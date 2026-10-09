@@ -11,6 +11,12 @@ Two deliverables (see ``docs/backlog/budget-guardrails.md``):
   24h spend total; :mod:`precis.budget.breaker` refuses *new paid* work
   once a cap is crossed. Only free local work always flows.
 
+The claude-OAuth lane is gated on *subscription quota*, not dollars
+(:mod:`precis.budget.quota`): the ``claude_quota_snapshot`` the probe
+refreshes, plus a **reactive stamp** the router writes the moment a live
+``quota``-class 429 lands, so the next claude call pauses without a
+subprocess and one early probe re-reads the window at its reset.
+
 The breaker is **dark by construction**: with no store bound (DB-free
 callers, tests) it never trips. :func:`bind_store` wires the process store at
 worker / runtime boot, mirroring :mod:`precis.route_log`.

@@ -110,11 +110,25 @@ retry and failover walk — ``local`` whenever a ``served_by`` slot exists.
 (``llm.model.small`` → ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → default
 ``z-ai/glm-4.7-flash``) whenever a call lands on a hosted OSS transport.
 
-Failure semantics: Claude quota-notice adapters stamp ``reason_class='quota'``
-and UTC ``retry_at`` alongside the existing pause flags. Reset parsing lives
-in ``quota`` so executor parking uses the same horizon; other failure classes
-are not yet populated. This additive slice does not retry or update quota
-snapshots.
+Failure semantics: every classifiable ``LlmResult.error`` carries a
+``reason_class`` and a UTC ``retry_at`` — ``quota`` (Claude window
+exhausted, horizon = the parsed reset; wording in ``quota``), ``budget``
+(dollar breaker, provider credits, 402), ``rate`` (bare 429/overloaded),
+``transport`` (timeout, connection, 5xx) or ``content`` (refused /
+filtered). One table owns it (``failure``): the router stamps live
+results (structurally from the caught exception first, then by wording),
+the executor's parked-job backoff reads the same table off the captured
+reason string, and the route-log stores both under ``features``. A
+``content`` error never falls through a failover chain — the next rung
+would answer the same; every other class, and an unclassified error,
+does. On the ``SMALL`` lane over a tool-less transport (local /
+openai_compat / claude_p) a ``rate`` or ``transport`` failure is retried
+inside ``route()`` with bounded exponential backoff (default 3 attempts,
+2s·2ⁿ with jitter, total under 30 s; ``PRECIS_LLM_RETRY_ATTEMPTS``, ``1``
+turns it off) — a timed-out result is never retried. A ``quota`` failure
+on a claude-OAuth rung stamps ``claude_quota_snapshot`` at once
+(``budget.quota.stamp_exhausted``) so the gate pauses the next claude call
+without a subprocess.
 
 A transport exception is classified
 (``router._is_unavailability``) — timeout / connection / 5xx / 429 →

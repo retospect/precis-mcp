@@ -68,6 +68,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
@@ -254,6 +255,12 @@ class GroupPlan:
     #: carries *what* is claimed, not just a bare pointer. Empty otherwise.
     reground_grounds: list[tuple[int, int, str]] = field(default_factory=list)
     note: str = ""
+    #: For ``"extract-unavailable"``: the router's failure class and the
+    #: horizon it named (``None`` when unclassified) — the job that
+    #: re-runs these chunks reports *why* and *when*, so a quota window
+    #: is not confused with a dead endpoint.
+    unavailable_class: str | None = None
+    retry_at: datetime | None = None
 
 
 @dataclass
@@ -581,11 +588,18 @@ def _run_cascade(
     try:
         extraction = extract_fn(group.span_text)
     except ExtractionUnavailable as exc:
+        cls = exc.reason_class or "unclassified"
+        after = f" after {exc.retry_at.isoformat()}" if exc.retry_at else ""
         return GroupPlan(
             group=group,
             action="extract-unavailable",
             supporters=supporters,
-            note=f"claim extraction unavailable (dispatch failed or reply cut off) — re-run: {exc}",
+            note=(
+                f"claim extraction unavailable [{cls}] (dispatch failed or reply "
+                f"cut off) — re-run{after}: {exc}"
+            ),
+            unavailable_class=exc.reason_class,
+            retry_at=exc.retry_at,
         )
     if extraction.is_empty:
         return GroupPlan(

@@ -15,7 +15,6 @@ import json
 import logging
 import math
 import os
-import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -36,11 +35,7 @@ from precis.store._resource_slots_ops import (
 )
 from precis.store._todo_sql import _doable_exclusion_clause
 from precis.store.types import ChunkInsert, Tag
-from precis.utils.llm.quota import (
-    QUOTA_RESET_PATTERN,
-    parse_api_usage_reset_at,
-    quota_retry_at,
-)
+from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.workers.executors import suspended_job_types
 from precis.workers.nursery import HOST_DARK_SILENCE_MIN
 from precis.workers.registry import SERVICES_BY_NAME
@@ -1161,78 +1156,19 @@ def set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
 # ── transient-failure classification (retryable child-failed,
 #    docs/backlog/todo-parked-transient-failures.md) ─────────────────
 
-#: Reason-text signatures for failures a fresh attempt will plausibly
-#: clear on its own — each entry is ``(pattern, backoff_hours)``. Matched
-#: (case-insensitively) against :func:`record_failure`'s ``reason`` — the
-#: one funnel every executor's failure passes through — so classification
-#: needs no per-executor wiring. Deliberately conservative: a false
-#: negative just keeps today's 12h·2ᴺ unpark cool-down; a false positive
-#: only means one earlier retry, still bounded by ``sweeper.UNPARK_CAP``.
-_TRANSIENT_FAILURE_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
-    # Rate limiting / API overload — clears in minutes.
-    (re.compile(r"rate.?limit|\b429\b|overloaded|\b529\b", re.IGNORECASE), 0.25),
-    # Spend/usage/budget caps — clears on the next window or a top-up.
-    (
-        re.compile(
-            r"usage limit|spend(?:ing)?\s+(?:limit|cap)"
-            r"|budget\s+(?:limit|cap|exceeded)|credit balance|out of credits",
-            re.IGNORECASE,
-        ),
-        2.0,
-    ),
-    # Transient upstream/API/network faults.
-    (
-        re.compile(
-            r"internal server error|service unavailable|bad gateway"
-            r"|temporarily unavailable|connection reset by peer|connection refused",
-            re.IGNORECASE,
-        ),
-        0.5,
-    ),
-)
-
-
-def _quota_limit_backoff_hours(reason: str, now: datetime) -> float | None:
-    """Use the router-owned reset instant for clock-shaped quota notices.
-
-    Bare legacy usage-limit notices retain the generic two-hour backoff
-    below; ordinary rate limits retain their fifteen-minute horizon.
-    """
-    if QUOTA_RESET_PATTERN.search(reason) is None:
-        return None
-    reset_at = quota_retry_at(reason, now=now)
-    assert reset_at is not None
-    return max((reset_at - now).total_seconds() / 3600.0, 0.0)
-
-
-def _api_usage_limit_backoff_hours(reason: str, now: datetime) -> float | None:
-    """Share the absolute account-reset parser with live router results."""
-    reset_at = parse_api_usage_reset_at(reason)
-    if reset_at is None:
-        return None
-    return max((reset_at - now).total_seconds() / 3600.0, 0.0)
-
 
 def classify_transient_backoff_hours(reason: str) -> float | None:
     """Backoff (hours) when ``reason`` reads as a transient failure, else
-    ``None``. The Claude weekly/session quota-limit shape
-    (:data:`~precis.utils.llm.quota.QUOTA_RESET_PATTERN`) is checked first (its backoff runs to
-    the actual reset instant, not a fixed horizon), then the account-level
-    API usage-limit shape (:func:`~precis.utils.llm.quota.parse_api_usage_reset_at`, also to its
-    named absolute instant); otherwise the first matching pattern in
-    :data:`_TRANSIENT_FAILURE_PATTERNS` wins (rate-limit before spend — a
-    message naming both is retryable at the shorter horizon)."""
-    now = datetime.now(UTC)
-    quota_hours = _quota_limit_backoff_hours(reason, now)
-    if quota_hours is not None:
-        return quota_hours
-    api_limit_hours = _api_usage_limit_backoff_hours(reason, now)
-    if api_limit_hours is not None:
-        return api_limit_hours
-    for pattern, hours in _TRANSIENT_FAILURE_PATTERNS:
-        if pattern.search(reason):
-            return hours
-    return None
+    ``None``. The table is the router's (:mod:`precis.utils.llm.failure`,
+    one owner): a Claude quota notice backs off to its parsed reset
+    instant, an account API usage-limit notice to its absolute date, a
+    rate limit fifteen minutes, a spend cap two hours, a transport fault
+    thirty minutes. Matched against :func:`record_failure`'s ``reason`` —
+    the one funnel every executor's failure passes through — so
+    classification needs no per-executor wiring. A false negative keeps
+    today's 12h·2ᴺ unpark cool-down; a false positive only means one
+    earlier retry, still bounded by ``sweeper.UNPARK_CAP``."""
+    return _failure_backoff_hours(reason, now=datetime.now(UTC))
 
 
 #: Cap on the ``reason`` string mirrored into ``refs.meta.error`` by

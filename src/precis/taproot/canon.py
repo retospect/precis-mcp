@@ -41,9 +41,11 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from precis.embedder import EmbedderUnavailable
 from precis.errors import Upstream
 from precis.store._chunks_ops import _prepare_filtered_ann
-from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
@@ -658,7 +660,33 @@ class ExtractionUnavailable(RuntimeError):
     "the model said nothing groundable" apart from "the model never ran"
     (e.g. a migration dry-run report) should use the strict variant and
     catch this instead of reading :func:`extract_claim`'s empty-extraction
-    fail-safe as a verdict."""
+    fail-safe as a verdict.
+
+    Carries the router's :attr:`~precis.utils.llm.router.LlmResult.reason_class`
+    and ``retry_at`` when the failure was a routed result (``None`` for a
+    cut-off or unparseable reply), so a backfill can say *why* it could
+    not decide and *when* re-running is worth it."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_class: str | None = None,
+        retry_at: datetime | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason_class = reason_class
+        self.retry_at = retry_at
+
+
+def _unavailable(res: LlmResult) -> ExtractionUnavailable:
+    # ``getattr``: tests hand ``route`` stand-ins carrying only
+    # ``.error``/``.data``/``.text``.
+    return ExtractionUnavailable(
+        res.error or "dispatch failed",
+        reason_class=getattr(res, "reason_class", None),
+        retry_at=getattr(res, "retry_at", None),
+    )
 
 
 def extract_claim(chunk_text: str, *, origin: str | None = None) -> ClaimExtraction:
@@ -778,7 +806,7 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
         )
         if res.error:
             if res.timed_out:
-                raise ExtractionUnavailable(res.error)
+                raise _unavailable(res)
             if attempt == 0:
                 log.info(
                     "taproot: medium-tier extract dispatch failed: %s — "
@@ -788,7 +816,7 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
                 )
                 time.sleep(_FLAKE_RETRY_BACKOFF_S)
                 continue
-            raise ExtractionUnavailable(res.error)
+            raise _unavailable(res)
 
         try:
             data = _top_level_payload(res)
@@ -851,7 +879,7 @@ def _extract_claim_impl(
     if res.error:
         log.warning("taproot: extract_claim dispatch failed: %s", res.error)
         if strict:
-            raise ExtractionUnavailable(res.error)
+            raise _unavailable(res)
         return _EMPTY_EXTRACTION
     try:
         data = _top_level_payload(res)

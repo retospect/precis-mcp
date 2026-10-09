@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from precis.utils.claude_agent import AgentResult, ClaudeAgentError
 from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.workers.job_types.deferred_llm_call import DEFERRABLE_CLASSES
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -155,38 +157,72 @@ def build_prompt(
     return "\n".join(parts)
 
 
+class AnswerDeferred(Exception):
+    """The follow-up cannot run now — a ``quota``/``budget``-class failure
+    (:attr:`~precis.utils.llm.router.LlmResult.reason_class`) whose window
+    clears on its own. Carries the request to defer and the horizon; the
+    route enqueues a ``deferred_llm_call`` instead of storing the failure
+    as a turn (gr345578)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_class: str,
+        retry_at: datetime | None,
+        request: LlmRequest,
+    ) -> None:
+        super().__init__(message)
+        self.reason_class = reason_class
+        self.retry_at = retry_at
+        self.request = request
+
+
+def build_request(prompt: str, *, store: Store, conv_ref_id: int) -> LlmRequest:
+    """The follow-up's routed request: FRONTIER, agentic, the dream pass's
+    flag set (SOUL system prompt, MCP config, web tools disabled,
+    stream-json for cost/turn accounting). ``log_event`` attributes the run
+    on the conv ref's ``ref_events`` for per-host telemetry."""
+    cfg = _resolve_config()
+    return LlmRequest(
+        tier=Tier.FRONTIER,
+        source="followup",
+        prompt=prompt,
+        tools_needed=True,
+        model=cfg.model,
+        system_prompt=cfg.soul_path,
+        mcp_config=cfg.mcp_path,
+        timeout_s=cfg.timeout_s,
+        # Same as dreams: stay on corpus state, don't fan out to the web.
+        disallowed_tools=("WebFetch", "WebSearch"),
+        output_format="stream-json",
+        extra_args=("--verbose",),
+        log_event=(store, conv_ref_id, "followup"),
+    )
+
+
 def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResult:
     """Run the agentic follow-up and return the result (blocking).
 
     Call from a worker thread (``asyncio.to_thread``) — the underlying
-    ``claude -p`` subprocess can take tens of seconds. Reuses the dream
-    pass's flag set (SOUL system prompt, MCP config, web tools disabled,
-    stream-json for cost/turn accounting). ``log_event`` attributes the
-    run on the conv ref's ``ref_events`` for per-host telemetry.
+    ``claude -p`` subprocess can take tens of seconds. Raises
+    :class:`AnswerDeferred` on a ``quota``/``budget``-class failure (the
+    route defers the call), :class:`ClaudeAgentError` on any other.
     """
-    cfg = _resolve_config()
+    req = build_request(prompt, store=store, conv_ref_id=conv_ref_id)
     # Routed through the LLM seam so PRECIS_LLM_BACKEND can
     # switch the follow-up onto an OSS model. The AgentResult-returning /
     # ClaudeAgentError-raising contract is preserved so the route is untouched:
     # route folds failures into res.error, which we re-raise.
-    res = route(
-        LlmRequest(
-            tier=Tier.FRONTIER,
-            source="followup",
-            prompt=prompt,
-            tools_needed=True,
-            model=cfg.model,
-            system_prompt=cfg.soul_path,
-            mcp_config=cfg.mcp_path,
-            timeout_s=cfg.timeout_s,
-            # Same as dreams: stay on corpus state, don't fan out to the web.
-            disallowed_tools=("WebFetch", "WebSearch"),
-            output_format="stream-json",
-            extra_args=("--verbose",),
-            log_event=(store, conv_ref_id, "followup"),
-        )
-    )
+    res = route(req)
     if res.error:
+        if res.reason_class in DEFERRABLE_CLASSES:
+            raise AnswerDeferred(
+                res.error,
+                reason_class=res.reason_class,
+                retry_at=res.retry_at,
+                request=req,
+            )
         raise ClaudeAgentError(res.error, stdout=res.text)
     return AgentResult(
         final_text=res.text,
@@ -199,8 +235,10 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
 __all__ = [
     "ANSWERER",
     "ASKER",
+    "AnswerDeferred",
     "answer_model_label",
     "build_prompt",
+    "build_request",
     "followup_slug",
     "generate_answer",
     "source_handle",

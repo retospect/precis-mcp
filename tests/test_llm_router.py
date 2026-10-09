@@ -5371,6 +5371,14 @@ def _reset_op_chain_warned() -> Any:
     operations._warned.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SMALL-lane in-process retry (``router._run_with_retry``) backs off
+    for real seconds; nothing here tests the backoff itself
+    (``test_llm_failure_classification`` does), so sleep through a no-op."""
+    monkeypatch.setattr(router, "_retry_sleep", lambda _s: None)
+
+
 def _saturated(monkeypatch: pytest.MonkeyPatch) -> tuple[_Rec, _Rec]:
     from precis.utils.llm import local_serving as ls
 

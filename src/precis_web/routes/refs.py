@@ -49,6 +49,11 @@ from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
+from precis.workers.job_types.deferred_llm_call import (
+    SURFACE_FOLLOWUP,
+    deferral_params,
+    serialize_request,
+)
 from precis_web import ask
 from precis_web.deps import (
     await_dispatch,
@@ -3226,6 +3231,43 @@ async def _run_followup(
             }.items()
             if v is not None
         }
+    except ask.AnswerDeferred as exc:
+        # A quota/budget window: never store the failure as a turn
+        # (gr345578). The human turn stays as the resume point; a
+        # deferred_llm_call job appends the real answer once the window
+        # clears. Minted through the canonical todo shape so the dispatch
+        # worker owns the job and the todo auto-resolves on success.
+        params = deferral_params(
+            surface=SURFACE_FOLLOWUP,
+            args={
+                "request": serialize_request(exc.request),
+                "conv_slug": slug,
+                "conv_ref_id": conv.id,
+                "author": ask.ANSWERER,
+                "question": question,
+            },
+            retry_at=exc.retry_at,
+        )
+        _, is_error = await await_dispatch(
+            request,
+            "put",
+            {
+                "kind": "todo",
+                "text": f"Deferred follow-up answer · {source_title}",
+                "executor": "coordinator",
+                "job_type": "deferred_llm_call",
+                "params": params,
+                "link": f"conv:{conv.id}",
+                "rel": "related-to",
+            },
+        )
+        if is_error:
+            return _err(
+                "Follow-up deferred",
+                f"the model is paused ({exc.reason_class}) and the deferred "
+                f"retry could not be queued: {exc}",
+            )
+        return RedirectResponse(url=conv_url, status_code=303)
     except ClaudeAgentError as exc:
         answer = f"⚠️ thinking failed: {exc}"
         answer_author = "system"

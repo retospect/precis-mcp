@@ -121,6 +121,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     #: checkpoint so a retry of this job re-runs them (an outage is not a
     #: verdict; checkpointing it would make the loss permanent).
     unavailable: list[int] = []
+    #: The failure classes + horizons behind ``unavailable`` (the router's
+    #: ``reason_class``/``retry_at`` via the plan), so the failure names
+    #: why — a quota window is not a dead endpoint — and when to retry.
+    unavailable_why: list[tuple[str | None, Any, str]] = []
 
     for _slug, c in pairs:
         if c.chunk_kind in draft_regex.TEXT_DERIVED_KINDS:
@@ -150,8 +154,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             if result.rewritten_text is not None:
                 n_converted += 1
             n_ungrounded += result.n_ungrounded
-            if any(p.action == "extract-unavailable" for p in result.plans):
+            stalled = [p for p in result.plans if p.action == "extract-unavailable"]
+            if stalled:
                 unavailable.append(c.chunk_id)
+                unavailable_why.extend(
+                    (p.unavailable_class, p.retry_at, p.note) for p in stalled
+                )
                 continue
 
         done_ids.append(c.chunk_id)
@@ -170,9 +178,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.set_meta(scanned=n_scanned, converted=n_converted, failed=n_failed)
     if unavailable:
         handles = ", ".join(f"dc{cid}" for cid in unavailable)
+        classes = sorted({c for c, _at, _n in unavailable_why if c})
+        horizons = [at for _c, at, _n in unavailable_why if at is not None]
+        why = f" [{', '.join(classes)}]" if classes else ""
+        when = f" after {max(horizons).isoformat()}" if horizons else ""
+        # The first plan's note carries the router's wording, so the
+        # executor's parked-job backoff classifies this failure the same way
+        # the router did (a quota reset, a 429's fifteen minutes, ...).
+        first = unavailable_why[0][2] if unavailable_why else ""
         ctx.record_failure(
-            f"taproot_backfill: claim extraction LLM unavailable for {handles} — "
-            "those chunks are not checkpointed; retry this job to re-run them",
+            f"taproot_backfill: claim extraction LLM unavailable{why} for "
+            f"{handles} — those chunks are not checkpointed; retry this job"
+            f"{when} to re-run them. {first}",
             failure_class="infra",
         )
 

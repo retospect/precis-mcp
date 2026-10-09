@@ -1275,3 +1275,24 @@ def test_dedup_judge_flags_empty_reply_as_error_and_judge_retries(
     judged = canon.judge_candidates("q", cands)
     assert len(calls) == 2  # tried, retried once
     assert judged[0][1]["verdict"] == "error"
+
+
+def test_extract_claim_strict_carries_the_router_failure_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A quota-class dispatch failure is an outage with a known horizon,
+    never a NO-CLAIM: the exception names the class and the retry instant
+    so a backfill reports why and when (docs/backlog/
+    llm-quota-failure-classification.md)."""
+    from datetime import UTC, datetime
+
+    reset = datetime(2026, 10, 9, 21, 0, tzinfo=UTC)
+    res = _result(error="account quota exhausted: You've hit your session limit")
+    res.reason_class, res.retry_at = "quota", reset
+    monkeypatch.setattr(canon, "route", lambda req: res)
+    with pytest.raises(ExtractionUnavailable) as info:
+        extract_claim_strict("some passage")
+    assert info.value.reason_class == "quota" and info.value.retry_at == reset
+    # The lenient extractor still degrades to empty — callers that want the
+    # distinction use the strict variant (the backfill does).
+    assert extract_claim("some passage").is_empty

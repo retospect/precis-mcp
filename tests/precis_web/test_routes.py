@@ -6396,3 +6396,53 @@ def test_drive_includes_conv_kind(runtime, client) -> None:
     # ...and a query passes it through to the cross-kind search primitive.
     client.get("/drive?q=anything")
     assert "conv" in runtime.store.search_kinds
+
+
+def test_ask_followup_quota_failure_defers_instead_of_storing_a_turn(
+    client, runtime, monkeypatch
+) -> None:
+    """A quota/budget-class failure never lands as a turn (gr345578): the
+    human question stays as the resume point and one ``deferred_llm_call``
+    todo carries the conv slug, the question and the retry horizon."""
+    from datetime import UTC, datetime, timedelta
+
+    from precis.utils.llm.router import LlmRequest, Tier
+    from precis_web import ask
+
+    reset = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=1)
+
+    def _quota(prompt, *, store, conv_ref_id):
+        raise ask.AnswerDeferred(
+            "account quota exhausted: You've hit your session limit · resets 9pm (UTC)",
+            reason_class="quota",
+            retry_at=reset,
+            request=LlmRequest(tier=Tier.FRONTIER, prompt=prompt, tools_needed=True),
+        )
+
+    monkeypatch.setattr(ask, "generate_answer", _quota)
+    resp = client.post(
+        "/refs/memory/20/ask",
+        data={"question": "What does this imply?"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/refs/conv/")
+
+    puts = [a for v, a in runtime.calls if v == "put"]
+    conv_puts = [a for a in puts if a["kind"] == "conv"]
+    assert len(conv_puts) == 1  # the question only — no system/asa turn
+    assert conv_puts[0]["author"] == "owner"
+
+    todo_puts = [a for a in puts if a["kind"] == "todo"]
+    assert len(todo_puts) == 1
+    todo = todo_puts[0]
+    assert todo["executor"] == "coordinator"
+    assert todo["job_type"] == "deferred_llm_call"
+    assert todo["link"].startswith("conv:")
+    params = todo["params"]
+    assert params["surface"] == "followup"
+    assert params["retry_at"] == reset.isoformat()
+    assert params["args"]["conv_slug"] == "followup/memory/20"
+    assert params["args"]["question"] == "What does this imply?"
+    assert params["args"]["request"]["tier"] == "frontier"
+    assert "A decision" in params["args"]["request"]["prompt"]

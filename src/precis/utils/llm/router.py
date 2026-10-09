@@ -40,16 +40,17 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 
@@ -60,6 +61,7 @@ from precis.utils.claude_agent import (
     call_claude_agent_async,
 )
 from precis.utils.claude_p import ClaudePResult, call_claude_p
+from precis.utils.llm import failure as _failure
 from precis.utils.llm.quota import is_quota_exhaustion_text, quota_retry_at
 
 if TYPE_CHECKING:
@@ -976,12 +978,20 @@ class LlmResult:
     #: when nothing was logged (no store bound, ``log_call`` off, a lite row,
     #: or a failed write).
     request_hash: str | None = None
-    #: Structured failure metadata. This first slice stamps detected Claude
-    #: quota notices only; unclassified failures and successes stay unset.
-    reason_class: Literal["quota", "rate", "budget", "transport", "content"] | None = (
-        None
-    )
-    #: UTC reset instant or the existing conservative quota backoff horizon.
+    #: Structured failure class (:mod:`precis.utils.llm.failure`):
+    #: ``quota`` (Claude window exhausted), ``budget`` (a spend cap — the
+    #: dollar breaker, provider credits, 402), ``rate`` (bare 429 /
+    #: overloaded), ``transport`` (timeout, connection failure, 5xx) or
+    #: ``content`` (the model refused — no rung will do better). Stamped by
+    #: the router on every classifiable ``error``; a successful result and
+    #: an unrecognized failure stay ``None``. Every ``paused`` result
+    #: carries a class. :class:`FailoverProvider` falls through on
+    #: :data:`~precis.utils.llm.failure.FALL_THROUGH_CLASSES` and on an
+    #: unclassified error, never on ``content``.
+    reason_class: _failure.FailureClass | None = None
+    #: Earliest sensible retry, UTC: the parsed quota reset, else the
+    #: class's fixed horizon (:data:`~precis.utils.llm.failure.DEFAULT_HORIZON`).
+    #: ``None`` when unclassified or ``content``.
     retry_at: datetime | None = None
 
 
@@ -1501,6 +1511,11 @@ class FailoverProvider:
     * **quality / verdict** — ``accept(res)`` returns ``False`` → fall through
       (a seam for a judge-gated escalate; unused by the default ladder).
 
+    A ``content``-class error (:attr:`LlmResult.reason_class` — the model
+    refused or was filtered) never falls through: the next rung gets the
+    same prompt and gives the same answer, so walking on would only spend.
+    Every other class, and an unclassified error, does.
+
     Cost/turn ceilings (``max_usd``/``max_turns``) live inside each provider,
     bounding a rung rather than the ladder.
     """
@@ -1514,8 +1529,10 @@ class FailoverProvider:
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         last: LlmResult | None = None
         for i, rung in enumerate(self._rungs):
-            last = provider_for(rung.transport, bare=rung.bare).run(
-                req, model=rung.model or model
+            last = _classified(
+                provider_for(rung.transport, bare=rung.bare).run(
+                    req, model=rung.model or model
+                )
             )
             # Stamp the rung that actually ran. Done per-iteration (not once at
             # the end) so a fall-through to a cloud rung is recorded as cloud —
@@ -1542,12 +1559,15 @@ class FailoverProvider:
                 return last
             if last.error is not None:
                 log.warning(
-                    "llm-failover: rung %d (%s, model=%s) failed: %s",
+                    "llm-failover: rung %d (%s, model=%s) failed: %s (class=%s)",
                     i,
                     rung.label or rung.transport.value,
                     rung.model or model,
                     last.error,
+                    last.reason_class or "unclassified",
                 )
+                if last.reason_class == "content":
+                    return last
         assert last is not None  # rungs is non-empty
         return last
 
@@ -1985,6 +2005,120 @@ def _hosted_small_remap(
     return _hosted_small_model()
 
 
+#: Transports the SMALL-lane in-process retry applies to: one-shot and
+#: tool-less, so a repeat is cheap and idempotent. The agent transports
+#: (``claude_agent`` / ``openai_tools``) run multi-turn tool loops that
+#: cost real turns per attempt and have their own park-and-resume path.
+_INPROCESS_RETRY_TRANSPORTS: frozenset[Transport] = frozenset(
+    {Transport.LOCAL, Transport.OPENAI_COMPAT, Transport.CLAUDE_P}
+)
+
+#: Base of the retry backoff (seconds): waits ``base·2ⁿ`` plus jitter.
+_RETRY_BASE_S = 2.0
+#: Cap on one wait and on the total wait across a call's retries.
+_RETRY_MAX_WAIT_S = 30.0
+
+# Seam for tests (and for a caller that must not block): the retry sleeps
+# through this, never through ``time.sleep`` directly.
+_retry_sleep: Callable[[float], None] = time.sleep
+
+
+def _retry_attempts() -> int:
+    """Attempts per SMALL-lane call, ``PRECIS_LLM_RETRY_ATTEMPTS`` (default 3;
+    ``1`` turns the retry off)."""
+    from precis.utils.env import env_int
+
+    return env_int("PRECIS_LLM_RETRY_ATTEMPTS", 3, lo=1, hi=6)
+
+
+def _run_with_retry(
+    provider: LlmProvider,
+    req: LlmRequest,
+    *,
+    model: str,
+    transport: Transport,
+) -> LlmResult:
+    """Run ``provider`` and, on the SMALL lane over a tool-less transport,
+    retry a ``rate``/``transport``-class failure with bounded exponential
+    backoff before surfacing it (item 3 of
+    docs/backlog/llm-quota-failure-classification.md).
+
+    The 2026-09-07 storm was 182 bare 429s on ``classify``/``llm_summarize``
+    that nothing retried in-process — each became an errored row. A few
+    seconds of backoff clears most of them. Bounds: :func:`_retry_attempts`
+    tries, waits ``2s·2ⁿ`` with jitter, each capped and the total capped
+    at :data:`_RETRY_MAX_WAIT_S`. A ``timed_out`` result is never retried
+    (an identical prompt against the same stalled wire stalls again), nor
+    is a ``quota``/``budget``/``content`` class (minutes-to-hours horizons
+    or a verdict on the prompt itself). Other tiers and transports run once.
+    """
+    attempts = (
+        _retry_attempts()
+        if req.tier is Tier.SMALL and transport in _INPROCESS_RETRY_TRANSPORTS
+        else 1
+    )
+    waited = 0.0
+    result = _classified(provider.run(req, model=model))
+    for n in range(1, attempts):
+        if (
+            result.error is None
+            or result.timed_out
+            or result.reason_class not in _failure.INPROCESS_RETRY_CLASSES
+        ):
+            break
+        wait = min(_RETRY_BASE_S * (2 ** (n - 1)), _RETRY_MAX_WAIT_S)
+        wait = min(wait * (0.75 + random.random() * 0.5), _RETRY_MAX_WAIT_S - waited)
+        if wait <= 0:
+            break
+        log.info(
+            "route: %s failure on the SMALL lane (%s) — retry %d/%d in %.1fs: %s",
+            result.reason_class,
+            transport.value,
+            n,
+            attempts - 1,
+            wait,
+            result.error,
+        )
+        _retry_sleep(wait)
+        waited += wait
+        result = _classified(provider.run(req, model=model))
+    return result
+
+
+def _react_to_quota(result: LlmResult, *, transport: Transport, bare: bool) -> None:
+    """Write a live ``quota``-class failure back to the claude quota
+    snapshot (:func:`precis.budget.quota.stamp_exhausted`) so the gate
+    pauses the next claude call on this store instead of every surface
+    rediscovering exhaustion until the probe cadence catches up. Only the
+    OAuth transports draw subscription quota (a ``bare`` rung spends
+    dollars); dark when no store is bound. Never raises."""
+    if result.reason_class != "quota":
+        return
+    from precis.budget import meter as _meter
+    from precis.budget import quota as _quota
+
+    if transport.value not in _meter.OAUTH_TRANSPORTS or bare:
+        return
+    try:
+        _quota.stamp_exhausted(
+            _meter.active_store(), resets_at=result.retry_at, notice=result.error
+        )
+    except Exception:
+        log.debug("route: reactive quota stamp failed", exc_info=True)
+
+
+def _trip_class(transport: Transport, *, bare: bool) -> _failure.FailureClass:
+    """The class of a breaker trip for the rung that was gated: the
+    claude-OAuth transports (not ``bare``) are gated on subscription quota,
+    everything else on dollars — the same split :func:`~precis.budget.breaker.gate_tier`
+    makes (:data:`~precis.budget.meter.OAUTH_TRANSPORTS`)."""
+    from precis.budget import meter as _meter
+
+    if transport.value in _meter.OAUTH_TRANSPORTS and not bare:
+        return "quota"
+    return "budget"
+
+
 def route(req: LlmRequest) -> LlmResult:
     """Route ``req`` to its provider and return a normalized
     :class:`LlmResult`.
@@ -2008,6 +2142,14 @@ def route(req: LlmRequest) -> LlmResult:
     covers a *saturated local slot*: a ``paused`` local-serving result
     retries rung 0 against the hosted OSS endpoint before falling to the
     next rung.
+
+    Every error result carries a :attr:`LlmResult.reason_class` and
+    :attr:`LlmResult.retry_at` (:mod:`precis.utils.llm.failure`). On the
+    ``SMALL`` lane over a tool-less transport a ``rate``/``transport``
+    failure is retried in-process with bounded backoff
+    (:func:`_run_with_retry`, ``PRECIS_LLM_RETRY_ATTEMPTS``) before it
+    surfaces; a ``quota`` failure on a claude-OAuth rung stamps the quota
+    snapshot (:func:`_react_to_quota`) so the next call pauses at the gate.
     """
 
     backend = resolve_backend()
@@ -2097,6 +2239,9 @@ def route(req: LlmRequest) -> LlmResult:
                 "waiting for cloud to be re-enabled"
             ),
             paused=True,
+            # An operator cap on cloud spend: the budget class, no horizon
+            # beyond its default — the throttle clears when the operator says.
+            reason_class="budget",
         )
     # The rung the operator's intent picked, before the mechanical fallbacks
     # below can replace it — `placement_routed` is classified off this.
@@ -2146,14 +2291,17 @@ def route(req: LlmRequest) -> LlmResult:
         # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
         # pinned pass skips (and re-runs when the window clears) rather than
         # spinning: record-failed → re-claim → re-trip every worker cycle.
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=trip,
-            paused=True,
+        return _classified(
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=trip,
+                paused=True,
+            ),
+            reason_class=_trip_class(transport, bare=ladder[0].bare),
         )
     # Window admission (llm-catalog slice 2): refuse a doomed (context, model)
     # pairing loudly — with the numbers — after the budget gate, before spending
@@ -2231,14 +2379,17 @@ def route(req: LlmRequest) -> LlmResult:
                 bare=nxt.bare,
             )
             if esc_trip is not None:
-                return LlmResult(
-                    text="",
-                    cost_usd=None,
-                    turns_used=None,
-                    model=model,
-                    tier=req.tier,
-                    error=esc_trip,
-                    paused=True,
+                return _classified(
+                    LlmResult(
+                        text="",
+                        cost_usd=None,
+                        turns_used=None,
+                        model=model,
+                        tier=req.tier,
+                        error=esc_trip,
+                        paused=True,
+                    ),
+                    reason_class=_trip_class(nxt.transport, bare=nxt.bare),
                 )
             esc_refusal = _admit.check_dispatch(
                 req, model=nxt.model or model, transport=nxt.transport
@@ -2253,7 +2404,8 @@ def route(req: LlmRequest) -> LlmResult:
                     error=esc_refusal,
                 )
             started = time.monotonic()
-            result = FailoverProvider(ladder[1:]).run(req, model=model)
+            result = _classified(FailoverProvider(ladder[1:]).run(req, model=model))
+            _react_to_quota(result, transport=nxt.transport, bare=nxt.bare)
             result = _replace(
                 result,
                 request_hash=_record_dispatch(
@@ -2297,7 +2449,7 @@ def route(req: LlmRequest) -> LlmResult:
                 ]
             )
             started = time.monotonic()
-            result = escape.run(req, model=saturated_model)
+            result = _classified(escape.run(req, model=saturated_model))
             result = _replace(
                 result,
                 request_hash=_record_dispatch(
@@ -2317,6 +2469,9 @@ def route(req: LlmRequest) -> LlmResult:
             tier=req.tier,
             error=f"all local serving slots for {model} are busy — backing off",
             paused=True,
+            # Capacity, not a fault: the shortest horizon.
+            reason_class="rate",
+            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
         )
     # A reserved slot that declares a direct `endpoint` (llama-swap) routes
     # the local transport there instead of the default, using the
@@ -2336,9 +2491,12 @@ def route(req: LlmRequest) -> LlmResult:
     )
     started = time.monotonic()
     try:
-        result = provider.run(call_req, model=call_model)
+        result = _run_with_retry(
+            provider, call_req, model=call_model, transport=transport
+        )
     finally:
         _local.release(slot)
+    _react_to_quota(result, transport=transport, bare=ladder[0].bare)
     # The direct (non-FailoverProvider) path has exactly one rung, so nothing
     # stamped placement above. A reserved `served_by` slot is local by
     # definition regardless of how the rung classifies — that IS the local
@@ -2474,14 +2632,17 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
         bare=ladder[0].bare,
     )
     if trip is not None:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=trip,
-            paused=True,
+        return _classified(
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=trip,
+                paused=True,
+            ),
+            reason_class=_trip_class(transport, bare=ladder[0].bare),
         )
 
     from precis.utils.llm import admit as _admit
@@ -2514,6 +2675,9 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             tier=req.tier,
             error=f"all local serving slots for {model} are busy — backing off",
             paused=True,
+            # Capacity, not a fault: the shortest horizon.
+            reason_class="rate",
+            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
         )
     call_req = req
     call_model = model
@@ -2523,9 +2687,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
 
     started = time.monotonic()
     try:
-        result = await _dispatch_claude_agent_async(call_req, model=call_model)
+        result = _classified(
+            await _dispatch_claude_agent_async(call_req, model=call_model)
+        )
     finally:
         _local.release(slot)
+    _react_to_quota(result, transport=transport, bare=ladder[0].bare)
     # The direct (non-FailoverProvider) path has exactly one rung, so nothing
     # stamped placement above. A reserved `served_by` slot is local by
     # definition regardless of how the rung classifies — that IS the local
@@ -2710,6 +2877,13 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         # burned the ceiling and recorded nothing. Cheap to stamp, and it is
         # what an alert should actually fire on.
         feats["empty_output"] = len((result.text or "").strip()) < 10
+        # The failure class + horizon, so the ledger answers "how many
+        # quota/rate/transport failures this month" without a regex over
+        # `error` (docs/backlog/llm-quota-failure-classification.md).
+        if result.reason_class is not None:
+            feats["reason_class"] = result.reason_class
+        if result.retry_at is not None:
+            feats["retry_at"] = result.retry_at.isoformat()
     return feats
 
 
@@ -2817,6 +2991,38 @@ def record_dispatch(
     )
 
 
+def _classified(
+    result: LlmResult,
+    *,
+    exc: BaseException | None = None,
+    reason_class: _failure.FailureClass | None = None,
+) -> LlmResult:
+    """Stamp :attr:`LlmResult.reason_class` / :attr:`LlmResult.retry_at`
+    on an errored result that has none yet (:mod:`precis.utils.llm.failure`).
+
+    ``exc`` is the caught transport exception when the caller has one
+    (structural first — a ``urllib`` 429 reads as ``"HTTP Error 429"``);
+    ``reason_class`` pins the class outright for a failure the router
+    itself produced (a breaker trip is ``budget``/``quota`` by
+    construction, not by wording). A success or an already-stamped result
+    passes through unchanged.
+    """
+    if result.error is None or result.reason_class is not None:
+        return result
+    if reason_class is not None:
+        horizon = _failure.DEFAULT_HORIZON.get(reason_class)
+        retry_at = result.retry_at
+        if retry_at is None and reason_class == "quota":
+            retry_at = quota_retry_at(result.error)
+        if retry_at is None and horizon is not None:
+            retry_at = datetime.now(UTC) + horizon
+        return _replace(result, reason_class=reason_class, retry_at=retry_at)
+    found = _failure.classify(result.error, exc=exc, timed_out=result.timed_out)
+    if found.reason_class is None:
+        return result
+    return _replace(result, reason_class=found.reason_class, retry_at=found.retry_at)
+
+
 def _is_unavailability(exc: BaseException) -> bool:
     """Classify a caught transport exception: unavailability (skip-and-retry,
     :attr:`LlmResult.paused`) vs. a genuine semantic failure
@@ -2898,14 +3104,17 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         # unavailability, not a genuine failure — flag it `paused` so a pinned
         # pass backs off and retries instead of recording a dispatch failure
         # that can park the todo.
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=str(exc),
-            paused=_is_unavailability(exc),
+        return _classified(
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=str(exc),
+                paused=_is_unavailability(exc),
+            ),
+            exc=exc,
         )
     return result_from_openai(res, model=model, tier=req.tier)
 
@@ -3077,14 +3286,17 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         )
     except (RuntimeError, OSError) as exc:
         # Same unavailability-vs-semantic split as `_dispatch_local` above.
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=str(exc),
-            paused=_is_unavailability(exc),
+        return _classified(
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=str(exc),
+                paused=_is_unavailability(exc),
+            ),
+            exc=exc,
         )
     out = result_from_openai(res, model=model, tier=req.tier)
     # An HTTP 200 with empty content, no tool calls and no refusal is a
@@ -3256,17 +3468,20 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             max_tokens=req.max_tokens,
         )
     except (RuntimeError, OSError) as exc:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=str(exc),
-            # Same unavailability-vs-semantic split as `_dispatch_local` —
-            # a failure to *build* the executor/tools shares its exceptions.
-            paused=_is_unavailability(exc),
-            stop_reason="error",
+        return _classified(
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=str(exc),
+                # Same unavailability-vs-semantic split as `_dispatch_local` —
+                # a failure to *build* the executor/tools shares its exceptions.
+                paused=_is_unavailability(exc),
+                stop_reason="error",
+            ),
+            exc=exc,
         )
     # Cost: prefer the loop's own summed usage.cost (OpenRouter); otherwise
     # price the accumulated token split via the catalog, as
@@ -3281,20 +3496,22 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         cost = cost_from_tokens(
             model, prompt_tokens=None, completion_tokens=result.total_tokens
         )
-    return LlmResult(
-        text=result.final_text,
-        cost_usd=cost,
-        turns_used=result.turns_used,
-        model=model,
-        tier=req.tier,
-        error=result.error,
-        paused=result.paused,
-        timed_out=result.timed_out,
-        # `tool_calls_made` is the loop's own definitive count, needed so the
-        # review seam's empty-result assertion (which demands a real 0, not
-        # None) works on this backend too.
-        tool_calls=result.tool_calls_made,
-        stop_reason=result.stop_reason,
+    return _classified(
+        LlmResult(
+            text=result.final_text,
+            cost_usd=cost,
+            turns_used=result.turns_used,
+            model=model,
+            tier=req.tier,
+            error=result.error,
+            paused=result.paused,
+            timed_out=result.timed_out,
+            # `tool_calls_made` is the loop's own definitive count, needed so
+            # the review seam's empty-result assertion (which demands a real
+            # 0, not None) works on this backend too.
+            tool_calls=result.tool_calls_made,
+            stop_reason=result.stop_reason,
+        )
     )
 
 
@@ -3311,7 +3528,7 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     dispatch failure (see :attr:`LlmResult.interrupted`).
     """
     rc = getattr(exc, "returncode", None)
-    return LlmResult(
+    result = LlmResult(
         text=getattr(exc, "stdout", "") or "",
         cost_usd=None,
         turns_used=None,
@@ -3332,6 +3549,11 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         # gr463517: the MCP readiness gate refused to start the pass.
         mcp_not_ready=getattr(exc, "mcp_not_ready", False),
     )
+    # A host-config defect (missing binary, MCP not ready) is neither the
+    # wire nor the model — leave it unclassified so nothing retries it.
+    if result.cli_unavailable or result.mcp_not_ready:
+        return result
+    return _classified(result)
 
 
 __all__ = [

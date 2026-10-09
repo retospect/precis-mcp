@@ -657,7 +657,8 @@ def test_quota_gate_rejected_pauses() -> None:
         windows={
             "five_hour": {
                 "status": "rejected",
-                "resets_at": "2026-07-17T00:00:00+00:00",
+                # Far future: a window past its own reset no longer pauses.
+                "resets_at": "2099-07-17T00:00:00+00:00",
             }
         }
     )

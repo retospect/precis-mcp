@@ -689,8 +689,16 @@ def test_apply_extraction_unavailable_is_retryable_not_no_claim(
     dc = _seed_draft_para(draft, hub, original_text)
     before = _finding_count(hub.live_store)
 
+    from datetime import UTC, datetime
+
+    reset = datetime(2026, 10, 9, 21, 0, tzinfo=UTC)
+
     def _outage(_span: str) -> ClaimExtraction:
-        raise ExtractionUnavailable("connection refused")
+        raise ExtractionUnavailable(
+            "account quota exhausted: You've hit your session limit",
+            reason_class="quota",
+            retry_at=reset,
+        )
 
     result = apply_chunk(
         hub.live_store,
@@ -707,6 +715,10 @@ def test_apply_extraction_unavailable_is_retryable_not_no_claim(
     assert plan.action == "extract-unavailable"
     assert result.rewritten_text is None
     assert _finding_count(hub.live_store) == before
+    # The plan names the router's class and horizon — a quota window is
+    # reported as such, not as a dead endpoint, and never as no-claim.
+    assert plan.unavailable_class == "quota" and plan.retry_at == reset
+    assert "[quota]" in plan.note and reset.isoformat() in plan.note
 
 
 def test_apply_collapses_adjacent_cites_to_one_hub(

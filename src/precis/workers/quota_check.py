@@ -85,8 +85,14 @@ def run_quota_check_pass(store: Store, *, limit: int = 1) -> BatchResult:
     # is fundamentally singleton — there's nothing to batch.
     del limit
 
+    from precis.budget import quota as _quota
+
     existing = store.read_claude_quota(scope=DEFAULT_SCOPE)
-    if existing is not None:
+    # A reactive stamp (budget/quota.stamp_exhausted) schedules exactly one
+    # early probe at the window's reset: when it is due, refresh now even if
+    # the snapshot is young — the refresh overwrites ``probe_due``, so the
+    # probe fires once per exhausted window however many jobs parked.
+    if existing is not None and not _quota.probe_due(store):
         existing_ts = existing.ts
         if existing_ts.tzinfo is None:
             existing_ts = existing_ts.replace(tzinfo=UTC)

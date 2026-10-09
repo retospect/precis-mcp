@@ -106,6 +106,7 @@ next section.
 | `good_search`       | `coordinator`   | Deep paper-search campaign — normally minted for you by `search(kind='paper', q=…, good=True)`, not submitted by hand (see `precis-search-help`) |
 | `good_search_triage`| `claude_inproc` | A `good_search` triage batch (internal — the campaign spawns these itself) |
 | `conflict_sweep`    | `claude_inproc` | One claim hub hunts its opposition: negated-paraphrase ANN over the corpus, `paper_rank`-budgeted LLM verify, `disputes` edge on a confirmed contradicts, `meta.conflict_search` coverage ledger stamped. Minted for you at claim mint and by the approve page's freshness check (dark unless the `conflict_search` service is lit); by hand: params `hub_id` (the `fi<id>` ref_id), optional `refresh` (sweep even if already current — covered passages are still skipped). See `precis-taproot-help`. |
+| `deferred_llm_call` | `coordinator`   | A synchronous surface's LLM call run later, after a Claude quota or budget window (internal — the web follow-up mints it when the model is paused; it sleeps until `retry_at`, then appends the real answer to the conv) |
 
 ## Which job types run compute or code?
 ## Run a relax, a Pourbaix verdict or a sandbox build

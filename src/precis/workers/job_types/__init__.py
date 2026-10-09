@@ -725,6 +725,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "datasheet_pull":
         _REGISTRY["datasheet_pull"] = _load_datasheet_pull()
         return _REGISTRY["datasheet_pull"]
+    if name == "deferred_llm_call":
+        # A synchronous surface's LLM call deferred past a quota/budget
+        # window (web follow-up first). Plugin dispatch under coordinator.
+        from precis.workers.job_types.deferred_llm_call import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -772,6 +779,7 @@ def known_job_types() -> list[str]:
         "pcb_place",
         "pcb_route",
         "datasheet_pull",
+        "deferred_llm_call",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
