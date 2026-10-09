@@ -43,6 +43,16 @@ Apply pending precis DB migrations`, then proceeds on its own.
 abort mid-deploy** — aborting leaves new code installed with migrations
 unapplied, strictly worse than a slow deploy. Never cancel the dump.
 
+`scripts/deploy` enforces this (`scripts/lib/backup-window.sh`): inside the
+window it refuses a deploy whose target ADDS a `src/precis/migrations/*.sql`
+relative to `origin/prod` (computed from git, never by querying prod) and
+names the window and its end; a deploy with no pending migration prints a
+warning and proceeds. Outside the window it says nothing. If you have checked
+on the DB node that the dump is not running, `--ignore-backup-window`
+overrides. The bounds and the pg_dump cron slot live together in
+`deploy/roles/backups/defaults/main.yml`, so a schedule change moves both;
+`DEPLOY_NOW_UTC=HH:MM` fakes the clock to rehearse the message.
+
 *Diagnosis* (the deploy log just goes silent — ansible buffers per task):
 `pg_stat_activity` for the waiting pid → `pg_blocking_pids(<pid>)` → blockers
 show `application_name='pg_dump'`. `agent_rw` sees

@@ -1,0 +1,21 @@
+---
+# backups role defaults. Overridable via host_vars or group_vars.
+#
+# The nightly pg_dump schedule and the deploy no-go window it implies live
+# HERE, together, so a schedule change moves both. scripts/deploy reads the
+# two backup_window_* keys from this file (scripts/lib/backup-window.sh, a
+# line-oriented awk read: keep them as plain `key: "HH:MM"` lines) and
+# refuses a deploy that carries a pending migration while the window is open:
+# the dump holds ACCESS SHARE on every table for its whole run, and a
+# migration's ALTER TABLE (ACCESS EXCLUSIVE) waits behind it for ~48 min
+# (2026-09-08: a /go at 03:22 UTC hung 17+ min with a silent log). See
+# docs/runbooks/migration-deploy-window.md.
+#
+# The DB node reboots at 03:00 UTC (daily-update-reboot root cron), the dump
+# starts 30 min later and runs ~48 min (03:30 → ~04:18 UTC, very stable), so
+# the window closes at 04:20 UTC. tests/test_deploy_backup_window.py asserts
+# the cron slot falls inside the window.
+pg_backup_cron_hour: "3"
+pg_backup_cron_minute: "30"
+backup_window_start_utc: "03:00"
+backup_window_end_utc: "04:20"

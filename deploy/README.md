@@ -38,6 +38,11 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    target is refused (bypass with `--ignore-pin`, or `--force-rollback`), and
    a successful deploy of that sha removes the file. So a bare `scripts/deploy`
    keeps working everywhere except the one window where it would be wrong.
+   Inside the nightly backup window (`roles/backups/defaults/main.yml`,
+   03:00–04:20 UTC) a deploy that adds a migration relative to `origin/prod`
+   is refused — the pg_dump would block its DDL — and a code-only deploy
+   warns and proceeds; `--ignore-backup-window` overrides
+   (`docs/runbooks/migration-deploy-window.md`).
 
    Two refs on origin publish where a commit has got to; nobody commits to
    either, the scripts move them (`scripts/lib/env-pointers.sh`):

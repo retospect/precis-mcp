@@ -78,11 +78,13 @@
 # Postgres and reboots at 03:00 UTC. Running the dump 30 min after gives the
 # DB time to come back and lets the backup grow toward a ~23 h budget before
 # the next reboot, instead of the old 02:00 slot's hard 60-min ceiling.
+# The slot and the deploy no-go window it implies are both in
+# defaults/main.yml — change them there, together.
 - name: Schedule nightly pg_dump via cron
   ansible.builtin.cron:
     name: "pg_dump nightly backup"
-    minute: "30"
-    hour: "3"
+    minute: "{{ pg_backup_cron_minute }}"
+    hour: "{{ pg_backup_cron_hour }}"
     job: "{{ shared_mount }}/scripts/pg_backup.sh >> {{ shared_mount }}/logs/backup-pg.log 2>&1"
     user: "{{ pg_user }}"
   become: true

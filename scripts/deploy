@@ -45,6 +45,19 @@
 # and an absent marker refuses outright. Expect a nonzero deploy-lag footer
 # from the next scripts/ship: that count IS the ungated backlog on main.
 #
+# --ignore-backup-window (anywhere in argv): the prod DB node reboots at 03:00
+# UTC and the nightly pg_dump runs 03:30 → ~04:18 UTC holding ACCESS SHARE on
+# every table, so a migration's ALTER TABLE waits behind the whole dump
+# (2026-09-08: a /go at 03:22 UTC hung 17+ min with a silent log). Inside that
+# window a deploy that carries a pending migration — one ADDED under
+# src/precis/migrations/ between origin/prod and the target, computed from
+# git, never by asking prod — is refused before anything is touched; a deploy
+# with no pending migration warns and proceeds. The bounds live next to the
+# backup cron in deploy/roles/backups/defaults/main.yml and the guard in
+# scripts/lib/backup-window.sh. --ignore-backup-window is for an operator who
+# has checked the dump is not running. DEPLOY_NOW_UTC=HH:MM fakes the clock
+# (tests, rehearsing the message).
+#
 # PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
 # the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
@@ -87,6 +100,8 @@ Usage:
   scripts/deploy <old-sha> --force-rollback   # deliberate rollback
   scripts/deploy <.ship-sha sha> --pinned     # /go: deploy the GATED sha
   scripts/deploy <ref> --ignore-pin           # deliberately go off-pin
+  scripts/deploy <ref> --ignore-backup-window # migration deploy inside the
+                                              # 03:00–04:20 UTC backup window
   scripts/deploy --help | -h                  # this message; no reachability
                                                # check, no ansible, no ssh
 
@@ -102,12 +117,19 @@ A .ship-sha in this worktree is an UNCONSUMED gated pin: any target that is
 not that sha is refused until the pin is deployed (which removes it) or the
 run passes --ignore-pin. --force-rollback also bypasses.
 
+Inside the nightly backup window (bounds in deploy/roles/backups/defaults/
+main.yml, 03:00–04:20 UTC) a deploy that adds a src/precis/migrations/*.sql
+relative to origin/prod is refused: the pg_dump holds ACCESS SHARE on every
+table and the migration's DDL would hang behind it. A deploy with no pending
+migration warns and proceeds. --ignore-backup-window overrides, for an
+operator who has checked the dump is not running.
+
 Notable env vars (see the header comment in this script for full docs):
   PRECIS_CLUSTER_DIR, PRECIS_DEPLOY_EXTRA_VARS, PRECIS_DEPLOY_ALLOW_STALE,
   PRECIS_DEPLOY_NO_LOG, PRECIS_DEPLOY_LOG_DIR, PRECIS_DEPLOY_FROM_TREE,
   PRECIS_OVERLAY_DIR, PRECIS_DEPLOY_SKIP_CATPATH_WHEEL, PRECIS_CATPATH_DIR,
   PRECIS_DEPLOY_SKIP_WHEEL_SMOKE, PRECIS_DEPLOY_LOCK_WAIT, PRECIS_DEPLOY_CANARY,
-  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST.
+  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST, DEPLOY_NOW_UTC.
 USAGE
 }
 for _a in "$@"; do
@@ -119,6 +141,7 @@ done
 FORCE_ROLLBACK=0
 PINNED=0
 IGNORE_PIN=0
+IGNORE_BACKUP_WINDOW=0
 # A scalar, not ${#_POSITIONAL[@]}: bash 3.2 (the macOS system bash) errors on
 # the length of an empty array under `set -u`, which is why the REF line below
 # uses the ${arr[0]:-default} idiom too.
@@ -129,6 +152,7 @@ for _a in "$@"; do
         --force-rollback) FORCE_ROLLBACK=1 ;;
         --pinned) PINNED=1 ;;
         --ignore-pin) IGNORE_PIN=1 ;;
+        --ignore-backup-window) IGNORE_BACKUP_WINDOW=1 ;;
         *) _POSITIONAL+=("$_a"); _HAVE_TARGET=1 ;;
     esac
 done
@@ -574,6 +598,30 @@ if [[ "$FORCE_ROLLBACK" != 1 ]]; then
             die "REFUSING TO DEPLOY: target '${REF}' (${_rb_target:0:8}) is an ANCESTOR of ${_rb_against} — this would roll the cluster BACKWARD (gr338201: this is exactly the 2026-09-13 stale-worktree incident shape). deployed=${_rb_deployed:-unknown} target=${_rb_target} origin/main=${_rb_origin_main:-unknown}. If this rollback is deliberate, re-run with --force-rollback."
         fi
     fi
+fi
+
+# ── backup-window guard: no migration deploy while the nightly pg_dump may
+# be running ──────────────────────────────────────────────────────────────
+# Decision and bounds live in scripts/lib/backup-window.sh (one place, next
+# to the cron it mirrors — see the header). Here: keep origin/prod fresh (the
+# "what runs" end of the pending-migration diff), run the guard, and stop on
+# a refusal. Sits after the rollback guard so a backward deploy is named as
+# that first, and before the overlay/`cd`, so nothing has been rendered or
+# pinged yet. The real clock applies to every deploy — the guard says nothing
+# at all outside the window. Deliberately NOT written to the attempt stamp as
+# "refused": scripts/ship reads that outcome as the rollback guard.
+# Tolerant of a tree without the lib (the throwaway-repo fixtures in tests/
+# copy only scripts/deploy + deploy-state.sh), same as env-pointers.sh.
+if [[ -f "${REPO_ROOT}/scripts/lib/backup-window.sh" ]]; then
+    . "${REPO_ROOT}/scripts/lib/backup-window.sh"
+    git -C "$REPO_ROOT" fetch -q origin prod 2>/dev/null || true
+    _bw_rc=0
+    backup_window_guard "$REPO_ROOT" "$REF" "$IGNORE_BACKUP_WINDOW" || _bw_rc=$?
+    case "$_bw_rc" in
+        0) ;;
+        1) die "backup-window guard refused this deploy (see above) — no host was touched." ;;
+        *) die "backup-window guard could not read the window bounds (see above) — fix deploy/roles/backups/defaults/main.yml; --ignore-backup-window does not bypass a broken bounds file." ;;
+    esac
 fi
 
 # ── slice 12a: install-from-tree is the DEFAULT (cutover complete 2026-07-19).

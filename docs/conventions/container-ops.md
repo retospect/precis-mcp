@@ -88,6 +88,14 @@ that gap (never blocks on it):
   incident this fixes was a stale worktree pinned to an old sha rolling the
   whole fleet backward. Equal-sha (no-op redeploy) and a missing marker
   (first-ever deploy) both proceed; `--force-rollback` is the sole override.
+- **Backup-window guard**: inside the nightly backup window (03:00–04:20
+  UTC; bounds next to the pg_dump cron in
+  `deploy/roles/backups/defaults/main.yml`) `scripts/deploy` refuses a
+  deploy that adds a migration relative to `origin/prod` — the dump holds
+  ACCESS SHARE on every table and the migration's DDL would hang behind it —
+  and warns-and-proceeds for a code-only deploy. `--ignore-backup-window`
+  overrides. Logic in `scripts/lib/backup-window.sh`; runbook
+  `docs/runbooks/migration-deploy-window.md`.
 - **Wheel smoke** (gr451360): before touching any host, `scripts/deploy`
   also runs `scripts/wheel-smoke`, which builds the wheel, installs it into
   a scratch venv, and imports `precis_web.app` with no repo `src/` on
