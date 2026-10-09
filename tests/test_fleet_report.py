@@ -315,6 +315,21 @@ def test_codex_async_question_beats_ready_footer(env):
     assert any(x["reason"] == "question for Reto" for x in rep["exceptions"])
 
 
+def test_codex_question_modal_on_screen_is_asking(env):
+    # Plan-mode modal, captured on melchior 2026-10-09; no rollout needed.
+    env.panes.write_text(pane_line(env, command="codex"), encoding="utf-8")
+    env.capture.write_text(
+        "  Question 1/1 (1 unanswered)\n"
+        "  Which would you like to discuss: A, B, or C?\n"
+        "  › 1. A                  Discuss A.\n"
+        "    2. B                  Discuss B.\n"
+        "  tab to add notes | enter to submit answer | esc to interrupt\n",
+        encoding="utf-8",
+    )
+    row = next(r for r in report(env)["rows"] if r["vendor"] == "codex")
+    assert row["state"] == "asking"
+
+
 def test_approval_pattern_marks_waiting_with_attach(env):
     write_jsonl(
         env.transcript_dir / "a.jsonl",

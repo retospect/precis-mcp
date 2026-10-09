@@ -38,6 +38,12 @@ APPROVAL_PATTERNS = (
     r"allow (this|once|always)|approve (this|once)",
     r"permission (required|request)",
 )
+# Codex's Plan-mode request_user_input modal, as seen on melchior 2026-10-09:
+# "Question 1/1 (1 unanswered)" … "tab to add notes | enter to submit answer".
+QUESTION_PATTERNS = (
+    r"Question \d+/\d+ \(\d+ unanswered\)",
+    r"enter to submit answer",
+)
 AGENT_COMMANDS = ("claude", "codex", "devin", "node")
 CLAUDE_WINDOW_DEFAULT = 200_000
 DEAD_SILENT_MIN = 5.0
@@ -460,7 +466,9 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
             if state != "asking":
                 state = f_state or state
             ctx_pct = f_ctx if f_ctx is not None else ctx_pct
-        if screen and vendor != "devin" and pane_approval(screen):
+        if screen and any(re.search(p, screen) for p in QUESTION_PATTERNS):
+            state = "asking"
+        elif screen and vendor != "devin" and pane_approval(screen):
             state = "waiting"
         if wt["lock_alive"] is False or (
             pane is None
