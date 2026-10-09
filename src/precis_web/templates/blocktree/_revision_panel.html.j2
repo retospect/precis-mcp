@@ -1,0 +1,73 @@
+{# The "Revision N" panel's body — rendered inside detail3d.html.j2's
+   `#bt3d-revision` at page load and served alone by
+   `GET /{kind}/{slug}/revision.html?rev=N` for the in-place scrubber
+   (gr458084): blocktree-3d.js swaps this HTML in beside the re-rendered
+   scene instead of reloading the page. Needs kind, slug, rev, rev_current,
+   read_only, has_record, revision.
+
+   Not a form: the range input and the prev/next anchors are read by the
+   viewer's `data-rev` handlers (the anchors keep their hrefs so a link
+   still works without the module). A design saved before the record
+   existed spans one position. #}
+<div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100">
+  <span class="font-semibold text-slate-700">Revision</span>
+  {% if has_record and rev > 1 %}
+  <a class="text-emerald-700 hover:underline" data-rev="{{ rev - 1 }}" href="/{{ kind }}/{{ slug | urlencode }}?rev={{ rev - 1 }}" title="previous revision">‹ {{ rev - 1 }}</a>
+  {% else %}<span class="text-slate-300">‹</span>{% endif %}
+  <input type="range" name="rev" min="{{ 1 if has_record else rev_current }}" max="{{ rev_current }}" step="1" value="{{ rev }}"
+         class="w-40" title="drag to a revision — the scene swaps in place, the camera stays where it is">
+  {% if rev < rev_current %}
+  <a class="text-emerald-700 hover:underline" data-rev="{{ rev + 1 }}" href="/{{ kind }}/{{ slug | urlencode }}?rev={{ rev + 1 }}" title="next revision">{{ rev + 1 }} ›</a>
+  {% else %}<span class="text-slate-300">›</span>{% endif %}
+  <span class="tabular-nums text-slate-600">{{ rev }} / {{ rev_current }}</span>
+  {% if not has_record %}
+  <span class="text-slate-400">— current, no record</span>
+  {% elif read_only %}
+  <span class="text-slate-400">— read-only</span>
+  {% else %}
+  <span class="text-slate-400">— current</span>
+  {% endif %}
+  {% if revision.created %}<span class="ml-auto text-[10px] text-slate-400">{{ revision.created }}</span>{% endif %}
+</div>
+
+<div class="px-3 py-2 space-y-1.5">
+  {% set d = revision.diff %}
+  <div class="text-[10px] uppercase tracking-wide text-slate-400">
+    {{ revision.n_blocks }} block{{ '' if revision.n_blocks == 1 else 's' }} ·
+    changed since revision {{ rev - 1 }}
+    {% if rev == 1 %}<span class="normal-case">(nothing — first save)</span>{% endif %}
+  </div>
+  {% if not has_record %}
+    <p class="text-slate-400">No revision record — this design was saved before revisions were recorded.</p>
+  {% elif not (d.added or d.removed or d.changed) %}
+    <p class="text-slate-400">No block differs from the previous revision.</p>
+  {% else %}
+    {% if d.added %}
+    <div><span class="text-emerald-700 font-semibold">+{{ d.added | length }} block{{ '' if d.added | length == 1 else 's' }}</span>
+      {% for b in d.added %}<code class="text-slate-500" data-uid="{{ b.uid }}">{{ b.name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</div>
+    {% endif %}
+    {% if d.removed %}
+    <div><span class="text-red-700 font-semibold">−{{ d.removed | length }} block{{ '' if d.removed | length == 1 else 's' }}</span>
+      {% for b in d.removed %}<code class="text-slate-500" data-uid="{{ b.uid }}">{{ b.name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</div>
+    {% endif %}
+    {% if d.changed %}
+    <div><span class="text-amber-700 font-semibold">{{ d.changed | length }} changed</span>
+      {% for b in d.changed %}<code class="text-slate-500" data-uid="{{ b.uid }}">{{ b.name }}</code> <span class="text-slate-400">({{ b.what | join(', ') }})</span>{% if not loop.last %}, {% endif %}{% endfor %}</div>
+    {% endif %}
+  {% endif %}
+
+  <div class="pt-1 border-t border-slate-100">
+    <span class="text-[10px] uppercase tracking-wide text-slate-400">Ops</span>
+    {% if not revision.has_record %}
+    <span class="text-slate-400">no op record</span>
+    {% elif not revision.ops %}
+    <span class="text-slate-400">none recorded (whole-tree save)</span>
+    {% else %}
+    <pre id="bt3d-revision-ops" class="mt-0.5 max-h-40 overflow-auto rounded bg-slate-50 p-2 font-mono text-[11px] text-slate-700 whitespace-pre">{% for line in revision.ops %}{{ line }}
+{% endfor %}</pre>
+    {% endif %}
+    {% if revision.turn %}
+    <div class="mt-0.5 text-slate-500">from turn <code>{{ revision.turn }}</code></div>
+    {% endif %}
+  </div>
+</div>

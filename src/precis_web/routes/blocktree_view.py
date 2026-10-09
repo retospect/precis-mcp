@@ -72,7 +72,11 @@ matched by block ``uid`` — come back as ``changed_uids`` and are tinted in
 the Shapes tree (:func:`precis_web.blocktree_3d.tint_blocks`). The page's
 "Revision N" panel lists that diff, the recorded ops and the chat ``turn``;
 a past revision is read-only (no note panel). A design saved before the
-record existed shows one position, "current, no record".
+record existed shows one position, "current, no record". Scrubbing does
+not reload the page (gr458084): the client refetches ``scene3d.json?rev=N``
+through its live-scene seam, camera held, and swaps the panel's body from
+``GET /se/{slug}/revision.html?rev=N`` — the same partial the page renders
+(``blocktree/_revision_panel.html.j2``), nothing else.
 
 The design chat (slice 3, ``precis_web.design_chat`` + the shared
 ``_design_chat.html.j2`` partial): ``POST /se/{slug}/chat`` (form
@@ -1173,6 +1177,42 @@ async def _view3d_page(
     )
 
 
+async def _revision_fragment(
+    request: Request, kind: str, slug: str, rev: int | None
+) -> Response:
+    """The "Revision N" panel's body alone (gr458084): what the scrubber
+    swaps in beside the re-rendered scene instead of reloading the page.
+    Reads only — the same ``_revision_panel`` the page itself renders."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, kind, slug)
+    except NotFound:
+        return PlainTextResponse("not found", status_code=404)
+
+    def _load() -> tuple[_RevisionAxis, dict[str, Any]]:
+        axis = _revision_axis(store, ref.id, rev)
+        tree = _tree_at(store, kind, ref.id, axis)
+        return axis, _revision_panel(store, ref.id, axis, tree)
+
+    try:
+        axis, revision = await asyncio.to_thread(_load)
+    except _NoSuchRevision as exc:
+        return PlainTextResponse(str(exc), status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "blocktree/_revision_panel.html.j2",
+        {
+            "kind": kind,
+            "slug": ref.slug,
+            "rev": axis.shown,
+            "rev_current": axis.current,
+            "read_only": axis.read_only,
+            "has_record": axis.has_record,
+            "revision": revision,
+        },
+    )
+
+
 def _build_scene3d(
     store: Store,
     kind: str,
@@ -2199,6 +2239,13 @@ async def se_scene3d(
     return await _scene3d_response(
         request, "se", slug, level=level, isolate=None, overrides=overrides, rev=rev
     )
+
+
+@router.get("/se/{slug}/revision.html", response_class=HTMLResponse)
+async def se_revision_fragment(
+    request: Request, slug: str, rev: int | None = None
+) -> Response:
+    return await _revision_fragment(request, "se", slug, rev)
 
 
 @router.get("/se/{slug}/atomic3d.json")

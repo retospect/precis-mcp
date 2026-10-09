@@ -114,6 +114,16 @@ function _layerStats(values) {
   };
 }
 
+//: gr461146 draw order. Group renderOrder is three.js's primary sort key
+//: for the transparent pass (the vendored CAD tree sits at 0, the pick
+//: markers at 1000); within the atomic group the surface goes before the
+//: atoms and bonds. The surface writes depth from this slider position on.
+const _ORDER_ATOMIC = 1;
+const _ORDER_TARGET = 2;
+const _ORDER_SURFACE = 0;
+const _ORDER_ATOMS = 1;
+const _SURFACE_BODY_T = 0.5;
+
 function _nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
@@ -223,6 +233,13 @@ export async function createMoleculeCore(host, data, {
   let targetGroup = null;
   const group = new THREE.Group();
   group.name = "bt3d-atomic-overlay";
+  // gr461146: three.js orders transparent objects by bounding-sphere
+  // distance, and every mesh here shares one centre, so the surface, the
+  // atoms and the teal target interleaved in an order that differed per
+  // page load — a depth-writing mesh drawn first then cut holes into
+  // whatever came after. A Group's renderOrder is the pass's primary sort
+  // key: the vendored CAD tree (0), then this overlay, then the target.
+  group.renderOrder = _ORDER_ATOMIC;
   scene.add(group);
 
   //: Clip only traverses the vendored CAD tree; our overlays live outside
@@ -291,6 +308,7 @@ export async function createMoleculeCore(host, data, {
         n
       );
       atomMesh.userData.blockIndex = blocks.length;
+      atomMesh.renderOrder = _ORDER_ATOMS;
       const cpk = new Array(n);
       for (let i = 0; i < n; i++) {
         cpk[i] = new THREE.Color(_ATOMIC_CPK[b.elements[i]] || _ATOMIC_CPK_DEFAULT);
@@ -306,6 +324,7 @@ export async function createMoleculeCore(host, data, {
         bondList.length
       );
       bondMesh.userData.blockIndex = blocks.length;
+      bondMesh.renderOrder = _ORDER_ATOMS;
       const greyColour = new THREE.Color(_BOND_GREY);
       const bondEntries = [];
       const bondSlice = Math.max(1, Math.ceil((_BUILD_SLICE_ATOMS * bondList.length) / Math.max(1, n)));
@@ -344,8 +363,15 @@ export async function createMoleculeCore(host, data, {
           vertexColors: true,
           side: THREE.DoubleSide,
           transparent: true,
+          // gr461146: a ghost surface over the atoms must not write
+          // depth; applyT turns it on once the surface is the body (and
+          // turns the atoms' off at the same point).
+          depthWrite: false,
         })
       );
+      // Drawn before the atoms and bonds of the same slider position:
+      // atoms in front blend over it instead of cutting it (gr461146).
+      surfMesh.renderOrder = _ORDER_SURFACE;
       surfMesh.visible = false;
       group.add(followClipping(surfMesh));
 
@@ -409,6 +435,16 @@ export async function createMoleculeCore(host, data, {
       surfMesh.geometry.attributes.position.needsUpdate = true;
       surfMesh.geometry.computeVertexNormals();
       surfMesh.material.opacity = t;
+      // gr461146: exactly one layer writes depth — the dominant one. With
+      // depth off, a closed surface's back wall overdraws its front wall at
+      // opacity t, so the surface writes once it is the body; and a
+      // near-invisible atom that still wrote depth carved its sphere out of
+      // the surface and the target behind it (measured: a bubble pattern
+      // over the target at slider 90), so atoms and bonds stop writing
+      // once they are the ghost.
+      const surfaceIsBody = t >= _SURFACE_BODY_T;
+      surfMesh.material.depthWrite = surfaceIsBody;
+      atomMesh.material.depthWrite = bondMesh.material.depthWrite = !surfaceIsBody;
       surfMesh.visible = t > 0.001;
     }
     try {
@@ -499,6 +535,8 @@ export async function createMoleculeCore(host, data, {
   // target is most of the atom payload and most pages never show it.
   targetGroup = new THREE.Group();
   targetGroup.name = "bt3d-target-overlay";
+  // gr461146: always after the atomic overlay (see group.renderOrder).
+  targetGroup.renderOrder = _ORDER_TARGET;
   targetGroup.visible = false;
   const hasTarget = data.blocks.some((b) => b.has_target);
   let targetBuilt = false;

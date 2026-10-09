@@ -284,6 +284,7 @@ def test_se_scrubber_rev1_renders_the_snapshot_tree(
     page = se_client.get("/se/caster_scrub?rev=1")
     assert page.status_code == 200
     assert 'id="bt3d-readonly"' in page.text
+    assert 'id="bt3d-readonly" hidden' not in page.text
     assert "revision 1 of 2" in page.text
     assert "2 blocks" in page.text  # the snapshot's count, not the live 3
     assert '<option value="cap"' not in page.text  # cap did not exist at 1
@@ -338,7 +339,9 @@ def test_se_scrubber_rev2_changed_uids_are_the_added_block(
     )
 
     page = se_client.get("/se/caster_scrub?rev=2").text
-    assert 'id="bt3d-readonly"' not in page  # rev 2 IS current: editable
+    # rev 2 IS current: editable. The badge stays in the DOM, hidden, so
+    # the in-place scrubber (gr458084) can show it without a reload.
+    assert 'id="bt3d-readonly" hidden' in page
     assert 'id="bt3d-note-panel"' in page
     assert "+1 block" in page and "cap" in page
     assert _panel_ops(page, "bt3d-revision-ops") == _CAP_OPS
@@ -362,6 +365,63 @@ def test_se_rev_outside_range_is_404(se_client, runtime_with_store, store) -> No
     assert se_client.get("/se/caster_scrub?rev=3").status_code == 404
     assert se_client.get("/se/caster_scrub?rev=0").status_code == 404
     assert se_client.get("/se/caster_scrub/scene3d.json?rev=3").status_code == 404
+    assert se_client.get("/se/caster_scrub/revision.html?rev=3").status_code == 404
+    assert se_client.get("/se/no_such_design/revision.html?rev=1").status_code == 404
+
+
+# ── gr458084: the scrubber swaps in place; the panel body is a route ─────
+
+
+def test_se_scrubber_is_not_a_form(se_client, runtime_with_store, store) -> None:
+    """The range input and prev/next anchors go through the viewer's
+    live-scene seam (``scrubTo`` in blocktree-3d.js), never a page load."""
+    _seed_se(runtime_with_store, store)
+    page = se_client.get("/se/caster_scrub?rev=1").text
+    panel = re.search(
+        r'<div id="bt3d-revision"(.*?)<div id="bt3d-pick-panel"', page, re.S
+    )
+    assert panel is not None
+    body = panel.group(1)
+    assert "this.form.submit()" not in body
+    assert "<form" not in body
+    assert 'data-rev="1" data-rev-current="2"' in body
+    assert '<input type="range" name="rev"' in body
+    assert 'data-rev="2" href="/se/caster_scrub?rev=2"' in body  # next
+    # The module gets the panel, its partial's URL and the page-level
+    # read-only state it toggles.
+    assert 'revisionEl: document.getElementById("bt3d-revision")' in page
+    assert 'revisionUrl: "/se/caster_scrub/revision.html"' in page
+    assert 'readOnlyEl: document.getElementById("bt3d-readonly")' in page
+
+
+def test_se_revision_fragment_is_the_panel_body(
+    se_client, runtime_with_store, store
+) -> None:
+    _seed_se(runtime_with_store, store)
+    rows_before = _revision_rows(store)
+
+    r1 = se_client.get("/se/caster_scrub/revision.html?rev=1")
+    assert r1.status_code == 200
+    assert r1.headers["content-type"].startswith("text/html")
+    body = r1.text
+    assert "<html" not in body and "<form" not in body  # a fragment
+    assert 'name="rev" min="1" max="2" step="1" value="1"' in body
+    assert 'data-rev="2" href="/se/caster_scrub?rev=2"' in body
+    assert "— read-only" in body
+    assert "2 blocks" in body
+    assert _panel_ops(body, "bt3d-revision-ops") == _CASTER_OPS
+
+    r2 = se_client.get("/se/caster_scrub/revision.html?rev=2").text
+    assert 'value="2"' in r2
+    assert 'data-rev="1" href="/se/caster_scrub?rev=1"' in r2  # prev
+    assert "— current" in r2 and "— read-only" not in r2
+    assert "+1 block" in r2 and "cap" in r2
+    assert _panel_ops(r2, "bt3d-revision-ops") == _CAP_OPS
+
+    # The bare fragment is the current revision, as the bare page is.
+    bare = se_client.get("/se/caster_scrub/revision.html").text
+    assert _panel_ops(bare, "bt3d-revision-ops") == _CAP_OPS
+    assert _revision_rows(store) == rows_before  # reads only
 
 
 def test_se_without_record_still_renders(se_client, runtime_with_store, store) -> None:

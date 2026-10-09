@@ -261,7 +261,8 @@ body {
   width: 30%;
   animation: bt3d-progress-slide 1.2s ease-in-out infinite;
 }
-#bt3d-progress[data-phase="timeout"] #bt3d-progress-fill {
+#bt3d-progress[data-phase="timeout"] #bt3d-progress-fill,
+#bt3d-progress[data-phase="error"] #bt3d-progress-fill {
   background: #b91c1c;
   width: 100%;
   animation: none;

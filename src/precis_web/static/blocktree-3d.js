@@ -698,7 +698,7 @@ function _bt3dMark(name) {
 }
 
 //: The load progress bar (gr462703): `el` is the template's `#bt3d-progress`
-//: (`data-phase` = scene|render|server|download|build|done|timeout, label
+//: (`data-phase` = scene|render|server|download|build|done|timeout|error, label
 //: in `#bt3d-progress-label`, fill in `#bt3d-progress-fill`). Null when the
 //: page has no bar; callers guard on that.
 function _makeProgress(el) {
@@ -739,12 +739,19 @@ function _makeProgress(el) {
       set("timeout", text);
       delete el.dataset.mode;
     },
+    // gr462703: a payload that failed for any reason other than the timeout
+    // stays on the bar as a red line with the reason, where the wait was —
+    // hiding it left a page that looked like it had quietly finished.
+    error(text) {
+      set("error", text);
+      delete el.dataset.mode;
+    },
     done() {
       stop();
       el.dataset.phase = "done";
       el.hidden = true;
     },
-    // A failed load: the error box says why; the bar just goes away.
+    // A failed load whose error box says why: the bar just goes away.
     hide() {
       stop();
       el.hidden = true;
@@ -940,6 +947,15 @@ export async function blocktreeViewer3D({
   busyEl,
   // The load progress bar (`#bt3d-progress`, gr462703). Optional.
   progressEl,
+  // The revision scrubber (gr458084): `revisionEl` is the `#bt3d-revision`
+  // panel (its `input[name=rev]` and `a[data-rev]` are read by delegation,
+  // since its body is swapped from `revisionUrl` — the panel partial — on
+  // every step); `readOnlyEl` the header badge; `currentOnlyEls` what a
+  // past revision hides (note panel, atom exports). All optional.
+  revisionEl,
+  revisionUrl,
+  readOnlyEl,
+  currentOnlyEls,
   // Atoms on/off for a structure-bound design. Optional — the template
   // only renders it alongside the atomic↔smooth slider.
   atomsToggle,
@@ -984,6 +1000,25 @@ export async function blocktreeViewer3D({
   }
   const progress = _makeProgress(progressEl);
   if (progress) progress.set("scene", "loading design…");
+  //: The revision on screen (gr458084): what the page's own URLs carry
+  //: (`?rev=N`, or null for the bare live tree) until the scrubber moves
+  //: it. `revUrl` rewrites a server-given URL to that revision, and leaves
+  //: it verbatim while it still matches — the inline prefetch is keyed on
+  //: the exact string (_takePrefetch).
+  const pageRev = (() => {
+    const r = new URL(sceneUrl, window.location.href).searchParams.get("rev");
+    return r === null ? null : Number(r);
+  })();
+  let shownRev = pageRev;
+  function withRev(base) {
+    const url = new URL(base, window.location.href);
+    if (shownRev === null) url.searchParams.delete("rev");
+    else url.searchParams.set("rev", String(shownRev));
+    return url.pathname + url.search;
+  }
+  function revUrl(base) {
+    return !base || shownRev === pageRev ? base : withRev(base);
+  }
   let data;
   try {
     const pre = _takePrefetch("scene", sceneUrl);
@@ -1384,8 +1419,7 @@ export async function blocktreeViewer3D({
       const url = new URL(validationUrl, window.location.href);
       url.searchParams.set("identity", identity);
       url.searchParams.set("subject", button.dataset.validationSubject);
-      const rev = new URL(sceneUrl, window.location.href).searchParams.get("rev");
-      if (rev) url.searchParams.set("rev", rev);
+      if (shownRev !== null) url.searchParams.set("rev", String(shownRev));
       const response = await fetch(url);
       const body = await response.json();
       if (!current()) {
@@ -1921,18 +1955,21 @@ export async function blocktreeViewer3D({
       // phases: only the first overlay load drives the bar.
       const prog = progressSpent ? null : progress;
       progressSpent = true;
-      atomicReady = _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes, prog, () => gen !== renderGen)
+      atomicReady = _setupAtomicOverlay(viewer, revUrl(atomicUrl), smoothEls, shapes, prog, () => gen !== renderGen)
         .then((overlay) => {
           if (gen !== renderGen) { overlay?.dispose(); return; }
           atomicOverlay = overlay;
           if (overlay) applyAtomState();
           // After the overlay meshes are in and the legend/strain rows are
           // stamped (applyAtomState redraws); mark once, on first paint.
-          if (!atomicBuiltMarked) {
-            atomicBuiltMarked = true;
-            requestAnimationFrame(() => _bt3dMark("bt3d-atomic-built"));
-          }
-          if (prog) prog.done();
+          // The bar goes with that first painted frame, not before it
+          // (gr462703): until then the canvas still shows envelopes only.
+          const first = !atomicBuiltMarked;
+          atomicBuiltMarked = true;
+          requestAnimationFrame(() => {
+            if (first) _bt3dMark("bt3d-atomic-built");
+            if (prog) prog.done();
+          });
           return overlay;
         })
         .catch((err) => {
@@ -1943,7 +1980,10 @@ export async function blocktreeViewer3D({
             if (prog) prog.timeout(_ATOMIC_TIMEOUT_TEXT);
             showViewerFallback(viewerEl, err, { message: _ATOMIC_TIMEOUT_TEXT });
           } else if (prog) {
-            prog.hide();
+            // gr462703: the envelopes stay up; the bar says the atoms failed.
+            prog.error(
+              `The atom view failed to load (${String((err && err.message) || err)}). Showing the block envelopes instead.`
+            );
           }
           return null;
         });
@@ -2241,6 +2281,8 @@ export async function blocktreeViewer3D({
       if (levelSelect) set("level", levelSelect.value);
       if (overridesInput) set("overrides", overridesInput.value.trim());
       set("isolate", currentIsolate());
+      // The scrubbed revision too (gr458084): a link reproduces the step.
+      set("rev", shownRev === null ? null : String(shownRev));
       window.history.replaceState(null, "", url);
     } catch (err) {
       // A URL we failed to rewrite costs shareability, never the view.
@@ -2261,10 +2303,16 @@ export async function blocktreeViewer3D({
     syncUrl();
   }
 
-  //: `level`/`overrides` are in flight. The two controls that trigger a
+  //: `level`/`overrides`/`rev` are in flight. The controls that trigger a
   //: refetch are disabled for the duration rather than left live over a
   //: guard that silently drops the second change.
   let reloading = false;
+
+  //: The scrubber's range input — looked up per call, since the panel's
+  //: body is replaced on every step (gr458084).
+  function revSlider() {
+    return revisionEl ? revisionEl.querySelector("input[name=rev]") : null;
+  }
 
   //: What to re-focus once the refetch ends, or null. Disabling a focused
   //: element blurs it and re-enabling does NOT give focus back, so for the
@@ -2290,7 +2338,7 @@ export async function blocktreeViewer3D({
         busyFocus = null;
       }
     }
-    for (const el of [levelSelect, overridesInput]) {
+    for (const el of [levelSelect, overridesInput, revSlider()]) {
       if (el) el.disabled = busy;
     }
     // The per-block chips start the same refetch, so they go dark with
@@ -2436,7 +2484,7 @@ export async function blocktreeViewer3D({
       }
     })();
     try {
-      const url = new URL(sceneUrl, window.location.href);
+      const url = new URL(revUrl(sceneUrl), window.location.href);
       if (levelSelect) url.searchParams.set("level", levelSelect.value);
       if (overridesInput) {
         const raw = overridesInput.value.trim();
@@ -2476,6 +2524,64 @@ export async function blocktreeViewer3D({
       }
     });
   }
+  // ── revision scrubber (gr458084) ─────────────────────────────────────
+  //
+  // The second consumer of the live-scene seam: a step refetches
+  // scene3d.json at that revision through `loadScene` (camera held, UI
+  // state re-applied, URL rewritten) and swaps the panel's body from the
+  // server's own partial, so the diff/ops it shows are the revision's.
+  // The page-level read-only state follows: badge, note panel, exports.
+  function applyRevisionState() {
+    const current = Number(revisionEl && revisionEl.dataset.revCurrent);
+    const past = shownRev !== null && Number.isFinite(current) && shownRev < current;
+    if (readOnlyEl) {
+      readOnlyEl.hidden = !past;
+      const num = readOnlyEl.querySelector("[data-role=rev]");
+      if (num && shownRev !== null) num.textContent = String(shownRev);
+    }
+    for (const el of currentOnlyEls || []) el.hidden = past;
+  }
+
+  async function scrubTo(rev) {
+    if (reloading || !Number.isFinite(rev) || rev === shownRev) return;
+    shownRev = rev;
+    // The panel's own HTML (Jinja-escaped, same origin as the page): the
+    // one innerHTML here, fetched alongside the scene, applied after it.
+    const panel = revisionUrl
+      ? fetch(withRev(revisionUrl)).then((r) => {
+          if (!r.ok) throw new Error(`revision panel fetch failed (${r.status})`);
+          return r.text();
+        })
+      : null;
+    // Handled below, after the scene; this keeps an early failure from
+    // logging as unhandled in the meantime.
+    if (panel) panel.catch(() => {});
+    await loadScene();
+    if (panel) {
+      try {
+        revisionEl.innerHTML = await panel;
+        revisionEl.dataset.rev = String(rev);
+      } catch (err) {
+        console.error("blocktree-3d: revision panel swap failed", err);
+        const slider = revSlider();
+        if (slider) slider.value = String(rev);
+      }
+    }
+    applyRevisionState();
+  }
+
+  if (revisionEl) {
+    revisionEl.addEventListener("change", (ev) => {
+      if (ev.target && ev.target.matches("input[name=rev]")) scrubTo(Number(ev.target.value));
+    });
+    revisionEl.addEventListener("click", (ev) => {
+      const a = ev.target && ev.target.closest("a[data-rev]");
+      if (!a || !revisionEl.contains(a)) return;
+      ev.preventDefault();
+      scrubTo(Number(a.dataset.rev));
+    });
+  }
+
   // An `isolate` carried in on the URL is applied client-side at load —
   // the server no longer did it for us.
   if (currentIsolate()) applyIsolate();

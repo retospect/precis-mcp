@@ -13,13 +13,14 @@
   {{ drive_back(kind, kind_label) }}
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <span class="text-xs text-slate-500">{{ kind_label }} · {{ slug }}</span>
-  {% if read_only %}
-  <span id="bt3d-readonly" class="text-[11px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
-        title="A past revision — the tree as it was at save {{ rev }}. Nothing here can be edited; go to the current revision to comment or edit.">
-    read-only · revision {{ rev }} of {{ rev_current }} ·
+  {# Always in the DOM, hidden on the current revision: the in-place
+     scrubber (gr458084) shows and renumbers it without a reload. #}
+  <span id="bt3d-readonly" {{ '' if read_only else 'hidden' }}
+        class="text-[11px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
+        title="A past revision — the tree as it was at that save. Nothing here can be edited; go to the current revision to comment or edit.">
+    read-only · revision <span data-role="rev">{{ rev }}</span> of <span data-role="current">{{ rev_current }}</span> ·
     <a class="underline" href="/{{ kind }}/{{ slug | urlencode }}">current</a>
   </span>
-  {% endif %}
   <a href="{{ detail_2d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">Envelope projections →</a>
 </div>
 
@@ -176,7 +177,7 @@
     <h2 class="text-sm font-semibold text-slate-700 mb-2">Assembly</h2>
     {# Load progress (gr462703): sits above the viewer shell, not inside it —
        the viewer's fallback replaces the shell's children. blocktree-3d.js
-       drives data-phase (scene|render|server|download|build|done|timeout). #}
+       drives data-phase (scene|render|server|download|build|done|timeout|error). #}
     <div id="bt3d-progress" data-phase="scene" class="mb-1">
       <div id="bt3d-progress-track"><div id="bt3d-progress-fill"></div></div>
       <div id="bt3d-progress-label" class="text-xs text-slate-500" aria-live="polite">loading design…</div>
@@ -191,76 +192,15 @@
     </p>
 
     {# ── revision scrubber (design-workbench build, slice 2) ──
-       A plain GET form of its own: the range input submits on change, the
-       prev/next links are ordinary anchors; level/isolate/overrides ride
-       along as hidden inputs so scrubbing keeps the view settings. A
-       design saved before the record existed spans one position. #}
+       Not a form since gr458084: the range input and the prev/next
+       anchors go through blocktree-3d.js's live-scene seam (scene3d.json
+       ?rev=N re-rendered with the camera held, the panel body refetched
+       from revision.html), so stepping revisions no longer reloads the
+       page. The body is the shared partial that route serves. #}
     {% if revision %}
-    <div id="bt3d-revision" class="mt-3 rounded-lg border border-slate-200 bg-white text-xs">
-      <form method="get" action="/{{ kind }}/{{ slug | urlencode }}" class="flex items-center gap-2 px-3 py-2 border-b border-slate-100">
-        <input type="hidden" name="level" value="{{ level }}">
-        {% if isolate %}<input type="hidden" name="isolate" value="{{ isolate }}">{% endif %}
-        {% if overrides %}<input type="hidden" name="overrides" value="{{ overrides }}">{% endif %}
-        <span class="font-semibold text-slate-700">Revision</span>
-        {% if has_record and rev > 1 %}
-        <a class="text-emerald-700 hover:underline" href="/{{ kind }}/{{ slug | urlencode }}?rev={{ rev - 1 }}&level={{ level }}" title="previous revision">‹ {{ rev - 1 }}</a>
-        {% else %}<span class="text-slate-300">‹</span>{% endif %}
-        <input type="range" name="rev" min="{{ 1 if has_record else rev_current }}" max="{{ rev_current }}" step="1" value="{{ rev }}"
-               class="w-40" title="drag to a revision — the page reloads at that snapshot"
-               onchange="this.form.submit()">
-        {% if rev < rev_current %}
-        <a class="text-emerald-700 hover:underline" href="/{{ kind }}/{{ slug | urlencode }}?rev={{ rev + 1 }}&level={{ level }}" title="next revision">{{ rev + 1 }} ›</a>
-        {% else %}<span class="text-slate-300">›</span>{% endif %}
-        <span class="tabular-nums text-slate-600">{{ rev }} / {{ rev_current }}</span>
-        {% if not has_record %}
-        <span class="text-slate-400">— current, no record</span>
-        {% elif not read_only %}
-        <span class="text-slate-400">— current</span>
-        {% endif %}
-        {% if revision.created %}<span class="ml-auto text-[10px] text-slate-400">{{ revision.created }}</span>{% endif %}
-      </form>
-
-      <div class="px-3 py-2 space-y-1.5">
-        {% set d = revision.diff %}
-        <div class="text-[10px] uppercase tracking-wide text-slate-400">
-          {{ revision.n_blocks }} block{{ '' if revision.n_blocks == 1 else 's' }} ·
-          changed since revision {{ rev - 1 }}
-          {% if rev == 1 %}<span class="normal-case">(nothing — first save)</span>{% endif %}
-        </div>
-        {% if not has_record %}
-          <p class="text-slate-400">No revision record — this design was saved before revisions were recorded.</p>
-        {% elif not (d.added or d.removed or d.changed) %}
-          <p class="text-slate-400">No block differs from the previous revision.</p>
-        {% else %}
-          {% if d.added %}
-          <div><span class="text-emerald-700 font-semibold">+{{ d.added | length }} block{{ '' if d.added | length == 1 else 's' }}</span>
-            {% for b in d.added %}<code class="text-slate-500" data-uid="{{ b.uid }}">{{ b.name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</div>
-          {% endif %}
-          {% if d.removed %}
-          <div><span class="text-red-700 font-semibold">−{{ d.removed | length }} block{{ '' if d.removed | length == 1 else 's' }}</span>
-            {% for b in d.removed %}<code class="text-slate-500" data-uid="{{ b.uid }}">{{ b.name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</div>
-          {% endif %}
-          {% if d.changed %}
-          <div><span class="text-amber-700 font-semibold">{{ d.changed | length }} changed</span>
-            {% for b in d.changed %}<code class="text-slate-500" data-uid="{{ b.uid }}">{{ b.name }}</code> <span class="text-slate-400">({{ b.what | join(', ') }})</span>{% if not loop.last %}, {% endif %}{% endfor %}</div>
-          {% endif %}
-        {% endif %}
-
-        <div class="pt-1 border-t border-slate-100">
-          <span class="text-[10px] uppercase tracking-wide text-slate-400">Ops</span>
-          {% if not revision.has_record %}
-          <span class="text-slate-400">no op record</span>
-          {% elif not revision.ops %}
-          <span class="text-slate-400">none recorded (whole-tree save)</span>
-          {% else %}
-          <pre id="bt3d-revision-ops" class="mt-0.5 max-h-40 overflow-auto rounded bg-slate-50 p-2 font-mono text-[11px] text-slate-700 whitespace-pre">{% for line in revision.ops %}{{ line }}
-{% endfor %}</pre>
-          {% endif %}
-          {% if revision.turn %}
-          <div class="mt-0.5 text-slate-500">from turn <code>{{ revision.turn }}</code></div>
-          {% endif %}
-        </div>
-      </div>
+    <div id="bt3d-revision" class="mt-3 rounded-lg border border-slate-200 bg-white text-xs"
+         data-rev="{{ rev }}" data-rev-current="{{ rev_current }}">
+      {% include "blocktree/_revision_panel.html.j2" %}
     </div>
     {% endif %}
     {% if pick_url %}
@@ -385,6 +325,16 @@
     overridesInput: document.getElementById("bt3d-overrides"),
     busyEl: document.getElementById("bt3d-busy"),
     progressEl: document.getElementById("bt3d-progress"),
+    {% if revision %}
+    revisionEl: document.getElementById("bt3d-revision"),
+    revisionUrl: {{ ("/" ~ kind ~ "/" ~ (slug | urlencode) ~ "/revision.html") | tojson }},
+    readOnlyEl: document.getElementById("bt3d-readonly"),
+    currentOnlyEls: [
+      document.getElementById("bt3d-note-panel"),
+      document.getElementById("bt3d-export-xyz"),
+      document.getElementById("bt3d-export-pdb"),
+    ].filter(Boolean),
+    {% endif %}
     exportEls: {
       png: document.getElementById("bt3d-export-png"),
       svg: document.getElementById("bt3d-export-svg"),
