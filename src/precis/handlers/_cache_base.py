@@ -535,6 +535,7 @@ class CacheBackedHandler(Handler):
                 kind=self.spec.kind, slug=self._slug_for(key)
             )
             if slug_lookup is not None:
+                self._guard_slug_collision(key, *slug_lookup)
                 existing_ref = slug_lookup[0]
 
         if existing_ref is not None:
@@ -715,6 +716,15 @@ class CacheBackedHandler(Handler):
         (gripe:3681 phase 4.)
         """
         return None
+
+    def _guard_slug_collision(self, key: str, ref: Ref, cache: CacheEntry) -> None:
+        """Hook: ``get`` missed the request hash but found a live row under
+        the slug ``key`` derives to, and is about to refresh that row in
+        place. Subclasses whose slug is lossy (``perplexity`` cuts the
+        query at 60 chars) raise ``BadInput`` here when the row belongs to
+        a different input, so an unrelated report is never overwritten.
+        The base allows the refresh.
+        """
 
     @staticmethod
     def _is_listing_request(id: str | int | None, q: str | None) -> bool:

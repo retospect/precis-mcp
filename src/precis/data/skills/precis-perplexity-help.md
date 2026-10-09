@@ -8,6 +8,7 @@ answers:
   - how do I import a free Perplexity web-UI answer without paying twice?
   - how do I force a fresh Perplexity call instead of the cached one?
   - how do I see what I've already asked Perplexity recently?
+  - why did a long Perplexity report vanish while I was paging it with more()?
 applies-to: get/search/put/tag/link (kind='websearch' | 'perplexity-reasoning' | 'perplexity-research')
 status: active
 tags: [external-sources, troubleshooting]
@@ -84,6 +85,32 @@ slug before `~` with `get(kind="perplexity-research", id="report-slug",
 args={"no_fetch": True})`; a cache miss refuses to fetch. If absent, find
 the original query. `args={"literal": True}` and `put(mode='import')`
 remain explicit escapes for handle-shaped query text.
+
+## Drain `more()` before any other call on the kind
+## My long report disappeared mid-paging — why?
+
+A long answer comes back paged: the first page ends in a `more(cursor=…)`
+handle. **Read every page through `more(cursor=…)` before you issue any
+other `get` or `put` on that kind.** Pages after the first are held in
+the serving process for a few minutes; a cursor that misses there is
+served by re-running the original `get` against the cache row. If a
+write on that kind has refreshed or replaced the row in between (a
+stale refetch, a `put(mode='import')` of the same query), the remaining
+pages come from the new body, or from a fresh paid call, not from the
+report you started reading.
+
+Two distinct queries whose first 60 characters match slug to the same
+row. That write is refused rather than overwriting:
+
+```python
+# BadInput: perplexity-research: '<query B>' slugs to '<slug>', which
+# already holds a different report: '<query A>' (ref 123). Refusing …
+```
+
+Read the existing row with `get(kind=…, id="<slug>", args={"no_fetch":
+True})`, or rephrase so the first 60 characters differ (or import under a
+distinct explicit `id=`). Same-query refetches and re-imports still replace
+in place; only a *different* stored query is protected.
 
 ## Pick the right kind
 ## Which model do I want — websearch, perplexity-reasoning, or perplexity-research?
@@ -190,6 +217,9 @@ queries without writing.
 - `BadInput: '<n>' is a bare number …` — a digits-only `id=`/`q=` looks
   like a misrouted ref-id; retrieve it as `get(id='<kind>:<n>')`, or
   pass `args={'literal': True}` to search the number for real.
+- `BadInput: <kind>: '<query>' slugs to '<slug>', which already holds a
+  different report …` — two queries share their first 60 characters;
+  read the existing row with `args={'no_fetch': True}` or rephrase.
 - `BadInput: <kind> only supports mode='import' for put` — `put` is
   scoped to imports.
 - `BadInput: import requires text=` — empty body.

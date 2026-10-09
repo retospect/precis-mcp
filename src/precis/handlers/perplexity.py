@@ -13,8 +13,15 @@ all three (pre-existing in the providers table).
 
 Search block handles are rejected as queries before a paid fetch: their
 truncated report prefix can collide with an existing report's slug.
-The literal escape and explicit imports remain available; this guard
-does not solve slug collisions between distinct natural-language queries.
+The literal escape and explicit imports remain available.
+
+The slug is the query cut at 60 chars, so distinct queries sharing a
+prefix collide. A hash miss that lands on a live slug whose stored
+``query`` differs is refused (``_guard_slug_collision``) on both the
+``get`` fetch path and ``put(mode='import')``, instead of replacing the
+existing report. The slug scheme is kept so every existing slug and
+cache lookup stays valid; the caller rephrases or reads the existing
+row by slug.
 
 Attribution policy (per Perplexity's Terms of Service): every public/
 shared output must disclose AI generation; Standard and Pro tiers are
@@ -220,6 +227,37 @@ class _PerplexityBase(CacheBackedHandler):
         # cache_state.model already.
         _, _, q = key.partition(":")
         return slug_from_text(q, max_len=60) or "perplexity-query"
+
+    def _guard_slug_collision(self, key, ref, cache):
+        """Refuse to overwrite a row whose stored query is a different query.
+
+        The slug is the query cut at 60 chars, so two distinct queries
+        that share a prefix land on one slug; the hash misses and base
+        ``get`` would refresh the existing row in place with the new
+        query's body (a ~$0.50 report was lost this way, 2026-09-13).
+        Compare the stored full query, whitespace-collapsed, and refuse
+        when it differs. Rows written before ``query`` was tracked in
+        meta cannot be compared and keep the in-place refresh.
+        """
+        stored = (cache.meta or {}).get("query")
+        if not stored:
+            return
+        _, _, incoming = key.partition(":")
+        if _title_for_query(str(stored)) == _title_for_query(incoming):
+            return
+        raise BadInput(
+            f"{self.spec.kind}: {incoming!r} slugs to {ref.slug!r}, which "
+            f"already holds a different report: {str(stored)!r} (ref "
+            f"{ref.id}). Refusing to overwrite it — the slug is the query "
+            "cut at 60 characters, so the two queries collide.",
+            next=(
+                f"get(kind={self.spec.kind!r}, id={ref.slug!r}, "
+                "args={'no_fetch': True}) to read the existing report",
+                "rephrase so the first 60 characters differ from the "
+                "existing query, or pass a distinct explicit id= for the "
+                "new row",
+            ),
+        )
 
     def _recover_key(self, ref, cache):
         """Reconstruct ``<model>:<query>`` from cached meta.
@@ -545,12 +583,19 @@ class _PerplexityBase(CacheBackedHandler):
         # still be hydrated at $0.
         key = self._canonical_key(query, literal=True)
         request_hash = self._hash(key)
+        slug = self._slug_for(key)
+        # ``put_cache_entry`` replaces the live row under this slug; refuse
+        # when that row holds a different query's report (same guard as
+        # the ``get`` miss path). Re-importing the same query still replaces.
+        existing = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
+        if existing is not None:
+            self._guard_slug_collision(key, *existing)
 
         body_blocks = self._blocks_from_report(body)
 
         ref, _cache = self.store.put_cache_entry(
             kind=self.spec.kind,
-            slug=self._slug_for(key),
+            slug=slug,
             title=_title_for_query(query),
             body_blocks=body_blocks,
             provider=self.provider,

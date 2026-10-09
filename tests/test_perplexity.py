@@ -1280,3 +1280,118 @@ def test_search_supports_announced_in_kind_spec() -> None:
     for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
         assert cls.spec.supports_search is True, cls.__name__
         assert cls.spec.supports_search_hits is True, cls.__name__
+
+
+# ── truncated-slug collision guard ──────────────────────────────────
+
+# Both queries slug to the same 60-char prefix; only the tail differs.
+_LONG_PREFIX = "electrowetting on dielectric droplet actuation in silicone oil"
+_QUERY_A = f"{_LONG_PREFIX} review of contact angle saturation"
+_QUERY_B = f"{_LONG_PREFIX} chemical synthesis protocols"
+
+
+def _import_a(h: ResearchHandler) -> str:
+    h.put(id=_QUERY_A, text="# A\n\nkeep this report", mode="import")
+    cached = h.store.get_cache_entry(
+        provider="perplexity", request_hash=h._hash(h._canonical_key(_QUERY_A))
+    )
+    assert cached is not None
+    slug = cached[0].slug
+    assert slug is not None
+    return slug
+
+
+def test_truncated_slug_collision_fixture_collides(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    h = research_with_embedder
+    assert _QUERY_A != _QUERY_B
+    assert h._slug_for(h._canonical_key(_QUERY_A)) == h._slug_for(
+        h._canonical_key(_QUERY_B)
+    )
+
+
+@pytest.mark.parametrize("query_arg", ["id", "q"])
+def test_truncated_slug_collision_get_refuses_overwrite(
+    research_with_embedder: ResearchHandler, query_arg: str
+) -> None:
+    h = research_with_embedder
+    slug = _import_a(h)
+
+    kwargs: dict[str, Any] = {query_arg: _QUERY_B}
+    with pytest.raises(BadInput, match="already holds") as err:
+        h.get(**kwargs)
+
+    msg = str(err.value)
+    assert slug in msg and _QUERY_A in msg
+    assert _StubClient.call_count == 0
+    assert "keep this report" in h.get(id=_QUERY_A).body
+    assert "keep this report" in h.get(id=slug, no_fetch=True).body
+
+    def replay_hint(verb: str, kwargs: dict[str, Any]) -> Any:
+        extras = kwargs.pop("args", {})
+        return getattr(h, verb)(**kwargs, **extras)
+
+    hints = assert_hints_round_trip(str(err.value.next), replay_hint, whole_body=True)
+    assert any("no_fetch" in hint for hint in hints)
+    assert "rephrase" in str(err.value.next)
+    assert _StubClient.call_count == 0
+
+
+def test_truncated_slug_collision_import_refuses_overwrite(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    h = research_with_embedder
+    slug = _import_a(h)
+
+    with pytest.raises(BadInput, match="already holds"):
+        h.put(id=_QUERY_B, text="# B\n\nunrelated report", mode="import")
+
+    assert "keep this report" in h.get(id=slug, no_fetch=True).body
+    assert (
+        h.store.get_cache_entry(
+            provider="perplexity", request_hash=h._hash(h._canonical_key(_QUERY_B))
+        )
+        is None
+    )
+
+
+def test_same_query_whitespace_variant_still_refreshes_in_place(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Internal whitespace changes the hash but not the query; the slug
+    match refreshes the row in place as before, no refusal."""
+    h = research_with_embedder
+    slug = _import_a(h)
+    spaced = _QUERY_A.replace("droplet", "droplet  ")
+
+    resp = h.get(q=spaced)
+
+    assert _StubClient.call_count == 1
+    assert "Dario Amodei" in resp.body
+    cached = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
+    assert cached is not None
+
+
+def test_slug_match_without_stored_query_keeps_legacy_refresh(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """A row written before ``query`` was tracked in meta cannot be
+    compared; the pre-guard in-place refresh stays."""
+    h = research_with_embedder
+    key = h._canonical_key(_QUERY_A)
+    h.store.put_cache_entry(
+        kind="perplexity-research",
+        slug=h._slug_for(key),
+        title="legacy",
+        body_blocks=h._blocks_from_report("# legacy\n\nold body"),
+        provider="perplexity",
+        request_hash="legacy-hash",
+        ttl_seconds=None,
+        cache_meta={"model": "sonar-deep-research"},
+    )
+
+    resp = h.get(q=_QUERY_B)
+
+    assert _StubClient.call_count == 1
+    assert "Dario Amodei" in resp.body
