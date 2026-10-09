@@ -329,6 +329,18 @@ with is ripped (`<net> ripped: … — re-route`); pad or placement collisions
 are listed as `now visible (real footprint)` and stand until a re-place. The
 cache is shared, so the reply also names other designs using the part.
 
+**Pads are not pins.** A pin is an electrical name the netlist declares and
+wires (`pins`/`connections`, pin swaps, `pin_to_net` by name); a pad is
+copper the footprint owns, keyed by pad number. Once a real footprint is
+cached, every one of its pads is on the board — rendered, gerber'd, claimed
+on the router's grid and clearance-checked — whether or not a pin names
+it: an NC lead, an unused corner land, a second tab the footprint numbers
+like the first. A pad whose name matches a declared pin carries that pin's
+net (two pads sharing one name are two lands of one pin, bonded inside the
+part); any other pad is net-less copper nothing may route through. Pad
+count therefore equals the footprint's pad count, however many nets touch
+the part; `view='drc'` names an unwired pad it hits by its footprint label.
+
 `pin_name_mismatch` is a different finding: the footprint IS cached, but
 a declared pin name matches none of its pads, so that pin still sits at a
 synthesized bound. Re-pulling cannot fix it; rename the pin. A design

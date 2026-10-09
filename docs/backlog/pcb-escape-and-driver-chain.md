@@ -238,9 +238,12 @@ and backed out. 3 must be MEASURED before it is built.
    wins" decides which pad's SIZE stands for a pin, not which pads belong
    to it.
 
-   **Residual gap:** the non-first pads of a multi-pad pin stay invisible
-   to the router and DRC, since both index per pin. Closing that needs
-   those pads carried WITH their pin's net, not as netless obstacles.
+   ~~**Residual gap:** the non-first pads of a multi-pad pin stay invisible
+   to the router and DRC, since both index per pin.~~ **CLOSED** with the
+   IR's pad-number-keyed pad set (`ir.footprint_pad_set`, gr451276):
+   every non-primary pad is emitted and claimed WITH its pin's net;
+   connectivity unions the pads of one pin so a second lead is not an
+   island. `_unclaimed_pad_claims` became `_footprint_pad_claims`.
 
 3. **Rim exit — MEASURE BEFORE BUILDING.** Reto, 2026-09-27: "the escape
    is just the needful vias we'll need in any case (except for the most
@@ -824,7 +827,7 @@ no-op for the fabric arm; `_net_class_layers` → all signal layers for
 the layer arm (**which is why that arm is invalid — it admits F.Cu**);
 `_resolve_track_rules` AND `RealizeConfig` together for clearance, since
 the config default is a floor and any net without a class override falls
-through to the fab house tier; `_unclaimed_pad_claims` → `[]` to measure
+through to the fab house tier; `_footprint_pad_claims` → `[]` to measure
 against the pre-item-2 board. Sink placement is moved by wrapping
 `generators._REGISTRY["ewod_pad_array"]`.
 

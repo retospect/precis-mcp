@@ -1729,7 +1729,7 @@ def test_unclaimed_pad_claims_reach_the_router_grid_with_distinct_owners():
         }
     }
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
-    claims = pcb_realize._unclaimed_pad_claims(
+    claims = pcb_realize._footprint_pad_claims(
         ir,
         layers,
         pcb_realize._signal_layers(ir),

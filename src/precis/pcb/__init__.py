@@ -102,6 +102,21 @@ monotonic yield improvement. The measured fine-grid fixture remains an explicit
 experiment, not a default or new API. Clearance/layers/fixed copper, all route/DRC
 ratchets and search budgets stay authoritative; diagnostic parity is separate.
 
+Pads are not pins (gr451276). A pin is a netlist name; a pad is footprint
+copper keyed by pad number, carried as the IR's pad set
+(``ir.FootprintPad``/``footprint_pad_set``, memoised on
+``PcbIR.footprint_pads`` by ``session.apply_real_pin_offsets``). Pins join
+pads by name, first pad per name supplying the pin's own position/size;
+every other pad of a real footprint is emitted by ``realize.pads_for_ir``,
+claimed on the router grid (``_footprint_pad_claims``, under its pin's net
+or a per-land sentinel) and hulled by the courtyard, so pad count equals the
+footprint's regardless of wiring. Pads were never promoted to pins because
+pin ids carry pin swaps, net indexing and pin_to_net-by-name. Connectivity
+unions the pads of one pin: the part bonds them internally, so a second lead
+is not an island of its net. Alternatives refused: seeding pins from the
+footprint (breaks pin identity), and net-less extra pads (made a pin's own
+second land a foreign obstacle to its net, measured on GND).
+
 Instance pinout inspection (``eyes.pinout``) reads raw stored pads and
 reuses ``padplace.place_pad_point``. IR/fab pads were refused as its input:
 synthesized bounds cannot establish numbering, and per-layer flashes

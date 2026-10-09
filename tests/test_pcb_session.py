@@ -258,7 +258,12 @@ def test_a_pin_with_several_same_numbered_pads_is_covered_whole():
 
     pin_a = next(p for p in range(ir.n_pins) if str(ir.pin_label[p]) == "A")
     assert (ir.pin_dx[pin_a], ir.pin_dy[pin_a]) == (-4.0, -4.0)
-    assert ir.pin_extra_lands[pin_a] == [(x, y, 1.5, 1.0) for x, y in tabs[1:]]
+    # Every tab is a pad of the IR's pad set, keyed by number, carrying
+    # pin A; only the first is the one `pin_dx`/`pin_w` describe.
+    tabs_in_set = [pad for pad in ir.footprint_pads if pad.pin == pin_a]
+    assert [(p.raw["x"], p.raw["y"]) for p in tabs_in_set] == tabs
+    assert [p.primary for p in tabs_in_set] == [True, False, False, False]
+    assert len(ir.footprint_pads) == 5
 
     court = Polygon(instance_courtyard_polygon(ir, 0, clearance_mm=0.1))
     for x, y in tabs:

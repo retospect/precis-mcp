@@ -74,11 +74,45 @@ class NetIslands:
     witnesses: tuple[tuple[float, float, str], ...]
 
 
+#: A pad's ``(refdes, pin)`` identity, or ``None`` when it carries none
+#: (the mounting-hole rings :func:`~precis.pcb.realize.pads_for_ir` emits).
+_PadKey = tuple[str, str] | None
+
+
+def _pad_key(pad: dict[str, Any]) -> _PadKey:
+    refdes, pin = pad.get("refdes"), pad.get("pin")
+    return (str(refdes), str(pin)) if refdes is not None and pin is not None else None
+
+
+def _union_same_pin_pads(
+    dsu: _DisjointSet, pad_offset: int, pad_keys: list[_PadKey]
+) -> None:
+    """Pads sharing one ``(refdes, pin)`` are ONE node (gr451276). A
+    footprint may carry several pads for one pin — a split-tab connector
+    numbers four tabs ``1``, a QFP bonds two GND leads to one rail, an
+    EWOD electrode is a body plus its stub — and the part joins them
+    internally, so the board's copper need not. Without this, the IR's
+    full pad set (:func:`~precis.pcb.realize.pads_for_ir` emits every
+    footprint pad, not one per pin) would make each extra pad an island of
+    its net until a track happened to land on it. Keyed by PIN identity,
+    never by net: two different pins on one net are still two terminals
+    the board must join."""
+    first_by_key: dict[tuple[str, str], int] = {}
+    for offset, key in enumerate(pad_keys):
+        if key is None:
+            continue
+        prev = first_by_key.setdefault(key, pad_offset + offset)
+        if prev != pad_offset + offset:
+            dsu.union(prev, pad_offset + offset)
+
+
 def _pad_primitives(
     model: dict[str, Any], start_group: int
-) -> tuple[list[_Prim], dict[int, tuple[Point, ...]]]:
+) -> tuple[list[_Prim], dict[int, tuple[Point, ...]], list[_PadKey]]:
     """Pads as disks, each its OWN group — two pads of one part are not
-    electrically joined just because they belong to the same footprint. A
+    electrically joined just because they belong to the same footprint
+    (the pads of one PIN are, see :func:`_union_same_pin_pads`; the third
+    return value carries each primitive's ``(refdes, pin)`` for that). A
     pad with no net is skipped — a mechanical land has nothing to be
     connected to.
 
@@ -115,6 +149,7 @@ def _pad_primitives(
     same "cannot represent exactly" situation) instead."""
     prims: list[_Prim] = []
     polys: dict[int, tuple[Point, ...]] = {}
+    keys: list[_PadKey] = []
     for i, pad in enumerate(model.get("pads") or []):
         net = str(pad.get("net", ""))
         if not net:
@@ -140,7 +175,8 @@ def _pad_primitives(
         )
         if poly is not None:
             polys[pad_index] = poly
-    return prims, polys
+        keys.append(_pad_key(pad))
+    return prims, polys, keys
 
 
 def _copper_primitives_with_vias(
@@ -292,7 +328,7 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     """
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
-    pad_prims, pad_polys_raw = _pad_primitives(
+    pad_prims, pad_polys_raw, pad_keys = _pad_primitives(
         model, start_group=len(model.get("copper") or [])
     )
     prims += pad_prims
@@ -307,6 +343,7 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     for members in via_groups.values():
         for other in members[1:]:
             dsu.union(members[0], other)
+    _union_same_pin_pads(dsu, pad_offset, pad_keys)
 
     # A pour is a polygon, not a capsule, so it joins the union-find by
     # containment rather than by gap. Only same-net, same-layer primitives
@@ -383,7 +420,7 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     convention :func:`_pad_primitives` already applies to a netless pad."""
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
-    pad_keys: list[tuple[str, str] | None] = []
+    pad_keys: list[_PadKey] = []
     pad_polys: dict[int, tuple[Point, ...]] = {}
     for pad in model.get("pads") or []:
         net = str(pad.get("net", ""))
@@ -406,10 +443,7 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
         poly = _pad_poly(pad)
         if poly is not None:
             pad_polys[pad_index] = poly
-        refdes, pin = pad.get("refdes"), pad.get("pin")
-        pad_keys.append(
-            (str(refdes), str(pin)) if refdes is not None and pin is not None else None
-        )
+        pad_keys.append(_pad_key(pad))
     if not prims:
         return set()
 
@@ -417,6 +451,7 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     for members in via_groups.values():
         for other in members[1:]:
             dsu.union(members[0], other)
+    _union_same_pin_pads(dsu, pad_offset, pad_keys)
 
     pours = [
         item for item in (model.get("copper") or []) if item.get("ctype") == "pour"
@@ -445,14 +480,17 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
                 if gap <= TOUCH_EPS_MM:
                     dsu.union(members[a_i], members[b_i])
 
-    by_root: dict[int, list[tuple[str, str]]] = {}
+    by_root: dict[int, dict[tuple[str, str], None]] = {}
     for offset, key in enumerate(pad_keys):
         if key is None:
             continue
-        by_root.setdefault(dsu.find(pad_offset + offset), []).append(key)
+        # A dict, not a list: one pin's several pads share a root by
+        # construction, and a pair of a pin with itself is not a pair.
+        by_root.setdefault(dsu.find(pad_offset + offset), {})[key] = None
 
     pairs: set[frozenset[tuple[str, str]]] = set()
-    for keys in by_root.values():
+    for keys_of_root in by_root.values():
+        keys = list(keys_of_root)
         for i in range(len(keys)):
             for j in range(i + 1, len(keys)):
                 pairs.add(frozenset((keys[i], keys[j])))
@@ -508,7 +546,7 @@ def fixed_copper_pin_terminals(
     if n_fixed_prims == 0:
         return {}
     pad_offset = n_fixed_prims
-    pad_keys: list[tuple[str, str] | None] = []
+    pad_keys: list[_PadKey] = []
     pad_polys: dict[int, tuple[Point, ...]] = {}
     for pad in model.get("pads") or []:
         net = str(pad.get("net", ""))
@@ -531,10 +569,7 @@ def fixed_copper_pin_terminals(
         poly = _pad_poly(pad)
         if poly is not None:
             pad_polys[pad_index] = poly
-        refdes, pin = pad.get("refdes"), pad.get("pin")
-        pad_keys.append(
-            (str(refdes), str(pin)) if refdes is not None and pin is not None else None
-        )
+        pad_keys.append(_pad_key(pad))
     if not prims:
         return {}
 
@@ -542,6 +577,7 @@ def fixed_copper_pin_terminals(
     for members in via_groups.values():
         for other in members[1:]:
             dsu.union(members[0], other)
+    _union_same_pin_pads(dsu, pad_offset, pad_keys)
 
     by_key: dict[tuple[str, str], list[int]] = {}
     for i, p in enumerate(prims):

@@ -354,13 +354,16 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "correctly doesn't count -- DRC, silk and the placer reach it "
         "through that function"
     ),
-    "src/precis/pcb/ir.py::PcbIR.pin_extra_lands": (
-        "same shape as pin_poly above (gr460567): produced by "
-        "PcbIR.set_pin_pad's subscript store, called from "
-        "session.apply_real_pin_offsets; read by ir.py's own "
-        "instance_courtyard_polygon and instance_land_rects, which DRC, "
-        "silk and the placer call -- a split-tab connector's same-numbered "
-        "pads, live on every board with a cached footprint"
+    "src/precis/pcb/ir.py::PcbIR.footprint_pads": (
+        "the IR's footprint-sourced pad set (gr451276): produced by "
+        "session.apply_real_pin_offsets on every build_ir with a cached "
+        "footprint (ir.footprint_pads = footprint_pad_set(...)); read by "
+        "ir.py's own instance_courtyard_polygon(s) and "
+        "instance_land_rects, which DRC, silk and the placer call. "
+        "realize.pads_for_ir and the router's claims take the same set "
+        "from footprint_pad_set(ir, footprints) directly, since they are "
+        "handed the footprints and must agree with pad_geometry's reading "
+        "of them"
     ),
     # ---- class methods/properties: legitimately unwired ------------------
 }

@@ -109,11 +109,19 @@ def test_connected_via_channel_assignment_replay(store, open_inner, method):
     result = realize.realize(
         ir, config=config, footprints=footprints, fixed_copper=fixed
     )
+    # ("radial", True) was 42 until the courtyard hulled the sink's FULL
+    # pad set (gr451276): the pins-only hull of the 58 declared pads cut
+    # the PQFP-80's corners where no declared pin sat (459 -> 476 mm^2,
+    # same bounds), so the via body-cost preference now prices the real
+    # part body and two escapes lose their corner via sites. Measured
+    # with the pad set on the IR but the router's claims and
+    # connectivity's same-pin union each disabled in turn: both 40 --
+    # the courtyard is the only cause.
     expected = {
         ("distance", False): 31,
         ("distance", True): 51,
         ("radial", False): 22,
-        ("radial", True): 42,
+        ("radial", True): 40,
     }
     assert 55 - len(_failed(ir, result)) == expected[method, open_inner]
     _assert_legal(ir, graph, features, footprints, fixed, config, result, layers)

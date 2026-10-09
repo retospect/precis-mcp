@@ -670,6 +670,18 @@ def test_dogfood_drc_pads_sit_where_the_exported_copper_does(pcb):
     assert _sink_pins(drc_pads) == sink_exported, (
         "the two pad sources must describe the same 80 lands"
     )
+    # The gripe's acceptance line itself, by COUNT: for a part with a
+    # cached real footprint, emitted pads == the footprint's pads,
+    # however many nets reference it. A set of names cannot tell 80 from
+    # 79 when two pads share a name (the real HV507 has 12 non-channel
+    # names across 13 pads), so the count is asserted separately.
+    sink_drc = [
+        p for p in drc_pads if str(p.get("refdes") or "").startswith("ARR1_SINK")
+    ]
+    hv507_fp = pcb.store.pcb_footprints_for(ref.id)[_HV507_LCSC]
+    assert len(sink_drc) == len(hv507_fp["pads"]) == 80, (
+        f"{len(sink_drc)} emitted pads for an {len(hv507_fp['pads'])}-pad footprint"
+    )
 
     # The array's own electrodes only: their footprint is the one with no
     # package-family label for the synthesis to approximate, so this is
@@ -1111,7 +1123,7 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # regression; tightened here to a real number with a tuning margin.
     #
     # LOWERED 35 -> 28 on 2026-09-27 by gr451276's router half
-    # (`realize._unclaimed_pad_claims`), and the drop is the POINT, not a
+    # (`realize._footprint_pad_claims`), and the drop is the POINT, not a
     # regression: six escape nets used to "realize" by drawing B.Cu
     # straight across an unclaimed land at 0.000mm clearance — 24 DRC
     # clearance ERRORS of the form `track[ARR1_RxCy] <-> pad[]`, all of
@@ -1179,8 +1191,8 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # Reto's own words: "no wire can route thru it, even if it is nc". An
     # unclaimed footprint pad carries no net (`net: ""`) but is real
     # copper in the gerbers, so a track over one is a short the board
-    # reports as a clean route. `realize._unclaimed_pad_rows` made those
-    # lands VISIBLE to DRC; `_unclaimed_pad_claims` puts them in the
+    # reports as a clean route. `realize._footprint_pad_rows` made those
+    # lands VISIBLE to DRC; `_footprint_pad_claims` puts them in the
     # router's own occupancy grid so they are never crossed in the first
     # place. Measured on this fixture at seed=1: 24 such errors before,
     # 0 after. Asserted as a count of ZERO, not a ceiling — one is a
@@ -1206,7 +1218,7 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     assert not shorts, (
         f"{len(shorts)} routed track(s) cross an unclaimed (net-less) "
         f"footprint land: {[f.where for f in shorts[:6]]} — the router's "
-        "grid is not claiming them (realize._unclaimed_pad_claims)"
+        "grid is not claiming them (realize._footprint_pad_claims)"
     )
 
 

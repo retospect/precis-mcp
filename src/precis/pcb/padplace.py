@@ -112,10 +112,10 @@ def pad_label(pad: dict[str, Any], pin_map: dict[str, Any] | None) -> str:
     :func:`precis.pcb.realize._real_pad_sizes` — which is the same "one
     rule, N call sites, drifted" defect :func:`precis.pcb.realize.
     pads_for_ir`'s own docstring records for pad position and size. It has
-    to agree everywhere, because :func:`precis.pcb.realize.
-    _unclaimed_pad_rows` decides whether a pad is claimed by a pin using
-    exactly this answer: disagree, and a pad either vanishes from the
-    obstacle set or is claimed twice."""
+    to agree everywhere, because :func:`precis.pcb.ir.footprint_pad_set`
+    decides whether a pad is claimed by a pin using exactly this answer:
+    disagree, and a pad either vanishes from the obstacle set or is
+    claimed twice."""
     entry = (pin_map or {}).get(str(pad.get("number")))
     if isinstance(entry, dict) and entry.get("name") is not None:
         return str(entry["name"])

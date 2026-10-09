@@ -143,6 +143,54 @@ class FixedVia:
     dia_mm: float
 
 
+#: Sentinel: a footprint pad no netlist pin of its instance claims
+#: (:attr:`FootprintPad.pin`).
+NO_PIN: int = -1
+
+
+@dataclass(frozen=True, slots=True)
+class FootprintPad:
+    """One physical pad of an instance's REAL cached footprint — the unit
+    of the IR's pad set (:attr:`PcbIR.footprint_pads`, built by
+    :func:`footprint_pad_set`).
+
+    **A pad is a pad: it is part of the footprint, that is its origin
+    (gr451276).** It occupies board space whether or not a net names it
+    — a manufacturer's NC lead, an unconnected corner land, the second
+    half of a split thermal slug, the fourth tab a connector numbers
+    ``1`` — so it is flashed by the gerbers, claimed on the router's
+    occupancy grid and checked by DRC regardless. Pads are keyed by
+    ``(instance, number)``, the footprint's own identity, and are kept
+    SEPARATE from pin identity: a pin id is load-bearing for pin swaps,
+    net indexing and ``pin_to_net``-by-name, and a pad is never promoted
+    to one. The join runs the other way — a pad whose label
+    (:func:`precis.pcb.padplace.pad_label`) is one of its instance's
+    netlist pin names carries that pin (``pin``), and through it the
+    pin's net; any other pad is net-less copper (``pin == NO_PIN``).
+
+    ``primary`` marks the ONE pad per pin that ``pin_dx``/``pin_dy``/
+    ``pin_w``/``pin_h`` already describe — the first pad of its label in
+    footprint order, the same "first wins" :func:`precis.pcb.session.
+    _real_pin_offsets` and :func:`precis.pcb.realize._real_pad_sizes`
+    apply — so a consumer walking ``ir.pin_*`` adds exactly the
+    non-primary pads to see the whole footprint, never a pad twice. An
+    unpinned pad is never primary.
+
+    ``raw`` is the footprint row's own pad dict, footprint-local and
+    unrotated by the instance pose (``x``/``y``/``w``/``h``/``rot``/
+    ``shape``/``poly``/``drill``/``mask``/``paste``/``role``...), so the
+    one placement transform :func:`precis.pcb.padplace.
+    place_footprint_pads` applies to the fab output is what every other
+    consumer applies too."""
+
+    instance: int
+    number: str
+    label: str
+    pin: int
+    primary: bool
+    raw: dict[str, Any]
+
+
 @dataclass(slots=True)
 class PcbIR:
     """The progressively-enriched IR. Construct via :func:`from_graph`
@@ -404,17 +452,22 @@ class PcbIR:
     #: routing — the handler-only feature list left the router blind to
     #: them (``npth_clearance`` findings, round-3 review item 4).
     mounting_holes: tuple[MountingHole, ...] = ()
-    #: pin id -> the pin's OTHER real pads, ``(cx, cy, w, h)`` each in
-    #: footprint-local mm (centre absolute in the footprint frame, not
-    #: relative to the pin). A footprint can number several pads alike —
-    #: a split-tab connector's four mounting tabs are all pad ``1`` —
-    #: and only the first sets ``pin_dx``/``pin_w``. The rest are still
-    #: copper the part owns, so :func:`instance_courtyard_polygon` hulls
-    #: them and :func:`instance_land_rects` keeps vias off them (gr460567).
-    #: Written by :meth:`set_pin_pad`; empty when no real footprint applied.
-    pin_extra_lands: dict[int, list[tuple[float, float, float, float]]] = field(
-        default_factory=dict
-    )
+    #: The footprint-sourced PAD SET (:class:`FootprintPad`, gr451276):
+    #: every pad of every instance whose REAL footprint is cached, keyed
+    #: by pad number, pinned where a netlist pin claims it and net-less
+    #: otherwise — :func:`footprint_pad_set`'s answer, memoised here by
+    #: :func:`precis.pcb.session.apply_real_pin_offsets` (the one seam
+    #: where footprints meet the IR) so the readers that have no
+    #: ``footprints`` argument of their own — :func:`instance_courtyard_
+    #: polygon`, :func:`instance_land_rects` — hull and reserve the whole
+    #: footprint, not just the pads the netlist happens to name. ``()``
+    #: when no real footprint was applied: those readers then fall back
+    #: to the pins, which are all the geometry a synthesized landpattern
+    #: has. Board-config data like ``mounting_holes`` above: populated at
+    #: hydration, never mutated by a move; a pin swap changes which NET a
+    #: pinned pad carries (read through ``ir.pin_net[pad.pin]``), never
+    #: the pad set itself.
+    footprint_pads: tuple[FootprintPad, ...] = ()
 
     #: The datasheet :class:`precis.pcb.objectives.NetAnnotation`, per net —
     #: ``float64[n_nets]`` with ``nan`` for "not annotated" (``pcb_nets.
@@ -711,7 +764,6 @@ class PcbIR:
         w: float,
         h: float,
         poly: list[tuple[float, float]] | None = None,
-        extra_lands: list[tuple[float, float, float, float]] | None = None,
     ) -> None:
         """L3 mutator: replace one pin's SYNTHESIZED pad size with the real
         footprint pad's extent (footprint-local mm, unrotated by the
@@ -721,18 +773,14 @@ class PcbIR:
         :meth:`set_pin_offset`: gr460567 — real positions with synthesized
         sizes made :func:`instance_courtyard_polygon` hull tiny pads at real
         coordinates, so courtyards cut through real pads and the placer
-        reserved too little. ``extra_lands`` are the pin's other same-numbered
-        pads (:attr:`pin_extra_lands`). Same dirty cascade as
-        :meth:`set_pin_offset`."""
+        reserved too little. A pin's OTHER same-labelled pads are not this
+        pin's size; they live in :attr:`footprint_pads`. Same dirty cascade
+        as :meth:`set_pin_offset`."""
         self.pin_w[pin_id] = w
         self.pin_h[pin_id] = h
         if poly:
             self.pin_poly[pin_id] = list(poly)
             self.pin_shape[pin_id] = "polygon"
-        if extra_lands:
-            self.pin_extra_lands[pin_id] = list(extra_lands)
-        else:
-            self.pin_extra_lands.pop(pin_id, None)
         self.pin_pad_synthesized[pin_id] = False
         self._dirty_pin_geometry(pin_id)
 
@@ -1853,6 +1901,7 @@ def instance_courtyard_polygon(
     *,
     clearance_mm: float,
     pins: Sequence[int] | None = None,
+    pads: Sequence[FootprintPad] | None = None,
     fallback_half_extent_mm: float = 0.0,
 ) -> list[tuple[float, float]]:
     """One instance's courtyard as a POLYGON in its own footprint-local
@@ -1904,34 +1953,51 @@ def instance_courtyard_polygon(
     formula drew with its ``min_radius_mm`` floor, and the same reason it is a
     parameter rather than a constant here: the fallback is a policy, and
     ``ir.py`` sits below the modules that hold policy.
+
+    **The hull is over the FULL pad set where one exists** (:attr:`PcbIR.
+    footprint_pads`, gr451276) — every pad of the real footprint, named
+    by the netlist or not — and over the pins only for an instance with
+    no real footprint applied, where the pins ARE the whole landpattern.
+    A courtyard hulled from the netlist's pins alone left an NC lead or
+    a connector's second tab outside it, so the placer could park a
+    neighbour on copper the gerbers flash.
     """
-    if pins is None:
-        pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
+    if pads is None:
+        pads = [pad for pad in ir.footprint_pads if pad.instance == inst]
     corners: list[tuple[float, float]] = []
-    for pid in pins:
-        dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
-        poly = ir.pin_poly[pid]
-        if poly:
-            # The pin's OWN outline, not its bounding square — an
+    for pad in pads:
+        ext = footprint_pad_extent(pad.raw)
+        if ext is None:
+            continue
+        cx, cy, w, h, ring = ext
+        if ring:
+            # The pad's OWN outline, not its bounding square — an
             # authored electrode's hull should hug its real shape (a
             # zigzag/crenellated edge is the whole point of one), not a
             # rectangle that over-reserves past every tooth.
-            corners += [(dx + float(vx), dy + float(vy)) for vx, vy in poly]
+            corners += [(cx + vx, cy + vy) for vx, vy in ring]
             continue
-        hw, hh = float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0
         corners += [
-            (dx - hw, dy - hh),
-            (dx + hw, dy - hh),
-            (dx + hw, dy + hh),
-            (dx - hw, dy + hh),
+            (cx - w / 2.0, cy - h / 2.0),
+            (cx + w / 2.0, cy - h / 2.0),
+            (cx + w / 2.0, cy + h / 2.0),
+            (cx - w / 2.0, cy + h / 2.0),
         ]
-    for pid in pins:
-        for cx, cy, w, h in ir.pin_extra_lands.get(int(pid), ()):
+    if not corners:
+        if pins is None:
+            pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
+        for pid in pins:
+            dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
+            poly = ir.pin_poly[pid]
+            if poly:
+                corners += [(dx + float(vx), dy + float(vy)) for vx, vy in poly]
+                continue
+            hw, hh = float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0
             corners += [
-                (cx - w / 2.0, cy - h / 2.0),
-                (cx + w / 2.0, cy - h / 2.0),
-                (cx + w / 2.0, cy + h / 2.0),
-                (cx - w / 2.0, cy + h / 2.0),
+                (dx - hw, dy - hh),
+                (dx + hw, dy - hh),
+                (dx + hw, dy + hh),
+                (dx - hw, dy + hh),
             ]
     if not corners:
         h = fallback_half_extent_mm
@@ -1965,12 +2031,16 @@ def instance_courtyard_polygons(
     pins_of: dict[int, list[int]] = {}
     for p in range(ir.n_pins):
         pins_of.setdefault(int(ir.pin_instance[p]), []).append(p)
+    pads_of: dict[int, list[FootprintPad]] = {}
+    for pad in ir.footprint_pads:
+        pads_of.setdefault(pad.instance, []).append(pad)
     return [
         instance_courtyard_polygon(
             ir,
             i,
             clearance_mm=clearance_mm,
             pins=pins_of.get(i, []),
+            pads=pads_of.get(i, []),
             fallback_half_extent_mm=fallback_half_extent_mm,
         )
         for i in range(ir.n_instances)
@@ -1978,18 +2048,29 @@ def instance_courtyard_polygons(
 
 
 def instance_land_rects(ir: PcbIR) -> list[np.ndarray]:
-    """Every instance's solder lands DERIVED FROM ITS PINS, as ``(cx, cy,
-    half_w, half_h)`` rows in its own footprint-local frame, indexed by
-    instance id — one rect per pin from ``pin_dx``/``pin_dy`` and
-    ``pin_w``/``pin_h``, the same pads :func:`instance_courtyard_polygon`
-    hulls. The fallback for :attr:`PcbIR.inst_land_rects` when no caller
-    hydrated real footprints. A polygon pin contributes its ring's
+    """Every instance's solder lands as ``(cx, cy, half_w, half_h)`` rows
+    in its own footprint-local frame, indexed by instance id — the same
+    pads :func:`instance_courtyard_polygon` hulls: the full pad set
+    (:attr:`PcbIR.footprint_pads`) where a real footprint was applied,
+    else one rect per pin from ``pin_dx``/``pin_dy`` and ``pin_w``/
+    ``pin_h``. The fallback for :attr:`PcbIR.inst_land_rects` when no
+    caller hydrated real footprints. A polygon pad contributes its ring's
     bounding box: over-covering a land is the safe direction for a
     keep-out."""
     rows: list[list[tuple[float, float, float, float]]] = [
         [] for _ in range(ir.n_instances)
     ]
+    with_pads: set[int] = set()
+    for pad in ir.footprint_pads:
+        ext = footprint_pad_extent(pad.raw)
+        if ext is None:
+            continue
+        cx, cy, w, h, _ring = ext
+        rows[pad.instance].append((cx, cy, w / 2.0, h / 2.0))
+        with_pads.add(pad.instance)
     for pid in range(ir.n_pins):
+        if int(ir.pin_instance[pid]) in with_pads:
+            continue
         dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
         poly = ir.pin_poly[pid]
         if poly:
@@ -2007,11 +2088,104 @@ def instance_land_rects(ir: PcbIR) -> list[np.ndarray]:
         rows[int(ir.pin_instance[pid])].append(
             (dx, dy, float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0)
         )
-    for pid, extras in ir.pin_extra_lands.items():
-        rows[int(ir.pin_instance[pid])] += [
-            (cx, cy, w / 2.0, h / 2.0) for cx, cy, w, h in extras
-        ]
     return [np.array(r, dtype=np.float64).reshape(-1, 4) for r in rows]
+
+
+def footprint_pad_extent(
+    pad: dict[str, Any],
+) -> tuple[float, float, float, float, list[tuple[float, float]] | None] | None:
+    """One raw footprint pad as ``(cx, cy, w, h, ring)`` in footprint-local
+    mm. ``ring`` is a polygon pad's outline relative to its centre, else
+    ``None``. The pad's own ``rot`` folds into ``w``/``h`` as the rotated
+    rectangle's bounding box: exact at 90° multiples, over-covering
+    otherwise, which is the safe direction for a keep-out. ``None`` for a
+    malformed pad."""
+    try:
+        cx, cy = float(pad["x"]), float(pad["y"])
+        if pad.get("poly"):
+            ring = [(float(vx) - cx, float(vy) - cy) for vx, vy in pad["poly"]]
+            xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+            return (cx, cy, max(xs) - min(xs), max(ys) - min(ys), ring)
+        w = float(pad["w"])
+        h = float(pad.get("h", pad["w"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    rot = float(pad.get("rot") or 0.0) % 180.0
+    if rot in (0.0, 90.0):
+        return (cx, cy, h, w, None) if rot == 90.0 else (cx, cy, w, h, None)
+    theta = math.radians(rot)
+    c, s = abs(math.cos(theta)), abs(math.sin(theta))
+    return (cx, cy, w * c + h * s, w * s + h * c, None)
+
+
+def footprint_pad_set(
+    ir: PcbIR, footprints: dict[str, dict[str, Any]] | None
+) -> tuple[FootprintPad, ...]:
+    """The IR's pad set (:class:`FootprintPad`): every pad of every
+    instance whose REAL footprint ``footprints`` (refdes-keyed, each a
+    ``part_footprints``/``pcb_local_footprints`` row — :func:`precis.pcb.
+    session.footprints_by_refdes`'s shape) carries, in footprint order.
+
+    Pins resolve by NAME, pads by NUMBER. A pad's label
+    (:func:`precis.pcb.padplace.pad_label`: the ``pin_map`` name for its
+    number, else the number itself) is looked up among the instance's
+    netlist pin labels; a match pins the pad, and the first pad of each
+    pinned label is ``primary`` — the one the pin's own ``pin_dx``/
+    ``pin_w`` describe. Two pads sharing a name are therefore two pads
+    (a split tab, a QFP's second GND lead, an EWOD electrode's body and
+    its stub) carrying one pin, where a name-keyed join could only ever
+    keep the first.
+
+    Only an instance with a REAL cached footprint contributes: a
+    synthesized landpattern is generated FROM the netlist's pins, so it
+    has no pads beyond them to discover, and inventing lands there would
+    be the "never invent geometry" the fab path already refuses. **An
+    instance whose pin/pad join FAILED contributes nothing.** When a
+    wired pin's label is not a footprint pad's label, that pin already
+    falls back to a landpattern-synthesized pad at a synthesized offset
+    (:func:`precis.pcb.realize.pad_geometry`'s documented fallback), and
+    the footprint's real lands would then sit at other coordinates on no
+    net, making every pair a spurious zero-gap clearance error. Skipping
+    the instance keeps the old behaviour (pad invisible) rather than
+    inventing a contradiction; the pin-name mismatch is the defect to fix,
+    and :func:`precis.pcb.session.pin_name_mismatches` already reports it.
+
+    Pose-independent (footprint-local, like the pins' own offsets): an
+    unplaced instance has a pad set too, which is what lets the placer
+    reserve its whole footprint before it has a position."""
+    if not footprints:
+        return ()
+    pins_of: dict[int, dict[str, int]] = {}
+    for pid in range(ir.n_pins):
+        pins_of.setdefault(int(ir.pin_instance[pid]), {}).setdefault(
+            str(ir.pin_label[pid]), pid
+        )
+    out: list[FootprintPad] = []
+    for inst_id in range(ir.n_instances):
+        fp = footprints.get(str(ir.instance_refdes[inst_id])) or {}
+        raw_pads = fp.get("pads") or []
+        if not raw_pads:
+            continue
+        pin_map = fp.get("pin_map") or {}
+        labels = [padplace.pad_label(raw, pin_map) for raw in raw_pads]
+        by_label = pins_of.get(inst_id, {})
+        if set(by_label) - set(labels):
+            continue  # join failed for at least one pin -- see docstring
+        seen: set[str] = set()
+        for raw, label in zip(raw_pads, labels, strict=True):
+            pid = by_label.get(label, NO_PIN)
+            out.append(
+                FootprintPad(
+                    instance=inst_id,
+                    number=str(raw.get("number") or ""),
+                    label=label,
+                    pin=pid,
+                    primary=pid != NO_PIN and label not in seen,
+                    raw=raw,
+                )
+            )
+            seen.add(label)
+    return tuple(out)
 
 
 def courtyard_bound_radius_mm(
