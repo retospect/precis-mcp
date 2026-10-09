@@ -31,9 +31,10 @@ a paragraph.
 
 **The live state below only covers this repo.** A clean/empty git status does
 not mean the session did nothing — durable output can land entirely outside
-this worktree's git tree: this Claude Code install's personal auto-memory
-under `~/.claude/projects/<encoded-workdir>/memory/`, or precis MCP writes to
-`kind='todo'`/`gripe`. If that's where this session's work actually went, say
+this worktree's git tree: graph memory (`kind='memory'`, `SPACE:repo-dev`;
+AGENTS.md §Repo-dev graph memory), or precis MCP writes to
+`kind='todo'`/`gripe`. A recovery prompt cites meIDs and recall queries,
+not memory file paths. If that's where this session's work actually went, say
 so plainly and point at it (path or id) — don't read an empty git diff as
 "nothing to hand off," and don't let it read as a ship failure either (that's
 `/land`'s call, not this one).
