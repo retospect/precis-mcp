@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:webfeeds="http://webfeeds.org/rss/1.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>Eugen Rochko</title>
+    <description>Public posts from @Gargron@mastodon.social</description>
+    <link>https://mastodon.social/@Gargron</link>
+    <image>
+      <url>https://files.mastodon.social/accounts/avatars/000/000/001/original/6b2384b33799a0dd.png</url>
+      <title>Eugen Rochko</title>
+      <link>https://mastodon.social/@Gargron</link>
+    </image>
+    <lastBuildDate>Thu, 08 Oct 2026 23:56:59 +0000</lastBuildDate>
+    <webfeeds:icon>https://files.mastodon.social/accounts/avatars/000/000/001/original/6b2384b33799a0dd.png</webfeeds:icon>
+    <generator>Mastodon v4.8.0-nightly.2026-10-06</generator>
+    <item>
+      <guid isPermaLink="true">https://mastodon.social/@Gargron/117407994292130285</guid>
+      <link>https://mastodon.social/@Gargron/117407994292130285</link>
+      <pubDate>Thu, 08 Oct 2026 23:56:59 +0000</pubDate>
+      <description>&lt;p&gt;This is peak.&lt;/p&gt;&lt;p&gt;&lt;a href="https://www.youtube.com/watch?v=EeS-cBgIoxI" target="_blank" rel="nofollow noopener" translate="no"&gt;&lt;span class="invisible"&gt;https://www.&lt;/span&gt;&lt;span class=""&gt;youtube.com/watch?v=EeS-cBgIoxI&lt;/span&gt;&lt;span class="invisible"&gt;&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;</description>
+    </item>
+    <item>
+      <guid isPermaLink="true">https://mastodon.social/@Gargron/117407869167910784</guid>
+      <link>https://mastodon.social/@Gargron/117407869167910784</link>
+      <pubDate>Thu, 08 Oct 2026 23:25:09 +0000</pubDate>
+      <description>&lt;p&gt;Okay... Don&amp;#39;t give me ideas &lt;a href="https://www.youtube.com/watch?v=245Ryi8d4cg" target="_blank" rel="nofollow noopener" translate="no"&gt;&lt;span class="invisible"&gt;https://www.&lt;/span&gt;&lt;span class=""&gt;youtube.com/watch?v=245Ryi8d4cg&lt;/span&gt;&lt;span class="invisible"&gt;&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;</description>
+    </item>
+    <item>
+      <guid isPermaLink="true">https://mastodon.social/@Gargron/117396158192371170</guid>
+      <link>https://mastodon.social/@Gargron/117396158192371170</link>
+      <pubDate>Tue, 06 Oct 2026 21:46:54 +0000</pubDate>
+      <description>&lt;p class="quote-inline"&gt;RE: &lt;a href="https://mastodon.social/@Gargron/117382963679112384" target="_blank" rel="nofollow noopener" translate="no"&gt;&lt;span class="invisible"&gt;https://&lt;/span&gt;&lt;span class="ellipsis"&gt;mastodon.social/@Gargron/11738&lt;/span&gt;&lt;span class="invisible"&gt;2963679112384&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;p&gt;Can confirm, we took one of the covers off, and all of the lightbulbs are warm white underneath colored glass. They sell them under the Fern Lighting brand in the Garden Centres.&lt;/p&gt;</description>
+    </item>
+  </channel>
+</rss>

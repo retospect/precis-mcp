@@ -275,8 +275,7 @@ the hold, Reto 2026-10-01), `backlog/email-kind.md`,
 `backlog/slide-photo-capture-to-pres.md`, `backlog/asa-ops-residuals.md`,
 `backlog/session-history-into-precis.md` (also a pillar-1 consumer),
 `backlog/asa-voice-register.md`, `backlog/cast-followups.md`,
-`backlog/briefing-combine-verify.md`, `backlog/news-reddit-mastodon.md`
-(a personal feed, Reto 2026-10-01), `backlog/document-timeline-index.md`
+`backlog/briefing-combine-verify.md`, `backlog/document-timeline-index.md`
 (its own non-graph index; placed when the pillar opens).
 Moved out 2026-10-01: web-basic-auth-users → platform, chem-name-lookup-verb
 → chemistry, ms-teams-paper-feed → ingest-and-fetch; remarkable-pairing

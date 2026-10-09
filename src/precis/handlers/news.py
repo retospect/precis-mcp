@@ -10,6 +10,14 @@ same ``fetch_article`` + ``Store.put_cache_entry`` path:
 * **scheduled** — the :mod:`precis.workers.news_poll` worker walks the
   ``news_sources`` feed registry and mints every new article.
 
+``put(kind='news', text='reddit:r/<name>' | 'mastodon:<user>@<instance>')``
+registers a subreddit or a Mastodon account as a ``news_sources`` row —
+both expose public, credential-free RSS (``/r/<name>/.rss``,
+``/@<user>.rss``), so they ride the existing poller path (``safe_get`` →
+feedparser → tier-0 injection scan) with no bespoke API client. The put
+stores the resolved feed URL and does not fetch it; a typo'd name shows up
+as the row's ``last_status`` after the first poll, then backs off.
+
 This replaces the retired ``daily_briefing``/``rss_ingest`` monolith
 tables: a news item is now a first-class, searchable, taggable ref
 instead of a row in a bespoke ``news_items`` table. The morning
@@ -31,6 +39,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from dataclasses import dataclass
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -83,6 +93,59 @@ _TRACKING_PARAMS = frozenset(
 #: Cap on extracted article chars kept (some pages run huge); the
 #: block-splitter chunks this. Truncation is flagged in meta.
 _MAX_ARTICLE_CHARS = 80_000
+
+#: Source-spec forms ``put(kind='news', text=...)`` accepts. Reddit names are
+#: 3-21 word chars (Reddit's own rule; 2-char legacy subs exist, allow 2);
+#: Mastodon usernames are word chars plus ``.``/``-``, the instance a
+#: hostname with at least one dot.
+_REDDIT_SPEC_RE = re.compile(r"^reddit:(?:r/)?([A-Za-z0-9_]{2,21})/?$")
+_MASTODON_SPEC_RE = re.compile(
+    r"^mastodon:@?([A-Za-z0-9_.\-]{1,64})@"
+    r"((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63})$"
+)
+_SOURCE_SPEC_NEXT = (
+    "put(kind='news', text='reddit:r/<name>') or "
+    "put(kind='news', text='mastodon:<user>@<instance>')"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NewsSourceSpec:
+    """A resolved ``news_sources`` row candidate from a source spec."""
+
+    category: str  # 'reddit' | 'mastodon'
+    url: str  # the public RSS feed URL the poller fetches
+    title: str  # human label ('r/python', '@user@instance')
+    source_slug: str  # → source:<slug> tag
+
+
+def parse_source_spec(spec: str) -> NewsSourceSpec:
+    """``reddit:r/<name>`` / ``mastodon:<user>@<instance>`` → feed row.
+
+    Only the two documented forms are accepted; a bare URL is refused
+    here (operators add arbitrary feeds by SQL, ``docs/runbooks/news-ops.md``).
+    """
+    text = (spec or "").strip()
+    if m := _REDDIT_SPEC_RE.match(text):
+        name = m.group(1)
+        return NewsSourceSpec(
+            category="reddit",
+            url=f"https://www.reddit.com/r/{name.lower()}/.rss",
+            title=f"r/{name}",
+            source_slug=f"reddit-{name.lower()}",
+        )
+    if m := _MASTODON_SPEC_RE.match(text):
+        user, instance = m.group(1), m.group(2).lower()
+        return NewsSourceSpec(
+            category="mastodon",
+            url=f"https://{instance}/@{user}.rss",
+            title=f"@{user}@{instance}",
+            source_slug=slug_from_text(f"mastodon-{user}-{instance}", max_len=72),
+        )
+    raise BadInput(
+        f"not a news source spec: {spec!r}",
+        next=_SOURCE_SPEC_NEXT,
+    )
 
 
 def canonical_url(url: str) -> str:
@@ -214,11 +277,15 @@ class NewsHandler(CacheBackedHandler):
             "mints them from the news_sources feed registry on a schedule. "
             "search(kind='news', q=...) lands hits inside article bodies. "
             "Pinned in cache; tagged category:news + source:<slug>. The "
-            "morning briefing summarizes recent items. See ``precis-news-help``."
+            "morning briefing summarizes recent items. put(kind='news', "
+            "text='reddit:r/<name>' | 'mastodon:<user>@<instance>') registers "
+            "a subreddit / Mastodon account as a feed source. See "
+            "``precis-news-help``."
         ),
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
+        supports_put=True,
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -253,6 +320,66 @@ class NewsHandler(CacheBackedHandler):
     def _fetch(self, key: str) -> FetchResult:
         return fetch_article(key, embedder=self.embedder)
 
+    # ── put: register a subreddit / Mastodon account as a feed source ──
+
+    def put(
+        self,
+        *,
+        text: str | None = None,
+        id: str | None = None,
+        title: str | None = None,
+        tags: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Register ``reddit:r/<name>`` / ``mastodon:<user>@<instance>``.
+
+        Writes (or re-enables) a ``news_sources`` row holding the resolved
+        public RSS URL; the next ``news_poll`` tick ingests it through the
+        shared ``safe_get`` → feedparser → tier-0 scan path. Idempotent on
+        the feed URL. ``tags=`` become the row's ``default_tags`` (stamped
+        on every article); ``title=`` overrides the human label.
+        """
+        spec_text = text if text is not None else id
+        if not isinstance(spec_text, str) or not spec_text.strip():
+            raise BadInput(
+                "put(kind='news') registers a feed source and needs text=",
+                next=_SOURCE_SPEC_NEXT,
+            )
+        spec = parse_source_spec(spec_text)
+        label = (title or "").strip() or spec.title
+        default_tags = [t for t in (tags or []) if t and t.strip()]
+        with self.store.tx() as conn:
+            row = conn.execute(
+                "SELECT source_id, enabled FROM news_sources WHERE url = %s",
+                (spec.url,),
+            ).fetchone()
+            if row is None:
+                inserted = conn.execute(
+                    "INSERT INTO news_sources "
+                    "(url, title, source_slug, category, default_tags) "
+                    "VALUES (%s, %s, %s, %s, %s) RETURNING source_id",
+                    (spec.url, label, spec.source_slug, spec.category, default_tags),
+                ).fetchone()
+                assert inserted is not None  # RETURNING on a successful INSERT
+                source_id = inserted[0]
+                state = "registered"
+            else:
+                source_id, enabled = row
+                if not enabled:
+                    conn.execute(
+                        "UPDATE news_sources SET enabled = true WHERE source_id = %s",
+                        (source_id,),
+                    )
+                state = "already registered" + ("" if enabled else ", re-enabled")
+        body = (
+            f"news source {state}: {label} (source_id={source_id})\n"
+            f"  feed: {spec.url}\n"
+            f"  tag:  source:{spec.source_slug}\n"
+            f"  next: the news_poll pass ingests it on its next tick; "
+            f"search(kind='news', tags=['source:{spec.source_slug}'])"
+        )
+        return Response(body=body)
+
     # ── render: append source URL + cache footer ──────────────────────
 
     def _render(self, ref, cache, *, hit):
@@ -262,4 +389,11 @@ class NewsHandler(CacheBackedHandler):
         return Response(body=resp.body + "\n" + footer, cost=resp.cost)
 
 
-__all__ = ["NewsHandler", "article_blocks", "canonical_url", "fetch_article"]
+__all__ = [
+    "NewsHandler",
+    "NewsSourceSpec",
+    "article_blocks",
+    "canonical_url",
+    "fetch_article",
+    "parse_source_spec",
+]

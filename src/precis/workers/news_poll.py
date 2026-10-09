@@ -93,9 +93,23 @@ FeedParser = Callable[..., Any]
 #: makes no page fetches.
 ArticleFetcher = Callable[[str], Any]
 
-_BREAK_RE = re.compile(r"<br\s*/?>|</p\s*>|</li\s*>", re.IGNORECASE)
+_BREAK_RE = re.compile(
+    r"<br\s*/?>|</(?:p|li|div|tr|h[1-6]|blockquote|pre)\s*>", re.IGNORECASE
+)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t]*\n[ \t]*(?:\n[ \t]*)+")
+#: Intra-line space runs — Reddit pads its HTML with ``&#32;`` entities and
+#: nested table cells, which survive tag-stripping as runs of blanks.
+_SPACE_RUN_RE = re.compile(r"[ \t]{2,}")
+_LINE_EDGE_RE = re.compile(r"^[ \t]+|[ \t]+$", re.MULTILINE)
+#: Reddit's per-post footer: ``submitted by /u/<author> [link] [comments]``.
+#: The anchors' hrefs are gone after tag-stripping, so the bracket tokens
+#: are dead text; the author attribution is kept.
+_REDDIT_FOOTER_RE = re.compile(r"\s*\[link\]\s*(?:\[comments\])?\s*$")
+
+#: Fallback-title length for entries that ship none (Mastodon RSS items
+#: have no ``<title>``; the post body stands in).
+_TITLE_FROM_BODY_CHARS = 80
 
 
 def _request_hash(canonical: str) -> str:
@@ -111,6 +125,7 @@ def _strip_html(raw: str) -> str:
     text = _BREAK_RE.sub("\n", raw)
     text = _TAG_RE.sub("", text)
     text = html.unescape(text)
+    text = _LINE_EDGE_RE.sub("", _SPACE_RUN_RE.sub(" ", text))
     return _WS_RE.sub("\n\n", text).strip()
 
 
@@ -129,7 +144,21 @@ def _entry_body(entry: Any) -> str:
         ) or ""
     if not raw:
         raw = getattr(entry, "summary", "") or ""
-    return _strip_html(raw)[:_MAX_BODY_CHARS]
+    return _REDDIT_FOOTER_RE.sub("", _strip_html(raw))[:_MAX_BODY_CHARS]
+
+
+def _entry_title(entry: Any, body: str, fallback: str) -> str:
+    """Entry title, or the body's first line clipped to
+    ``_TITLE_FROM_BODY_CHARS`` when the feed ships none (Mastodon), else
+    ``fallback`` (the canonical URL / guid)."""
+    title = (getattr(entry, "title", "") or "").strip()
+    if title:
+        return title
+    first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    if len(first) > _TITLE_FROM_BODY_CHARS:
+        cut = first[:_TITLE_FROM_BODY_CHARS].rsplit(" ", 1)[0].rstrip()
+        first = (cut or first[:_TITLE_FROM_BODY_CHARS]) + "…"
+    return first or fallback
 
 
 def _entry_pub_date(entry: Any) -> datetime | None:
@@ -304,7 +333,8 @@ def run_news_pass(
             if store.get_cache_entry(provider="news", request_hash=rh) is not None:
                 continue  # already have this article
 
-            title = (getattr(entry, "title", "") or key or guid).strip()
+            feed_body = _entry_body(entry)
+            title = _entry_title(entry, feed_body, (key or guid).strip())
             if fetch is not None and key is not None:
                 # Opt-in full-page extraction.
                 try:
@@ -317,9 +347,7 @@ def run_news_pass(
                 extra_meta = {**(fr.meta or {})}
             else:
                 # Default: body straight from the feed entry, no page fetch.
-                body = (
-                    _entry_body(entry) or f"(no body in feed)\n\n{title}\n{key or ''}"
-                )
+                body = feed_body or f"(no body in feed)\n\n{title}\n{key or ''}"
                 body_blocks = article_blocks(body, embedder=None)
                 extra_meta = {"url": key, "via": "rss"}
 
@@ -329,9 +357,9 @@ def run_news_pass(
             # put_cache_entry's (kind, slug) replace. The article's handle
             # is its identity; URL/guid are metadata.
             slug = slug_from_text(key or guid_id or title, max_len=72) or "news-article"
-            # Tier-0 injection scan at the gate: feed bodies (soon Mastodon /
-            # Reddit RSS too) are attacker-writable text headed for LLM
-            # readers. The verdict rides cache meta so NewsHandler._render
+            # Tier-0 injection scan at the gate: feed bodies (Mastodon posts
+            # and Reddit threads included) are attacker-writable text headed
+            # for LLM readers. The verdict rides cache meta so NewsHandler._render
             # gates on it; content is never dropped.
             scan = scan_tier0(title, "\n\n".join(b.text for b in body_blocks))
             ref, _cache = store.put_cache_entry(

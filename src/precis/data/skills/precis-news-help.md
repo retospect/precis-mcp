@@ -1,12 +1,13 @@
 ---
 id: precis-news-help
 title: precis — news kind (RSS ingestion + morning briefing)
-summary: multi-source news as first-class refs; news_poll feed ingestion, news_sources registry, search/tag, and the scheduled morning briefing with delivery
+summary: multi-source news as first-class refs; news_poll feed ingestion, news_sources registry, subreddit/Mastodon sources via put, search/tag, and the scheduled morning briefing with delivery
 answers:
   - how do I read today's news items?
   - how does the news_poll worker ingest new sources?
+  - how do I follow a subreddit or a Mastodon account as news?
   - how do I get a morning news briefing scheduled?
-applies-to: get/search (kind='news'); precis worker --only news_poll|briefing; news_sources table; recurring-todo scheduling
+applies-to: get/put/search (kind='news'); precis worker --only news_poll|briefing; news_sources table; recurring-todo scheduling
 status: active
 tags: [workflow, external-sources]
 kinds: [news]
@@ -43,9 +44,31 @@ get(kind="news", id="https://www.bbc.com/news/articles/abc123")
 
 ## Ingestion
 
-New articles arrive on a schedule from an operator-managed feed registry —
-there's no `put` for minting a news ref from a feed. Ask a human operator to
-add or manage one (`docs/runbooks/news-ops.md`).
+New articles arrive on a schedule from the `news_sources` feed registry.
+There's no `put` for minting a single news ref; arbitrary RSS/Atom feeds are
+added by a human operator (`docs/runbooks/news-ops.md`).
+
+### Subreddits and Mastodon accounts as sources
+
+Both expose public, credential-free RSS, so you can register them yourself;
+`put` stores the resolved feed URL as a `news_sources` row and the next
+`news_poll` tick ingests it (nothing is fetched at put time):
+
+```python
+put(kind="news", text="reddit:r/python")  # → https://www.reddit.com/r/python/.rss
+put(kind="news", text="mastodon:Gargron@mastodon.social")  # → https://mastodon.social/@Gargron.rss
+put(kind="news", text="reddit:r/python", title="Python subreddit", tags=["topic:python"])
+```
+
+Only these two forms are accepted. `tags=` become the row's `default_tags`
+(stamped on every article from it); `title=` overrides the label. Articles
+are tagged `source:reddit-<name>` / `source:mastodon-<user>-<instance>`
+(dots → dashes), so `search(kind="news", tags=["source:reddit-python"])`
+scopes to one source. Re-registering an existing source is a no-op (it
+re-enables a parked row). A mistyped name isn't caught at put: the row's
+`last_status` shows the fetch error after the first poll and the feed backs
+off. Posts without a title (Mastodon) take their first line as the title;
+feed text passes the same tier-0 injection scan as every other feed.
 
 ## The morning briefing
 

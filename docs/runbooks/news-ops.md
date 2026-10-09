@@ -23,7 +23,10 @@ Run one pass by hand:
 precis worker --only news_poll --once
 ```
 
-Managing feeds (plain SQL against the registry):
+Subreddits and Mastodon accounts need no SQL — agents register them via
+`put(kind='news', text='reddit:r/<name>' | 'mastodon:<user>@<instance>')`,
+which writes the resolved public RSS URL as a row (see `precis-news-help`).
+Any other feed is managed with plain SQL against the registry:
 
 ```sql
 -- add a feed
