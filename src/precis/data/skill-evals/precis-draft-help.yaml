@@ -1,0 +1,29 @@
+# Eval cases for precis-draft-help (schema: precis.skill_eval.cases).
+skill: precis-draft-help
+cases:
+  - id: create-draft-for-project
+    prompt: |
+      Start the write-up for project todo 4821: a draft with id
+      'perovskite-review' titled 'Perovskite stability review'. Then tag
+      the draft 'review' so I can find it.
+    expect:
+      calls:
+        - verb: put
+          kind: draft
+          args: {id: perovskite-review, project: "re:.*4821.*", title: "re:(?i)perovskite stability review"}
+      record: {kind: draft, id: perovskite-review}
+    forbid:
+      calls:
+        - {verb: tag, kind: draft}                         # tag/link raise Unsupported on drafts
+        - {verb: link, kind: draft}
+    fake:
+      calls:
+        - verb: put
+          kind: draft
+          args: {id: perovskite-review, project: "4821", title: "Perovskite stability review"}
+      record: {kind: draft, id: perovskite-review, title: "Perovskite stability review"}
+      answer: >
+        put(kind='draft', id='perovskite-review', project='4821',
+        title='Perovskite stability review') creates the draft and its title
+        heading dc1. A draft is not taggable as a whole (tag raises
+        Unsupported); tag the project todo instead if you need a 'review' label.

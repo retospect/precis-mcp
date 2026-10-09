@@ -21,6 +21,9 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
   style `llm-facing-prose.md`; code anchors `code-anchors.md`).
 - **Tests and gate shape**: `docs/conventions/testing.md`. Run tests with
   `scripts/test`; never bare `pytest`, `pip` or `mypy`.
+- **Skill evals** (advisory, never a ship gate): `scripts/skill-eval`
+  runs `src/precis/data/skill-evals/<skill>.yaml` through a fake or a
+  budgeted host `claude -p` runner. → `docs/conventions/skill-evals.md`.
 - **Code navigation**: structure first, grep second. The precis python kind
   (`search(kind='python', mode='pattern', q=...)`;
   `get(kind='python', id='main::<qualname>')` for signature, callers and

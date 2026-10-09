@@ -1,0 +1,25 @@
+# Eval cases for precis-overview (schema: precis.skill_eval.cases).
+skill: precis-overview
+cases:
+  - id: topic-lookup-uses-search
+    prompt: |
+      I want papers in precis about perovskite solar-cell stability. I do not
+      know any slugs or handles. Which precis call do I make, and how would I
+      then open the skill that explains the paper kind?
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: "re:(?is).*perovskite.*"}}
+        - {verb: get, kind: skill, args: {id: precis-paper-help}}
+    forbid:
+      calls:
+        - {verb: get, kind: paper, args: {q: "re:.+"}}   # q= belongs to search
+      text: ["SELECT ", "psql"]                              # no SQL detour
+    fake:
+      calls:
+        - {verb: get, kind: skill, args: {id: precis-paper-help}}
+        - {verb: search, kind: paper, args: {q: "perovskite solar-cell stability"}}
+      record: null
+      answer: >
+        Content by topic is a search: search(kind='paper', q='perovskite
+        solar-cell stability'). Names go through get, so the paper skill is
+        get(kind='skill', id='precis-paper-help').

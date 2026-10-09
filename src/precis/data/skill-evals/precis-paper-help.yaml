@@ -1,0 +1,26 @@
+# Eval cases for precis-paper-help (schema: precis.skill_eval.cases).
+skill: precis-paper-help
+cases:
+  - id: doi-to-abstract
+    prompt: |
+      I have the DOI 10.1038/nature10352. Read me its abstract from precis.
+    expect:
+      calls:
+        - verb: get
+          kind: paper
+          args: {id: "10.1038/nature10352", view: abstract}
+    forbid:
+      calls:
+        - {verb: search, kind: web}                        # the paper is held
+        - {verb: get, kind: paper, args: {id: "re:10\\.1038/nature10352/abstract"}}
+      text: ["SELECT "]
+    fake:
+      calls:
+        - verb: get
+          kind: paper
+          args: {id: "10.1038/nature10352", view: abstract}
+      record: null
+      answer: >
+        get(kind='paper', id='10.1038/nature10352', view='abstract') — a DOI
+        resolves via metadata; the view goes in the kwarg because DOI
+        suffixes can contain '/'. Keep the pa<id> handle from the reply.

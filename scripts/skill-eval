@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scripts/skill-eval — per-skill eval harness: does an agent GIVEN a skill
+# plan the verb calls the skill teaches? ADVISORY, never a scripts/ship gate
+# stage (same standing as scripts/mutate-diff). Docs: docs/conventions/
+# skill-evals.md; corpus: src/precis/data/skill-evals/<skill>.yaml.
+#
+#   scripts/skill-eval                      # fake runner: corpus self-check, free
+#   scripts/skill-eval --runner live        # host claude -p dry run, budgeted
+#   scripts/skill-eval --runner live --diff # only skills HEAD changed
+#   scripts/skill-eval --skill precis-paper-help --out /tmp/r.json
+#
+# Live runs skip (exit 0, status "skipped") when claude is missing or not
+# logged in — the container claude is unauthenticated and would fake a pass.
+# Budget knobs: --case-usd / --run-usd / --timeout-s, or
+# PRECIS_SKILL_EVAL_{CASE_USD,RUN_USD,TIMEOUT_S,MODEL}.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python -m precis.skill_eval "$@"

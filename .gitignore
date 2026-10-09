@@ -116,6 +116,8 @@ coverage.xml
 .coverage.*
 # scripts/mutate-diff's scratch diff patch — regenerated per run, not source.
 .mutate-diff.patch
+# scripts/skill-eval's JSON report — regenerated per run, not source.
+.skill-eval-report.json
 
 # scripts/nightly local full-build result (machine-specific state, not git)
 .nightly-status.md
