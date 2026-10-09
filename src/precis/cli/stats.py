@@ -49,6 +49,7 @@ from precis.cli._common import (
 )
 from precis.format import serialize
 from precis.store import Store
+from precis.store._body_predicate import has_body_sql
 from precis.store._stub_predicate import no_oa_bucket_sql
 
 # Pinned column order for each section. Adding a column lands in
@@ -306,8 +307,7 @@ def _query_bodiless_pdf(store: Store) -> list[dict[str, Any]]:
         ") last_event ON TRUE "
         "WHERE r.kind = 'paper' AND r.pdf_sha256 IS NOT NULL "
         "  AND r.retired_at IS NULL "
-        "  AND NOT EXISTS (SELECT 1 FROM chunks c "
-        "                  WHERE c.ref_id = r.ref_id AND c.ord >= 0) "
+        f"  AND NOT {has_body_sql('r')} "
         "GROUP BY state ORDER BY state ASC"
     )
     with store.pool.connection() as conn:

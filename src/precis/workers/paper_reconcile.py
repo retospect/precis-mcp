@@ -12,6 +12,12 @@ the system worker at a low cadence so the corpus self-heals:
 * :func:`reconcile_by_pdf_sha256` / :func:`reconcile_by_doi_case` — the
   identifier/file duplicate classes. Idempotent and cheap once the corpus
   is clean.
+* The :mod:`precis.ingest.paper_hygiene` heals, after the merges. All are
+  SQL-only except :func:`~precis.ingest.paper_hygiene.heal_bodiless_pdfs`,
+  which may re-run Marker over a held PDF: that leg is capped per pass
+  (``PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS``, default 5, ``0`` = judge
+  only) and runs Marker in a killable subprocess, so one pass costs the
+  lock-holding node a few bounded model runs, not an hour of residency.
 
 Two guards keep it from being expensive or racy:
 
@@ -107,8 +113,11 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
 
             # Deterministic hygiene heals (run after the merges so a fresh
             # supersede/soft-delete is picked up the same pass).
+            from precis.corpus_layout import corpus_roots_from_env
             from precis.ingest.paper_hygiene import (
+                bodiless_extract_per_pass,
                 collapse_superseded_chains,
+                heal_bodiless_pdfs,
                 heal_drifted_cards,
                 metadata_hygiene_stats,
                 migrate_dangling_paper_links,
@@ -119,6 +128,18 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
             relinked = migrate_dangling_paper_links(store, dry_run=False, limit=limit)
             requeued = requeue_stranded_fetches(store, dry_run=False, limit=limit)
+            # Bodiless PDFs (gr453860): the one heal that may run Marker.
+            # Capped per pass so the lock-holding node spends at most a
+            # few model runs; verdicts (preview / missing / unreadable)
+            # are uncapped and journalled once.
+            bodiless = heal_bodiless_pdfs(
+                store,
+                corpus_dirs=corpus_roots_from_env(),
+                dry_run=False,
+                limit=limit,
+                extract_limit=bodiless_extract_per_pass(),
+            )
+            bodiless_judged = [o for o in bodiless if o.outcome != "deferred"]
             stats = metadata_hygiene_stats(store)
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 
@@ -126,12 +147,20 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 len(o.duplicate_ref_ids)
                 for o in (*title_outcomes, *pdf_outcomes, *doi_outcomes)
             )
-            if merged or review or healed_cards or collapsed or relinked or requeued:
+            if (
+                merged
+                or review
+                or healed_cards
+                or collapsed
+                or relinked
+                or requeued
+                or bodiless_judged
+            ):
                 log.info(
                     "paper_reconcile: merged %d duplicate ref(s) "
                     "(%d title, %d pdf_sha256, %d doi-case); %d flagged for review; "
                     "healed %d card(s), collapsed %d chain(s), migrated %d link(s), "
-                    "re-queued %d stranded fetch(es)",
+                    "re-queued %d stranded fetch(es), judged %d bodiless PDF(s)",
                     merged,
                     len(title_outcomes),
                     len(pdf_outcomes),
@@ -141,6 +170,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                     len(collapsed),
                     len(relinked),
                     len(requeued),
+                    len(bodiless_judged),
                 )
             for r in review:
                 log.info("paper_reconcile: %s", r.line())
@@ -169,6 +199,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 + len(collapsed)
                 + len(relinked)
                 + len(requeued)
+                + len(bodiless_judged)
             )
             return BatchResult(
                 handler="paper_reconcile", claimed=work, ok=work, failed=0

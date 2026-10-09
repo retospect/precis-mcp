@@ -36,6 +36,7 @@ from typing import Any
 
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store
+from precis.store._body_predicate import has_body_sql
 
 log = logging.getLogger(__name__)
 
@@ -146,6 +147,9 @@ class _Cand:
     n_authors: int
     has_ext_id: bool
     has_pdf: bool = False
+    #: Has extracted text (a body chunk at ``ord >= 0``) — distinct from
+    #: ``has_pdf``: a promoted ref can hold bytes and no text (gr453860).
+    has_body: bool = False
 
 
 def _title_is_junk(title: str | None) -> bool:
@@ -210,7 +214,8 @@ def _candidates(store: Store, conn: Any, ref_ids: list[int]) -> list[_Cand]:
         "       EXISTS (SELECT 1 FROM ref_identifiers ri "
         "               WHERE ri.ref_id = r.ref_id "
         "                 AND ri.id_kind = ANY(%s)) AS has_id, "
-        "       r.pdf_sha256 IS NOT NULL AS has_pdf "
+        "       r.pdf_sha256 IS NOT NULL AS has_pdf, "
+        f"       {has_body_sql('r')} AS has_body "
         "FROM refs r WHERE r.ref_id = ANY(%s)",
         (list(_MIGRATABLE_ID_KINDS), ref_ids),
     ).fetchall()
@@ -221,6 +226,7 @@ def _candidates(store: Store, conn: Any, ref_ids: list[int]) -> list[_Cand]:
             n_authors=int(r[2]),
             has_ext_id=r[3],
             has_pdf=r[4],
+            has_body=r[5],
         )
         for r in rows
     ]
@@ -302,12 +308,15 @@ def pick_survivor_keep_chunks(cands: list[_Cand]) -> int:
     fully-ingested paper. The stub carries the DOI too, so :func:`pick_survivor`
     (which weighs external-id presence first) can't tell them apart — and its
     author/id tiebreaks could keep the empty stub. Here the copy that actually
-    holds the bytes wins: restrict to the refs with a PDF when any has one, then
-    fall back to the ordinary survivor rule within that set (or the whole group
-    if none has a PDF yet — both are stubs, either is fine).
+    holds the *text* wins: restrict to the refs with body chunks when any has
+    them (a markup-ingested ref with no PDF outranks a bodiless PDF-carrying
+    one — gr453860), else to the refs with a PDF (the bytes are still worth
+    keeping), then fall back to the ordinary survivor rule within that set
+    (or the whole group if none has either — both are stubs, either is fine).
     """
+    body_bearing = [c for c in cands if c.has_body]
     pdf_bearing = [c for c in cands if c.has_pdf]
-    return pick_survivor(pdf_bearing or cands)
+    return pick_survivor(body_bearing or pdf_bearing or cands)
 
 
 def _normalize_doi_rows(conn: Any) -> int:
@@ -545,8 +554,7 @@ def reconcile_by_title_similarity(
                 # Survivor must be a *truly ingested* copy — a pdf_sha256
                 # AND body chunks — not a bare held-flag. We never retire a
                 # stub in favour of a paper we can't show we actually have.
-                "  AND EXISTS (SELECT 1 FROM chunks ck "
-                "              WHERE ck.ref_id = r.ref_id AND ck.ord >= 0) "
+                f"  AND {has_body_sql('r')} "
                 "ORDER BY sim DESC, r.ref_id ASC LIMIT 1",
                 (stub_title, stub_title, _TITLE_REVIEW_SIM),
             ).fetchone()

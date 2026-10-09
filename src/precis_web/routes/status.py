@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse
 
 from precis import health_checks
 from precis.alerts import STATE_OPEN, STATE_RESOLVED
+from precis.store._body_predicate import has_body_sql
 from precis.workers.executors._common import QUEUED, RUNNING, STATUS_NAMESPACE, TERMINAL
 from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import ALL_HOSTS, DEFAULT_PRIO
@@ -136,13 +137,12 @@ def _paper_summary(store: Store) -> dict[str, int]:
     with _connect(store) as conn:
         row = conn.execute(
             "SELECT count(*)::int AS total, "
-            "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL)::int AS held, "
+            "count(*) FILTER (WHERE r.pdf_sha256 IS NOT NULL)::int AS held, "
             # "held" is a PDF, not text: a promoted ref with no ord >= 0 chunk
             # is searchable by nobody and sits in no fetch queue (gr453860).
-            "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL AND NOT EXISTS ("
-            "  SELECT 1 FROM chunks c WHERE c.ref_id = refs.ref_id AND c.ord >= 0"
-            "))::int AS bodiless "
-            "FROM refs WHERE kind = 'paper' AND retired_at IS NULL"
+            "count(*) FILTER (WHERE r.pdf_sha256 IS NOT NULL "
+            f"  AND NOT {has_body_sql('r')})::int AS bodiless "
+            "FROM refs r WHERE r.kind = 'paper' AND r.retired_at IS NULL"
         ).fetchone()
     total, held, bodiless = (
         (int(row[0]), int(row[1]), int(row[2])) if row else (0, 0, 0)

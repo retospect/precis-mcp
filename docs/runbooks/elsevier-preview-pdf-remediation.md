@@ -184,3 +184,28 @@ preview-PDF ingest, and nothing in the repo shows it.
 **Open.** Gripe 372785: extend past Elsevier (Wiley TDM next). Do not widen
 to "any thin PDF body" — each publisher needs its own validated footer
 signature.
+
+## Bodiless PDFs — `precis bodiless-heal` (gripe 453860)
+
+**Symptom.** A live paper with `pdf_sha256` set and no body chunk
+(`ord >= 0`). ~950 on prod (2026-10-02): 814 Elsevier not-entitled (the
+preview above, but bodiless rather than thin), 65 readable PDFs that never
+ran through Marker, 43 corrupt, 20 missing on disk, 5 scanned. Counted by
+`precis stats` (bodiless-pdf section) and the `/status` "PDF-no-body" label.
+
+**Tooling.** `paper_hygiene.heal_bodiless_pdfs` judges each candidate
+once and journals the verdict as a `ref_events` row,
+`source='heal:bodiless'`, `event` ∈ `preview` / `missing_file` /
+`unreadable` / `extracted`, `payload.pdf_sha256` = the sha judged (a
+re-fetch that lands a different file is judged afresh). Elsevier-fetched
+candidates get `preview` and are never re-extracted — that would mint a
+preview *body*. Readable, locally held PDFs are re-extracted (Marker in a
+killable subprocess) through the ordinary stub-upgrade write path. Wired
+into `paper_reconcile` with a per-pass Marker cap
+(`PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS`, default 5; `0` = judge only).
+
+**Operator run.** `precis bodiless-heal` (dry-run: prints the verdict each
+candidate would get) then `precis bodiless-heal --apply` on a node that
+mounts the corpus — a file only another node holds is reported `deferred`
+and left for that node's pass. Read verdicts back with
+`SELECT event, count(*) FROM ref_events WHERE source = 'heal:bodiless' GROUP BY 1`.

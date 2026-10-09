@@ -339,6 +339,112 @@ def _build_cards(
 # ---------------------------------------------------------------------------
 
 
+@dataclasses.dataclass(frozen=True)
+class BodyExtraction:
+    """What one Marker (or fitz-fallback) run over a PDF produced.
+
+    ``chunks`` are the ``ord >= 0`` body rows; ``blocks`` the raw merged
+    blocks they came from (``extract_paper`` reads a title off them for
+    offline kinds); ``meta`` the body-owned ``refs.meta`` keys
+    (``glyph_health`` when suspected, ``extract_used_fallback`` /
+    ``extract_fallback_reason`` / ``extract_fallback_empty`` when the fitz
+    fallback ran — see :func:`extract_body`). ``page_first`` /
+    ``page_last`` / ``page_count`` summarise the pages blocks landed on.
+    """
+
+    chunks: list[ChunkToWrite]
+    blocks: list[dict[str, Any]]
+    meta: dict[str, Any]
+    page_first: int | None
+    page_last: int | None
+    page_count: int
+
+    @property
+    def content_hash(self) -> str | None:
+        """Hash of the canonicalised body text, ``None`` when there is none."""
+        full_text = "\n\n".join(c.text for c in self.chunks)
+        return make_content_hash(full_text) if full_text else None
+
+
+def extract_body(
+    pdf_path: Path,
+    paper_id: str,
+    *,
+    marker_timeout_s: float | None = None,
+    pdf_bytes: bytes | None = None,
+) -> BodyExtraction:
+    """Run the body leg of :func:`extract_paper` alone: Marker → blocks →
+    mojibake repair → body chunks (+ reference re-tagging), with the
+    glyph-health and fitz-fallback forensics the full pipeline records.
+
+    Shared by :func:`extract_paper` and the bodiless-PDF heal
+    (:func:`precis.ingest.paper_hygiene.heal_bodiless_pdfs`), which already
+    holds the ref's identity and metadata and only needs the text, so it
+    must not re-run the online metadata cascade. ``pdf_bytes`` lets a
+    caller that has already read the file skip a second read; it is only
+    used for the page count behind ``extract_fallback_empty``.
+    """
+    # gr236139 — mutated by extract_blocks_marker iff it took the fitz
+    # fallback branch; that's the only signal that survives a fallback
+    # run producing zero blocks (see extract_blocks_marker's docstring).
+    fallback_info: dict[str, Any] = {}
+
+    # gr228652 — populated in place by extract_blocks_marker with the
+    # per-document glyph-corruption forensics (Advent-3B2 "Adv*" fonts that
+    # silently destroy μ/Greek at extraction). Stored on PaperToWrite.meta
+    # below so flagged documents can be routed to recovery and a grounding
+    # audit can distinguish an ingest scar from a wrong claim.
+    glyph_health_info: dict[str, Any] = {}
+
+    blocks = extract_blocks_marker(
+        pdf_path,
+        paper_id,
+        timeout_s=marker_timeout_s,
+        fallback_info=fallback_info,
+        glyph_health=glyph_health_info,
+    )
+    blocks = _repair_mojibake(blocks)
+    body_chunks = _blocks_to_chunks(blocks)
+    body_chunks = _retag_references(body_chunks)
+    pages = [p for b in blocks if (p := b.get("page")) is not None]
+
+    meta: dict[str, Any] = {}
+    if glyph_health_info.get("suspected"):
+        # gr228652 — only persist the record when something fired; a clean
+        # document carries no glyph_health key, keeping meta small.
+        meta["glyph_health"] = glyph_health_info
+    if fallback_info.get("used_fallback"):
+        # gr236139 — surfaced to precis.ingest.add._ingest_pdf (which has
+        # a Store) via PaperToWrite.meta, then onto IngestResult so the
+        # watcher can raise a rate-limited ops alert and, for the
+        # zero-body-chunk case below, route to errors/ instead of
+        # reporting success.
+        meta["extract_used_fallback"] = True
+        reason = fallback_info.get("reason")
+        if reason:
+            meta["extract_fallback_reason"] = reason
+        if not body_chunks:
+            # A ≥1-page PDF that the fitz fallback couldn't extract any
+            # text from (typically image-only/scanned) — the silent
+            # data-loss signature this hardening exists to catch. Reuse
+            # the already-read bytes; only paid on this rare, already-
+            # degraded path.
+            if pdf_bytes is None:
+                pdf_bytes = Path(pdf_path).read_bytes()
+            total_pages = _pdf_page_count(pdf_bytes) or 0
+            if total_pages >= 1:
+                meta["extract_fallback_empty"] = True
+
+    return BodyExtraction(
+        chunks=body_chunks,
+        blocks=blocks,
+        meta=meta,
+        page_first=min(pages) if pages else None,
+        page_last=max(pages) if pages else None,
+        page_count=len({p for p in pages if p is not None}) if pages else 0,
+    )
+
+
 def extract_paper(
     pdf_path: Path,
     *,
@@ -410,52 +516,35 @@ def extract_paper(
     if not online and not authors_dict and metadata.title:
         cite_key_prefix = _title_cite_key(metadata.title, metadata.year)
 
-    # gr236139 — mutated by extract_blocks_marker iff it took the fitz
-    # fallback branch; that's the only signal that survives a fallback
-    # run producing zero blocks (see extract_blocks_marker's docstring).
-    fallback_info: dict[str, Any] = {}
-
-    # gr228652 — populated in place by extract_blocks_marker with the
-    # per-document glyph-corruption forensics (Advent-3B2 "Adv*" fonts that
-    # silently destroy μ/Greek at extraction). Stored on PaperToWrite.meta
-    # below so flagged documents can be routed to recovery and a grounding
-    # audit can distinguish an ingest scar from a wrong claim.
-    glyph_health_info: dict[str, Any] = {}
-
     if printable_only:
         blocks: list[dict[str, Any]] = []
         body_chunks: list[Any] = []
         cards: list[Any] = []
         pdf_pages_first = pdf_pages_last = None
         page_count = _pdf_page_count(pdf_bytes) or 0
+        content_hash: str | None = None
+        body_meta: dict[str, Any] = {}
     else:
-        blocks = extract_blocks_marker(
-            pdf_path,
-            paper_id,
-            timeout_s=marker_timeout_s,
-            fallback_info=fallback_info,
-            glyph_health=glyph_health_info,
+        body = extract_body(
+            pdf_path, paper_id, marker_timeout_s=marker_timeout_s, pdf_bytes=pdf_bytes
         )
-        blocks = _repair_mojibake(blocks)
+        blocks = body.blocks
         if not metadata.title and not online:
             metadata.title = _first_title_block(blocks)
             if metadata.title and not authors_dict:
                 cite_key_prefix = _title_cite_key(metadata.title, metadata.year)
-        body_chunks = _blocks_to_chunks(blocks)
-        body_chunks = _retag_references(body_chunks)
+        body_chunks = body.chunks
         cards = _build_cards(
             title=metadata.title,
             authors=authors_dict,
             abstract=metadata.abstract,
             keywords=metadata.keywords,
         )
-        pages = [p for b in blocks if (p := b.get("page")) is not None]
-        pdf_pages_first = min(pages) if pages else None
-        pdf_pages_last = max(pages) if pages else None
-        page_count = len({p for p in pages if p is not None}) if pages else 0
-
-    full_text = "\n\n".join(c.text for c in body_chunks)
-    content_hash = make_content_hash(full_text) if full_text else None
+        pdf_pages_first = body.page_first
+        pdf_pages_last = body.page_last
+        page_count = body.page_count
+        content_hash = body.content_hash
+        body_meta = body.meta
 
     provider = _PROVIDER_MAP.get(metadata.doi_provenance, "embedded")
 
@@ -470,29 +559,7 @@ def extract_paper(
         extra["keywords"] = metadata.keywords
     if metadata.verify_warnings:
         extra["verify_warnings"] = metadata.verify_warnings
-    if glyph_health_info.get("suspected"):
-        # gr228652 — only persist the record when something fired; a clean
-        # document carries no glyph_health key, keeping meta small.
-        extra["glyph_health"] = glyph_health_info
-    if fallback_info.get("used_fallback"):
-        # gr236139 — surfaced to precis.ingest.add._ingest_pdf (which has
-        # a Store) via PaperToWrite.meta, then onto IngestResult so the
-        # watcher can raise a rate-limited ops alert and, for the
-        # zero-body-chunk case below, route to errors/ instead of
-        # reporting success.
-        extra["extract_used_fallback"] = True
-        reason = fallback_info.get("reason")
-        if reason:
-            extra["extract_fallback_reason"] = reason
-        if not body_chunks:
-            # A ≥1-page PDF that the fitz fallback couldn't extract any
-            # text from (typically image-only/scanned) — the silent
-            # data-loss signature this hardening exists to catch. Reuse
-            # the already-read bytes; only paid on this rare, already-
-            # degraded path.
-            total_pages = _pdf_page_count(pdf_bytes) or 0
-            if total_pages >= 1:
-                extra["extract_fallback_empty"] = True
+    extra.update(body_meta)
 
     return PaperToWrite(
         title=metadata.title,
@@ -824,6 +891,8 @@ def _paper_from_lookup(
 
 
 __all__ = [
+    "BodyExtraction",
+    "extract_body",
     "extract_paper",
     "extract_paper_from_markup",
     "fetch_paper_by_arxiv",

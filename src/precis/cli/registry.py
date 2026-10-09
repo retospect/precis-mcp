@@ -117,6 +117,11 @@ COMMANDS: tuple[Command, ...] = (
         "Re-queue front-matter-only Elsevier preview papers for re-fetch.",
     ),
     _c(
+        "bodiless-heal",
+        "bodiless_heal",
+        "Judge and re-extract papers that hold a PDF but no body text.",
+    ),
+    _c(
         "title-backfill",
         "title_backfill",
         "Re-arm metadata enrichment for papers stuck at '(no title)'.",

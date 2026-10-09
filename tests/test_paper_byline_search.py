@@ -180,3 +180,59 @@ def test_handler_empty_byline_falls_through_to_q_guard(store: Store) -> None:
     """Blank title/author is treated as absent — the normal q= guard fires."""
     with pytest.raises(BadInput):
         _handler(store).search(title="   ")
+
+
+# ── ranking: text first, not merely a held PDF (gr453860) ─────────
+
+
+def _give_pdf(store: Store, ref_id: int, sha: str) -> None:
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, size_bytes, "
+            "storage_path) VALUES (%s, %s, 1, 1, '') ON CONFLICT DO NOTHING",
+            (sha, sha),
+        )
+        conn.execute("UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, ref_id))
+
+
+def _give_body(store: Store, ref_id: int) -> None:
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', 'Body text.')",
+            (ref_id,),
+        )
+
+
+def test_find_papers_by_title_ranks_body_over_bodiless_pdf(store: Store) -> None:
+    """A bodiless PDF-carrying paper (bytes, no text) must not outrank a
+    paper an agent can read: the markup-ingested copy with no PDF."""
+    bodiless = _seed_paper(
+        store,
+        slug="bl",
+        title="Graphene oxide membranes for desalination",
+        authors=["A"],
+    )
+    _give_pdf(store, bodiless, "b" * 64)
+    with_body = _seed_paper(
+        store,
+        slug="wb",
+        title="Graphene oxide membranes for desalination",
+        authors=["B"],
+    )
+    _give_body(store, with_body)
+    got = store.find_papers_by_title(kind="paper", q="graphene oxide membranes")
+    assert got[:2] == [with_body, bodiless]
+
+
+def test_find_papers_by_author_ranks_body_over_bodiless_pdf(store: Store) -> None:
+    bodiless = _seed_paper(store, slug="bl2", title="Paper one", authors=["Kim Nguyen"])
+    _give_pdf(store, bodiless, "c" * 64)
+    with_body = _seed_paper(
+        store, slug="wb2", title="Paper two", authors=["Kim Nguyen"]
+    )
+    _give_body(store, with_body)
+    assert store.find_papers_by_author(kind="paper", q="Nguyen") == [
+        with_body,
+        bodiless,
+    ]

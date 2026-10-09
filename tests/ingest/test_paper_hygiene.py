@@ -696,3 +696,316 @@ class TestEnrichRearmCli:
         with pytest.raises(SystemExit) as exc:
             self._run(store, monkeypatch, ["--refs", "12,abc"])
         assert exc.value.code == 2
+
+
+# ── bodiless PDFs (gr453860) ──────────────────────────────────────
+
+
+def _bodiless_paper(store: Store, *, slug: str, storage_path: str) -> tuple[int, str]:
+    """A live paper that holds a PDF (``pdf_sha256`` set, ``pdfs`` row at
+    ``storage_path``) and carries only its ``ord < 0`` card — the bodiless
+    shape the heal targets."""
+    rid = _paper(store, slug=slug, title=f"Paper {slug}")
+    sha = f"{rid:064d}"
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, 1, 100, %s)",
+                (sha, sha, storage_path),
+            )
+            conn.execute("UPDATE refs SET pdf_sha256=%s WHERE ref_id=%s", (sha, rid))
+    _card(store, rid, f"Paper {slug}\n\ncard text")
+    return rid, sha
+
+
+def _write_pdf(path: Any, *, text: str | None) -> None:
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    if text:
+        page.insert_text((72, 72), text)
+    doc.save(str(path))
+    doc.close()
+
+
+def _heal_events(store: Store, ref_id: int) -> list[tuple[str, dict[str, Any]]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT event, payload FROM ref_events "
+            "WHERE ref_id=%s AND source='heal:bodiless' ORDER BY event_id",
+            (ref_id,),
+        ).fetchall()
+    return [(str(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def _body_count(store: Store, ref_id: int) -> int:
+    return store.chunks.count_chunks(ref_id)
+
+
+def _fake_body(n_chunks: int, *, meta: dict[str, Any] | None = None) -> Any:
+    from precis.ingest.db_writer import ChunkToWrite
+    from precis.ingest.pipeline import BodyExtraction
+
+    chunks = [
+        ChunkToWrite(ord=i, chunk_kind="paragraph", text=f"Body paragraph {i}.")
+        for i in range(n_chunks)
+    ]
+    return BodyExtraction(
+        chunks=chunks,
+        blocks=[],
+        meta=dict(meta or {}),
+        page_first=1 if chunks else None,
+        page_last=1 if chunks else None,
+        page_count=1 if chunks else 0,
+    )
+
+
+class TestHealBodilessPdfs:
+    def test_preview_verdict_is_journalled_once_and_never_extracted(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "prev.pdf"
+        _write_pdf(pdf, text="Contents lists available at ScienceDirect")
+        rid, sha = _bodiless_paper(store, slug="bl-prev", storage_path=str(pdf))
+        _fetch_event(store, rid, "fetch_ok", hours_ago=2, source="fetcher:elsevier")
+
+        calls: list[Any] = []
+
+        def never(path: Any, paper_id: str) -> Any:
+            calls.append(path)
+            return _fake_body(5)
+
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=never
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "preview")]
+        assert calls == []
+        assert _body_count(store, rid) == 0
+        events = _heal_events(store, rid)
+        assert len(events) == 1 and events[0][0] == "preview"
+        assert events[0][1]["pdf_sha256"] == sha
+        assert "elsevier" in events[0][1]["reason"]
+        # Judged: the next pass does not see it again.
+        assert heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False) == []
+
+    def test_missing_file_when_no_node_holds_it(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        rid, sha = _bodiless_paper(
+            store, slug="bl-miss", storage_path=str(tmp_path / "gone.pdf")
+        )
+        out = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False)
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "missing_file")]
+        events = _heal_events(store, rid)
+        assert events[0][0] == "missing_file"
+        assert "gone.pdf" in events[0][1]["reason"]
+
+    def test_deferred_not_judged_when_another_node_holds_it(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        rid, sha = _bodiless_paper(
+            store,
+            slug="bl-else",
+            storage_path="/opt/nas/botshome/papers/corpus/x/y.pdf",
+        )
+        store.record_pdf_location(
+            sha, "other-node", "/nas/botshome/papers/corpus/x/y.pdf"
+        )
+        out = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False)
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "deferred")]
+        assert _heal_events(store, rid) == []
+        # Still a candidate for the node that holds the file.
+        again = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=True)
+        assert [o.ref_id for o in again] == [rid]
+
+    def test_unreadable_corrupt_file(self, store: Store, tmp_path: Any) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        bad = tmp_path / "bad.pdf"
+        bad.write_bytes(b"%PDF-1.4 this is not really a pdf")
+        rid, _ = _bodiless_paper(store, slug="bl-bad", storage_path=str(bad))
+        out = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False)
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "unreadable")]
+        assert out[0].reason.startswith("corrupt:")
+        assert _heal_events(store, rid)[0][1]["reason"].startswith("corrupt:")
+
+    def test_unreadable_scanned_no_text_layer(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        scan = tmp_path / "scan.pdf"
+        _write_pdf(scan, text=None)
+        rid, _ = _bodiless_paper(store, slug="bl-scan", storage_path=str(scan))
+
+        def never(path: Any, paper_id: str) -> Any:
+            raise AssertionError("extractor must not run on a text-less PDF")
+
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=never
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "unreadable")]
+        assert out[0].reason.startswith("scanned:")
+
+    def test_extracts_readable_pdf_and_journals_chunks(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "ok.pdf"
+        _write_pdf(pdf, text="A real body of text on the page.")
+        rid, sha = _bodiless_paper(store, slug="bl-ok", storage_path=str(pdf))
+        seen: list[tuple[Any, str]] = []
+
+        def fake(path: Any, paper_id: str) -> Any:
+            seen.append((path, paper_id))
+            return _fake_body(3, meta={"glyph_health": {"suspected": True}})
+
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=fake
+        )
+        assert [(o.ref_id, o.outcome, o.chunks_written) for o in out] == [
+            (rid, "extracted", 3)
+        ]
+        assert seen and seen[0][0] == pdf
+        assert _body_count(store, rid) == 3
+        events = _heal_events(store, rid)
+        assert events[0][0] == "extracted"
+        assert events[0][1]["chunks"] == 3 and events[0][1]["pdf_sha256"] == sha
+        # Body-owned meta landed through the ordinary stub-upgrade path.
+        assert _meta(store, rid)["glyph_health"] == {"suspected": True}
+        with store.pool.connection() as conn:
+            ch = conn.execute(
+                "SELECT 1 FROM ref_identifiers WHERE ref_id=%s AND id_kind='content_hash'",
+                (rid,),
+            ).fetchone()
+        assert ch is not None
+        # Healed: no longer a candidate.
+        assert heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=True) == []
+
+    def test_extractor_without_body_is_unreadable(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "empty.pdf"
+        _write_pdf(pdf, text="Some text the probe sees but Marker drops.")
+        rid, _ = _bodiless_paper(store, slug="bl-nobody", storage_path=str(pdf))
+
+        def nothing(path: Any, paper_id: str) -> Any:
+            return _fake_body(
+                0,
+                meta={"extract_used_fallback": True, "extract_fallback_reason": "boom"},
+            )
+
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=nothing
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "unreadable")]
+        assert "no body chunks" in out[0].reason and "boom" in out[0].reason
+        assert _body_count(store, rid) == 0
+
+    def test_dry_run_probes_but_writes_nothing(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "dry.pdf"
+        _write_pdf(pdf, text="Readable text.")
+        rid_ok, _ = _bodiless_paper(store, slug="bl-dry-ok", storage_path=str(pdf))
+        rid_prev, _ = _bodiless_paper(store, slug="bl-dry-prev", storage_path=str(pdf))
+        _fetch_event(
+            store, rid_prev, "fetch_ok", hours_ago=2, source="fetcher:elsevier"
+        )
+
+        def never(path: Any, paper_id: str) -> Any:
+            raise AssertionError("dry run must not extract")
+
+        out = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), extractor=never)
+        assert {o.ref_id: o.outcome for o in out} == {
+            rid_ok: "readable",
+            rid_prev: "preview",
+        }
+        assert _heal_events(store, rid_ok) == [] and _heal_events(store, rid_prev) == []
+        assert _body_count(store, rid_ok) == 0
+
+    def test_extract_limit_defers_the_rest(self, store: Store, tmp_path: Any) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "cap.pdf"
+        _write_pdf(pdf, text="Readable text.")
+        rid_a, _ = _bodiless_paper(store, slug="bl-cap-a", storage_path=str(pdf))
+        rid_b, _ = _bodiless_paper(store, slug="bl-cap-b", storage_path=str(pdf))
+
+        out = heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extract_limit=1,
+            extractor=lambda p, pid: _fake_body(2),
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [
+            (rid_a, "extracted"),
+            (rid_b, "deferred"),
+        ]
+        assert _heal_events(store, rid_b) == []
+        # The deferred one is first in line next pass.
+        again = heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extractor=lambda p, pid: _fake_body(2),
+        )
+        assert [(o.ref_id, o.outcome) for o in again] == [(rid_b, "extracted")]
+
+    def test_new_sha_after_verdict_is_judged_afresh(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        rid, _ = _bodiless_paper(
+            store, slug="bl-resha", storage_path=str(tmp_path / "x.pdf")
+        )
+        out = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False)
+        assert out[0].outcome == "missing_file"
+        assert heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False) == []
+
+        # A re-fetch lands a different file for the same ref.
+        new_sha = "f" * 64
+        _stamp_pdf(store, rid, new_sha)
+        again = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False)
+        assert [(o.ref_id, o.pdf_sha256) for o in again] == [(rid, new_sha)]
+        assert [e[0] for e in _heal_events(store, rid)] == [
+            "missing_file",
+            "missing_file",
+        ]
+
+    def test_bodied_and_retired_papers_are_not_candidates(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        rid_body, _ = _bodiless_paper(store, slug="bl-has", storage_path="/nope.pdf")
+        _body_chunk(store, rid_body, 0, "A body paragraph.")
+        rid_dead, _ = _bodiless_paper(store, slug="bl-dead", storage_path="/nope.pdf")
+        with store.tx() as conn:
+            store.retire_ref(rid_dead, conn=conn)
+        assert heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=True) == []
+
+    def test_extract_per_pass_env(self, monkeypatch: Any) -> None:
+        from precis.ingest.paper_hygiene import bodiless_extract_per_pass
+
+        monkeypatch.delenv("PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS", raising=False)
+        assert bodiless_extract_per_pass() == 5
+        monkeypatch.setenv("PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS", "0")
+        assert bodiless_extract_per_pass() == 0
+        monkeypatch.setenv("PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS", "junk")
+        assert bodiless_extract_per_pass() == 5

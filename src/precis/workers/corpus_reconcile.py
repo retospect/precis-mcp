@@ -34,7 +34,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from precis.corpus_layout import corpus_pdf_dest, rebase_onto_local
+from precis.corpus_layout import resolve_local_pdf
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
 from precis.utils.timeutil import as_utc
@@ -87,21 +87,9 @@ def _resolve_local(corpus_dirs: tuple[Path, ...], due: DuePdf) -> Path | None:
     Prefers the authoritative ``storage_path`` (an absolute path recorded at
     ingest), rebasing it onto this node's own NAS mount prefix when the raw
     path was written by a differently-mounted host, then probes the cite_key
-    convention across every root.
+    convention across every root (:func:`resolve_local_pdf`).
     """
-    if due.storage_path:
-        p = Path(due.storage_path)
-        if p.is_file():
-            return p
-        rebased = rebase_onto_local(due.storage_path, corpus_dirs)
-        if rebased is not None:
-            return rebased
-    for cite_key in due.cite_keys:
-        for root in corpus_dirs:
-            cand = corpus_pdf_dest(cite_key, root)
-            if cand.is_file():
-                return cand
-    return None
+    return resolve_local_pdf(corpus_dirs, due.storage_path, due.cite_keys)
 
 
 def run_corpus_reconcile_pass(

@@ -24,6 +24,7 @@ def _c(
     n_authors=3,
     has_ext_id=True,
     has_pdf=False,
+    has_body=None,
 ):
     return _Cand(
         ref_id=ref_id,
@@ -31,6 +32,9 @@ def _c(
         n_authors=n_authors,
         has_ext_id=has_ext_id,
         has_pdf=has_pdf,
+        # Default: a PDF-carrying candidate has text, the pre-gr453860
+        # assumption the older tests encode.
+        has_body=has_pdf if has_body is None else has_body,
     )
 
 
@@ -86,6 +90,20 @@ class TestPickSurvivorKeepChunks:
         a = _c(3, has_pdf=True, n_authors=1)
         b = _c(4, has_pdf=True, n_authors=9)
         assert pick_survivor_keep_chunks([a, b]) == 4
+
+    def test_text_beats_bytes(self):
+        # gr453860: a markup-ingested ref (no PDF, has body) must outrank a
+        # promoted ref that holds a PDF but no body chunk — "keep chunks"
+        # means keep the text, not the file.
+        bodiless_pdf = _c(3, has_pdf=True, has_body=False, n_authors=9)
+        markup_body = _c(4, has_pdf=False, has_body=True, n_authors=1)
+        assert pick_survivor_keep_chunks([bodiless_pdf, markup_body]) == 4
+
+    def test_pdf_still_beats_bare_stub_when_nobody_has_text(self):
+        # Two bodiless refs: the one holding bytes is still worth keeping.
+        bodiless_pdf = _c(3, has_pdf=True, has_body=False, n_authors=0, title="")
+        stub = _c(4, has_pdf=False, has_body=False, n_authors=5)
+        assert pick_survivor_keep_chunks([bodiless_pdf, stub]) == 3
 
 
 class TestReconcileOutcomeLine:

@@ -38,6 +38,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, NotFound
 from precis.hints import Hint, merged_redirect_hint
+from precis.store._body_predicate import has_body_sql
 from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_ALIASED,
@@ -731,8 +732,7 @@ class RefsMixin:
                     # unable to infer the parameter type (IndeterminateDatatype).
                     "  AND (%s::int IS NULL OR r.year IS NULL "
                     "       OR abs(r.year - %s::int) <= 1) "
-                    "  AND EXISTS (SELECT 1 FROM chunks ck "
-                    "              WHERE ck.ref_id = r.ref_id AND ck.ord >= 0) "
+                    f"  AND {has_body_sql('r')} "
                     "ORDER BY similarity(r.title, %s) DESC, r.ref_id ASC LIMIT 1",
                     (title, year, year, title),
                 ).fetchone()
@@ -2455,10 +2455,7 @@ class RefsMixin:
         if has_chunks is not None:
             # Correlated EXISTS on the body-chunk index — cheap, and it
             # keeps the filter on the SQL side so pagination stays honest.
-            exists = (
-                "EXISTS (SELECT 1 FROM chunks c "
-                "WHERE c.ref_id = r.ref_id AND c.ord >= 0)"
-            )
+            exists = has_body_sql("r")
             clauses.append(exists if has_chunks else f"NOT {exists}")
         if has_schedule is not None:
             clauses.append(
@@ -2536,10 +2533,7 @@ class RefsMixin:
                 "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
             )
         if has_chunks is not None:
-            exists = (
-                "EXISTS (SELECT 1 FROM chunks c "
-                "WHERE c.ref_id = r.ref_id AND c.ord >= 0)"
-            )
+            exists = has_body_sql("r")
             clauses.append(exists if has_chunks else f"NOT {exists}")
         if has_schedule is not None:
             clauses.append(
@@ -2834,8 +2828,9 @@ class RefsMixin:
         the words: ``pg_trgm similarity(r.title, q) >= 0.3`` (whole raw
         title, immune to FTS stop-word stripping) OR
         ``to_tsvector('english', r.title) @@ websearch_to_tsquery``
-        (partial title). Held papers (``pdf_sha256 IS NOT NULL``) sort
-        first, then by similarity. Returns ``ref_id`` in rank order."""
+        (partial title). Papers with a body (:func:`has_body_sql` — text
+        an agent can read, not merely a held PDF; gr453860) sort first,
+        then by similarity. Returns ``ref_id`` in rank order."""
         clauses = [
             "r.retired_at IS NULL",
             # Defensive: a superseded ref is normally soft-deleted (caught
@@ -2859,7 +2854,7 @@ class RefsMixin:
             "SELECT r.ref_id "
             "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY (r.pdf_sha256 IS NOT NULL) DESC, "
+            f"ORDER BY {has_body_sql('r')} DESC, "
             "         similarity(r.title, %s) DESC, r.ref_id ASC "
             "LIMIT %s"
         )
@@ -2887,9 +2882,10 @@ class RefsMixin:
         unsplit fallback for a ``{"name"}``-only / legacy row). A name
         matches by substring or ``pg_trgm`` fuzzy hit (threshold 0.35)
         against any of the three. ``lower(family) = lower(q)`` exact
-        ranks a paper first within its held/unheld bucket, ahead of a
-        merely-fuzzy hit; held papers (``pdf_sha256 IS NOT NULL``) sort
-        before unheld regardless. Returns ``ref_id`` in rank order."""
+        ranks a paper first within its body/no-body bucket, ahead of a
+        merely-fuzzy hit; papers with a body (:func:`has_body_sql`, not
+        merely a held PDF — gr453860) sort before the rest regardless.
+        Returns ``ref_id`` in rank order."""
         fullname = "pa.full_name"
         rev = "concat_ws(', ', pa.family, pa.given)"
         clauses = [
@@ -2924,8 +2920,8 @@ class RefsMixin:
             "FROM refs r "
             "JOIN paper_authors pa ON pa.ref_id = r.ref_id "
             f"WHERE {' AND '.join(clauses)} "
-            "GROUP BY r.ref_id, r.pdf_sha256 "
-            "ORDER BY (r.pdf_sha256 IS NOT NULL) DESC, exact DESC, "
+            "GROUP BY r.ref_id "
+            f"ORDER BY {has_body_sql('r')} DESC, exact DESC, "
             "         sim DESC, r.ref_id ASC "
             "LIMIT %s"
         )

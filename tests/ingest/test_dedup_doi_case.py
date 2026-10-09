@@ -213,6 +213,27 @@ class TestReconcileByDoiCase:
         assert not _is_deleted(store, stub)
         assert not _is_deleted(store, paper)
 
+    def test_body_bearing_ref_beats_bodiless_pdf_ref(self, store: Store):
+        # gr453860: the PDF-carrying ref here has NO body chunk (a promoted
+        # stub whose extraction wrote nothing), while the "stub" was ingested
+        # from markup — no PDF, but real text. Keep the text, not the bytes.
+        bodiless = _mk_pdf_paper(store, slug="beltagy19", doi="10.18653/v1/D19-1371")
+        markup = _mk_stub(store, slug="scibert19", doi="10.18653/v1/d19-1371")
+        with store.tx() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', 'A body paragraph from JATS.')",
+                (markup,),
+            )
+
+        outcomes = reconcile_by_doi_case(store, dry_run=False)
+
+        assert len(outcomes) == 1
+        assert outcomes[0].survivor_ref_id == markup
+        assert outcomes[0].duplicate_ref_ids == [bodiless]
+        assert _is_deleted(store, bodiless)
+        assert not _is_deleted(store, markup)
+
     def test_noop_when_no_case_collision(self, store: Store):
         # Two genuinely different DOIs — no group, nothing merged.
         _mk_stub(store, slug="a", doi="10.1/aaa")

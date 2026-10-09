@@ -83,6 +83,36 @@ def rebase_onto_local(stored: str, corpus_dirs: tuple[Path, ...]) -> Path | None
     return None
 
 
+def resolve_local_pdf(
+    corpus_dirs: tuple[Path, ...],
+    storage_path: str | None,
+    cite_keys: tuple[str, ...] | list[str] = (),
+) -> Path | None:
+    """Where this node holds a PDF, or ``None`` if absent locally.
+
+    The resolution order every presence check shares: the authoritative
+    ``pdfs.storage_path`` as recorded at ingest, that same path rebased
+    onto this node's own NAS mount prefix (:func:`rebase_onto_local`), then
+    the cite_key convention (:func:`corpus_pdf_dest`) for each alias across
+    every configured root. Pure filesystem probes, no DB access.
+    """
+    if storage_path:
+        p = Path(storage_path)
+        if p.is_file():
+            return p
+        rebased = rebase_onto_local(storage_path, corpus_dirs)
+        if rebased is not None:
+            return rebased
+    for cite_key in cite_keys:
+        if not cite_key:
+            continue
+        for root in corpus_dirs:
+            cand = corpus_pdf_dest(cite_key, root)
+            if cand.is_file():
+                return cand
+    return None
+
+
 def host_name(env: dict[str, str] | None = None) -> str:
     """This node's stable identity: ``PRECIS_HOST_NAME`` or the hostname.
 
@@ -100,4 +130,5 @@ __all__ = [
     "corpus_roots_from_env",
     "host_name",
     "rebase_onto_local",
+    "resolve_local_pdf",
 ]

@@ -41,6 +41,15 @@ ingestion/edit bugs that the current code no longer produces:
   idempotency stamp is the whole heal — the ref falls back into
   ``_claim_batch``'s predicate and the (now title-filling) pass re-runs
   over it. No network here: this only re-arms.
+* :func:`heal_bodiless_pdfs` — a live paper that carries a ``pdf_sha256``
+  but no body chunk (``ord >= 0``): the PDF leg promoted the stub and
+  wrote no text, and nothing journalled why (gr453860). The one heal
+  here that is not pure SQL: for a locally held, readable PDF it re-runs
+  the body extraction (Marker, in a killable subprocess) and writes the
+  chunks; everything else it *judges* once — Elsevier entitlement
+  preview, file missing on every node, corrupt or text-less PDF — and
+  journals the verdict as a ``ref_events`` row (``source='heal:bodiless'``)
+  so the next pass skips what it already judged. Still no network.
 
 All are dry-run by default and idempotent: a clean corpus yields empty
 results and the next pass is a cheap no-op.
@@ -60,14 +69,23 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
+from precis.corpus_layout import resolve_local_pdf
 from precis.identity import PLACEHOLDER_TITLE
 from precis.ingest.cards import rewrite_cards
+from precis.ingest.db_writer import PaperToWrite, register_aliases_and_maybe_upgrade
 from precis.store import Store
+from precis.store._body_predicate import has_body_sql
 from precis.utils.authors import author_display, author_names, is_junk_author_name
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from precis.ingest.pipeline import BodyExtraction
 
 log = logging.getLogger(__name__)
 
@@ -554,6 +572,455 @@ def requeue_front_matter_only_papers(
 
 
 # ---------------------------------------------------------------------------
+# Bodiless PDFs — held bytes, no extracted text
+# ---------------------------------------------------------------------------
+
+#: ``ref_events.source`` every bodiless-heal verdict is journalled under.
+#: One row per (ref, pdf_sha256) judged; the candidate query excludes a ref
+#: whose *current* sha already has a verdict, so a re-fetch that lands a
+#: different file is judged afresh while a settled verdict is never
+#: revisited. Deliberately not ``fetcher:%`` (it must not touch the fetch
+#: backoff) and not ``paper_reconcile`` (the other heals' breadcrumb
+#: source) so ``view='log'`` and the stats split read it unambiguously.
+BODILESS_HEAL_SOURCE = "heal:bodiless"
+
+#: Fetch legs whose ``fetch_ok`` means "Elsevier's Article Retrieval API
+#: answered" — for a non-entitled DOI that is a well-formed one-page
+#: preview, and re-running Marker over it would turn a bodiless paper into
+#: a preview-body one (worse: it then looks done). A bodiless ref whose
+#: newest ``fetch_ok`` came from one of these gets the ``preview`` verdict
+#: and is never re-extracted; the entitlement fix (td462729) re-fetches
+#: through the markup leg, which lands a body the normal way.
+_PREVIEW_FETCH_SOURCES: frozenset[str] = frozenset(
+    {"fetcher:elsevier", "fetcher:elsevier_xml"}
+)
+
+#: Default Marker wall-clock budget per PDF in the heal — the same 900 s the
+#: watcher uses (``precis ingest --watch --marker-timeout-s``). Non-zero so
+#: Marker always runs in a killable child here: the heal runs inside the
+#: ``paper_reconcile`` pass, which must not wedge on one bad file.
+BODILESS_MARKER_TIMEOUT_S = 900.0
+
+_EXTRACT_PER_PASS_DEFAULT = 5
+
+
+def bodiless_extract_per_pass() -> int:
+    """How many Marker runs one unattended ``paper_reconcile`` pass may spend
+    on bodiless PDFs (env ``PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS``, default
+    5; ``0`` = judge only, never extract). The cheap verdicts (preview,
+    missing, unreadable) are not capped — only the heavy leg is, so a
+    24-hourly pass drains the readable tail a few papers at a time without
+    pinning a node's memory for an hour; ``precis bodiless-heal --apply``
+    is the operator's way to do the bulk in one go."""
+    try:
+        return max(0, int(os.environ["PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS"].strip()))
+    except (KeyError, ValueError):
+        return _EXTRACT_PER_PASS_DEFAULT
+
+
+@dataclass(frozen=True)
+class BodilessOutcome:
+    """One bodiless paper's verdict from :func:`heal_bodiless_pdfs`.
+
+    ``outcome`` is one of:
+
+    * ``extracted`` — body chunks written from the stored PDF (journalled).
+    * ``preview`` — Elsevier entitlement preview; not re-extracted (journalled).
+    * ``missing_file`` — no node holds the bytes (journalled).
+    * ``unreadable`` — the PDF does not open, has no pages, has no text
+      layer, or the extractor returned no body; ``reason`` says which
+      (journalled).
+    * ``readable`` — dry-run only: would be extracted.
+    * ``deferred`` — readable, but this pass's extraction cap is spent or
+      the file lives on another node; retried next pass (not journalled).
+    """
+
+    ref_id: int
+    pdf_sha256: str
+    outcome: str
+    reason: str = ""
+    chunks_written: int = 0
+    path: str | None = None
+
+    def line(self) -> str:
+        bits = [f"ref_id={self.ref_id}", self.outcome]
+        if self.chunks_written:
+            bits.append(f"chunks={self.chunks_written}")
+        if self.reason:
+            bits.append(f"({self.reason})")
+        return "  ".join(bits)
+
+
+@dataclass(frozen=True)
+class _BodilessCandidate:
+    ref_id: int
+    pdf_sha256: str
+    title: str | None
+    storage_path: str
+    cite_keys: tuple[str, ...]
+    last_fetch_source: str | None
+    paper_id: str
+
+
+def _bodiless_candidates(
+    store: Store, *, limit: int | None
+) -> list[_BodilessCandidate]:
+    """Live papers with a ``pdf_sha256`` and no body chunk whose current
+    sha has no ``heal:bodiless`` verdict yet, oldest ref first."""
+    sql = f"""
+        SELECT r.ref_id, r.pdf_sha256, r.title,
+               coalesce(p.storage_path, '') AS storage_path,
+               array_remove(array_agg(DISTINCT ri.id_value), NULL) AS cite_keys,
+               lf.source AS last_fetch_source,
+               (SELECT pid.id_value FROM ref_identifiers pid
+                 WHERE pid.ref_id = r.ref_id AND pid.id_kind = 'paper_id'
+                 LIMIT 1) AS paper_id
+          FROM refs r
+          LEFT JOIN pdfs p ON p.pdf_sha256 = r.pdf_sha256
+          LEFT JOIN ref_identifiers ri
+                 ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
+          LEFT JOIN LATERAL (
+                SELECT e.source FROM ref_events e
+                 WHERE e.ref_id = r.ref_id AND e.event = 'fetch_ok'
+                   AND starts_with(e.source, 'fetcher:')
+                 ORDER BY e.ts DESC LIMIT 1
+          ) lf ON TRUE
+         WHERE r.kind = 'paper'
+           AND r.retired_at IS NULL
+           AND r.pdf_sha256 IS NOT NULL
+           AND NOT {has_body_sql("r")}
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_events j
+                  WHERE j.ref_id = r.ref_id AND j.source = %s
+                    AND j.payload->>'pdf_sha256' = r.pdf_sha256::text
+               )
+         GROUP BY r.ref_id, r.pdf_sha256, r.title, p.storage_path, lf.source
+         ORDER BY r.ref_id
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (BODILESS_HEAL_SOURCE,)).fetchall()
+    out: list[_BodilessCandidate] = []
+    for ref_id, sha, title, storage_path, cite_keys, last_src, paper_id in rows:
+        # The slug is one of the ``cite_key`` identifiers (v2: ``refs.slug``
+        # is gone), so the aggregate already carries it.
+        keys = sorted(k for k in (cite_keys or ()) if k)
+        out.append(
+            _BodilessCandidate(
+                ref_id=int(ref_id),
+                pdf_sha256=str(sha).strip(),
+                title=title,
+                storage_path=str(storage_path or ""),
+                cite_keys=tuple(keys),
+                last_fetch_source=last_src,
+                paper_id=str(paper_id) if paper_id else f"ref{int(ref_id)}",
+            )
+        )
+    if limit:
+        out = out[:limit]
+    return out
+
+
+def _probe_pdf(path: Path) -> tuple[int, int]:
+    """``(page_count, pages_with_text)`` for the PDF at ``path`` — a cheap
+    PyMuPDF pass. Raises whatever fitz raises on a file that does not open
+    (the caller records that as ``unreadable``)."""
+    import fitz
+
+    with fitz.open(str(path)) as doc:
+        pages = int(doc.page_count)
+        with_text = sum(1 for page in doc if page.get_text("text").strip())
+    return pages, with_text
+
+
+def _default_body_extractor(
+    marker_timeout_s: float | None,
+) -> Callable[[Path, str], BodyExtraction]:
+    from precis.ingest.pipeline import extract_body
+
+    def _run(path: Path, paper_id: str) -> BodyExtraction:
+        return extract_body(path, paper_id, marker_timeout_s=marker_timeout_s)
+
+    return _run
+
+
+def _journal_bodiless(
+    store: Store, cand: _BodilessCandidate, outcome: BodilessOutcome, *, conn: Any
+) -> None:
+    payload: dict[str, Any] = {"pdf_sha256": cand.pdf_sha256}
+    if outcome.reason:
+        payload["reason"] = outcome.reason
+    if outcome.path:
+        payload["path"] = outcome.path
+    if outcome.outcome == "extracted":
+        payload["chunks"] = outcome.chunks_written
+    store.append_event(
+        cand.ref_id,
+        source=BODILESS_HEAL_SOURCE,
+        event=outcome.outcome,
+        payload=payload,
+        conn=conn,
+    )
+
+
+def heal_bodiless_pdfs(
+    store: Store,
+    *,
+    corpus_dirs: tuple[Path, ...] = (),
+    dry_run: bool = True,
+    limit: int | None = None,
+    extract_limit: int | None = None,
+    marker_timeout_s: float | None = BODILESS_MARKER_TIMEOUT_S,
+    extractor: Callable[[Path, str], BodyExtraction] | None = None,
+) -> list[BodilessOutcome]:
+    """Judge — and where possible heal — live papers that hold a PDF but no
+    body text (gr453860 parts 2 and 3).
+
+    The predicate is ``pdf_sha256 IS NOT NULL AND NOT has_body`` (no chunk
+    at ``ord >= 0``; the ``ord < 0`` cards a stub carries do not count), the
+    class :func:`requeue_stranded_fetches` cannot see (it keys on a NULL
+    sha) and :func:`requeue_front_matter_only_papers` excludes by
+    construction (it needs 1..N body chunks). Each candidate is judged in
+    order, cheapest first, and the verdict is journalled as a
+    ``ref_events`` row (:data:`BODILESS_HEAL_SOURCE`, ``event`` = the
+    outcome, ``payload.pdf_sha256`` = the sha judged) so the candidate
+    query skips it from then on — until a re-fetch lands a *different*
+    file, which is judged afresh:
+
+    1. ``preview`` — the newest ``fetch_ok`` came from an Elsevier leg
+       (:data:`_PREVIEW_FETCH_SOURCES`): the stored PDF is the
+       entitlement-limited one-page preview. Never re-extracted (that
+       would mint a preview *body*, which looks done and is not); the
+       entitlement fix re-fetches these through the markup leg.
+    2. ``missing_file`` — the PDF resolves on no node:
+       :func:`~precis.corpus_layout.resolve_local_pdf` finds nothing under
+       this node's ``corpus_dirs`` and the ``pdf_locations`` ledger has no
+       fresh row from another host (``Store.pdf_held_anywhere``). A file
+       another node does hold is ``deferred`` here, not judged, so a
+       single-runner pass on the wrong node cannot mis-file it.
+    3. ``unreadable`` — the file does not open in PyMuPDF, has zero pages,
+       or has no text layer on any page (``reason`` distinguishes the
+       three: corrupt / empty / scanned). Also the verdict when Marker
+       runs and returns no body chunk.
+    4. ``extracted`` — otherwise the body leg re-runs over the stored file
+       (:func:`precis.ingest.pipeline.extract_body`: Marker in a killable
+       subprocess when ``marker_timeout_s`` is set, fitz fallback on a
+       Marker failure, glyph-health forensics) and the chunks land through
+       :func:`precis.ingest.db_writer.register_aliases_and_maybe_upgrade`
+       — the same no-body branch a stub upgrade takes, so the healed ref is
+       indistinguishable from one ingested normally (content_hash alias,
+       body-owned meta, ``markup_refetch`` pin spent). No metadata cascade
+       and no network: the ref already has its identity.
+
+    ``extract_limit`` caps step 4 per call (``None`` = unbounded;
+    :func:`bodiless_extract_per_pass` supplies the unattended default);
+    readable candidates past the cap are ``deferred`` and picked up next
+    pass. A dry run (the default) performs steps 1-3's read-only probes
+    and reports step-4 candidates as ``readable``, writing nothing.
+    ``extractor`` is the Marker seam for tests.
+
+    Returns one :class:`BodilessOutcome` per candidate considered, in
+    ``ref_id`` order.
+    """
+    candidates = _bodiless_candidates(store, limit=limit)
+    if not candidates:
+        return []
+    extract = extractor or _default_body_extractor(marker_timeout_s)
+    extracted_n = 0
+    outcomes: list[BodilessOutcome] = []
+
+    def _settle(cand: _BodilessCandidate, out: BodilessOutcome) -> None:
+        outcomes.append(out)
+        if dry_run or out.outcome in ("readable", "deferred"):
+            return
+        with store.tx() as conn:
+            _journal_bodiless(store, cand, out, conn=conn)
+
+    for cand in candidates:
+        rid, sha = cand.ref_id, cand.pdf_sha256
+        if cand.last_fetch_source in _PREVIEW_FETCH_SOURCES:
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "preview",
+                    reason=f"Elsevier entitlement preview ({cand.last_fetch_source})",
+                ),
+            )
+            continue
+
+        path = resolve_local_pdf(corpus_dirs, cand.storage_path, cand.cite_keys)
+        if path is None:
+            if store.pdf_held_anywhere(sha):
+                _settle(
+                    cand,
+                    BodilessOutcome(
+                        rid, sha, "deferred", reason="held on another node"
+                    ),
+                )
+            else:
+                _settle(
+                    cand,
+                    BodilessOutcome(
+                        rid,
+                        sha,
+                        "missing_file",
+                        reason=f"not on disk (storage_path={cand.storage_path or '-'})",
+                    ),
+                )
+            continue
+
+        try:
+            pages, with_text = _probe_pdf(path)
+        except Exception as exc:
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "unreadable",
+                    reason=f"corrupt: {str(exc)[:160]}",
+                    path=str(path),
+                ),
+            )
+            continue
+        if pages == 0:
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid, sha, "unreadable", reason="empty: 0 pages", path=str(path)
+                ),
+            )
+            continue
+        if with_text == 0:
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "unreadable",
+                    reason=f"scanned: {pages} page(s), no text layer",
+                    path=str(path),
+                ),
+            )
+            continue
+
+        if dry_run:
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "readable",
+                    reason=f"{with_text}/{pages} text pages",
+                    path=str(path),
+                ),
+            )
+            continue
+        if extract_limit is not None and extracted_n >= extract_limit:
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "deferred",
+                    reason="extraction cap reached",
+                    path=str(path),
+                ),
+            )
+            continue
+
+        extracted_n += 1
+        try:
+            body = extract(path, cand.paper_id)
+        except Exception as exc:
+            # extract_blocks_marker already absorbs a Marker failure into
+            # the fitz fallback, so a raise here is infrastructure (a
+            # killed subprocess, a full disk), not a verdict on the file:
+            # log it and leave the ref unjudged for the next pass.
+            log.warning(
+                "paper_hygiene: bodiless ref_id=%s extraction raised on %s: %s",
+                rid,
+                path,
+                exc,
+            )
+            _settle(
+                cand,
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "deferred",
+                    reason=f"extraction raised: {str(exc)[:160]}",
+                    path=str(path),
+                ),
+            )
+            continue
+        if not body.chunks:
+            reason = "extractor returned no body chunks"
+            fb = body.meta.get("extract_fallback_reason")
+            if fb:
+                reason += f" (fallback: {str(fb)[:120]})"
+            _settle(
+                cand,
+                BodilessOutcome(rid, sha, "unreadable", reason=reason, path=str(path)),
+            )
+            continue
+
+        paper = PaperToWrite(
+            title=cand.title or "",
+            authors=[],
+            year=None,
+            provider=BODILESS_HEAL_SOURCE,
+            paper_id=cand.paper_id,
+            pdf_sha256=sha,
+            content_hash=body.content_hash,
+            pdf_pages_first=body.page_first,
+            pdf_pages_last=body.page_last,
+            pdf_role="main",
+            pdf_storage_path=str(path),
+            pdf_page_count=body.page_count or pages,
+            pdf_size_bytes=path.stat().st_size,
+            meta=body.meta,
+            chunks=body.chunks,
+        )
+        with store.tx() as conn:
+            written = register_aliases_and_maybe_upgrade(rid, paper, conn=conn)
+            out = BodilessOutcome(
+                rid,
+                sha,
+                "extracted",
+                reason=(
+                    "fitz fallback body"
+                    if body.meta.get("extract_used_fallback")
+                    else (
+                        "body landed from another ingest first" if not written else ""
+                    )
+                ),
+                chunks_written=len(body.chunks) if written else 0,
+                path=str(path),
+            )
+            _journal_bodiless(store, cand, out, conn=conn)
+        outcomes.append(out)
+        log.info(
+            "paper_hygiene: bodiless ref_id=%s extracted %d body chunk(s) from %s",
+            rid,
+            out.chunks_written,
+            path,
+        )
+
+    if not dry_run:
+        counts: dict[str, int] = {}
+        for o in outcomes:
+            counts[o.outcome] = counts.get(o.outcome, 0) + 1
+        log.info(
+            "paper_hygiene: bodiless PDFs judged %d — %s",
+            len(outcomes),
+            ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
+        )
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
 # Metadata hygiene counters (read-only)
 # ---------------------------------------------------------------------------
 
@@ -924,8 +1391,12 @@ def requeue_papers_for_enrich(
 
 
 __all__ = [
+    "BODILESS_HEAL_SOURCE",
+    "BodilessOutcome",
     "MetadataHygieneStats",
+    "bodiless_extract_per_pass",
     "collapse_superseded_chains",
+    "heal_bodiless_pdfs",
     "heal_drifted_cards",
     "is_filename_like_title",
     "metadata_hygiene_stats",
