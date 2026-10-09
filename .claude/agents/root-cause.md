@@ -35,7 +35,7 @@ up to that point and what decision is needed; that decision belongs on Opus.
    the symptom surfaces to where it originates. Use `scripts/coderef
    callers|deps <file.py::Sym>` for exact who-calls/what-depends-on (over
    grep), the precis python kind (`search(kind='python', mode='pattern', q=…)`,
-   `get(kind='python', id='main::<qualname>')`; reads MAIN, not your worktree) for
+   `get(kind='python', id='main::<qualname>')`; your own tree is `wt-<tree name>::`) for
    where-is/how-does, and `git log -p`/`git bisect`/`git blame` to find when
    and why the defect was introduced.
 3. **Ask the load-bearing question.** For the obvious/tempting fix: would

@@ -102,3 +102,47 @@ def test_multi_term_headline_splits_all_vs_some_terms(handler: PythonHandler) ->
 
 def test_single_term_headline_has_no_split(handler: PythonHandler) -> None:
     assert "match all" not in handler.search(q="provenance").body
+
+
+def test_test_in_query_or_scope_disables_demotion(handler: PythonHandler) -> None:
+    from precis.handlers.python import _wants_tests
+
+    assert _wants_tests("fix test flake", None, None)  # "test" in the query
+    assert _wants_tests("provenance", "tests/test_provenance.py", None)  # test file
+    assert not _wants_tests("provenance", "pkg/provenance.py", None)
+
+    def score(body: str) -> float:
+        m = re.search(
+            r"^## r::test_provenance\.test_provenance\b.*?score=([\d.]+)",
+            body,
+            flags=re.M,
+        )
+        assert m, body
+        return float(m[1])
+
+    plain = handler.search(q="provenance", mode="pattern", page_size=50).body
+    scoped = handler.search(
+        q="provenance", scope="r/tests/test_provenance.py", mode="pattern"
+    ).body
+    assert score(scoped) > score(plain)  # demotion factor lifted by the scope
+
+
+def test_nested_def_ranks_below_top_level(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        def outer():
+            def widget_inner():
+                return 1
+            return widget_inner
+
+        def widget_top():
+            return 2
+        """,
+    )
+    h = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    handles = _handles(h.search(q="widget", mode="pattern", page_size=50).body)
+    top = next(i for i, x in enumerate(handles) if x.endswith("widget_top"))
+    nested = next(i for i, x in enumerate(handles) if x.endswith("widget_inner"))
+    assert top < nested

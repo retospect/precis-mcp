@@ -233,3 +233,114 @@ def test_chained_edit_uses_sha_from_previous_response(
     assert "relocated: L5-L7 -> L7-L9" in r2
     assert "return 42" in _file(repo)
     assert "range: L7 sha=" in r2 or "range: L7-7 sha=" in r2
+
+
+# ── delete ──────────────────────────────────────────────────────────
+
+
+def test_delete_matching_base_sha_applies(handler: PythonHandler, repo: Path) -> None:
+    sha = _sha(handler.get(id="r/pkg/m.py~L5").body)
+    r = handler.delete(id="r/pkg/m.py~L5", base_sha=sha).body
+    assert "x = 1" not in _file(repo)
+    assert "relocated" not in r and "hint: pass base_sha" not in r
+
+
+def test_delete_shifted_lines_are_relocated(handler: PythonHandler, repo: Path) -> None:
+    sha = _sha(handler.get(id="r/pkg/m.py~L5").body)
+    _insert_above(repo, 3)
+    r = handler.delete(id="r/pkg/m.py~L5", base_sha=sha).body
+    assert "relocated: L5-L5 -> L8-L8" in r
+    f = _file(repo)
+    assert "x = 1" not in f and "return x" in f and f.startswith("# pad\n" * 3)
+
+
+def test_delete_changed_content_refused_file_untouched(
+    handler: PythonHandler, repo: Path
+) -> None:
+    sha = _sha(handler.get(id="r/pkg/m.py~L5").body)
+    (repo / "pkg" / "m.py").write_text(
+        _file(repo).replace("x = 1", "x = 9"), encoding="utf-8"
+    )
+    before = _file(repo)
+    with pytest.raises(BadInput) as ei:
+        handler.delete(id="r/pkg/m.py~L5", base_sha=sha)
+    assert "changed since read" in str(ei.value)
+    assert _file(repo) == before
+
+
+def test_delete_without_base_sha_hints(handler: PythonHandler, repo: Path) -> None:
+    r = handler.delete(id="r/pkg/m.py~L5").body
+    assert "hint: pass base_sha=" in r
+    assert "x = 1" not in _file(repo)
+
+
+def test_delete_qualname_unchanged_and_rejects_base_sha(
+    handler: PythonHandler, repo: Path
+) -> None:
+    with pytest.raises(BadInput):
+        handler.delete(id="r::pkg.m.other", base_sha="0" * 8)
+    r = handler.delete(id="r::pkg.m.other").body
+    assert "hint: pass base_sha" not in r
+    assert "def other" not in _file(repo)
+
+
+# ── post-format range ───────────────────────────────────────────────
+
+
+def test_range_survives_ruff_removing_unused_import_above(
+    handler: PythonHandler, repo: Path
+) -> None:
+    p = repo / "pkg" / "m.py"
+    p.write_text("import sys\n" + _file(repo), encoding="utf-8")  # unused import
+    sha = _sha(handler.get(id="r/pkg/m.py~L6-L7").body)
+    r = handler.edit(
+        id="r/pkg/m.py~L6-L7",
+        mode="replace",
+        text="    x = 1\n    x += 1\n    return x",
+        base_sha=sha,
+    ).body
+    assert "import sys" not in _file(repo)  # ruff dropped it: lines shifted up
+    m = re.search(r"^range: L(\d+)-(\d+) sha=([0-9a-f]{8})$", r, re.M)
+    assert m, r
+    a, b, got = int(m[1]), int(m[2]), m[3]
+    fresh = handler.get(id=f"r/pkg/m.py~L{a}-L{b}").body
+    assert _sha(fresh) == got
+    assert "x += 1" in fresh and "return x" in fresh and b - a == 2
+
+
+def test_range_unknown_when_unmappable(handler: PythonHandler, repo: Path) -> None:
+    from precis.handlers import python as pymod
+
+    guard = pymod._Guard(5, 6, 14, [])
+    pymod._LAST_FORMAT.set(_file(repo))
+    # post shares nothing with the pre-format buffer -> never a guessed sha
+    out = PythonHandler._post_edit_range("a = 1\nb = 2\n", guard)
+    assert out == "range: unknown after formatting — re-read"
+
+
+def test_range_unknown_without_format_record() -> None:
+    from precis.handlers import python as pymod
+
+    pymod._LAST_FORMAT.set(None)
+    out = PythonHandler._post_edit_range("a = 1\n", pymod._Guard(1, 1, 1, []))
+    assert out == "range: unknown after formatting — re-read"
+
+
+def test_range_deleted_when_region_emptied() -> None:
+    from precis.handlers import python as pymod
+
+    pymod._LAST_FORMAT.set("a = 1\nc = 3\n")  # region L2-L3 removed from 4 lines
+    out = PythonHandler._post_edit_range("a = 1\nc = 3\n", pymod._Guard(2, 3, 4, []))
+    assert out == "range: (deleted)"
+
+
+def test_range_found_by_text_search_when_edges_ambiguous() -> None:
+    from precis.handlers import python as pymod
+
+    # The formatter inserts a line inside the region: diff edges are not
+    # mappable, so the replacement text is located in the final file instead.
+    pre = "a\nx = 1\ny = 2\nb\n"
+    post = "a\nq\nx = 1\ny = 2\nb\n"
+    pymod._LAST_FORMAT.set(pre)
+    out = PythonHandler._post_edit_range(post, pymod._Guard(2, 3, 4, []))
+    assert re.match(r"range: L3-L?4 sha=[0-9a-f]{8}$", out), out

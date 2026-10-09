@@ -24,7 +24,7 @@ guess. Those decisions belong on Opus.
 1. **Orient before editing.** For where-is/how-does questions, prefer
    the precis python kind — `search(kind='python', mode='pattern',
    q='<qualname regex>')`, `get(kind='python', id='main::<dotted.qualname>')`
-   (signature + callers + callees; reads MAIN, not your worktree) — or a
+   (signature + callers + callees; your own tree is `wt-<tree name>::`) — or a
    quick Grep (truth for code you changed) — don't spelunk with Read. For who-calls /
    what-depends-on over Python, `scripts/coderef callers|deps <file.py::Sym>`
    is exact — use it over grepping the bare name. Never `cd`; the shell is

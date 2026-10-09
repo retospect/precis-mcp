@@ -253,3 +253,19 @@ def test_expected_root_crosses_mcp_boundary(server_runtime: PrecisRuntime) -> No
     assert _is_error(wrong)
     assert "root mismatch" in _body(wrong)
     assert handler.roots == {"demo": root}
+
+
+def test_delete_verb_forwards_base_sha(monkeypatch) -> None:
+    from precis.tools import core as tools_core
+
+    seen: dict = {}
+
+    def fake_dispatch(verb, payload):
+        seen["verb"], seen["payload"] = verb, payload
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", fake_dispatch)
+    out = tools_core.delete(kind="python", id="r/m.py~L1-L2", base_sha="abcd1234")
+    assert out == "ok"
+    assert seen["verb"] == "delete"
+    assert seen["payload"]["base_sha"] == "abcd1234"

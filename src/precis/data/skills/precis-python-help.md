@@ -133,7 +133,9 @@ paraphrases ("stale data" -> cache invalidation) find symbols that share
 no words with the query. A query that is a substring of a qualname still
 ranks that symbol first. Hits are canonical addresses you can paste as
 `id=`; `sim=` shows the semantic similarity. `mode='lexical'` /
-`mode='semantic'` use one half only.
+`mode='semantic'` use one half only. Test-file symbols and nested defs rank
+below prod symbols (demoted, not hidden) unless `q` contains "test" or
+`scope` is a test path.
 
 The symbol index is built in the background after server start. Until it
 is ready (or with no embedder configured) the answer is lexical-only and
@@ -324,7 +326,8 @@ ast.parse:       ok
 
 `sha` = first 8 hex of sha256 over the exact bytes of those lines
 (newlines included, `\n`-normalised). Works with replace, find-replace
-and insert (delete = `replace` with `text=''`), and `dry_run`.
+and insert, and `dry_run`. `delete(kind="python", id="...~L<a>-<b>",
+base_sha=...)` takes the same guard with the same semantics and messages.
 - Lines still hash to `base_sha`: edit applies as addressed.
 - They moved (lines inserted/removed above): if exactly one same-length
   run hashes to it, the edit lands there and says `relocated: ...`.
@@ -332,7 +335,9 @@ and insert (delete = `replace` with `text=''`), and `dry_run`.
   gives the current sha, the matches, and a `Next:` to re-read (or edit
   the enclosing symbol by qualname).
 - No `base_sha`: applies as addressed, plus a `hint:` line. The edit
-  response's `range:` line is the sha for chaining the next guarded edit.
+  response's `range:` line (located in the post-format file, even if ruff
+  changed lines elsewhere; `range: unknown after formatting — re-read` if it
+  cannot be located) is the sha for chaining the next guarded edit.
 
 Line numbers are 1-indexed, inclusive both ends (vi/sed/GitHub
 permalink convention). `L120-128` is 9 lines; `L120` is one.

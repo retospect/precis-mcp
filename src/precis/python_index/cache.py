@@ -105,5 +105,10 @@ class RepoCache:
         """Forget a root; the next read reparses its files."""
         self._cache.pop(root.resolve(), None)
 
+    def held_modules(self, root: Path) -> list[ModuleIndex]:
+        """Modules currently cached for ``root``; no stat, no reparse."""
+        files = self._cache.get(root.resolve(), {})
+        return [cf.module for cf in list(files.values())]
+
     def known_roots(self) -> list[Path]:
         return list(self._cache)

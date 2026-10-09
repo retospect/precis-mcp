@@ -204,3 +204,28 @@ def test_provenance_uses_gitdir(env):
     body = h.get(id="wt-real::m.f").body
     assert "git UNAVAILABLE" not in body
     assert "git " in body
+
+
+def test_held_worktree_symbols_only_non_static_roots(env):
+    h, reg, _ = _make(env)
+    assert h._held_worktree_symbols() == []  # nothing cached yet
+    h.get(id="wt-alpha::m.f")
+    h.get(id="main::m.f")
+    syms = h._held_worktree_symbols()
+    assert syms and all(s.file == "m.py" for s in syms)
+    wt_root = reg.listing()[0]["wt-alpha"].path
+    assert len(syms) == sum(len(m.symbols) for m in h.cache.held_modules(wt_root))
+    assert h.cache.held_modules(wt_root / "nope") == []
+
+
+def test_warm_semantic_passes_keep_callback(env):
+    h, _, _ = _make(env)
+    seen = {}
+
+    def fake(symbols, *, keep=None, block=False):
+        seen["symbols"], seen["keep"] = symbols, keep
+
+    h._semantic.start_warmup = fake
+    h.warm_semantic()
+    assert seen["symbols"] == h._all_symbols
+    assert seen["keep"] == h._held_worktree_symbols

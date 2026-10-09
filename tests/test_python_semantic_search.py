@@ -198,3 +198,21 @@ def test_python_cache_flushes_in_large_batches(repo: Path) -> None:
     cache = h._semantic.cache()
     assert cache is not None
     assert cache.flush_every == sem._FLUSH_EVERY >= 1000
+
+
+def test_keep_set_symbols_survive_prune(repo: Path) -> None:
+    h = _handler(repo, _ConceptEmbedder())
+    h._semantic.start_warmup(h._all_symbols, block=True)
+    cache = h._semantic.cache()
+    assert cache is not None
+    live = len(cache)
+    assert live > 0
+    held = h._all_symbols()
+    # Nothing is live, but every vector belongs to a held (worktree) symbol.
+    h._semantic.state = "idle"
+    h._semantic.start_warmup(lambda: [], keep=lambda: held, block=True)
+    assert len(cache) == live
+    # Without the keep-set the same vectors are all stale and get pruned.
+    h._semantic.state = "idle"
+    h._semantic.start_warmup(lambda: [], block=True)
+    assert len(cache) == 0

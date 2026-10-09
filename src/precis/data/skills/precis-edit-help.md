@@ -152,7 +152,7 @@ Available on every file kind.
 
 python `~L<a>-<b>` ids take `base_sha=` (the `sha=` of the `range:` line a
 read printed): the edit follows the content if lines shifted, and is
-refused if it changed. Detail: `precis-python-help` "Edit by line range".
+refused if it changed; `delete` takes `base_sha=` too. Detail: `precis-python-help` "Edit by line range".
 
 ## Edit a python function or class by qualname
 ## Rewrite one symbol without touching neighbours

@@ -25,7 +25,7 @@ design or narrative.
 ## How to work
 1. **Verify against the code first.** Use the precis python kind
    (`search(kind='python', mode='pattern', q=…)`, `get(kind='python',
-   id='main::<qualname>')` — reads MAIN, not your worktree, so Grep is truth
+   id='main::<qualname>')` — your own tree is `wt-<tree name>::`; Grep is truth
    for uncommitted changes) / Grep / Read to confirm what the code actually does *now* — never
    document from the caller's summary alone or from a stale doc. If the code
    contradicts the brief, report that; don't paper over it.

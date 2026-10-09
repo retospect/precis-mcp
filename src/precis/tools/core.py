@@ -1442,6 +1442,9 @@ def edit(
     journal: str | None = None,
     entry_type: str | None = None,
     abstract: str | None = None,
+    # paper/cfp: supplement_of=<parent slug | paN> declares this record a
+    # supplement (SI) of that parent; made alone, no other edit fields.
+    supplement_of: str | None = None,
     find: str | None = None,
     before: str | None = None,
     after: str | None = None,
@@ -1629,6 +1632,7 @@ def edit(
         "journal": journal,
         "entry_type": entry_type,
         "abstract": abstract,
+        "supplement_of": supplement_of,
         "find": find,
         "before": before,
         "after": after,
@@ -1705,6 +1709,9 @@ def delete(
     # draft (see precis-draft-help): retiring a heading with children needs
     # mode='cascade' (delete contents) or 'promote' (lift them to the parent).
     mode: str | None = None,
+    # python line-range ids (…~L<a>-<b>): the sha= of the read's ``range:``
+    # line; the delete lands on the lines that hash to it or refuses.
+    base_sha: str | None = None,
 ) -> str:
     """Delete a ref or addressed region.
 
@@ -1723,7 +1730,9 @@ def delete(
     Full reference: get(kind='skill', id='precis-delete-help'), or
     search(kind='skill', q='removing a ref') for a topical lookup.
     """
-    return _dispatch("delete", {"kind": kind, "id": id, "mode": mode})
+    return _dispatch(
+        "delete", {"kind": kind, "id": id, "mode": mode, "base_sha": base_sha}
+    )
 
 
 def tag(

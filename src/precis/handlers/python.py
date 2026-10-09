@@ -22,8 +22,10 @@ Views: ``toc`` (repo-level), ``outline`` (file/symbol; default),
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -124,6 +126,11 @@ def parse_python_roots(raw: str | None) -> dict[str, Path]:
 # ---------------------------------------------------------------------------
 # Address parsing
 # ---------------------------------------------------------------------------
+
+
+#: Pre-format buffer (edit applied, before ruff) of the latest write in this
+#: context; lets ``edit`` map its range through ruff's line-count changes.
+_LAST_FORMAT: ContextVar[str | None] = ContextVar("python_last_format", default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +302,18 @@ class PythonHandler(Handler):
 
     def warm_semantic(self) -> None:
         """Start the background symbol-embedding pass (server boot hook)."""
-        self._semantic.start_warmup(self._all_symbols)
+        self._semantic.start_warmup(self._all_symbols, keep=self._held_worktree_symbols)
+
+    def _held_worktree_symbols(self) -> list[Symbol]:
+        """Symbols of worktree indexes currently cached (prune keep-set only)."""
+        static = {r.resolve() for r in self.roots.values()}
+        return [
+            sym
+            for root in self.cache.known_roots()
+            if root not in static
+            for mod in self.cache.held_modules(root)
+            for sym in mod.symbols
+        ]
 
     def _all_symbols(self) -> list[Symbol]:
         return [
@@ -486,6 +504,9 @@ class PythonHandler(Handler):
         scope_qn_prefix, scope_file = _split_scope(scope)
 
         use_lex = mode != "semantic"
+        # Tests and nested helpers are demoted unless the query is about tests.
+        demote_on = not _wants_tests(q, scope_file, scope_qn_prefix)
+        demote: dict[int, float] = {}
         scoped: list[tuple[str, Symbol]] = []
         hits: list[tuple[float, str, Symbol]] = []
         for alias, root in roots.items():
@@ -500,6 +521,9 @@ class PythonHandler(Handler):
                     ):
                         continue
                     scoped.append((alias, sym))
+                    factor = _demotion(sym, mod.qualname) if demote_on else 1.0
+                    if factor != 1.0:
+                        demote[id(sym)] = factor
                     if preds is not None:
                         score = _score_pattern(sym, preds)
                     elif use_lex:
@@ -507,13 +531,15 @@ class PythonHandler(Handler):
                     else:
                         score = 0.0
                     if score > 0:
-                        hits.append((score, alias, sym))
+                        hits.append((score * factor, alias, sym))
 
         hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
         sims: dict[int, float] = {}
         sem_note: str | None = None
         if mode != "pattern" and mode != "lexical":
-            self._semantic.start_warmup(self._all_symbols)
+            self._semantic.start_warmup(
+                self._all_symbols, keep=self._held_worktree_symbols
+            )
             sem_hits, sem_note = self._semantic.rank(q, [s for _, s in scoped])
             sims = {i: sim for sim, i in sem_hits}
         if mode == "semantic" and not sims:
@@ -522,12 +548,17 @@ class PythonHandler(Handler):
             hits = [
                 (sc, a, s)
                 for a, s in scoped
-                if (sc := _score_symbol(s, needle, terms)) > 0
+                if (sc := _score_symbol(s, needle, terms) * demote.get(id(s), 1.0)) > 0
             ]
             hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
         if sims:
             hits = self._fuse(
-                hits, scoped, sims, needle, semantic_only=mode == "semantic"
+                hits,
+                scoped,
+                sims,
+                needle,
+                semantic_only=mode == "semantic",
+                demote=demote,
             )
         sim_of = {id(scoped[i][1]): sim for i, sim in sims.items()}
 
@@ -636,13 +667,14 @@ class PythonHandler(Handler):
         needle: str,
         *,
         semantic_only: bool,
+        demote: dict[int, float] | None = None,
     ) -> list[tuple[float, str, Symbol]]:
         """Merge lexical ``hits`` (best first) with semantic ``sims``.
 
         Symbols whose qualname contains the whole query stay first in
         lexical order (exact-name lookups must not be re-ranked by
-        meaning); the rest are ordered by reciprocal-rank fusion. Test
-        symbols are down-weighted like the lexical score does.
+        meaning); the rest are ordered by reciprocal-rank fusion. Test and
+        nested symbols are down-weighted via ``demote`` (id(sym) -> factor).
         """
         pos = {id(s): i for i, (_, s) in enumerate(scoped)}
         lex = {pos[id(s)]: (sc, a, s) for sc, a, s in hits}
@@ -659,8 +691,7 @@ class PythonHandler(Handler):
             [1.0, 2.0 if prose else 1.0],
         )
         for i in fused:
-            if _is_test_path(scoped[i][1].file):
-                fused[i] *= 0.5
+            fused[i] *= (demote or {}).get(id(scoped[i][1]), 1.0)
         pin = set(pinned)
         rest = sorted(
             (i for i in fused if i not in pin),
@@ -776,6 +807,7 @@ class PythonHandler(Handler):
                 "base_sha= guards line-range ids only (…~L<a>-<b>)",
                 next="drop base_sha=; qualname edits are position-independent",
             )
+        _LAST_FORMAT.set(None)
         resp = self._edit_dispatch(
             parsed=parsed,
             root=root,
@@ -795,11 +827,7 @@ class PythonHandler(Handler):
         notes = list(guard.notes)
         if normalize_dry_run(dry_run) is None:
             post = (root / str(parsed.file)).read_text(encoding="utf-8")
-            new_end = guard.end + len(write.lines_of(post)) - guard.total
-            if new_end >= guard.start:
-                notes.insert(0, write.range_line(post, guard.start, new_end))
-            else:
-                notes.insert(0, "range: (deleted)")
+            notes.insert(0, self._post_edit_range(post, guard))
         head, _, rest = resp.body.partition("\n")
         return Response(body="\n".join([head, *notes, rest]))
 
@@ -919,12 +947,65 @@ class PythonHandler(Handler):
             next=nxt,
         )
 
+    @staticmethod
+    def _post_edit_range(post: str, guard: _Guard) -> str:
+        """The ``range:`` line for the edited region of the final file.
+
+        ``_finalize_write`` records the pre-format buffer (edit applied)
+        and ``post`` is what ruff left on disk; ruff may change line
+        counts anywhere (e.g. drop an unused import above the range).
+        Map the region through a line diff; if an edge is ambiguous,
+        search for the replacement text; else say so rather than print
+        a wrong sha.
+        """
+        unknown = "range: unknown after formatting — re-read"
+        pre = _LAST_FORMAT.get()
+        if pre is None:
+            return unknown
+        pre_lines = write.lines_of(pre)
+        post_lines = write.lines_of(post)
+        s = guard.start
+        e = guard.end + len(pre_lines) - guard.total
+        if e < s:
+            return "range: (deleted)"
+        if pre_lines == post_lines:
+            return write.range_line(post, s, e)
+        ops = difflib.SequenceMatcher(None, pre_lines, post_lines, autojunk=False)
+        blocks = ops.get_opcodes()
+
+        def edge(i: int, *, first: bool) -> int | None:  # i is 0-based
+            for tag, i1, i2, j1, j2 in blocks:
+                if not (i1 <= i < i2):
+                    continue
+                if tag == "equal":
+                    return j1 + (i - i1)
+                if tag == "replace" and (i == i1 if first else i == i2 - 1):
+                    return j1 if first else j2 - 1
+                return None
+            return None
+
+        a = edge(s - 1, first=True)
+        b = edge(e - 1, first=False)
+        if a is not None and b is not None and b >= a:
+            return write.range_line(post, a + 1, b + 1)
+        want = pre_lines[s - 1 : e]
+        n = len(want)
+        hits = [
+            i + 1
+            for i in range(len(post_lines) - n + 1)
+            if post_lines[i : i + n] == want
+        ]
+        if len(hits) == 1:
+            return write.range_line(post, hits[0], hits[0] + n - 1)
+        return unknown
+
     @_translate_readonly_fs
     def delete(
         self,
         *,
         id: str | int,
         allow_rename: bool = False,
+        base_sha: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Delete a file, symbol, or line range from a python repo.
@@ -932,10 +1013,25 @@ class PythonHandler(Handler):
         Same gating as ``put(mode='delete')`` — the qualname-drop
         check is skipped (delete intentionally drops symbols), and
         ruff still runs against the remaining file content.
+
+        Track-A line-range ids accept ``base_sha=`` exactly like
+        ``edit`` (apply / relocate on a unique match / refuse).
         """
         parsed = _parse_id(str(id))
         root = self._resolve_writable(parsed.alias)
-        return self._put_delete(parsed, root, allow_rename=allow_rename)
+        guard: _Guard | None = None
+        if parsed.start_line is not None and parsed.file is not None:
+            parsed, guard = self._guard_line_range(parsed, root, base_sha)
+        elif base_sha is not None:
+            raise BadInput(
+                "base_sha= guards line-range ids only (…~L<a>-<b>)",
+                next="drop base_sha=; qualname deletes are position-independent",
+            )
+        resp = self._put_delete(parsed, root, allow_rename=allow_rename)
+        if guard is None or not guard.notes:
+            return resp
+        head, _, rest = resp.body.partition("\n")
+        return Response(body="\n".join([head, *guard.notes, rest]))
 
     # ── put dispatch ───────────────────────────────────────────────
 
@@ -1399,6 +1495,7 @@ class PythonHandler(Handler):
 
         # Atomic write of the canonical buffer.
         write.atomic_write(path, canonical)
+        _LAST_FORMAT.set(new_content)  # pre-format text, for edit()'s range:
 
         # Force the cache to re-stat this file on the next get(); the
         # mtime change is what triggers reparse, so this is implicit.
@@ -1962,6 +2059,35 @@ def _is_test_path(file: str) -> bool:
     return basename.startswith("test_") or basename.endswith("_test.py")
 
 
+#: Score multiplier per demotion reason (tests, nested defs); they stack.
+_DEMOTE = 0.5
+
+
+def _wants_tests(q: str, scope_file: str | None, scope_qn_prefix: str | None) -> bool:
+    """True when the query or scope is about tests (no demotion then)."""
+    if "test" in q.lower():
+        return True
+    if scope_file and _is_test_path(scope_file):
+        return True
+    return bool(scope_qn_prefix) and any(
+        seg.startswith("test") for seg in (scope_qn_prefix or "").split(".")
+    )
+
+
+def _demotion(sym: Symbol, module_qualname: str) -> float:
+    """Search-score factor: tests and nested defs rank below prod symbols.
+
+    A nested def is a ``function`` whose parent is not its module (methods
+    have kind ``method``; top-level functions have the module as parent).
+    """
+    f = 1.0
+    if _is_test_path(sym.file):
+        f *= _DEMOTE
+    if sym.kind == "function" and sym.parent not in (None, module_qualname):
+        f *= _DEMOTE
+    return f
+
+
 _STOPWORDS = frozenset(
     {"the", "and", "for", "with", "that", "this", "from", "are", "was", "how", "where"}
 )
@@ -2040,7 +2166,7 @@ def _score_symbol(sym: Symbol, needle: str, terms: list[str] | None = None) -> f
     - docstring contains needle      -> 1
     - per-term (multi-word / stemmed) fallback adds a coverage-weighted
       score, so ``'SSRF redirect pinning'`` is any-term, not all-words
-    - test-file symbol               -> x0.5 (implementation ranks above tests)
+    Test/nested demotion is applied by the caller (``_demotion``).
     """
     score = 0.0
     qn = sym.qualname.lower()
@@ -2057,8 +2183,6 @@ def _score_symbol(sym: Symbol, needle: str, terms: list[str] | None = None) -> f
         score += 1
     if terms and (len(terms) > 1 or score == 0):
         score += _score_terms(sym, terms)
-    if _is_test_path(sym.file):
-        score *= 0.5
     return score
 
 
@@ -2069,7 +2193,7 @@ def _score_pattern(
 
     Text predicates score name match 3 > qualname 2 > signature 1.5 >
     docstring 1 (docstring only ranks, it never admits a hit); the hit
-    scores the mean over its text predicates. Test files are halved.
+    scores the mean over its text predicates.
     """
     if not reverse.matches_pattern(sym, preds):
         return 0.0
@@ -2087,10 +2211,7 @@ def _score_pattern(
             vals.append(1.0)
         else:
             vals.append(1.0)
-    score = sum(vals) / len(vals) if vals else 1.0
-    if _is_test_path(sym.file):
-        score *= 0.5
-    return score
+    return sum(vals) / len(vals) if vals else 1.0
 
 
 def _enclosing_note(alias: str, mod: ModuleIndex, start: int, end: int) -> str:

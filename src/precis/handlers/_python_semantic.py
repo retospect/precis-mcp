@@ -45,9 +45,15 @@ _BACKOFF_S = 2.0
 _DOC_CHARS = 400
 #: Semantic candidates handed to fusion.
 TOP_K = 30
-#: Cosine floor below which a "nearest" symbol is noise (bge-m3: relevant
-#: matches sit ~0.45+, unrelated code ~0.25-0.35).
-MIN_SIM = 0.40
+#: Cosine floor below which a "nearest" symbol is noise. Tuned 2026-10-09
+#: against real bge-m3 over this repo (47,890 symbol vectors), 15 prose
+#: queries with known targets + 5 off-topic/nonsense queries:
+#:   targets in the top 30 (ranks 1-6, n=11): sim 0.54-0.73
+#:   targets at rank >30 (n=4, never returned anyway): 0.46-0.55
+#:   off-topic best hit: 0.41-0.50 (max 0.496, "qwerty asdf zxcv")
+#: 0.50 drops every off-topic result and no retrievable target; 0.40 let
+#: all five off-topic queries return a full page of noise.
+MIN_SIM = 0.50
 
 #: Last warm outcome, read by ``precis-status`` (``python_vector_warmup``).
 _WARMUP_STATE: str | None = None
@@ -133,12 +139,18 @@ class SemanticIndex:
     # -- warm ----------------------------------------------------------
 
     def start_warmup(
-        self, symbols: Callable[[], Iterable[Symbol]], *, block: bool = False
+        self,
+        symbols: Callable[[], Iterable[Symbol]],
+        *,
+        keep: Callable[[], Iterable[Symbol]] | None = None,
+        block: bool = False,
     ) -> None:
         """Start one background warm pass (no-op when running or warm).
 
         ``symbols`` is called on the warm thread, so indexing the repos
-        never delays the caller. After a failure, re-arm at most every
+        never delays the caller. ``keep`` yields extra symbols (e.g. worktree
+        indexes held in memory) whose vectors survive a prune but are not
+        embedded here. After a failure, re-arm at most every
         60s (a request that finds the index cold triggers it).
         """
         if self.embedder is None:
@@ -152,7 +164,7 @@ class SemanticIndex:
             _record("warming: starting")
             t = threading.Thread(
                 target=self._warm,
-                args=(symbols,),
+                args=(symbols, keep),
                 name="python-semantic-warmup",
                 daemon=True,
             )
@@ -161,7 +173,11 @@ class SemanticIndex:
         if block:
             t.join()
 
-    def _warm(self, symbols: Callable[[], Iterable[Symbol]]) -> None:
+    def _warm(
+        self,
+        symbols: Callable[[], Iterable[Symbol]],
+        keep: Callable[[], Iterable[Symbol]] | None = None,
+    ) -> None:
         try:
             cache = self.cache()
             if cache is None:
@@ -187,9 +203,13 @@ class SemanticIndex:
                 # Stale vectors (edited/deleted symbols) are never looked up
                 # again. Prune only when they dominate: another server sharing
                 # this cache dir with different roots would re-embed its share.
-                stale = len(cache) - sum(1 for k in by_key if k in cache)
+                live = set(by_key)
+                for sym in keep() if keep is not None else ():
+                    if embeddable(sym):
+                        live.add(text_key(symbol_text(sym)))
+                stale = len(cache) - sum(1 for k in live if k in cache)
                 if stale > len(cache) * _PRUNE_STALE_SHARE:
-                    dropped = cache.retain(by_key)
+                    dropped = cache.retain(live)
                     log.info("python semantic cache pruned %d stale vectors", dropped)
             cache.flush()
             with self._lock:

@@ -215,9 +215,22 @@ if _LEAKCHECK == "off":
     _LEAKCHECK = ""
 
 
-def _live_backends(dbname: str) -> set[int]:
-    """PIDs of backends on ``dbname`` that hold (or can hold) a table lock —
-    i.e. state ``active`` / ``idle in transaction`` — excluding ours.
+_LOCKING_STATES = (
+    "  AND state IN ('active', 'idle in transaction', "
+    "                'idle in transaction (aborted)')"
+)
+
+
+def _live_backends(dbname: str, *, any_state: bool = False) -> set[int]:
+    """PIDs of client backends on ``dbname`` that hold (or can hold) a table
+    lock — i.e. state ``active`` / ``idle in transaction`` — excluding ours.
+    ``any_state=True`` returns every client backend (the "before" snapshot).
+
+    Only ``client backend`` rows count: autovacuum/analyze and parallel-query
+    workers carry the DB's ``datname`` and sit ``active`` for seconds after the
+    per-test TRUNCATE + re-insert, which blamed a random test under the ``-n6``
+    gate (gr476901). Everything a test opens (Store, pool, worker, LISTEN) is a
+    client backend, so real leaks stay visible.
 
     Plain ``idle`` backends are deliberately ignored: a connection the fixture
     pool is tearing down lingers momentarily as ``idle`` and holds no lock, so
@@ -233,11 +246,26 @@ def _live_backends(dbname: str) -> set[int]:
             for r in c.execute(
                 "SELECT pid FROM pg_stat_activity "
                 "WHERE datname = %s AND pid <> pg_backend_pid() "
-                "  AND state IN ('active', 'idle in transaction', "
-                "                'idle in transaction (aborted)')",
+                "  AND backend_type = 'client backend'"
+                + ("" if any_state else _LOCKING_STATES),
                 (dbname,),
             ).fetchall()
         }
+
+
+def _describe_backends(dbname: str, pids: set[int]) -> str:
+    """One line per pid — who it is and what it runs — for the leak message."""
+    with psycopg.connect(_dsn_with_db(_active_dsn(), dbname), autocommit=True) as c:
+        rows = c.execute(
+            "SELECT pid, backend_type, state, application_name, "
+            "       now() - backend_start, left(query, 160) "
+            "FROM pg_stat_activity WHERE pid = ANY(%s)",
+            (sorted(pids),),
+        ).fetchall()
+    return "\n".join(
+        f"  pid {pid} {bt} {st} app={app!r} age={age} query={q!r}"
+        for pid, bt, st, app, age, q in rows
+    )
 
 
 def _leaked_backends(dbname: str, before: set[int]) -> set[int]:
@@ -751,7 +779,9 @@ def store() -> Iterator[Store]:
     _secrets.invalidate()
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
-    before = _live_backends(dbname) if _LEAKCHECK else set()
+    # Every pre-existing client backend, idle or not: one opened by an earlier
+    # test that turns active mid-test is not this test's leak.
+    before = _live_backends(dbname, any_state=True) if _LEAKCHECK else set()
     try:
         yield s
     finally:
@@ -764,7 +794,8 @@ def store() -> Iterator[Store]:
                     raise AssertionError(
                         f"test leaked {len(leaked)} DB connection(s) "
                         f"(pids {sorted(leaked)}) — close every Store/pool/worker "
-                        "it opens (use a context manager or an explicit .close())."
+                        "it opens (use a context manager or an explicit .close()).\n"
+                        + _describe_backends(dbname, leaked)
                     )
                 logpath = os.environ.get("PRECIS_TEST_LEAK_LOG")
                 if logpath:
