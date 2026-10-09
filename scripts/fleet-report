@@ -1,0 +1,587 @@
+#!/usr/bin/env python3
+"""Read-only fleet reporter: one row per agent session on THIS host.
+
+Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis
+writes: it reads tmux, git worktrees, Claude transcripts
+(`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`) and Codex
+rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), then prints a compact
+fisheye (EXCEPTIONS / AGENTS / QUOTA) or `--json`.
+
+State per row: working | idle | waiting | dead | unknown. `dead` means the
+worktree lock's pid is gone, or no tmux pane exists while the transcript says
+working and has been silent for DEAD_SILENT_MIN (a session outside tmux that
+is actively writing is therefore not flagged). Usage: scripts/fleet-report
+[--repo PATH]... [--json] [--quiet-min N] [--since-min N].
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+# Regexes matched (case-insensitive, any line) against the last lines of a
+# pane. One hit marks the session `waiting` (an approval/permission dialog).
+APPROVAL_PATTERNS = (
+    r"do you want to (proceed|make this edit|create|allow)",
+    r"\b1\.\s*yes\b.*\n?.*\b(2\.|3\.)\s*(yes|no)\b",
+    r"would you like to run the following command",
+    r"press enter to confirm or esc to cancel",
+    r"\[y/n\]|\(y/n\)",
+    r"allow (this|once|always)|approve (this|once)",
+    r"permission (required|request)",
+)
+AGENT_COMMANDS = ("claude", "codex", "devin", "node")
+CLAUDE_WINDOW_DEFAULT = 200_000
+DEAD_SILENT_MIN = 5.0
+RECENT_WORKING_S = 120
+TAIL_BYTES = 262_144
+
+
+def now_ts() -> float:
+    return time.time()
+
+
+def iso(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(text: str | None) -> float | None:
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def run(*args: str, cwd: str | Path | None = None) -> str | None:
+    try:
+        r = subprocess.run(
+            args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=False
+        )
+    except (OSError, ValueError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def tail_lines(path: Path, nbytes: int = TAIL_BYTES) -> list[str]:
+    """Complete lines from the last `nbytes` of a file (first partial dropped)."""
+    try:
+        with path.open("rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - nbytes))
+            data = f.read()
+            partial = size > nbytes
+    except OSError:
+        return []
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[1:] if partial else lines
+
+
+def json_tail(path: Path) -> list[dict]:
+    out = []
+    for line in tail_lines(path):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict):
+            out.append(d)
+    return out
+
+
+# ---------------------------------------------------------------- tmux / git
+
+
+def tmux_panes() -> list[dict]:
+    fmt = "\t".join(
+        f"#{{{k}}}"
+        for k in (
+            "session_name",
+            "window_index",
+            "window_name",
+            "pane_id",
+            "pane_pid",
+            "pane_current_command",
+            "pane_current_path",
+            "window_activity",
+        )
+    )
+    out = run("tmux", "list-panes", "-a", "-F", fmt)
+    panes = []
+    for line in (out or "").splitlines():
+        p = line.split("\t")
+        if len(p) != 8:
+            continue
+        panes.append(
+            {
+                "session": p[0],
+                "window": p[1],
+                "window_name": p[2],
+                "pane_id": p[3],
+                "pane_pid": p[4],
+                "command": p[5],
+                "path": p[6],
+                "activity": float(p[7]) if p[7].isdigit() else None,
+            }
+        )
+    return panes
+
+
+def pane_approval(pane_id: str) -> bool:
+    text = run("tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-15")
+    if not text:
+        return False
+    return any(re.search(p, text, re.I) for p in APPROVAL_PATTERNS)
+
+
+def git(path: str | Path, *args: str) -> str | None:
+    out = run("git", "-C", str(path), *args)
+    return out.strip() if out is not None else None
+
+
+def pid_alive(pid: int) -> bool:
+    """kill -0; EPERM means the process exists (mirrors scripts/inflight)."""
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def list_worktrees(repo: str | Path) -> list[dict]:
+    out = run("git", "-C", str(repo), "worktree", "list", "--porcelain")
+    trees, cur = [], None
+    for line in (out or "").splitlines() + [""]:
+        if not line:
+            if cur:
+                trees.append(cur)
+            cur = None
+        elif line.startswith("worktree "):
+            cur = {"path": line[9:], "branch": "", "locked": None}
+        elif cur is not None and line.startswith("branch "):
+            cur["branch"] = line[7:].removeprefix("refs/heads/")
+        elif cur is not None and line.startswith("locked"):
+            cur["locked"] = line[6:].strip()
+    return trees
+
+
+def worktree_info(path: str, entry: dict | None = None) -> dict | None:
+    top = git(path, "rev-parse", "--show-toplevel")
+    if not top:
+        return None
+    common = git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    project = Path(common).parent.name if common else Path(top).name
+    branch = (
+        (entry or {}).get("branch")
+        or git(top, "rev-parse", "--abbrev-ref", "HEAD")
+        or ""
+    )
+    locked = (entry or {}).get("locked")
+    if entry is None:
+        for t in list_worktrees(top):
+            if os.path.realpath(t["path"]) == os.path.realpath(top):
+                locked = t["locked"]
+    status = git(top, "status", "--porcelain") or ""
+    ab = git(top, "rev-list", "--left-right", "--count", "main...HEAD") or ""
+    behind, ahead = (
+        (int(x) for x in ab.split()) if len(ab.split()) == 2 else (None, None)
+    )
+    purpose = ""
+    try:
+        for line in (
+            (Path(top) / ".claude" / "purpose").read_text(encoding="utf-8").splitlines()
+        ):
+            if line.strip():
+                purpose = line.strip()
+                break
+    except OSError:
+        pass
+    pid = None
+    m = re.search(r"pid[\s:=]+(\d+)", locked or "")
+    if m:
+        pid = int(m.group(1))
+    return {
+        "path": os.path.realpath(top),
+        "project": project,
+        "tree": Path(top).name,
+        "branch": branch,
+        "dirty": len([ln for ln in status.splitlines() if ln.strip()]),
+        "ahead": ahead,
+        "behind": behind,
+        "purpose": purpose,
+        "lock": locked,
+        "lock_pid": pid,
+        "lock_alive": pid_alive(pid) if pid else None,
+    }
+
+
+# ---------------------------------------------------------------- transcripts
+
+
+def claude_dir(cwd: str) -> Path:
+    return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def newest(paths) -> Path | None:
+    best, best_m = None, -1.0
+    for p in paths:
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        if m > best_m:
+            best, best_m = p, m
+    return best
+
+
+def claude_session(cwd: str, window: int) -> dict | None:
+    """State from the newest transcript for this cwd (None when absent)."""
+    f = newest(claude_dir(cwd).glob("*.jsonl"))
+    if f is None:
+        return None
+    mtime = f.stat().st_mtime
+    entries = [d for d in json_tail(f) if d.get("type") in ("assistant", "user")]
+    ctx = None
+    for d in reversed(entries):
+        u = (d.get("message") or {}).get("usage")
+        if d["type"] == "assistant" and isinstance(u, dict):
+            ctx = (
+                (u.get("input_tokens") or 0)
+                + (u.get("cache_read_input_tokens") or 0)
+                + (u.get("cache_creation_input_tokens") or 0)
+            )
+            break
+    state = "unknown"
+    if entries:
+        last = entries[-1]
+        msg = last.get("message") or {}
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else []
+        age = now_ts() - (parse_iso(last.get("timestamp")) or mtime)
+        if last["type"] == "assistant":
+            if any(b.get("type") == "tool_use" for b in blocks if isinstance(b, dict)):
+                state = "working"
+            elif msg.get("stop_reason") == "end_turn" or age > RECENT_WORKING_S:
+                state = "idle"
+            else:
+                state = "working"
+        else:  # user prompt or tool_result: the agent owes a reply
+            state = "working"
+    return {
+        "file": str(f),
+        "mtime": mtime,
+        "state": state,
+        "ctx_tokens": ctx,
+        "ctx_pct": round(100 * ctx / window, 1) if ctx is not None else None,
+    }
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def codex_sessions(since_s: float) -> dict[str, dict]:
+    """Newest recent rollout per cwd: {cwd: session dict}."""
+    root = codex_home() / "sessions"
+    cutoff = now_ts() - since_s
+    newest_by_cwd: dict[str, tuple[float, Path]] = {}
+    for p in root.rglob("rollout-*.jsonl") if root.is_dir() else ():
+        try:
+            m = p.stat().st_mtime
+            if m < cutoff:
+                continue
+            with p.open(encoding="utf-8") as f:
+                meta = json.loads(f.readline())
+        except (OSError, ValueError):
+            continue
+        cwd = (meta.get("payload") or {}).get("cwd") if isinstance(meta, dict) else None
+        if cwd and (cwd not in newest_by_cwd or m > newest_by_cwd[cwd][0]):
+            newest_by_cwd[cwd] = (m, p)
+    out = {}
+    for cwd, (m, p) in newest_by_cwd.items():
+        entries = json_tail(p)
+        last_ts = m
+        state, ctx, window, limits = "unknown", None, None, {}
+        for d in entries:
+            last_ts = parse_iso(d.get("timestamp")) or last_ts
+            pl = d.get("payload") or {}
+            kind = pl.get("type")
+            if d.get("type") != "event_msg":
+                continue
+            if kind == "task_started":
+                state = "working"
+            elif kind in ("task_complete", "turn_aborted"):
+                state = "idle"
+            elif kind == "token_count":
+                info = pl.get("info") or {}
+                use = info.get("last_token_usage") or {}
+                if use:
+                    ctx = use.get("input_tokens") or use.get("total_tokens")
+                    window = info.get("model_context_window")
+                rl = pl.get("rate_limits") or {}
+                for slot in ("primary", "secondary"):
+                    w = rl.get(slot)
+                    if isinstance(w, dict) and w.get("used_percent") is not None:
+                        limits[slot] = {
+                            "used_percent": w["used_percent"],
+                            "window_minutes": w.get("window_minutes"),
+                        }
+        if state == "unknown" and entries:
+            state = "working"
+        out[cwd] = {
+            "file": str(p),
+            "mtime": m,
+            "last_event": last_ts,
+            "state": state,
+            "ctx_tokens": ctx,
+            "ctx_pct": round(100 * ctx / window, 1) if ctx and window else None,
+            "rate_limits": limits,
+        }
+    return out
+
+
+def window_label(minutes) -> str:
+    if not minutes:
+        return "?"
+    return (
+        "5h"
+        if minutes <= 360
+        else "week"
+        if minutes >= 10000
+        else f"{round(minutes / 60)}h"
+    )
+
+
+# ---------------------------------------------------------------- assemble
+
+
+def vendor_of(command: str) -> str:
+    c = command.lower()
+    for v in ("claude", "codex", "devin"):
+        if v in c:
+            return v
+    return "claude" if c == "node" else c
+
+
+def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -> dict:
+    host = socket.gethostname().split(".")[0]
+    t = now_ts()
+    panes = tmux_panes()
+    trees: dict[str, dict] = {}
+
+    def add(path: str, entry: dict | None = None) -> str | None:
+        key = os.path.realpath(path)
+        if key not in trees:
+            info = worktree_info(path, entry)
+            if info is None:
+                return None
+            trees[info["path"]] = info
+            key = info["path"]
+        return key
+
+    for repo in repos:
+        for e in list_worktrees(repo):
+            add(e["path"], e)
+    pane_tree = {}
+    for p in panes:
+        if p["path"]:
+            pane_tree[p["pane_id"]] = add(p["path"])
+    codex = codex_sessions(since_min * 60)
+    codex_by_tree = {}
+    for cwd, s in codex.items():
+        key = add(cwd) if os.path.isdir(cwd) else None
+        if key and (
+            key not in codex_by_tree or s["mtime"] > codex_by_tree[key]["mtime"]
+        ):
+            codex_by_tree[key] = s
+
+    rows = []
+    seen = set()
+
+    def make_row(vendor: str, key: str, pane: dict | None) -> dict:
+        wt = trees[key]
+        sess = None
+        if vendor == "claude":
+            sess = claude_session(wt["path"], window)
+        elif vendor == "codex":
+            sess = codex_by_tree.get(key)
+        mt = [x for x in (sess and sess["mtime"], pane and pane["activity"]) if x]
+        latest = max(mt) if mt else None
+        state = sess["state"] if sess else ("unknown" if pane else "idle")
+        if pane and vendor != "devin" and pane_approval(pane["pane_id"]):
+            state = "waiting"
+        if wt["lock_alive"] is False or (
+            pane is None
+            and sess
+            and sess["state"] == "working"
+            and latest
+            and (t - latest) / 60 > DEAD_SILENT_MIN
+        ):
+            state = "dead"
+        row = {
+            "vendor": vendor,
+            "host": host,
+            "project": wt["project"],
+            "tree": wt["tree"],
+            "path": wt["path"],
+            "branch": wt["branch"],
+            "dirty": wt["dirty"],
+            "ahead": wt["ahead"],
+            "behind": wt["behind"],
+            "purpose": wt["purpose"],
+            "lock_pid": wt["lock_pid"],
+            "lock_alive": wt["lock_alive"],
+            "state": state,
+            "quiet_min": round((t - latest) / 60, 1) if latest else None,
+            "transcript_mtime": iso(sess["mtime"]) if sess else None,
+            "ctx_pct": sess["ctx_pct"] if sess else None,
+            "ctx_tokens": sess["ctx_tokens"] if sess else None,
+            "rate_limits": sess.get("rate_limits") if sess else None,
+            "tmux": None,
+            "attach": None,
+        }
+        if pane:
+            row["tmux"] = {
+                k: pane[k]
+                for k in (
+                    "session",
+                    "window",
+                    "window_name",
+                    "pane_id",
+                    "pane_pid",
+                    "command",
+                )
+            }
+            row["attach"] = f"tmux attach -t {pane['session']}:{pane['window']}"
+        return row
+
+    for p in panes:
+        if not any(a in p["command"].lower() for a in AGENT_COMMANDS):
+            continue
+        key = pane_tree.get(p["pane_id"])
+        if not key:
+            continue
+        vendor = vendor_of(p["command"])
+        seen.add((vendor, key))
+        rows.append(make_row(vendor, key, p))
+    # sessions with no pane: recent transcripts / rollouts / live locks
+    for key, wt in trees.items():
+        if ("claude", key) not in seen:
+            c = claude_session(wt["path"], window)
+            if (c and t - c["mtime"] < since_min * 60) or wt["lock_alive"]:
+                rows.append(make_row("claude", key, None))
+        if ("codex", key) not in seen and key in codex_by_tree:
+            rows.append(make_row("codex", key, None))
+
+    return {
+        "host": host,
+        "generated": iso(t),
+        "rows": rows,
+        "exceptions": exceptions(rows, quiet_min),
+    }
+
+
+def exceptions(rows: list[dict], quiet_min: float, ctx_max: float = 60.0) -> list[dict]:
+    out = []
+    for r in rows:
+        who = f"{r['vendor']}@{r['host']}/{r['project']}/{r['tree']}"
+        reasons = []
+        if r["state"] == "dead":
+            reasons.append("dead")
+        if r["state"] == "waiting":
+            reasons.append("waiting on approval")
+        if (
+            r["state"] == "working"
+            and r["quiet_min"] is not None
+            and r["quiet_min"] > quiet_min
+        ):
+            reasons.append(f"quiet {r['quiet_min']:.0f}m while working")
+        if r["ctx_pct"] is not None and r["ctx_pct"] > ctx_max:
+            reasons.append(f"context {r['ctx_pct']:.0f}%")
+        for why in reasons:
+            out.append({"who": who, "reason": why, "attach": r["attach"]})
+    return out
+
+
+def render(rep: dict) -> str:
+    lines = ["EXCEPTIONS"]
+    for e in rep["exceptions"]:
+        tail = f"   attach: {e['attach']}" if e["attach"] else ""
+        lines.append(f"  {e['who']}  {e['reason']}{tail}")
+    if not rep["exceptions"]:
+        lines.append("  none")
+    lines.append("AGENTS")
+    for r in rep["rows"]:
+        q = f"{r['quiet_min']:.0f}m" if r["quiet_min"] is not None else "-"
+        ctx = f"{r['ctx_pct']:.0f}%" if r["ctx_pct"] is not None else "-"
+        purpose = r["purpose"][:40]
+        lines.append(
+            f"  {r['vendor']}@{r['host']}/{r['project']}/{r['tree']} · {r['state']} · {q} · {purpose} · {ctx}"
+        )
+    if not rep["rows"]:
+        lines.append("  none")
+    quota = {}
+    for r in rep["rows"]:
+        for w in (r.get("rate_limits") or {}).values():
+            quota[(r["vendor"], window_label(w.get("window_minutes")))] = w[
+                "used_percent"
+            ]
+    if quota:
+        lines.append(
+            "QUOTA   "
+            + " · ".join(
+                f"{v} {lab} {pct:.0f}%" for (v, lab), pct in sorted(quota.items())
+            )
+        )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Read-only per-host agent session report.")
+    ap.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help="repo whose worktrees to list (repeatable)",
+    )
+    ap.add_argument("--json", action="store_true", help="rows + exceptions as JSON")
+    ap.add_argument(
+        "--quiet-min",
+        type=float,
+        default=30.0,
+        help="quiet minutes before a working session is an exception",
+    )
+    ap.add_argument(
+        "--since-min",
+        type=float,
+        default=240.0,
+        help="ignore pane-less transcripts older than this",
+    )
+    ap.add_argument(
+        "--claude-window",
+        type=int,
+        default=CLAUDE_WINDOW_DEFAULT,
+        help="Claude context window in tokens",
+    )
+    args = ap.parse_args(argv)
+    repos = args.repo or [str(Path(__file__).resolve().parent.parent)]
+    rep = collect(repos, args.quiet_min, args.since_min, args.claude_window)
+    print(json.dumps(rep, indent=2) if args.json else render(rep))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

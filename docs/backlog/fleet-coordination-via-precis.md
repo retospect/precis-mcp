@@ -130,6 +130,12 @@ and that headless volume is within each plan's terms.
 1. **Reporter, read-only, no DB.** Prints the fisheye locally on the Mac
    and melchior; run against live sessions for a day to tune state
    detection and exception rules. Verify the capacity sources.
+   `scripts/fleet-report` exists (2026-10-09). Verified on the Mac: Claude
+   transcript state and usage, Codex `token_count` / `rate_limits` (real
+   rollouts carry a weekly `primary`, `secondary: null`). Open: real
+   approval-dialog text (`APPROVAL_PATTERNS` are guesses), a live agent
+   pane, melchior/Linux, Claude context window per model (assumes 200k,
+   `--claude-window`), and `merge-tree` conflict prediction.
 2. **`fleet` kind + migration** (`/go`), `test_kind_totality`,
    `test_item_view`, skill `precis-fleet-help`; reporter writes it;
    `scripts/inflight --all-hosts` reads it.
