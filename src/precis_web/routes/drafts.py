@@ -1259,9 +1259,17 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     """Synchronous .docx export: renders the draft, streams it back.
     Toolchain-free (python-docx); rendering runs off the event loop.
 
-    ``?citations=endnote`` emits EndNote *Cite While You Write* fields
-    (``ADDIN EN.CITE`` + ``EN.REFLIST``); default ``plain`` is a numbered
-    ``[n]`` + References section needing no add-in.
+    Default ``citations=endnote`` emits EndNote *Cite While You Write*
+    fields (``ADDIN EN.CITE`` + ``EN.REFLIST``) — the travelling library,
+    so a co-author's EndNote picks the references up; Word without the
+    add-in still shows each field's cached ``[n]`` text. ``?citations=plain``
+    is the numbered ``[n]`` + References section with no fields at all.
+
+    ``?links=0`` drops the small ``doi`` / library-search hyperlink runs
+    after each ``[n]`` marker (a submission copy); default on.
+
+    The download name carries a UTC stamp (``<slug>-YYYYMMDD-HHMMZ``) so
+    successive exports of one draft stay distinguishable on disk.
 
     ``?sources=1`` returns a ``.zip`` instead: the ``.docx`` plus a
     ``sources/`` folder of every cited paper/datasheet PDF the host holds
@@ -1319,10 +1327,11 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         )
 
     citations = (
-        "endnote" if request.query_params.get("citations") == "endnote" else "plain"
+        "plain" if request.query_params.get("citations") == "plain" else "endnote"
     )
+    links = _links_wanted(request)
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
-    name = str(ref.slug or ref.id)
+    name = f"{ref.slug or ref.id}-{_export_stamp()}"
     work = Path(tempfile.mkdtemp(prefix="precis-docx-"))
     out = work / f"{name}.docx"
     docx_result = await asyncio.to_thread(
@@ -1332,6 +1341,8 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         target_path=out,
         citations=citations,
         withheld_figures=pf.withheld_handles,
+        doi_links=links,
+        library_links=links,
     )
     if not with_sources:
         return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
@@ -1852,12 +1863,28 @@ def _pdf_cache_token(store: Any, ref: Any) -> str:
     return f"{version}.{rev}"
 
 
+def _export_stamp() -> str:
+    """UTC stamp for export download names (``YYYYMMDD-HHMMZ``): one draft
+    exported twice in a day must not overwrite itself in the Downloads
+    folder, and the stamp says which copy a reviewer is holding."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y%m%d-%H%MZ")
+
+
+def _links_wanted(request: Request) -> bool:
+    """``?links=0`` turns off the inline ``doi`` / library-search hyperlink
+    runs after each cite mark (both exporters); anything else keeps them."""
+    return request.query_params.get("links") not in ("0", "false", "no")
+
+
 def _pdf_cache_dir(
     ref_id: int,
     version: int | str,
     *,
     sources: bool = False,
     withheld: frozenset[str] = frozenset(),
+    links: bool = True,
 ) -> Path:
     """Per-(draft, version) build dir for the compiled PDF. Lives under
     the system temp so it survives within a deploy and is cheap to
@@ -1872,7 +1899,10 @@ def _pdf_cache_dir(
     ``withheld`` (the figures rendered as withheld boxes under
     ``placeholder_figures``) adds a ``-wh<digest>`` segment: a PDF compiled
     with boxes must not be served once the permissions are granted, and the
-    grant may not bump the version token."""
+    grant may not bump the version token.
+
+    ``links=False`` (the ``?links=0`` submission copy, no inline doi /
+    library runs) adds ``-nolinks`` so the two variants cache apart."""
     import hashlib
     import tempfile
 
@@ -1880,6 +1910,8 @@ def _pdf_cache_dir(
     if withheld:
         digest = hashlib.sha1(",".join(sorted(withheld)).encode("utf-8")).hexdigest()
         tag = f"{tag}-wh{digest[:8]}"
+    if not links:
+        tag = f"{tag}-nolinks"
     return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / tag
 
 
@@ -1948,17 +1980,25 @@ async def pdf(request: Request, ident: str) -> Response:
         )
 
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
+    links = _links_wanted(request)
     cache_token = _pdf_cache_token(store, ref)
     cache_dir = _pdf_cache_dir(
-        ref.id, cache_token, sources=with_sources, withheld=pf.withheld_handles
+        ref.id,
+        cache_token,
+        sources=with_sources,
+        withheld=pf.withheld_handles,
+        links=links,
     )
     pdf_path = cache_dir / "main.pdf"
     suffix = "-with-sources" if with_sources else ""
     # A cast draft downloads as its human stem (``morning_brief_<date>.pdf``),
-    # matching the mp3 on the feed; other drafts keep their slug.
+    # matching the mp3 on the feed; other drafts keep their slug plus a UTC
+    # stamp so successive exports stay distinguishable.
     from precis.reading.cast_common import export_basename_for_meta
 
-    base = export_basename_for_meta(getattr(ref, "meta", None)) or (ref.slug or ref.id)
+    base = export_basename_for_meta(getattr(ref, "meta", None)) or (
+        f"{ref.slug or ref.id}-{_export_stamp()}"
+    )
     filename = f"{base}{suffix}.pdf"
 
     if not pdf_path.exists():
@@ -1985,6 +2025,8 @@ async def pdf(request: Request, ident: str) -> Response:
             target_dir=cache_dir,
             include_sources=with_sources,
             withheld_figures=pf.withheld_handles,
+            doi_links=links,
+            library_links=links,
         )
         result = compile_pdf(cache_dir)
         if not result.ok:

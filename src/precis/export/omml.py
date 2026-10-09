@@ -18,11 +18,15 @@ serialises with the standard prefix.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 _M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+_MATHRM_ONE = re.compile(r"\\mathrm\{([A-Za-z0-9])\}")
 
 
 def latex_to_omml(latex: str) -> Any | None:
@@ -37,6 +41,9 @@ def latex_to_omml(latex: str) -> Any | None:
         from lxml import etree
     except Exception:  # pragma: no cover — optional deps absent
         return None
+    # latex2mathml drops the upright variant on a SINGLE-char \mathrm{C}
+    # (multi-char keeps mathvariant="normal"); \text{C} survives as mtext.
+    latex = _MATHRM_ONE.sub(r"\\text{\1}", latex)
     try:
         mathml = convert(latex)
         root = etree.fromstring(mathml.encode("utf-8"))
@@ -58,11 +65,16 @@ def _localname(node: Any) -> str:
     return str(etree.QName(node).localname)
 
 
-def _run(parent: Any, text: str, etree: Any) -> None:
-    """An OMML run: ``<m:r><m:t>text</m:t></m:r>``."""
+def _run(parent: Any, text: str, etree: Any, *, upright: bool = False) -> None:
+    """An OMML run: ``<m:r><m:t>text</m:t></m:r>``. ``upright`` adds
+    ``<m:rPr><m:sty m:val="p"/></m:rPr>`` (plain, non-italic math text)."""
     if not text:
         return
     r = etree.SubElement(parent, f"{{{_M}}}r")
+    if upright:
+        rpr = etree.SubElement(r, f"{{{_M}}}rPr")
+        sty = etree.SubElement(rpr, f"{{{_M}}}sty")
+        sty.set(f"{{{_M}}}val", "p")
     t = etree.SubElement(r, f"{{{_M}}}t")
     # Preserve surrounding spaces in operators like " = ".
     t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
@@ -86,7 +98,9 @@ def _convert(node: Any, parent: Any, etree: Any) -> None:
             _convert(child, parent, etree)
         return
     if name in ("mi", "mn", "mo", "mtext", "ms"):
-        _run(parent, node.text or "", etree)
+        # \mathrm{…} → mathvariant="normal"; \text{…} → mtext: both upright.
+        upright = name == "mtext" or node.get("mathvariant") == "normal"
+        _run(parent, node.text or "", etree, upright=upright)
         return
     kids = list(node)
     if name == "msup":

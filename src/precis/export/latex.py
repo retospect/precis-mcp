@@ -556,7 +556,8 @@ _LATEX_CITE = re.compile(r"\\cite[a-z]*\*?(?:\[[^\]]*\])*\{([^}]*)\}")
 #: author put the base outside the math (chemistry style: ``Zr$_6$``,
 #: ``UO$_2^{2+}$``). That renders as a floating subscript in LaTeX and an
 #: empty-box placeholder (``<m:e/>``) in Word. Pull the adjacent preceding
-#: token into the math so the base is non-empty (``Zr$_6$`` → ``$Zr_6$``).
+#: token into the math so the base is non-empty (``Zr$_6$`` →
+#: ``$\mathrm{Zr}_6$``), upright — an element symbol is not a variable.
 #: The token may sit right after a closing ``$`` (``$W_{18}$O$_{49}$`` → the
 #: ``O`` base), so the lookbehind only forbids a word char, not ``$``.
 _EMPTY_BASE_MATH = re.compile(r"(?<!\w)([A-Za-z0-9)\]]+)\$([_^][^$]+)\$")
@@ -573,7 +574,7 @@ def preprocess_draft_inline(text: str) -> str:
     ``$…$`` math (see ``_LATEX_CITE`` / ``_EMPTY_BASE_MATH``). Shared by both
     the LaTeX and docx exporters so they handle verbatim LaTeX identically."""
     text = _LATEX_CITE.sub(_fold_cite, text)
-    text = _EMPTY_BASE_MATH.sub(r"$\1\2$", text)
+    text = _EMPTY_BASE_MATH.sub(r"$\\mathrm{\1}\2$", text)
     return text
 
 
@@ -780,21 +781,68 @@ def _glsify(
     if not keymap:
         return escaped
     shorts = sorted((s for s in keymap if s), key=len, reverse=True)
+    # Pre-pass: a prose ``long (SHORT)`` whose long form itself contains
+    # another registered short (``functionalized CNB (FCNB)``) would have
+    # that inner short consumed first, leaving the main loop's look-back
+    # without its long form. Stash those spans behind ``\x03<n>\x03``
+    # tokens the main loop treats as the first use of SHORT. Longest long
+    # form first so a nested span wins over its prefix.
+    spans: list[tuple[str, str, bool, str]] = []  # (short, key, plural, text)
+    longs: dict[str, str] = {s: (abbrevs or {}).get(s, "").strip() for s in shorts}
+    for short in sorted(
+        (s for s in shorts if longs[s]),
+        key=lambda s: len(longs[s]),
+        reverse=True,
+    ):
+        esc_long = _encode_unicode(_latex_escape(longs[short]))
+        base = esc_long[:-1] if esc_long.lower().endswith("s") else esc_long
+        if not base:
+            continue
+
+        def _stash(m: re.Match[str], short: str = short) -> str:
+            spans.append((short, keymap[short], bool(m.group(1)), m.group(0)))
+            return f"\x03{len(spans) - 1}\x03"
+
+        escaped = re.sub(
+            r"(?<![\w-])" + re.escape(base) + r"s?\s*\(" + re.escape(short) + r"(s)?\)",
+            _stash,
+            escaped,
+            flags=re.IGNORECASE,
+        )
     pat = re.compile(
-        r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")(s)?(?![\w-])"
+        r"\x03(\d+)\x03|(?<![\w-])("
+        + "|".join(re.escape(s) for s in shorts)
+        + r")(s)?(?![\w-])"
     )
     out: list[str] = []
     pos = 0
     for m in pat.finditer(escaped):
-        short = m.group(1)
-        key = keymap[short]
-        plural = m.group(2)
         pre = escaped[pos : m.start()]
         end = m.end()
+        stashed = m.group(1) is not None
+        if stashed:
+            short, key, plural_b, span_text = spans[int(m.group(1))]
+            plural = "s" if plural_b else None
+        else:
+            short = m.group(2)
+            key = keymap[short]
+            plural = m.group(3)
         first = seen is None or key not in seen
+        if stashed and not first:
+            # Already introduced: keep the author's prose span verbatim.
+            out.append(pre)
+            out.append(span_text)
+            pos = end
+            continue
         if first and seen is not None:
             seen.add(key)
-        if not first:
+        if stashed:
+            cmd = "glspl" if plural else "gls"
+            if re.search(r"[.?!]\s+$", pre) or (
+                at_start and not "".join(out).strip() and not pre.strip()
+            ):
+                cmd = cmd[0].upper() + cmd[1:]
+        elif not first:
             cmd = "glspltip" if plural else "glstip"
         else:
             cmd = "glspl" if plural else "gls"
@@ -1362,6 +1410,12 @@ def _cite_link_group(bases: list[str], ctx: _Ctx) -> str:
     return "{\\scriptsize " + "\\ ".join(parts) + "}"
 
 
+def _cite_marker(keys: list[str]) -> str:
+    """Private sentinel standing in for the link group after a ``\\cite``;
+    :func:`_merge_adjacent_cites` resolves it (merged runs get ONE group)."""
+    return "\x01<" + ",".join(keys) + ">\x01"
+
+
 def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
     # A supplementary-information record cites as its PARENT with the
     # postnote "SI": ``\cite[SI]{parent}``. ``si=True`` means the caller
@@ -1386,8 +1440,8 @@ def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
     if si:
         if base not in ctx.si_cited:
             ctx.si_cited.append(base)
-        return f"\\cite[SI]{{{base}}}" + _cite_link_group([base], ctx)
-    return f"\\cite{{{base}}}" + _cite_link_group([base], ctx)
+        return f"\\cite[SI]{{{base}}}" + _cite_marker([base])
+    return f"\\cite{{{base}}}" + _cite_marker([base])
 
 
 def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
@@ -1430,8 +1484,8 @@ def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
         body = "".join(f"[SI]{{{k}}}" if si_flag[k] else f"{{{k}}}" for k in keys)
         # \relax ends the multicite's argument scan; without it biblatex
         # swallows a following {link group} as one more cite key.
-        return f"\\cites{body}\\relax" + _cite_link_group(keys, ctx)
-    return f"\\cite{{{','.join(keys)}}}" + _cite_link_group(keys, ctx)
+        return f"\\cites{body}\\relax" + _cite_marker(keys)
+    return f"\\cite{{{','.join(keys)}}}" + _cite_marker(keys)
 
 
 #: Longest excerpt (chars) quoted into a reMarkable footnote before it's
@@ -1927,20 +1981,30 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
     return key
 
 
-#: A run of directly-adjacent ``\cite{…}`` (no separator) → one grouped
-#: ``\cite{a,b}`` so biblatex prints a single ``[1, 2]`` bracket rather than
-#: ``[1][2]``. The adjacency comes from folding a multi-key ``\cite{a,b}``
-#: through the one-key-per-bracket grammar; cites the author spaced apart
-#: keep their separator and are left alone.
-_ADJ_CITES = re.compile(r"(?:\\cite\{[^}]*\})+")
+#: A run of directly-adjacent ``\\cite{…}`` + link sentinel (no separator
+#: between items) → one grouped ``\\cite{a,b}`` plus ONE link group so
+#: biblatex prints a single ``[1, 2]`` bracket rather than ``[1][2]``. The
+#: adjacency comes from folding a multi-key ``\\cite{a,b}`` through the
+#: one-key-per-bracket grammar; cites the author spaced apart keep their
+#: separator and are left alone. ``\\cite[SI]{…}`` never matches.
+_ADJ_CITES = re.compile(r"(?:\\cite\{[^}]*\}\x01<[^\x01]*>\x01)+")
+_CITE_ITEM = re.compile(r"\\cite\{([^}]*)\}\x01<([^\x01]*)>\x01")
+_CITE_MARKER = re.compile(r"\x01<([^\x01]*)>\x01")
 
 
-def _merge_adjacent_cites(s: str) -> str:
+def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
     def repl(m: re.Match[str]) -> str:
-        keys = re.findall(r"\\cite\{([^}]*)\}", m.group(0))
-        return "\\cite{" + ",".join(keys) + "}"
+        items = _CITE_ITEM.findall(m.group(0))
+        cite_keys = [k for ck, _lk in items for k in ck.split(",") if k]
+        link_keys = [k for _ck, lk in items for k in lk.split(",") if k]
+        cite_keys = list(dict.fromkeys(cite_keys))
+        link_keys = list(dict.fromkeys(link_keys))
+        return "\\cite{" + ",".join(cite_keys) + "}" + _cite_link_group(link_keys, ctx)
 
-    return _ADJ_CITES.sub(repl, s)
+    s = _ADJ_CITES.sub(repl, s)
+    return _CITE_MARKER.sub(
+        lambda m: _cite_link_group([k for k in m.group(1).split(",") if k], ctx), s
+    )
 
 
 def _render_inline(text: str, ctx: _Ctx) -> str:
@@ -1981,7 +2045,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     if dropped_at is not None and tail[:1] in (".", ",", ";", ":", "!", "?", ")"):
         out[dropped_at] = out[dropped_at].rstrip(" ")
     out.append(_render_gap(tail, ctx, chunk_start=not out))
-    s = _merge_adjacent_cites("".join(out))
+    s = _merge_adjacent_cites("".join(out), ctx)
     # Directly-adjacent footnote markers print as one number ("23" for 2
     # then 3). Each emitted footnote carries a trailing \x02 sentinel; a
     # sentinel touching the next \footnote marks true adjacency (anything

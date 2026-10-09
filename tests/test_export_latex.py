@@ -426,7 +426,7 @@ def test_math_inside_inline_code_restores_no_nul_placeholder() -> None:
     out, _ = _inline("`[Biotin]–[PEG$_{7nm}$]–[comp-E]`")
     assert "\x00" not in out
     # the math span survived verbatim (empty-base repair folds PEG inside)
-    assert "$PEG_{7nm}$" in out
+    assert r"$\mathrm{PEG}_{7nm}$" in out
 
 
 def test_italic_single_star_to_emph() -> None:
@@ -473,11 +473,11 @@ def test_latex_empty_base_math_gets_a_base() -> None:
     # `Zr$_6$` puts the base outside the math; fold it in so it isn't a
     # floating subscript. Multi-fragment `$W_{18}$O$_{49}$` too.
     out, _ = _inline(r"the Zr$_6$ node and UO$_2^{2+}$ ion and $W_{18}$O$_{49}$.")
-    assert "$Zr_6$" in out
-    assert "$UO_2^{2+}$" in out
+    assert r"$\mathrm{Zr}_6$" in out
+    assert r"$\mathrm{UO}_2^{2+}$" in out
     # adjacent repaired fragments get a {} separator — bare $$ would be a
     # display-math opener (see test_adjacent_math_spans_do_not_glue…).
-    assert "$W_{18}${}$O_{49}$" in out
+    assert r"$W_{18}${}$\mathrm{O}_{49}$" in out
 
 
 def test_paper_handle_renders_citation() -> None:
@@ -2630,7 +2630,9 @@ def test_multicite_is_terminated_before_link_group(monkeypatch) -> None:
     store = _si_store(monkeypatch, with_parent=True)
     ctx = _ctx("", store=store)
     monkeypatch.setattr(latex, "_cite_link_group", lambda _k, _c: r"{\scriptsize L}")
-    out = latex._cite_keys(["other", "parent24si"], ctx)
+    out = latex._merge_adjacent_cites(
+        latex._cite_keys(["other", "parent24si"], ctx), ctx
+    )
     assert out == r"\cites{other}[SI]{parent24}\relax{\scriptsize L}"
 
 
@@ -2675,3 +2677,53 @@ def test_si_cite_without_parent_falls_back_with_warning(monkeypatch) -> None:
     assert r"\cite{parent24si}" in out and "[SI]" not in out
     assert ctx.cited == ["parent24si"] and ctx.si_cited == []
     assert any("no live parent" in w for w in ctx.warnings)
+
+
+def _link_ctx(monkeypatch):
+    ctx = _ctx("")
+    monkeypatch.setattr(
+        latex, "_cite_link_group", lambda keys, _c: "{L:" + "+".join(keys) + "}"
+    )
+    return ctx
+
+
+def test_adjacent_cites_merge_with_one_link_group(monkeypatch) -> None:
+    ctx = _link_ctx(monkeypatch)
+    s = latex._cite("a", ctx) + latex._cite("b", ctx)
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}{L:a+b}"
+
+
+def test_overlapping_cites_dedupe_keys(monkeypatch) -> None:
+    ctx = _link_ctx(monkeypatch)
+    s = latex._cite("a", ctx) + latex._cite_keys(["a", "b"], ctx)
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}{L:a+b}"
+
+
+def test_si_cite_not_merged(monkeypatch) -> None:
+    ctx = _link_ctx(monkeypatch)
+    s = latex._cite("a", ctx) + latex._cite("b", ctx, si=True) + latex._cite("c", ctx)
+    out = latex._merge_adjacent_cites(s, ctx)
+    assert out == r"\cite{a}{L:a}\cite[SI]{b}{L:b}\cite{c}{L:c}"
+
+
+def test_text_between_cites_prevents_merge(monkeypatch) -> None:
+    ctx = _link_ctx(monkeypatch)
+    s = latex._cite("a", ctx) + " " + latex._cite("b", ctx)
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a}{L:a} \cite{b}{L:b}"
+
+
+def test_adjacent_cites_without_links_unchanged() -> None:
+    ctx = _ctx("")
+    ctx.doi_links = ctx.library_links = False
+    s = latex._cite("a", ctx) + latex._cite("b", ctx)
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}"
+    assert latex._merge_adjacent_cites(latex._cite("a", ctx), ctx) == r"\cite{a}"
+
+
+def test_glsify_collapses_long_form_containing_another_short() -> None:
+    abbrevs = {"CNB": "carbon nanobud", "FCNB": "functionalized CNB"}
+    out, _ = _inline("a functionalized CNB (FCNB) and FCNBs", abbrevs)
+    assert out.count(r"\gls{fcnb}") == 1
+    assert "functionalized" not in out and "(FCNB)" not in out
+    assert r"\glspltip{fcnb}" in out
+    assert "{cnb}" not in out

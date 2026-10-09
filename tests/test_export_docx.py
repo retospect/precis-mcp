@@ -1492,3 +1492,19 @@ def test_si_mark_survives_after_plain_mark_of_same_parent(monkeypatch) -> None:
     dx._cite("parent24si", ctx, para)  # same parent, SI flag differs
     dx._cite("parent24si", ctx, para)  # identical consecutive -> collapses
     assert para.text == "[1][1] (SI)"
+
+
+def test_mathrm_renders_upright_omml() -> None:
+    """``\\mathrm{C}_{60}`` (the repaired ``C$_{60}$``) must come out as
+    upright (``m:sty p``) OMML runs, single- and multi-character alike."""
+    pytest.importorskip("latex2mathml")
+
+    from precis.export.omml import latex_to_omml
+
+    ns = {"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"}
+    for src, base in ((r"\mathrm{C}_{60}", "C"), (r"\mathrm{WS}_2", "WS")):
+        omath = latex_to_omml(src)
+        assert omath is not None
+        runs = omath.xpath("//m:e/m:r", namespaces=ns)
+        assert "".join(r.xpath("string(m:t)", namespaces=ns) for r in runs) == base
+        assert all(r.xpath("m:rPr/m:sty/@m:val", namespaces=ns) == ["p"] for r in runs)

@@ -1049,6 +1049,55 @@ def test_export_docx_override_bypasses_block(
     assert r.content.startswith(b"PK")
 
 
+def test_export_docx_defaults_to_endnote_fields_and_stamps_name(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The travelling library (EndNote CWYW fields) is the default .docx;
+    ``?citations=plain`` opts out; ``?links=0`` drops the inline doi /
+    library runs; the download name carries a UTC stamp so two exports of
+    one draft never collide in a Downloads folder."""
+    import re
+
+    import precis.export.docx as docx_mod
+
+    seen: list[dict[str, object]] = []
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(papers=[])
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **kw):
+        seen.append({"citations": citations, **kw})
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=[])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+
+    r = draft_client.get("/drafts/nt/export.docx")
+    assert r.status_code == 200
+    assert seen[-1]["citations"] == "endnote"
+    assert seen[-1]["doi_links"] is True and seen[-1]["library_links"] is True
+    assert re.search(
+        r'filename="?nt-\d{8}-\d{4}Z\.docx', r.headers["content-disposition"]
+    )
+
+    r = draft_client.get("/drafts/nt/export.docx?citations=plain&links=0")
+    assert r.status_code == 200
+    assert seen[-1]["citations"] == "plain"
+    assert seen[-1]["doi_links"] is False and seen[-1]["library_links"] is False
+
+
+def test_pdf_cache_dir_separates_nolinks_builds() -> None:
+    """A ``?links=0`` submission PDF caches apart from the linked build of
+    the same version, so neither variant is served for the other."""
+    from precis_web.routes import drafts as drafts_mod
+
+    linked = drafts_mod._pdf_cache_dir(7, "12.34")
+    plain = drafts_mod._pdf_cache_dir(7, "12.34", links=False)
+    assert linked != plain
+    assert plain.name.endswith("-nolinks")
+
+
 def test_export_docx_soft_status_does_not_block(
     draft_client: TestClient, monkeypatch
 ) -> None:
@@ -1315,6 +1364,7 @@ def test_export_docx_placeholder_waives_assetless_figure(
         citations="plain",
         doc_type=None,
         withheld_figures=frozenset(),
+        **_kw,
     ):
         assert withheld_figures == frozenset()  # image-less: nothing withheld
         target_path.write_bytes(b"PK\x03\x04fake-docx")
@@ -2526,12 +2576,20 @@ def test_draft_pdf_serves_cached(
     monkeypatch.setattr(
         drafts_mod,
         "_pdf_cache_dir",
-        lambda ref_id, version, *, sources=False, withheld=frozenset(): tmp_path,
+        lambda ref_id, version, *, sources=False, withheld=frozenset(), links=True: (
+            tmp_path
+        ),
     )
     (tmp_path / "main.pdf").write_bytes(b"%PDF-1.4 fake\n%%EOF\n")
     r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
+    # slug + UTC stamp, so successive exports stay distinguishable
+    import re
+
+    assert re.search(
+        r'filename="?nt-\d{8}-\d{4}Z\.pdf', r.headers["content-disposition"]
+    )
 
 
 def test_pdf_cache_dir_separates_withheld_builds() -> None:

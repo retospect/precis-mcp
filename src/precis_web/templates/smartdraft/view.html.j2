@@ -954,6 +954,7 @@
              withSources: false,
              overrideRetraction: false,
              placeholderFigures: false,
+             submissionCopy: false,
              forceRecheck: false,
              retraction: null,
              retractionChecking: false,
@@ -1029,11 +1030,15 @@
              // export gates are draft-level, not per-format, so all three
              // overrides ride on all of them — sources appendix, retraction
              // override, and the image-less-figure placeholder waiver.
-             exportQuery() {
+             exportQuery(extra) {
                const p = new URLSearchParams();
                if (this.withSources) p.set('sources', '1');
                if (this.overrideRetraction) p.set('ignore_retractions', '1');
                if (this.placeholderFigures) p.set('placeholder_figures', '1');
+               // Submission copy: no inline doi / library link runs after
+               // the cite marks and no claim-artifact appendix.
+               if (this.submissionCopy) { p.set('links', '0'); p.set('claims', '0'); }
+               for (const [k, v] of Object.entries(extra || {})) p.set(k, v);
                const q = p.toString();
                return q ? '?' + q : '';
              }
@@ -1051,6 +1056,10 @@
         <label class="flex items-center gap-1 text-slate-500"
                title="export even when figures have no image yet — image-less figures appear as visible placeholders, and an uncleared third-party image is withheld (caption kept, image replaced by a box naming the source)">
           <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"><span>allow placeholder figures (image-less, and uncleared third-party withheld)</span>
+        </label>
+        <label class="flex items-center gap-1 text-slate-500"
+               title="what goes to the journal: no doi / library hyperlink runs after each cite mark and no 'Published claim artifacts' appendix">
+          <input type="checkbox" x-model="submissionCopy" class="h-3 w-3"><span>submission copy (no cite links, no claim appendix)</span>
         </label>
 
         {# Retraction watch: passive warning (read-only, no network) + the
@@ -1124,7 +1133,11 @@
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
           <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery()"
              class="text-slate-500 underline hover:text-slate-800"
+             title="EndNote Cite While You Write fields (travelling library); Word without EndNote still shows the [n] text"
              x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
+          <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery({citations: 'plain'})"
+             class="text-slate-400 underline hover:text-slate-800"
+             title="plain [n] markers and a References section, no EndNote fields">plain .docx</a>
           <a :href="'/drafts/{{ ident }}/pdf' + exportQuery()"
              class="text-slate-500 underline hover:text-slate-800">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
