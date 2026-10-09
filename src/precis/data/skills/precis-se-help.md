@@ -547,3 +547,4 @@ scadnano/caDNAno/oxDNA/PDB.
 - [[precis-se-chain-help]] — nucleic-acid helices, strands, domains, pairing
 - [[precis-se-states-help]] — discrete states, transitions, the derived swing, view='sweep'
 - [[precis-se-fret-help]] — FRET links as a comm channel: chromophores, optical links, view='fret'
+- [[precis-se-flatpack-help]] — flat-pack boxes with shelves from one sheet: finger joints from t, nesting, laser SVG / CNC DXF

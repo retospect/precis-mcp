@@ -102,7 +102,11 @@ groups, ``manufacture`` print-in-place), :mod:`precis_se.ops_export`.
 *Domains.* :mod:`precis_se.atomic` (chemistry-bound blocks — the merged ``nm``
 kind), :mod:`precis_se.chain` (DNA/RNA over the chemistry-free
 :mod:`precis_chain` kernel), :mod:`precis_se.fret` (optical FRET links),
-:mod:`precis_se.properties` (region properties).
+:mod:`precis_se.properties` (region properties), :mod:`precis_se.flatpack`
+(flat parts cut from one sheet — a box with shelves whose joinery derives
+from the sheet thickness, nested into the neutral :mod:`precis.sheet` job
+that the laser SVG and CNC DXF writers export; a pure python surface until
+its se op and ``view='cut'`` land).
 
 **Lifecycle.** ``put``/``edit`` build a tree through the ops table — the
 store-aware ops (``bind_structure``/``unbind_structure``/``generate``/

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ units: mm; x right, y down (sheet frame flipped)
+ sheet: 52 x 256 mm, corrugated-3mm 3 mm
+ parts: 5: side-l, side-r, top, bottom, back
+ colour -> settings (set these up in LightBurn; the file carries them only as data- attributes):
+   #000000 cut op=cut power 100 % speed 10 mm/s passes 1 (laser defaults: the layer carries no laser settings)
+ fit 0 mm (default: no recorded fit for corrugated-3mm on laser)
+ kerf 0 mm (default: no recorded kerf for corrugated-3mm on laser)
+ nesting: margin and spacing 1 mm; sheet derived from the strip packing; utilisation 85.2 %
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="52mm" height="256mm" viewBox="0 0 52 256">
+<g id="cut" data-op="cut" stroke="#000000" fill="none" stroke-width="0.01" data-power-pct="100" data-speed-mm-s="10" data-passes="1">
+<path d="M 1 255 L 11 255 L 11 252 L 21 252 L 21 255 L 31 255 L 31 252 L 41 252 L 41 255 L 51 255 L 51 245 L 48 245 L 48 235 L 51 235 L 51 225 L 48 225 L 48 215 L 51 215 L 51 205 L 41 205 L 41 208 L 31 208 L 31 205 L 21 205 L 21 208 L 11 208 L 11 205 L 1 205 Z" data-part="side-l" data-role="outer"/>
+<path d="M 1 204 L 11 204 L 11 201 L 21 201 L 21 204 L 31 204 L 31 201 L 41 201 L 41 204 L 51 204 L 51 194 L 48 194 L 48 184 L 51 184 L 51 174 L 48 174 L 48 164 L 51 164 L 51 154 L 41 154 L 41 157 L 31 157 L 31 154 L 21 154 L 21 157 L 11 157 L 11 154 L 1 154 Z" data-part="side-r" data-role="outer"/>
+<path d="M 1 143 L 4 143 L 4 153 L 48 153 L 48 143 L 51 143 L 51 133 L 48 133 L 48 123 L 51 123 L 51 113 L 48 113 L 48 103 L 41 103 L 41 106 L 31 106 L 31 103 L 21 103 L 21 106 L 11 106 L 11 103 L 4 103 L 4 113 L 1 113 L 1 123 L 4 123 L 4 133 L 1 133 Z" data-part="top" data-role="outer"/>
+<path d="M 1 92 L 4 92 L 4 102 L 48 102 L 48 92 L 51 92 L 51 82 L 48 82 L 48 72 L 51 72 L 51 62 L 48 62 L 48 52 L 41 52 L 41 55 L 31 55 L 31 52 L 21 52 L 21 55 L 11 55 L 11 52 L 4 52 L 4 62 L 1 62 L 1 72 L 4 72 L 4 82 L 1 82 Z" data-part="bottom" data-role="outer"/>
+<path d="M 1 41 L 4 41 L 4 48 L 11 48 L 11 51 L 21 51 L 21 48 L 31 48 L 31 51 L 41 51 L 41 48 L 48 48 L 48 41 L 51 41 L 51 31 L 48 31 L 48 21 L 51 21 L 51 11 L 48 11 L 48 4 L 41 4 L 41 1 L 31 1 L 31 4 L 21 4 L 21 1 L 11 1 L 11 4 L 4 4 L 4 11 L 1 11 L 1 21 L 4 21 L 4 31 L 1 31 Z" data-part="back" data-role="outer"/>
+</g>
+</svg>
