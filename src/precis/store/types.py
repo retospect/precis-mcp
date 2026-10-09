@@ -1155,6 +1155,11 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "unsupported-claim",
             "citation-drift",
             "missing-data",
+            # Memory attribution gate (derived): a number written next to a
+            # citation is not in the cited text. Set by MemoryHandler on
+            # write and by scripts/memory-attribution-audit; cleared by a
+            # clean rewrite. Agents may also set it by hand.
+            "ungrounded-number",
         }
     ),
     # Argument graph — retraction-ripple marker. Set by the
@@ -1252,7 +1257,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # agent-authored (dreamed) memories (consolidated survivors + speculative
     # inspirations). ``STALE:`` is the argument-graph retraction-ripple
     # marker — system-set only, see ``_SYSTEM_WRITABLE_PREFIXES``.
-    "memory": frozenset({"DREAM", "STALE", "SPACE"}),
+    "memory": frozenset({"DREAM", "STALE", "SPACE", "AUDIT"}),
     # Anki cloze cards carry no closed axes — Anki owns scheduling, so
     # there is no STATUS / EASE / DUE review state here.
     "anki": frozenset(),

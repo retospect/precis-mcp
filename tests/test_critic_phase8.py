@@ -126,11 +126,14 @@ class TestAuditAxis:
         t = Tag.parse_strict("AUDIT:citation-drift", kind="finding")
         assert t.value == "citation-drift"
 
-    def test_audit_rejected_on_memory(self) -> None:
-        """memory has a restricted allowlist (DREAM only) — AUDIT is not
-        allowed, so a stray audit tag on a note fails loud."""
+    def test_audit_allowed_on_memory_status_rejected(self) -> None:
+        """memory keeps a restricted allowlist. AUDIT joined it with the
+        attribution gate (``handlers/_attribution.py``); a workflow axis
+        such as STATUS still fails loud on a note."""
+        tag = Tag.parse_strict("AUDIT:ungrounded-number", kind="memory")
+        assert (tag.prefix, tag.value) == ("AUDIT", "ungrounded-number")
         with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
-            Tag.parse_strict("AUDIT:missing-citation", kind="memory")
+            Tag.parse_strict("STATUS:open", kind="memory")
 
     def test_bad_audit_value_rejected(self) -> None:
         """Closed vocab: a typo'd category fails at write time instead of

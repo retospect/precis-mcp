@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scripts/memory-attribution-audit — retro-apply the memory attribution gate.
+#
+# Finds live memories whose body pins a unit-bearing number next to a
+# citation that does not contain it (docs/backlog/memory-attribution-gate.md
+# §4). Dry run by default: prints counts, a per-cite-kind breakdown and a
+# 30-row sample `me<id>  "<token>"  <cite>` for a human false-positive read.
+# `--apply` adds the closed tag AUDIT:ungrounded-number; it never edits a body.
+#
+# Usage:
+#   scripts/memory-attribution-audit              # dry run
+#   scripts/memory-attribution-audit --apply      # tag flagged memories
+#   scripts/memory-attribution-audit --sample 60
+#
+# Database: PRECIS_DATABASE_URL (default: the dev DB). For prod, export it from
+# the gitignored cluster overlay (scripts/lib/pgb-host.sh), never a literal.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python scripts/_memory_attribution_audit.py "$@"

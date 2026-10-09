@@ -470,7 +470,8 @@ def _link_neighbors(store: Store, ref_id: int) -> str:
     graduated rather than a flat uncapped dump. A truncated block ends with
     a visible ``… +N more`` line (no silent cap); the count is against
     *rendered* (live, non-deleted) neighbours, not raw edges."""
-    return _render_first_hop(*_first_hop(store, ref_id))
+    hop1, refs = _first_hop(store, ref_id)
+    return _render_first_hop(hop1, refs, audit=_audit_flagged(store, refs))
 
 
 def _first_hop(
@@ -509,8 +510,31 @@ def _first_hop(
     return {key: oids for key, oids in live.items() if oids}, refs
 
 
+def _audit_flagged(store: Store, ref_ids: Any) -> frozenset[int]:
+    """Ids among ``ref_ids`` carrying ``AUDIT:ungrounded-number`` (one query),
+    so a ring label can warn the reader before they trust the prose."""
+    ids = [int(i) for i in ref_ids]
+    if not ids:
+        return frozenset()
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT rt.ref_id FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'AUDIT' "
+                "AND t.value = 'ungrounded-number'",
+                (ids,),
+            ).fetchall()
+    except Exception:
+        # A label decoration must never break a render.
+        return frozenset()
+    return frozenset(int(r[0]) for r in rows)
+
+
 def _render_first_hop(
-    by_label: dict[tuple[str, str], list[int]], refs: dict[int, Any]
+    by_label: dict[tuple[str, str], list[int]],
+    refs: dict[int, Any],
+    audit: frozenset[int] = frozenset(),
 ) -> str:
     order = {group: i for i, group in enumerate(RING_GROUPS)}
     lines = ["— linked (1 hop) —"]
@@ -521,18 +545,21 @@ def _render_first_hop(
             lines.append(f"{group}:")
             heading = group
         for oid in live_ids[:_NEIGHBOR_GROUP_CAP]:
-            lines.append(f"  {label}: {_neighbor_label(refs[oid], oid)}")
+            lines.append(
+                f"  {label}: {_neighbor_label(refs[oid], oid, audit=oid in audit)}"
+            )
         if len(live_ids) > _NEIGHBOR_GROUP_CAP:
             lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more")
     return "\n".join(lines) if heading is not None else ""
 
 
-def _neighbor_label(ref: Any, ref_id: int) -> str:
+def _neighbor_label(ref: Any, ref_id: int, *, audit: bool = False) -> str:
     oh = _handle_with_file(getattr(ref, "kind", "?"), ref, ref_id)
     title = " ".join((getattr(ref, "title", None) or "").split())
     if len(title) > _NEIGHBOR_TITLE_CAP:
         title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
-    return f"{oh} — {title}" if title else oh
+    label = f"{oh} — {title}" if title else oh
+    return f"{label}  [AUDIT:ungrounded-number]" if audit else label
 
 
 #: Most ``(kind, label)`` count lines the second hop renders before its
@@ -644,7 +671,12 @@ def _expand_second_hop(
     shown = sorted(ids)[:_SECOND_HOP_EXPAND_CAP]
     refs = store.fetch_refs_by_ids(shown)
     lines = [f"— second hop: {len(ids)} {kind} via {label} —"]
-    lines.extend(f"  {_neighbor_label(refs[i], i)}" for i in shown if i in refs)
+    flagged = _audit_flagged(store, refs)
+    lines.extend(
+        f"  {_neighbor_label(refs[i], i, audit=i in flagged)}"
+        for i in shown
+        if i in refs
+    )
     if len(ids) > len(shown):
         lines.append(f"    … +{len(ids) - len(shown)} more")
     return "\n".join(lines)
@@ -683,6 +715,7 @@ def _recall(store: Store, ref_id: int, kind: str) -> str:
         # chunk; let it match, as `seed_chunk_for_ref` does for the seed.
         card_kinds=("card_combined",),
     )
+    flagged = _audit_flagged(store, {int(ref.id) for _b, ref, _d in hits})
     seen: set[int] = set()
     lines = [f"— recall (nearest by embedding, {'+'.join(kinds)}, k≤{_RECALL_K}) —"]
     for block, ref, dist in hits:
@@ -691,7 +724,9 @@ def _recall(store: Store, ref_id: int, kind: str) -> str:
             continue  # one line per ref: its nearest chunk speaks for it
         seen.add(rid)
         gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
-        lines.append(f"  {_neighbor_label(ref, rid)}  ({1 - dist:.2f})")
+        lines.append(
+            f"  {_neighbor_label(ref, rid, audit=rid in flagged)}  ({1 - dist:.2f})"
+        )
         if gist:
             lines.append(f"    {gist}")
         if len(seen) == _RECALL_K:
@@ -717,7 +752,9 @@ def _rings(
     if ext >= Extent.HOP1:
         hop1, refs = _first_hop(store, ref_id)
         if expand is None:
-            sections.append(_render_first_hop(hop1, refs))
+            sections.append(
+                _render_first_hop(hop1, refs, audit=_audit_flagged(store, refs))
+            )
         if ext >= Extent.HOP2:
             sections.append(_second_hop(store, ref_id, hop1, expand=expand))
     if recall:

@@ -1532,3 +1532,103 @@ def test_mention_connection_loss_cannot_return_success(
     assert persisted_state() == before
     assert failure is not None, "closed mention connection returned false success"
     assert "transaction" in str(failure)
+
+
+# ---------------------------------------------------------------------------
+# Attribution gate (docs/backlog/memory-attribution-gate.md)
+# ---------------------------------------------------------------------------
+
+
+def _audit_tags(store: Store, ref_id: int) -> list[str]:
+    return [str(t) for t in store.tags_for(ref_id) if str(t).startswith("AUDIT:")]
+
+
+def test_attribution_gate_tags_and_advises_on_create(
+    handler: MemoryHandler, store: Store
+) -> None:
+    src = id_of(handler.put(text="source note: the film is thick").body)
+    bad = handler.put(text=f"the scale is ~10 nm per memory:{src}.")
+    bad_id = id_of(bad.body)
+    assert (
+        f'ungrounded: "10 nm" near memory:{src} — not in the cited text; '
+        'drop the attribution or write "(my estimate)"'
+    ) in bad.body
+    assert _audit_tags(store, bad_id) == ["AUDIT:ungrounded-number"]
+    # The header shows the verdict on its own line.
+    assert "AUDIT:ungrounded-number:" in handler.get(id=bad_id).body
+
+    grounded_src = id_of(handler.put(text="source: the scale is about 10 nm").body)
+    ok = handler.put(text=f"the scale is ~10 nm per memory:{grounded_src}.")
+    assert "ungrounded" not in ok.body
+    assert _audit_tags(store, id_of(ok.body)) == []
+
+    own = handler.put(text=f"the scale is ~10 nm (my estimate), cf. memory:{src}.")
+    assert _audit_tags(store, id_of(own.body)) == []
+
+
+def test_attribution_gate_clean_rewrite_clears_tag(
+    handler: MemoryHandler, store: Store
+) -> None:
+    src = id_of(handler.put(text="no figures here").body)
+    mid = id_of(handler.put(text=f"it is 5 nm per memory:{src}.").body)
+    assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
+
+    r = handler.edit(
+        id=mid,
+        mode="find-replace",
+        find="5 nm per",
+        text="small, see",
+    )
+    assert "ungrounded" not in r.body
+    assert _audit_tags(store, mid) == []
+
+    # Anchored edit that reintroduces the miss re-tags and advises.
+    r = handler.edit(id=mid, mode="find-replace", find="small", text="7 nm")
+    assert 'ungrounded: "7 nm"' in r.body
+    assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
+    # Whole-body replace with clean prose clears it again.
+    r = handler.edit(id=mid, mode="replace", text="no figures at all")
+    assert _audit_tags(store, mid) == []
+
+
+def test_attribution_gate_reject_mode(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = id_of(handler.put(text="nothing numeric").body)
+    monkeypatch.setenv("PRECIS_MEMORY_ATTRIBUTION_GATE", "reject")
+    with pytest.raises(BadInput, match="ungrounded") as exc:
+        handler.put(text=f"it is 5 nm per memory:{src}.")
+    assert "my estimate" in (exc.value.next or "")
+    # An unresolvable cite is not a grounding failure, even in reject mode.
+    handler.put(text="it is 5 nm per memory:99999999.")
+
+
+def test_agent_can_tag_audit_on_memory(handler: MemoryHandler, store: Store) -> None:
+    mid = id_of(handler.put(text="plain note").body)
+    handler.tag(id=mid, add=["AUDIT:ungrounded-number"])
+    assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
+
+
+def test_attribution_fail_open_keeps_existing_flag(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = id_of(handler.put(text="no figures here").body)
+    mid = id_of(handler.put(text=f"it is 5 nm per memory:{src}.").body)
+    assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("precis.handlers.memory.ungrounded_cited_numbers", boom)
+    assert handler._attribution_misses("anything 5 nm memory:1") is None
+    handler.edit(id=mid, mode="replace", text="no figures at all")
+    assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
+
+
+def test_attribution_clean_rewrite_keeps_hand_set_flag(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = id_of(handler.put(text="plain note").body)
+    handler.tag(id=mid, add=["AUDIT:ungrounded-number"])  # set_by agent
+    handler.edit(id=mid, mode="replace", text="still plain, no figures")
+    assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]

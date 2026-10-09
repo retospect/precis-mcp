@@ -25,10 +25,19 @@ Semantics (`precis-memory-help`):
     - get(id=N)                    — read title + body + tags
     - get(id='/recent')            — list recent memories
     - search(q=...)                — lexical search over the body chunks
+
+Attribution gate (``handlers/_attribution.py``): every body write
+(create / edit / supersede) checks that a unit-bearing number next to a
+citation token appears in the cited text. A miss tags the memory
+``AUDIT:ungrounded-number`` (system-set, cleared by a clean rewrite) and
+adds an advisory line to the ack; ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject``
+refuses the write instead. A lookup error fails open and changes no tag.
+``scripts/memory-attribution-audit`` retro-applies the same check.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, ClassVar, cast
 
 from psycopg import Connection
@@ -36,6 +45,13 @@ from psycopg.pq import TransactionStatus
 
 from precis.errors import BadInput, Gone, Internal, NotFound, Unsupported
 from precis.handlers._argument_view import render_argument_view
+from precis.handlers._attribution import (
+    AUDIT_VALUE,
+    UngroundedNumber,
+    gate_mode,
+    grounding_failures,
+    ungrounded_cited_numbers,
+)
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -54,6 +70,12 @@ from precis.utils.edit_resolve import (
 )
 from precis.utils.eye_render import RECALL_SUFFIX, render_eye
 from precis.workers.working_set import Extent
+
+log = logging.getLogger(__name__)
+
+#: Derived tag the attribution gate maintains (a number next to a citation
+#: that the cited text does not carry). Docs/backlog/memory-attribution-gate.md.
+_AUDIT_UNGROUNDED = Tag.closed("AUDIT", AUDIT_VALUE)
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
 #: A guardrail, not a quota — the agent can do several small merges.
@@ -384,6 +406,9 @@ class MemoryHandler(NumericRefHandler):
         if tags:
             all_tag_strs.extend(tags)
 
+        # Attribution gate: before any write, so ``reject`` mode leaves nothing.
+        misses = self._attribution_misses(body)
+
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
                 kind=self.kind,
@@ -424,6 +449,8 @@ class MemoryHandler(NumericRefHandler):
                     relation=relation,
                     conn=conn,
                 )
+            if misses:
+                self._apply_attribution_tag(ref.id, misses, conn=conn)
             if self.autolink_mentions:
                 self._sync_mention_links(ref.id, body, conn=conn)
         # Attribute the new memory's body chunk to the current agent run
@@ -434,7 +461,66 @@ class MemoryHandler(NumericRefHandler):
         from precis import agentlog
 
         agentlog.touch_from_env(self.store, chunk_ids=[b.id for b in body_blocks])
-        return self._with_first_line_nudge(self._render_create_ack(ref.id), title)
+        ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
+        return self._with_attribution_advisory(ack, misses)
+
+    # ── attribution gate (docs/backlog/memory-attribution-gate.md) ──
+
+    def _attribution_misses(self, body: str) -> list[UngroundedNumber] | None:
+        """Numbers in ``body`` pinned to a citation whose text lacks them.
+
+        Fails open: a lookup error never blocks a memory write and returns
+        ``None`` ("not checked": callers change no tag). In
+        ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject`` mode a miss raises
+        :class:`BadInput` (before the caller writes anything).
+        """
+        try:
+            misses = grounding_failures(ungrounded_cited_numbers(self.store, body))
+        except Exception:
+            log.warning("memory attribution gate failed open", exc_info=True)
+            return None
+        if misses and gate_mode() == "reject":
+            raise BadInput(
+                "\n".join(m.advisory() for m in misses),
+                next=(
+                    "drop the attribution (remove the handle from that "
+                    "sentence) or mark the figure your own: write "
+                    "'~10 nm (my estimate)'; then retry the write"
+                ),
+            )
+        return misses
+
+    def _apply_attribution_tag(
+        self, ref_id: int, misses: list[UngroundedNumber] | None, *, conn: Connection
+    ) -> None:
+        """Set ``AUDIT:ungrounded-number`` on a miss, clear it on a clean body.
+
+        Derived like ``STALE:retracted-premise``: the latest body decides.
+        ``misses=None`` (gate failed open) changes nothing, and a clean body
+        only clears a tag the gate itself set (``set_by='system'``): a
+        hand-set flag survives.
+        """
+        if misses is None:
+            return
+        if misses:
+            self.store.add_tag(ref_id, _AUDIT_UNGROUNDED, set_by="system", conn=conn)
+            return
+        row = conn.execute(
+            "SELECT rt.set_by FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'AUDIT' AND t.value = %s",
+            (ref_id, AUDIT_VALUE),
+        ).fetchone()
+        if row is not None and row[0] == "system":
+            self.store.remove_tag(ref_id, _AUDIT_UNGROUNDED, conn=conn)
+
+    @staticmethod
+    def _with_attribution_advisory(
+        ack: Response, misses: list[UngroundedNumber] | None
+    ) -> Response:
+        if not misses:
+            return ack
+        lines = "\n".join(m.advisory() for m in misses)
+        return Response(body=f"{ack.body}\n\n{lines}", cost=ack.cost)
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         """Lead the create-ack trailer with the title/first-line convention,
@@ -618,8 +704,13 @@ class MemoryHandler(NumericRefHandler):
             return Response(body=out)
 
         assert text is not None
+        misses = self._attribution_misses(text)
         old_body = self._write_body(
-            ref.id, text, new_title=new_title, meta_patch=meta_patch
+            ref.id,
+            text,
+            new_title=new_title,
+            meta_patch=meta_patch,
+            misses=misses,
         )
         nudge = self._first_line_nudge(new_title) if new_title is not None else None
         old_words = len((old_body or "").split())
@@ -633,7 +724,7 @@ class MemoryHandler(NumericRefHandler):
         body += " view='log' for the full diff."
         if nudge:
             body += f"\n\nhint: {nudge}"
-        return Response(body=body)
+        return self._with_attribution_advisory(Response(body=body), misses)
 
     def _write_body(
         self,
@@ -643,6 +734,7 @@ class MemoryHandler(NumericRefHandler):
         new_title: str | None,
         meta_patch: dict[str, Any],
         expected_body: str | None = None,
+        misses: list[UngroundedNumber] | None = None,
     ) -> str | None:
         """The one body-write path shared by every edit mode.
 
@@ -652,7 +744,10 @@ class MemoryHandler(NumericRefHandler):
         auto-mention links to the new prose. Lock the ref before reading
         the previous body so simultaneous handler writes serialize. An
         anchored edit must still match its snapshot; a conflict rolls back
-        the replacement and its derived-row cascade. Returns the old body.
+        the replacement and its derived-row cascade. ``misses`` is the
+        attribution gate's verdict on ``new_text`` (``None`` = not checked):
+        it sets or clears ``AUDIT:ungrounded-number`` in the same
+        transaction. Returns the old body.
         """
         with self.store.tx() as conn:
             row = conn.execute(
@@ -685,6 +780,8 @@ class MemoryHandler(NumericRefHandler):
             # Re-sync auto-mention links to the rewritten body: drop the old
             # auto links, add the current ones. Hand-added links survive.
             self._sync_mention_links(ref_id, new_text, conn=conn, replace=True)
+            if misses is not None:
+                self._apply_attribution_tag(ref_id, misses, conn=conn)
         return old_body
 
     def _sync_mention_links(
@@ -805,22 +902,27 @@ class MemoryHandler(NumericRefHandler):
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
             return Response(body="\n".join([*header, "", body]))
+        misses = self._attribution_misses(new_body)
         self._write_body(
             ref.id,
             new_body,
             new_title=None,
             meta_patch=meta_patch,
             expected_body=old_body,
+            misses=misses,
         )
         verb = "edited" if op_kind == "edit" else "inserted into"
         n_spans = len(result.edited_spans)
-        return Response(
-            body=(
-                f"{verb} body of {self._sense()} id={ref.id} "
-                f"({len(old_body.split())} → {len(new_body.split())} words, "
-                f"{n_spans} span{'s' if n_spans != 1 else ''}). "
-                "view='log' for the full diff."
-            )
+        return self._with_attribution_advisory(
+            Response(
+                body=(
+                    f"{verb} body of {self._sense()} id={ref.id} "
+                    f"({len(old_body.split())} → {len(new_body.split())} words, "
+                    f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+                    "view='log' for the full diff."
+                )
+            ),
+            misses,
         )
 
     # ── tag: refuse author add/remove of the system-set STALE: axis ──
@@ -895,6 +997,11 @@ class MemoryHandler(NumericRefHandler):
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))
+            if any(str(t) == str(_AUDIT_UNGROUNDED) for t in tags):
+                out.append(
+                    f"{_AUDIT_UNGROUNDED}: a number next to a citation is not "
+                    "in the cited text; check it before trusting it"
+                )
         return "\n".join(out)
 
     def _render_hits_table(self, refs: list[Ref]) -> str:
@@ -1147,6 +1254,7 @@ class MemoryHandler(NumericRefHandler):
             if isinstance(new_title, str) and new_title.strip()
             else _derive_title(new_text)
         )
+        misses = self._attribution_misses(new_text)
         with self.store.tx() as conn:
             survivor = self.store.insert_ref(
                 kind="memory",
@@ -1168,6 +1276,8 @@ class MemoryHandler(NumericRefHandler):
                     replace_prefix=(tag.namespace == "closed"),
                     conn=conn,
                 )
+            if misses:
+                self._apply_attribution_tag(survivor.id, misses, conn=conn)
             for mid in ids:
                 self.store.migrate_links(mid, survivor.id, conn=conn)
                 self.store.add_link(
@@ -1183,12 +1293,15 @@ class MemoryHandler(NumericRefHandler):
                 self.store.retire_ref(mid, conn=conn)
 
         merged = ", ".join(str(m) for m in ids)
-        return Response(
-            body=(
-                f"superseded memories [{merged}] → new memory id={survivor.id} "
-                f"(originals soft-deleted, links migrated, tagged "
-                f"{_DREAM_CONSOLIDATED})"
-            )
+        return self._with_attribution_advisory(
+            Response(
+                body=(
+                    f"superseded memories [{merged}] → new memory id={survivor.id} "
+                    f"(originals soft-deleted, links migrated, tagged "
+                    f"{_DREAM_CONSOLIDATED})"
+                )
+            ),
+            misses,
         )
 
 

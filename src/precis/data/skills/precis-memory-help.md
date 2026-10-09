@@ -240,6 +240,22 @@ an explicit `link()` — reach for it when the reference lives naturally in
 the prose, and `link()` when it doesn't. See `precis-addressing-help` for
 the handle form.
 
+## Numbers next to citations
+
+A unit-bearing number written in the same sentence as a citation
+(`~10 nm per websearch:170350`, `[pc123456]`) must appear in the cited
+text. The write checks this; a miss is tagged `AUDIT:ungrounded-number`
+and the ack lists each one:
+
+```
+ungrounded: "10 nm" near websearch:170350 — not in the cited text; drop the attribution or write "(my estimate)"
+```
+
+Fix it by moving the handle off the figure, or mark the figure yours:
+`~10 nm (my estimate)`. Rewriting the body clears the tag when it is
+clean. If the deployment is set to reject mode, the write is refused
+instead of tagged. Citations that do not resolve are not checked.
+
 ## Promote a research cache to a durable memory
 ## Distil a Sonar deep-research answer into a note
 ## Save the gist of an expensive cache call

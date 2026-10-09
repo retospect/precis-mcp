@@ -146,15 +146,7 @@ def extract_numerics(text: str) -> list[str]:
         return []
     seen: set[str] = set()
     out: list[str] = []
-    for m in _NUMERIC_RE.finditer(text):
-        number = m.group(1)
-        unit = m.group(2)
-        # Special-case ``%`` — print without the space between number
-        # and unit ("12%" is more idiomatic than "12 %" in queries).
-        if unit == "%":
-            token = f"{number}%"
-        else:
-            token = f"{number} {unit}"
+    for token, _start, _end in numeric_spans(text):
         if token in seen:
             continue
         seen.add(token)
@@ -162,4 +154,22 @@ def extract_numerics(text: str) -> list[str]:
     return out
 
 
-__all__ = ["extract_numerics"]
+def numeric_spans(text: str) -> list[tuple[str, int, int]]:
+    """``[(token, start, end), …]`` for every recognized token, in order,
+    **not** deduplicated — for callers that need to know *where* a value
+    sits (the memory attribution gate). ``token`` is spelled exactly as
+    :func:`extract_numerics` spells it."""
+    if not text:
+        return []
+    out: list[tuple[str, int, int]] = []
+    for m in _NUMERIC_RE.finditer(text):
+        number = m.group(1)
+        unit = m.group(2)
+        # Special-case ``%`` — print without the space between number
+        # and unit ("12%" is more idiomatic than "12 %" in queries).
+        token = f"{number}%" if unit == "%" else f"{number} {unit}"
+        out.append((token, m.start(), m.end()))
+    return out
+
+
+__all__ = ["extract_numerics", "numeric_spans"]
