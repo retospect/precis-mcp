@@ -39,6 +39,7 @@ that flip.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -52,6 +53,8 @@ from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 #: Envelope key holding the freeze time.
 FROZEN_AT_KEY = "frozen_at"
@@ -256,3 +259,50 @@ def check_grounding_fresh(
     if not edges:
         return None, []
     return GateViolation(GATE, grounding_stale_message(hub_ref_id, edges)), edges
+
+
+# ── conflict-search coverage at approve ──────────────────────────────────
+#
+# The second freshness question, asked at the OTHER end of the lifecycle:
+# before the string freezes, how current is the hub's "no known conflict"
+# statement (``meta.conflict_search``, docs/backlog/claim-conflict-search.md
+# item 4)? Advisory only — this never becomes a gate: an unreviewed LLM
+# suspicion raises a question (``disputes``), it does not veto.
+
+
+def request_conflict_resweep(
+    store: Store, hub_ref_id: int, hub_meta: dict[str, Any] | None
+) -> tuple[Any, int | None]:
+    """``(coverage, job_id)`` — read the hub's conflict-search ledger
+    (:func:`precis.workers.conflict_search.coverage_status`) and, when it
+    is not fresh, queue a ``refresh`` sweep for it
+    (:func:`~precis.workers.conflict_search.enqueue_conflict_sweep`, one
+    per hub per UTC day; ``None`` when the service is dark or the ledger
+    is fresh). Both the approve page's coverage panel and
+    :func:`precis.nanopub.mint.approve` call this, so a reviewer who
+    opens the page has already asked for the re-sweep by the time they
+    approve. Never raises into approve: an enqueue failure logs and reads
+    as "no job"."""
+    from precis.workers.conflict_search import (
+        coverage_status,
+        enqueue_conflict_sweep,
+    )
+
+    coverage = coverage_status(hub_meta)
+    if coverage.fresh:
+        return coverage, None
+    try:
+        job_id = enqueue_conflict_sweep(
+            store,
+            hub_ref_id,
+            reason=f"refresh:{datetime.now(UTC):%Y-%m-%d}",
+            refresh=True,
+        )
+    except Exception:
+        log.warning(
+            "nanopub: conflict_sweep refresh enqueue failed for fi%d",
+            hub_ref_id,
+            exc_info=True,
+        )
+        job_id = None
+    return coverage, job_id

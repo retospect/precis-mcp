@@ -194,6 +194,14 @@ def approve(
     if violations:
         raise MintGateError(violations)
 
+    # Conflict-search freshness (docs/backlog/claim-conflict-search.md
+    # item 4): advisory only, never a gate. A missing/stale coverage
+    # ledger queues a re-sweep (dark unless the service is enabled) so the
+    # "no known conflict" statement is re-checked against today's corpus;
+    # the approve itself proceeds — a reviewer who has read the page's
+    # coverage panel has made the call with that staleness in view.
+    freshness.request_conflict_resweep(store, hub_ref_id, hub_ref.meta or {})
+
     approved = bundle.sentence.strip()
     from precis.taproot.canon import claim_sha
 

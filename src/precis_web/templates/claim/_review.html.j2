@@ -88,6 +88,52 @@
   </div>
   {% endif %}
 
+  {# Conflict-search coverage ledger (meta.conflict_search): the hub's
+     "no known conflict as of …" statement, or the fact that none can be
+     made yet. Advisory in every state — never withholds the approve form. #}
+  {% set cc = np.conflict_coverage %}
+  {% if cc %}
+  <div class="rounded-lg border {{ 'border-slate-200 bg-slate-50' if cc.fresh else 'border-amber-200 bg-amber-50' }} px-4 py-3 space-y-2 text-sm"
+       data-conflict-coverage="{{ cc.status }}">
+    <h3 class="text-sm font-semibold {{ 'text-slate-700' if cc.fresh else 'text-amber-700' }}">Conflict search coverage — advisory, never blocking</h3>
+    {% if cc.status == 'missing' %}
+    <p class="text-amber-800">Not yet swept for opposition. No statement about conflicting evidence can be made
+      — missing results do not mean none exists.</p>
+    {% elif cc.status == 'stale-version' %}
+    <p class="text-amber-800">Last swept {{ cc.at }} under method v{{ cc.version }}; the current method is
+      v{{ cc.current_version }}. The stored verdicts predate it.</p>
+    {% elif cc.status == 'stale-age' %}
+    <p class="text-amber-800">Last swept {{ cc.at }} (method v{{ cc.version }}) — older than {{ cc.fresh_days }} days,
+      so the corpus has likely grown since.</p>
+    {% else %}
+    <p class="text-slate-700">No known conflict beyond the open questions above, as of {{ cc.at }}
+      (method v{{ cc.version }}): {{ cc.candidates_checked }} candidate passage{{ 's' if cc.candidates_checked != 1 }} verified,
+      {{ cc.disputes_filed }} dispute{{ 's' if cc.disputes_filed != 1 }} filed.</p>
+    {% endif %}
+    {% if cc.status != 'fresh' %}
+      {% if cc.resweep_job_id %}
+      <p class="text-xs text-amber-700/80">Re-sweep requested (job {{ cc.resweep_job_id }}); results land in the open questions above once it runs.</p>
+      {% else %}
+      <p class="text-xs text-amber-700/80">No re-sweep queued — the <code>conflict_search</code> service is off, or this claim is past review.</p>
+      {% endif %}
+    {% endif %}
+    {% if cc.covered %}
+    <details class="text-xs">
+      <summary class="cursor-pointer text-slate-500">Passages covered ({{ cc.covered_total }})</summary>
+      <ul class="mt-1 space-y-0.5">
+        {% for c in cc.covered %}
+        <li>
+          <span class="font-mono {{ 'text-sky-700' if c.verdict == 'disputes' else 'text-slate-400' }}">{{ c.verdict }}</span>
+          {{ c.kind }} {{ ref_link(c.kind, c.ref_id, c.title) }}
+          {% if c.handle %}<span class="font-mono text-slate-400">{{ c.handle }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="grid lg:grid-cols-5 gap-6">
     {# ── the DAG ── #}
     <div class="lg:col-span-3">

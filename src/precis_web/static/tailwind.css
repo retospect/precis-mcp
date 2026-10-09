@@ -2517,6 +2517,10 @@ video {
   color: rgb(180 83 9 / var(--tw-text-opacity, 1));
 }
 
+.text-amber-700\/80 {
+  color: rgb(180 83 9 / 0.8);
+}
+
 .text-amber-800 {
   --tw-text-opacity: 1;
   color: rgb(146 64 14 / var(--tw-text-opacity, 1));

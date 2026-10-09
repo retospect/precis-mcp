@@ -1328,3 +1328,103 @@ def test_re_review_door_reopens_a_reviewed_row(
     resp = client.post(f"/nanopub/fi{hub}/reopen", follow_redirects=False)
     assert resp.status_code == 303
     assert store.nanopub_publish_row(hub).state == "candidate"
+
+
+def test_coverage_panel_states_the_ledger_and_requests_a_resweep(
+    client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The conflict-search coverage panel: a never-swept candidate says so
+    and (service lit) queues one refresh sweep; a fresh ledger reads as a
+    "no known conflict as of" statement with its covered passages; neither
+    ever withholds the approve form."""
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from precis.workers.conflict_search import (
+        CONFLICT_SEARCH_VERSION,
+        CONFLICT_SWEEP_JOB_TYPE,
+    )
+    from precis.workers.service_config import ALL_HOSTS, set_service_prio
+    from precis_web import nanopub_render
+
+    _stub_dedup_judge(monkeypatch)
+    monkeypatch.setattr(
+        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
+    )
+    store = _store(runtime_with_store)
+    paper, chunk, sha = _seed_paper(store)
+    title = "Coverage-panel claim: the anisotropy ratio exceeds 100:1."
+    hub = _seed_hub(store, title, paper, chunk)
+
+    def _jobs() -> list[dict[str, Any]]:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT meta FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+                "AND meta->>'job_type' = %s "
+                "AND (meta->'params'->>'hub_id')::int = %s",
+                (CONFLICT_SWEEP_JOB_TYPE, hub),
+            ).fetchall()
+        return [dict(r[0]) for r in rows]
+
+    # Dark service: the panel says "not yet swept", nothing is queued.
+    page = client.get(f"/claim/fi{hub}")
+    assert page.status_code == 200, page.text
+    assert 'data-conflict-coverage="missing"' in page.text
+    assert "Not yet swept for opposition" in page.text
+    assert "No re-sweep queued" in page.text
+    assert f'action="/nanopub/fi{hub}/approve"' in page.text
+    assert _jobs() == []
+
+    # Lit service: the same render requests exactly one refresh sweep.
+    set_service_prio(store, ALL_HOSTS, "conflict_search", 5)
+    page = client.get(f"/claim/fi{hub}")
+    assert "Re-sweep requested (job" in page.text
+    client.get(f"/claim/fi{hub}")
+    jobs = _jobs()
+    assert len(jobs) == 1
+    assert jobs[0]["params"] == {"hub_id": hub, "refresh": True}
+    assert jobs[0]["idem_key"].startswith(
+        f"{CONFLICT_SWEEP_JOB_TYPE}:{hub}:v{CONFLICT_SEARCH_VERSION}:refresh:"
+    )
+
+    # A fresh ledger renders as the checkable statement + covered list.
+    other = store.insert_ref(
+        kind="paper", slug="covered-src", title="Covered source", meta={}
+    )
+    store.update_ref(
+        hub,
+        meta_patch={
+            "conflict_search": {
+                "version": CONFLICT_SEARCH_VERSION,
+                "at": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+                "candidates_checked": 1,
+                "disputes_filed": 0,
+                "covered": [
+                    {
+                        "ref_id": other.id,
+                        "kind": "paper",
+                        "chunk_id": 999999,
+                        "handle": "pc999999",
+                        "verdict": "no-conflict",
+                    }
+                ],
+            }
+        },
+    )
+    page = client.get(f"/claim/fi{hub}")
+    assert 'data-conflict-coverage="fresh"' in page.text
+    assert "No known conflict beyond the open questions above" in page.text
+    assert "1 candidate passage verified" in page.text
+    assert "Passages covered (1)" in page.text
+    assert "Covered source" in page.text
+    assert "no-conflict" in page.text
+    assert len(_jobs()) == 1  # fresh: no further request
+
+    # Approve is never withheld by coverage, in any state.
+    approved = client.post(
+        f"/nanopub/fi{hub}/approve",
+        data={"title": title, "payload": json.dumps(_payload(chunk, sha))},
+        follow_redirects=False,
+    )
+    assert approved.status_code == 303, approved.text
+    assert store.nanopub_publish_row(hub).state == "reviewed"

@@ -329,6 +329,29 @@ _NOT_CLAIMS_META_KEY = "taproot_not_claims"
 _COMPOSITE_SOURCE_META_KEY = "composite_source"
 
 
+def _enqueue_conflict_sweep(store: Store, hub_ref_id: int, *, conn: Any) -> None:
+    """The mint trigger of docs/backlog/claim-conflict-search.md: queue
+    the new hub's ``conflict_sweep`` job inside the mint savepoint, so a
+    claim is swept for opposition promptly after it exists rather than
+    when the backfill walk reaches it. Best-effort and never a reason a
+    mint fails: the enqueue runs in its own nested savepoint and any
+    failure is logged. Dark unless the ``conflict_search`` service is
+    enabled (:func:`~precis.workers.conflict_search.enqueue_conflict_sweep`
+    returns ``None`` and writes nothing). Local import — ``workers.
+    conflict_search`` imports :data:`HUB_ROLES` from this module."""
+    from precis.workers.conflict_search import enqueue_conflict_sweep
+
+    try:
+        with conn.transaction():
+            enqueue_conflict_sweep(store, hub_ref_id, reason="mint", conn=conn)
+    except Exception:
+        log.warning(
+            "taproot: conflict_sweep enqueue failed for hub %d (mint unaffected)",
+            hub_ref_id,
+            exc_info=True,
+        )
+
+
 def mint_hub(
     store: Store,
     claim: CanonicalClaim,
@@ -368,6 +391,11 @@ def mint_hub(
     applied only on an actual insert — a converge-to-existing branch returns
     the existing hub untouched (:func:`_merge_not_claims_memo` handles the
     non-destructive merge case on the ``attach`` side).
+
+    An actual insert also queues the hub's ``conflict_sweep`` job
+    (:func:`_enqueue_conflict_sweep`, dark unless the ``conflict_search``
+    service is enabled) — every new claim hunts its own opposition
+    shortly after mint, not only when the backfill reaches it.
     """
     paper_id = make_taproot_hub_paper_id(claim.sentence, claim.scope)
     pub_id = make_pub_id(paper_id)
@@ -433,6 +461,7 @@ def mint_hub(
             replace_prefix=True,
             conn=c,
         )
+        _enqueue_conflict_sweep(store, int(ref.id), conn=c)
         log.info("taproot: minted hub ref_id=%s pub_id=%s", ref.id, pub_id)
         return int(ref.id)
 

@@ -11,16 +11,24 @@ never a live LLM.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.store.types import ChunkInsert
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.workers.conflict_search import (
+    CONFLICT_SEARCH_FRESH_DAYS,
     CONFLICT_SEARCH_VERSION,
+    CONFLICT_SWEEP_JOB_TYPE,
     _discover,
+    coverage_counts,
+    coverage_status,
+    enqueue_conflict_sweep,
     run_conflict_search_pass,
+    sweep_one_hub,
 )
+from precis.workers.service_config import ALL_HOSTS, set_service_prio
 from tests.workers._helpers import make_mock_bge_m3, seed_chunk, seed_ref
 
 _SENTENCE = "Pd/C catalyzes Suzuki coupling at room temperature."
@@ -507,3 +515,260 @@ def test_no_embedder_degrades_to_a_no_op(store: Any) -> None:
         "llm_errors": 0,
         "skipped": 0,
     }
+
+
+# ── slice 2: the covered ledger, one-hub door, enqueue + mint trigger ──
+
+
+def _job_rows(store: Any, hub: int) -> list[dict[str, Any]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.meta FROM refs r WHERE r.kind = 'job' "
+            "AND r.retired_at IS NULL AND r.meta->>'job_type' = %s "
+            "AND (r.meta->'params'->>'hub_id')::int = %s ORDER BY r.ref_id",
+            (CONFLICT_SWEEP_JOB_TYPE, hub),
+        ).fetchall()
+    return [{"ref_id": int(r[0]), **dict(r[1] or {})} for r in rows]
+
+
+def _enable_service(store: Any) -> None:
+    set_service_prio(store, ALL_HOSTS, "conflict_search", 5)
+
+
+def test_ledger_records_every_verified_passage_with_its_verdict(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    opposer, opp_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="opp", text="Pd/C does NOT catalyze Suzuki coupling."
+    )
+    neutral, neu_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="neu", text="Pd/C is a common hydrogenation catalyst."
+    )
+
+    def verify(**kw: Any) -> dict[str, Any]:
+        return {
+            "supports": "no",
+            "contradicts": kw["target_cite_key"] == f"paper:{opposer}",
+            "caveats": [],
+        }
+
+    result = run_conflict_search_pass(
+        store, embedder=embedder, negate_fn=_no_negate, verify_fn=verify
+    )
+    assert result["hubs_swept"] == 1
+
+    cs = _hub_meta(store, hub)["conflict_search"]
+    by_chunk = {int(r["chunk_id"]): r for r in cs["covered"]}
+    assert by_chunk[opp_chunk]["verdict"] == "disputes"
+    assert by_chunk[opp_chunk]["handle"] == f"pc{opp_chunk}"
+    assert by_chunk[opp_chunk]["ref_id"] == opposer
+    assert by_chunk[neu_chunk]["verdict"] == "no-conflict"
+    assert by_chunk[neu_chunk]["ref_id"] == neutral
+    assert cs["candidates_checked"] == len(cs["covered"]) == 2
+    assert cs["disputes_filed"] == 1
+
+
+def test_same_version_refresh_skips_covered_chunks_and_merges(store: Any) -> None:
+    """The "never repeat work" rule: a refresh sweep spends verify budget
+    only on chunks the ledger has not seen, and the ledger grows rather
+    than resets."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="first",
+        text="Pd/C is a common hydrogenation catalyst.",
+    )
+    calls: list[dict[str, Any]] = []
+    first = sweep_one_hub(
+        store,
+        embedder=embedder,
+        hub_ref_id=hub,
+        negate_fn=_no_negate,
+        verify_fn=_recording_verify(calls),
+    )
+    assert first is not None and first.swept and first.checked == 1
+    assert first.skipped_covered == 0
+
+    # Not due anymore: without refresh the one-hub door is a no-op.
+    assert (
+        sweep_one_hub(
+            store,
+            embedder=embedder,
+            hub_ref_id=hub,
+            negate_fn=_never_negate,
+            verify_fn=_never_verify,
+        )
+        is None
+    )
+
+    # The corpus grows; a refresh verifies only the new passage.
+    later, later_chunk = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="later",
+        text="Suzuki coupling needs elevated temperature.",
+    )
+    calls.clear()
+    second = sweep_one_hub(
+        store,
+        embedder=embedder,
+        hub_ref_id=hub,
+        refresh=True,
+        negate_fn=_no_negate,
+        verify_fn=_recording_verify(calls),
+    )
+    assert second is not None and second.swept
+    assert second.skipped_covered == 1
+    assert [c["target_cite_key"] for c in calls] == [f"paper:{later}"]
+
+    cs = _hub_meta(store, hub)["conflict_search"]
+    assert {int(r["chunk_id"]) for r in cs["covered"]} >= {later_chunk}
+    assert cs["candidates_checked"] == 2
+
+
+def test_version_bump_discards_the_old_ledger(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    _seed_paper_chunk(store, embedder, cite_key="p", text="Pd/C hydrogenation.")
+    run_conflict_search_pass(
+        store, embedder=embedder, negate_fn=_no_negate, verify_fn=_no_verdict
+    )
+    assert _hub_meta(store, hub)["conflict_search"]["candidates_checked"] == 1
+    _reset_watermark(store, hub)
+    calls: list[dict[str, Any]] = []
+    run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        negate_fn=_no_negate,
+        verify_fn=_recording_verify(calls),
+    )
+    # Re-verified under the new method, ledger rebuilt from scratch.
+    assert len(calls) == 1
+    assert _hub_meta(store, hub)["conflict_search"]["candidates_checked"] == 1
+
+
+def test_sweep_one_hub_ignores_a_non_claim_ref(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    paper = seed_ref(store, kind="paper", title="not a hub")
+    assert (
+        sweep_one_hub(
+            store,
+            embedder=embedder,
+            hub_ref_id=paper,
+            refresh=True,
+            negate_fn=_never_negate,
+            verify_fn=_never_verify,
+        )
+        is None
+    )
+
+
+def test_enqueue_is_dark_until_the_service_row_lights_it(store: Any) -> None:
+    hub = _seed_hub(store)
+    assert enqueue_conflict_sweep(store, hub, reason="test") is None
+    assert _job_rows(store, hub) == []
+
+    _enable_service(store)
+    job_id = enqueue_conflict_sweep(store, hub, reason="test", refresh=True)
+    assert job_id is not None
+    rows = _job_rows(store, hub)
+    assert len(rows) == 1
+    assert rows[0]["ref_id"] == job_id
+    assert rows[0]["executor"] == "claude_inproc"
+    assert rows[0]["params"] == {"hub_id": hub, "refresh": True}
+    assert rows[0]["idem_key"] == (
+        f"{CONFLICT_SWEEP_JOB_TYPE}:{hub}:v{CONFLICT_SEARCH_VERSION}:test"
+    )
+    # Idempotent on the key: same reason returns the live job, mints nothing.
+    assert enqueue_conflict_sweep(store, hub, reason="test") == job_id
+    assert len(_job_rows(store, hub)) == 1
+    # A different reason is a different job.
+    assert enqueue_conflict_sweep(store, hub, reason="other") not in (None, job_id)
+    assert len(_job_rows(store, hub)) == 2
+
+
+def test_mint_hub_queues_the_sweep_when_the_service_is_lit(store: Any) -> None:
+    """The mint trigger: a freshly minted claim hub carries a queued
+    ``conflict_sweep`` job without any nanopub intent; a converge-to-
+    existing mint queues nothing new."""
+    _enable_service(store)
+    hub = _seed_hub(store, "Mint-trigger claim sentence one.")
+    rows = _job_rows(store, hub)
+    assert len(rows) == 1
+    assert rows[0]["idem_key"].endswith(":mint")
+    assert rows[0]["params"] == {"hub_id": hub, "refresh": False}
+
+    again = _seed_hub(store, "Mint-trigger claim sentence one.")
+    assert again == hub
+    assert len(_job_rows(store, hub)) == 1
+
+
+def test_mint_hub_queues_nothing_while_dark(store: Any) -> None:
+    hub = _seed_hub(store, "Dark-service claim sentence.")
+    assert _job_rows(store, hub) == []
+
+
+def test_coverage_status_reads_the_ledger_as_a_statement() -> None:
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    assert coverage_status(None).status == "missing"
+    assert coverage_status({"conflict_search": "garbage"}).status == "missing"
+    fresh = coverage_status(
+        {
+            "conflict_search": {
+                "version": CONFLICT_SEARCH_VERSION,
+                "at": (now - timedelta(days=1)).isoformat(),
+                "candidates_checked": 3,
+                "disputes_filed": 1,
+                "covered": [{"ref_id": 1, "chunk_id": 2, "verdict": "disputes"}],
+            }
+        },
+        now=now,
+    )
+    assert fresh.status == "fresh" and fresh.fresh
+    assert (fresh.candidates_checked, fresh.disputes_filed) == (3, 1)
+    assert len(fresh.covered) == 1
+    old = coverage_status(
+        {
+            "conflict_search": {
+                "version": CONFLICT_SEARCH_VERSION,
+                "at": (
+                    now - timedelta(days=CONFLICT_SEARCH_FRESH_DAYS + 1)
+                ).isoformat(),
+            }
+        },
+        now=now,
+    )
+    assert old.status == "stale-age"
+    older_method = coverage_status(
+        {"conflict_search": {"version": 0, "at": now.isoformat()}}, now=now
+    )
+    assert older_method.status == "stale-version"
+    # A current-version ledger whose ``at`` is unreadable is stale, not fresh.
+    assert (
+        coverage_status(
+            {"conflict_search": {"version": CONFLICT_SEARCH_VERSION, "at": "??"}}
+        ).status
+        == "stale-age"
+    )
+
+
+def test_coverage_counts_is_one_query_over_live_hubs(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    a = _seed_hub(store, "Coverage claim A.")
+    _seed_hub(store, "Coverage claim B.")
+    before = coverage_counts(store)
+    assert before["total"] >= 2 and before["version"] == CONFLICT_SEARCH_VERSION
+    swept_before = before["swept"]
+    assert sweep_one_hub(
+        store,
+        embedder=embedder,
+        hub_ref_id=a,
+        negate_fn=_no_negate,
+        verify_fn=_no_verdict,
+    )
+    after = coverage_counts(store)
+    assert after["swept"] == swept_before + 1
+    _reset_watermark(store, a)
+    assert coverage_counts(store)["swept"] == swept_before

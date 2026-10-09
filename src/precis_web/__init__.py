@@ -23,8 +23,11 @@ as JSON plus ``ring_group`` buckets.
 and reasoning alongside pinned passages, including typed paper, patent
 and finding handles from ``conflict_search``. Pins must name the counterpart
 ref's chunk to avoid attributing an unrelated passage. These are advisory
-records, not adjudications; rendering never refreshes conflict search or
-changes the approval gate.
+records, not adjudications. The coverage panel beside it reads the hub's
+``meta.conflict_search`` ledger as a dated statement; pre-approve, a
+missing or stale ledger *queues* a ``conflict_sweep`` refresh job (one
+per hub per day, dark unless the service is lit) — the web process never
+runs the search itself, and neither panel changes the approval gate.
 
 Gripe summary counts link to the existing list route with exact workflow
 status filters; the live total retains the nonterminal cohort. Filtering

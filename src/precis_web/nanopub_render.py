@@ -167,6 +167,9 @@ def hub_context(
     # reviewed/signed artifact, taproot-merge-mcp-surface.md) — shared by
     # the mint-gates dry-run below and the nearest-claims panel.
     pre_approve = state in (None, "candidate")
+    conflict_coverage = _conflict_coverage_panel(
+        store, hub_id, hub_meta, request_resweep=pre_approve
+    )
     # Pre-approve: the mint gates haven't run for real yet, but they are
     # pure reads — dry-run them against the live sentence + the prefilled
     # grounding so the gates panel shows how the claim stacks up NOW, not
@@ -205,6 +208,7 @@ def hub_context(
         "disputed": disputed,
         "contradicted": _contradicted_panel(contradicted),
         "disputes": open_disputes,
+        "conflict_coverage": conflict_coverage,
         "withheld": _withheld_rows(store, withheld),
         "newer_evidence": newer_evidence,
         "preflight": preflight,
@@ -894,6 +898,68 @@ def _dispute_panel(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+#: How many ``covered`` ledger rows the coverage panel lists (newest first).
+_COVERAGE_LIST_CAP = 12
+
+
+def _conflict_coverage_panel(
+    store: Any, hub_ref_id: int, hub_meta: dict[str, Any], *, request_resweep: bool
+) -> dict[str, Any]:
+    """The conflict-search COVERAGE surface (docs/backlog/claim-conflict-
+    search.md item 4): the hub's ``meta.conflict_search`` ledger read as a
+    statement — "no known conflict as of <at>, method v<version>, N
+    passages checked" — or, when it is missing/stale, the plain fact that
+    no such statement can be made yet. Pre-approve (``request_resweep``)
+    this also asks for the refresh sweep
+    (:func:`precis.nanopub.freshness.request_conflict_resweep`, one per
+    hub per day, dark unless the service is enabled) so the ledger is
+    current before the string freezes; past candidate it is read-only.
+    Advisory in every state — never the blocking banner's data, and
+    never a reason the approve form is withheld."""
+    from precis.nanopub.freshness import request_conflict_resweep
+    from precis.workers.conflict_search import (
+        CONFLICT_SEARCH_FRESH_DAYS,
+        CONFLICT_SEARCH_VERSION,
+        coverage_status,
+    )
+
+    if request_resweep:
+        coverage, job_id = request_conflict_resweep(store, hub_ref_id, hub_meta)
+    else:
+        coverage, job_id = coverage_status(hub_meta), None
+
+    rows = list(reversed(coverage.covered))[:_COVERAGE_LIST_CAP]
+    ref_ids = sorted({int(r["ref_id"]) for r in rows if r.get("ref_id") is not None})
+    try:
+        refs = store.fetch_refs_by_ids(ref_ids) if ref_ids else {}
+    except Exception:
+        log.warning("conflict coverage: ref lookup failed", exc_info=True)
+        refs = {}
+    covered = [
+        {
+            "ref_id": r.get("ref_id"),
+            "kind": r.get("kind") or "",
+            "handle": r.get("handle") or "",
+            "verdict": r.get("verdict") or "",
+            "title": getattr(refs.get(r.get("ref_id")), "title", None) or "",
+        }
+        for r in rows
+    ]
+    return {
+        "status": coverage.status,
+        "fresh": coverage.fresh,
+        "version": coverage.version,
+        "current_version": CONFLICT_SEARCH_VERSION,
+        "fresh_days": CONFLICT_SEARCH_FRESH_DAYS,
+        "at": abs_ts(coverage.at) if coverage.at is not None else "",
+        "candidates_checked": coverage.candidates_checked,
+        "disputes_filed": coverage.disputes_filed,
+        "covered": covered,
+        "covered_total": len(coverage.covered),
+        "resweep_job_id": job_id,
+    }
 
 
 def _contradicted_panel(contradicted: list[Any]) -> list[dict[str, Any]]:

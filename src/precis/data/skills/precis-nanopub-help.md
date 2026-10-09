@@ -30,9 +30,16 @@ stays authoritative; the nanopub is the frozen published form.
 ## What an agent can do
 
 The web approval page's open questions show stored disputing passages,
-support verdicts and reasoning when available. These are advisory, never
-an approval veto. Reading the panel does not re-run conflict search;
-missing results do not establish that no opposition exists.
+support verdicts and reasoning when available. Below them, the
+conflict-search coverage panel reads the hub's `meta.conflict_search`
+ledger as a statement — "no known conflict as of <date>, method
+v<n>, N passages verified" with the covered passages — or says the hub
+was never swept / was swept under an older method / more than 90 days
+ago. Pre-approve, a missing or stale ledger queues one `conflict_sweep`
+refresh job per day (only when the `conflict_search` service is lit);
+the page never runs the search itself. All of this is advisory, never
+an approval veto; missing results do not establish that no opposition
+exists. Details: [[precis-taproot-help]].
 
 - `get(kind='finding', id='fi<id>', view='nanopub')` — the TriG
   rendering. Pre-mint you get an **unsigned draft** (placeholder URI,

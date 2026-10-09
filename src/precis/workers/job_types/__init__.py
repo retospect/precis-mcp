@@ -264,6 +264,16 @@ def _load_reground_claim() -> JobTypeSpec:
     return reground_claim.SPEC
 
 
+def _load_conflict_sweep() -> JobTypeSpec:
+    # Dispatch glue for one claim hub's conflict sweep (negated-paraphrase
+    # ANN + budgeted verify + disputes edge + coverage ledger). Thin: the
+    # mechanism lives in workers/conflict_search.py; this job and the
+    # standing pass are two doors onto the same sweep.
+    from precis.workers.job_types import conflict_sweep
+
+    return conflict_sweep.SPEC
+
+
 def _load_draft_refresh() -> JobTypeSpec:
     # One bounded, section-scoped refresh of a living draft (critique +
     # rewrite against corpus + research-arm evidence, growth-gated apply).
@@ -634,6 +644,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "reground_claim":
         _REGISTRY["reground_claim"] = _load_reground_claim()
         return _REGISTRY["reground_claim"]
+    if name == "conflict_sweep":
+        _REGISTRY["conflict_sweep"] = _load_conflict_sweep()
+        return _REGISTRY["conflict_sweep"]
     if name == "draft_refresh":
         _REGISTRY["draft_refresh"] = _load_draft_refresh()
         return _REGISTRY["draft_refresh"]
@@ -732,6 +745,7 @@ def known_job_types() -> list[str]:
         "taproot_backfill",
         "elsevier_abstract_backfill",
         "reground_claim",
+        "conflict_sweep",
         "draft_refresh",
         "remarkable_send",
         "remarkable_papers_send",

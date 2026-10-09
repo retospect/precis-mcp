@@ -56,11 +56,38 @@ Per hub:
    verdicts). Idempotent on ``links``' endpoint+relation unique index —
    a re-sweep never duplicates it.
 6. **Stamp** — ``meta.conflict_search = {version, at,
-   candidates_checked, disputes_filed}`` written unconditionally on a
-   completed sweep (even a hub with zero candidates: "no known conflict
-   as of <date>" is a checkable statement, not silence), and the claim
-   lease cleared. Coverage (swept/total at the live version) is then one
-   query.
+   candidates_checked, disputes_filed, covered}`` written unconditionally
+   on a completed sweep (even a hub with zero candidates: "no known
+   conflict as of <date>" is a checkable statement, not silence), and the
+   claim lease cleared. Coverage (swept/total at the live version) is
+   then one query (:func:`coverage_counts`). ``covered`` is the per-
+   passage ledger — one ``{ref_id, kind, handle, verdict}`` row per
+   verified candidate (``verdict`` is ``"disputes"`` or
+   ``"no-conflict"``; a verify dispatch failure is not a verdict and is
+   never recorded as covered). A re-sweep at the *same* version skips
+   every chunk already in ``covered`` before spending budget and merges
+   the new rows in, so the ledger is what makes "never repeat work" true
+   for the approve-time refresh below; a version bump discards it (the
+   method changed, so the old verdicts are not comparable).
+
+**Three doors onto the same sweep.** The standing pass
+(:func:`run_conflict_search_pass`) is the retro backfill: it walks the
+watermark cohort a few hubs per tick. :func:`sweep_one_hub` is the same
+negate→search→verify→file→stamp for ONE named hub, with the same lease
+and the same watermark rule unless ``refresh=True`` — it is what the
+``conflict_sweep`` job type (``workers/job_types/conflict_sweep.py``)
+runs. :func:`enqueue_conflict_sweep` mints that job: ``taproot.hub.
+mint_hub`` calls it inside the mint savepoint so a freshly minted claim
+is swept promptly rather than waiting for the backfill walk to reach it,
+and the nanopub approve surface (``nanopub/mint.py::approve``,
+``precis_web/nanopub_render.py``) calls it with ``refresh=True`` when
+:func:`coverage_status` says the ledger is missing, from an older method
+version, or older than :data:`CONFLICT_SEARCH_FRESH_DAYS`. Every door is
+gated on the same ``service_config`` row (``conflict_search`` prio > 0 on
+any host) — a dark service mints no jobs, so enabling the pass is the
+one switch for all three populations. The enqueue is idempotent on
+``meta.idem_key`` (``conflict_sweep:<hub>:v<version>:<reason>``), so a
+mint and a same-day approve-page refresh never queue two sweeps.
 
 Re-derives its own discovery wiring rather than importing
 ``hub_refine``'s underscore-private helpers (a deliberate spec decision,
@@ -80,11 +107,12 @@ import os
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from precis.errors import NotFound
 from precis.store import Store
+from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
     NOT_HYPOTHESIS_PREDICATE_PARAMS,
@@ -101,15 +129,48 @@ from precis.workers._chase_llm import _verify_support_with_caveats
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "CONFLICT_SEARCH_FRESH_DAYS",
     "CONFLICT_SEARCH_VERSION",
+    "CONFLICT_SWEEP_JOB_TYPE",
+    "ConflictCoverage",
     "NegateFn",
+    "SweepOutcome",
     "VerifyFn",
+    "conflict_search_enabled",
+    "coverage_counts",
+    "coverage_status",
+    "enqueue_conflict_sweep",
     "negate_claim",
     "run_conflict_search_pass",
+    "sweep_one_hub",
 ]
 
 #: Bump to re-sweep every hub (the watermark rule, module docstring).
 CONFLICT_SEARCH_VERSION = 1
+
+#: A ledger whose ``at`` is older than this is ``stale-age`` at approve
+#: time (:func:`coverage_status`) — the corpus has grown since, so the
+#: "no known conflict" statement is re-checked before the claim freezes.
+#: Starting point, not tuned: the approve refresh only verifies chunks
+#: NOT already in ``covered``, so a shorter window costs little.
+CONFLICT_SEARCH_FRESH_DAYS = 90
+
+#: The job type :func:`enqueue_conflict_sweep` mints — one named hub's
+#: sweep on the ``claude_inproc`` lane (``workers/job_types/conflict_sweep.py``).
+CONFLICT_SWEEP_JOB_TYPE = "conflict_sweep"
+
+#: The ``service_config`` service every door of this module is gated on.
+_SERVICE_NAME = "conflict_search"
+
+#: Background priority for a minted sweep job — same tier the other
+#: system-minted maintenance jobs use (``draft_refresh_scan``,
+#: ``diagnose_scan``: ``_MINT_PRIO = 8``).
+_SWEEP_JOB_PRIO = 8
+
+#: Upper bound on ``meta.conflict_search.covered`` rows kept per hub —
+#: oldest rows fall off first (and so become re-verifiable). Six verify
+#: slots per sweep means this is years of daily refreshes for one hub.
+_COVERED_CAP = 200
 
 #: Default hubs claimed per pass invocation — mirrors
 #: ``hub_refine.py::_hubs_per_pass``'s env-int shape.
@@ -173,23 +234,38 @@ def _verify_budget() -> int:
 
 # ── cohort + claim-and-lease ────────────────────────────────────────────
 
+#: A live claim hub, not a hypothesis — the population every door sweeps.
+_LIVE_HUB_SQL = f"""\
+    r.kind = 'finding'
+       AND r.retired_at IS NULL
+       AND {claim_hub_predicate_sql()}
+       AND {not_hypothesis_predicate_sql()}
+"""
+
+#: The watermark rule: coverage missing, or from an older method version.
+_DUE_SQL = """\
+    (
+             r.meta->'conflict_search'->>'version' IS NULL
+             OR (r.meta->'conflict_search'->>'version')::int < %(version)s
+    )
+"""
+
+#: Not currently leased by another in-flight sweep (TTL-expired counts as free).
+_LEASE_FREE_SQL = """\
+    (r.meta->>'conflict_search_claimed_at' IS NULL
+            OR (r.meta->>'conflict_search_claimed_at')::timestamptz
+                 < now() - make_interval(mins => %(ttl_min)s))
+"""
+
 #: Live claim hubs, not a hypothesis, whose conflict-search coverage is
 #: missing or stale, not currently leased by another node's in-flight
 #: sweep. Mirrors ``hub_tagline.py``'s ``_COHORT_SQL`` shape.
 _COHORT_SQL = f"""\
     SELECT r.ref_id, r.title, r.meta
       FROM refs r
-     WHERE r.kind = 'finding'
-       AND r.retired_at IS NULL
-       AND {claim_hub_predicate_sql()}
-       AND {not_hypothesis_predicate_sql()}
-       AND (
-             r.meta->'conflict_search'->>'version' IS NULL
-             OR (r.meta->'conflict_search'->>'version')::int < %(version)s
-           )
-       AND (r.meta->>'conflict_search_claimed_at' IS NULL
-            OR (r.meta->>'conflict_search_claimed_at')::timestamptz
-                 < now() - make_interval(mins => %(ttl_min)s))
+     WHERE {_LIVE_HUB_SQL}
+       AND {_DUE_SQL}
+       AND {_LEASE_FREE_SQL}
      ORDER BY r.ref_id
      LIMIT %(limit)s
        FOR UPDATE OF r SKIP LOCKED
@@ -230,6 +306,41 @@ def _claim_hubs(store: Store, *, limit: int) -> list[tuple[int, str, dict[str, A
     claimed = [(int(r[0]), str(r[1] or ""), dict(r[2] or {})) for r in rows]
     claimed.sort(key=lambda c: c[0])
     return claimed
+
+
+def _claim_one_hub(
+    store: Store, hub_ref_id: int, *, refresh: bool
+) -> tuple[str, dict[str, Any]] | None:
+    """Atomically claim ONE named hub for a sweep: ``(title, meta)``, or
+    ``None`` when it is not claimable — not a live claim hub, leased by
+    an in-flight sweep, or (unless ``refresh``) already at the current
+    version. Same lease stamp as :func:`_claim_hubs`, so a job and the
+    standing pass never both pay for the same hub inside the TTL."""
+    due = "TRUE" if refresh else _DUE_SQL
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"""
+            UPDATE refs r
+               SET meta = r.meta || jsonb_build_object(
+                             'conflict_search_claimed_at', now()::text)
+             WHERE r.ref_id = %(hub)s
+               AND {_LIVE_HUB_SQL}
+               AND {due}
+               AND {_LEASE_FREE_SQL}
+             RETURNING r.title, r.meta
+            """,
+            {
+                **CLAIM_HUB_PREDICATE_PARAMS,
+                **NOT_HYPOTHESIS_PREDICATE_PARAMS,
+                "hub": hub_ref_id,
+                "version": CONFLICT_SEARCH_VERSION,
+                "ttl_min": _CLAIM_TTL_MIN,
+            },
+        ).fetchone()
+        conn.commit()
+    if row is None:
+        return None
+    return str(row[0] or ""), dict(row[1] or {})
 
 
 # ── negate — MEDIUM, 1-3 opposing paraphrases ───────────────────────────
@@ -512,12 +623,59 @@ VerifyFn = Callable[..., "dict[str, Any] | None"]
 
 
 @dataclass(frozen=True)
-class _SweepResult:
+class SweepOutcome:
+    """One hub's sweep result. ``swept`` is a completed, stamped sweep;
+    ``vanished`` means the hub was deleted between claim and stamp.
+    ``checked`` counts verify calls spent this sweep (dispatch failures
+    included — they are in ``llm_errors`` too); ``skipped_covered`` is
+    how many discovered chunks the ledger let this sweep skip."""
+
     swept: bool
     checked: int
     disputes_filed: int
     llm_errors: int
     vanished: bool = False
+    skipped_covered: int = 0
+
+
+#: Backwards-compatible alias for the pre-slice-2 private name.
+_SweepResult = SweepOutcome
+
+
+def _prior_ledger(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """The hub's existing ``meta.conflict_search`` iff it is at the
+    current version — an older version's verdicts came from a different
+    method and are not carried forward."""
+    prior = meta.get("conflict_search")
+    if not isinstance(prior, dict):
+        return None
+    try:
+        if int(prior.get("version") or 0) != CONFLICT_SEARCH_VERSION:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return prior
+
+
+def _covered_rows(ledger: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if ledger is None:
+        return []
+    raw = ledger.get("covered")
+    return (
+        [dict(r) for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    )
+
+
+def _covered_chunk_ids(rows: list[dict[str, Any]]) -> set[int]:
+    """Chunk ids already verified. A row without a usable ``chunk_id`` is
+    simply not skipped — re-verifying is the safe failure."""
+    out: set[int] = set()
+    for r in rows:
+        try:
+            out.add(int(r["chunk_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 def _sweep_hub(
@@ -566,8 +724,15 @@ def _sweep_hub(
         topk=topk,
     )
     candidates = _filter_finding_candidates(store, candidates)
-    _attach_read_first(store, candidates)
-    selected = _select_for_verify(candidates, verify_budget)
+    # The ledger: chunks verified by an earlier sweep at this version
+    # never take a budget slot again (module docstring step 6).
+    prior = _prior_ledger(meta)
+    covered = _covered_rows(prior)
+    already = _covered_chunk_ids(covered)
+    fresh_candidates = [c for c in candidates if c.chunk_id not in already]
+    skipped_covered = len(candidates) - len(fresh_candidates)
+    _attach_read_first(store, fresh_candidates)
+    selected = _select_for_verify(fresh_candidates, verify_budget)
 
     checked = 0
     disputes_filed = 0
@@ -594,10 +759,18 @@ def _sweep_hub(
         if verdict is None:
             llm_errors += 1
             continue
-        if verdict.get("contradicts") is True:
-            handle = handle_registry.try_format(
-                cand.ref_kind, cand.chunk_id, chunk=True
-            )
+        handle = handle_registry.try_format(cand.ref_kind, cand.chunk_id, chunk=True)
+        contradicts = verdict.get("contradicts") is True
+        covered.append(
+            {
+                "ref_id": cand.ref_id,
+                "kind": cand.ref_kind,
+                "chunk_id": cand.chunk_id,
+                "handle": handle,
+                "verdict": "disputes" if contradicts else "no-conflict",
+            }
+        )
+        if contradicts:
             # ``support`` is hardcoded "no", never read off the verdict's
             # own ``supports`` field: the edge exists BECAUSE contradicts
             # is True, while the verify prompt decides ``supports``
@@ -620,6 +793,10 @@ def _sweep_hub(
             )
             disputes_filed += 1
 
+    # Cumulative at this version: the ledger merges, never resets, until
+    # the method version bumps (``_prior_ledger`` drops an older one).
+    covered = covered[-_COVERED_CAP:]
+    prior_filed = int((prior or {}).get("disputes_filed") or 0)
     try:
         store.update_ref(
             hub_ref_id,
@@ -627,26 +804,29 @@ def _sweep_hub(
                 "conflict_search": {
                     "version": CONFLICT_SEARCH_VERSION,
                     "at": datetime.now(UTC).isoformat(),
-                    "candidates_checked": checked,
-                    "disputes_filed": disputes_filed,
+                    "candidates_checked": len(covered),
+                    "disputes_filed": prior_filed + disputes_filed,
+                    "covered": covered,
                 },
                 "conflict_search_claimed_at": None,
             },
         )
     except NotFound:
-        return _SweepResult(
+        return SweepOutcome(
             swept=False,
             checked=checked,
             disputes_filed=disputes_filed,
             llm_errors=llm_errors,
             vanished=True,
+            skipped_covered=skipped_covered,
         )
 
-    return _SweepResult(
+    return SweepOutcome(
         swept=True,
         checked=checked,
         disputes_filed=disputes_filed,
         llm_errors=llm_errors,
+        skipped_covered=skipped_covered,
     )
 
 
@@ -723,3 +903,249 @@ def run_conflict_search_pass(
             result["skipped"] += 1
 
     return result
+
+
+# ── one named hub (the job type's door) ──────────────────────────────────
+
+
+def sweep_one_hub(
+    store: Store,
+    *,
+    embedder: Any,
+    hub_ref_id: int,
+    refresh: bool = False,
+    negate_fn: NegateFn | None = None,
+    verify_fn: VerifyFn | None = None,
+) -> SweepOutcome | None:
+    """Sweep ONE named claim hub — the same negate → search → rank/floor →
+    verify → file → stamp as the standing pass, for the ``conflict_sweep``
+    job type. Claims the hub through the same lease as the pass
+    (:func:`_claim_one_hub`); honours the watermark unless ``refresh`` —
+    the approve-time freshness re-sweep sets it, and the ledger (module
+    docstring step 6) keeps a refresh from re-verifying anything already
+    covered.
+
+    Returns ``None`` when the hub is not claimable (not a live claim hub,
+    already at the current version without ``refresh``, or leased by an
+    in-flight sweep) — a no-op, not a failure. ``embedder is None`` is
+    also ``None``, mirroring the pass's degrade.
+    """
+    if embedder is None:
+        log.warning("conflict_search: embedder unavailable -- sweep_one_hub no-ops")
+        return None
+    claimed = _claim_one_hub(store, hub_ref_id, refresh=refresh)
+    if claimed is None:
+        return None
+    title, meta = claimed
+    return _sweep_hub(
+        store,
+        embedder,
+        hub_ref_id=hub_ref_id,
+        title=title,
+        meta=meta,
+        negate_fn=negate_fn or negate_claim,
+        verify_fn=verify_fn or _verify_support_with_caveats,
+        topk=_topk(),
+        verify_budget=_verify_budget(),
+    )
+
+
+# ── enqueue (mint trigger + approve-time refresh) ────────────────────────
+
+
+def conflict_search_enabled(store: Store, *, conn: Any = None) -> bool:
+    """True iff a ``service_config`` row enables ``conflict_search`` (prio
+    > 0) on ANY host. The mint trigger and the approve refresh run in the
+    MCP/web process, which is never the host that runs the pass, so the
+    per-host resolver (``ServiceConfigResolver``) is the wrong question
+    here — "is the service lit anywhere" is. Never raises: a missing
+    table or a connection blip reads as dark (no job minted), the same
+    fail-closed default the resolver has."""
+
+    def _q(c: Any) -> bool:
+        row = c.execute(
+            "SELECT 1 FROM service_config WHERE service = %s AND prio > 0 LIMIT 1",
+            (_SERVICE_NAME,),
+        ).fetchone()
+        return row is not None
+
+    try:
+        if conn is not None:
+            return _q(conn)
+        with store.pool.connection() as c:
+            return _q(c)
+    except Exception:
+        log.warning("conflict_search: service_config lookup failed", exc_info=True)
+        return False
+
+
+def _sweep_idem_key(hub_ref_id: int, reason: str) -> str:
+    return f"{CONFLICT_SWEEP_JOB_TYPE}:{hub_ref_id}:v{CONFLICT_SEARCH_VERSION}:{reason}"
+
+
+def enqueue_conflict_sweep(
+    store: Store,
+    hub_ref_id: int,
+    *,
+    reason: str,
+    refresh: bool = False,
+    conn: Any = None,
+) -> int | None:
+    """Mint ONE ``conflict_sweep`` job for ``hub_ref_id``, or return the
+    live job already holding its idem key. ``None`` when the service is
+    dark (:func:`conflict_search_enabled`) — a dark service mints no
+    jobs, so the ``service_config`` row is the one switch for the pass,
+    the mint trigger and the approve refresh alike.
+
+    ``reason`` scopes the idem key (``conflict_sweep:<hub>:v<version>:
+    <reason>``): ``"mint"`` from :func:`precis.taproot.hub.mint_hub`,
+    ``"refresh:<UTC date>"`` from the approve surface (at most one
+    refresh per hub per day). Same direct-``insert_ref`` + idem-guarded
+    shape as ``draft_refresh_scan._mint`` / ``diagnose_scan._mint``:
+    parentless, ``STATUS:queued``, ``claude_inproc``. ``conn=`` joins the
+    caller's transaction (the mint savepoint) so a rolled-back mint
+    leaves no orphan job.
+    """
+
+    def _do(c: Any) -> int | None:
+        if not conflict_search_enabled(store, conn=c):
+            return None
+        idem_key = _sweep_idem_key(hub_ref_id, reason)
+        existing = c.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+            "AND meta->>'idem_key' = %s LIMIT 1",
+            (idem_key,),
+        ).fetchone()
+        if existing is not None:
+            return int(existing[0])
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"{CONFLICT_SWEEP_JOB_TYPE} (fi{hub_ref_id}: {reason})",
+            meta={
+                "job_type": CONFLICT_SWEEP_JOB_TYPE,
+                "executor": "claude_inproc",
+                "params": {"hub_id": hub_ref_id, "refresh": bool(refresh)},
+                "idem_key": idem_key,
+            },
+            prio=_SWEEP_JOB_PRIO,
+            conn=c,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "queued"),
+            set_by="system",
+            replace_prefix=True,
+            conn=c,
+        )
+        log.info(
+            "conflict_search: minted %s job id=%d for fi%d (%s)",
+            CONFLICT_SWEEP_JOB_TYPE,
+            ref.id,
+            hub_ref_id,
+            reason,
+        )
+        return int(ref.id)
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
+# ── coverage reads (the ledger as a statement) ───────────────────────────
+
+CoverageStatus = Literal["fresh", "stale-age", "stale-version", "missing"]
+
+
+@dataclass(frozen=True)
+class ConflictCoverage:
+    """One hub's ``meta.conflict_search`` read as a checkable statement.
+
+    ``status``: ``fresh`` (swept by the current method within
+    :data:`CONFLICT_SEARCH_FRESH_DAYS`), ``stale-age`` (current method,
+    older sweep), ``stale-version`` (an earlier method), ``missing``
+    (never swept — says nothing about opposition, in either direction).
+    """
+
+    status: CoverageStatus
+    version: int | None
+    at: datetime | None
+    candidates_checked: int
+    disputes_filed: int
+    covered: list[dict[str, Any]]
+
+    @property
+    def fresh(self) -> bool:
+        return self.status == "fresh"
+
+
+def coverage_status(
+    meta: dict[str, Any] | None, *, now: datetime | None = None
+) -> ConflictCoverage:
+    """Pure read of a hub's ledger — no DB. Malformed fields degrade to
+    ``missing`` rather than raise: the approve page must render whatever
+    an older sweep wrote."""
+    ledger = (meta or {}).get("conflict_search")
+    if not isinstance(ledger, dict):
+        return ConflictCoverage("missing", None, None, 0, 0, [])
+    try:
+        raw_version = ledger.get("version")
+        if not isinstance(raw_version, (int, str)):
+            raise TypeError("version missing")
+        version = int(raw_version)
+    except (TypeError, ValueError):
+        return ConflictCoverage("missing", None, None, 0, 0, [])
+    at: datetime | None
+    try:
+        at = datetime.fromisoformat(str(ledger.get("at")))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        at = None
+
+    def _int(key: str) -> int:
+        try:
+            return int(ledger.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    covered = _covered_rows(ledger)
+    status: CoverageStatus
+    if version < CONFLICT_SEARCH_VERSION:
+        status = "stale-version"
+    elif at is None or (now or datetime.now(UTC)) - at > timedelta(
+        days=CONFLICT_SEARCH_FRESH_DAYS
+    ):
+        status = "stale-age"
+    else:
+        status = "fresh"
+    return ConflictCoverage(
+        status, version, at, _int("candidates_checked"), _int("disputes_filed"), covered
+    )
+
+
+def coverage_counts(store: Store) -> dict[str, int]:
+    """``{swept, total, version}`` — how many live claim hubs carry a
+    ledger at the current method version, out of all live claim hubs. The
+    "coverage is one query" acceptance criterion; bumping the version
+    drops ``swept`` to zero until the backfill walks everyone again."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT count(*) AS total,
+                   count(*) FILTER (
+                     WHERE (r.meta->'conflict_search'->>'version')::int
+                           >= %(version)s
+                   ) AS swept
+              FROM refs r
+             WHERE {_LIVE_HUB_SQL}
+            """,
+            {
+                **CLAIM_HUB_PREDICATE_PARAMS,
+                **NOT_HYPOTHESIS_PREDICATE_PARAMS,
+                "version": CONFLICT_SEARCH_VERSION,
+            },
+        ).fetchone()
+    total, swept = (int(row[0]), int(row[1])) if row is not None else (0, 0)
+    return {"swept": swept, "total": total, "version": CONFLICT_SEARCH_VERSION}

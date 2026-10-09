@@ -63,18 +63,31 @@ converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
 the held `cites` graph). No intra-supporter citation edge held → every
 supporter stays `corroborates` (never guessed).
 
-**Every hub hunts its own opposition.** The `conflict_search` worker
-pass (dark until enabled) sweeps live claim hubs: LLM-negated
-paraphrases of the claim are ANN-searched over paper/patent/hub
-passages ("X has no effect" sits far from "X enhances" in embedding
-space), the hits are verify-budgeted by `paper_rank` with a reserved
-floor for low-prestige sources, and a confirmed opposing passage is
-filed as a `disputes` edge (`meta.via='conflict_search'`). The hub's
-`meta.conflict_search = {version, at, candidates_checked,
-disputes_filed}` is the coverage ledger — "no known conflict as of
-`at`, method `version`" is a checkable statement, not silence; a
-missing or stale-version ledger means the hub was never swept by the
-current method.
+## The evidence model — conflict search and inbound grounding
+
+**Every hub hunts its own opposition.** One sweep, three doors, one
+switch (the `conflict_search` service stays dark until you ask a human
+operator to give it a priority).
+The sweep: LLM-negated paraphrases of the claim are ANN-searched over
+paper/patent/hub passages ("X has no effect" sits far from "X enhances"
+in embedding space), the hits are verify-budgeted by `paper_rank` with
+a reserved floor for low-prestige sources, and a confirmed opposing
+passage is filed as a `disputes` edge (`meta.via='conflict_search'`).
+The doors: the `conflict_search` worker pass walks every hub whose
+ledger is missing or from an older method version (the retro
+backfill); minting a hub queues a `conflict_sweep` job for it (swept
+shortly after it exists, no nanopub intent needed); the claim approve
+page queues a `refresh` sweep when the ledger is missing or stale. The
+hub's `meta.conflict_search = {version, at, candidates_checked,
+disputes_filed, covered}` is the coverage ledger — "no known conflict
+as of `at`, method `version`" is a checkable statement, not silence;
+`covered` lists every verified passage (`{ref_id, kind, handle,
+verdict: disputes|no-conflict}`), and a re-sweep at the same version
+never re-verifies one of them. A missing ledger says nothing about
+opposition in either direction. By hand:
+`put(kind='job', job_type='conflict_sweep', params={'hub_id': <fi id>,
+'refresh': true})`; coverage over the corpus is
+`conflict_search.coverage_counts()` (swept/total at the live version).
 
 **A new paper is checked against the claim set as it lands.** The
 `inbound_ground` worker pass (dark until enabled) takes each paper whose
@@ -88,6 +101,8 @@ the hub's rejection memo only. No citation path is needed. The paper
 carries an `INBOUND_GROUND:<version>` tag once grounded; its
 `ref_events` row (`source='inbound_ground'`) says how many hubs matched
 and were verified.
+
+## The evidence model — composite hubs
 
 **A composite hub holds no direct evidence.** When a claim decomposes into
 several atomic sub-claims, the bundling sentence gets its own hub — cite-able,

@@ -105,6 +105,7 @@ next section.
 | `elsevier_abstract_backfill` | `claude_inproc` | Re-arm an operator-confirmed Elsevier preview cohort for re-fetch (stamps the existing `markup_refetch`/`oa_requeued` pins; bodies, hashes and events stay until a validated replacement ingests). Params: explicit `ref_ids`, `expected_count` (must equal `len(ref_ids)`), `dry_run` (default `true`). No provider or model call; never derives the cohort from body length. |
 | `good_search`       | `coordinator`   | Deep paper-search campaign — normally minted for you by `search(kind='paper', q=…, good=True)`, not submitted by hand (see `precis-search-help`) |
 | `good_search_triage`| `claude_inproc` | A `good_search` triage batch (internal — the campaign spawns these itself) |
+| `conflict_sweep`    | `claude_inproc` | One claim hub hunts its opposition: negated-paraphrase ANN over the corpus, `paper_rank`-budgeted LLM verify, `disputes` edge on a confirmed contradicts, `meta.conflict_search` coverage ledger stamped. Minted for you at claim mint and by the approve page's freshness check (dark unless the `conflict_search` service is lit); by hand: params `hub_id` (the `fi<id>` ref_id), optional `refresh` (sweep even if already current — covered passages are still skipped). See `precis-taproot-help`. |
 
 ## Which job types run compute or code?
 ## Run a relax, a Pourbaix verdict or a sandbox build
