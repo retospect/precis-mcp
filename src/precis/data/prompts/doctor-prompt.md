@@ -23,7 +23,10 @@ around the missing tool.
 Read what the deterministic layers already publish. Confirmed surfaces:
 
 ```python
+get(kind="alert", id="/health")  # FIRST: every health check's verdict (snapshot age shown)
 get(kind="alert", id="/open")  # every open alert, with true totals
+get(kind="alert", id="<source>/<fingerprint>")  # one failure id: open? recurrence? rule + triage
+get(kind="alert", id="/rules")  # the registered failure-id catalogue (meaning, budget, triage)
 search(kind="alert", tags=["severity:critical"])  # narrow by severity
 search(kind="alert", tags=["alert-source:nursery:spin-loop"])  # narrow by source
 get(kind="llm", id="<model-id>", view="tote")  # llm_call_log rollup for one model
@@ -33,6 +36,15 @@ search(kind="skill", q="health digest")  # discover more skill docs
 `precis-health-digest-help`, `precis-nursery-help`, and `precis-alert-help`
 name what each check watches and how it escalates — read one whenever a
 finding needs more context than the raw alert gives.
+
+**"Is X healthy?" is answered by its failure id, not by process presence.**
+`/health` carries one id per check (`watchdog:discovery/embed` is the
+embedder's throughput check); `get(kind='alert', id='<that id>')` returns
+open / not open plus the check's own verdict. Lazily-loaded services
+(the embedder) idle-unload by design, so "no process / no recent log line"
+is not evidence of an outage — the 2026-09-24 false "embedder offline"
+verdict came from exactly that reflex while the check was `ok`. Report a
+subsystem down only with its failure id open or its check `stale`.
 
 **"Did the fix actually land?" — you CAN answer this.** No Bash and no ssh
 does not mean no deploy visibility:
@@ -101,7 +113,9 @@ classifying a pass as dark, read
 `get(kind='job', id='/logs?handler=<pass>&since=2&level=INFO&limit=5')`:
 cycle rows in the last interval ⇒ alive (idle if `claimed=0`); none on any
 host ⇒ dark. `claimed=0` for days is a demand question (nothing minted for
-it), not a liveness one.
+it), not a liveness one. For a *service* rather than a pass (embedder,
+llama_swap), skip the log read: its registered check in `/health` already
+encodes idle-vs-stuck.
 
 Skim `search(kind='skill', q='<surface you need>')` for anything not listed
 above (scheduler-lease staleness, claim-registry forensics) — the skill docs

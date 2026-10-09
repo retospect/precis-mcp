@@ -37,6 +37,18 @@ safety / uniform shape).
 Severity is advisory (``info`` / ``warn`` / ``critical``) — it drives
 sort + colour in the UI, nothing gates on it.
 
+**Failure ids.** ``(alert_source, fingerprint)`` is the failure id, spelt
+``<source>/<fingerprint>`` (split on the first ``/`` — fingerprints may
+contain one, sources never may; :func:`raise_alert` rejects a ``/`` in
+``source`` and an empty fingerprint). Every emitted id belongs to a rule
+in :mod:`precis.alert_ids`; ``raise_alert`` resolves the rule and stamps
+``meta.rule_id`` on the row (unregistered → logged, not refused — the
+registry's totality is enforced by ``tests/test_alert_ids.py``, and a
+production raise must never fail on a catalogue gap). Recurrence is the
+set of rows sharing the id (dedup is among *open* rows only, so a
+resolve → re-raise mints a new row): :func:`alert_history` reads that
+set for the agent-facing ``get(kind='alert', id='<source>/<fingerprint>')``.
+
 Alerts are intentionally NOT embedded: the body lives in ``refs.title``
 + ``meta`` and no ``card_combined`` chunk is minted, so the embed /
 chunk_keywords workers skip them and they never reach semantic search.
@@ -51,6 +63,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis import alert_ids
 from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
@@ -132,8 +145,23 @@ def raise_alert(
     above, so a slowly-changing value can be up to the throttle window
     stale on a repeat sighting — fine for advisory signage.
     """
+    if "/" in source:
+        raise ValueError(
+            f"alert source {source!r} may not contain '/': the composite id "
+            "<source>/<fingerprint> splits on the first slash"
+        )
+    if not fingerprint:
+        raise ValueError(f"alert fingerprint for source {source!r} must be non-empty")
     severity = _norm_severity(severity)
     throttle = timedelta(seconds=_throttle_seconds())
+    rule_id = alert_ids.rule_id(source, fingerprint)
+    if rule_id is None:
+        log.warning(
+            "raise_alert: unregistered failure id %s/%s — add an AlertRule to "
+            "precis.alert_ids",
+            source,
+            fingerprint,
+        )
 
     def _do() -> tuple[int, bool]:
         with store.tx() as conn:
@@ -215,6 +243,8 @@ def raise_alert(
                         "severity": severity,
                         "detail": detail,
                     }
+                    if rule_id is not None:
+                        patch["rule_id"] = rule_id
                     if extra_meta:
                         patch.update(extra_meta)
                     store.update_ref(ref_id, title=title, meta_patch=patch, conn=conn)
@@ -230,6 +260,8 @@ def raise_alert(
                 "detail": detail,
                 "seen_count": 1,
             }
+            if rule_id is not None:
+                meta["rule_id"] = rule_id
             if subject_ref_id is not None:
                 meta["subject_ref_id"] = int(subject_ref_id)
             if extra_meta:
@@ -574,6 +606,71 @@ def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
     ]
 
 
+def alert_history(store: Store, *, source: str, fingerprint: str) -> dict[str, Any]:
+    """Everything the failure id ``<source>/<fingerprint>`` has ever done.
+
+    The agent-facing single-id read (``get(kind='alert',
+    id='watchdog:discovery/embed')``): is it open *now*, and has it come
+    back before? ``state`` is ``"open"`` when a live open row exists
+    (``open`` carries that row's ref_id / severity / seen_count /
+    timestamps), else ``"resolved"`` when only history exists, else
+    ``"never"`` — a well-formed "not broken" answer, never NotFound, so
+    "is X broken?" can be answered "no". ``recurrence`` counts every row
+    sharing the id (open + resolved + retired); ``first_seen`` /
+    ``last_seen`` span them; ``last_resolved_at`` is the newest close.
+    """
+    with store.pool.connection() as conn:
+        agg = conn.execute(
+            """
+            SELECT count(*), min(created_at), max(updated_at), max(resolved_at)
+              FROM refs
+             WHERE kind = 'alert'
+               AND COALESCE(alert_source, meta->>'alert_source') = %s
+               AND COALESCE(fingerprint, meta->>'fingerprint') = %s
+            """,
+            (source, fingerprint),
+        ).fetchone()
+        live = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.meta->>'severity',
+                   COALESCE((r.meta->>'seen_count')::int, 1),
+                   r.meta->>'detail', r.created_at, r.updated_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'alert' AND r.retired_at IS NULL
+               AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
+               AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
+               AND t.namespace = 'OPEN' AND t.value = %s
+             ORDER BY r.created_at DESC
+             LIMIT 1
+            """,
+            (source, fingerprint, STATE_OPEN),
+        ).fetchone()
+    recurrence = int(agg[0]) if agg and agg[0] else 0
+    out: dict[str, Any] = {
+        "source": source,
+        "fingerprint": fingerprint,
+        "state": "open" if live else ("resolved" if recurrence else "never"),
+        "recurrence": recurrence,
+        "first_seen": agg[1] if agg else None,
+        "last_seen": agg[2] if agg else None,
+        "last_resolved_at": agg[3] if agg else None,
+        "open": None,
+    }
+    if live:
+        out["open"] = {
+            "ref_id": int(live[0]),
+            "title": live[1],
+            "severity": live[2],
+            "seen_count": int(live[3]),
+            "detail": live[4],
+            "created_at": live[5],
+            "updated_at": live[6],
+        }
+    return out
+
+
 def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) -> None:
     """Keep exactly one ``severity:`` open tag on an alert."""
     for sev in SEVERITIES:
@@ -688,6 +785,7 @@ __all__ = [
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",
+    "alert_history",
     "list_open_alerts",
     "notify_critical_alert",
     "open_alert_severity",

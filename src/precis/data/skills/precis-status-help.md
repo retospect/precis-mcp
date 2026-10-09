@@ -269,6 +269,12 @@ you can also read it straight from the process log.
 ## What git hash is the live MCP server actually on?
 ## Are my edits live in the running server?
 
+This section answers **build staleness** — which code a process runs.
+It is not a liveness or health check: for "is X healthy / up?" read
+`get(kind='alert', id='/health')` first ([[precis-alert-help]] §Health
+questions). Lazily-loaded services idle-unload, so the `ps` step below
+finding no process says nothing about health.
+
 Reconcile the *connected* server against the checkout in front of you:
 
 1. **Boot facts** — `get(kind='skill', id='precis-status')`, read
@@ -319,6 +325,8 @@ to introspect.
 
 ## See also
 
+- [[precis-alert-help]] — health questions: `/health`, failure ids, why
+  process presence is not health.
 - [[precis-overview]] — orientation: seven verbs, one address scheme.
 - [[precis-help]] — the synthesised skill listing active kinds + verbs
   on this server (from the live hub, not a file — still a valid

@@ -791,3 +791,160 @@ def test_notify_critical_alert_is_dark_without_target(
 
     monkeypatch.delenv("PRECIS_OPS_ALERT_TARGET", raising=False)
     assert notify_critical_alert(store, "x", "y") is False
+
+
+# ── failure ids: validation, rule_id, history, composite get ───────────
+
+
+def test_raise_alert_rejects_slash_in_source_and_empty_fingerprint(
+    store: Store,
+) -> None:
+    """D1: sources never contain ``/`` (the composite id splits on the
+    first one); an empty fingerprint has no identity to dedup on."""
+    with pytest.raises(ValueError, match="may not contain '/'"):
+        raise_alert(store, source="bad/source", fingerprint="x", title="t")
+    with pytest.raises(ValueError, match="non-empty"):
+        raise_alert(store, source="nursery:spin-loop", fingerprint="", title="t")
+
+
+def test_raise_alert_stamps_registered_rule_id(store: Store) -> None:
+    aid, _ = raise_alert(
+        store,
+        source="nursery:dead-worker",
+        fingerprint="dead-worker:melchior:precis-worker",
+        title="dead",
+        severity="critical",
+    )
+    ref = store.get_ref(kind="alert", id=aid)
+    assert ref is not None
+    assert ref.meta["rule_id"] == "nursery:dead-worker/dead-worker:{host}:{process}"
+    # a repeat sighting keeps it (the refresh patch carries it too)
+    raise_alert(
+        store,
+        source="nursery:dead-worker",
+        fingerprint="dead-worker:melchior:precis-worker",
+        title="dead (still)",
+        severity="critical",
+    )
+    ref = store.get_ref(kind="alert", id=aid)
+    assert ref is not None and ref.meta["rule_id"].startswith("nursery:dead-worker/")
+
+
+def test_raise_alert_unregistered_id_still_raises_without_rule_id(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A catalogue gap is a test failure (tests/test_alert_ids.py), never a
+    production raise failure."""
+    with caplog.at_level("WARNING", logger="precis.alerts"):
+        aid, is_new = raise_alert(store, source="s", fingerprint="fp:1", title="t")
+    assert is_new
+    ref = store.get_ref(kind="alert", id=aid)
+    assert ref is not None and "rule_id" not in ref.meta
+    assert any("unregistered failure id s/fp:1" in r.message for r in caplog.records)
+
+
+def test_alert_history_never_open_resolved_and_recurrence(store: Store) -> None:
+    src, fp = "watchdog:discovery", "embed"
+    h = alerts_mod.alert_history(store, source=src, fingerprint=fp)
+    assert h["state"] == "never" and h["recurrence"] == 0 and h["open"] is None
+
+    aid, _ = raise_alert(store, source=src, fingerprint=fp, title="embed stale")
+    raise_alert(store, source=src, fingerprint=fp, title="embed stale")
+    h = alerts_mod.alert_history(store, source=src, fingerprint=fp)
+    assert h["state"] == "open"
+    assert h["recurrence"] == 1
+    assert h["open"]["ref_id"] == aid and h["open"]["seen_count"] == 2
+
+    resolve_stale_alerts(store, source=src, live_fingerprints=[])
+    h = alerts_mod.alert_history(store, source=src, fingerprint=fp)
+    assert h["state"] == "resolved" and h["open"] is None
+    assert h["last_resolved_at"] is not None
+
+    # resolve → re-raise mints a NEW row: recurrence is what tells flaky from fixed
+    aid2, is_new = raise_alert(
+        store, source=src, fingerprint=fp, title="embed stale again"
+    )
+    assert is_new and aid2 != aid
+    h = alerts_mod.alert_history(store, source=src, fingerprint=fp)
+    assert h["state"] == "open" and h["recurrence"] == 2
+
+
+def test_handler_composite_id_not_open_is_well_formed(hub: Hub) -> None:
+    """AC3: on a healthy system the id read answers "not open" — never
+    NotFound — and carries the rule's meaning, budget and triage."""
+    handler = AlertHandler(hub=hub)
+    body = handler.get(id="watchdog:discovery/embed").body
+    assert body.startswith("# watchdog:discovery/embed [not open]")
+    assert "rule: watchdog:discovery/embed" in body
+    assert "budget 2h" in body
+    assert "service: embedder" in body
+    assert "triage:" in body and "idle-unloads" in body
+    assert "state: never · recurrence: 0 row(s)" in body
+    assert "check: not in the last health_digest snapshot" in body
+
+
+def test_handler_composite_id_open_shows_live_row_and_recurrence(
+    hub: Hub, store: Store
+) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(
+        store,
+        source="nursery:host-dark",
+        fingerprint="host-dark:caspar",
+        title="[host-dark] caspar",
+        detail="no heartbeat 40min",
+        severity="critical",
+    )
+    body = handler.get(id="nursery:host-dark/host-dark:caspar").body
+    assert body.startswith("# nursery:host-dark/host-dark:caspar [open]")
+    assert f"open: alert {aid} · severity critical · seen_count 1" in body
+    assert "no heartbeat 40min" in body
+    assert "recurrence: 1 row(s)" in body
+    assert f"get(kind='alert', id={aid}, view='detail')" in body
+
+
+def test_handler_composite_id_splits_on_first_slash(hub: Hub, store: Store) -> None:
+    """Fingerprints may contain ``/`` (prod convention — llm-degraded,
+    pass-dead, ``caspar:/``); only the first slash separates source."""
+    handler = AlertHandler(hub=hub)
+    raise_alert(
+        store,
+        source="watchdog:condition",
+        fingerprint="llm-degraded:z-ai/glm-4.7-flash/openai_compat/cloud",
+        title="llm degraded",
+    )
+    body = handler.get(
+        id="watchdog:condition/llm-degraded:z-ai/glm-4.7-flash/openai_compat/cloud"
+    ).body
+    assert "[open]" in body
+    assert "rule: watchdog:condition/llm-degraded:{model}/{transport}/{tier}" in body
+    body = handler.get(id="disk_check/caspar:/").body
+    assert body.startswith("# disk_check/caspar:/ [not open]")
+
+
+def test_handler_composite_id_unregistered_says_so(hub: Hub) -> None:
+    body = handler_body = AlertHandler(hub=hub).get(id="s/fp:1").body
+    assert "[not open]" in handler_body
+    assert "UNREGISTERED" in body
+
+
+def test_handler_rules_view_lists_the_catalogue(hub: Hub) -> None:
+    from precis.alert_ids import ALERT_RULES
+
+    body = AlertHandler(hub=hub).get(id="/rules").body
+    assert f"{len(ALERT_RULES)} registered failure ids" in body
+    assert "## watchdog:discovery" in body
+    assert "- embed [warn, budget 2h]" in body
+    assert "## nursery:dead-worker" in body
+    assert "triage:" in body
+    # every rule's subject appears
+    for r in ALERT_RULES:
+        assert r.subject in body, r.id
+
+
+def test_handler_health_view_without_snapshot(hub: Hub) -> None:
+    body = AlertHandler(hub=hub).get(id="/health").body
+    assert body.startswith("# health panel — no health_digest eval yet")
+    assert "open alerts: none" in body
+    # live freshness probes still render (they need no snapshot)
+    assert "watchdog:ingest/papers_ingested" in body

@@ -37,6 +37,15 @@ to change anything. You exist so that 100-line log tails and psql dumps burn
 
 ## How to work
 
+0. **"Is X healthy / up?" starts with the registry, not `ps`.**
+   `get(kind='alert', id='/health')` gives every check's verdict;
+   `get(kind='alert', id='<source>/<fingerprint>')` (e.g.
+   `watchdog:discovery/embed` for the embedder) answers open / not open with
+   the check's own idle-aware verdict. Lazily-loaded services idle-unload by
+   design, so an absent process or a quiet log is not evidence of an outage
+   (2026-09-24: five agents reported the embedder "completely offline" from
+   `ps aux` while it had embedded 595 chunks that hour). ssh/log reads
+   corroborate a failure id; they never replace it.
 1. Identify the host + exactly what to read. If the host is ambiguous and the
    check is fleet-wide, loop the four hosts.
 2. Run the minimal read command (tail with a bounded `-n`, a scoped

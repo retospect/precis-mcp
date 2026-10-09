@@ -44,6 +44,14 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
    raises ``kind='alert'`` under ``alert_source="watchdog:<group>"``, capped
    info/warn (nursery keeps critical); ``resolve_stale_alerts`` auto-closes
    whatever went fresh again, including a group with zero findings this eval.
+   The fingerprint is the check's *pinned* failure id
+   (:data:`_PINNED_FINGERPRINTS` → :func:`check_fingerprint`), registered
+   in :mod:`precis.alert_ids`, not ``CheckResult.name`` — so renaming a
+   check never mints a new id. The full check set is also persisted as a
+   JSON snapshot (:data:`CHECKS_SNAPSHOT_KEY`) that :func:`health_panel`
+   — the agent-facing ``get(kind='alert', id='/health')`` — reads with its
+   age instead of re-running the ~30 s backlog aggregates, overlaying the
+   cheap freshness probes live.
 3. **Remediation router** (:func:`_route_findings`) — a still-open
    ``watchdog:<group>`` alert older than its class's self-heal budget gets
    one condition-linked ``kind='gripe'`` (dedup key: a
@@ -108,6 +116,12 @@ log = logging.getLogger(__name__)
 #: push (heartbeat OR degradation) — the whole "reuse app_settings, don't
 #: invent a new throttle table" ask from the spec.
 LAST_PUSH_KEY = "health_digest:last_push"
+
+#: App-settings key holding the JSON snapshot of the last eval's full check
+#: set (:func:`_store_checks_snapshot`) — what the agent-facing health
+#: panel (:func:`health_panel`) reads instead of re-running the ~30 s of
+#: backlog aggregates (``docs/backlog/alert-failure-id-registry.md`` D3).
+CHECKS_SNAPSHOT_KEY = "health_digest:checks_snapshot"
 
 #: The daily green-heartbeat cadence: push at least this often even when
 #: every check is ``ok`` (the dead-man's-switch the push itself IS).
@@ -1658,6 +1672,41 @@ def _evaluate_checks(
 
 # ── findings → alerts ─────────────────────────────────────────────────
 
+#: ``(group, check name) → alert fingerprint`` for every fixed-name check
+#: this module emits. The fingerprint is the check's *failure id* (its
+#: subject in :mod:`precis.alert_ids`), pinned here rather than derived
+#: from ``CheckResult.name`` so renaming a check — a pure refactor — does
+#: not mint a new id and silently auto-resolve the old one. Derived
+#: checks (``cadence``, ``coherence``, ``condition``) are keyed by their
+#: data (lease name, spec name, finding key) and fall through unchanged.
+#: ``tests/test_alert_ids.py`` asserts every constant ``(group, name)``
+#: pair in this module is listed here and resolves to a registered rule.
+_PINNED_FINGERPRINTS: dict[tuple[str, str], str] = {
+    ("ingest", "papers_ingested"): "papers_ingested",
+    ("ingest", "news"): "news",
+    ("ingest", "chunks_extracted"): "chunks_extracted",
+    ("discovery", "chunks_classified"): "chunks_classified",
+    ("discovery", "embed"): "embed",
+    ("discovery", "chunk_keywords"): "chunk_keywords",
+    ("reading", "morning_brief_cast"): "morning_brief_cast",
+    ("reading", "cast_audio"): "cast_audio",
+    ("reading", "card_forge"): "card_forge",
+    ("knowledge", "taproot_edges"): "taproot_edges",
+    ("taproot", "claim_hub_dedup_index"): "claim_hub_dedup_index",
+    ("nanopub", "staged_candidates_fresh"): "staged_candidates_fresh",
+    ("autonomy", "agent_jobs_completing"): "agent_jobs_completing",
+    ("autonomy", "doctor_report_fresh"): "doctor_report_fresh",
+    ("infra", "hosts_alive"): "hosts_alive",
+    ("meta", "alert_backlog_rot"): "alert_backlog_rot",
+}
+
+
+def check_fingerprint(check: CheckResult) -> str:
+    """The alert fingerprint a check raises under — pinned when the check
+    has a fixed name (:data:`_PINNED_FINGERPRINTS`), else its data-derived
+    name."""
+    return _PINNED_FINGERPRINTS.get((check.group, check.name), check.name)
+
 
 def _sync_alerts(store: Store, checks: list[CheckResult]) -> tuple[int, int, bool]:
     """Raise/refresh a ``watchdog:<group>`` alert per stale finding; resolve
@@ -1690,7 +1739,7 @@ def _sync_alerts(store: Store, checks: list[CheckResult]) -> tuple[int, int, boo
         for c in group_checks:
             if not c.is_finding:
                 continue
-            fp = c.name
+            fp = check_fingerprint(c)
             live.append(fp)
             _ref_id, is_new = raise_alert(
                 store,
@@ -2212,6 +2261,123 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
     return frozenset(routed)
 
 
+# ── checks snapshot + agent-facing health panel ─────────────────────────
+
+
+def _check_to_json(c: CheckResult) -> dict[str, Any]:
+    return {
+        "group": c.group,
+        "name": c.name,
+        "status": c.status,
+        "detail": c.detail,
+        "severity": c.severity,
+        "age_hours": c.age_hours,
+        "id": f"watchdog:{c.group}/{check_fingerprint(c)}",
+    }
+
+
+def _store_checks_snapshot(store: Store, checks: list[CheckResult]) -> None:
+    """Persist this eval's full check set as JSON under
+    :data:`CHECKS_SNAPSHOT_KEY` — one ``app_settings`` row both the MCP
+    and web processes read (no cross-process cache). The backlog checks
+    cost ~30 s of full-table scans (D3), so the panel reads the snapshot
+    with its age rather than recomputing."""
+    import json
+
+    from precis.budget import settings as app_settings
+
+    payload = {
+        "computed_at": datetime.now(UTC).isoformat(),
+        "checks": [_check_to_json(c) for c in checks],
+    }
+    app_settings.set_setting(store, CHECKS_SNAPSHOT_KEY, json.dumps(payload))
+
+
+def _load_checks_snapshot(store: Store) -> dict[str, Any] | None:
+    import json
+
+    from precis.budget import settings as app_settings
+
+    raw = app_settings.get_setting(store, CHECKS_SNAPSHOT_KEY)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) and "checks" in data else None
+
+
+def health_panel(store: Store) -> dict[str, Any]:
+    """The agent-facing per-subsystem health read.
+
+    Same states ``/status`` and the digest show, in one call, without the
+    expensive part: every check comes from the last eval's snapshot
+    (hourly; ``snapshot_age_hours`` says how old), except the cheap
+    :data:`_FRESHNESS_CHECKS` probes, which are re-run live and overlay
+    their snapshot rows. ``checks`` is a list of the snapshot's JSON
+    shape (``group``/``name``/``status``/``detail``/``severity``/
+    ``age_hours``/``id``) with a ``live`` flag; the ``id`` is the
+    registered failure id (``watchdog:<group>/<fingerprint>``), so a
+    stale row can be followed straight to its rule and its open alert.
+    ``open_alerts`` is the open-alert count by severity. Returns
+    ``snapshot_age_hours=None`` and an empty ``checks`` list when no
+    eval has run yet (a fresh install) — never raises.
+    """
+    snap = _load_checks_snapshot(store)
+    checks: list[dict[str, Any]] = []
+    computed_at: datetime | None = None
+    if snap is not None:
+        try:
+            computed_at = datetime.fromisoformat(str(snap.get("computed_at")))
+            if computed_at.tzinfo is None:
+                computed_at = computed_at.replace(tzinfo=UTC)
+        except ValueError:
+            computed_at = None
+        checks = [dict(c, live=False) for c in snap["checks"] if isinstance(c, dict)]
+
+    try:
+        with store.pool.connection() as conn:
+            live = _freshness_layer1(conn)
+    except Exception:
+        log.exception("health_panel: live freshness probes raised")
+        live = []
+    by_id = {c.get("id"): i for i, c in enumerate(checks)}
+    for c in live:
+        row = dict(_check_to_json(c), live=True)
+        idx = by_id.get(row["id"])
+        if idx is None:
+            checks.append(row)
+        else:
+            checks[idx] = row
+
+    open_by_sev: dict[str, int] = {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.meta->>'severity', count(*)
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'alert' AND r.retired_at IS NULL
+                   AND t.namespace = 'OPEN' AND t.value = %s
+                 GROUP BY 1
+                """,
+                (STATE_OPEN,),
+            ).fetchall()
+        open_by_sev = {str(sev or "warn"): int(n) for sev, n in rows}
+    except Exception:
+        log.exception("health_panel: open-alert count raised")
+
+    return {
+        "computed_at": computed_at,
+        "snapshot_age_hours": _hours_since(computed_at),
+        "checks": checks,
+        "open_alerts": open_by_sev,
+    }
+
+
 # ── push policy: pure template, daily heartbeat + on-degradation ────────
 
 
@@ -2473,6 +2639,11 @@ def run_health_digest_pass(
     stale_n = sum(1 for c in checks if c.status == "stale")
     ok_n = sum(1 for c in checks if c.status == "ok")
 
+    try:
+        _store_checks_snapshot(store, checks)
+    except Exception:
+        log.exception("health_digest: checks snapshot write raised")
+
     degraded = False
     try:
         _raised, _resolved, degraded = _sync_alerts(store, checks)
@@ -2515,10 +2686,13 @@ def run_health_digest_pass(
 
 
 __all__ = [
+    "CHECKS_SNAPSHOT_KEY",
     "DEADMAN_ALLOW_PRIVATE_ENV",
     "DEADMAN_PING_URL_ENV",
     "HEARTBEAT_INTERVAL_HOURS",
     "LAST_PUSH_KEY",
     "CheckResult",
+    "check_fingerprint",
+    "health_panel",
     "run_health_digest_pass",
 ]

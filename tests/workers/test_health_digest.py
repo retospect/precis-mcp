@@ -1975,3 +1975,91 @@ def test_render_digest_no_prefix_when_not_routed() -> None:
     checks = [CheckResult("coherence", "some-pass", "stale", "broke", "warn")]
     body = _render_digest(checks)
     assert "⛳" not in body
+
+
+# ── failure ids: pinned fingerprints, snapshot, health panel ─────────────
+
+
+def test_renaming_a_check_keeps_its_pinned_failure_id(store, monkeypatch) -> None:
+    """Spec defect 2 regression: a pure rename of a fixed-name check must
+    not mint a new alert id and auto-resolve the old one."""
+    stale = [CheckResult("discovery", "embed", "stale", "not draining", "warn")]
+    _sync_alerts(store, stale)
+    before = [a for a in list_open_alerts(store) if a["source"] == "watchdog:discovery"]
+    assert len(before) == 1
+    aid = before[0]["ref_id"]
+
+    monkeypatch.setitem(
+        health_digest._PINNED_FINGERPRINTS, ("discovery", "chunks_embedded"), "embed"
+    )
+    renamed = [
+        CheckResult("discovery", "chunks_embedded", "stale", "not draining", "warn")
+    ]
+    _raised, resolved, degraded = _sync_alerts(store, renamed)
+    assert resolved == 0 and degraded is False
+    after = [a for a in list_open_alerts(store) if a["source"] == "watchdog:discovery"]
+    assert [a["ref_id"] for a in after] == [aid]
+    assert after[0]["seen_count"] == 2
+    ref = store.get_ref(kind="alert", id=aid)
+    assert ref is not None and ref.fingerprint == "embed"
+    assert ref.meta["rule_id"] == "watchdog:discovery/embed"
+
+
+def test_checks_snapshot_round_trips_into_the_health_panel(store) -> None:
+    checks = [
+        CheckResult(
+            "discovery", "embed", "stale", "42 pending, NOT draining", "warn", 5.0
+        ),
+        CheckResult("cadence", "materialize", "ok", "on schedule", "warn"),
+    ]
+    health_digest._store_checks_snapshot(store, checks)
+    panel = health_digest.health_panel(store)
+    assert panel["snapshot_age_hours"] is not None
+    assert panel["snapshot_age_hours"] < 0.1
+    by_id = {c["id"]: c for c in panel["checks"]}
+    embed = by_id["watchdog:discovery/embed"]
+    assert embed["status"] == "stale" and embed["live"] is False
+    assert embed["age_hours"] == 5.0
+    assert by_id["watchdog:cadence/materialize"]["status"] == "ok"
+    # the cheap freshness probes are re-run live and flagged as such
+    papers = by_id["watchdog:ingest/papers_ingested"]
+    assert papers["live"] is True
+
+
+def test_run_pass_persists_the_checks_snapshot(store, monkeypatch) -> None:
+    monkeypatch.delenv(health_digest.DEADMAN_PING_URL_ENV, raising=False)
+    run_health_digest_pass(store, specs=[])
+    snap = health_digest._load_checks_snapshot(store)
+    assert snap is not None
+    ids = {c["id"] for c in snap["checks"]}
+    assert "watchdog:discovery/embed" in ids
+
+
+def test_embedder_health_is_answered_by_throughput_not_process_presence(
+    store, monkeypatch, hub
+) -> None:
+    """AC9 — the 2026-09-24 incident, replayed. The embedder idle-unloads,
+    so there is no process to find; the one call an agent is told to make
+    (the failure-id read) must still say healthy, from the idle-aware
+    backlog check in the snapshot."""
+    from precis.handlers.alert import AlertHandler
+
+    monkeypatch.setattr(
+        health_digest.health_checks,
+        "compute_backlog_counts",
+        lambda conn: {
+            "embed": {"pending": 0, "done": 595, "failed": 0, "last_ts": None},
+            "chunk_keywords": {"pending": 0, "done": 10, "failed": 0, "blocked": 0},
+        },
+    )
+    with store.pool.connection() as conn:
+        checks = _idle_aware_backlog_checks(conn)
+    health_digest._store_checks_snapshot(store, checks)
+
+    body = AlertHandler(hub=hub).get(id="watchdog:discovery/embed").body
+    assert "[not open]" in body
+    assert (
+        "check (snapshot 0.0h old): ok — chunks embedded: 0 pending (caught up)" in body
+    )
+    assert "idle-unloads" in body  # the triage line warns off the ps-aux reflex
+    assert "state: never" in body

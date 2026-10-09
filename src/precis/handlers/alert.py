@@ -21,6 +21,23 @@ the agent surface is the read / triage half:
                                            — generic numeric-ref views
     - get(kind='alert', id='/recent')     — recent alerts (open + resolved)
     - get(kind='alert', id='/open')       — currently-open alerts only
+    - get(kind='alert', id='/rules')      — the registered failure-id
+                                             catalogue (precis.alert_ids):
+                                             every rule with its meaning,
+                                             budget, owning service, triage
+    - get(kind='alert', id='/health')     — the per-subsystem health panel
+                                             (health_digest's last eval,
+                                             freshness re-probed live) —
+                                             the first call for any "is X
+                                             healthy?" question
+    - get(kind='alert', id='<source>/<fingerprint>')
+                                           — one failure id: its rule, open
+                                             state, seen_count, first/last
+                                             seen, recurrence, and (for a
+                                             watchdog id) the check's
+                                             snapshot verdict. Not-open is
+                                             a well-formed answer, never
+                                             NotFound
     - search(kind='alert', q=...)         — lexical search over alert titles
     - tag(id=N, add/remove=[...])    — ack / reclassify (resolve via
                                         add=['alert-state:resolved'],
@@ -40,12 +57,19 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from precis.alerts import STATE_OPEN, STATE_RESOLVED, sync_resolved_at_with_tags
+from precis import alert_ids
+from precis.alerts import (
+    STATE_OPEN,
+    STATE_RESOLVED,
+    alert_history,
+    sync_resolved_at_with_tags,
+)
 from precis.errors import Unsupported
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import Ref, Tag
+from precis.utils.next_block import render_next_section
 
 #: Views this kind adds on top of the base ``links``/``log``/``raw``.
 #: ``full`` is an alias of ``detail`` — both were observed as recurring
@@ -90,12 +114,176 @@ class AlertHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "open")
+        return ("recent", "open", "rules", "health")
 
     def _list_view(self, view: str) -> Response | None:
         if view == "open":
             return self._render_open()
+        if view == "rules":
+            return self._render_rules()
+        if view == "health":
+            return self._render_health()
         return super()._list_view(view)
+
+    def _render_rules(self) -> Response:
+        """``/rules``: the failure-id catalogue, grouped by source."""
+        from precis.workers.registry import SERVICES_BY_NAME
+
+        rules = alert_ids.ALERT_RULES
+        out = [
+            f"# alert rules — {len(rules)} registered failure ids",
+            "id = <source>/<fingerprint>; {var} is a per-instance subject. "
+            "One id: get(kind='alert', id='<source>/<fingerprint>') · "
+            "live states: get(kind='alert', id='/health')",
+        ]
+        by_source: dict[str, list[alert_ids.AlertRule]] = {}
+        for r in rules:
+            by_source.setdefault(r.rule, []).append(r)
+        for source, group in by_source.items():
+            out += ["", f"## {source}"]
+            for r in group:
+                line = f"- {r.subject or '(singleton)'} [{r.severity}"
+                if r.budget:
+                    line += f", budget {r.budget}"
+                line += f"] — {r.one_line}"
+                spec = SERVICES_BY_NAME.get(r.service) if r.service else None
+                if spec is not None:
+                    line += f" · service {spec.name}"
+                    if spec.doc_skill:
+                        line += f" ({spec.doc_skill})"
+                if r.triage:
+                    line += f" · triage: {r.triage}"
+                out.append(line)
+        return Response(body="\n".join(out))
+
+    def _render_health(self) -> Response:
+        """``/health``: the agent-facing per-subsystem panel."""
+        from precis.workers.health_digest import health_panel
+
+        panel = health_panel(self.store)
+        age = panel["snapshot_age_hours"]
+        head = "# health panel — "
+        head += (
+            f"snapshot {age:.1f}h old ({panel['computed_at']:%Y-%m-%dT%H:%MZ})"
+            if age is not None and panel["computed_at"] is not None
+            else "no health_digest eval yet (snapshot absent)"
+        )
+        sev = panel["open_alerts"]
+        head += " · open alerts: " + (
+            ", ".join(f"{n} {s}" for s, n in sorted(sev.items())) if sev else "none"
+        )
+        out = [
+            head,
+            "A check's verdict is the truth for 'is X healthy?' — not process "
+            "presence (lazily-loaded services idle-unload by design). Follow an "
+            "id with get(kind='alert', id='<id>').",
+        ]
+        checks = panel["checks"]
+        for status, title in (("stale", "stale"), ("unknown", "unknown"), ("ok", "ok")):
+            rows = [c for c in checks if c.get("status") == status]
+            if not rows:
+                continue
+            out += ["", f"## {title} ({len(rows)})"]
+            for c in rows:
+                age_h = c.get("age_hours")
+                age_s = f", {age_h:.1f}h" if isinstance(age_h, (int, float)) else ""
+                live = " (live)" if c.get("live") else ""
+                out.append(f"- {c['id']} [{c['severity']}{age_s}]{live} {c['detail']}")
+        return Response(body="\n".join(out))
+
+    # ── one failure id: <source>/<fingerprint> ──────────────────────
+
+    def _render_failure_id(self, id_str: str) -> Response:
+        """``get(kind='alert', id='<source>/<fingerprint>')`` — the
+        deterministic single-id read (``alert_history``) joined to its
+        registered rule and, for a ``watchdog:`` id, the check's snapshot
+        verdict. "Not open" is a well-formed answer rather than NotFound,
+        because "is it broken?" must be answerable "no"."""
+        from precis.workers.registry import SERVICES_BY_NAME
+
+        source, fingerprint = alert_ids.split_id(id_str)
+        if not fingerprint:
+            raise Unsupported(
+                f"alert id {id_str!r} needs both halves: <source>/<fingerprint>",
+                next="get(kind='alert', id='/rules') lists every registered id",
+            )
+        hist = alert_history(self.store, source=source, fingerprint=fingerprint)
+        rule = alert_ids.resolve(source, fingerprint)
+        state = hist["state"]
+        out = [f"# {id_str} [{'open' if state == 'open' else 'not open'}]"]
+        if rule is None:
+            out.append("rule: UNREGISTERED — not in precis.alert_ids (see /rules)")
+        else:
+            line = f"rule: {rule.id} — {rule.one_line} · severity {rule.severity}"
+            if rule.budget:
+                line += f" · budget {rule.budget}"
+            out.append(line)
+            spec = SERVICES_BY_NAME.get(rule.service) if rule.service else None
+            if spec is not None:
+                svc = f"service: {spec.name} — {spec.one_line}".rstrip(" —")
+                svc += f" (logs handler {spec.log_handler}"
+                svc += f", skill {spec.doc_skill})" if spec.doc_skill else ")"
+                out.append(svc)
+            if rule.triage:
+                out.append(f"triage: {rule.triage}")
+        out.append("")
+        out.append(
+            f"state: {state} · recurrence: {hist['recurrence']} row(s)"
+            + (
+                f" · first seen {hist['first_seen']:%Y-%m-%dT%H:%MZ}"
+                if hist["first_seen"]
+                else ""
+            )
+            + (
+                f" · last seen {hist['last_seen']:%Y-%m-%dT%H:%MZ}"
+                if hist["last_seen"]
+                else ""
+            )
+            + (
+                f" · last resolved {hist['last_resolved_at']:%Y-%m-%dT%H:%MZ}"
+                if hist["last_resolved_at"]
+                else ""
+            )
+        )
+        live = hist["open"]
+        if live:
+            out += [
+                f"open: alert {live['ref_id']} · severity {live['severity']} · "
+                f"seen_count {live['seen_count']} · since "
+                f"{live['created_at']:%Y-%m-%dT%H:%MZ} · updated "
+                f"{live['updated_at']:%Y-%m-%dT%H:%MZ}",
+                live["title"] or "",
+            ]
+            if live.get("detail"):
+                out.append(live["detail"])
+        if source.startswith("watchdog:"):
+            out.append(self._snapshot_verdict_line(id_str))
+        body = "\n".join(out)
+        if live:
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind='alert', id={live['ref_id']}, view='detail')",
+                        "the open alert's triage shape",
+                    )
+                ]
+            )
+        return Response(body=body)
+
+    def _snapshot_verdict_line(self, id_str: str) -> str:
+        from precis.workers.health_digest import health_panel
+
+        panel = health_panel(self.store)
+        row = next((c for c in panel["checks"] if c.get("id") == id_str), None)
+        if row is None:
+            return "check: not in the last health_digest snapshot"
+        age = panel["snapshot_age_hours"]
+        src = (
+            "live"
+            if row.get("live")
+            else (f"snapshot {age:.1f}h old" if age is not None else "snapshot")
+        )
+        return f"check ({src}): {row['status']} — {row['detail']}"
 
     def _render_open(self) -> Response:
         """Currently-open alerts, recency-ordered."""
@@ -123,6 +311,11 @@ class AlertHandler(NumericRefHandler):
         # MemoryHandler.get's view='argument' dispatch shape — a
         # concrete-id-only extra view layered in front of the base
         # links/log/raw set.
+        # A composite failure id (<source>/<fingerprint>) is checked
+        # BEFORE _coerce_id: it can never start with '/' (sources never
+        # contain one), so it cannot collide with the list-view path.
+        if isinstance(id, str) and "/" in id and not id.startswith("/"):
+            return self._render_failure_id(id)
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if concrete and view in _DETAIL_VIEWS:
             ref = self._resolve_live_ref(self._coerce_id(id))
