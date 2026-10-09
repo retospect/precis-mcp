@@ -37,6 +37,10 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   dropped after 24 h unused (`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or when the
   tree is removed. `PRECIS_PYTHON_WORKTREE_MAX` adds an optional LRU cap
   (default 0 = none).
+- The main checkout itself defaults to `$REPO`. A host whose agents work in a
+  different clone (their worktrees registered there) puts that clone's
+  absolute path in `main-checkout` there (or exports `PRECIS_MCP_MAIN`); a
+  path that is not a git checkout falls back to `$REPO` with a note.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

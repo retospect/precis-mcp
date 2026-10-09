@@ -393,6 +393,19 @@ POOL_MAX="${PRECIS_DB_POOL_MAX_SIZE:-16}"
 # public repo names no machine's layout. Each is mounted read-only at
 # /roots/<alias>; a change alters the container spec, so the next run
 # recreates (blue-green) on its own.
+# The live main checkout mounted at /main (python/md kinds, worktree
+# discovery). Per-host override: PRECIS_MCP_MAIN, else the single path in
+# ${STATE_DIR}/main-checkout, else REPO. A host whose agents work in another
+# clone (their git worktrees registered there) names that clone here.
+MAIN_CHECKOUT="${PRECIS_MCP_MAIN:-}"
+if [ -z "$MAIN_CHECKOUT" ] && [ -f "${STATE_DIR}/main-checkout" ]; then
+    MAIN_CHECKOUT="$(tr -d '[:space:]' < "${STATE_DIR}/main-checkout")"
+fi
+if [ -z "$MAIN_CHECKOUT" ] || [ ! -d "${MAIN_CHECKOUT}/.git" ]; then
+    [ -z "$MAIN_CHECKOUT" ] || note "main-checkout: '${MAIN_CHECKOUT}' is not a git checkout; using ${REPO}"
+    MAIN_CHECKOUT="$REPO"
+fi
+
 PY_ROOTS="precis:/app,main:/main"
 EXTRA_MOUNTS=()
 if [ -f "${STATE_DIR}/python-roots" ]; then
@@ -417,7 +430,7 @@ ENVS=(
     -e PRECIS_ROOT=/data/notes
     -e PRECIS_PYTHON_ROOTS="${PY_ROOTS}"
     -e PRECIS_PYTHON_WORKTREES=wt:/main
-    -e PRECIS_PYTHON_GITDIR_MAP="${PRECIS_MCP_MAIN:-$REPO}:/main"
+    -e PRECIS_PYTHON_GITDIR_MAP="${MAIN_CHECKOUT}:/main"
     -e PRECIS_MD_ROOTS=repo:/app,main:/main
     -e PRECIS_EMBEDDER=remote
     -e PRECIS_EMBEDDER_URL=http://host.docker.internal:8181
@@ -534,7 +547,7 @@ RUN_ARGS=(
     -v "${SRC_REPO}:/src:ro"
     # Live main checkout (read-only) so a qland is visible via the python/md
     # kinds before a deploy; roots main:/main in ENVS above.
-    -v "${PRECIS_MCP_MAIN:-$REPO}:/main:ro"
+    -v "${MAIN_CHECKOUT}:/main:ro"
     -v "${SECRETS_OUT}:/run/precis-secrets:ro"
     -v "${CACHE_DIR}:/home/precis/.cache/precis"
     -v "${UV_CACHE_VOLUME}:/home/precis/.cache/uv"

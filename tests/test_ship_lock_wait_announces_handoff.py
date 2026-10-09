@@ -36,10 +36,7 @@ def _acquire_fn() -> str:
     return m.group(0)
 
 
-def test_wait_reannounces_when_the_holder_changes(tmp_path: Path) -> None:
-    lockdir = tmp_path / "precis-ship.lock.d"
-    lockdir.mkdir()
-    (lockdir / "holder").write_text("worktree=first pid=1 host=x", encoding="utf-8")
+def _run(lockdir: Path, writer: str) -> subprocess.CompletedProcess[str]:
     script = f"""
 set -u
 say() {{ printf '%s\\n' "$*"; }}
@@ -50,21 +47,60 @@ lock_holder_write() {{ :; }}
 LOCKDIR="{lockdir}"
 {_acquire_fn()}
 (
-  command sleep 0.5
-  echo "worktree=second pid=2 host=x" > "$LOCKDIR/holder"
-  command sleep 0.5
-  rm -rf "$LOCKDIR"
+{writer}
 ) &
 acquire_ship_lock
 wait
 echo ACQUIRED
 """
-    proc = subprocess.run(
+    return subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=30,
+    )
+
+
+def test_empty_holder_mid_handoff_is_not_a_change(tmp_path: Path) -> None:
+    """gr476902: the holder file read empty mid-write (truncate, then write)
+    and mid-release (holder unlinked, dir not yet) — each window held open
+    for several polls — must not announce on its own."""
+    lockdir = tmp_path / "precis-ship.lock.d"
+    lockdir.mkdir()
+    (lockdir / "holder").write_text("worktree=first pid=1 host=x", encoding="utf-8")
+    proc = _run(
+        lockdir,
+        """
+  command sleep 0.3
+  : > "$LOCKDIR/holder"
+  command sleep 0.5
+  echo "worktree=second pid=2 host=x" > "$LOCKDIR/holder"
+  command sleep 0.3
+  rm -f "$LOCKDIR/holder"
+  command sleep 0.5
+  rm -rf "$LOCKDIR"
+""",
+    )
+    out = proc.stdout
+    assert proc.returncode == 0, proc.stderr
+    assert "no holder file" not in out, out
+    assert out.count("changed hands") == 1, out
+    assert "now held by: worktree=second pid=2 host=x" in out
+
+
+def test_wait_reannounces_when_the_holder_changes(tmp_path: Path) -> None:
+    lockdir = tmp_path / "precis-ship.lock.d"
+    lockdir.mkdir()
+    (lockdir / "holder").write_text("worktree=first pid=1 host=x", encoding="utf-8")
+    proc = _run(
+        lockdir,
+        """
+  command sleep 0.5
+  echo "worktree=second pid=2 host=x" > "$LOCKDIR/holder"
+  command sleep 0.5
+  rm -rf "$LOCKDIR"
+""",
     )
     out = proc.stdout
     assert proc.returncode == 0, proc.stderr

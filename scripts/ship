@@ -753,14 +753,18 @@ acquire_ship_lock() {
         # comment 9): the lock is a 3 s mkdir poll with no ticket order, so
         # it routinely passes from the holder we first saw to a fresh
         # acquirer; a log that still names the original, long-dead holder
-        # reads as a hang instead of a lost handoff.
+        # reads as a hang instead of a lost handoff. An empty read after the
+        # first poll is a holder mid-write (mkdir before the holder file, or a
+        # truncate-then-write) or mid-release, not a new holder: skip it, or
+        # one handoff announces twice (gr476902).
         if [[ "$_waited" == 0 ]]; then
             say "waiting for the ship lock — held by: ${holder_desc}"
             echo "(will steal it immediately if that process dies; a live holder on this host is waited out however long it takes)"
-        elif [[ "$holder" != "$_last_holder" ]]; then
+            _last_holder="$holder"
+        elif [[ -n "$holder" && "$holder" != "$_last_holder" ]]; then
             say "ship lock changed hands — now held by: ${holder_desc}"
+            _last_holder="$holder"
         fi
-        _last_holder="$holder"
         _waited=1
         sleep 3
     done
