@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** When Reto answers nanobuds-paper-32, apply the ruled draft edits through `scripts/prod-precis tools edit --kind draft`, re-export and land.
-- **Blocked by:** Reto’s nanobuds-paper-32 answer; hero figure remains unchanged while hexfold’s spec-driven shapes are pending; anchored-hub edits wait on the supersede door.
+- **Next:** After Reto's enrich-rearm/re-export cycle (he runs it), compile the RSC export and read the PDF; fix the residual hygiene (em-dashes in dc2445888/dc2445917, whole-paper cites in dc2445980).
+- **Blocked by:** Reto's re-export after the enrichment worker cycle; figure rights for the five reproduced figures; hero figure remains unchanged while hexfold's spec-driven shapes are pending; anchored-hub edits wait on the supersede door.
 - **Unblocks:** A submission-ready October preprint.
 - **Acceptance:** Use [the latest handoff](#thread-context): read back the ruled edits, re-export dr173020, compile and visually read the PDF; saved-export checks alone do not establish readiness. Preserve signed-grounding pins and frozen-hub constraints.
 - **Worktree:** `nanobuds-paper`
@@ -68,18 +68,14 @@ held for hexfold; leave the hero and its unrelaxed-junction caption intact.
   - **Pin triage done 04:50Z:** 13 noise, 22 re-pins, 2 rewords.
     - The 22 re-pins were applied on prod; each adds the passage that names the method (`printed-read/apply_pins_r4.py`, log `apply-pins-r4.log`, pre-flight and post-check clean).
     - Re-export: 37 → 20 warnings. Most remaining warnings are noise (acronyms against spelled-out forms, signed numbers, NanoBud vs CNB, generic words), sent to claims-and-evidence for their noise sweep. Item 32 still holds the prose decisions; its lithium clause was found by reading, not by this checker.
-    - Open with Reto: **nanobuds-paper-32**, four sentences:
-      - A, "CVD": keep;
-      - B, Ahangari "corroborated these MD results": reword;
-      - C, the lithium clause, which no hub carries: cut;
-      - D, uncited background numbers in the Novoselov sentence: leave.
+    - **nanobuds-paper-32 ruled "as recommended" by Reto 2026-10-09:** A "CVD" kept; B Ahangari already reworded by the adversarial apply (dc2445912, "First-principles calculations by Ahangari et al. predict…"); C the lithium clause cut from dc2445908 (sha:7491dfedfc65; the td472446 cross-reference sentence went with it, it carried no hub); D Novoselov numbers left. Item closed.
 
     - Measured before deploy: 37 of 89 pins warn, none for G4. In a sample about 6 in 10 are real gaps, e.g. DFT, DFTB or HOMO/LUMO missing from the pinned chunk. Known noise: negated terms, words glued by extraction, numeric locants, range endpoints.
     - Each warning suggests up to 3 better chunks: re-pin to one if it carries the term; if none does, file the gap.
     - fi189535 (anchored) now flags TEM and STS as uncovered and suggests pc209502 and pc209508. Its fix is still a supersede, which waits on the unbuilt supersede door. This thread owns it.
 - **Reto-run:**
-  - `scripts/prod-precis tools delete --kind draft --id dc3015729`, and the same for dc3015722;
-  - enrich-rearm over `export-tex/cited-paper-ids.txt` (pa1181 still lacks volume and pages);
+  - ~~delete dc3015729 and dc3015722~~ done 2026-10-09 via MCP `delete(kind='draft')`, both retired (Reto: "delete them");
+  - ~~enrich-rearm~~ applied 2026-10-08 (115/118); the worker-cycle wait and the re-export are Reto's (2026-10-09, "I work on it");
   - pillar delete + `pillar/regen.py` + re-export;
   - rename the stale `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge_1181.py` (the classifier blocked the session).
 - **Off-thread requests from this session, each with its owner:**
@@ -273,8 +269,7 @@ item is nanobuds-paper-32. Edit-verb year=/journal= fix landed
    - dc4306940, the sublattice bond-formation rule, after dc3015729;
    - dc4306941, the cap vs sidewall paths, after dc3015722. The source itself is inconsistent here: it says "0.46 eV lower", but its stated barriers give 0.40.
 
-   **Reto-run (classifier denied the delete):** retire the two placeholders, so the export does not print each figure twice:
-   `scripts/prod-precis tools delete --kind draft --id dc3015729`, then the same for `dc3015722`.
+   Both placeholders retired 2026-10-09 (MCP delete worked from this session), so the export prints each figure once.
    dc3015723 (pyrene-tethered C60) and dc3015730 (MD laddering) are images
    of computed structures, outside hexfold, so they stay reproduced
    unless Reto drops them (item 27 proposed keeping them; the answer did not object). dc3015720 is done (dc4300876). The
@@ -392,9 +387,8 @@ td173019.
    still needs every figure imaged and cleared. docx/pdf via the local prod
    export path against the RSC template. 43020 stays frozen.
 3. **preprint slot blockers** — the repo-side blockers for the monthly
-   preprint (four placeholder figures as of 2026-10-04: dc3015722,
-   dc3015723, dc3015729, dc3015730; two of them are superseded and
-   wait on Reto's delete, Do-next 1) are this thread's; the posting step
+   preprint (two placeholder figures as of 2026-10-09: dc3015723 and
+   dc3015730; dc3015722 and dc3015729 were retired that day) are this thread's; the posting step
    itself (arXiv/Zenodo submission) is Reto's: td459586, qu459585's
    October todo. td459586's own text still names td450081 (venue) as a
    hold; that todo is done (Nanoscale, 2026-10-01).
