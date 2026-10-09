@@ -2289,8 +2289,8 @@ class TestBuildAuthorBlock:
             {"name": "Roe, John", "affiliation": "Caltech"},
         ]
         out = latex.build_author_block(raw, fallback="precis")
-        assert "\\author[1]{Doe, Jane}" in out
-        assert "\\author[2]{Roe, John}" in out
+        assert "\\author[1]{Jane Doe}" in out
+        assert "\\author[2]{John Roe}" in out
         # org name is escaped (& → \&) and hyperlinked to its ROR id
         assert "\\affil[1]{\\href{https://ror.org/x}{MIT \\& Co}}" in out
         assert "\\affil[2]{Caltech}" in out
@@ -2345,7 +2345,7 @@ def test_export_draft_emits_byline_from_ref_authors(hub) -> None:
     with tempfile.TemporaryDirectory() as td:
         latex.export_draft(store, ref, target_dir=Path(td))
         main_tex = (Path(td) / "main.tex").read_text(encoding="utf-8")
-    assert "\\author[1]{Doe, Jane}" in main_tex
+    assert "\\author[1]{Jane Doe}" in main_tex
     assert "\\affil[1]{\\href{https://ror.org/x}{MIT}}" in main_tex
     assert "\\affil[2]{Caltech}" in main_tex
 

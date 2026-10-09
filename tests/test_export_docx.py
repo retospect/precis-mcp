@@ -861,7 +861,7 @@ def test_render_byline_names_marks_and_ror_link() -> None:
     )
     _render_byline(doc, byline)
     text = "\n".join(p.text for p in doc.paragraphs)
-    assert "Doe, Jane" in text and "Roe, John" in text
+    assert "Jane Doe" in text and "John Roe" in text
     # superscript marks present as run text on the names paragraph
     names_p = doc.paragraphs[1]
     assert any(r.font.superscript and r.text in ("1", "2") for r in names_p.runs)

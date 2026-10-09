@@ -219,9 +219,9 @@ class TestBuildByline:
         ]
         b = build_byline(raw)
         assert [a["name"] for a in b["authors"]] == [
-            "Doe, Jane",
-            "Roe, John",
-            "Lee, Kim",
+            "Jane Doe",
+            "John Roe",
+            "Kim Lee",
         ]
         assert [a["orcid"] for a in b["authors"]] == [
             "0000-0002-1825-0097",

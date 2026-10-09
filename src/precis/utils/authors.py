@@ -660,6 +660,12 @@ def build_byline(raw: Any) -> dict[str, Any]:
         name = name.strip()
         if not name:
             continue
+        # Draft entries are stored sortable (``Family, Given`` in ``name``,
+        # the shape :func:`to_author_dicts` writes); a byline reads in
+        # natural order, so flip the unambiguous single-comma form.
+        split = _split_author_name(name)
+        if "family" in split:
+            name = f"{split['given']} {split['family']}"
         aff = ror = ""
         orcid = bracket or ""
         if isinstance(a, dict):
