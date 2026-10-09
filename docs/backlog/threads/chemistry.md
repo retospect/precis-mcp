@@ -122,11 +122,6 @@ paper needs.
    wall and the seed cpuset (`0-4,10-14`, runner falls back unpinned when
    the node lacks those CPUs) landed in 4181421ce; the dispatch follows
    its deploy (Resume line).
-4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
-   `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
-   per-step re-queue with a fresh seed, which turns 0.95^20 attrition into
-   additive compute.
-
 ## Horizon
 
 Items 1-4 and 6 are engine items moved down from Do next 2026-10-01 to keep

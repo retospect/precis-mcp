@@ -527,21 +527,13 @@ at the bottom)
      bond-angle deviation, plus POAV θp, with mean, p95 and max. Second,
      the se 3D viewer colours each atom by its strain, as a toggle next
      to the tier badge.
-5. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
-   a join's findings live only in the minted structure's meta and there is
-   no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
-   six SQL queries and a container exec on "which row governed this
-   seam?", and never asked the question that mattered because asking was
-   expensive. `status: ready` and both open questions decided 2026-09-30:
-   three slices in the one file, shipped in order, and `view='report'`
-   lives on `se` addressed by block. Slice 1 ships alone and is the
-   unblocker; slice 3 (the join dry-run) goes last, when there is a
-   reading surface to prove it wrote nothing with.
-6. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
-   (SPEC §25.3) then the join dry-run, after slice 1. Slice 3
-   goes last by the file's own decision: a dry-run needs a reading
-   surface to prove it wrote nothing with.
-7. **Design retire cascade, remaining half** — Reto ruled 2026-10-01 (recorded on the
+5. **backlog/se-join-observability.md, slice 3** — the write-free join
+   dry-run, proven through the reading surfaces. Slices 1 and 2 shipped
+   (`view='report'` 2026-09-30, `view='catalogue'` 2026-10-09 with the
+   per-join-side consulted rows); slice 3 went last by the file's own
+   decision: a dry-run needs a reading surface to prove it wrote nothing
+   with.
+6. **Design retire cascade, remaining half** — Reto ruled 2026-10-01 (recorded on the
    gripe): a design retire **cascades** to the structures its blocks
    minted, except structures promoted to building-block status, and
    (no ruling needed) except any structure another live design still
@@ -549,7 +541,7 @@ at the bottom)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-8. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
@@ -571,7 +563,7 @@ at the bottom)
      design call, not a one-liner.
    - Second, larger slice: the `EnvKey` extent field, shared with
      gr457997.
-9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
@@ -627,7 +619,7 @@ at the bottom)
    backlog/precis-surface-kernel.md) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 9.
+   clearance stub is gated on Do-next 8.
 9. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 10. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -693,8 +685,6 @@ not tick, wake or re-scope them without his word. On prod they are tagged
   gripe, so its motivating case is gone. The prepare/finish
   seam is still untested; unparks the next time a phase bug is suspected,
   with a real instance to write the first test on.
-- **backlog/se-join-unknown-op-in-web-proposal.md** — `status: ready`, but
-  viewer-surface work; unparks when someone is in `precis_web`.
 
 ## No action needed
 

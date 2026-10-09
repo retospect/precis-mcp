@@ -99,9 +99,7 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
    2-slot gate for every tree.
 7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
    container; the tooling that makes 6 diagnosable.
-8. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
-   crash reads as a policy violation, sending authors to fix the wrong thing.
-9. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon

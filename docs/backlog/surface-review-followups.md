@@ -32,8 +32,9 @@ schema regen and the two changed product skills (`precis-fisheye-help`,
 1. **Shared render cap** — `src/precis/handlers/_capped_section.py` now
    serves inline links and routine gripe comments in prepared R14 source;
    combined gate and deployed replay remain pending.
-2. **`singleton-id-no-batch-form`** — make `_coerce_id` the id normalizer
-   (scalar-or-list in, list out, clean `BadInput` otherwise).
+2. **`singleton-id-no-batch-form`** — the batch `get`/`tag` half shipped
+   2026-10-09 (`_coerce_ids`, cap 50, one transaction for the tag batch);
+   left is the batch `put(draft, terms=[...])` case in the file.
 
 **Deployed 1 gates 2.** A batch `get` of 50 gripes whose comment timelines are
 uncapped is worse than the singleton loop it replaces. Doing 2 first
@@ -80,6 +81,6 @@ is).
 - **Only 2 fleet-wide gate slots exist.** `scripts/test` queues behind
   siblings; a quiescent run is waiting, not hung. Read the holder file, not
   `docker ps`.
-- **`OSError: [Errno 23]` from a policy gate is not a finding** — see item
-  `policy-gates-must-fail-distinguishably` and
+- **`OSError: [Errno 23]` from a policy gate is not a finding** — policy
+  scans fail distinguishably on OSError since 2026-10-09; see
   `memory/gate-errno23-fd-exhaustion.md`.

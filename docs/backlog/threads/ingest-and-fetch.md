@@ -70,83 +70,15 @@ deploy, then the after-deploy steps below.
 
 ## Do next
 
-1. **`backlog/si-attachments.md`** — supplementary-information PDFs
-   are found where attention is, always fetched, and ingested as their
-   own ref linked to the parent paper and cited as the parent. Reto
-   ruled 2026-10-03 (review session 20:02Z). Blocks quest qu164903
-   (NO→NH3 on Pd(111)) through catalysis-selectivity-17. Build 1 landed
-   2026-10-03 (`si_discovery.py`, `si_fetch.py`, `si_links.py`;
-   `put(kind='paper', id=…, mode='fetch-si')`). Discovery runs Figshare
-   (`resource_doi`; ACS mirrors its SI there), then Crossref relation, a
-   component-DOI probe and landing-page patterns. pubs.acs.org answers a
-   Cloudflare challenge, which is recorded as a miss, not bypassed. Two
-   deviations from the spec: the link is `part-of`/`contains` with
-   `meta.role='supplement'`, because a new relation pair needs a
-   migration (switch point: `SI_RELATION` in `store/si_links.py`); the event
-   source is `si_fetch`, because `fetcher:%` events start the main-PDF
-   backoff. Not built: a CLI, and a bare-slug cite of an SI ref is not
-   redirected to the parent (search hits and exports are). Next, after the
-   round-4 deploy: run `fetch-si` on pa5303 and pa166889 and write the
-   result into catalysis-selectivity-17. Build 2 landed 2026-10-03: the
-   attention trigger, `queue_si_on_attention` (`store/si_links.py`). It is
-   called from the web paper page (`routes/papers.py::detail`), the MCP
-   `get` overview (`PaperHandler.get`) and the fisheye ring walk
-   (`refeye.py::collect_ring`, at most 20 papers per walk). A paper is
-   checked once by attention, ever; only `fetch-si` re-checks it.
-   Explicit `fetch-si` requests claim ahead of attention ones. The ring
-   walk also runs inside backfill and working-set renders, so a paper
-   cited by a backfilled section is queued without a human look. That is
-   accepted under the "walkers touch" ruling. Off switch:
-   `si.attention_enabled` (env `PRECIS_SI_ATTENTION`). After deploy:
-   watch the SI-pass yield and how much of each fetch pass it takes;
-   delete this item once the two quest papers are done. First prod run,
-   2026-10-04 00:44Z (build 1): pa5303 (chen23g) got its SI from Figshare,
-   minted as pa465134 (chen23gsi), 32 chunks. pa166889 (chen24p) found
-   its Figshare SI, but the download was skipped on `deadline`: from the
-   fetcher host, Crossref and doi.org connect timeouts used up the
-   shared 120 s pass budget. A budget-cut parent was then never retried.
-   Fixed: it is re-armed for the next pass, up to 3 times, and discovery
-   requests are capped at 10 s connect / 20 s read. pa166889 was
-   re-queued by hand. Its 02:37Z retry missed again on Figshare and
-   doi.org connect timeouts, so a no-PDF check that failed on a
-   transient network error now also re-arms (4ed4c40b0). Probe
-   2026-10-04 from the fetcher host:
-   - Crossref failed 5 of 10 requests, with TLS handshakes up to 20 s.
-   - Figshare took 35 ms every time.
-   - doi.org took up to 3 s.
-   - DNS, IPv6 and the route were all clean.
-   Crossref answers `x-concurrency-limit: 1`, and several worker
-   processes on that host call it (retraction gate, enrich, provenance,
-   SI discovery). Exceeding that limit is the likely cause.
-   Unconfirmed, and open: whether the polite-pool mailto is sent on
-   every Crossref call.
-   Quest result (2026-10-04): both SIs are ingested, pa465134
-   (chen23gsi) and pa465698 (chen24psi). Both state V vs RHE, so
-   catalysis-selectivity-17 is resolved and routed to the
-   catalysis-selectivity thread. Round-4 dogfood (prod 727728cc9):
-   - Attention: an MCP `get` queued ref 458964 once; a second `get`
-     left `requested_at` alone.
-   - Re-arm: its SI pass (06:24Z) missed Figshare and doi.org on
-     `ConnectTimeout` and re-armed (`rearmed: true`,
-     `deadline_retries: 1`).
-   - No SI or e-print errors in `worker_logs`.
-   Two problems remain:
-   - The first fetch pass after the 04:40Z deploy started only at
-     06:23Z: `_hub_refine_pass` held the fetcher host from 05:26Z.
-   - The worker hits `ConnectTimeout` on api.figshare.com in 3 of 4
-     SI passes. It is not the worker runtime (no proxy env, a fresh
-     client per request). The fetcher host has per-IP TLS-handshake
-     stalls (`_ssl.c:989: The handshake operation timed out`) to
-     Figshare, Crossref and doi.org. A failing IP stalls on every try,
-     then recovers, and the IPs swap within a minute. Crossref
-     timeouts show on a second worker host too. Egress problem, ops
-     gripe gr465931 (`safe_fetch` pins the first resolved address only,
-     so a pass keeps hitting the stalled IP). Until fixed, the SI
-     re-arm absorbs it. Crossref and bib_parse calls now retry once on a
-     connect failure (`utils/http.py::retry_transient`). The safe_fetch
-     next-address fallback design is accepted (reviews §3) and goes
-     through the orchestrator's gate as a branch.
-   Delete this item once walker and web triggers are seen on prod.
+1. **`backlog/si-attachments.md`** — builds 1 and 2 shipped and deployed
+   (`si_discovery.py`, `si_fetch.py`, `si_links.py`; `put(kind='paper',
+   id=…, mode='fetch-si')` and the attention trigger from the web paper
+   page, the MCP `get` overview and the fisheye ring walk). Both quest
+   papers have their SI ingested; catalysis-selectivity-17 is resolved.
+   Left, per the file: observe the web and walker attention triggers on
+   prod once each, then delete the file and this item. Optional: a CLI
+   for `fetch-si`.
+
 2. **`backlog/ingest-strips-greek-glyphs.md`** — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until the stub-upgrade fix (the upgrade dropped `paper.meta` for

@@ -118,15 +118,14 @@ off that gap until it closes.
      ½ build (se-3d-viewer-7).
    Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
    Lab X1 Carbon with tree supports; the goal is support-free.
-3. **backlog/flatpack-furniture-generator.md** — `ready`, 3 builds
-   (Reto 2026-10-03). Reto's answers:
-   - laser first, 3 mm corrugated cardboard, a 50 mm cube, with the fit
-     recorded on the first cut;
-   - finger joints by default, with a straight edge as an option;
-   - se-machine-design-7, option 1: a shared sheet job under flat-pack
-     from build 1. PCB writes into it only through ewod-pcb's adapter.
-   Builds: (1) core + laser SVG + DXF; (2) panels, joints, nesting; (3)
-   checks and the 50 mm cardboard cut, whose physical fit check is Reto's.
+3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped
+   2026-10-09 (`src/precis/sheet/`, `src/precis_se/flatpack/`: panels,
+   finger/straight joints, shelves, skyline nesting, laser SVG and DXF,
+   the 50 mm cube golden). Left: build 3, the se op and params home,
+   `view='cut'`, store-aware checks and the cardboard cut, whose physical
+   fit check is Reto's. Rulings (laser first, 3 mm cardboard, finger
+   joints default, shared sheet job under flat-pack, PCB writes through
+   ewod-pcb's adapter only) are recorded in the file.
 4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
 5. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 4.
@@ -224,10 +223,6 @@ off that gap until it closes.
     2026-10-03); blocked-by the flat-pack generator (Do next 3). Its
     reference is stored as web ref
     `rs-online-com-designspark-laser-cut-living-hinges-for-neater`.
-23. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
-    hygiene: the skill is over the 32 KB hard cap and allowlisted; split
-    the FRET/optical and discrete-states domains out. Cheap, any time; do
-    it before the next domain section is added to that skill.
 
 ## Parked
 

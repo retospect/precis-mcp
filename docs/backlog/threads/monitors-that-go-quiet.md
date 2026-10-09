@@ -158,9 +158,10 @@ gr346534, soft-deleted)
    `worker_logs` prunes (around 2026-10-09, after which the evidence is gone).
    Left on the Horizon only as a pointer — Do-next 4 is the narrow read-only
    slice of it and is still this thread's.
-2. **backlog/alert-failure-id-registry.md** — status ready; stable failure
-   ids make "did host-dark fire, for which host" addressable instead of SQL
-   archaeology. Leverage over Do-next 4 and shippable now.
+2. **backlog/alert-failure-id-registry.md** — the registry, `/rules`
+   catalogue and idle-aware health panel shipped 2026-10-09; "did host-dark
+   fire, for which host" is addressable by id. Left, per the file: the
+   `acked_until` TTL, `/status` onto the panel, call-site constants.
 3. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
    the condition registry; Do-next 4 exists because a host has no
    durable identity separating "ephemeral by design" from "vanished", so

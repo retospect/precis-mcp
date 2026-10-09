@@ -86,10 +86,10 @@ to Do next, and the 11-gripe god-module cluster to Horizon)
    now unblocked by the step-8 ruling below. Step 6 closed as prep on
    2026-10-02: the `db` marker already splits store-free from store-backed
    tests, and the per-package shares are in the item. The import boundary
-   still carries one grandfathered breach, **gr459054**
-   (`quest/roadmap_tick.py` importing `precis_se.handler`); the fix is the
-   quest thread's, and a staleness assertion drops the exemption when they
-   land it.
+   carries no grandfathered breach since 2026-10-09 (gr459054 fixed:
+   `roadmap_tick` takes the booted hub and `Hub.sibling()` resolves plugin
+   kinds by entry point; `_GRANDFATHERED` is empty and
+   `test_core_never_imports_precis_se` holds the line).
 2. **Step 8, ruled 2026-10-02 (Reto): publish to PyPI** from
    precis-util's first release. Claim the member names before the split
    mints them and revive `publish.yml` (it lapsed at v8.4.4; pyproject is

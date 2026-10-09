@@ -246,19 +246,16 @@ the chemistry thread's):
 8. **backlog/quest-loop-safety.md** — the "rubric key never produced"
     warning (the anti-spin breaker shipped); a silent empty
     frontier is the failure it names.
-9. **gr459054** — `quest/roadmap_tick.py` imports `precis_se.handler`, the
-    one grandfathered breach of the plugin import boundary (plugin-split
-    owns the boundary; the fix is in quest code).
-10. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
+9. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
     cadence or why-not-ticking.
-11. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
+10. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
     checklist.
-12. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
+11. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
     the web; last, a human surface over a loop that must tick first.
-13. **backlog/todo-tree-plan.md** — remaining fold candidates of the
+12. **backlog/todo-tree-plan.md** — remaining fold candidates of the
     todo-tree plan; the todo tree is the quest loop's work substrate, so it
     sequences after the loop ticks. Platform pass 2026-10-02.
-14. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
+13. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
     has no trust or posture filter, and `finding` is in `LINKABLE_KINDS`.
     So a refuted hub, such as fi460566 or fi460856 (marked 2026-10-02 by
     claims-and-evidence with a `support: "no"` edge verdict), can still
