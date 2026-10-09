@@ -249,6 +249,21 @@ and that headless volume is within each plan's terms.
   surviving a report, and the collector against a fake MCP.
   `scripts/inflight --all-hosts` reads the agent rows.
 
+**First live push (2026-10-09, f76d3b6cf):** 70 rows from the Mac, 1
+from melchior. Tuning before step 3:
+- A worktree with no Claude session still gets a `claude` row (`idle`,
+  no age, no ctx): every Devin tree shows twice. Emit a row only for a
+  session that exists.
+- `ctx_pct` passes 100% (112%, 128%): the 200k window is wrong for the
+  current models. Read the window per model from the transcript's model
+  id; until then the `context` exception is noise.
+- Devin rows are `unknown`: state needs a Devin source (pane footer).
+- The fisheye lists every row; fold idle rows with no session age into
+  one count line.
+- The collector needs the bearer token without an env var on the Mac:
+  read it from the precis entry in `~/.claude.json` when
+  `PRECIS_MCP_TOKEN` is unset, never printed.
+
 Write-path tests on the dev DB. Fallback when prod precis is down: local
 files (`round.json`, `.claude/purpose`, `inflight`) keep working.
 
