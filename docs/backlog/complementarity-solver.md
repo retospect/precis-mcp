@@ -1,7 +1,7 @@
 ---
 status: ready
 pillar: 3d-design
-title: complementarity solver — active-set unilateral analysis, sign-aware completeness, bistability probe
+title: complementarity solver — se bridge for the shipped structsolve core (stability section, validate findings, bistability view)
 prio: high
 ---
 
@@ -14,11 +14,17 @@ complementarity"): that rung's deferral note says when a consumer
 actually wants the load path, build it as the complementarity solve
 from the start, not a graph walk. This is that build.
 
-**Units-window split (2026-09-12):** slice 1's CORE (the pure
-structsolve module + array tests) is outside the units-cutover
-exclusive window and may build immediately; everything touching
-`precis_se/*` (the bridge, views, slice 2) waits for
-`units-policy-cutover` to land.
+**Core status:** the pure `src/precis/structsolve/complementarity.py`
+module is SHIPPED for all three slices — `solve_complementarity`
+(slice 1 active-set solve, status rows, refusals), `check_completeness`
+(slice 2's sign-aware per-load-case verdict: complete / unseated /
+incomplete + culprit members / mechanism) and `probe_bistability`
+(slice 3) — with array-level tests in
+`tests/test_structsolve_complementarity.py`. What remains below is the
+`precis_se/*` side only: the bridge, the `view='stability'` section, the
+validate/drc findings and the load-case vocabulary. (The 2026-09-12
+units-window split that held the se side back is moot now that
+`units-policy-cutover` landed.)
 
 ## Motivation / why
 
@@ -51,55 +57,39 @@ analysis the flagship needs.
 
 ## In scope
 
-**Core: `src/precis/structsolve/complementarity.py`** — house rules of
-the package docstring: numpy/scipy only, pure functions over passed-in
-arrays, no store access, unit-agnostic (se feeds metres/newtons, nm
-feeds Å/nN; the numbers never know). Sign convention tension-positive,
-matching `formfind.py` and `stability.py`. Inputs: node coords, member
-incidence, per-member axial rate + free length (hence prestress
-`k(L₀ − L)`), the capacity-pair sign idiom (tension-only /
-compression-only / bidirectional / must-contact), per-coordinate fixed
-mask (the `formfind` prescription convention), nodal load vector.
-Output: equilibrium displacements, per-member force, and a per-member
-status row — `taut` / `slack` / `bearing` / `separated` / `seated` /
-`unseated` — plus a residual the caller can assert on, and a loud
-refusal (the `FormFindError` posture) when no complementary equilibrium
-exists in the small-displacement model.
+**Core (shipped) — `src/precis/structsolve/complementarity.py`:** the
+module docstring is the contract (inputs, tension-positive convention,
+status vocabulary, refusal posture, the documented active-set
+algorithm choice, and the completeness/bistability honesty notes).
 
-**Slice 1 — active-set solve + taut/slack report on the existing axial
-subgraph.** The se bridge consumes what already exists: member rows via
+**Slice 1 — se bridge for the active-set solve + taut/slack report on
+the existing axial subgraph.** The bridge consumes what already exists: member rows via
 `stability.axial_connects` (role from the asymmetric capacity pair —
 tie/strut/rod derived, never a third class), supports via
 `objectives.fixed`, loads via `objectives.force`, node-per-block poses
 exactly as `stability._assemble` scopes them. Report surfaces as a
 section of `view='stability'` with the same honesty scoping notes:
 axial subgraph only, non-axial connects and envelope contact not
-modelled. Nonlinear stiffness is inherent: the solve iterates active
-sets until the working set is sign-consistent (slack members carry zero
-and have non-negative gap; active members carry legal-sign force), so
-members dropping out is the mechanism, not a post-hoc filter.
+modelled.
 
-**Slice 2 — sign-aware completeness wired into se validate.** Addendum
-A6's delta: a tension-only member driven into compression (i.e.
-required to carry compression for equilibrium to exist, or slack in a
-way that leaves the remaining bilateral+active structure a mechanism)
-under *any* declared load case makes the structure **incomplete — a
-topology error, not a stressed member**. Structured rejection (principle
-9): the finding names the member (`a.port—b.port` subject format) and
-the load case. Lands as findings folded into `view='drc'` /
+**Slice 2 — sign-aware completeness wired into se validate.** The
+verdict itself is shipped (`check_completeness`: per case `complete` /
+`unseated` / `incomplete` with culprit member indices / `mechanism`,
+culprits read off the sign-blind contrast solve). The bridge maps
+culprit indices to `a.port—b.port` subjects and the case index to its
+declared name — structured rejection (principle 9) naming member and
+load case. Lands as findings folded into `view='drc'` /
 `validate.validate` the same way `preload_findings` and
 `capacity_findings` already fold in. Tripwire contract respected: any
 path that cannot run the solve emits the honest "not checked" line,
 never a bare verdict.
 
-**Slice 3 — two-equilibria / bistability probe.** Given two candidate
-prestress/geometry states (in practice: the two free-length assignments
-a photoswitch's `{trans, cis}` Δ(end-to-end) induces on one member),
-verify each is a stable complementary equilibrium (solve converges,
-second-order stabilized, all signs legal) and report an energy-barrier
-estimate along a path between them. This is the bridge to photoswitch
-tensegrity: two stable equilibria + a barrier = bistable actuation.
-Endpoint verification here; the full switching-pathway sweep stays in
+**Slice 3 — two-equilibria / bistability probe, se side.**
+`probe_bistability` is shipped (per-state second-order stability,
+`|E_a − E_b|` barrier with its honesty notes). Remaining: an se entry
+point that takes a photoswitch member's `{trans, cis}` free lengths and
+surfaces the result with its `notes` verbatim. Endpoint verification
+only; the full switching-pathway sweep stays in
 structural-solution-space slice 5.
 
 ## Explicitly NOT in scope
@@ -126,15 +116,11 @@ structural-solution-space slice 5.
 
 ## Acceptance criteria
 
-- Pure-array unit tests, no store: (a) two-cable + strut triangle where
-  one cable goes slack under a lateral load — status rows flip
-  taut→slack and forces match hand calc; (b) compression-only contact
-  that separates under uplift; (c) a must-contact stop reported
-  `unseated` when preload is insufficient; (d) a classic tensegrity
-  (e.g. 3-strut prism from `prestress_report`'s test fixtures) where all
-  ties stay taut under a small service load.
-- Same problem fed in metres/newtons and Å/nanonewtons produces
-  identical status rows (unit-agnosticism is tested, not asserted).
+- (Shipped, core) the four array fixtures, units-agnosticism, refusal
+  paths, completeness verdicts incl. culprit naming and "re-sign clears
+  it", bistability probe — `tests/test_structsolve_complementarity.py`.
+- Slice 1 bridge: `view='stability'` carries the taut/slack section
+  with the honesty scoping notes; undeclared-rate members skip-and-report.
 - Slice 2: an se design with a tie that any declared load case drives
   into compression yields a structured finding naming member subject and
   case; removing the case or re-signing the member clears it.
@@ -146,8 +132,7 @@ structural-solution-space slice 5.
 
 ## Target + blast radius
 
-New: `src/precis/structsolve/complementarity.py` (+ `__init__` exports).
-Touched (post-units-window only): `precis_se/stability.py` (bridge +
+Touched: `precis_se/stability.py` (bridge +
 view section), `precis_se/validate.py` / `precis_se/drc.py` (slice-2
 findings), `precis_se/handler.py` (view plumbing), package docstrings,
 and the two owning backlog docs (architecture §Complementarity gains a
@@ -179,14 +164,15 @@ fastener preload (`joints.py` preload, N tension-positive) into
 exactly this pair so the general solve and the closed-form check agree
 by construction.
 
-Still open (non-blocking for slice-1 core):
+Still open (the se side):
 - **Load-case vocabulary.** `objectives.force` today is one load per
   block — "under any load case" needs named cases (shock included).
   Extend the objectives vocabulary, or a list-of-cases argument at the
-  view/op layer only? Blocker for slice 2, not slice 1.
-- **Algorithm.** Iterative active-set over linear solves vs. posing the
-  LCP/QP to `scipy.optimize`; cycling guards. Decide in-code with a
-  documented choice; flag if Lemke-style pivoting is wanted.
+  view/op layer only? Blocker for the slice-2 bridge; the core takes an
+  `(n, j, 3)` stack and is indifferent.
+- **Algorithm — RESOLVED in-code:** iterative active-set over linear
+  solves with a visited-set cycling guard (module docstring); revisit
+  only if a consumer needs Lemke-style pivoting.
 - **Slice-3 barrier estimate — RESOLVED 2026-09-12 (built, reviewed):**
   linear interpolation of free lengths + endpoint displacements, with a
   proven consequence disclosed in the code's notes tuple: the summed

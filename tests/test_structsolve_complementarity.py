@@ -22,7 +22,16 @@ purpose-built "collinear buckling" fixture — two compression-only
 members driving a transverse rod's reduced stiffness negative — proves
 the second-order check has teeth: it *converges* (a legal, invertible
 small-displacement solve) yet is correctly reported not stable, which
-plain convergence alone would miss."""
+plain convergence alone would miss.
+
+Sign-aware completeness (``check_completeness``, slice 2's pure-array
+core): per load case, ``complete`` (a legal-sign equilibrium exists —
+a slack cable is fine), ``unseated`` (solves, but a must-contact stop
+is not engaged), ``incomplete`` (no complementary equilibrium though
+the all-bidirectional solve carries the case — the culprit members are
+the ones that solve puts on their illegal sign; re-signing them clears
+the verdict) and ``mechanism`` (the bilateral topology itself fails).
+Units-agnostic like the solver it wraps."""
 
 from __future__ import annotations
 
@@ -32,9 +41,11 @@ import numpy as np
 import pytest
 
 from precis.structsolve.complementarity import (
+    COMPLETENESS_VERDICTS,
     IDIOMS,
     ComplementarityError,
     ComplementarityInputError,
+    check_completeness,
     probe_bistability,
     solve_complementarity,
 )
@@ -790,3 +801,195 @@ def test_all_idioms_are_documented_and_valid_inputs() -> None:
             fixed,
         )
         assert res.forces[0] == 0.0
+
+
+# ── sign-aware completeness over declared load cases ─────────────────────
+
+
+def test_completeness_slack_cable_is_still_complete() -> None:
+    coords, members, fixed, rate = _tripod()
+    free_length = np.array([np.linalg.norm(coords[3] - coords[k]) for k in range(3)])
+    idiom = np.array(["compression_only", "tension_only", "tension_only"], dtype=object)
+    cases = np.zeros((1, 4, 3))
+    cases[0, 3] = [1.0, -1.0, 0.0]  # cable C goes slack, structure still stands
+
+    rep = check_completeness(coords, members, rate, free_length, idiom, fixed, cases)
+
+    assert rep.complete is True
+    (case,) = rep.cases
+    assert case.verdict == "complete"
+    assert case.culprits == () and case.unseated == () and case.cause == ""
+    assert case.result is not None and list(case.result.status) == [
+        "bearing",
+        "taut",
+        "slack",
+    ]
+    assert any("sign-blind" in n for n in rep.notes)
+
+
+def test_completeness_tie_driven_into_compression_is_incomplete_and_named() -> None:
+    coords, members, fixed = _contact_and_brace()
+    rate = np.array([10.0, 5.0])
+    length0 = np.array([1.0, 1.0])
+    idiom = np.array(["tension_only", "tension_only"], dtype=object)
+    cases = np.zeros((2, 2, 3))
+    cases[0, 1, 2] = 5.0  # uplift: both ties taut — fine
+    cases[1, 1, 2] = -5.0  # push-down: both ties would need compression
+
+    rep = check_completeness(coords, members, rate, length0, idiom, fixed, cases)
+
+    assert rep.complete is False
+    assert [c.verdict for c in rep.cases] == ["complete", "incomplete"]
+    bad = rep.cases[1]
+    assert bad.case == 1
+    assert bad.culprits == (0, 1)  # both ties named, the case is named
+    assert bad.result is None and "no complementary equilibrium" in bad.cause
+
+    # Removing the offending case clears the verdict …
+    rep_one = check_completeness(
+        coords, members, rate, length0, idiom, fixed, cases[:1]
+    )
+    assert rep_one.complete is True
+    # … and so does re-signing one culprit so the case has a legal path.
+    idiom[1] = "bidirectional"
+    rep_resigned = check_completeness(
+        coords, members, rate, length0, idiom, fixed, cases
+    )
+    assert rep_resigned.complete is True
+    assert [c.verdict for c in rep_resigned.cases] == ["complete", "complete"]
+    resigned = rep_resigned.cases[1].result
+    assert resigned is not None
+    assert list(resigned.status) == ["slack", "bearing"]
+
+
+def test_completeness_sign_blind_would_pass_what_sign_aware_rejects() -> None:
+    # The named wrong simplification: with every member bidirectional
+    # the push-down case solves (verdict complete), so a sign-blind check
+    # would pass a topology the sign-aware one correctly refuses.
+    coords, members, fixed = _contact_and_brace()
+    rate = np.array([10.0, 5.0])
+    length0 = np.array([1.0, 1.0])
+    cases = np.zeros((1, 2, 3))
+    cases[0, 1, 2] = -5.0
+    blind = np.array(["bidirectional", "bidirectional"], dtype=object)
+    aware = np.array(["tension_only", "tension_only"], dtype=object)
+    assert check_completeness(
+        coords, members, rate, length0, blind, fixed, cases
+    ).complete
+    assert (
+        check_completeness(coords, members, rate, length0, aware, fixed, cases)
+        .cases[0]
+        .verdict
+        == "incomplete"
+    )
+
+
+def test_completeness_bilateral_mechanism_is_not_blamed_on_signs() -> None:
+    # One rod along z, node 1 free in x only, no prestress: a transverse
+    # load has no stiffness to lean on whatever sign the rod is allowed.
+    coords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    members = np.array([[0, 1]])
+    fixed = np.array([[True, True, True], [False, True, True]])
+    cases = np.zeros((1, 2, 3))
+    cases[0, 1, 0] = 1.0
+    for idm in ("bidirectional", "tension_only"):
+        rep = check_completeness(
+            coords,
+            members,
+            np.array([10.0]),
+            np.array([1.0]),
+            np.array([idm], dtype=object),
+            fixed,
+            cases,
+        )
+        assert rep.complete is False
+        assert rep.cases[0].verdict == "mechanism"
+        assert rep.cases[0].culprits == ()
+        assert "singular" in rep.cases[0].cause
+
+
+def test_completeness_unseated_hard_stop_is_a_verdict_not_a_pass() -> None:
+    coords, members, fixed, rate, length0 = _preloaded_stop()
+    free_length = np.array([1.02, length0[1]])
+    idiom = np.array(["must_contact", "bidirectional"], dtype=object)
+    cases = np.zeros((2, 3, 3))
+    cases[0, 1, 0] = 0.02  # within preload: seated
+    cases[1, 1, 0] = 0.5  # beyond preload: joint separates
+
+    rep = check_completeness(coords, members, rate, free_length, idiom, fixed, cases)
+
+    assert rep.complete is False
+    assert [c.verdict for c in rep.cases] == ["complete", "unseated"]
+    assert rep.cases[1].unseated == (0,)
+    assert rep.cases[1].culprits == ()
+    assert rep.cases[1].result is not None  # it did solve — the stop just let go
+
+
+def test_completeness_prism_service_cases_all_complete() -> None:
+    coords, members, rate, free_length, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    j = coords.shape[0]
+    cases = np.zeros((3, j, 3))
+    cases[0, 3] = [0.05, -0.05, 0.02]
+    cases[1, 4] = [-0.03, 0.0, -0.04]
+    # an all-zero case: prestress alone must be a legal equilibrium too
+    rep = check_completeness(coords, members, rate, free_length, idiom, fixed, cases)
+    assert rep.complete is True
+    assert {c.verdict for c in rep.cases} == {"complete"}
+
+
+def test_completeness_units_agnosticism() -> None:
+    coords, members, fixed = _contact_and_brace()
+    rate = np.array([10.0, 5.0])
+    length0 = np.array([1.0, 1.0])
+    idiom = np.array(["tension_only", "tension_only"], dtype=object)
+    cases = np.zeros((2, 2, 3))
+    cases[0, 1, 2] = 5.0
+    cases[1, 1, 2] = -5.0
+    rep_si = check_completeness(coords, members, rate, length0, idiom, fixed, cases)
+    len_scale, force_scale = 1e10, 1e9
+    rep_alt = check_completeness(
+        coords * len_scale,
+        members,
+        rate * force_scale / len_scale,
+        length0 * len_scale,
+        idiom,
+        fixed,
+        cases * force_scale,
+    )
+    assert [c.verdict for c in rep_si.cases] == [c.verdict for c in rep_alt.cases]
+    assert [c.culprits for c in rep_si.cases] == [c.culprits for c in rep_alt.cases]
+
+
+def test_completeness_rejects_malformed_cases_and_propagates_input_errors() -> None:
+    coords, members, fixed = _contact_and_brace()
+    rate = np.array([10.0, 5.0])
+    length0 = np.array([1.0, 1.0])
+    idiom = np.array(["tension_only", "tension_only"], dtype=object)
+    with pytest.raises(ComplementarityInputError, match=r"load_cases must be"):
+        check_completeness(
+            coords, members, rate, length0, idiom, fixed, np.zeros((2, 3))
+        )
+    with pytest.raises(ComplementarityInputError, match=r"load_cases must be"):
+        check_completeness(
+            coords, members, rate, length0, idiom, fixed, np.zeros((1, 3, 3))
+        )
+    with pytest.raises(ComplementarityInputError, match=r"empty"):
+        check_completeness(
+            coords, members, rate, length0, idiom, fixed, np.zeros((0, 2, 3))
+        )
+    # a caller bug in the base problem is raised, never absorbed as a verdict
+    with pytest.raises(ComplementarityInputError, match=r"rate must be"):
+        check_completeness(
+            coords, members, rate[:1], length0, idiom, fixed, np.zeros((1, 2, 3))
+        )
+
+
+def test_completeness_verdict_vocabulary_is_closed() -> None:
+    assert set(COMPLETENESS_VERDICTS) == {
+        "complete",
+        "unseated",
+        "incomplete",
+        "mechanism",
+    }

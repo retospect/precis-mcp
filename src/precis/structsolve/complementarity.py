@@ -1,5 +1,5 @@
 """Active-set complementarity solve for unilateral pin-jointed networks
-(docs/backlog/complementarity-solver.md slices 1 and 3 — CORE only, no
+(docs/backlog/complementarity-solver.md slices 1-3 — CORE only, no
 se/nm bridge): given node coordinates, member incidence, per-member
 axial rate and free length (hence a prestress ``k(L₀ − L)`` at the
 input geometry), a per-member sign idiom, per-coordinate supports and
@@ -136,6 +136,29 @@ energy scale, never a certified saddle-point energy — every
 :class:`BistabilityResult` that reports one carries the method and
 these limits in its ``notes``, the same posture
 :mod:`precis.structsolve.simp` uses for its advisory-tier numbers.
+
+**Slice 2's core — :func:`check_completeness`, sign-aware completeness
+over declared load cases.** Addendum A6's delta: a tension-only member
+a load case drives into compression makes the structure *incomplete* —
+a topology error, not a stressed member — and a sign-blind check (a
+rank/mechanism count that treats every member as bidirectional, the
+flagship's named wrong simplification) cannot see it. Per case this
+runs :func:`solve_complementarity`; a converged solve is ``complete``
+(a slack cable is a legal non-event) unless a ``must_contact`` stop
+came out ``unseated``, which is its own verdict (the clamped joint has
+separated). A refusal is then disambiguated by re-solving the same case
+with every member bidirectional: if *that* carries the load the
+one-sidedness is the cause — verdict ``incomplete``, and the culprits
+are the one-sided members the sign-blind solve puts on their illegal
+sign (exactly "the tie this case drives into compression", named by
+index so the se bridge can map it to ``a.port—b.port``); if even the
+sign-blind solve refuses, the bilateral topology is itself a
+``mechanism`` under these supports and no re-signing fixes it.
+Verdicts, not exceptions, for genuine physics refusals;
+:class:`ComplementarityInputError` still propagates as a caller bug.
+The load-case vocabulary (named cases, shock) is the bridge's problem:
+here a case is one ``(j, 3)`` nodal load field in an ``(n, j, 3)``
+stack.
 """
 
 from __future__ import annotations
@@ -554,6 +577,166 @@ def solve_complementarity(
         status=status,
         residual=residual,
         iterations=iteration,
+    )
+
+
+# ── sign-aware completeness (slice 2's CORE, pure arrays) ────────────────
+# (docs/backlog/complementarity-solver.md slice 2 — the per-load-case
+# verdict; the se bridge that folds it into validate/drc is NOT here)
+
+#: Per-case verdicts :func:`check_completeness` can return, worst last.
+COMPLETENESS_VERDICTS = ("complete", "unseated", "incomplete", "mechanism")
+
+_ILLEGAL_SIGN = {
+    "tension_only": lambda f, tol: f < -tol,
+    "compression_only": lambda f, tol: f > tol,
+    "must_contact": lambda f, tol: f > tol,
+}
+
+
+@dataclass
+class CaseCompleteness:
+    """One load case's verdict under :func:`check_completeness`."""
+
+    #: Index into the ``load_cases`` argument.
+    case: int
+    #: One of :data:`COMPLETENESS_VERDICTS` — ``complete``: a
+    #: complementary equilibrium exists, every member on its legal sign,
+    #: every hard stop seated; ``unseated``: it exists but at least one
+    #: ``must_contact`` stop is not engaged (a hard stop that fails to
+    #: seat is broken — the clamped joint has separated); ``incomplete``:
+    #: no complementary equilibrium, yet the same topology solved with
+    #: every member bidirectional does carry the case — the one-sidedness
+    #: is the cause, a topology error, and ``culprits`` names the members
+    #: whose declared sign the case violates; ``mechanism``: not even the
+    #: sign-blind solve carries the case — the bilateral topology itself
+    #: is a mechanism under these supports, no re-signing fixes it.
+    verdict: str
+    #: Member indices the case drives onto their illegal sign in the
+    #: sign-blind solve (``incomplete`` only; empty otherwise).
+    culprits: tuple[int, ...]
+    #: ``must_contact`` member indices reported ``unseated`` (``unseated``
+    #: verdict only; empty otherwise).
+    unseated: tuple[int, ...]
+    #: The solver's refusal message for ``incomplete``/``mechanism``;
+    #: ``""`` when the case solved.
+    cause: str
+    #: The converged sign-aware solve when there is one, else ``None``.
+    result: ComplementarityResult | None
+
+
+@dataclass
+class CompletenessResult:
+    """Sign-aware completeness over every declared load case."""
+
+    #: True iff every case's verdict is ``complete``.
+    complete: bool
+    #: One entry per load case, in input order.
+    cases: tuple[CaseCompleteness, ...]
+    #: What was and was not checked (the ``simp``/``probe_bistability``
+    #: notes posture) — callers surface these, never the bool alone.
+    notes: tuple[str, ...]
+
+
+_COMPLETENESS_NOTES = (
+    "sign-aware completeness: a case is complete only if a complementary "
+    "equilibrium exists with every member on its declared legal sign and "
+    "every must_contact stop seated — a sign-blind rank/mechanism count "
+    "would pass a tie the case drives into compression; this does not",
+    "axial, small-displacement model linearized at the given coords: no "
+    "member capacity/strength check, no overturning or contact-patch "
+    "escape, no cable sag — 'complete' means a legal load path exists, "
+    "not that members are adequately sized",
+    "culprits are read off the sign-blind (all-bidirectional) solve of "
+    "the same case: the one-sided members it puts on their illegal sign; "
+    "re-signing or bracing those members is the topology fix the verdict "
+    "asks for",
+)
+
+
+def check_completeness(
+    coords: np.ndarray,
+    members: np.ndarray,
+    rate: np.ndarray,
+    free_length: np.ndarray,
+    idiom: np.ndarray,
+    fixed: np.ndarray,
+    load_cases: np.ndarray,
+    *,
+    max_iterations: int | None = None,
+) -> CompletenessResult:
+    """Run :func:`solve_complementarity` once per declared load case and
+    return a per-case verdict (:class:`CaseCompleteness`) plus the
+    overall bool. Arguments as :func:`solve_complementarity`, except
+    ``load_cases`` is ``(n, j, 3)`` — one nodal load field per case,
+    ``n >= 1`` (pass a single all-zero case to check prestress alone).
+    A tension-only member the case drives into compression — i.e. the
+    sign-aware solve refuses while the sign-blind solve of the same case
+    does not — makes the case ``incomplete`` and the member a culprit:
+    a topology error, not a stressed member (addendum A6's delta).
+    Malformed input raises :class:`ComplementarityInputError` as a
+    caller bug; genuine refusals are absorbed into the verdicts."""
+    cases = np.asarray(load_cases, dtype=float)
+    if cases.ndim != 3 or cases.shape[1:] != (np.asarray(coords).shape[0], 3):
+        raise ComplementarityInputError(
+            f"load_cases must be (n, {np.asarray(coords).shape[0]}, 3) — one "
+            f"nodal load field per case, got {cases.shape}"
+        )
+    if cases.shape[0] == 0:
+        raise ComplementarityInputError(
+            "load_cases is empty — declare at least one case (an all-zero "
+            "case checks prestress alone)"
+        )
+    idiom_arr = np.asarray(idiom, dtype=object)
+    blind_idiom = np.full(idiom_arr.shape, "bidirectional", dtype=object)
+
+    per_case: list[CaseCompleteness] = []
+    for n in range(cases.shape[0]):
+        loads = cases[n]
+        try:
+            res = solve_complementarity(
+                coords,
+                members,
+                rate,
+                free_length,
+                idiom,
+                fixed,
+                loads,
+                max_iterations=max_iterations,
+            )
+        except ComplementarityInputError:
+            raise
+        except ComplementarityError as exc:
+            cause = str(exc)
+            try:
+                blind = solve_complementarity(
+                    coords, members, rate, free_length, blind_idiom, fixed, loads
+                )
+            except ComplementarityInputError:
+                raise
+            except ComplementarityError:
+                per_case.append(CaseCompleteness(n, "mechanism", (), (), cause, None))
+                continue
+            scale = float(np.max(np.abs(blind.forces))) if blind.forces.size else 0.0
+            tol = _SIGN_RTOL * scale
+            culprits = tuple(
+                k
+                for k in range(blind.forces.shape[0])
+                if str(idiom_arr[k]) in _ILLEGAL_SIGN
+                and _ILLEGAL_SIGN[str(idiom_arr[k])](float(blind.forces[k]), tol)
+            )
+            per_case.append(
+                CaseCompleteness(n, "incomplete", culprits, (), cause, None)
+            )
+            continue
+        unseated = tuple(int(k) for k in np.flatnonzero(res.status == "unseated"))
+        verdict = "unseated" if unseated else "complete"
+        per_case.append(CaseCompleteness(n, verdict, (), unseated, "", res))
+
+    return CompletenessResult(
+        complete=all(c.verdict == "complete" for c in per_case),
+        cases=tuple(per_case),
+        notes=_COMPLETENESS_NOTES,
     )
 
 

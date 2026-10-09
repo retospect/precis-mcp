@@ -19,11 +19,16 @@ Modules:
   coordinates, one linear solve per axis returns node geometry in
   equilibrium.
 - :mod:`precis.structsolve.complementarity` — active-set unilateral
-  analysis (docs/backlog/complementarity-solver.md slices 1 and 3):
+  analysis (docs/backlog/complementarity-solver.md slices 1-3, core):
   given topology, per-member axial rate/free-length/sign-idiom and
   supports, finds the small-displacement equilibrium in which every
   tension-only, compression-only and must-contact member obeys its
-  one-sidedness — never both a gap and a force. Slice 3's
+  one-sidedness — never both a gap and a force. Slice 2's
+  :func:`~precis.structsolve.complementarity.check_completeness` runs
+  that solve per declared load case and returns a sign-aware verdict
+  (complete / unseated / incomplete with the culprit members / mechanism)
+  — a tie a case drives into compression is a topology error a
+  sign-blind rank count would pass. Slice 3's
   :func:`~precis.structsolve.complementarity.probe_bistability` takes
   two candidate free-length assignments over the same topology (e.g. a
   photoswitch's ``{trans, cis}`` states) and reports whether each is a
@@ -67,12 +72,16 @@ slice — nothing here touches the store.
 from __future__ import annotations
 
 from precis.structsolve.complementarity import (
+    COMPLETENESS_VERDICTS,
     IDIOMS,
     BistabilityResult,
+    CaseCompleteness,
     ComplementarityError,
     ComplementarityInputError,
     ComplementarityResult,
+    CompletenessResult,
     EquilibriumStabilityResult,
+    check_completeness,
     probe_bistability,
     solve_complementarity,
 )
@@ -105,12 +114,15 @@ from precis.structsolve.simp import (
 )
 
 __all__ = [
+    "COMPLETENESS_VERDICTS",
     "IDIOMS",
     "BistabilityResult",
+    "CaseCompleteness",
     "Coefficients",
     "ComplementarityError",
     "ComplementarityInputError",
     "ComplementarityResult",
+    "CompletenessResult",
     "ContinuationError",
     "ContinuationResult",
     "ContinuationStep",
@@ -122,6 +134,7 @@ __all__ = [
     "PreferredResult",
     "SimpResult",
     "barrier_over_kT",
+    "check_completeness",
     "default_coefficients",
     "evaluate",
     "form_find",
