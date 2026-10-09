@@ -30,6 +30,7 @@ Word/pandoc path.
 
 from __future__ import annotations
 
+import html
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -739,7 +740,13 @@ def _encode_unicode(escaped: str) -> str:
     return _wrap_cjk(_U2L.unicode_to_latex(_normalize_subsup(escaped)))
 
 
-def _glsify(escaped: str, keymap: dict[str, str], seen: set[str] | None = None) -> str:
+def _glsify(
+    escaped: str,
+    keymap: dict[str, str],
+    seen: set[str] | None = None,
+    abbrevs: dict[str, str] | None = None,
+    at_start: bool = False,
+) -> str:
     """Replace whole-word occurrences of each known abbreviation short
     with a glossary call (longest-first, word-bounded). Runs on
     already-escaped prose; shorts are alphanumerics, untouched by
@@ -759,24 +766,56 @@ def _glsify(escaped: str, keymap: dict[str, str], seen: set[str] | None = None) 
     the full term on hover. Only later uses are wrapped since a
     pdftooltip box can't break across a line and first-use expansion is
     multi-word. ``seen`` omitted → every occurrence renders plain (unit
-    tests)."""
+    tests).
+
+    ``abbrevs`` (``{short: long}``) lets a first use that the prose already
+    spells out as ``long (SHORT)`` / ``long (SHORTs)`` collapse that whole
+    span into the single ``\\gls`` (whose first-use expansion prints the
+    same thing), instead of doubling the expansion. The prose long form
+    matches case-insensitively and may differ from the registry's only by
+    a trailing ``s``. A first-use ``\\gls`` that starts a sentence (the
+    start of ``escaped`` when ``at_start``, or after ``. ``/``? ``/``! ``)
+    renders capitalised (``\\Gls``/``\\Glspl``)."""
     if not keymap:
         return escaped
     shorts = sorted((s for s in keymap if s), key=len, reverse=True)
     pat = re.compile(
         r"(?<![\w-])(" + "|".join(re.escape(s) for s in shorts) + r")(s)?(?![\w-])"
     )
-
-    def _sub(m: re.Match[str]) -> str:
-        key = keymap[m.group(1)]
+    out: list[str] = []
+    pos = 0
+    for m in pat.finditer(escaped):
+        short = m.group(1)
+        key = keymap[short]
         plural = m.group(2)
-        if seen is None or key not in seen:
-            if seen is not None:
-                seen.add(key)
-            return f"\\glspl{{{key}}}" if plural else f"\\gls{{{key}}}"
-        return f"\\glspltip{{{key}}}" if plural else f"\\glstip{{{key}}}"
-
-    return pat.sub(_sub, escaped)
+        pre = escaped[pos : m.start()]
+        end = m.end()
+        first = seen is None or key not in seen
+        if first and seen is not None:
+            seen.add(key)
+        if not first:
+            cmd = "glspltip" if plural else "glstip"
+        else:
+            cmd = "glspl" if plural else "gls"
+            long = (abbrevs or {}).get(short)
+            if long and escaped[end : end + 1] == ")":
+                esc_long = _encode_unicode(_latex_escape(long.strip()))
+                base = esc_long[:-1] if esc_long.lower().endswith("s") else esc_long
+                lm = re.search(
+                    r"(?<![\w-])" + re.escape(base) + r"s?\s*\($", pre, re.IGNORECASE
+                )
+                if base and lm:
+                    pre = pre[: lm.start()]
+                    end += 1
+            if re.search(r"[.?!]\s+$", pre) or (
+                at_start and not "".join(out).strip() and not pre.strip()
+            ):
+                cmd = cmd[0].upper() + cmd[1:]
+        out.append(pre)
+        out.append(f"\\{cmd}{{{key}}}")
+        pos = end
+    out.append(escaped[pos:])
+    return "".join(out)
 
 
 @dataclass
@@ -796,6 +835,11 @@ class _Ctx:
     #: Read cache for the pin lint (:func:`precis.nanopub.pin_lint.warn_export`).
     pin_ctx: Any = None
     seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
+    abbrevs: dict[str, str] = field(default_factory=dict)  # short → long form
+    #: Set by :func:`_render_finding_cite` when a cite mark was dropped for
+    #: want of any citable source; :func:`_render_inline` reads and clears it
+    #: to pull the preceding space off the dropped mark.
+    dropped_cite: bool = False
     figures: list[tuple[str, bytes]] = field(default_factory=list)  # (relpath, bytes)
     data_package: list[DataPackageFigure] = field(default_factory=list)
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text cites, no bib
@@ -853,7 +897,7 @@ class _Ctx:
         return self.doc_type == _PATENT_DOC_TYPE
 
 
-def _render_gap(text: str, ctx: _Ctx) -> str:
+def _render_gap(text: str, ctx: _Ctx, *, chunk_start: bool = False) -> str:
     """Render a non-reference run of prose to LaTeX: math + code stashed
     verbatim, sub/sup → ``\\textsubscript`` / ``\\textsuperscript``,
     ``**bold**`` → ``\\textbf``, ``\\gls`` for known abbreviations,
@@ -898,7 +942,7 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
     # 6. Abbreviations → \gls (first use) / \glstip tooltip (later uses).
-    s = _glsify(s, ctx.keymap, ctx.seen_acr)
+    s = _glsify(s, ctx.keymap, ctx.seen_acr, ctx.abbrevs, chunk_start)
 
     # 6b. Two math spans restored back-to-back would abut as ``…$$…`` — TeX
     #     reads that as a display-math opener ("Display math should end with
@@ -975,6 +1019,25 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
     return getattr(resolved, "cite_public_id", None) or resolved.public_id
 
 
+def _conjunct_cite_keys(store: Any, hub_ref_id: int) -> list[str]:
+    """Union of the cite_keys of a composite hub's ``conjunct-of`` atoms
+    (the atoms point at the hub), in atom ref_id order, deduped. ``[]`` when
+    the finding has no atoms or none is citable."""
+    from precis.taproot.cite import finding_cite_keys
+    from precis.taproot.seniority import conjunct_atoms_bulk
+
+    try:
+        atoms = conjunct_atoms_bulk(store, [hub_ref_id]).get(hub_ref_id, [])
+    except Exception:  # pragma: no cover — store without a pool / hiccup
+        return []
+    keys: list[str] = []
+    for atom in atoms:
+        for k in finding_cite_keys(store, atom).cite_keys:
+            if k not in keys:
+                keys.append(k)
+    return keys
+
+
 def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
     """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
     the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`,
@@ -1004,6 +1067,8 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
 
     fc = finding_cite_keys(ctx.store, pk)
     keys = fc.cite_keys
+    if not keys:
+        keys = _conjunct_cite_keys(ctx.store, pk)
     op, handles = mentions.parse_pin_suffix(pin)
     if op is not None:
         if fc.is_hub and fc.evidence is not None:
@@ -1032,7 +1097,14 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
         # the hub's full derived evidence — a pin overrides what gets
         # cited, never what the evidence graph holds.
         return _hub_footnote(pk, fc.evidence, ctx)
-    return _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
+    rendered = _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
+    if not keys and op is None:
+        ctx.warnings.append(
+            f"cite [{tgt}]: no citable source "
+            "(conjunction hub without sourced conjuncts)"
+        )
+        ctx.dropped_cite = not rendered
+    return rendered
 
 
 def _trust_mark_latex(ctx: _Ctx, finding_ref_id: int) -> str:
@@ -1797,11 +1869,36 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     pin_lint.warn_export(ctx, text)
     out: list[str] = []
     last = 0
+    prev_ref = ""  # last emitted cite mark, while only it separates us
+    dropped_at: int | None = None  # out index of the gap before a dropped cite
     for m in _COMBINED.finditer(text):
-        out.append(_render_gap(text[last : m.start()], ctx))
-        out.append(_render_reference(m, ctx))
+        gap = text[last : m.start()]
+        if dropped_at is not None and gap[:1] in (".", ",", ";", ":", "!", "?", ")"):
+            out[dropped_at] = out[dropped_at].rstrip(" ")
+        dropped_at = None
+        out.append(_render_gap(gap, ctx, chunk_start=not out))
+        ctx.dropped_cite = False
+        ref = _render_reference(m, ctx)
+        if ctx.dropped_cite:
+            dropped_at = len(out) - 1
+            ctx.dropped_cite = False
+        # Consecutive marks resolving to the same cite (``[fi1][fi2]`` both
+        # → one paper) collapse to one cite + one link run.
+        if gap:
+            prev_ref = ""
+        if ref.startswith("\\cite{"):
+            if ref == prev_ref:
+                ref = ""
+            else:
+                prev_ref = ref
+        elif ref:
+            prev_ref = ""
+        out.append(ref)
         last = m.end()
-    out.append(_render_gap(text[last:], ctx))
+    tail = text[last:]
+    if dropped_at is not None and tail[:1] in (".", ",", ";", ":", "!", "?", ")"):
+        out[dropped_at] = out[dropped_at].rstrip(" ")
+    out.append(_render_gap(tail, ctx, chunk_start=not out))
     s = _merge_adjacent_cites("".join(out))
     # Directly-adjacent footnote markers print as one number ("23" for 2
     # then 3). Each emitted footnote carries a trailing \x02 sentinel; a
@@ -1891,6 +1988,7 @@ def render_body(
     cfg = load_config()
     ctx = _Ctx(
         keymap=_acronym_keymap(abbrevs),
+        abbrevs=abbrevs,
         known_handles={c.dc for c in chunks},
         store=store,
         legacy_to_dc={c.handle: c.dc for c in chunks},
@@ -2142,7 +2240,7 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
         ids.append(pref.id)
     aliases = store.identifiers_for_refs(ids) if ids else {}
     for slug, pref in ref_by_slug.items():
-        fields = [f"  title = {{{_encode_unicode(_latex_escape(pref.title or slug))}}}"]
+        fields = [f"  title = {{{_bib_text(pref.title or slug)}}}"]
         authors = _encode_unicode(_bibtex_authors(pref.authors))
         if authors:
             fields.append(f"  author = {{{authors}}}")
@@ -2169,7 +2267,7 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
                 or ""
             ).strip()
             if journal:
-                fields.append(f"  journaltitle = {{{_tex(journal)}}}")
+                fields.append(f"  journaltitle = {{{_bib_text(journal)}}}")
             for bib_key, meta_key in (
                 ("volume", "volume"),
                 ("number", "number"),
@@ -2235,6 +2333,56 @@ def _preamble_text(bib_style: str = _BIB_STYLE_DEFAULT) -> str:
 def _tex(text: str) -> str:
     """Escape + unicode-encode a run of plain prose for LaTeX."""
     return _encode_unicode(_latex_escape(text))
+
+
+_BIB_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9]*)\b[^>]*>")
+_BIB_TAG_CMD = {
+    "sub": "\\textsubscript",
+    "sup": "\\textsuperscript",
+    "i": "\\emph",
+    "em": "\\emph",
+    "scp": "\\textsc",
+    "b": "\\textbf",
+    "strong": "\\textbf",
+}
+
+
+def _bib_text(text: str) -> str:
+    """A bibliography title / journal string → LaTeX. Crossref-style
+    inline HTML (``<sub>``, ``<sup>``, ``<i>``/``<em>``, ``<scp>``,
+    ``<b>``) becomes the matching text command, any other tag is
+    stripped, HTML entities are decoded, ``$…$`` math passes through
+    verbatim, and BibTeX case-protection braces outside math are
+    dropped (escaped they would print literally)."""
+    stash: list[str] = []
+
+    def _keep(rendered: str) -> str:
+        stash.append(rendered)
+        return f"\x00{len(stash) - 1}\x00"
+
+    s = _MATH.sub(
+        lambda m: (
+            _keep(_math_comment_safe(m.group(0)))
+            if _math_braces_balanced(m.group(0)) and _math_plausible(m.group(0))
+            else m.group(0)
+        ),
+        text,
+    )
+
+    def _tag(m: re.Match[str]) -> str:
+        cmd = _BIB_TAG_CMD.get(m.group(2).lower())
+        if cmd is None:
+            return ""
+        return _keep("}" if m.group(1) else cmd + "{")
+
+    s = _BIB_TAG.sub(_tag, s)
+    s = html.unescape(s).replace("{", "").replace("}", "")
+    s = _tex(s)
+    for _ in range(len(stash) + 1):
+        s, n = re.subn(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], s)
+        if not n:
+            break
+    return s
 
 
 def _affil_tex(org: str, ror: str) -> str:

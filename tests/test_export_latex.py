@@ -48,6 +48,7 @@ def _ctx(text, abbrevs=None, known=None, store=None, legacy_to_dc=None):
         known = set(re.findall(r"\b(dc\d+)\b", text))
     return latex._Ctx(
         keymap=latex._acronym_keymap(abbrevs or {}),
+        abbrevs=dict(abbrevs or {}),
         known_handles=known,
         store=store,
         legacy_to_dc=legacy_to_dc or {},
@@ -613,7 +614,7 @@ def test_glsify_plural_uses_glspl() -> None:
 def test_glsify_tooltip_on_later_use() -> None:
     """First use expands (plain \\gls); every later use is the bare short
     wrapped in a \\glstip pdftooltip revealing the full term on hover."""
-    out, _ = _inline("PEI first, then PEI again.", {"PEI": "polyethyleneimine"})
+    out, _ = _inline("Use PEI first, then PEI again.", {"PEI": "polyethyleneimine"})
     assert out.count(r"\gls{pei}") == 1  # only the first use is a plain \gls
     assert r"\glstip{pei}" in out  # the later use is tooltip-wrapped
 
@@ -2295,3 +2296,130 @@ def test_markdown_bullets_export_as_a_nested_itemize(hub, tmp_path) -> None:
         < body.index("\\item Bader charge shows 0.39 e")
         < body.index("\\item NH3 side")
     )
+
+
+# ── export defects from the dr173020 visual read ──────────────────────
+
+
+def _one_paper_bib(title, journal=None):
+    meta = {"journal": journal} if journal else None
+    store = _BibStore(
+        {("paper", "p1"): _bibref(1, "p1", "paper", title=title, year=2020, meta=meta)}
+    )
+    return latex.build_bib(store, ["p1"], [])
+
+
+def test_build_bib_title_html_tags_become_text_commands() -> None:
+    bib = _one_paper_bib(
+        "Carbon nanotube–fullerene hybrid by C<sub>60</sub> bombardment of "
+        "<i>In situ</i> <scp>iii</scp> <b>x</b><sup>2</sup> <span>y</span>"
+    )
+    assert r"C\textsubscript{60}" in bib
+    assert r"\emph{In situ}" in bib
+    assert r"\textsc{iii}" in bib
+    assert r"\textbf{x}\textsuperscript{2}" in bib
+    assert "<" not in bib and "span" not in bib
+
+
+def test_build_bib_title_math_passes_through_and_protective_braces_drop() -> None:
+    bib = _one_paper_bib("Encapsulated {C$_{60}$} in carbon nanotubes")
+    assert "title = {Encapsulated C$_{60}$ in carbon nanotubes}" in bib
+
+
+def test_build_bib_journal_decodes_entities_and_tags() -> None:
+    bib = _one_paper_bib("T", journal="Materials &amp; Design")
+    assert "journaltitle = {Materials \\& Design}" in bib
+    bib = _one_paper_bib("T", journal="J. <i>Chem</i> Phys")
+    assert r"journaltitle = {J. \emph{Chem} Phys}" in bib
+
+
+def test_adjacent_identical_cites_collapse_to_one(monkeypatch) -> None:
+    import types
+
+    monkeypatch.setattr(latex, "_trust_mark_latex", lambda _c, _r: "")
+
+    store = _FindingStore(
+        {
+            1: types.SimpleNamespace(meta={"primary_cite_key": "choi16"}),
+            2: types.SimpleNamespace(meta={"primary_cite_key": "choi16"}),
+            3: types.SimpleNamespace(meta={"primary_cite_key": "other20"}),
+        }
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("a [fi1][fi2][fi1] b [fi1] [fi2] c [fi1][fi3].", ctx)
+    assert out.count(r"\cite{choi16}") == 3  # run, then each spaced cite
+    assert r"\cite{choi16,other20}" in out  # distinct keys still merge
+
+
+def test_taproot_hub_without_own_source_uses_conjunct_cites(monkeypatch) -> None:
+    import types
+
+    store = _FindingStore({7: types.SimpleNamespace(meta={})})
+    monkeypatch.setattr(latex, "_conjunct_cite_keys", lambda _s, _pk: ["a21", "b22"])
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("claim [fi7].", ctx)
+    assert r"\cite{a21,b22}" in out
+    assert ctx.warnings == []
+
+
+def test_conjunct_cite_keys_unions_atoms_deduped(monkeypatch) -> None:
+    import types
+
+    from precis.taproot import cite as tcite
+    from precis.taproot import seniority
+
+    monkeypatch.setattr(
+        seniority, "conjunct_atoms_bulk", lambda _s, ids: {ids[0]: [11, 12, 13]}
+    )
+    keys = {11: ["a21"], 12: ["a21", "b22"], 13: []}
+    monkeypatch.setattr(
+        tcite,
+        "finding_cite_keys",
+        lambda _s, rid: types.SimpleNamespace(cite_keys=keys[rid]),
+    )
+    assert latex._conjunct_cite_keys(object(), 7) == ["a21", "b22"]
+
+
+def test_sourceless_hub_warns_and_pulls_space_before_punctuation(monkeypatch) -> None:
+    import types
+
+    store = _FindingStore({7: types.SimpleNamespace(meta={})})
+    monkeypatch.setattr(latex, "_trust_mark_latex", lambda _c, _r: "")
+    monkeypatch.setattr(latex, "_conjunct_cite_keys", lambda _s, _pk: [])
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("in frameworks [fi7].", ctx)
+    assert out.startswith("in frameworks.")
+    assert "cite" not in out
+    assert ctx.warnings == [
+        "cite [fi7]: no citable source (conjunction hub without sourced conjuncts)"
+    ]
+
+
+def test_glsify_collapses_spelled_out_first_use() -> None:
+    abbrevs = {"PGNB": "periodic graphene nanobud"}
+    out, _ = _inline("periodic graphene nanobuds (PGNBs) were built", abbrevs)
+    # chunk start is a sentence start → capitalised first-use form
+    assert out.count(r"\Glspl{pgnb}") == 1
+    assert "(PGNBs)" not in out
+    assert out.startswith(r"\Glspl{pgnb} were built")
+    mid, _ = _inline("we built periodic graphene nanobuds (PGNBs) here", abbrevs)
+    assert mid == r"we built \glspl{pgnb} here"
+    ctx = _ctx("x", abbrevs)
+    two = latex._render_inline("Periodic Graphene Nanobud (PGNB) and then PGNBs.", ctx)
+    assert two.count("{pgnb}") == 2
+    assert r"\glspltip{pgnb}" in two
+
+
+def test_glsify_leaves_unspelled_first_use_alone() -> None:
+    out, _ = _inline("we grew PGNB films", {"PGNB": "periodic graphene nanobud"})
+    assert r"\gls{pgnb}" in out
+
+
+def test_glsify_sentence_initial_first_use_capitalised() -> None:
+    abbrevs = {"GGA": "generalized gradient approximation"}
+    out, _ = _inline("GGA functionals fail.", abbrevs)
+    assert out.startswith(r"\Gls{gga}")
+    out, _ = _inline("It fails. GGA functionals too.", abbrevs)
+    assert r"\Gls{gga}" in out
+    out, _ = _inline("It fails with GGA functionals.", abbrevs)
+    assert r"\gls{gga}" in out

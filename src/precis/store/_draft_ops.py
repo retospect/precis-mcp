@@ -415,6 +415,20 @@ class _AbbrevMixin:
             ).fetchall():
                 if short and (long or "").strip():
                     out[str(short)] = strip_trailing_aside(str(long).strip())
+            # A token the author silenced via ``add_abbrev_ignore`` (a false
+            # Schwartz-Hearst hit) is not an abbreviation of this draft.
+            mrow = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            if mrow and mrow[0]:
+                for tok in mrow[0]:
+                    out.pop(str(tok), None)
+        # ``X`` and ``Xs`` with the same meaning are one abbreviation (the
+        # exporter absorbs a plural ``s``): keep only ``X``.
+        for short in [k for k in out if k.endswith("s") and k[:-1] in out]:
+            if out[short].lower().rstrip("s") == out[short[:-1]].lower().rstrip("s"):
+                del out[short]
         return out
 
     def defined_terms(self, ref_id: int) -> dict[str, Any]:

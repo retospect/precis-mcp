@@ -369,3 +369,38 @@ def test_edit_meta_patches_term_attribute_bag(draft: DraftHandler, hub: Hub) -> 
     assert leaf.meta["manufacturer"] == "TI"
     # The frozen callout survives a bag edit.
     assert leaf.meta["callout"] == 1
+
+
+def test_defined_abbrevs_drops_plural_duplicate_with_same_meaning(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    ref_id = _mk(hub, draft)
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="metal-organic framework",
+        meta={"short": "MOF"},
+    )
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="metal-organic frameworks",
+        meta={"short": "MOFs"},
+    )
+    abbrevs = hub.live_store.drafts.defined_abbrevs(ref_id)
+    assert "MOF" in abbrevs
+    assert "MOFs" not in abbrevs
+
+
+def test_defined_abbrevs_drops_ignored_tokens(draft: DraftHandler, hub: Hub) -> None:
+    ref_id = _mk(hub, draft)
+    title_h = hub.live_store.drafts.reading_order(ref_id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="We use Fourier Transform Infrared (FTIR) here.",
+        at={"after": "¶" + title_h},
+    )
+    assert "FTIR" in hub.live_store.drafts.defined_abbrevs(ref_id)
+    hub.live_store.drafts.add_abbrev_ignore(ref_id, ["FTIR"])
+    assert "FTIR" not in hub.live_store.drafts.defined_abbrevs(ref_id)

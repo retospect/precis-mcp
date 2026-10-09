@@ -110,7 +110,8 @@
 {# Reuse the ledger matrix so inherited section checks and stale watermarks
    agree with the aggregate dot; these flags never start a review. #}
 {% if n.is_prose or n.is_heading %}
-<span class="sd-review sd-checker-strip inline-block text-xs" @click.stop>
+<span class="sd-review sd-checker-strip inline-block text-xs" @click.stop
+      title="Review checkers: F flow, C cites, S structure, A adversarial. Marks: ✓ reviewed and current, ~ reviewed but stale (block edited since), – never run. Hover a letter for that checker's detail.">
   {%- set labels = {'flow': 'F', 'cites': 'C', 'structure': 'S', 'adversarial': 'A'} -%}
   {%- set symbols = {'current': '✓', 'stale': '~', 'never': '–'} -%}
   {%- for row in review.matrix if row.checker in labels -%}
