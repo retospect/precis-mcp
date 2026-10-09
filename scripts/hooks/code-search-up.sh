@@ -23,6 +23,9 @@ WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || WORKTREE_ROOT=""
 
 if [[ -n "$MAIN_ROOT" ]]; then
     echo "🔎 code search (precis python kind): get(kind='python', id='main::<qualname>') — reads MAIN, not this worktree; Grep is truth for worktree changes."
+    if [[ -n "$WORKTREE_ROOT" && "$(git rev-parse --git-dir 2>/dev/null)" != "$(git rev-parse --git-common-dir 2>/dev/null)" ]]; then
+        echo "   your own tree (linked worktree): get(kind='python', id='wt-$(basename "$WORKTREE_ROOT")::<qualname>') — read-only; Grep if it doesn't resolve."
+    fi
     echo "   find symbols: search(kind='python', mode='pattern', q='<qualname regex>'); skill precis-python-help."
     if [[ -n "$WORKTREE_ROOT" && "$WORKTREE_ROOT" != "$MAIN_ROOT" ]]; then
         echo "   ⚠ shell/Read/Edit operate in THIS worktree: $WORKTREE_ROOT"

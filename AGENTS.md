@@ -24,8 +24,10 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
 - **Code navigation**: structure first, grep second. The precis python kind
   (`search(kind='python', mode='pattern', q=...)`;
   `get(kind='python', id='main::<qualname>')` for signature, callers and
-  callees) and `scripts/coderef callers|deps <file.py::Sym>`. Both read
-  main, not your worktree; grep is truth for code you changed. Skill
+  callees) and `scripts/coderef callers|deps <file.py::Sym>`. `main::`
+  reads main; a worktree session queries its own tree as
+  `wt-<tree name>::<qualname>` (read-only; grep if the alias doesn't
+  resolve). Grep is truth for code you changed. Skill
   `precis-python-help`.
 - **Rounds**: when a round is open (`scripts/round status`), mark it from
   your tree with `scripts/round in <sha>|none|eta <text>`. The mark is the

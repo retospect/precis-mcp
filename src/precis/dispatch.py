@@ -878,7 +878,30 @@ def boot(
 
         roots = parse_python_roots(python_roots)
         if roots:
-            _gated(PythonHandler, roots=roots)
+            from precis.handlers._python_worktrees import (
+                WorktreeRegistry,
+                parse_gitdir_map,
+                parse_worktrees_spec,
+            )
+
+            wt_spec = parse_worktrees_spec(os.environ.get("PRECIS_PYTHON_WORKTREES"))
+            try:
+                wt_max = int(os.environ.get("PRECIS_PYTHON_WORKTREE_MAX", "4"))
+            except ValueError:
+                wt_max = 4
+            registry = (
+                WorktreeRegistry(
+                    wt_spec[0],
+                    wt_spec[1],
+                    gitdir_map=parse_gitdir_map(
+                        os.environ.get("PRECIS_PYTHON_GITDIR_MAP")
+                    ),
+                    max_indexes=wt_max,
+                )
+                if wt_spec
+                else None
+            )
+            _gated(PythonHandler, roots=roots, worktrees=registry)
         else:
             # Roots configured but every entry was malformed — same
             # deferred-kind treatment as markdown/plaintext/tex below.

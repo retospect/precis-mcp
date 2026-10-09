@@ -46,6 +46,16 @@ gives aliases `precis` and `cluster`). The `::` separator is python-
 specific and goes straight to a dotted qualname; `/` introduces a
 file path and `~` introduces a selector inside it.
 
+Worktree aliases: when the server has `PRECIS_PYTHON_WORKTREES`, every git
+worktree of the main checkout is a root `wt-<tree name>` (e.g.
+`wt-validate-precis-python::pkg.mod.fn`), discovered live (about 5 s lag), no
+restart. They are read-only (write verbs refuse; use your own Edit tool), built
+lazily on first query, and only the 4 most recently used stay indexed
+(`PRECIS_PYTHON_WORKTREE_MAX`). They are NOT in the default cross-root
+search; name one with `scope='wt-x'` (or `wt-x::pkg.mod`). Semantic vectors
+are not warmed for them (cached vectors from main still hit). If the alias does
+not resolve, fall back to Grep.
+
 ## Which checkout did this result use?
 
 Every successful Python read/search carries ONE summary line per consulted

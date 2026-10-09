@@ -44,6 +44,7 @@ from precis.handlers._python_provenance import (
     with_provenance,
 )
 from precis.handlers._python_semantic import SemanticIndex, rrf
+from precis.handlers._python_worktrees import WorktreeRegistry
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
@@ -266,6 +267,7 @@ class PythonHandler(Handler):
         hub: Hub,
         roots: dict[str, Path],
         cache: RepoCache | None = None,
+        worktrees: WorktreeRegistry | None = None,
     ) -> None:
         # ``hub`` is taken for signature uniformity; python is an
         # in-memory kind (no DB, no embedder), so we don't actually
@@ -287,6 +289,7 @@ class PythonHandler(Handler):
             resolved[alias] = p
         self.roots = resolved
         self.cache = cache or RepoCache()
+        self.worktrees = worktrees
         # Semantic half of search (embedder may be None -> lexical only).
         self._semantic = SemanticIndex(getattr(hub, "embedder", None))
 
@@ -726,7 +729,7 @@ class PythonHandler(Handler):
                 next="put(kind='python', id='r/path/new.py', text='...', mode='create')",
             )
         parsed = _parse_id(str(id))
-        root = self._resolve_alias(parsed.alias)
+        root = self._resolve_writable(parsed.alias)
         return self._put_create(parsed, root, text)
 
     # ── seven-verb surface ─────────────────────────────────────────
@@ -762,7 +765,7 @@ class PythonHandler(Handler):
         """
         require_mode(spec=self.spec, verb="edit", mode=mode)
         parsed = _parse_id(str(id))
-        root = self._resolve_alias(parsed.alias)
+        root = self._resolve_writable(parsed.alias)
         if mode == "append":
             return self._put_append(parsed, root, text)
         guard: _Guard | None = None
@@ -931,7 +934,7 @@ class PythonHandler(Handler):
         ruff still runs against the remaining file content.
         """
         parsed = _parse_id(str(id))
-        root = self._resolve_alias(parsed.alias)
+        root = self._resolve_writable(parsed.alias)
         return self._put_delete(parsed, root, allow_rename=allow_rename)
 
     # ── put dispatch ───────────────────────────────────────────────
@@ -1488,20 +1491,59 @@ class PythonHandler(Handler):
                 f"({type(exc).__name__})",
                 next="get(kind='python') to inspect configured roots",
             ) from exc
+        if self.worktrees is not None and alias not in self.roots:
+            for gone in self.worktrees.touch(alias, root):
+                self.cache.drop(gone)
         note_index(alias, idx)
         return idx
 
+    def _worktree_listing(self) -> dict[str, Path]:
+        if self.worktrees is None:
+            return {}
+        listing, gone = self.worktrees.listing()
+        for path in gone:
+            self.cache.drop(path)
+        return {a: w.path for a, w in listing.items()}
+
+    def git_dir_for(self, root: Path) -> Path | None:
+        """GIT_DIR for a worktree root (its own ``.git`` file is host-pathed)."""
+        return None if self.worktrees is None else self.worktrees.git_dir_for(root)
+
     def _resolve_alias(self, alias: str) -> Path:
-        if alias not in self.roots:
+        if alias in self.roots:
+            return self.roots[alias]
+        wts = self._worktree_listing()
+        if alias in wts:
+            return wts[alias]
+        if self.worktrees is not None and self.worktrees.owns(alias):
             raise NotFound(
-                f"unknown python repo alias {alias!r}",
-                options=list(self.roots),
-                next="get(kind='python') to list configured repos",
+                f"worktree {alias!r} not configured: its directory does not exist "
+                f"(or is not a registered git worktree under the mapped prefix)",
+                options=[*self.roots, *wts],
+                next="Grep/Read in your own tree, or get(kind='python') to list roots",
             )
-        return self.roots[alias]
+        raise NotFound(
+            f"unknown python repo alias {alias!r}",
+            options=list(self.roots),
+            next="get(kind='python') to list configured repos",
+        )
+
+    def _resolve_writable(self, alias: str) -> Path:
+        root = self._resolve_alias(alias)
+        if alias not in self.roots:
+            raise BadInput(
+                f"{alias!r} is a read-only worktree root; python-kind writes are "
+                f"disabled there",
+                next="use your own Edit/Write tool on the worktree files",
+            )
+        return root
 
     def _roots_for_scope(self, scope: str | None) -> dict[str, Path]:
-        """Return the `{alias: root}` subset matching a search scope."""
+        """Return the `{alias: root}` subset matching a search scope.
+
+        No scope fans out over static roots only; worktree aliases are
+        searched only when named explicitly (they mostly duplicate main).
+        """
         if scope is None:
             return self.roots
         # First segment up to '::' or '/' is the alias.
@@ -1511,9 +1553,10 @@ class PythonHandler(Handler):
             alias = scope.split("/", 1)[0]
         else:
             alias = scope
-        if alias not in self.roots:
-            return {}
-        return {alias: self.roots[alias]}
+        if alias in self.roots:
+            return {alias: self.roots[alias]}
+        wts = self._worktree_listing()
+        return {alias: wts[alias]} if alias in wts else {}
 
     def _render_file(
         self,

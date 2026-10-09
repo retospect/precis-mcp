@@ -108,8 +108,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   (`search(kind='python', mode='pattern', q=...)`, `get(kind='python',
   id='main::<qualname>')` for signature + callers + callees) and
   `scripts/coderef callers|deps <file.py::Sym>` before grepping bare symbols.
-  It reads MAIN (`main::` is the live main checkout), not this worktree — Grep
-  is truth for code you changed here. Skill `precis-python-help`.
+  `main::` is the live main checkout; a worktree session queries its own tree
+  as `wt-<tree name>::<qualname>` (git-registered worktrees, read-only; Grep
+  if the alias doesn't resolve) — Grep is truth for code you changed here. Skill `precis-python-help`.
 - Cite durable anchors, not line numbers, in docs/memory. →
   `docs/conventions/code-anchors.md`
 - Bug intake → the `bug` skill before fixing; masked root cause → dispatch

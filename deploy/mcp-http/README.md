@@ -30,6 +30,11 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   read-only at `/roots/<name>` and appended to `PRECIS_PYTHON_ROOTS`; editing
   the file changes the container spec, so the next ensure run swaps in a new
   backend (blue-green). Invalid or missing entries are skipped with a note.
+- Git worktrees of the main checkout (mounted at `/main`) appear dynamically
+  as python aliases `wt-<tree name>`, discovered from `/main/.git/worktrees`
+  (`PRECIS_PYTHON_WORKTREES=wt:/main`, host paths translated by
+  `PRECIS_PYTHON_GITDIR_MAP`); no restart needed, read-only, lazy, LRU-bounded
+  by `PRECIS_PYTHON_WORKTREE_MAX` (default 4).
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

@@ -129,7 +129,7 @@ class GitFacts:
         return f"git {head} {verdict}{flag}"
 
 
-def _observe_git(root: Path) -> GitFacts:
+def _observe_git(root: Path, git_dir: Path | None = None) -> GitFacts:
     started = _utc_now()
     deadline = time.monotonic() + 2.0
     values = {
@@ -174,6 +174,11 @@ def _observe_git(root: Path) -> GitFacts:
                     }
                 },
                 "GIT_OPTIONAL_LOCKS": "0",
+                **(
+                    {"GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(root)}
+                    if git_dir is not None
+                    else {}
+                ),
             },
             check=False,
         )
@@ -326,7 +331,11 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
             roots = {alias: idx.root for alias, idx in reads.indexes.items()}
             if method.__name__ == "get" and kwargs.get("id") in (None, "", "/"):
                 roots = self.roots
-            git = {root: _observe_git(root) for root in dict.fromkeys(roots.values())}
+            gdir = getattr(self, "git_dir_for", lambda _r: None)
+            git = {
+                root: _observe_git(root, g) if (g := gdir(root)) else _observe_git(root)
+                for root in dict.fromkeys(roots.values())
+            }
             detail = kwargs.get("view") == "provenance"
             if detail:
                 blocks = [
