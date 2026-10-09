@@ -87,6 +87,7 @@ import math
 import re
 from dataclasses import dataclass, field
 
+from precis.pcb import argue
 from precis.utils.text import esc
 
 #: A drill is an absence of material, not a coloured feature — painting
@@ -611,6 +612,27 @@ def _drill_title(layer: str, x: float, y: float, dia: float) -> str:
     return _title(layer, _pt(x, y), f"drill Ø{dia:.4f}mm")
 
 
+def _handle_attr(handle: str | None) -> str:
+    """The ``data-handle`` attribute (leading space included) for one
+    element, or nothing when the object has no identity. The grammar is
+    :mod:`precis.pcb.argue`'s — pcb-argue-with-design.md's text box reads
+    this attribute off whatever the user clicks, so the string here MUST
+    be what the resolver accepts, verbatim."""
+    return f' data-handle="{esc(handle, quote=True)}"' if handle else ""
+
+
+def _flash_handle(flash: Flash) -> str | None:
+    # Same evidence rule as _flash_title: a pad handle only when the
+    # gerber named the pin; a net-only flash (a via) is the net's handle.
+    if flash.refdes and flash.pin:
+        return argue.pad_handle(flash.refdes, flash.pin)
+    return argue.net_handle(flash.net) if flash.net else None
+
+
+def _net_handle(net: str | None) -> str | None:
+    return argue.net_handle(net) if net else None
+
+
 def _flash_geometry(flash: Flash) -> tuple[str, str]:
     """``(tag, shape-attrs)`` for one flash's aperture — the ONE place that
     turns a :class:`Flash` into an SVG shape, shared by the normal
@@ -634,7 +656,8 @@ def _flash_geometry(flash: Flash) -> tuple[str, str]:
 
 def _flash_svg(flash: Flash, colour: str, title: str) -> str:
     tag, attrs = _flash_geometry(flash)
-    return f'<{tag} {attrs} fill="{colour}"><title>{title}</title></{tag}>'
+    handle = _handle_attr(_flash_handle(flash))
+    return f'<{tag} {attrs} fill="{colour}"{handle}><title>{title}</title></{tag}>'
 
 
 def _flash_mask_shape(flash: Flash) -> str:
@@ -654,8 +677,10 @@ def _flash_hit_target(flash: Flash, title: str) -> str:
     ``<path>``), and this is cheaper than reshaping the film into N
     separate paths just to hang a tooltip off each one."""
     tag, attrs = _flash_geometry(flash)
+    handle = _handle_attr(_flash_handle(flash))
     return (
-        f'<{tag} {attrs} fill="#fff" fill-opacity="0.01"><title>{title}</title></{tag}>'
+        f'<{tag} {attrs} fill="#fff" fill-opacity="0.01"{handle}>'
+        f"<title>{title}</title></{tag}>"
     )
 
 
@@ -775,10 +800,11 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
                 rings.append(regions[j].ring)
                 j += 1
             title = f"<title>{_region_title(layer, region)}</title>"
+            handle = _handle_attr(_net_handle(region.net))
             if len(rings) == 1:
                 out.append(
                     f'<path d="{_path_d(region.ring, close=True)}" '
-                    f'fill="{colour}">{title}</path>'
+                    f'fill="{colour}"{handle}>{title}</path>'
                 )
             else:
                 # Unique across the whole document: this function runs once
@@ -802,7 +828,7 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
                 )
                 out.append(
                     f'<path d="{_path_d(region.ring, close=True)}" '
-                    f'fill="{colour}" mask="url(#{mask_id})">{title}</path>'
+                    f'fill="{colour}" mask="url(#{mask_id})"{handle}>{title}</path>'
                 )
             i = j
         else:
@@ -818,6 +844,45 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
                 f"<title>{_region_title(layer, region)}</title></path>"
             )
             i += 1
+    return out
+
+
+def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
+    """One almost-invisible rect per refdes, spanning that part's pad
+    flashes across every copper layer — the "part body" click target of
+    pcb-argue-with-design.md's handle grammar (``data-handle="U1"``).
+    Painted UNDER the layer stack, so pads, tracks and the mask film keep
+    first claim on a click; the host page walks ``elementsFromPoint`` down
+    to it when nothing above carries a handle. A refdes is known here
+    only from ``%TO.P`` pad attributes — the writer emits no component-
+    level ``%TO.C`` (module docstring), and the pads' extent is the body
+    a user means when they click "the chip"."""
+    boxes: dict[str, list[float]] = {}
+    for key, art in arts.items():
+        if not key.endswith("_Cu"):
+            continue
+        for f in art.flashes:
+            if not (f.refdes and f.pin):
+                continue
+            w = f.aperture.sizes[0]
+            h = f.aperture.sizes[1] if len(f.aperture.sizes) > 1 else w
+            box = boxes.setdefault(f.refdes, [math.inf, math.inf, -math.inf, -math.inf])
+            box[0] = min(box[0], f.x - w / 2)
+            box[1] = min(box[1], f.y - h / 2)
+            box[2] = max(box[2], f.x + w / 2)
+            box[3] = max(box[3], f.y + h / 2)
+    if not boxes:
+        return []
+    out = ['<g class="parts">']
+    for refdes in sorted(boxes):
+        x0, y0, x1, y1 = boxes[refdes]
+        title = _title("Parts", _pt((x0 + x1) / 2, (y0 + y1) / 2), f"part {refdes}")
+        out.append(
+            f'<rect x="{x0:.4f}" y="{y0:.4f}" width="{x1 - x0:.4f}" '
+            f'height="{y1 - y0:.4f}" fill="#fff" fill-opacity="0.01"'
+            f"{_handle_attr(refdes)}><title>{title}</title></rect>"
+        )
+    out.append("</g>")
     return out
 
 
@@ -893,7 +958,7 @@ def render_fab_svg(
         (x0, y0, x1, y1)
     )
 
-    body: list[str] = []
+    body: list[str] = _part_body_els(arts)
     for key in keys:
         colour, visible = _LAYER_STYLE.get(key, _DEFAULT_STYLE)
         cls = "layer" if visible else "layer off"
@@ -915,7 +980,7 @@ def render_fab_svg(
                 body.append(
                     f'<path d="{_path_d(s.points)}" fill="none" stroke="{colour}" '
                     f'stroke-width="{s.width:.4f}" stroke-linecap="round" '
-                    'stroke-linejoin="round">'
+                    f'stroke-linejoin="round"{_handle_attr(_net_handle(s.net))}>'
                     f"<title>{_stroke_title(key, s)}</title></path>"
                 )
             for f in art.flashes:

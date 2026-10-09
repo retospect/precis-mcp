@@ -830,3 +830,87 @@ def test_hostile_slug_cannot_break_out_of_the_document_title() -> None:
     import xml.etree.ElementTree as ET
 
     ET.fromstring(svg)
+
+
+# ── data-handle: the argue-with-the-design grammar stamped on the render
+#    (docs/backlog/pcb-argue-with-design.md slice 1; precis.pcb.argue) ───
+def test_pad_flash_carries_its_refdes_pin_handle_where_the_gerber_named_it() -> None:
+    """A pad the gerber named (``%TO.P``) is clickable as ``REFDES.PIN`` on
+    the copper flash. The mask film's hit target over it carries no handle
+    (the mask gerber names no pin), so the host page's elementsFromPoint
+    walk falls through it to the copper — the handle is on the element
+    that has the evidence, never guessed onto a neighbour."""
+    model = _model()
+    model["pads"][0]["refdes"] = "U1"
+    model["pads"][0]["pin"] = "3"
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    cu = re.search(r'<g id="layer-F_Cu"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    mask = re.search(r'<g id="layer-F_Mask"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert cu is not None and mask is not None
+    assert 'data-handle="U1.3"' in cu.group(1)
+    assert "data-handle" not in mask.group(1)
+    # The mask hit target DOES carry a handle when its own gerber says so.
+    ap = gerber_view.Aperture("C", (1.0,))
+    hit = gerber_view._flash_hit_target(
+        gerber_view.Flash(ap, 2.0, 2.0, refdes="U1", pin="3"), "t"
+    )
+    assert 'data-handle="U1.3"' in hit
+
+
+def test_net_only_objects_carry_the_net_handle_and_identityless_ones_none() -> None:
+    """A track or via with just a net is ``net:NAME``; a flash the gerber
+    gave no identity at all gets no handle — the same no-guessing rule the
+    hover titles follow (a drill is never clickable)."""
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    cu = re.search(r'<g id="layer-F_Cu"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert cu is not None
+    tracks = re.findall(r'<path [^>]*stroke-width="0\.2500"[^>]*>', cu.group(1))
+    assert tracks and all('data-handle="net:N"' in t for t in tracks)
+    pth = re.search(r'<g id="layer-PTH"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert pth is not None and "data-handle" not in pth.group(1)
+    # The pin-less pad in the fixture: a net, so the net handle — never a
+    # made-up REFDES.PIN.
+    assert re.search(r'<[a-z]+ [^>]*data-handle="net:N"[^>]*><title>[^<]*flash', svg)
+    assert not re.search(r'data-handle="\.', svg)
+
+
+def test_part_body_hit_rect_spans_the_parts_pads_under_the_layer_stack() -> None:
+    """One almost-invisible rect per refdes, ``data-handle="REFDES"``, over
+    the extent of that part's pads, painted BEFORE the first layer group so
+    pads keep first claim on a click. It carries a coordinate title like
+    every other board element (test_every_board_element_has_a_title…)."""
+    model = _model()
+    model["pads"][0]["refdes"] = "Q4"
+    model["pads"][0]["pin"] = "1"
+    model["pads"].append(
+        {**model["pads"][0], "x": 6.0, "y": 2.0, "pin": "2", "net": None}
+    )
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    parts = re.search(r'<g class="parts">(.*?)</g>', svg, re.DOTALL)
+    assert parts is not None
+    rects = re.findall(r"<rect [^>]*>", parts.group(1))
+    assert len(rects) == 1
+    assert 'data-handle="Q4"' in rects[0]
+    mx = re.search(r' x="([-\d.]+)"', rects[0])
+    mw = re.search(r' width="([-\d.]+)"', rects[0])
+    assert mx is not None and mw is not None
+    x, w = float(mx.group(1)), float(mw.group(1))
+    assert x < 2.0 and x + w > 6.0  # spans both pads, each half-pad wider
+    assert "part Q4" in parts.group(1) and "mm" in parts.group(1)
+    assert svg.index('<g class="parts">') < svg.index('<g id="layer-')
+
+
+def test_no_part_bodies_when_no_pad_names_a_part() -> None:
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    assert '<g class="parts">' not in svg
+
+
+def test_handle_attribute_is_escaped() -> None:
+    ap = gerber_view.Aperture("C", (1.0,))
+    f = gerber_view.Flash(ap, 1.0, 1.0, refdes='U"1', pin="1")
+    el = gerber_view._flash_svg(f, "#fff", "t")
+    assert 'data-handle="U&quot;1.1"' in el

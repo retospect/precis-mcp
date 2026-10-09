@@ -181,7 +181,10 @@ _SESSION_VIEWS = ("congestion", "planes")
 _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: gr341532 fix 3 — the ``part_footprints`` cache gap made visible per
 #: catalog-part instance, the read-side counterpart to ``op='footprint'``.
-_OTHER_VIEWS = ("links", "footprints", "pinout", "pinout-preview")
+#: ``notes`` (pcb-argue-with-design.md) — the design's argument ledger:
+#: what the user typed on the board page, verbatim, anchored by handle,
+#: with the model's answer re each question (:mod:`precis.pcb.argue`).
+_OTHER_VIEWS = ("links", "footprints", "pinout", "pinout-preview", "notes")
 _VIEWS = (
     *_PROBE_VIEWS,
     *_EXPORT_VIEWS,
@@ -504,7 +507,9 @@ class PcbHandler(Handler):
             "footprint={...} to author one directly under part=) pulls/"
             "authors a catalog part's real pad geometry into the "
             "part_footprints cache -- fixes the synthesized_footprint DRC "
-            "finding; search over names; delete soft-retires. "
+            "finding; view='notes' is the argument ledger the board page's "
+            "text box writes (handles REFDES | REFDES.PIN | net:NAME); "
+            "search over names; delete soft-retires. "
             "Postgres-canonical; routing/gerbers are downstream export. "
             "See precis-pcb-help and precis-pcb-route-help."
         ),
@@ -1865,6 +1870,36 @@ class PcbHandler(Handler):
             "error": error or "",
         }
 
+    def _render_notes(self, ref_id: int) -> Response:
+        """The argument ledger (``pcb_notes``), oldest first. Anchors that no
+        longer resolve are reported per note, never raised — se_notes' rule."""
+        from precis.pcb import argue
+
+        notes = self.store.pcb_notes_list(ref_id)
+        if not notes:
+            return Response(
+                body="# notes — none yet\n"
+                "Argue with the design on its board page (/pcb/<slug>): click "
+                "parts and pads to drop their handles into the text box."
+            )
+        valid = self.store.pcb_handles(ref_id)
+        lines = [f"# notes — {len(notes)} ({len(valid['parts'])} live part(s))"]
+        for n in notes:
+            ts = n["created_at"]
+            when = ts.astimezone(UTC).strftime("%Y-%m-%dT%H:%MZ") if ts else ""
+            head = f"## {n['name']} · {n['kind']} · {n['origin']} · {when}"
+            if n["re"]:
+                head += f" · re {n['re']}"
+            lines.append(head)
+            if n["about"]:
+                lines.append("about: " + " ".join(n["about"]))
+            gone = argue.dangling(n["about"], valid)
+            if gone:
+                lines.append("dangling (no longer on the board): " + " ".join(gone))
+            lines.append(n["body"])
+            lines.append("")
+        return Response(body="\n".join(lines).rstrip() + "\n")
+
     # ── the eyes ───────────────────────────────────────
     def _render_view(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         if view not in _VIEWS:
@@ -1900,6 +1935,8 @@ class PcbHandler(Handler):
             )
         if view == "footprints":
             return self._render_footprints_view(ref_id)
+        if view == "notes":
+            return self._render_notes(ref_id)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.

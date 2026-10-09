@@ -307,6 +307,24 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
   score against. Default to a 600px peek in-loop; reserve full 1800px
   (`PRECIS_PCB_PEEK_SIZE`) for milestone/acceptance renders.
 
+### Argue with the design — the board page's text box, `view='notes'`
+
+The human-facing board page (`/pcb/<slug>` on the web UI) has one text box.
+Clicking a pad on the render drops its handle at the caret (`U1.3` —
+refdes.pin; an EWOD array cell is `ARR1.R3C4`), clicking a part body drops
+`U1`, a track or via drops `net:GND`; the user types prose between clicks
+and submits ("R_BLEED is on the wrong side of J_HV, and U1.3 should be on
+net:GND"). The text is stored byte-for-byte as a `question` note with
+every handle it names in `about`, the model answers once with the resolved
+context (pins, nets, neighbours per handle) and that lands as an `answer`
+note re the question; a clicked handle that no longer resolves is refused
+at submit with the valid roster, while a handle retired *after* the
+argument reads as a dangling anchor, never an error. There is no place or
+route button on that page — actions stay here, in `put(args={'op':…})`.
+`get(kind="pcb", id="s", view="notes")` is the ledger, oldest first: read
+it before a place/route to see what the human already argued, and answer
+open questions the machinery can settle.
+
 ## Fill in a missing footprint — `op='footprint'`
 
 `view='drc'` reporting `synthesized_footprint` means a catalog `part=`

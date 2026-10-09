@@ -233,6 +233,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_local_footprints.courtyard",
         "pcb_local_footprints.pads",
         "pcb_local_footprints.pin_map",
+        # 0193: the se_notes shape verbatim (pcb-argue-with-design.md) —
+        # about is the handle list parsed out of the argument text.
+        "pcb_notes.about",
         # 0161: generator identity/idempotency rows (pcb-ewod-multitile
         # Slice 2) — params is the caller's canonicalized kwargs and
         # ledger the expansion's report; both shapes are owned by the

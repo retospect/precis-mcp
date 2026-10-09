@@ -3659,6 +3659,126 @@ class PcbMixin:
                 ),
             )
 
+    # -- argument ledger (the se_notes shape; pcb-argue-with-design.md) --
+    def pcb_handles(self, ref_id: int) -> dict[str, Any]:
+        """Every live handle on a design, by class: ``parts`` (refdes),
+        ``pins`` (``{refdes: [pin, ...]}``), ``nets`` (names), ``features``
+        (distinct ftypes). The resolver's one read; the 400 a bad handle
+        earns quotes it back so the user can pick a real one."""
+        with self._pcb_conn() as conn:
+            pins: dict[str, list[str]] = {}
+            for refdes, pin in conn.execute(
+                "SELECT i.refdes, p.name FROM pcb_instances i "
+                "JOIN pcb_pins p ON p.component_id = i.component_id "
+                "WHERE i.ref_id = %s AND i.retired_at IS NULL "
+                "  AND p.retired_at IS NULL ORDER BY i.refdes, p.name",
+                (ref_id,),
+            ).fetchall():
+                pins.setdefault(refdes, []).append(pin)
+            parts = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT refdes FROM pcb_instances "
+                    "WHERE ref_id = %s AND retired_at IS NULL ORDER BY refdes",
+                    (ref_id,),
+                ).fetchall()
+            ]
+            nets = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM pcb_nets "
+                    "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
+                    (ref_id,),
+                ).fetchall()
+            ]
+            features = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT ftype FROM pcb_features "
+                    "WHERE ref_id = %s AND retired_at IS NULL ORDER BY ftype",
+                    (ref_id,),
+                ).fetchall()
+            ]
+        return {"parts": parts, "pins": pins, "nets": nets, "features": features}
+
+    def pcb_features_of_type(self, ref_id: int, ftype: str) -> list[dict[str, Any]]:
+        """The live ``pcb_features`` rows of one ftype — a ``feature:<ftype>``
+        handle's resolution."""
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT ftype, x, y, rot, layer, geom, note FROM pcb_features "
+                "WHERE ref_id = %s AND ftype = %s AND retired_at IS NULL "
+                "ORDER BY feature_id",
+                (ref_id, ftype),
+            ).fetchall()
+        return [
+            {
+                "ftype": r[0],
+                "x": r[1],
+                "y": r[2],
+                "rot": r[3],
+                "layer": r[4],
+                "geom": r[5],
+                "note": r[6],
+            }
+            for r in rows
+        ]
+
+    def pcb_note_insert(
+        self,
+        ref_id: int,
+        *,
+        name: str,
+        kind: str,
+        body: str,
+        re: str | None = None,
+        about: list[str] | None = None,
+        origin: str = "user",
+    ) -> int:
+        """One ledger row. ``body`` is stored byte for byte; ``about`` is
+        the caller's handle list (existence is a read-time concern)."""
+        with self._pcb_tx() as conn:
+            row = conn.execute(
+                "INSERT INTO pcb_notes (ref_id, name, kind, body, re, about, origin) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (ref_id, name, kind, body, re, Jsonb(about or []), origin),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def pcb_note_retire(self, ref_id: int, name: str) -> bool:
+        """Retire (never delete) the live note of this name — a genuine
+        retraction, mirroring ``se_notes``'s ``remove_note``."""
+        with self._pcb_tx() as conn:
+            cur = conn.execute(
+                "UPDATE pcb_notes SET retired_at = now() "
+                "WHERE ref_id = %s AND name = %s AND retired_at IS NULL",
+                (ref_id, name),
+            )
+        return cur.rowcount > 0
+
+    def pcb_notes_list(self, ref_id: int) -> list[dict[str, Any]]:
+        """The live ledger, oldest first."""
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT name, kind, body, re, about, origin, created_at "
+                "FROM pcb_notes WHERE ref_id = %s AND retired_at IS NULL "
+                "ORDER BY created_at, id",
+                (ref_id,),
+            ).fetchall()
+        return [
+            {
+                "name": r[0],
+                "kind": r[1],
+                "body": r[2],
+                "re": r[3],
+                "about": list(r[4] or []),
+                "origin": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
+
     # -- delete ---------------------------------------------------------
     def pcb_delete(self, ref_id: int) -> dict[str, int]:
         """Soft-delete a design: mark the ref deleted, retire its graph rows,
@@ -3672,6 +3792,7 @@ class PcbMixin:
                 "pcb_nets",
                 "pcb_measures",
                 "pcb_features",
+                "pcb_notes",
             ):
                 counts[tbl] = conn.execute(
                     f"UPDATE {tbl} SET retired_at = now() "

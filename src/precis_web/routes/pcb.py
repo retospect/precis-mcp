@@ -12,6 +12,20 @@ same data:
   so its layer-toggle legend script keeps working).
 * ``GET  /pcb/{slug}/schematic.svg`` — the net-label schematic
   (:mod:`precis.pcb.schematic` — placement-free, renders from day one).
+* ``POST /pcb/{slug}/note`` — argue with the design
+  (docs/backlog/pcb-argue-with-design.md). The page's one text box
+  accumulates handles as the user clicks the board render (the fab SVG
+  stamps ``data-handle`` per :mod:`precis.pcb.argue`'s grammar); submit
+  posts ``{text, handles}``. Every clicked handle must resolve against
+  the live board — a stale one is a 400 quoting the valid roster, not a
+  stored note. The typed text is stored verbatim as a ``question`` note
+  with the handles it names in ``about``; the model's reply (one
+  :func:`precis.utils.llm.router.route` call with the resolved context)
+  is stored as an ``answer`` note re the question. A model failure
+  degrades to "recorded, unanswered" — the argument is never lost to an
+  outage. Returns the re-rendered notes list. Mirrors ``POST
+  /se/{slug}/note`` (``routes/blocktree_view.py``) in access posture:
+  ambient store, no layer beyond the page's own.
 
 Both SVG endpoints delegate to the SAME code the MCP surface serves
 (``PcbHandler.get(view='svg'|'schematic')``) rather than re-assembling
@@ -21,18 +35,20 @@ byte-identical to the one an agent pulls.
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.responses import Response as RawResponse
 
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import argue
 from precis_web.deps import get_store, templates
 
 if TYPE_CHECKING:
@@ -97,8 +113,110 @@ async def pcb_detail(request: Request, slug: str) -> HTMLResponse:
         "slug": ref.slug,
         "title": ref.title or ref.slug,
         **_vitals(store, ref.id),
+        **_notes_ctx(store, ref.id),
     }
     return templates.TemplateResponse(request, "pcb/detail.html.j2", ctx)
+
+
+def _notes_ctx(store: Store, ref_id: int) -> dict[str, Any]:
+    """The argument ledger as the notes partial renders it: questions in
+    order, each with its answers, dangling anchors reported per note."""
+    notes = store.pcb_notes_list(ref_id)
+    valid = store.pcb_handles(ref_id)
+    for n in notes:
+        n["dangling"] = set(argue.dangling(n["about"], valid))
+    by_re: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for n in notes:
+        if n["re"]:
+            by_re[n["re"]].append(n)
+    threads = [
+        {"note": n, "replies": by_re.get(n["name"], [])} for n in notes if not n["re"]
+    ]
+    return {"threads": threads, "n_notes": len(notes)}
+
+
+@router.post("/pcb/{slug}/note")
+async def pcb_note_save(request: Request, slug: str) -> JSONResponse:
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
+    except NotFound:
+        return JSONResponse({"error": f"no live pcb design {slug!r}"}, status_code=404)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    text = str(payload.get("text") or "")
+    if not text.strip():
+        return JSONResponse({"error": "empty argument"}, status_code=400)
+    raw = payload.get("handles") or []
+    if not isinstance(raw, list) or not all(isinstance(h, str) for h in raw):
+        return JSONResponse(
+            {"error": "handles must be a list of strings"}, status_code=400
+        )
+    clicked = [h.strip() for h in raw if h.strip()]
+
+    def _save() -> dict[str, Any]:
+        resolved, unknown = argue.resolve(store, ref.id, clicked)
+        if unknown:
+            return {
+                "status": 400,
+                "error": "unknown handle(s): " + ", ".join(unknown),
+                "unknown": unknown,
+                "valid": argue.all_handles(store.pcb_handles(ref.id)),
+            }
+        # The handles the sentence names: clicked first, then any typed by
+        # hand that resolve — one list, the user's order, no duplicates.
+        about = list(clicked)
+        about += [h for h in argue.handles_in(text, store, ref.id) if h not in about]
+        known = {r.handle for r in resolved}
+        extra, _ = argue.resolve(store, ref.id, [h for h in about if h not in known])
+        resolved.extend(extra)
+        taken = {n["name"] for n in store.pcb_notes_list(ref.id)}
+        q_name = argue.note_name("question", text, taken)
+        store.pcb_note_insert(
+            ref.id, name=q_name, kind="question", body=text, about=about
+        )
+        out: dict[str, Any] = {"ok": True, "name": q_name, "about": about}
+        try:
+            answer = argue.ask(
+                title=str(ref.title or ref.slug),
+                text=text,
+                resolved=resolved,
+                vitals=_vitals(store, ref.id),
+                ref_id=ref.id,
+            )
+        except Exception as exc:
+            # Degrade honestly: the question is on record; the answer is
+            # not, and the page says so.
+            log.warning("pcb argue: model call failed for %s: %s", slug, exc)
+            out.update(answer=None, degraded=True, detail=str(exc))
+            return out
+        a_name = argue.note_name("answer", answer, taken | {q_name})
+        store.pcb_note_insert(
+            ref.id,
+            name=a_name,
+            kind="answer",
+            body=answer,
+            re=q_name,
+            about=about,
+            origin="proposed",
+        )
+        out.update(answer=a_name, degraded=False)
+        return out
+
+    try:
+        result = await asyncio.to_thread(_save)
+    except Exception as exc:
+        log.exception("pcb note save failed for %s", slug)
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    status = int(result.pop("status", 200))
+    if status != 200:
+        return JSONResponse(result, status_code=status)
+    html = templates.get_template("pcb/_notes.html.j2").render(
+        request=request, slug=ref.slug, **_notes_ctx(store, ref.id)
+    )
+    return JSONResponse({**result, "html": html})
 
 
 def _svg_response(svg: str) -> RawResponse:

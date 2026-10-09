@@ -1,0 +1,27 @@
+{# The argument ledger (pcb_notes) — questions in order, each with its
+   answers; re-rendered whole by POST /pcb/{slug}/note's response. #}
+{% macro note_body(n) %}
+  <div class="flex flex-wrap items-baseline gap-2 text-xs text-slate-500">
+    <span class="font-mono">{{ n.name }}</span>
+    <span class="rounded px-1 {% if n.kind == 'question' %}bg-sky-100 text-sky-800{% elif n.kind == 'answer' %}bg-emerald-100 text-emerald-800{% else %}bg-amber-100 text-amber-800{% endif %}">{{ n.kind }}</span>
+    <span>{{ n.origin }}</span>
+    {% if n.created_at %}<span title="{{ n.created_at | abs_ts }}">{{ n.created_at | ago }}</span>{% endif %}
+    {% for h in n.about %}
+      <span class="font-mono rounded border px-1 {% if h in n.dangling %}border-rose-300 text-rose-700 line-through{% else %}border-slate-300 text-slate-700{% endif %}"
+            {% if h in n.dangling %}title="dangling: no longer on the board"{% endif %}>{{ h }}</span>
+    {% endfor %}
+  </div>
+  <p class="mt-1 whitespace-pre-wrap text-sm text-slate-800">{{ n.body }}</p>
+{% endmacro %}
+<ol id="pcb-notes" class="space-y-3" data-count="{{ n_notes }}">
+  {% for t in threads %}
+  <li class="rounded border border-slate-200 bg-white p-2">
+    {{ note_body(t.note) }}
+    {% for r in t.replies %}
+    <div class="mt-2 ml-4 border-l-2 border-slate-200 pl-3">{{ note_body(r) }}</div>
+    {% endfor %}
+  </li>
+  {% else %}
+  <li class="text-xs text-slate-400">No arguments yet.</li>
+  {% endfor %}
+</ol>

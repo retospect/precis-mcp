@@ -68,6 +68,14 @@ Map, in pipeline order (design doc:
   from its gerbers), :mod:`~precis.pcb.schematic`, :mod:`~precis.pcb.export`
   (the text/dict exporters), :mod:`~precis.pcb.route` (Freerouting via
   Specctra, optional).
+* **Argue** — :mod:`~precis.pcb.argue`: the handle grammar (``U1``,
+  ``U1.3``, ``net:GND``, ``feature:outline``) the fab render stamps as
+  ``data-handle`` and the board page's text box submits; resolution
+  against the stored board, the one LLM turn, the ``pcb_notes`` ledger
+  (``se_notes``' shape). Handles are name-keyed text resolved at read
+  time: a clicked handle is checked at submit (a stale one is refused with
+  the roster), a stored one that stops resolving is a report, not an
+  error.
 
 Fresh local EasyEDA Pro intake retains accepted LINE/ARC records and ordinary
 through vias as fixed source copper, so preview does not erase existing routing
