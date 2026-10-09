@@ -1,11 +1,11 @@
 ---
 status: ready
-title: make a join's findings and its catalogue resolution visible without SQL
+title: a write-free dry-run for join, proven through the reading surfaces
 pillar: 3d-design
 prio: high
 ---
 
-# Make a join's findings and its catalogue resolution visible without SQL
+# A write-free dry-run for `join`, proven through the reading surfaces
 
 ## Motivation / why
 
@@ -15,68 +15,51 @@ block view's findings renderer without geometry loading or recomputation.
 Missing records or malformed findings are unavailable, never a clean bill of
 health. State overrides are rejected; template occurrences are not expanded.
 
-Catalogue resolution and write-free dry-run remain the next slices.
+`view='catalogue'` (SPEC §25.3) lists the catalogue edge rows a join can
+see and the measured rows the gate withholds, then per join side the row
+consulted, its `resolve_edge` label (`pinned z`, `exact z10`, `nearest
+z12`), what governed the seam radius and leak threshold in force
+(`explicit`, the label, or `table`), and which withheld row the gate kept
+from that side. `compose` carries the label on
+`composite.seam["catalogue"]`; the view reads it, never re-resolves.
 
-SPEC §25.3 specifies `view='catalogue'`. It does not exist. So the one
-number a join looks up — the seam radius, and the leak threshold that
-decides whether the seam is sound — has no provenance surface:
-`resolve_edge` returns a label (`pinned z`, `exact z10`, `nearest z12`)
-and `compose` discards it unless the row happens to *narrow* the radius.
-The common case, where the pinned constant governs, is invisible.
-
-This is the leverage item for the hexfold thread: it does not block any
-correctness fix, but every correctness fix below it is diagnosed through
-it.
+What remains is the write path: today every probe `join` mints a
+composite, which is how the dogfood permanently corrupted a design in
+order to ask a question about it.
 
 ## In scope
 
-Stored reports are implemented. Two surfaces remain:
-
-1. **`view='catalogue'`** (SPEC §25.3) — the rows the design's joins can
-   see, and per join side, which row was consulted, its label, and
-   whether it was preferred or withheld by the measured-row gate.
-2. **A dry-run for `join`** — the equivalent of `generate`'s
-   `fidelity="check"`: resolve, compose, report, mint nothing. Today every
-   probe mints a composite, which is how the dogfood permanently
-   corrupted a design in order to ask a question about it.
+**A dry-run for `join`** — the equivalent of `generate`'s
+`fidelity="check"`: resolve, compose, report, mint nothing. The two
+reading surfaces above are what proves it wrote nothing.
 
 ## Explicitly NOT in scope
 
-- Changing what a join computes or records. This is a reading surface.
+- Changing what a join computes or records.
 - Persisting findings in their own table. They are already in the
-  structure's meta; this exposes them.
+  structure's meta.
 - A web/3D viewer surface. MCP views only.
 
 ## Acceptance criteria
 
-- The codes a join emitted can be listed for a named block through one
-  verb call, with no SQL and no knowledge of the meta layout.
-- For a join, the seam radius and leak threshold in force are shown with
-  their provenance label, including when the pinned constant governed.
 - A join dry-run on a design leaves the design byte-identical — assert it.
+- The dry-run's report and catalogue resolution match what `view='report'`
+  and `view='catalogue'` would show for the same join once minted.
 - The test helpers in `tests/test_se_join.py` that dig findings out of
   meta by hand can be deleted in favour of the view.
 
 ## Target + blast radius
 
-`precis_se/handler.py` view dispatch and its renderers; `hexfold.join`'s
-`compose` for surfacing the resolution label it already computes;
-`precis_se/atomic/join.py` for the dry-run path. Read-only except the
-dry-run, which must be provably write-free.
+`precis_se/atomic/join.py` for the dry-run path (the only write path
+touched; it must be provably write-free), `precis_se/handler.py` only if
+the dry-run needs a flag on the op surface.
 
 ## Open questions / decisions log
 
 - **DECIDED 2026-09-30: three slices, in this file, shipped in order.**
-  Not three items — the three share one renderer and one question ("what
-  did this op report?"), and splitting them would put the shared renderer
-  in whichever item happened to go first. Slice 1 (`view='report'`) ships
-  alone and is the unblocker; slice 2 (`view='catalogue'`) needs slice 1's
-  renderer; slice 3 (the dry-run) is the only one that touches a write
-  path and goes last, when there is a reading surface to prove it wrote
+  Slice 1 (`view='report'`) and slice 2 (`view='catalogue'`) have shipped;
+  slice 3 (the dry-run) is the only one that touches a write path and
+  goes last, now that there is a reading surface to prove it wrote
   nothing with.
 - **DECIDED 2026-09-30: `view='report'` goes on `se`, addressed by
-  block.** The findings are stored on the `structure` ref, but the
-  question is always "what did this block's build report?", and a caller
-  holding a block name should not have to know the minted slug's
-  convention to ask it. `view='report'` with no `args` reports every block
-  in the design; `args={'block': ...}` narrows.
+  block.** `view='catalogue'` follows the same addressing.

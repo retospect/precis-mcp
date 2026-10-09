@@ -291,7 +291,7 @@ class SeHandler(Handler):
             "reaction|redox|ph|thermal|mechanical); set_current_state "
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
-            "get lists designs or renders one (view='tree'|'block'|'report'|'surface_deviation'|"
+            "get lists designs or renders one (view='tree'|'block'|'report'|'catalogue'|'surface_deviation'|"
             "'ports'|'topology'|'chain'|'measures'|'revisions'|'datums'|'pockets'|'validate'|"
             "'clearance'|'sweep'|'stations'|'pick'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
@@ -492,6 +492,7 @@ class SeHandler(Handler):
             "tree",
             "block",
             "report",
+            "catalogue",
             "ports",
             "topology",
             "chain",
@@ -992,6 +993,8 @@ class SeHandler(Handler):
             return Response(body=_render_block(tree, node, self.store, ref.id))
         if v == "report":
             return Response(body=_render_report(self.store, tree, args))
+        if v == "catalogue":
+            return Response(body=_render_catalogue(self.store, tree, args))
         if v == "ports":
             return Response(body=_render_ports(tree))
         if v == "topology":
@@ -1094,7 +1097,9 @@ class SeHandler(Handler):
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='report' (stored build findings, "
-            "optional args={'block':...}) | view='ports' "
+            "optional args={'block':...}) | view='catalogue' (each join "
+            "side's consulted catalogue row and resolution label, optional "
+            "args={'block':...}) | view='ports' "
             "| view='surface_deviation' (args={'name':...}; matching exact generated target receipt, legacy unavailable; explicit target.features override permits rigid z_offset_A; stored local Å atoms, no fitting/generation) "
             "| view='topology' (L2: threading, declared dof, strand domains) | "
             "view='chain' (nucleic acids: helices with motif/turns/segments/"
@@ -2775,6 +2780,187 @@ def _render_report(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str
             continue
         lines.append(f"generator: {rec.get('generator', '?')}")
         lines.extend(_stored_report_lines(rec))
+    return "\n".join(lines)
+
+
+def _render_catalogue(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
+    """Catalogue rows the design's joins can see, then each join side's
+    recorded resolution — the label ``compose`` carried on the seam
+    record, never re-derived. The only lookup done here is which withheld
+    (measured) row the gate kept from that side, so the common case
+    "the pinned constant governed" is visible next to what it displaced."""
+    from hexfold.catalogue import EdgeMotif, MemoryStore, resolve_edge
+    from precis_se.atomic.catalogue import UNTRUSTED_SOURCE, DbCatalogueStore
+
+    selector = (args or {}).get("block")
+    if selector is not None:
+        if not isinstance(selector, str) or not selector.strip():
+            raise BadInput("catalogue block must be a non-empty label or uid")
+        try:
+            node = resolve_block(tree, selector.strip())
+        except AmbiguousLabel as exc:
+            raise BadInput(str(exc)) from exc
+        if node is None:
+            raise NotFound(_block_not_found(tree, selector))
+        nodes = [node]
+    else:
+        nodes = [tree.blocks[name] for name in sorted(tree.blocks)]
+
+    cat = DbCatalogueStore(store)
+    preferred = [r for r in cat.rows("edge") if isinstance(r, EdgeMotif)]
+    withheld = [r for r in cat.measured("edge") if isinstance(r, EdgeMotif)]
+    withheld_store = MemoryStore()
+    for r in withheld:
+        withheld_store.put(r)
+
+    def _fmt_thresh(th: Any) -> str:
+        if isinstance(th, list | tuple) and len(th) == 2:
+            return f"{th[0]:g} Å / {th[1]:g}°"
+        return "?"
+
+    def _row_cells(r: EdgeMotif, status: str) -> dict[str, str]:
+        return {
+            "status": status,
+            "rim": r.key.rim_type or "mixed",
+            "N": "*" if r.key.N is None else str(r.key.N),
+            "rung": r.key.rung,
+            "sigma": r.key.sigma,
+            "radius": str(r.seam_radius),
+            "leak": _fmt_thresh(r.leak_thresh),
+            "source": r.source,
+            "key": r.key.hash()[:12],
+        }
+
+    lines = [
+        "# Catalogue resolution",
+        "Rows as stored now (se_hexfold_catalogue, edge zone); per-join "
+        "resolution as recorded at join time. Read-only, no recomputation.",
+        "",
+        f"## catalogue rows ({len(preferred)} preferred, {len(withheld)} withheld)",
+        f"withheld = source={UNTRUSTED_SOURCE!r}, kept from resolve_edge by the "
+        "measured-row gate (gripe 456641); a join reads preferred rows only.",
+    ]
+    rows = [_row_cells(r, "preferred") for r in preferred] + [
+        _row_cells(r, "withheld") for r in withheld
+    ]
+    if rows:
+        lines.append(
+            render_agent_table(
+                rows,
+                schema=[
+                    "status",
+                    "rim",
+                    "N",
+                    "rung",
+                    "sigma",
+                    "radius",
+                    "leak",
+                    "source",
+                    "key",
+                ],
+            )
+        )
+    else:
+        lines.append("No rows: the catalogue has not been seeded (a join seeds it).")
+
+    joins = 0
+    for node in nodes:
+        rec: Any = None
+        if node.bound_kind == "structure" and node.bound:
+            ref = store.get_ref(kind="structure", id=node.bound)
+            rec = (getattr(ref, "meta", None) or {}).get("generated") if ref else None
+        if not isinstance(rec, dict) or rec.get("generator") != "join":
+            if selector is not None:
+                lines.extend(
+                    [
+                        "",
+                        f"## block '{node.name}'",
+                        "Not a join: no catalogue resolution to show "
+                        f"(generator={rec.get('generator', '?') if isinstance(rec, dict) else 'none'}).",
+                    ]
+                )
+            continue
+        joins += 1
+        seam: dict[str, Any] = rec["seam"] if isinstance(rec.get("seam"), dict) else {}
+        parts: list[Any] = rec["parts"] if isinstance(rec.get("parts"), list) else []
+        lines.extend(
+            [
+                "",
+                f"## block '{node.name}' (join, rung={seam.get('rung', rec.get('relaxer', '?'))})",
+                f"structure: {node.bound}",
+            ]
+        )
+        types: dict[str, Any] = (
+            seam["types"] if isinstance(seam.get("types"), dict) else {}
+        )
+        radii: dict[str, Any] = (
+            seam["radius"] if isinstance(seam.get("radius"), dict) else {}
+        )
+        radius_src: dict[str, Any] = (
+            seam["radius_source"] if isinstance(seam.get("radius_source"), dict) else {}
+        )
+        cat_rec: dict[str, Any] = (
+            seam["catalogue"] if isinstance(seam.get("catalogue"), dict) else {}
+        )
+        for i, side in enumerate(("a", "b")):
+            part: dict[str, Any] = (
+                parts[i] if i < len(parts) and isinstance(parts[i], dict) else {}
+            )
+            rim = types.get(side)
+            rim_txt = (
+                f"rim {rim[0]}{rim[1]}"
+                if isinstance(rim, list) and len(rim) == 2
+                else "mixed rim"
+            )
+            lines.append(
+                f"- {side}: {part.get('block', '?')}.{part.get('port', '?')}  {rim_txt}"
+            )
+            side_rec = cat_rec.get(side)
+            if not isinstance(side_rec, dict):
+                lines.append(
+                    f"    resolution label not recorded (pre-2026-10-09 join); "
+                    f"radius in force {radii.get(side, '?')} "
+                    f"({radius_src.get(side, '?')})"
+                )
+                continue
+            row = side_rec.get("row")
+            if not side_rec.get("consulted"):
+                lines.append("    catalogue not consulted (mixed rim or no catalogue)")
+            elif isinstance(row, dict):
+                lines.append(
+                    f"    consulted: {side_rec.get('label')} — key "
+                    f"{str(row.get('key_hash', ''))[:12]} source={row.get('source')} "
+                    f"radius {row.get('seam_radius')} leak "
+                    f"{_fmt_thresh(row.get('leak_thresh'))}"
+                )
+            else:
+                lines.append(f"    consulted: {side_rec.get('label')} — no row matched")
+            lines.append(
+                f"    in force: radius {radii.get(side, '?')} "
+                f"({side_rec.get('radius_source')}); leak "
+                f"{_fmt_thresh(side_rec.get('thresh'))} "
+                f"({side_rec.get('thresh_source')})"
+            )
+            if side_rec.get("consulted") and isinstance(rim, list) and len(rim) == 2:
+                sigma_txt = side_rec.get("sigma")
+                w_row, w_label = resolve_edge(
+                    withheld_store,
+                    str(rim[0]),
+                    int(rim[1]),
+                    str(seam.get("rung", "stick")),
+                    None,
+                    sigma=float(sigma_txt) if sigma_txt else None,
+                )
+                if w_row is None:
+                    lines.append("    withheld: none for this environment")
+                else:
+                    lines.append(
+                        f"    withheld: {w_label} — key {w_row.key.hash()[:12]} "
+                        f"radius {w_row.seam_radius} leak "
+                        f"{_fmt_thresh(w_row.leak_thresh)} (measured-row gate)"
+                    )
+    if joins == 0 and selector is None:
+        lines.extend(["", "No join blocks in this design."])
     return "\n".join(lines)
 
 
@@ -5233,6 +5419,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "tree": frozenset({"state"}),
     "block": frozenset({"name", "state"}),
     "report": frozenset({"block"}),
+    "catalogue": frozenset({"block"}),
     "surface_deviation": frozenset({"name", "target", "z_offset_A"}),
     "ports": frozenset(),
     "topology": frozenset(),

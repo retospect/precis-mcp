@@ -557,7 +557,20 @@ def compose(
     ``composite.seam`` gains ``"radius_source"`` (per side: ``"explicit"``,
     the ``resolve_edge`` label, ``"table"``, or ``"default"``) and
     ``"rung"``.  With no ``catalogue`` and ``rung="stick"`` (the defaults),
-    every number is unchanged from before this parameter existed."""
+    every number is unchanged from before this parameter existed.
+
+    ``composite.seam["catalogue"]`` (per side) is the resolution record
+    the se ``view='catalogue'`` reads back: ``consulted`` (a typed rim
+    with a catalogue to ask), ``label`` (``resolve_edge``'s own label --
+    ``"pinned z"``, ``"exact z10"``, ``"nearest z12"``, ``"none"`` -- or
+    ``None`` when not consulted), ``sigma`` (the key the lookup used),
+    ``row`` (``key_hash``/``source``/``seam_radius``/``leak_thresh`` of
+    the row found, or ``None``), and ``radius_source``/``thresh_source``
+    (what actually governed each number: ``"explicit"``, the label,
+    ``"table"`` or ``"default"``) with ``thresh`` the leak threshold in
+    force.  It is recorded here, at the one place
+    the label exists, rather than re-derived later against a catalogue
+    that may have changed since the join."""
     n = len(pa.dangling)
     if len(pb.dangling) != n:
         return _empty_composite(
@@ -668,9 +681,10 @@ def compose(
 
     def resolve_side(
         side: str, rim_type: tuple[str, int] | None, block_sigma: float
-    ) -> tuple[int, tuple[float, float], str]:
+    ) -> tuple[int, tuple[float, float], str, dict[str, Any]]:
         row = None
         row_label: str = ""
+        consulted = catalogue is not None and rim_type is not None
         # a mixed rim (rim_type is None) never consults the catalogue --
         # no row is ever measured for one (module docstring), and it must
         # still fall through to the seam.radius.unmeasured finding below,
@@ -722,16 +736,35 @@ def compose(
             label = "table"
         if leak_thresholds is not None:
             th = _thresh_for(rim_type, leak_thresholds)
+            thresh_source = "explicit"
         elif row is not None:
             th = row.leak_thresh
+            thresh_source = row_label
         else:
             th = _thresh_for(
                 rim_type, LEAK_THRESH_GEO if rung == "geo" else _LEAK_THRESH
             )
-        return r, th, label
+            thresh_source = "table"
+        record: dict[str, Any] = {
+            "consulted": consulted,
+            "label": row_label if consulted else None,
+            "sigma": f"{block_sigma:g}",
+            "row": None
+            if row is None
+            else {
+                "key_hash": row.key.hash(),
+                "source": row.source,
+                "seam_radius": row.seam_radius,
+                "leak_thresh": list(row.leak_thresh),
+            },
+            "radius_source": label,
+            "thresh": list(th),
+            "thresh_source": thresh_source,
+        }
+        return r, th, label, record
 
-    r_a, thresh_a, radius_source_a = resolve_side("a", ta, a.sigma)
-    r_b, thresh_b, radius_source_b = resolve_side("b", tb, b.sigma)
+    r_a, thresh_a, radius_source_a, cat_a = resolve_side("a", ta, a.sigma)
+    r_b, thresh_b, radius_source_b, cat_b = resolve_side("b", tb, b.sigma)
 
     adj_a = _adjacency(a.bonds)
     adj_b = _adjacency(b.bonds)
@@ -821,6 +854,7 @@ def compose(
         "rings": dict(sorted(census.items())),
         "radius": {"a": r_a, "b": r_b},
         "radius_source": {"a": radius_source_a, "b": radius_source_b},
+        "catalogue": {"a": cat_a, "b": cat_b},
         "rung": rung,
     }
 

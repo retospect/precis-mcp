@@ -27,7 +27,13 @@ bound structure metadata for direct design blocks, optionally addressed by
 label or uid (`args={'block': ...}`). It shares the block view's finding
 renderer: a build record is historical evidence, not recomputed validation.
 Missing records remain explicitly unavailable rather than implying a pass;
-template occurrences and catalogue/dry-run surfaces are separate work.
+template occurrences are not expanded. `view='catalogue'` is its sibling for
+a join's provenance: the catalogue edge rows a join can see (and the measured
+rows the gate withholds), then per join side the row consulted and the
+`resolve_edge` label `hexfold.join.compose` recorded on
+``seam["catalogue"]`` — read back, never re-resolved, so the label still says
+what governed even after the shared catalogue changes. The join dry-run is
+separate work.
 
 **The IR — six levels** (same invariant as ``pcb``: dropping everything above
 level *k* leaves a valid level-*k* object):

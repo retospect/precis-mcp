@@ -337,6 +337,44 @@ def test_compose_explicit_seam_radius_still_wins_over_catalogue() -> None:
     assert comp.seam["radius_source"]["b"] == "exact z8"
 
 
+def test_compose_records_the_resolution_label_even_when_overridden() -> None:
+    # the label `resolve_edge` returns is carried on the seam record on
+    # every typed side, including the side whose radius an explicit
+    # override governed -- the se `view='catalogue'` reads it back rather
+    # than re-resolving against a catalogue that may have changed since.
+    spec1 = "hexfold 0.2\na: tube(8,0, len=10)\n"
+    a = _resolved(spec1)
+    b = _resolved(spec1)
+    pa, pb = a.ports["out"], b.ports["in"]
+    row = _edge_row("z", 8, "stick", radius=3)
+    store = MemoryStore()
+    store.put(row)
+
+    comp = compose(a, pa, b, pb, k=0, catalogue=store, seam_radius={"a": 1})
+    cat = comp.seam["catalogue"]
+    assert cat["a"]["consulted"] and cat["b"]["consulted"]
+    assert cat["a"]["label"] == cat["b"]["label"] == "exact z8"
+    assert cat["a"]["radius_source"] == "explicit"
+    assert cat["b"]["radius_source"] == "exact z8"
+    assert cat["a"]["row"]["key_hash"] == row.key.hash()
+    assert cat["a"]["row"]["source"] == "measured"
+    assert cat["a"]["row"]["seam_radius"] == 3
+    assert cat["a"]["sigma"] == f"{a.sigma:g}"
+    assert cat["b"]["thresh_source"] == "exact z8"
+    assert cat["b"]["thresh"] == list(row.leak_thresh)
+
+    bare = compose(a, pa, b, pb, k=0)
+    assert bare.seam["catalogue"]["a"] == {
+        "consulted": False,
+        "label": None,
+        "sigma": f"{a.sigma:g}",
+        "row": None,
+        "radius_source": "table",
+        "thresh": list(_thresh_for(("z", 8), _LEAK_THRESH)),
+        "thresh_source": "table",
+    }
+
+
 def test_compose_with_no_catalogue_is_unaffected() -> None:
     # today's path (no catalogue, default rung) still gives the exact
     # numbers `tests/hexfold/test_join.py` pins.

@@ -202,6 +202,21 @@ the query in-process against the paper corpus and returns both the
 generated query and the ranked hits. Naming no `block=` queries the whole
 design instead.
 
+### `view='catalogue'` — which catalogue row a join's seam numbers came from
+
+`get(kind='se', id=…, view='catalogue')` (optional `args={'block': '<label
+or #uid>'}`) lists the `se_hexfold_catalogue` edge rows a join can see
+(`preferred`) and the `source='measured'` rows the measured-row gate
+withholds from `resolve_edge` (`withheld`), then for every `join` block
+and each side `a`/`b`: the row consulted with its resolution label as
+`resolve_edge` returned it (`pinned z`, `exact z10`, `nearest z12`),
+the seam radius and leak threshold in force with what governed each
+(`explicit` override, the label, or `table`), and which withheld row the
+gate kept from that side. The label is read off the join record
+`compose` wrote at join time, never re-resolved; only the withheld lookup
+is live. Joins recorded before 2026-10-09 show `radius_source` alone.
+Read-only, no geometry; the dry-run for `join` is a later slice.
+
 ## Atomic mode — `view='validate'`, the chemistry-tier findings
 
 Atomic mode's findings (`precis_se.atomic.validate`) share `view='validate'`
