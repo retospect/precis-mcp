@@ -114,3 +114,50 @@ configures.**
 - `llm-judge-reliability.md` — where this was found; carries the counts.
 - `grounding-verification-rubric.md` — `FRONT_MATTER_ANCHOR` and the
   hearsay-section rule are the provenance axis in edge form.
+
+## Landscape claims need their own class (motivating case, 2026-10-09)
+
+_Added 2026-10-09 from the review of fi449493; Reto agreed the direction._
+
+A review draft (dc2445855, carbon nanobuds) minted fi449493, "The
+electrical and optical properties of carbon nanomaterials are
+conventionally tuned by chemical or electrochemical doping and by charge
+transfer from adsorbed molecules", scope `material=Carbon nanobuds`.
+fi192855 already said the same thing scoped to `carbon nanomaterials`
+with 15 verified supporters. The mint-time conflict check did not fire
+(gripe filed 2026-10-09, linked from fi192855), because the dedup key
+hashes scope and the draft's subject had leaked into the scope of a
+sentence that names the generic class. The widen arm then attached 14
+topic-adjacent chunks (COF electrocatalysts, porous carbons, H₂O₂
+production, single-atom catalysts). The reviewer faced 17 edges, none
+about nanobuds, for a sentence no single quote can confirm or refute.
+Resolved by hand: cite repointed, far-field edges dropped, hubs merged.
+
+The extractor's `landscape` sort is exactly this class. Keeping such
+hubs is right: review papers are made of them, and they are the parent
+nodes specific claims hang off (`refines`). But they must behave
+differently once `claim_type` is persisted:
+
+1. **Generic scope, sentence-only dedup.** A landscape hub's scope is
+   the class the sentence is about, never the citing draft's subject.
+   Conflict search for this type matches on sentence alone, so a
+   draft-specific mint folds into the existing parent instead of forking.
+2. **Consensus verifier, not per-edge sign-off.** The empirical
+   question ("does this chunk affirm or contradict") does not apply.
+   The check is: three or more independent sources across distinct
+   systems state it, and ideally one review states it in this form.
+   Pass or fail at hub level; no human judgement per edge.
+3. **No widen.** Landscape sentences are embedding attractors. The
+   method-gap and inbound-grounding arms skip this type, or route the
+   candidate chunk to a specific child hub.
+4. **Never a disputes counterparty.** `claims-and-evidence.md` already
+   logged a judge disputing a small-fullerene claim with a background
+   sentence about nanobuds in general. A landscape hub states the
+   common case and cannot contradict a specific result.
+5. **Probably no nanopub.** Signing a consensus sentence attributes
+   nothing; these hubs are citable inside the mesh and may not need the
+   publish path. Decide at design time rather than exempt silently.
+
+The design hazard above stands: the per-type verifier and widen table is
+static, and reclassification is a human door, so the model cannot relax
+its own gate by calling a claim `landscape`.

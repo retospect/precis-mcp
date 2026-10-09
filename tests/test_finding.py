@@ -2702,13 +2702,17 @@ class TestDeleteBackrefGuard:
         resp = h.put(title=title, body=f"{title} body text", cited_in=cite_key)
         return int(_search(r"id=(\d+)", resp.body).group(1))
 
-    def _seed_citer(self, store, *, text: str) -> int:
-        """A live chunk carrying ``text``. Any ref kind works — the
-        backref query isn't scoped to ``draft`` chunks (mirrors
-        gr265228's measured predicate, which wasn't either)."""
+    def _seed_citer(self, store, *, text: str, kind: str = "draft") -> int:
+        """A live chunk carrying ``text``. The backref query is scoped to
+        ``draft`` documents (gr477211): only prose being written and
+        exported treats ``[fi<id>]`` as a grounding cite; the same token
+        in a conv or memory is a quote of one."""
+        import uuid
+
         from precis.store.types import ChunkInsert
 
-        ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
+        slug = None if kind == "memory" else f"citer-{uuid.uuid4().hex[:8]}"
+        ref = store.insert_ref(kind=kind, slug=slug, title=text[:80], meta={})
         store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta={})])
         return ref.id
 
@@ -2722,7 +2726,7 @@ class TestDeleteBackrefGuard:
         msg = str(exc.value)
         assert f"fi{fid}" in msg
         assert "1 live chunk" in msg
-        assert f"me{citer_id}" in msg
+        assert f"dr{citer_id}" in msg
         assert exc.value.next  # names the fix-cites-first recovery path
 
         # The finding is untouched — still live.
@@ -2731,6 +2735,20 @@ class TestDeleteBackrefGuard:
                 "SELECT retired_at FROM refs WHERE ref_id = %s", (fid,)
             ).fetchone()
         assert row is not None and row[0] is None
+
+    def test_delete_ignores_quotes_in_non_draft_documents(self, store) -> None:
+        """A conv or memory quoting ``[fi<id>]`` is a record of a cite, not
+        a grounding cite — it must not block the retire (gr477211: the
+        fi449493 merge was held by a done gripe's quoted sentence)."""
+        fid = self._mint_finding(store, title="quoted claim", cite_key="paper-del5")
+        self._seed_citer(
+            store, text=f"The draft said '... holds [fi{fid}]'.", kind="conv"
+        )
+        self._seed_citer(store, text=f"Minted [fi{fid}] today.", kind="memory")
+        h = _make_handler(store)
+
+        resp = h.delete(id=fid)
+        assert f"id={fid}" in resp.body
 
     def test_delete_succeeds_when_uncited(self, store) -> None:
         """An uncited finding deletes exactly as before — unchanged

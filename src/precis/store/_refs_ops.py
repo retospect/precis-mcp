@@ -63,11 +63,18 @@ from precis.utils.authors import author_row_from_entry, entry_from_author_row
 #: under an already-retired document carries no operational risk. The
 #: pattern is a literal ``[fi<id>]`` bracket, matching :mod:`._draft_lint`'s
 #: bare-bracket handle scope; a pinned ``[fi<id>>pc<id>]`` token isn't
-#: matched (same scope gap as that lint).
+#: matched (same scope gap as that lint). Scoped to ``draft`` documents:
+#: a cite is a grounding claim only in prose that is being written and
+#: exported — the same token quoted in a gripe, a memory or a conv is a
+#: historical record of a cite, and a retired hub stays resolvable there
+#: (soft-delete + the merge's ``refines`` edge). Measured 2026-10-09: the
+#: fi449493 → fi192855 merge was blocked by three such quotes in a done
+#: gripe and a memory, with no live draft cite left (gr477211).
 _LIVE_FI_CITERS_SQL = (
     "SELECT c.chunk_id, c.ref_id, r.kind "
     "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
     "WHERE c.retired_at IS NULL AND c.ord >= 0 AND r.retired_at IS NULL "
+    "AND r.kind = 'draft' "
     "AND c.text ~ %s "
     "ORDER BY c.ref_id, c.chunk_id "
     "LIMIT 25"
@@ -75,8 +82,9 @@ _LIVE_FI_CITERS_SQL = (
 
 
 def _refuse_if_finding_cited(conn: Connection, ref_id: int) -> None:
-    """Raise :class:`~precis.errors.BadInput` when a live chunk still
-    carries a bare ``[fi<ref_id>]`` cite (gr265228).
+    """Raise :class:`~precis.errors.BadInput` when a live **draft** chunk
+    still carries a bare ``[fi<ref_id>]`` cite (gr265228; draft-only
+    scope since gr477211).
 
     Soft-deleting the finding underneath that cite doesn't remove the
     token — it keeps rendering, and a conversion agent (or a human)
