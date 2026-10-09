@@ -248,17 +248,39 @@ def test_docx_withheld_figure_is_boxed_not_embedded(
     assert "Fig 1. Borrowed." in text
 
 
-def test_glossary_section(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
-    _seed_paper(hub.live_store, "miller2020", "A study of MOFs", 2020)
-    ref = _make_draft(draft, hub)
-    out = tmp_path / "d1.docx"
+def test_glossary_terms_become_a_sorted_used_only_acronym_list(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """The draft's own Glossary heading + term chunks are not body; the back
+    matter is an "Acronyms" list of the shorts the prose used, sorted
+    case-insensitively (LaTeX's generated acronym list)."""
+    pid = _new_draft_project(hub)
+    draft.put(id="dgl", title="T", project=pid)
+    for short, long in [
+        ("pG", "pristine graphene"),
+        ("CNT", "carbon nanotube"),
+        ("DFT", "density functional theory"),  # defined, never used
+        ("ha", "hexylamine"),
+    ]:
+        draft.put(id="dgl", chunk_kind="term", text=long, meta={"short": short})
+    draft.put(
+        id="dgl",
+        chunk_kind="paragraph",
+        text="We study pG, ha and CNT here.",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dgl")
+    out = tmp_path / "dgl.docx"
     export_docx(hub.live_store, ref, target_path=out)
-    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
-    assert "Glossary" in text
-    assert "MOF" in text and "metal-organic framework" in text
-    # The draft's own Glossary is the abbreviations list — the auto "Acronyms"
-    # section would duplicate it, so it is suppressed (one section, not two).
-    assert "Acronyms" not in text
+    texts = [p.text for p in docx.Document(str(out)).paragraphs]
+    assert "Glossary" not in texts
+    i = texts.index("Acronyms")
+    assert texts[i + 1 :] == [
+        "CNT — carbon nanotube",
+        "ha — hexylamine",
+        "pG — pristine graphene",
+    ]
+    assert not any(t.startswith("DFT") for t in texts)  # never used in the body
 
 
 def test_missing_paper_warns_but_exports(
@@ -301,10 +323,10 @@ def test_acronym_first_use_expansion(
     # First prose occurrence expanded; later plural stays abbreviated.
     assert "metal-organic framework (MOF)" in text
     assert "MOFs appear" in text  # plural, not expanded
-    # The abbreviation is an explicit term, so it lives in the Glossary; the
-    # auto "Acronyms" section is suppressed to avoid a duplicate list.
-    assert "Glossary" in text
-    assert "Acronyms" not in text
+    # The used abbreviation lands in the generated Acronyms list.
+    assert "Acronyms" in text
+    assert "MOF — metal-organic framework" in text
+    assert "Glossary" not in text
 
 
 def test_math_renders_as_omml(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
@@ -1508,3 +1530,501 @@ def test_mathrm_renders_upright_omml() -> None:
         runs = omath.xpath("//m:e/m:r", namespaces=ns)
         assert "".join(r.xpath("string(m:t)", namespaces=ns) for r in runs) == base
         assert all(r.xpath("m:rPr/m:sty/@m:val", namespaces=ns) == ["p"] for r in runs)
+
+
+# ── fidelity vs. the LaTeX exporter (docx-fidelity pass) ───────────────
+
+
+class _NonHubConn:
+    def execute(self, *_a, **_k):
+        return self
+
+    def fetchone(self):
+        return None
+
+
+class _NonHubPool:
+    def connection(self):
+        import contextlib
+
+        return contextlib.nullcontext(_NonHubConn())
+
+
+class _FindingFake:
+    """Store for a plain finding handle with no cite key of its own."""
+
+    def __init__(self, refs):
+        self._refs = refs
+        self.pool = _NonHubPool()
+
+    def fetch_refs_by_ids(self, ids):
+        from types import SimpleNamespace
+
+        return {i: self._refs.get(i, SimpleNamespace(meta={})) for i in ids}
+
+    def tags_for(self, _ref_id):
+        return []
+
+    def get_ref(self, **_k):
+        return None
+
+
+def _render_text(text: str, ctx) -> str:
+    from precis.export import docx as dx
+
+    para = docx.Document().add_paragraph()
+    dx._render_inline(text, ctx, para)
+    return para.text
+
+
+def test_conjunction_hub_cites_union_of_conjunct_sources(monkeypatch) -> None:
+    """A finding with no cite key of its own (conjunction hub) cites its
+    atoms' sources, like LaTeX — it used to vanish from docx."""
+    from precis.export import docx as dx
+
+    monkeypatch.setattr(dx, "_conjunct_cite_keys", lambda _s, _pk: ["a21", "b22"])
+    monkeypatch.setattr(dx, "_render_trust_mark", lambda *_a: None)
+    ctx = dx._Ctx(
+        store=_FindingFake({}),
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    out = _render_text("claim [fi7].", ctx)
+    assert out == "claim [1][2]."
+    assert ctx.cited == ["a21", "b22"]
+
+
+def test_sourceless_finding_cite_pulls_space_before_punctuation(monkeypatch) -> None:
+    from precis.export import docx as dx
+
+    monkeypatch.setattr(dx, "_conjunct_cite_keys", lambda _s, _pk: [])
+    monkeypatch.setattr(dx, "_render_trust_mark", lambda *_a: None)
+    ctx = dx._Ctx(
+        store=_FindingFake({}),
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    out = _render_text("in frameworks [fi7]. And (~130 GPa [fi7]) end", ctx)
+    assert out == "in frameworks. And (~130 GPa) end"
+    assert any("no citable source" in w for w in ctx.warnings)
+
+
+def test_cite_run_does_not_collapse_across_paragraphs(monkeypatch) -> None:
+    """A paragraph that opens with the paper the previous one closed on keeps
+    its mark: consecutive-cite collapse is scoped to one chunk."""
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    assert _render_text("one [§smith20].", ctx) == "one [1]."
+    assert _render_text("[§smith20] two", ctx) == "[1] two"
+
+
+def test_si_cite_via_alias_shares_the_parents_number(monkeypatch) -> None:
+    """The same paper cited plainly (under an alias key) and via its SI
+    record must get ONE number; SI keeps the '(SI)' postnote."""
+    from types import SimpleNamespace
+
+    import docx as _docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    # an alias key resolves to the same ref whose canonical slug is parent24
+    ctx.store._refs[("paper", "parent24alias")] = SimpleNamespace(
+        id=1, slug="parent24", kind="paper", pdf_role=None
+    )
+    para = _docx.Document().add_paragraph()
+    dx._cite("parent24alias", ctx, para)
+    para.add_run(" and ")
+    dx._cite("parent24si", ctx, para)
+    assert ctx.cited == ["parent24"]
+    assert para.text == "[1] and [1] (SI)"
+
+
+def test_xref_numbers_follow_latex_section_counting() -> None:
+    """The seeded title is skipped and the nested body lifted a level
+    (Intro is 1, a depth-2 child 1.1); the draft's own Glossary heading is
+    skipped; figures count in reading order; run-in headings (depth >= 3)
+    resolve to their enclosing section."""
+    from types import SimpleNamespace as NS
+
+    from precis.export.docx import _xref_numbers
+
+    def ch(dc, kind, depth, text=""):
+        return NS(dc=dc, chunk_kind=kind, depth=depth, text=text)
+
+    chunks = [
+        ch("dc1", "heading", 0, "Title"),
+        ch("dc2", "heading", 1, "Intro"),
+        ch("dc3", "figure", 2),
+        ch("dc4", "heading", 1, "Applications"),
+        ch("dc5", "heading", 2, "Catalysis"),
+        ch("dc6", "heading", 2, "Batteries"),
+        ch("dc7", "heading", 3, "Run-in"),
+        ch("dc8", "figure", 2),
+        ch("dc9", "heading", 0, "Glossary"),
+        ch("dc10", "term", 1, "x"),
+        ch("dc11", "heading", 4, "Run-in"),
+    ]
+    xref, shown = _xref_numbers(chunks, "  title ")
+    assert "dc1" not in xref  # the seeded title heading is not a section
+    assert xref["dc2"] == ("section", "1")
+    assert xref["dc4"] == ("section", "2")
+    assert xref["dc6"] == ("section", "2.2")
+    assert xref["dc7"] == ("section", "2.2.1")
+    # sections beside the title at depth 0 (no lift): nothing is shifted
+    flat = [ch("dc1", "heading", 0, "Title"), ch("dc2", "heading", 0, "Intro")]
+    assert _xref_numbers(flat, "Title")[0]["dc2"] == ("section", "1")
+    # an untitled lookup keeps the old behaviour: depth-0 heading counts
+    assert _xref_numbers(chunks)[0]["dc1"] == ("section", "1")
+    assert xref["dc3"] == ("fig.", "1") and xref["dc8"] == ("fig.", "2")
+    assert "dc9" not in xref and "dc11" not in shown and "dc7" in shown
+
+
+def test_bare_dc_crossref_prints_section_and_figure_numbers() -> None:
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        xref={"dc4": ("section", "1.5.5"), "dc3": ("fig.", "1")},
+        dc_handles={"dc3", "dc4", "dc5"},
+        legacy_to_dc={"Abc": "dc4"},
+    )
+    assert (
+        _render_text("(see [dc4]) and [¶dc4]", ctx)
+        == "(see section 1.5.5) and section 1.5.5"
+    )
+    assert _render_text("Shown in [dc3].", ctx) == "Shown in fig. 1."
+    # sentence start capitalises
+    assert (
+        _render_text("[dc4] covers it. [dc3] too", ctx)
+        == "Section 1.5.5 covers it. Fig. 1 too"
+    )
+    assert _render_text("via [¶Abc]", ctx) == "via section 1.5.5"
+    # authored surface wins; a non-live chunk downgrades with a warning
+    assert _render_text("[the intro](dc4)", ctx) == "the intro"
+    assert _render_text("see [dc99]", ctx) == "see dc99"
+    assert any("dc99" in w for w in ctx.warnings)
+
+
+def test_export_numbers_headings_and_resolves_crossrefs(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    import re
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dxr", title="T", project=pid)
+    h1 = draft.put(id="dxr", chunk_kind="heading", text="Intro", at={"last": True})
+    h1_match = re.search(r"dc\d+", h1.body)
+    assert h1_match is not None
+    h1_dc = h1_match.group(0)
+    draft.put(
+        id="dxr",
+        chunk_kind="paragraph",
+        text=f"As argued in [{h1_dc}], things hold (see [¶{h1_dc}]).",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dxr")
+    out = tmp_path / "dxr.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "As argued in section" in text
+    assert "(see section" in text
+    assert "Intro" in text
+
+
+def test_aligned_equation_converts_one_omml_line_per_row() -> None:
+    from precis.export.docx import _render_equation
+
+    doc = docx.Document()
+    body = (
+        r" \begin{aligned} \sum_{n=4}^{8} (6 - n)\,P_n &= 6\chi, \\ "
+        r"2P_4 + P_5 - P_7 - 2P_8 &= 6\chi. \end{aligned} "
+    )
+    _render_equation(doc, body, 2, False)
+    paras = doc.paragraphs
+    assert len(paras) == 2
+    xml = "".join(p._p.xml for p in paras)
+    assert "begin{aligned}" not in xml and "&amp;" not in xml
+    assert xml.count("<m:oMath") == 2  # both rows went through OMML
+    assert "(2)" not in paras[0].text and paras[1].text.endswith("(2)")
+    # unnumbered (starred) variant: rows, no label
+    doc2 = docx.Document()
+    _render_equation(doc2, body, None, True)
+    assert len(doc2.paragraphs) == 2
+    assert not any("(" in p.text for p in doc2.paragraphs)
+
+
+def test_single_line_equation_unchanged_by_aligned_support() -> None:
+    from precis.export.docx import _render_equation
+
+    doc = docx.Document()
+    _render_equation(doc, r" \chi = V - E + F. ", 1, False)
+    assert len(doc.paragraphs) == 1 and doc.paragraphs[0].text.endswith("(1)")
+
+
+def _abbrev_ctx(abbrevs):
+    from precis.export import docx as dx
+
+    return dx._Ctx(store=None, known_handles=set(), abbrevs=abbrevs)
+
+
+def test_abbrev_plural_first_use_pluralises_the_long_form() -> None:
+    ctx = _abbrev_ctx({"CNT": "carbon nanotube"})
+    out = _render_text("We study CNTs. Later CNTs again.", ctx)
+    assert out == "We study carbon nanotubes (CNTs). Later CNTs again."
+
+
+def test_abbrev_spelled_out_in_prose_collapses_to_one_expansion() -> None:
+    ctx = _abbrev_ctx(
+        {
+            "HA": "hexylamine",
+            "pG": "pristine graphene",
+            "CNT": "carbon nanotube",
+        }
+    )
+    out = _render_text(
+        "Using hexylamine (HA) and Pristine Graphene (pG) on carbon nanotubes (CNTs);"
+        " HA again.",
+        ctx,
+    )
+    assert out == (
+        "Using hexylamine (HA) and pristine graphene (pG) on carbon nanotubes"
+        " (CNTs); HA again."
+    )
+    assert "hexylamine (hexylamine" not in out
+
+
+def test_abbrev_first_use_at_sentence_start_keeps_capital() -> None:
+    ctx = _abbrev_ctx({"GGA": "generalized gradient approximation"})
+    assert (
+        _render_text("GGA works. The GGA fails.", ctx)
+        == "Generalized gradient approximation (GGA) works. The GGA fails."
+    )
+    ctx2 = _abbrev_ctx({"GGA": "generalized gradient approximation"})
+    assert (
+        _render_text("It is cheap. GGA works.", ctx2)
+        == "It is cheap. Generalized gradient approximation (GGA) works."
+    )
+
+
+def test_abbrev_followed_by_subscripted_index_keeps_the_subscript() -> None:
+    """``NICS(1)$_{zz}$``: the shared empty-base repair pulled ``1)`` into the
+    math, splitting the parenthesis; a pure-script span is a sub run now."""
+    from precis.export import docx as dx
+
+    ctx = _abbrev_ctx({"NICS": "nucleus-independent chemical shift"})
+    para = docx.Document().add_paragraph()
+    dx._render_inline("a NICS(1)$_{zz}$ index and H$_2$O and x$^{2+}$", ctx, para)
+    assert para.text == (
+        "a nucleus-independent chemical shift (NICS)(1)zz index and H2O and x2+"
+    )
+    subs = [r.text for r in para.runs if r.font.subscript]
+    sups = [r.text for r in para.runs if r.font.superscript]
+    assert subs == ["zz", "2"] and sups == ["2+"]
+    assert not para._p.xpath(".//m:oMath")
+
+
+def test_figure_captions_carry_figure_n_label(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """Captions open with a bold "Figure N:" in reading order, and a bare
+    [dc<id>] cross-ref to the second figure prints the same number."""
+    pid = _new_draft_project(hub)
+    draft.put(id="dfig", title="T", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dfig")
+    assert ref is not None
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    f1 = hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="figure",
+        text="First widget.",
+        at={"after": title_h},
+        split=False,
+    )[0]
+    f2 = hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="figure",
+        text="Second widget.",
+        at={"after": f1.handle},
+        split=False,
+    )[0]
+    dc2 = hub.live_store.drafts.reading_order(ref.id)[2].dc
+    assert f2.chunk_id
+    draft.put(
+        id="dfig",
+        chunk_kind="paragraph",
+        text=f"As in [{dc2}].",
+        at={"last": True},
+    )
+    out = tmp_path / "dfig.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    paras = docx.Document(str(out)).paragraphs
+    texts = [p.text for p in paras]
+    assert "Figure 1: First widget." in texts
+    assert "Figure 2: Second widget." in texts
+    assert "As in fig. 2." in texts
+    cap = next(p for p in paras if p.text.startswith("Figure 1:"))
+    assert cap.runs[0].bold and cap.runs[1].italic and not cap.runs[0].italic
+
+
+def test_bib_markup_runs_convert_html_and_math_to_styles() -> None:
+    from precis.export.docx import _bib_markup_runs
+
+    runs = _bib_markup_runs(
+        "{C$_{60}$} and C<sub>60</sub>: <i>In situ</i> <scp>iii</scp> Fe$^{3+}$ &amp; x"
+    )
+    text = "".join(t for t, _ in runs)
+    assert text == "C60 and C60: In situ iii Fe3+ & x"
+    styled = {t: st for t, st in runs if st}
+    assert styled["60"] == frozenset({"sub"})
+    assert styled["In situ"] == frozenset({"i"})
+    assert styled["iii"] == frozenset({"sc"})
+    assert styled["3+"] == frozenset({"sup"})
+    for leak in ("$", "{", "<", "&amp;"):
+        assert leak not in text
+
+
+def test_reference_line_carries_venue_fields_and_no_double_period() -> None:
+    from types import SimpleNamespace
+
+    from precis.export.docx import _format_reference, _reference_runs
+
+    paper = SimpleNamespace(
+        id=3,
+        slug="doe20",
+        kind="paper",
+        title="Charge transfer in {C$_{60}$} fields.",
+        authors=[{"name": "Doe, Jane"}, {"name": "Roe & Sons"}],
+        year=2020,
+        meta={
+            "venue": "J. Phys. <scp>iii</scp>",
+            "volume": "12",
+            "number": "4",
+            "pages": "100-110",
+        },
+    )
+    store = _RefStore({("paper", "doe20"): paper})
+    warnings: list[str] = []
+    line = _format_reference(store, "doe20", warnings)
+    assert line == (
+        "Doe, Jane; Roe & Sons (2020). Charge transfer in C60 fields."
+        " J. Phys. iii 12(4), 100-110."
+    )
+    assert ".." not in line
+    runs = _reference_runs(store, "doe20", warnings)
+    assert ("60", frozenset({"sub"})) in runs
+    assert ("J. Phys. ", frozenset({"i"})) in runs
+    assert ("iii", frozenset({"i", "sc"})) in runs
+
+
+def test_references_section_renders_sub_and_italic_runs(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    paper = SimpleNamespace(
+        id=3,
+        slug="doe20",
+        kind="paper",
+        title="On C<sub>60</sub>",
+        authors=[{"name": "Doe, Jane"}],
+        year=2020,
+        meta={"journal": "Carbon", "volume": "7"},
+    )
+    ctx = dx._Ctx(
+        store=_RefStore({("paper", "doe20"): paper}),
+        known_handles=set(),
+        cited=["doe20"],
+    )
+    doc = docx.Document()
+    dx._append_references(doc, ctx)
+    p = doc.paragraphs[-1]
+    assert p.text == "[1] Doe, Jane (2020). On C60. Carbon 7."
+    assert any(r.font.subscript and r.text == "60" for r in p.runs)
+    assert any(r.italic and r.text == "Carbon" for r in p.runs)
+
+
+def test_title_page_has_date_line_and_abstract_heading(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from datetime import UTC, datetime
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dab", title="Paper", project=pid)
+    draft.put(id="dab", chunk_kind="paragraph", text="The abstract.", at={"last": True})
+    draft.put(id="dab", chunk_kind="heading", text="Intro", at={"last": True})
+    ref = hub.live_store.get_ref(kind="draft", id="dab")
+    out = tmp_path / "dab.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    paras = docx.Document(str(out)).paragraphs
+    texts = [p.text for p in paras]
+    today = datetime.now(UTC)
+    date_line = f"{today:%B} {today.day}, {today.year}"
+    assert texts[1] == date_line  # right under the title (no byline here)
+    i = texts.index("Abstract")
+    assert texts[i + 1] == "The abstract."
+    assert texts[0] == "Paper" and i == 2
+    assert next(p for p in paras if p.text == "Abstract").style.name.startswith(
+        "Heading"
+    )
+
+
+def test_nested_layout_numbers_sections_from_one(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """title -> Introduction -> Scope displays "1" and "1.1", and a
+    cross-ref to Scope prints the same number."""
+    import re
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dnest", title="Nested", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dnest")
+    assert ref is not None
+    title_dc = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    intro = draft.put(
+        id="dnest",
+        chunk_kind="heading",
+        text="Introduction",
+        at={"into": title_dc, "last": True},
+    )
+    intro_m = re.search(r"dc\d+", intro.body)
+    assert intro_m is not None
+    intro_h = intro_m.group(0)
+    scope = draft.put(
+        id="dnest",
+        chunk_kind="heading",
+        text="Scope",
+        at={"into": intro_h, "last": True},
+    )
+    scope_m = re.search(r"dc\d+", scope.body)
+    assert scope_m is not None
+    scope_h = scope_m.group(0)
+    draft.put(
+        id="dnest",
+        chunk_kind="paragraph",
+        text=f"See [{scope_h}].",
+        at={"into": scope_h, "last": True},
+    )
+    out = tmp_path / "dnest.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    paras = docx.Document(str(out)).paragraphs
+    texts = [p.text for p in paras]
+    assert "Nested" in texts and "1 Introduction" in texts and "1.1 Scope" in texts
+    assert "See section 1.1." in texts
+    head = next(p for p in paras if p.text == "1.1 Scope")
+    assert head.style.name == "Heading 2"

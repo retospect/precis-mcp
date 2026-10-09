@@ -480,6 +480,14 @@ def test_latex_empty_base_math_gets_a_base() -> None:
     assert r"$W_{18}${}$\mathrm{O}_{49}$" in out
 
 
+def test_sp_hybridisation_math_is_upright() -> None:
+    # `$sp^3$` is a label, not a product of variables: set sp upright.
+    out, _ = _inline(r"local $sp^3$ centres and $sp^{2}$ carbon, $s_p^3$ stays.")
+    assert r"$\mathrm{sp}^3$" in out
+    assert r"$\mathrm{sp}^{2}$" in out
+    assert r"$s_p^3$" in out
+
+
 def test_paper_handle_renders_citation() -> None:
     # a paper handle [pc10] / [pa99] → \cite via the cite_key.
     out, ctx = _inline("see [pc10] here", store=_PaperStore())

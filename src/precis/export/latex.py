@@ -562,6 +562,11 @@ _LATEX_CITE = re.compile(r"\\cite[a-z]*\*?(?:\[[^\]]*\])*\{([^}]*)\}")
 #: ``O`` base), so the lookbehind only forbids a word char, not ``$``.
 _EMPTY_BASE_MATH = re.compile(r"(?<!\w)([A-Za-z0-9)\]]+)\$([_^][^$]+)\$")
 
+#: ``$sp^2$`` / ``$sp^3$`` — hybridisation labels written as math set
+#: ``sp`` in italic, as if a product of two variables. Upright is the
+#: chemistry convention (``$\mathrm{sp}^3$``); the exponent is kept as is.
+_SP_HYBRID_MATH = re.compile(r"\$sp\^(\{?[23]\}?)\$")
+
 
 def _fold_cite(m: re.Match[str]) -> str:
     keys = [k.strip() for k in m.group(1).split(",") if k.strip()]
@@ -575,6 +580,7 @@ def preprocess_draft_inline(text: str) -> str:
     the LaTeX and docx exporters so they handle verbatim LaTeX identically."""
     text = _LATEX_CITE.sub(_fold_cite, text)
     text = _EMPTY_BASE_MATH.sub(r"$\\mathrm{\1}\2$", text)
+    text = _SP_HYBRID_MATH.sub(r"$\\mathrm{sp}^\1$", text)
     return text
 
 

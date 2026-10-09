@@ -29,8 +29,10 @@ correct as of this export; re-export after an edit, don't hand-renumber.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,12 +70,15 @@ from precis.export.latex import (
     _CITE_ENTRY_TYPES,
     _COMBINED,
     _MATH,
+    _NAME_UNISPACE,
+    _NAME_ZEROWIDTH,
     _PATENT_DOC_TYPE,
-    _bibtex_authors,
+    _conjunct_cite_keys,
     _math_braces_balanced,
     _math_plausible,
     _standalone_equation,
     datasheet_pub_label,
+    paper_bib_type,
     preprocess_draft_inline,
 )
 from precis.nanopub import pin_lint
@@ -176,6 +181,11 @@ class _Ctx:
     used_acr: set[str] = field(default_factory=set)  # for the acronyms list
     last_cite: str | None = None  # paper of the immediately-preceding mark
     last_cite_si: bool = False  # ...and whether that mark carried "(SI)"
+    #: Set by :func:`_finding_cite_keys_pinned` when a finding cite had no
+    #: citable source; :func:`_render_inline` reads and clears it to pull the
+    #: space before the dropped mark off the preceding run (mirrors
+    #: ``export/latex.py``'s ``_Ctx.dropped_cite``).
+    dropped_cite: bool = False
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
@@ -223,6 +233,17 @@ class _Ctx:
     #: cross-reference field (unlike LaTeX's cleveref), so the number is a
     #: static string resolved once at export time from document order.
     eq_numbers: dict[str, int] = field(default_factory=dict)
+    #: dc handle → ``(noun, number)`` for a heading (``("section", "1.5.5")``)
+    #: or figure (``("fig.", "3")``), precomputed over the whole draft by
+    #: :func:`_xref_numbers` the same way LaTeX would count them, so a bare
+    #: ``[dc<id>]`` cross-ref prints what ``\cref`` would.
+    xref: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: dc handles of headings that display a section number (depth <= 2).
+    numbered_headings: set[str] = field(default_factory=set)
+    #: every live ``dc`` handle (cross-ref liveness) and legacy ``¶`` handle →
+    #: ``dc`` — mirrors ``export/latex.py``'s ``known_handles``/``legacy_to_dc``.
+    dc_handles: set[str] = field(default_factory=set)
+    legacy_to_dc: dict[str, str] = field(default_factory=dict)
     #: ``dc`` handles of uncleared third-party figures waived under
     #: ``placeholder_figures``: rendered as a bordered notice, never embedded.
     withheld_figures: frozenset[str] = frozenset()
@@ -258,7 +279,9 @@ class _Ctx:
         if self._short_re is None and self.abbrevs:
             shorts = sorted(self.abbrevs, key=len, reverse=True)
             self._short_re = re.compile(
-                r"\b(" + "|".join(re.escape(s) for s in shorts) + r")(s?)\b"
+                r"(?<![\w-])("
+                + "|".join(re.escape(s) for s in shorts)
+                + r")(s?)(?![\w-])"
             )
         return self._short_re
 
@@ -290,6 +313,77 @@ def _standalone_equation_numbers(chunks: list[Any]) -> dict[str, int]:
         n += 1
         numbers[c.dc] = n
     return numbers
+
+
+#: LaTeX's sectioning depth that still carries a number (``article``:
+#: section, subsection, subsubsection); deeper headings are run-in paragraphs.
+_NUMBERED_DEPTHS = 3
+
+
+def _is_glossary_heading(c: Any) -> bool:
+    """The draft's own "Glossary" heading — LaTeX skips it (the acronym list
+    is generated), so it consumes no section number."""
+    return c.chunk_kind == "heading" and (c.text or "").strip().lower() == "glossary"
+
+
+def _title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
+    """Mirror of ``export/latex.py::_title_heading_dc``: the ``dc`` of the
+    first reading-order heading when it is a depth-0 heading whose text is
+    the draft title (whitespace-normalised, case-insensitive)."""
+    if not chunks or not title:
+        return None
+    first = chunks[0]
+    if first.chunk_kind != "heading" or int(first.depth) != 0:
+        return None
+
+    def norm(x: str | None) -> str:
+        return " ".join((x or "").split()).lower()
+
+    return str(first.dc) if norm(first.text) == norm(title) else None
+
+
+def _depth_shift(chunks: list[Any], title_dc: str | None) -> int:
+    """1 when the body is nested under the seeded title chunk (so sections
+    number from 1, not 1.x), else 0 — LaTeX's ``shift`` in ``render_body``."""
+    return 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+
+
+def _xref_numbers(
+    chunks: list[Any], title: str | None = None
+) -> tuple[dict[str, tuple[str, str]], set[str]]:
+    """Section / figure numbering walked over the WHOLE draft in reading
+    order, mirroring how ``export/latex.py`` lays the draft out: a heading's
+    chunk depth picks ``\\section``/``\\subsection``/``\\subsubsection`` (the
+    seeded title heading is skipped and, when the body is nested under it,
+    every depth is lifted one level), the draft's own Glossary heading and
+    its terms are skipped, and every figure chunk steps the figure counter.
+    Returns ``({dc: (noun, number)}, {dc of headings that show a number})``."""
+    out: dict[str, tuple[str, str]] = {}
+    shown: set[str] = set()
+    counters = [0] * _NUMBERED_DEPTHS
+    figs = 0
+    title_dc = _title_heading_dc(chunks, title)
+    shift = _depth_shift(chunks, title_dc)
+    for c in chunks:
+        if c.chunk_kind == "figure":
+            figs += 1
+            out[c.dc] = ("fig.", str(figs))
+        elif (
+            c.chunk_kind == "heading"
+            and not _is_glossary_heading(c)
+            and c.dc != title_dc
+        ):
+            d = max(int(c.depth) - shift, 0)
+            if d < _NUMBERED_DEPTHS:
+                counters[d] += 1
+                for i in range(d + 1, _NUMBERED_DEPTHS):
+                    counters[i] = 0
+                shown.add(c.dc)
+                level = d + 1
+            else:  # run-in paragraph heading: refs resolve to the enclosing section
+                level = _NUMBERED_DEPTHS
+            out[c.dc] = ("section", ".".join(str(n) for n in counters[:level]))
+    return out, shown
 
 
 def _add_hyperlink(
@@ -334,6 +428,16 @@ def _add_hyperlink(
     run.append(t)
     link.append(run)
     paragraph._p.append(link)
+
+
+def _render_date(doc: Any) -> None:
+    """The title-page date line — LaTeX's ``\\date{\\today}``
+    ("October 9, 2026"), taken at export time (UTC)."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    today = datetime.now(UTC)
+    p = doc.add_paragraph(f"{today:%B} {today.day}, {today.year}")
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
 def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
@@ -418,9 +522,14 @@ def export_docx(
     from precis.config import load_config
 
     cfg = load_config()
+    xref, numbered_headings = _xref_numbers(chunks, getattr(ref, "title", None))
     ctx = _Ctx(
         store=store,
         known_handles=handles,
+        xref=xref,
+        numbered_headings=numbered_headings,
+        dc_handles={c.dc for c in chunks},
+        legacy_to_dc={c.handle: c.dc for c in chunks},
         abbrevs=store.drafts.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
         doc_type=doc_type,
@@ -434,7 +543,6 @@ def export_docx(
 
     doc = Document()
     _apply_paper_theme(doc)
-    terms = store.drafts.draft_terms(ref.id)  # handle → (short, long)
     byline = build_byline(getattr(ref, "authors", None))
 
     # List context (migration 0037): a ulist/olist container owns `item`
@@ -446,10 +554,17 @@ def export_docx(
 
     # The first heading at depth 0 is the title — render it as the doc title.
     title_done = False
+    abstract_pending = False  # next body paragraph opens the abstract
     for c in chunks:
         kind = c.chunk_kind
         if kind in ("ulist", "olist"):
             continue  # structural container — its items carry the prose
+        if abstract_pending and kind != "term":
+            abstract_pending = False
+            if kind == "paragraph":
+                # Prose between the title and the first heading is the
+                # abstract; give it the heading the PDF prints.
+                doc.add_heading("Abstract", level=1)
         if kind == "item":
             base, level = "List Bullet", 0
             pid = c.parent_chunk_id
@@ -464,25 +579,23 @@ def export_docx(
             p = doc.add_paragraph(style=style)
             _render_inline(c.text, ctx, p)
             continue
-        if kind == "term":
-            # Render in place (terms live under the draft's own Glossary
-            # heading) as "SHORT — long", pulling the short from meta.
-            short, long = terms.get(c.handle, ("", c.text))
-            p = doc.add_paragraph()
-            if short:
-                p.add_run(short).bold = True
-                p.add_run(f" — {long}")
-            else:
-                p.add_run(long)
+        if kind == "term" or _is_glossary_heading(c):
+            # The draft's own Glossary heading + term chunks are the source
+            # of the abbreviation registry, not body: like LaTeX, the
+            # "Acronyms" list is generated at the end from the shorts the
+            # prose actually used.
             continue
         if kind == "heading":
             if not title_done and c.depth == 0:
                 doc.add_heading(c.text, level=0)
                 _render_byline(doc, byline)
+                _render_date(doc)
                 title_done = True
+                abstract_pending = True
                 continue
             level = min(max(c.depth, 1), _MAX_HEADING_LEVEL)
-            doc.add_heading(c.text, level=level)
+            number = ctx.xref[c.dc][1] if c.dc in ctx.numbered_headings else ""
+            doc.add_heading(f"{number} {c.text}" if number else c.text, level=level)
             continue
         if kind == "code":
             p = doc.add_paragraph()
@@ -504,11 +617,7 @@ def export_docx(
         p = doc.add_paragraph()
         _render_inline(c.text, ctx, p)
 
-    # An authored glossary (``term`` chunks, rendered in place above) already
-    # lists the abbreviations, so the auto "Acronyms" section would duplicate
-    # it — only emit it when the draft defines no terms of its own.
-    if not terms:
-        _append_acronyms(doc, ctx)
+    _append_acronyms(doc, ctx)
     # "Unverified claims" end-matter (trust-surfaces marking), before
     # the bibliography/end — no-op when nothing was marked. Independent of
     # patent_mode: a finding cite renders (and can be marked) either way.
@@ -619,8 +728,14 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
             )
     cap = doc.add_paragraph()
     cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    # "Figure N:" — the same reading-order number a ``[dc<id>]`` cross-ref
+    # prints as "fig. N", like LaTeX's ``\\caption`` label.
+    number = ctx.xref.get(chunk.dc, ("", ""))[1]
+    if number:
+        cap.add_run(f"Figure {number}: ").bold = True
+    first_caption_run = len(cap.runs)
     _render_inline(chunk.text or "", ctx, cap)
-    for r in cap.runs:
+    for r in cap.runs[first_caption_run:]:
         r.italic = True
 
 
@@ -667,14 +782,71 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     """Walk a chunk's text, adding runs to ``paragraph``. References go
     through :func:`_render_reference`; the prose gaps between them get
     markdown/sub-sup/math run formatting."""
+    text = _SCRIPT_ONLY_MATH_SPAN.sub(_script_only_to_html, text)
     text = preprocess_draft_inline(text)
     pin_lint.warn_export(ctx, text)
+    # A new chunk/caption/cell never continues the previous one's cite run:
+    # without this reset, a paragraph opening with the same paper the last
+    # one closed on lost its mark entirely.
+    ctx.last_cite = None
     last = 0
+    dropped = False  # the previous reference was a cite dropped for no source
     for m in _COMBINED.finditer(text):
-        _render_gap(text[last : m.start()], ctx, paragraph)
+        gap = text[last : m.start()]
+        if dropped and gap[:1] in _CLOSING_PUNCT:
+            _rstrip_last_run(paragraph)
+        _render_gap(gap, ctx, paragraph)
+        ctx.dropped_cite = False
         _render_reference(m, ctx, paragraph)
+        dropped, ctx.dropped_cite = ctx.dropped_cite, False
         last = m.end()
-    _render_gap(text[last:], ctx, paragraph)
+    tail = text[last:]
+    if dropped and tail[:1] in _CLOSING_PUNCT:
+        _rstrip_last_run(paragraph)
+    _render_gap(tail, ctx, paragraph)
+
+
+#: ``$_{zz}$`` / ``$^2$`` — a math span that is only a sub/superscript, the
+#: chemistry-style ``NICS(1)$_{zz}$`` / ``Zr$_6$`` authoring. As OMML it has
+#: an empty base (and the shared empty-base repair would pull the preceding
+#: ``1)`` into the math, splitting the parenthesis); Word does better with a
+#: plain sub/superscript run, which is also what the author meant.
+_SCRIPT_ONLY_MATH = re.compile(r"\$\s*(?P<op>[_^])\s*(?P<arg>[^$]+?)\s*\$", re.DOTALL)
+_SCRIPT_WRAPPER = re.compile(r"\\(?:mathrm|textrm|text|mathit)\{([^{}]*)\}")
+_SCRIPT_PLAIN = re.compile(r"[^\s{}$\\_^]+")
+_SCRIPT_ONLY_MATH_SPAN = _MATH
+
+
+def _script_only_to_html(m: re.Match[str]) -> str:
+    """``$_{zz}$`` → ``<sub>zz</sub>`` (``^`` → ``<sup>``) when the span is
+    nothing but one plain-text script; any other math span is left alone."""
+    sm = _SCRIPT_ONLY_MATH.fullmatch(m.group(0))
+    if sm is None:
+        return m.group(0)
+    arg = sm.group("arg").strip()
+    braced = arg.startswith("{") and arg.endswith("}")
+    if braced:
+        arg = arg[1:-1].strip()
+    wm = _SCRIPT_WRAPPER.fullmatch(arg)
+    if wm is not None:
+        arg, braced = wm.group(1), True
+    if not arg or not _SCRIPT_PLAIN.fullmatch(arg) or (len(arg) > 1 and not braced):
+        return m.group(0)
+    tag = "sub" if sm.group("op") == "_" else "sup"
+    return f"<{tag}>{arg}</{tag}>"
+
+
+#: Punctuation that must hug the preceding word: a dropped cite mark leaves
+#: its leading space behind, which is pulled off before one of these.
+_CLOSING_PUNCT = (".", ",", ";", ":", "!", "?", ")")
+
+
+def _rstrip_last_run(paragraph: Any) -> None:
+    """Trim trailing spaces off the paragraph's last run (the space that
+    preceded a dropped citation mark)."""
+    runs = paragraph.runs
+    if runs:
+        runs[-1].text = runs[-1].text.rstrip(" ")
 
 
 # Tokeniser for a non-reference gap: math / code / bold / italic / sub /
@@ -749,16 +921,38 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
         return
     last = 0
     for m in pat.finditer(text):
-        if m.start() > last:
-            paragraph.add_run(text[last : m.start()])
+        pre = text[last : m.start()]
         short, plural = m.group(1), m.group(2)
+        end = m.end()
         ctx.used_acr.add(short)
-        if short not in ctx.seen_acr:
-            ctx.seen_acr.add(short)
-            paragraph.add_run(f"{ctx.abbrevs[short]} ({short}{plural})")
-        else:
+        if short in ctx.seen_acr:
+            if pre:
+                paragraph.add_run(pre)
             paragraph.add_run(f"{short}{plural}")
-        last = m.end()
+            last = end
+            continue
+        ctx.seen_acr.add(short)
+        long = ctx.abbrevs[short].strip()
+        # Prose that already spells it out — ``long (SHORT)`` / ``longs
+        # (SHORTs)`` — collapses into the one expansion instead of doubling
+        # it (mirrors ``export/latex.py::_glsify``): the long form matches
+        # case-insensitively, optionally with a trailing ``s``.
+        if long and text[end : end + 1] == ")":
+            base = long[:-1] if long.lower().endswith("s") else long
+            lm = re.search(
+                r"(?<![\w-])" + re.escape(base) + r"s?\s*\($", pre, re.IGNORECASE
+            )
+            if lm:
+                pre = pre[: lm.start()]
+                end += 1
+        if pre:
+            paragraph.add_run(pre)
+        if plural and not long.lower().endswith("s"):
+            long += "s"  # "carbon nanotube" + CNTs -> "carbon nanotubes (CNTs)"
+        if long and _at_sentence_start(paragraph):
+            long = long[0].upper() + long[1:]  # "Generalized gradient approx…"
+        paragraph.add_run(f"{long} ({short}{plural})")
+        last = end
     if last < len(text):
         paragraph.add_run(text[last:])
 
@@ -793,19 +987,43 @@ def _render_equation(doc: Any, body: str, number: int | None, starred: bool) -> 
     from docx.enum.text import WD_TAB_ALIGNMENT
     from docx.shared import Inches
 
-    p = doc.add_paragraph()
-    if starred or number is None:
-        _render_math(f"$${body}$$", p)
-        return
-    p.paragraph_format.tab_stops.add_tab_stop(
-        Inches(_EQ_CENTER_TAB_IN), WD_TAB_ALIGNMENT.CENTER
-    )
-    p.paragraph_format.tab_stops.add_tab_stop(
-        Inches(_EQ_NUMBER_TAB_IN), WD_TAB_ALIGNMENT.RIGHT
-    )
-    p.add_run("\t")
-    _render_math(f"$${body}$$", p)
-    p.add_run(f"\t({number})")
+    lines = _aligned_lines(body) or [body]
+    for i, line in enumerate(lines):
+        p = doc.add_paragraph()
+        if starred or number is None:
+            _render_math(f"$${line}$$", p)
+            continue
+        p.paragraph_format.tab_stops.add_tab_stop(
+            Inches(_EQ_CENTER_TAB_IN), WD_TAB_ALIGNMENT.CENTER
+        )
+        p.paragraph_format.tab_stops.add_tab_stop(
+            Inches(_EQ_NUMBER_TAB_IN), WD_TAB_ALIGNMENT.RIGHT
+        )
+        p.add_run("\t")
+        _render_math(f"$${line}$$", p)
+        if i == len(lines) - 1:  # one label for the whole block, on its last line
+            p.add_run(f"\t({number})")
+
+
+#: A display body that is exactly one multi-line ``aligned``-family block.
+_ALIGNED = re.compile(
+    r"\A\s*\\begin\{(?P<env>aligned|align\*?|gathered|split)\}"
+    r"(?P<inner>.*)\\end\{(?P=env)\}\s*\Z",
+    re.DOTALL,
+)
+_ROW_BREAK = re.compile(r"\\\\(?:\[[^\]]*\])?")
+
+
+def _aligned_lines(body: str) -> list[str]:
+    """The rows of an ``\\begin{aligned}…\\end{aligned}`` display body, with
+    the ``&`` alignment points dropped — Word's OMML converter has no
+    ``aligned`` environment, so each row becomes its own equation line.
+    ``[]`` when ``body`` is not such a block."""
+    m = _ALIGNED.match(body)
+    if m is None:
+        return []
+    rows = (r.replace("&", " ").strip() for r in _ROW_BREAK.split(m.group("inner")))
+    return [r for r in rows if r]
 
 
 def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
@@ -889,6 +1107,10 @@ def _finding_cite_keys_pinned(tgt: str, pin: str | None, ctx: _Ctx) -> list[str]
 
     fc = finding_cite_keys(ctx.store, pk)
     keys = fc.cite_keys
+    if not keys:
+        # A composite (conjunction) hub carries no source of its own: it
+        # cites the union of its conjunct atoms' sources — as LaTeX does.
+        keys = _conjunct_cite_keys(ctx.store, pk)
     op, handles = parse_pin_suffix(pin)
     if op is not None:
         if fc.is_hub and fc.evidence is not None:
@@ -908,6 +1130,12 @@ def _finding_cite_keys_pinned(tgt: str, pin: str | None, ctx: _Ctx) -> list[str]
             ctx.warnings.append(
                 f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
             )
+    if not keys and op is None:
+        ctx.warnings.append(
+            f"cite [{tgt}]: no citable source "
+            "(conjunction hub without sourced conjuncts)"
+        )
+        ctx.dropped_cite = True
     return keys
 
 
@@ -982,7 +1210,10 @@ def _render_target(
         if kind == "finding":
             for slug in _finding_cite_keys_pinned(tgt, pin, ctx):
                 _cite(slug, ctx, paragraph)
+            n_runs = len(paragraph.runs)
             _render_trust_mark(ctx, pk, paragraph)
+            if len(paragraph.runs) > n_runs:
+                ctx.dropped_cite = False  # a trust mark is still printed
             return
         if kind in COMPUTED_EVIDENCE_KINDS:
             # Computational evidence (a simulation structure, a calc/math
@@ -996,22 +1227,20 @@ def _render_target(
         # draft cross-ref / other record handle → not a citation.
         ctx.last_cite = None
         if kind == "draft" and is_chunk:
-            if surface:
-                paragraph.add_run(surface)  # no Word cross-ref field — text only
-            else:
-                # Bare [dc<id>] with no authored surface: a numbered
-                # equation auto-resolves to "Eq. (N)" (the static count
-                # from _standalone_equation_numbers) — every other chunk
-                # kind still has no Word cross-ref field, so still renders
-                # nothing (unchanged pre-existing gap).
-                num = ctx.eq_numbers.get(tgt)
-                if num is not None:
-                    paragraph.add_run(f"Eq. ({num})")
+            _render_xref(tgt, surface, ctx, paragraph)
         return
     # Any non-citation content breaks a run of consecutive citations.
     ctx.last_cite = None
     if tgt.startswith("¶"):
         handle = tgt[1:]
+        dc = ctx.legacy_to_dc.get(handle)
+        if dc is None:
+            hp = handle_registry.parse(handle)
+            if hp is not None and hp[0] == "draft" and hp[1]:
+                dc = handle  # ``[¶dc<id>]`` — the ¶ is just the xref sigil
+        if dc is not None:
+            _render_xref(dc, surface, ctx, paragraph)
+            return
         if handle not in ctx.known_handles:
             ctx.warnings.append(f"cross-ref ¶{handle}: no such live chunk — downgraded")
         paragraph.add_run(surface or f"¶{handle}")
@@ -1019,6 +1248,40 @@ def _render_target(
     if tgt.startswith(("http://", "https://")):
         paragraph.add_run(surface or tgt)
         return
+
+
+def _at_sentence_start(paragraph: Any) -> bool:
+    """Is the next run the first word of a sentence (paragraph start, or
+    right after ``. ``/``? ``/``! ``)? Drives first-letter capitalisation."""
+    text = paragraph.text
+    return not text.strip() or re.search(r"[.?!]\s+$", text) is not None
+
+
+def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> None:
+    """An intra-draft cross-ref to chunk ``dc``. An authored surface wins;
+    otherwise print what LaTeX's ``\\cref`` would — ``section 1.5.5``,
+    ``fig. 2``, ``Eq. (3)`` — capitalised at a sentence start (``Section``,
+    ``Fig.``, ``Equation``). Static text resolved at export time (no Word
+    REF field). A cross-ref to a chunk that isn't live in this draft is
+    downgraded to its surface/handle with a warning, like LaTeX."""
+    if ctx.dc_handles and dc not in ctx.dc_handles:
+        ctx.warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
+        paragraph.add_run(surface or dc)
+        return
+    if surface:
+        paragraph.add_run(surface)
+        return
+    num = ctx.eq_numbers.get(dc)
+    if num is not None:
+        label = ("Equation" if _at_sentence_start(paragraph) else "Eq.") + f" ({num})"
+    elif dc in ctx.xref:
+        noun, number = ctx.xref[dc]
+        if _at_sentence_start(paragraph):
+            noun = noun[0].upper() + noun[1:]
+        label = f"{noun} {number}"
+    else:
+        return  # a plain paragraph/table: no number to print
+    paragraph.add_run(label)
 
 
 def _inline_source_cite(
@@ -1114,6 +1377,11 @@ def _resolve_si_slug(slug: str, ctx: _Ctx) -> tuple[str, bool]:
     result = (slug, False)
     get_ref = getattr(ctx.store, "get_ref", None)
     ref = get_ref(kind="paper", id=slug) if callable(get_ref) else None
+    # Canonical key: a ref can hold several cite_key aliases; number and list
+    # it under the one slug the store returns, so aliases merge into one entry.
+    own = getattr(ref, "slug", None)
+    if isinstance(own, str) and own:
+        result = (own, False)
     if ref is not None and getattr(ref, "pdf_role", None) == SI_PDF_ROLE:
         target, is_si = cite_target_for(ctx.store, ref, ctx._cite_target_cache)
         if is_si and target.slug:
@@ -1161,8 +1429,8 @@ def _cite(
         return
     # A supplementary-information record cites as its parent paper; the plain
     # marker gains " (SI)". EndNote fields cite the parent only (no postnote).
-    if not si:
-        slug, si = _resolve_si_slug(slug, ctx)
+    slug, resolved_si = _resolve_si_slug(slug, ctx)
+    si = si or resolved_si
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
     if ctx.last_cite == slug and ctx.last_cite_si == si:
         return  # consecutive cite to the same paper — one mark for the run
@@ -1254,11 +1522,150 @@ def _cite_endnote(
 # ── references + glossary sections ────────────────────────────────
 
 
-def _format_reference(store: RefLookupStore, slug: str, warnings: list[str]) -> str:
-    """One reference line, resolved through the SAME paper/patent/datasheet
-    lookup as the ``.bib`` path (citation-integrity parity with the PDF). A
-    slug with no matching source in the corpus degrades to a marked stub + a
-    warning."""
+#: One styled piece of a reference line: ``(text, styles)`` with styles drawn
+#: from ``i`` italic, ``b`` bold, ``sub``, ``sup``, ``sc`` small caps.
+_RefRun = tuple[str, frozenset[str]]
+
+_BIB_TOKEN = re.compile(
+    rf"(?P<math>{_MATH.pattern})|<(?P<close>/?)(?P<tag>[A-Za-z][A-Za-z0-9]*)\b[^>]*>",
+    re.DOTALL,
+)
+_BIB_TAG_STYLE = {
+    "sub": "sub",
+    "sup": "sup",
+    "i": "i",
+    "em": "i",
+    "scp": "sc",
+    "b": "b",
+    "strong": "b",
+}
+_TEX_TEXT_WRAPPER = re.compile(r"\\(?:mathrm|mathit|textrm|textit|text|rm|it)\b")
+
+
+def _tex_script_runs(body: str, styles: frozenset[str]) -> list[_RefRun]:
+    """The inside of a ``$…$`` span → styled runs: ``_x`` / ``^{xy}`` become
+    sub/superscript runs, ``\\mathrm{…}``-style wrappers and braces vanish, any
+    other macro is dropped. Enough for the chemistry in titles
+    (``C$_{60}$``, ``Fe$^{3+}$``); not a general TeX renderer."""
+    out: list[_RefRun] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if buf:
+            out.append(("".join(buf), styles))
+            buf.clear()
+
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch in "_^":
+            flush()
+            i += 1
+            while i < n and body[i] == " ":
+                i += 1
+            if i < n and body[i] == "{":
+                depth, j = 1, i + 1
+                while j < n and depth:
+                    depth += {"{": 1, "}": -1}.get(body[j], 0)
+                    j += 1
+                arg, i = body[i + 1 : j - 1], j
+            elif i < n and body[i] == "\\":
+                m = re.match(r"\\[A-Za-z]+", body[i:])
+                arg = m.group(0) if m else body[i : i + 1]
+                i += len(arg)
+            else:
+                arg, i = body[i : i + 1], i + 1
+            out.extend(_tex_script_runs(arg, styles | {"sub" if ch == "_" else "sup"}))
+        elif ch == "\\":
+            m = re.match(r"\\[A-Za-z]+|\\.", body[i:])
+            tok = m.group(0) if m else ch
+            i += len(tok)
+            if tok[1:].isalpha():
+                continue  # a macro (``\mathrm`` wrapper or unknown): drop the name
+            buf.append(tok[1:])  # an escaped char: ``\%`` -> ``%``
+        elif ch in "{}":
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    flush()
+    return out
+
+
+def _bib_markup_runs(text: str) -> list[_RefRun]:
+    """A bibliography title / journal string → styled runs, the docx twin of
+    ``export/latex.py::_bib_text``: Crossref-style inline HTML (``<sub>``,
+    ``<sup>``, ``<i>``/``<em>``, ``<scp>``, ``<b>``) becomes real run
+    formatting, other tags are stripped, entities are decoded, ``$…$`` math
+    renders its sub/superscripts as runs, and BibTeX case-protection braces
+    outside math are dropped."""
+    out: list[_RefRun] = []
+    active: list[str] = []
+    pos = 0
+
+    def plain(chunk: str) -> None:
+        chunk = html.unescape(chunk).replace("{", "").replace("}", "")
+        if chunk:
+            out.append((chunk, frozenset(active)))
+
+    for m in _BIB_TOKEN.finditer(text):
+        plain(text[pos : m.start()])
+        pos = m.end()
+        if m.group("math") is not None:
+            span = m.group("math")
+            if _math_braces_balanced(span) and _math_plausible(span):
+                out.extend(_tex_script_runs(span.strip("$"), frozenset(active)))
+            else:
+                plain(span)
+            continue
+        style = _BIB_TAG_STYLE.get(m.group("tag").lower())
+        if style is None:
+            continue  # unknown tag: stripped
+        if m.group("close"):
+            if style in active:
+                active.remove(style)
+        else:
+            active.append(style)
+    plain(text[pos:])
+    return out
+
+
+def _plain_authors(authors: list[dict[str, Any]] | None) -> str:
+    """``A; B; C`` byline for a reference line (unescaped — unlike the BibTeX
+    ``_bibtex_authors``, whose ``\\&`` escapes would print literally)."""
+    names = []
+    for a in authors or []:
+        name = a.get("name") or " ".join(
+            x for x in (a.get("given"), a.get("family")) if x
+        )
+        if name:
+            names.append(_NAME_ZEROWIDTH.sub("", _NAME_UNISPACE.sub(" ", name)))
+    return "; ".join(names)
+
+
+def _runs_text(runs: list[_RefRun]) -> str:
+    return "".join(t for t, _ in runs)
+
+
+def _sentence(runs: list[_RefRun]) -> list[_RefRun]:
+    """``runs`` closed with a full stop, unless it already ends in one
+    (``fields.`` + ``.`` used to print ``fields..``)."""
+    text = _runs_text(runs).rstrip()
+    if not text or text[-1] in ".?!":
+        return runs
+    return [*runs, (".", frozenset())]
+
+
+def _reference_runs(
+    store: RefLookupStore, slug: str, warnings: list[str]
+) -> list[_RefRun]:
+    """One reference line as styled runs, resolved through the SAME
+    paper/patent/datasheet lookup as the ``.bib`` path (citation-integrity
+    parity with the PDF), carrying the fields ``build_bib`` emits: authors,
+    year, title, journal / volume / number / pages (or the book / report
+    equivalents) and the DOI / arXiv id. A slug with no matching source in
+    the corpus degrades to a marked stub + a warning."""
+    none: frozenset[str] = frozenset()
     pref = (
         store.get_ref(kind="paper", id=slug)
         or store.get_ref(kind="patent", id=slug)
@@ -1266,30 +1673,82 @@ def _format_reference(store: RefLookupStore, slug: str, warnings: list[str]) -> 
     )
     if pref is None:
         warnings.append(f"cite {slug!r}: no source in corpus — stub reference")
-        return f"[missing source {slug}] (cited slug not in corpus)"
-    authors = _bibtex_authors(pref.authors).replace(" and ", "; ")
+        return [(f"[missing source {slug}] (cited slug not in corpus)", none)]
+    authors = _plain_authors(pref.authors)
     # A datasheet has no byline; its vendor stands in as the "author" org so the
     # reference reads "Espressif (2023). ESP32-C3. [Datasheet] Part C123."
     meta = pref.meta or {}
-    if getattr(pref, "kind", "") == "datasheet" and not authors:
+    kind = getattr(pref, "kind", "")
+    if kind == "datasheet" and not authors:
         authors = str(meta.get("vendor") or "").strip()
     # "Authors (year). Title." — robust plain-text assembly.
     head = " ".join(x for x in [authors, f"({pref.year})" if pref.year else ""] if x)
-    line = (head + ". " if head else "") + (pref.title or slug) + "."
-    if getattr(pref, "kind", "") == "datasheet":
-        line += f" [{datasheet_pub_label(meta)}]"
+    runs: list[_RefRun] = []
+    if head:
+        runs.append((head + ". ", none))
+    runs += _sentence(_bib_markup_runs(pref.title or slug))
+    if kind == "datasheet":
+        runs.append((f" [{datasheet_pub_label(meta)}]", none))
         part = str(meta.get("part_lcsc") or "").strip()
         if part:
-            line += f" Part {part}."
+            runs.append((f" Part {part}.", none))
+    elif kind == "paper":
+        runs += _venue_runs(meta, paper_bib_type(meta))
     try:
         alias = store.identifiers_for_refs([pref.id]).get(pref.id, {})
         if alias.get("doi"):
-            line += f" doi:{alias['doi']}"
+            runs.append((f" doi:{alias['doi']}", none))
         elif alias.get("arxiv"):
-            line += f" arXiv:{alias['arxiv']}"
+            runs.append((f" arXiv:{alias['arxiv']}", none))
     except Exception:
         pass
-    return line
+    return runs
+
+
+def _venue_runs(meta: dict[str, Any], entry_type: str) -> list[_RefRun]:
+    """The journal / container / publisher part of a paper's reference line,
+    from the same ``meta`` fields (and precedence) ``build_bib`` reads."""
+    none: frozenset[str] = frozenset()
+    ital = frozenset({"i"})
+
+    def field(key: str) -> str:
+        return str(meta.get(key) or "").strip()
+
+    out: list[_RefRun] = []
+    if entry_type == "article":
+        journal = field("venue") or field("journal") or field("container_title")
+        if journal:
+            out.append((" ", none))
+            out += [(t, st | ital) for t, st in _bib_markup_runs(journal)]
+        vol, num, pages = field("volume"), field("number"), field("pages")
+        tail = vol + (f"({num})" if num else "")
+        if tail:
+            out.append((f" {tail}", none))
+        if pages:
+            out.append((f"{', ' if journal or tail else ' '}{pages}", none))
+        return _sentence(out) if out else out
+    if entry_type in ("book", "incollection", "inproceedings"):
+        booktitle = field("container_title") or field("journal")
+        if entry_type != "book" and booktitle:
+            out.append((" In: ", none))
+            out += [(t, st | ital) for t, st in _bib_markup_runs(booktitle)]
+        parts = [field("publisher")]
+        if entry_type != "book":
+            parts.append(field("pages"))
+        extra = ", ".join(x for x in parts if x)
+        if extra:
+            out.append((f"{', ' if out else ' '}{extra}", none))
+        return _sentence(out) if out else out
+    inst = field("institution") or field("publisher")
+    if inst:  # report / thesis / online
+        out.append((f" {inst}", none))
+    return _sentence(out) if out else out
+
+
+def _format_reference(store: RefLookupStore, slug: str, warnings: list[str]) -> str:
+    """One reference line as plain text (the EndNote cached list); the docx
+    References section renders the styled :func:`_reference_runs` instead."""
+    return _runs_text(_reference_runs(store, slug, warnings))
 
 
 def _append_references(doc: Any, ctx: _Ctx) -> None:
@@ -1317,16 +1776,26 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
         add_reflist_field(doc, cached)
         return
     for i, slug in enumerate(ctx.cited, start=1):
-        line = _format_reference(ctx.store, slug, ctx.warnings)
         p = doc.add_paragraph()
         p.add_run(f"[{i}] ").bold = True
-        p.add_run(line)
+        for text, styles in _reference_runs(ctx.store, slug, ctx.warnings):
+            run = p.add_run(text)
+            if "i" in styles:
+                run.italic = True
+            if "b" in styles:
+                run.bold = True
+            if "sub" in styles:
+                run.font.subscript = True
+            if "sup" in styles:
+                run.font.superscript = True
+            if "sc" in styles:
+                run.font.small_caps = True
 
 
 def _append_acronyms(doc: Any, ctx: _Ctx) -> None:
     """An "Acronyms" list of every abbreviation actually used in the prose
     (auto-built, like the LaTeX glossaries acronym list) — SHORT → long."""
-    used = sorted(s for s in ctx.used_acr if s in ctx.abbrevs)
+    used = sorted((s for s in ctx.used_acr if s in ctx.abbrevs), key=str.casefold)
     if not used:
         return
     doc.add_heading("Acronyms", level=1)
