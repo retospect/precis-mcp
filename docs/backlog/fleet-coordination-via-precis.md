@@ -43,7 +43,8 @@ engines. Ruled with Reto 2026-10-09.
   their transcript and marked unreachable.
 - **Typing into a pane:** only when the agent is idle at an empty prompt
   (`pane_current_command` is the harness, transcript ends on a finished
-  turn), only from a fixed list (`/clear`, `/fleet resume`, message text).
+  turn), only from a fixed list (`/clear`, `/exit`, `/fleet resume`,
+  message text).
   Anything else, approval dialogs included, is an exception reported to
   Reto with the attach line. Fewer dialogs come from config (auto mode,
   `approvals_reviewer = "auto_review"`, allow-lists), never from an
@@ -104,6 +105,35 @@ Workers: one slice = one tree = one session; `/qland` on done, handoff
 into the `fleet` row, exit. New slices go to the vendor with headroom; a
 session past ~60% context finishes its slice and restarts.
 
+### Rounds and session lifecycle
+
+- **What is in.** A round mark links to the agent's `fleet` ref (vendor,
+  host, session, attach) and to what it is for:
+  `scripts/round in <sha> --for <backlog-slug|grNNN|tdNNN>`, else derived
+  from the commit (a touched backlog/thread file, a gripe id in the
+  message). The round ref lists sha · who · for what; this feeds the
+  stale-cite gate check.
+- **No hold by default.** `eta` = wants in; `cut` already prints late
+  shas, which ride the next round. An `eta` naming ≤15 min may hold the
+  cut once, at the coordinator's choice.
+- **The coordinator builds.** Peers never deploy. CI gates every main
+  push; the coordinator runs `cut` → `deploy` → verifies the live product
+  → `--confirm-runtime`. Only the last two need judgment; a timer can take
+  the first two later if the coordinator gets expensive.
+- **The coordinator starts and stops sessions.** An idle session costs no
+  tokens, but waking one after its prompt cache expired rewrites the whole
+  context (1.25–2× input price vs ~0.1× for a warm read: 12–20× dearer).
+  A worker exits once its slice is qlanded and its handoff written; one
+  waiting more than ~1 h for a deploy exits and a fresh session reads the
+  handoff later. The coordinator spawns from the slice queue with the
+  existing launchers (`fleet-codex up`, `devin-tree`, `claude -w` in
+  tmux); the reporter flags idle + landed + empty-mailbox sessions and the
+  coordinator closes them with `/exit` (added to the pane-typing list).
+- **Quota source.** Codex `/status` shows the snapshot its rollouts record
+  as `rate_limits`; compare the reporter's QUOTA line with `/status` on
+  melchior, and fall back to `capture-pane` of `/status` in an idle pane
+  only if the rollout lacks a window.
+
 ### Mailbox
 
 Messages are refs addressed to a `fleet` agent ref: sender, body, sent,
@@ -141,8 +171,9 @@ and that headless volume is within each plan's terms.
    `scripts/inflight --all-hosts` reads it.
 3. **Exception-change wake** of the coordinator; reporter-driven `/clear`.
 4. **Mailbox** + `scripts/fleet-msg` + Claude hook delivery.
-5. **Round marks:** `scripts/round` dual-writes; `status` merges remote
-   marks; flip after a few rounds, `round.json` as fallback.
+5. **Round marks:** `scripts/round` dual-writes, with `--for`; `status`
+   merges remote marks; flip after a few rounds, `round.json` as fallback.
+   Coordinator spawn/close of sessions.
 6. **Harness as todo executor.**
 
 Write-path tests on the dev DB. Fallback when prod precis is down: local
