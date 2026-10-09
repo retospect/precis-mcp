@@ -210,11 +210,17 @@ def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -
     assert any("placeholder" in t for _k, t in ctx2.events), ctx2.events
 
 
-def test_placeholder_figures_never_waives_a_licensing_block(hub: Hub) -> None:
-    """The waiver only covers image-less figures — a third-party figure WITH a
-    real image and no granted permission stays a hard block under
-    ``placeholder_figures`` (it would ship the actual uncleared image)."""
+def test_placeholder_figures_withholds_a_licensing_block(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """Under ``placeholder_figures`` a third-party figure WITH a real image and
+    no granted permission no longer fails the job: its handle is passed to the
+    exporter as ``withheld_figures`` (rendered as a box, never embedded).
+    Without the opt-in it stays a hard stop."""
     import base64
+
+    from precis.export import compile as compile_mod
+    from precis.export import latex as latex_mod
 
     _pid, slug = _make_project_and_draft(hub)
     png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
@@ -227,13 +233,31 @@ def test_placeholder_figures_never_waives_a_licensing_block(hub: Hub) -> None:
         permission={"publisher": "X", "permission_id": "Y", "status": "requested"},
     )
     spec = get_job_type("draft_export")
-    ctx = _FakeCtx(
-        store=hub.store,
-        meta={"params": {"draft": slug, "placeholder_figures": True}},
-    )
     assert spec is not None and spec.dispatch is not None
+    seen: dict[str, Any] = {}
+
+    def _fake_export(*_a: Any, **kw: Any) -> Any:
+        seen.update(kw)
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(latex_mod, "export_draft", _fake_export)
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+
+    # Without the opt-in: still a hard stop, exporter never reached.
+    ctx0 = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    spec.dispatch(ctx0, spec)
+    assert any("not cleared" in f for f in ctx0.failures), ctx0.failures
+    assert not seen
+
+    ctx = _FakeCtx(
+        store=hub.store, meta={"params": {"draft": slug, "placeholder_figures": True}}
+    )
     spec.dispatch(ctx, spec)
-    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+    assert not any("not cleared" in f for f in ctx.failures), ctx.failures
+    assert any("withheld" in t for _k, t in ctx.events), ctx.events
+    handle = next(iter(seen["withheld_figures"]))
+    assert handle.startswith("dc")
+    assert any(handle in t for _k, t in ctx.events), ctx.events
 
 
 # ── cite-drift gate (docs/backlog/cite-pins-hub-version.md, task 3) ─────

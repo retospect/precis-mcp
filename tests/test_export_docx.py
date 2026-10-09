@@ -194,6 +194,59 @@ def test_docx_embeds_figure_image(
     assert "Fig 1. A widget." in text  # caption
 
 
+def test_docx_withheld_figure_is_boxed_not_embedded(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A handle in ``withheld_figures`` renders a bordered notice naming the
+    publisher and source plus the caption; the image is never embedded."""
+    import base64
+
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="d1", title="T", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="d1")
+    assert ref is not None
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    # 1x1 PNG
+    png = base64.b64encode(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        )
+    ).decode()
+    draft.put(
+        id="d1",
+        chunk_kind="figure",
+        text="Fig 1. Borrowed.",
+        image=png,
+        origin="third_party",
+        permission={
+            "publisher": "ACME",
+            "source_paper": "Doe 2020",
+            "status": "requested",
+        },
+        at={"after": f"\u00b6{title_h}"},
+    )
+    figc = next(
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "figure"
+    )
+    out = tmp_path / "d1.docx"
+    export_docx(
+        hub.live_store, ref, target_path=out, withheld_figures=frozenset({figc.dc})
+    )
+    doc = docx.Document(str(out))
+    assert len(doc.inline_shapes) == 0
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Figure withheld pending permission: ACME, Doe 2020" in text
+    assert "Fig 1. Borrowed." in text
+
+
 def test_glossary_section(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
     _seed_paper(hub.live_store, "miller2020", "A study of MOFs", 2020)
     ref = _make_draft(draft, hub)

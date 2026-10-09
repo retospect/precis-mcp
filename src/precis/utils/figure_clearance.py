@@ -16,6 +16,7 @@ The rule by ``origin``:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
@@ -63,7 +64,8 @@ class FigureClear:
     #: True when the figure has no exportable asset at all (caption-only, or
     #: an empty canvas) — export renders a visible placeholder, so an opt-in
     #: send may skip the gate for it. False = a real image is present and the
-    #: block is a licensing/permission verdict that must never be skipped.
+    #: block is a licensing/permission verdict; under the opt-in the image is
+    #: withheld (never embedded), not shipped.
     assetless: bool = False
 
 
@@ -88,17 +90,22 @@ def partition_uncleared(
     One source of truth for the waiver rule, shared by every export gate
     (the web preflight, the ``draft_export`` job, the ``remarkable_send``
     job) so the reMarkable send and the browser download can't disagree on
-    what "allow placeholder figures" lets through. The waiver covers only
-    **asset-less** blocks — a caption-only / empty-canvas figure that
-    exports as a visible placeholder, so nothing uncleared actually ships.
-    A licensing block on a real image (uncleared third-party art) is never
-    waivable and always stays in ``blocked``. Without the opt-in every
-    uncleared figure blocks."""
+    what "allow placeholder figures" lets through. The waiver covers both
+    kinds of uncleared figure: asset-less ones print as "image pending"
+    placeholders, and uncleared real images (third-party art without a
+    granted, unexpired permission) are WITHHELD: the exporter keeps the
+    caption and replaces the image with a framed box (see
+    :func:`withheld_handles`). Nothing uncleared is ever embedded. Without
+    the opt-in every uncleared figure blocks."""
     if not placeholder_figures:
         return list(uncleared), []
-    blocked = [f for f in uncleared if not f.assetless]
-    waived = [f for f in uncleared if f.assetless]
-    return blocked, waived
+    return [], list(uncleared)
+
+
+def withheld_handles(waived: Iterable[FigureClear]) -> frozenset[str]:
+    """``dc`` handles of waived figures that have a real image: the set the
+    exporters must not embed (they render a withheld box instead)."""
+    return frozenset(f.dc for f in waived if not f.assetless)
 
 
 def draft_figure_clearance(store: Store, ref_id: int) -> ClearanceSummary:

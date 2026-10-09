@@ -176,16 +176,19 @@ def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -
     assert any("placeholder" in t for _k, t in ctx2.events), ctx2.events
 
 
-def test_placeholder_figures_never_waives_a_licensing_block(
+def test_placeholder_figures_withholds_a_licensing_block(
     hub: Hub, monkeypatch: Any
 ) -> None:
-    """A third-party figure WITH a real image and no granted permission stays
-    a hard block even under ``placeholder_figures`` — the waiver is only for
-    figures that would export as placeholders anyway."""
+    """Under ``placeholder_figures`` a third-party figure WITH a real image and
+    no granted permission no longer fails the send: its handle is passed to
+    the exporter as ``withheld_figures``. Without the opt-in it is a hard
+    stop."""
     import base64
 
+    from precis.export import compile as compile_mod
+    from precis.export import latex as latex_mod
+
     _arm_paired_device(monkeypatch)
-    monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
     slug = _project_and_draft(hub)
     png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
     DraftHandler(hub=hub).put(
@@ -198,12 +201,33 @@ def test_placeholder_figures_never_waives_a_licensing_block(
     )
     spec = get_job_type("remarkable_send")
     assert spec is not None and spec.dispatch is not None
+    seen: dict[str, Any] = {}
+
+    def _fake_export(*_a: Any, **kw: Any) -> Any:
+        seen.update(kw)
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(latex_mod, "export_draft", _fake_export)
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+
+    # Without the opt-in: still a hard stop, exporter never reached.
+    ctx0 = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
+    spec.dispatch(ctx0, spec)
+    assert any("not cleared" in f for f in ctx0.failures), ctx0.failures
+    assert not seen
+
     ctx = _FakeCtx(
         store=hub.live_store,
         meta={"params": {"draft": slug, "user": "reto", "placeholder_figures": True}},
     )
     spec.dispatch(ctx, spec)
-    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+    assert not any("not cleared" in f for f in ctx.failures), ctx.failures
+    assert any("withheld" in t for _k, t in ctx.events), ctx.events
+    handle = next(iter(seen["withheld_figures"]))
+    assert handle.startswith("dc")
+    assert any(handle in t for _k, t in ctx.events), ctx.events
 
 
 def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:

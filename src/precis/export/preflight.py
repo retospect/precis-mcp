@@ -48,8 +48,18 @@ class ExportPreflight:
     clearance_total: int = 0
     #: Uncleared figures still *blocking* the export (after any waiver).
     figures_blocked: list[FigureClear] = field(default_factory=list)
-    #: Image-less figures waived to ship as visible placeholders.
+    #: Uncleared figures waived under the opt-in: image-less ones ship as
+    #: placeholders, real-image ones are withheld (see ``figures_withheld``).
     figures_waived: list[FigureClear] = field(default_factory=list)
+
+    @property
+    def figures_withheld(self) -> list[FigureClear]:
+        """Waived figures with a real image: exported as a withheld box."""
+        return [f for f in self.figures_waived if not f.assetless]
+
+    @property
+    def withheld_handles(self) -> frozenset[str]:
+        return frozenset(f.dc for f in self.figures_withheld)
 
     @property
     def blocked(self) -> bool:
@@ -103,8 +113,8 @@ def draft_export_preflight(
 
     ``ignore_retractions`` moves any blocking retracted cite from
     ``retraction_blocked`` to ``retraction_override``; ``placeholder_figures``
-    waives image-less uncleared figures into ``figures_waived`` (a licensing
-    block on a real image never waives). The caller inspects
+    waives every uncleared figure into ``figures_waived`` (image-less ones
+    print as placeholders, real-image ones are withheld, never embedded). The caller inspects
     :attr:`ExportPreflight.blocked` and renders / records the appropriate
     stop; the overrides are the only way past."""
     from precis.utils.figure_clearance import partition_uncleared

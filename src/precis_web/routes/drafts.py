@@ -50,10 +50,11 @@ from here:
   Two gates: a ``retracted`` cite hard-blocks (override
   ``?ignore_retractions=1``, reading stored state only — never a live
   Crossref check — ``_retraction_blocked_response``), and an uncleared figure
-  hard-blocks (``precis.utils.figure_clearance``); an image-less figure can be
-  waived to ship as a visible placeholder via ``?placeholder_figures=1``
-  (``_figure_clearance_blocked_response``), but a licensing block on a real
-  image never waives. The overrides are query params on the GET downloads and
+  hard-blocks (``precis.utils.figure_clearance``); ``?placeholder_figures=1``
+  waives it (``_figure_clearance_blocked_response``): an image-less figure
+  ships as a visible placeholder, an uncleared third-party image ships
+  WITHHELD (caption kept, image replaced by a box naming publisher and
+  source; never embedded). The overrides are query params on the GET downloads and
   form fields on the PDF-job POST.
   ``GET .../retraction-status`` (no-network read) and
   ``POST .../retraction-check`` (live re-check, TTL-gated,
@@ -1183,10 +1184,11 @@ def _figure_clearance_blocked_response(
     Like the retraction block this is a hard stop by default — an uncleared
     figure (no image yet, or a third-party image whose permission isn't
     granted / has expired) must not ship in a finished artifact. The only
-    way past is per-check and explicit: an *image-less* figure can ship as a
-    visible placeholder via ``placeholder_figures=1`` (query on the GET
-    downloads, form field on the PDF job), but a licensing block on a real
-    image is never waivable — the permission has to be granted or renewed."""
+    way past is per-check and explicit: ``placeholder_figures=1`` (query on
+    the GET downloads, form field on the PDF job) lets an *image-less* figure
+    ship as a visible placeholder and an uncleared third-party image ship
+    withheld (never embedded); the final document still needs the permission
+    granted or renewed."""
     slugs = ", ".join(f.dc for f in blocked)
     return templates.TemplateResponse(
         request,
@@ -1200,11 +1202,13 @@ def _figure_clearance_blocked_response(
                 "yet, or a third-party image whose permission isn't granted "
                 "or has expired) must not ship in a finished document, so it "
                 "hard-stops by default.\n\n"
-                "An image-less figure can ship as a visible placeholder: tick "
-                "'allow placeholder figures' in the export panel, or add "
+                "An image-less figure can ship as a visible placeholder and an "
+                "uncleared third-party image can ship withheld (caption kept, "
+                "image replaced by a box naming the publisher and source): "
+                "tick 'allow placeholder figures' in the export panel, or add "
                 "placeholder_figures=1 to this request (downloads: query "
-                "param; PDF job: form field). A licensing block on a real "
-                "image is never waivable — grant or renew the permission."
+                "param; PDF job: form field). The final document must clear "
+                "them: grant or renew the permission."
             ),
         },
         status_code=409,
@@ -1312,7 +1316,12 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     work = Path(tempfile.mkdtemp(prefix="precis-docx-"))
     out = work / f"{name}.docx"
     docx_result = await asyncio.to_thread(
-        export_docx, store, ref, target_path=out, citations=citations
+        export_docx,
+        store,
+        ref,
+        target_path=out,
+        citations=citations,
+        withheld_figures=pf.withheld_handles,
     )
     if not with_sources:
         return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
@@ -1833,7 +1842,13 @@ def _pdf_cache_token(store: Any, ref: Any) -> str:
     return f"{version}.{rev}"
 
 
-def _pdf_cache_dir(ref_id: int, version: int | str, *, sources: bool = False) -> Path:
+def _pdf_cache_dir(
+    ref_id: int,
+    version: int | str,
+    *,
+    sources: bool = False,
+    withheld: frozenset[str] = frozenset(),
+) -> Path:
     """Per-(draft, version) build dir for the compiled PDF. Lives under
     the system temp so it survives within a deploy and is cheap to
     discard; a new version compiles into a fresh dir, so a stale PDF is
@@ -1842,10 +1857,19 @@ def _pdf_cache_dir(ref_id: int, version: int | str, *, sources: bool = False) ->
 
     ``sources=True`` uses a distinct ``<version>-src`` dir so the
     self-contained (pdfpages-appendix) PDF caches separately from the plain
-    one — both variants can coexist for the same version."""
+    one — both variants can coexist for the same version.
+
+    ``withheld`` (the figures rendered as withheld boxes under
+    ``placeholder_figures``) adds a ``-wh<digest>`` segment: a PDF compiled
+    with boxes must not be served once the permissions are granted, and the
+    grant may not bump the version token."""
+    import hashlib
     import tempfile
 
     tag = f"{version}-src" if sources else str(version)
+    if withheld:
+        digest = hashlib.sha1(",".join(sorted(withheld)).encode("utf-8")).hexdigest()
+        tag = f"{tag}-wh{digest[:8]}"
     return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / tag
 
 
@@ -1915,7 +1939,9 @@ async def pdf(request: Request, ident: str) -> Response:
 
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
     cache_token = _pdf_cache_token(store, ref)
-    cache_dir = _pdf_cache_dir(ref.id, cache_token, sources=with_sources)
+    cache_dir = _pdf_cache_dir(
+        ref.id, cache_token, sources=with_sources, withheld=pf.withheld_handles
+    )
     pdf_path = cache_dir / "main.pdf"
     suffix = "-with-sources" if with_sources else ""
     # A cast draft downloads as its human stem (``morning_brief_<date>.pdf``),
@@ -1943,7 +1969,13 @@ async def pdf(request: Request, ident: str) -> Response:
                 },
                 status_code=503,
             )
-        export_draft(store, ref, target_dir=cache_dir, include_sources=with_sources)
+        export_draft(
+            store,
+            ref,
+            target_dir=cache_dir,
+            include_sources=with_sources,
+            withheld_figures=pf.withheld_handles,
+        )
         result = compile_pdf(cache_dir)
         if not result.ok:
             return templates.TemplateResponse(

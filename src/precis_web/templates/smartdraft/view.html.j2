@@ -1045,11 +1045,12 @@
         </label>
         {# Figure-clearance waiver — draft-level, so it applies to every export
            path (download PDF/.docx, →project, → reMarkable), not just the
-           tablet. Only image-less figures ride through as visible
-           placeholders; a licensing block on a real image still stops it. #}
+           tablet. Image-less figures ride through as visible
+           placeholders; an uncleared third-party image is withheld (a framed
+           box naming the source), never embedded. #}
         <label class="flex items-center gap-1 text-slate-500"
-               title="export even when figures have no image yet — they appear as visible placeholders; a licensing block (uncleared third-party image) still stops the export">
-          <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"><span>allow placeholder figures</span>
+               title="export even when figures have no image yet — image-less figures appear as visible placeholders, and an uncleared third-party image is withheld (caption kept, image replaced by a box naming the source)">
+          <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"><span>allow placeholder figures (image-less, and uncleared third-party withheld)</span>
         </label>
 
         {# Retraction watch: passive warning (read-only, no network) + the

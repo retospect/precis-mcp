@@ -213,6 +213,9 @@ class _Ctx:
     #: cross-reference field (unlike LaTeX's cleveref), so the number is a
     #: static string resolved once at export time from document order.
     eq_numbers: dict[str, int] = field(default_factory=dict)
+    #: ``dc`` handles of uncleared third-party figures waived under
+    #: ``placeholder_figures``: rendered as a bordered notice, never embedded.
+    withheld_figures: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -353,6 +356,7 @@ def export_docx(
     doc_type: str | None = None,
     doi_links: bool = True,
     library_links: bool = True,
+    withheld_figures: frozenset[str] = frozenset(),
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -394,6 +398,7 @@ def export_docx(
         library_links=library_links,
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
+        withheld_figures=withheld_figures,
     )
 
     doc = Document()
@@ -518,6 +523,22 @@ def export_docx(
 # ── figure rendering ──────────────────────────────────────────────
 
 
+def _border_paragraph(par: Any) -> None:
+    """Draw a thin box around a paragraph (``w:pBdr``)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    pbdr = OxmlElement("w:pBdr")
+    for side in ("top", "left", "bottom", "right"):
+        el = OxmlElement(f"w:{side}")
+        el.set(qn("w:val"), "single")
+        el.set(qn("w:sz"), "6")
+        el.set(qn("w:space"), "4")
+        el.set(qn("w:color"), "000000")
+        pbdr.append(el)
+    par._p.get_or_add_pPr().append(pbdr)
+
+
 def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     """Embed a figure image + its caption. Raster blobs
     embed directly; an SVG (blob-SVG or a linked canvas) arrives pre-rasterised
@@ -530,8 +551,24 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
 
     from precis.utils.figure_source import figure_export_asset
 
-    asset = figure_export_asset(store, chunk)
-    if asset is None:
+    asset = (
+        None if chunk.dc in ctx.withheld_figures else figure_export_asset(store, chunk)
+    )
+    if chunk.dc in ctx.withheld_figures:
+        perm = ((chunk.meta or {}).get("figure") or {}).get("permission") or {}
+        who = ", ".join(
+            str(perm[k]) for k in ("publisher", "source_paper") if perm.get(k)
+        )
+        box = doc.add_paragraph(
+            "Figure withheld pending permission" + (f": {who}" if who else "")
+        )
+        box.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _border_paragraph(box)
+        ctx.warnings.append(
+            f"figure {chunk.dc} withheld (third-party image, permission not granted)"
+            " — placeholder used"
+        )
+    elif asset is None:
         ctx.warnings.append(f"figure {chunk.dc} has no exportable image — caption only")
     else:
         data, _ext = asset

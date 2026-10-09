@@ -879,6 +879,10 @@ class _Ctx:
     #: ``__post_init__`` from ``store`` so every existing call site that
     #: only ever passed ``store=`` keeps working unchanged.
     trust: Any = None
+    #: ``dc`` handles of uncleared third-party figures the caller waived
+    #: under ``placeholder_figures``: rendered as a withheld box, the image
+    #: is never loaded or embedded.
+    withheld_figures: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -1965,6 +1969,7 @@ def render_body(
     footnote_refs: bool = False,
     doi_links: bool = True,
     library_links: bool = True,
+    withheld_figures: frozenset[str] = frozenset(),
 ) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
@@ -1998,6 +2003,7 @@ def render_body(
         library_links=library_links,
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
+        withheld_figures=withheld_figures,
     )
     lines: list[str] = []
     # Open list environments (migration 0037): ulist→itemize, olist→
@@ -2098,6 +2104,27 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
     from precis.utils.figure_source import figure_export_asset
 
     caption = _render_moving_arg(c.text or "", ctx)
+    if c.dc in ctx.withheld_figures:
+        perm = ((c.meta or {}).get("figure") or {}).get("permission") or {}
+        who = ", ".join(
+            _latex_escape(str(perm.get(k)))
+            for k in ("publisher", "source_paper")
+            if perm.get(k)
+        )
+        ctx.warnings.append(
+            f"figure {c.dc} withheld (third-party image, permission not granted)"
+            " — placeholder used"
+        )
+        box = "\\emph{Figure withheld pending permission}"
+        if who:
+            box += f"\\\\ {who}"
+        return [
+            "\\begin{figure}[htbp]",
+            "\\centering",
+            f"\\fbox{{\\parbox{{0.9\\linewidth}}{{\\centering{box}}}}}",
+            f"\\caption{{{caption}}}{label}",
+            "\\end{figure}",
+        ]
     asset = figure_export_asset(ctx.store, c)
     if asset is None:
         ctx.warnings.append(f"figure {c.dc} has no exportable image — placeholder used")
@@ -2668,6 +2695,7 @@ def export_draft(
     doi_links: bool = True,
     library_links: bool = True,
     bib_style: str | None = None,
+    withheld_figures: frozenset[str] = frozenset(),
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -2690,7 +2718,11 @@ def export_draft(
     ``bib_style`` picks the biblatex bibliography style (see
     :data:`_BIB_STYLES`): the explicit argument wins, else the draft's own
     ``meta.workspace.style``, else ``numeric-comp``. An unsupported value
-    keeps the default and adds a warning to ``ExportResult.warnings``."""
+    keeps the default and adds a warning to ``ExportResult.warnings``.
+
+    ``withheld_figures`` are ``dc`` handles of uncleared third-party figures
+    waived under ``placeholder_figures``: each renders as a framed "withheld
+    pending permission" box (caption kept), never its image."""
     from precis.export import guard_exportable
 
     guard_exportable(ref)
@@ -2719,6 +2751,7 @@ def export_draft(
         footnote_refs=remarkable,
         doi_links=doi_links,
         library_links=library_links,
+        withheld_figures=withheld_figures,
     )
     if style_warning and not patent_mode:
         rendered.warnings.append(style_warning)

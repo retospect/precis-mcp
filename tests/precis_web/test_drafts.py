@@ -1038,7 +1038,7 @@ def test_export_docx_override_bypasses_block(
             papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
         )
 
-    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **_kw):
         target_path.write_bytes(b"PK\x03\x04fake-docx")
         return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
 
@@ -1061,7 +1061,7 @@ def test_export_docx_soft_status_does_not_block(
             papers=[_cited("smith2024", "corrected", checked_at="2026-01-01")],
         )
 
-    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **_kw):
         target_path.write_bytes(b"PK\x03\x04fake-docx")
         return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
 
@@ -1083,7 +1083,7 @@ def test_export_docx_unchecked_does_not_block(
             papers=[_cited("smith2024", None, checked_at=None)]
         )
 
-    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **_kw):
         target_path.write_bytes(b"PK\x03\x04fake-docx")
         return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
 
@@ -1109,7 +1109,7 @@ def test_export_docx_override_records_trace_in_sources_appendix(
             papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
         )
 
-    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **_kw):
         target_path.write_bytes(b"PK\x03\x04fake-docx")
         return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
 
@@ -1307,7 +1307,16 @@ def test_export_docx_placeholder_waives_assetless_figure(
     download — the export proceeds."""
     import precis.export.docx as docx_mod
 
-    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+    def fake_export_docx(
+        store,
+        ref,
+        *,
+        target_path,
+        citations="plain",
+        doc_type=None,
+        withheld_figures=frozenset(),
+    ):
+        assert withheld_figures == frozenset()  # image-less: nothing withheld
         target_path.write_bytes(b"PK\x03\x04fake-docx")
         return docx_mod.DocxResult(path=target_path, cited_slugs=[])
 
@@ -1325,11 +1334,22 @@ def test_export_docx_placeholder_waives_assetless_figure(
     assert r.content.startswith(b"PK")
 
 
-def test_export_docx_placeholder_never_waives_licensing_block(
+def test_export_docx_placeholder_withholds_licensing_block(
     draft_client: TestClient, monkeypatch
 ) -> None:
-    """The waiver only covers image-less figures — a licensing block on a
-    real image (``assetless=False``) still hard-stops even with the flag."""
+    """Without the flag a licensing block on a real image (``assetless=False``)
+    hard-stops; with ``placeholder_figures=1`` the export proceeds and the
+    figure's handle reaches the exporter as ``withheld_figures``."""
+    import precis.export.docx as docx_mod
+
+    seen: dict = {}
+
+    def fake_export_docx(store, ref, *, target_path, **kw):
+        seen.update(kw)
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=[])
+
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
     monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
     monkeypatch.setattr(
         clearance_mod,
@@ -1338,9 +1358,13 @@ def test_export_docx_placeholder_never_waives_licensing_block(
             total=1, uncleared=[_uncleared_fig("dc10", assetless=False)]
         ),
     )
-    r = draft_client.get("/drafts/nt/export.docx?placeholder_figures=1")
+    r = draft_client.get("/drafts/nt/export.docx")
     assert r.status_code == 409
     assert "dc10" in r.text
+    assert not seen
+    r = draft_client.get("/drafts/nt/export.docx?placeholder_figures=1")
+    assert r.status_code == 200
+    assert seen["withheld_figures"] == frozenset({"dc10"})
 
 
 def test_export_pdf_blocked_when_figure_uncleared(
@@ -2500,12 +2524,29 @@ def test_draft_pdf_serves_cached(
     from precis_web.routes import drafts as drafts_mod
 
     monkeypatch.setattr(
-        drafts_mod, "_pdf_cache_dir", lambda ref_id, version, *, sources=False: tmp_path
+        drafts_mod,
+        "_pdf_cache_dir",
+        lambda ref_id, version, *, sources=False, withheld=frozenset(): tmp_path,
     )
     (tmp_path / "main.pdf").write_bytes(b"%PDF-1.4 fake\n%%EOF\n")
     r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
+
+
+def test_pdf_cache_dir_separates_withheld_builds() -> None:
+    """A PDF compiled with withheld-figure boxes caches apart from the
+    clean build of the same version: granting the permissions may not bump
+    the version token, and the boxed PDF must not be served after that."""
+    from precis_web.routes import drafts as drafts_mod
+
+    plain = drafts_mod._pdf_cache_dir(7, "12.34")
+    boxed = drafts_mod._pdf_cache_dir(7, "12.34", withheld=frozenset({"dc10", "dc11"}))
+    same = drafts_mod._pdf_cache_dir(7, "12.34", withheld=frozenset({"dc11", "dc10"}))
+    assert plain != boxed
+    assert boxed == same
+    assert boxed.name.startswith("12.34-wh")
+    assert drafts_mod._pdf_cache_dir(7, "12.34", sources=True) != plain
 
 
 def test_pdf_cache_token_includes_ref_updated_at(monkeypatch) -> None:

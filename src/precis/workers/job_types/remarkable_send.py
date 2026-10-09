@@ -46,9 +46,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # The signed-in login to resolve a per-user paired device for —
         # threaded by the web route; absent for agent-started sends.
         "user": {"type": "string"},
-        # Opt-in: send even when IMAGE-LESS figures are uncleared — they ship
-        # as the exporter's visible placeholders. A licensing block (an
-        # uncleared figure with a real image) still fails the send.
+        # Opt-in: send even when figures are uncleared — image-less ones
+        # ship as visible placeholders, uncleared real images are withheld
+        # (framed box, never embedded).
         "placeholder_figures": {"type": "boolean"},
     },
     "required": ["draft"],
@@ -108,12 +108,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     # Figure clearance gate — same as draft_export: an uncleared figure must
-    # not ship. ``placeholder_figures`` waives only ASSET-LESS blocks (the
-    # export renders a visible placeholder — nothing uncleared actually
-    # ships); a licensing block on a real image is never waivable.
+    # not ship. ``placeholder_figures`` waives every uncleared figure:
+    # image-less ones export as visible placeholders, uncleared real images
+    # are WITHHELD (a framed box, never the image), so nothing uncleared
+    # actually ships.
     from precis.utils.figure_clearance import (
         draft_figure_clearance,
         partition_uncleared,
+        withheld_handles,
     )
 
     clearance = draft_figure_clearance(ctx.store, ref.id)
@@ -121,11 +123,19 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         clearance.uncleared,
         placeholder_figures=bool(params.get("placeholder_figures")),
     )
-    if waived:
+    withheld = withheld_handles(waived)
+    pending = [f for f in waived if f.dc not in withheld]
+    if pending:
         ctx.append_chunk(
             "job_event",
-            f"warn: {len(waived)} image-less figure(s) ship as visible "
-            f"placeholders — {'; '.join(f.dc for f in waived)}",
+            f"warn: {len(pending)} image-less figure(s) ship as visible "
+            f"placeholders — {'; '.join(f.dc for f in pending)}",
+        )
+    if withheld:
+        ctx.append_chunk(
+            "job_event",
+            f"warn: {len(withheld)} third-party figure(s) withheld pending "
+            f"permission — {'; '.join(sorted(withheld))}",
         )
     if uncleared:
         lines = "; ".join(f"{f.dc} ({f.reason})" for f in uncleared)
@@ -154,7 +164,13 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "job_event", f"exporting {slug!r} in reMarkable mode → {folder}"
         )
         try:
-            result = export_draft(ctx.store, ref, target_dir=out_dir, remarkable=True)
+            result = export_draft(
+                ctx.store,
+                ref,
+                target_dir=out_dir,
+                remarkable=True,
+                withheld_figures=withheld,
+            )
         except Exception as exc:
             log.warning("remarkable_send: render failed for %s", slug, exc_info=True)
             ctx.record_failure(f"remarkable_send: LaTeX render failed: {exc}")

@@ -40,10 +40,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # ?ignore_retractions=1 — the sources appendix records which cited
         # papers were overridden (see precis.export.retraction).
         "ignore_retractions": {"type": "boolean"},
-        # Opt-in: export even when IMAGE-LESS figures are uncleared — they
-        # ship as the exporter's visible placeholders. Same waiver
-        # remarkable_send offers; a licensing block (an uncleared figure with
-        # a real image) still fails the export.
+        # Opt-in: export even when figures are uncleared — image-less ones
+        # ship as the exporter's visible placeholders, uncleared real images
+        # are withheld (framed box, never embedded). Same waiver
+        # remarkable_send offers.
         "placeholder_figures": {"type": "boolean"},
         # Append the doi hyperlink run after each in-text \cite{...} mark
         # (precis.export.latex.render_body's doi_links). Default on.
@@ -161,13 +161,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     # Figure clearance gate: an uncleared figure must not
     # ship, so it fails the export — the way a bare ``\cite`` fails review.
-    # ``placeholder_figures`` waives only ASSET-LESS blocks (the export
-    # renders a visible placeholder — nothing uncleared actually ships), the
-    # same waiver remarkable_send offers; a licensing block on a real image
-    # is never waivable.
+    # ``placeholder_figures`` waives every uncleared figure: image-less ones
+    # export as visible placeholders, uncleared real images are WITHHELD (the
+    # exporter prints a framed box naming the publisher and source, never the
+    # image), so nothing uncleared actually ships. Same waiver remarkable_send
+    # offers.
     from precis.utils.figure_clearance import (
         draft_figure_clearance,
         partition_uncleared,
+        withheld_handles,
     )
 
     clearance = draft_figure_clearance(ctx.store, ref.id)
@@ -175,11 +177,19 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         clearance.uncleared,
         placeholder_figures=bool(params.get("placeholder_figures")),
     )
-    if waived:
+    withheld = withheld_handles(waived)
+    pending = [f for f in waived if f.dc not in withheld]
+    if pending:
         ctx.append_chunk(
             "job_event",
-            f"warn: {len(waived)} image-less figure(s) ship as visible "
-            f"placeholders — {'; '.join(f.dc for f in waived)}",
+            f"warn: {len(pending)} image-less figure(s) ship as visible "
+            f"placeholders — {'; '.join(f.dc for f in pending)}",
+        )
+    if withheld:
+        ctx.append_chunk(
+            "job_event",
+            f"warn: {len(withheld)} third-party figure(s) withheld pending "
+            f"permission — {'; '.join(sorted(withheld))}",
         )
     if uncleared:
         lines = "; ".join(f"{f.dc} ({f.reason})" for f in uncleared)
@@ -275,6 +285,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             doi_links=bool(params.get("doi_links", True)),
             library_links=bool(params.get("library_links", True)),
             bib_style=str(params.get("bib_style") or "").strip() or None,
+            withheld_figures=withheld,
         )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)

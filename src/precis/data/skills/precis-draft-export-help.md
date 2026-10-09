@@ -101,9 +101,10 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
   source integrity flags). Cites inside figure captions and headings
   stay plain `\cite` (LaTeX forbids a footnote there). Destination =
   `remarkable.target_folder` app_setting (default `/Precis`).
-  `params={'placeholder_figures': True}` (job) waives the clearance gate
-  for **image-less** figures only — they print as visible placeholders; a
-  licensing block on a real image still fails the send.
+  `params={'placeholder_figures': True}` (job) waives the clearance gate:
+  image-less figures print as visible placeholders and an uncleared
+  third-party image is withheld (caption kept, image replaced by a box naming
+  publisher and source), never embedded.
 - **Cited sources → reMarkable**
   (`put(kind='job', job_type='remarkable_papers_send',
   params={'draft': '<slug>'})`) sends every cited source PDF (paper /

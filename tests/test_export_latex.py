@@ -1953,6 +1953,71 @@ def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:
     assert len(pics) == 1 and pics[0].read_bytes() == _PNG
 
 
+def test_render_figure_withheld_emits_box_and_never_loads_asset(hub) -> None:
+    """A handle in ``ctx.withheld_figures`` renders a framed box naming the
+    publisher and source, keeps the caption, and never embeds the image,
+    even though a real blob exists."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="wh", title="T", project=proj)
+    ref = store.get_ref(kind="draft", id="wh")
+    title_h = store.drafts.reading_order(ref.id)[0].handle
+    draft.put(
+        id="wh",
+        chunk_kind="figure",
+        text="Fig 1. Borrowed.",
+        image=_PNG_B64,
+        origin="third_party",
+        permission={
+            "publisher": "ACME & Sons",
+            "source_paper": "Doe 2020",
+            "status": "requested",
+        },
+        at={"after": f"\u00b6{title_h}"},
+    )
+    fig = next(
+        c for c in store.drafts.reading_order(ref.id) if c.chunk_kind == "figure"
+    )
+    ctx = latex._Ctx(
+        keymap={},
+        known_handles=set(),
+        store=store,
+        withheld_figures=frozenset({fig.dc}),
+    )
+    out = "\n".join(latex._render_figure(fig, ctx, ""))
+    assert "withheld pending permission" in out
+    assert r"ACME \& Sons" in out and "Doe 2020" in out
+    assert r"\caption{Fig 1. Borrowed.}" in out
+    assert r"\includegraphics" not in out
+    assert ctx.figures == []
+    assert any("withheld" in w and fig.dc in w for w in ctx.warnings)
+
+    # Not in the set: the same figure embeds normally (control).
+    ctx2 = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out2 = "\n".join(latex._render_figure(fig, ctx2, ""))
+    assert r"\includegraphics" in out2 and len(ctx2.figures) == 1
+
+
+def test_partition_uncleared_waives_everything_and_withheld_handles() -> None:
+    from precis.utils.figure_clearance import (
+        FigureClear,
+        partition_uncleared,
+        withheld_handles,
+    )
+
+    img = FigureClear("dc1", "c", "third_party", False, "requested", assetless=False)
+    none = FigureClear("dc2", "c", "original", False, "no image yet", assetless=True)
+    blocked, waived = partition_uncleared([img, none], placeholder_figures=False)
+    assert blocked == [img, none] and waived == []
+    blocked, waived = partition_uncleared([img, none], placeholder_figures=True)
+    assert blocked == [] and waived == [img, none]
+    assert withheld_handles(waived) == frozenset({"dc1"})
+    assert withheld_handles([]) == frozenset()
+
+
 def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatch):
     """``include_sources=True`` copies each present cited PDF into
     ``sources/`` and appends a ``pdfpages`` appendix. We stub the cited-
