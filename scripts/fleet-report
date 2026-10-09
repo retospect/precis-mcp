@@ -12,6 +12,12 @@ worktree lock's pid is gone, or no tmux pane exists while the transcript says
 working and has been silent for DEAD_SILENT_MIN (a session outside tmux that
 is actively writing is therefore not flagged). Usage: scripts/fleet-report
 [--repo PATH]... [--json] [--quiet-min N] [--since-min N].
+
+Step 2 collector: `--push` POSTs the report to the local precis HTTP MCP as
+`put(kind='fleet', mode='report')` (URL from PRECIS_FLEET_MCP_URL, default
+http://127.0.0.1:8765/mcp; bearer from PRECIS_MCP_TOKEN). `--remote HOST`
+(repeatable) runs this script on HOST over ssh and pushes that host's report.
+Without those flags it stays read-only.
 """
 
 from __future__ import annotations
@@ -24,8 +30,11 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 # Regexes matched (case-insensitive, any line) against the last lines of a
 # pane. One hit marks the session `waiting` (an approval/permission dialog).
@@ -48,6 +57,8 @@ AGENT_COMMANDS = ("claude", "codex", "devin", "node")
 CLAUDE_WINDOW_DEFAULT = 200_000
 DEAD_SILENT_MIN = 5.0
 RECENT_WORKING_S = 120
+REPORT_VERSION = 1
+DEFAULT_MCP_URL = "http://127.0.0.1:8765/mcp"
 TAIL_BYTES = 262_144
 
 
@@ -493,6 +504,7 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
             "lock_alive": wt["lock_alive"],
             "state": state,
             "quiet_min": round((t - latest) / 60, 1) if latest else None,
+            "last_active": iso(latest),
             "transcript_mtime": iso(sess["mtime"]) if sess else None,
             "ctx_pct": ctx_pct,
             "ctx_tokens": sess["ctx_tokens"] if sess else None,
@@ -538,6 +550,7 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
     newest_codex = max(codex.values(), key=lambda s: s["mtime"], default=None)
     return {
         "host": host,
+        "version": REPORT_VERSION,
         "generated": iso(t),
         "rows": rows,
         "exceptions": exceptions(rows, quiet_min),
@@ -607,6 +620,162 @@ def render(rep: dict) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- push
+
+
+class PushError(Exception):
+    pass
+
+
+def _sse_json(body: str, rpc_id: int | None) -> dict | None:
+    """The JSON-RPC message in an SSE body (matching `rpc_id` when given)."""
+    found = None
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            d = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        if isinstance(d, dict) and (rpc_id is None or d.get("id") == rpc_id):
+            found = d
+    return found
+
+
+def mcp_post(
+    url: str,
+    token: str | None,
+    session: str | None,
+    msg: dict,
+    timeout: float = 30.0,
+) -> tuple[dict | None, str | None]:
+    """POST one JSON-RPC message; return (response message or None, session id)."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if session:
+        headers["Mcp-Session-Id"] = session
+    req = urllib.request.Request(
+        url, data=json.dumps(msg).encode("utf-8"), headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            sid = resp.headers.get("Mcp-Session-Id") or session
+            ctype = resp.headers.get("Content-Type", "")
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise PushError(f"HTTP {e.code} from {url}") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise PushError(f"cannot reach {url}: {e}") from None
+    if "id" not in msg or not body.strip():
+        return None, sid
+    if "text/event-stream" in ctype:
+        return _sse_json(body, msg.get("id")), sid
+    try:
+        d = json.loads(body)
+    except ValueError:
+        raise PushError(f"non-JSON reply from {url}") from None
+    return (d if isinstance(d, dict) else None), sid
+
+
+def push_report(rep: dict, url: str, token: str | None) -> str:
+    """initialize -> notifications/initialized -> tools/call put. Returns the
+    tool's text reply; raises PushError on any failure."""
+    init, sid = mcp_post(
+        url,
+        token,
+        None,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "fleet-report", "version": str(REPORT_VERSION)},
+            },
+        },
+    )
+    if not init or "error" in init:
+        raise PushError(f"initialize failed: {(init or {}).get('error')}")
+    mcp_post(url, token, sid, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    reply, _ = mcp_post(
+        url,
+        token,
+        sid,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "put",
+                "arguments": {
+                    "kind": "fleet",
+                    "mode": "report",
+                    "args": {"host": rep["host"], "report": rep},
+                },
+            },
+        },
+    )
+    if not reply:
+        raise PushError("no reply to tools/call")
+    if "error" in reply:
+        raise PushError(f"put failed: {reply['error']}")
+    result = reply.get("result") or {}
+    text = " ".join(
+        c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)
+    ).strip()
+    if result.get("isError") or text.startswith("[error"):
+        raise PushError(f"put refused: {text[:300]}")
+    return text
+
+
+#: A remote report takes a few seconds; past this the host is treated as down.
+REMOTE_TIMEOUT_S = 60
+
+
+def _ssh(host: str, repo: str, src: IO[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "--",
+            host,
+            f"python3 - --json --repo {repo}",
+        ],
+        stdin=src,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=REMOTE_TIMEOUT_S,
+    )
+
+
+def remote_report(host: str, repo: str = "~/precis-mcp") -> dict:
+    """Run this script on `host` over ssh (script on stdin) and parse its JSON."""
+    with Path(__file__).open(encoding="utf-8") as src:
+        try:
+            r = _ssh(host, repo, src)
+        except subprocess.TimeoutExpired:
+            raise PushError(f"ssh {host}: no report in {REMOTE_TIMEOUT_S}s") from None
+    if r.returncode != 0:
+        raise PushError(f"ssh {host} exited {r.returncode}: {r.stderr.strip()[:200]}")
+    try:
+        rep = json.loads(r.stdout)
+    except ValueError:
+        raise PushError(f"ssh {host}: report is not JSON") from None
+    if not isinstance(rep, dict) or not rep.get("host"):
+        raise PushError(f"ssh {host}: report has no host")
+    return rep
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Read-only per-host agent session report.")
     ap.add_argument(
@@ -634,11 +803,44 @@ def main(argv: list[str] | None = None) -> int:
         default=CLAUDE_WINDOW_DEFAULT,
         help="Claude context window in tokens",
     )
+    ap.add_argument(
+        "--push",
+        action="store_true",
+        help="send this host's report to the precis MCP (put kind='fleet')",
+    )
+    ap.add_argument(
+        "--remote",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="run on HOST over ssh and push its report (repeatable)",
+    )
     args = ap.parse_args(argv)
     repos = args.repo or [str(Path(__file__).resolve().parent.parent)]
-    rep = collect(repos, args.quiet_min, args.since_min, args.claude_window)
-    print(json.dumps(rep, indent=2) if args.json else render(rep))
-    return 0
+    if not args.push and not args.remote:
+        rep = collect(repos, args.quiet_min, args.since_min, args.claude_window)
+        print(json.dumps(rep, indent=2) if args.json else render(rep))
+        return 0
+    url = os.environ.get("PRECIS_FLEET_MCP_URL") or DEFAULT_MCP_URL
+    token = os.environ.get("PRECIS_MCP_TOKEN")
+    status = 0
+
+    def push(label: str, make) -> None:
+        nonlocal status
+        try:
+            print(f"{label}: {push_report(make(), url, token)}")
+        except PushError as e:
+            print(f"{label}: {e}", file=sys.stderr)
+            status = 1
+
+    if args.push:
+        push(
+            "local",
+            lambda: collect(repos, args.quiet_min, args.since_min, args.claude_window),
+        )
+    for host in args.remote:
+        push(host, lambda host=host: remote_report(host))
+    return status
 
 
 if __name__ == "__main__":

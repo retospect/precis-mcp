@@ -92,6 +92,8 @@ KIND_CODES: dict[str, str] = {
     "job": "jo",
     "alert": "al",
     "agentlog": "ag",
+    # agent-fleet coordination rows (fleet-coordination-via-precis, step 2)
+    "fleet": "fl",
     "message": "ms",
     "gripe": "gr",
     # system / meta

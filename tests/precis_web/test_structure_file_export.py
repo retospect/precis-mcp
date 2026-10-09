@@ -150,7 +150,9 @@ def test_se_viewer_shows_atom_buttons_only_when_bound(
     runtime_with_store,
 ) -> None:
     _seed_plain_se(runtime_with_store, "plainse2")
-    assert "bt3d-export-xyz" not in web.get("/se/plainse2").text
+    # The viewer script names the ids unconditionally; the anchors are what
+    # must be absent.
+    assert 'id="bt3d-export-xyz"' not in web.get("/se/plainse2").text
     _seed_c60_structure(runtime_with_store, "c60se5")
     _seed_atomic_se(runtime_with_store, slug="c60se5d", structure_slug="c60se5")
     page = web.get("/se/c60se5d").text

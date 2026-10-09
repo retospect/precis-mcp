@@ -994,6 +994,7 @@ def boot(
         from precis.handlers.email import EmailHandler
         from precis.handlers.figure import FigureHandler
         from precis.handlers.finding import FindingHandler
+        from precis.handlers.fleet import FleetHandler
         from precis.handlers.folder import FolderHandler
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
@@ -1028,6 +1029,7 @@ def boot(
         _gated(GripeHandler)
         _gated(AlertHandler)
         _gated(AgentLogHandler)
+        _gated(FleetHandler)
         _gated(JobHandler)
         _gated(AnkiHandler)
         _gated(ConceptHandler)

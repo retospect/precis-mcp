@@ -65,6 +65,7 @@ _NUMERIC_KINDS_FALLBACK: frozenset[str] = frozenset(
         "message",
         "alert",
         "agentlog",
+        "fleet",
         "folder",
         "quest",
         "concept",

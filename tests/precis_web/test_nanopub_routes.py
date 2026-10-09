@@ -1353,7 +1353,7 @@ def test_coverage_panel_states_the_ledger_and_requests_a_resweep(
     )
     store = _store(runtime_with_store)
     paper, chunk, sha = _seed_paper(store)
-    title = "Coverage-panel claim: the anisotropy ratio exceeds 100:1."
+    title = "Raman spectroscopy shows the D/G ratio rises above 1.2 after annealing at 600 C."
     hub = _seed_hub(store, title, paper, chunk)
 
     def _jobs() -> list[dict[str, Any]]:

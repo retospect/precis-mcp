@@ -54,6 +54,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "job",
         "alert",
         "agentlog",
+        "fleet",
         "message",
         "gripe",
         "skill",

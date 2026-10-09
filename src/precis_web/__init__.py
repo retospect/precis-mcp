@@ -104,20 +104,8 @@ canvas bitmap with vector annotations. Purposeful technical drawings need
 their own geometry contract; retiring projections would discard useful
 axis views before that contract exists.
 
-**Workbench turn** (``design_turn.py``, slice 3): ``POST /se/{slug}/chat`` +
-``/chat/apply`` and ``POST /structure/{slug}/chat`` +
-``/chat/apply`` share ``design_chat.py`` and ``_design_chat.html.j2``. Each
-blocking POST returns 303 with its outcome; a past ``?rev=`` returns 409.
-``run_turn(hub, kind=, slug=, message=, handles=, model_call=)`` makes one
-tool-less ``Tier.BIG`` ``route()`` call with a design digest and clicked
-handles. Its ``{ops, rationale}`` reply is checked against the kind's roster;
-an unknown op, raw coordinates, invalid JSON or failed dry run gets one repair
-round, then rejects the whole turn without writing. Pure SE ops dry-run and
-apply through one ``SeHandler.edit(turn=…)`` revision. Store-aware SE ops and
-all structure ops require a proposal; ``StructureHandler.edit`` updates in
-place, never ``derive``. Each design has one ``conv`` (``design-chat-<slug>``,
-``related-to``); each answered turn adds one applied/proposal/rejected/no-op
-block, and its revision stores ``<conv-slug>~<block ordinal>`` as ``turn``.
+**Workbench turn** (``design_turn.py``): chat POSTs for ``se``/``structure``
+designs; routes, repair and apply policy are in that module's docstring.
 
 **Drive (`/drive`)** unifies seek and management. The active-folder chip
 uses the sidebar tree without another lookup; missing/non-folder ids keep

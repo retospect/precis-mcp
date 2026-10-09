@@ -6,10 +6,13 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -401,7 +404,14 @@ def test_json_shape(env):
     )
     env.panes.write_text(pane_line(env), encoding="utf-8")
     rep = report(env)
-    assert set(rep) == {"host", "generated", "rows", "exceptions", "quota"}
+    assert set(rep) == {
+        "host",
+        "version",
+        "generated",
+        "rows",
+        "exceptions",
+        "quota",
+    }
     assert rep["generated"].endswith("Z") and "." not in rep["host"]
     keys = {
         "vendor",
@@ -415,7 +425,9 @@ def test_json_shape(env):
         "purpose",
         "state",
     }
-    assert keys | {"quiet_min", "ctx_pct", "attach"} <= set(rep["rows"][0])
+    assert keys | {"quiet_min", "last_active", "ctx_pct", "attach"} <= set(
+        rep["rows"][0]
+    )
     assert rep["rows"][0]["tmux"]["pane_id"] == "%7"
 
 
@@ -426,3 +438,121 @@ def test_text_output_blocks(env):
     out = run_script(env)
     assert out.splitlines()[0] == "EXCEPTIONS"
     assert re.search(r"claude@\S+/proj/proj · idle · \d+m · build the thing · 60%", out)
+
+
+def test_last_active_is_iso_utc_and_matches_quiet(env):
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 600)]
+    )
+    row = report(env)["rows"][0]
+    la = datetime.fromisoformat(row["last_active"].replace("Z", "+00:00"))
+    assert row["last_active"].endswith("Z")
+    assert abs((datetime.now(UTC) - la).total_seconds() / 60 - row["quiet_min"]) < 1
+
+
+class FakeMcp:
+    """Minimal streamable-HTTP MCP: records every POST."""
+
+    def __init__(self, sse: bool) -> None:
+        self.sse = sse
+        self.posts: list[tuple[dict, dict]] = []
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # silence
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                outer.posts.append((dict(self.headers), body))
+                if "id" not in body:
+                    self.send_response(202)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                result: dict[str, Any]
+                if body["method"] == "initialize":
+                    result = {"protocolVersion": "2025-03-26", "capabilities": {}}
+                else:
+                    result = {"content": [{"type": "text", "text": "reported ok"}]}
+                msg = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result})
+                if outer.sse:
+                    payload = f"event: message\ndata: {msg}\n\n".encode()
+                    ctype = "text/event-stream"
+                else:
+                    payload, ctype = msg.encode(), "application/json"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Mcp-Session-Id", "sess-1")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self.server = HTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/mcp"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.mark.parametrize("sse", [False, True])
+def test_push_runs_the_mcp_handshake_and_puts_the_report(env, monkeypatch, sse):
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    with FakeMcp(sse) as mcp:
+        monkeypatch.setenv("PRECIS_FLEET_MCP_URL", mcp.url)
+        monkeypatch.setenv("PRECIS_MCP_TOKEN", "tok-secret")
+        out = run_script(env, "--push")
+    assert out.strip() == "local: reported ok"
+    assert "tok-secret" not in out
+    methods = [b["method"] for _, b in mcp.posts]
+    assert methods == ["initialize", "notifications/initialized", "tools/call"]
+    for headers, _ in mcp.posts:
+        assert headers["Authorization"] == "Bearer tok-secret"
+    assert "Mcp-Session-Id" not in mcp.posts[0][0]
+    assert mcp.posts[1][0]["Mcp-Session-Id"] == "sess-1"
+    assert mcp.posts[2][0]["Mcp-Session-Id"] == "sess-1"
+    call = mcp.posts[2][1]["params"]
+    assert call["name"] == "put"
+    assert call["arguments"]["kind"] == "fleet"
+    assert call["arguments"]["mode"] == "report"
+    sent = call["arguments"]["args"]
+    assert sent["host"] == sent["report"]["host"]
+    assert sent["report"]["rows"][0]["last_active"]
+
+
+def test_push_failure_exits_nonzero_without_leaking_token(env, monkeypatch):
+    monkeypatch.setenv("PRECIS_FLEET_MCP_URL", "http://127.0.0.1:9/mcp")
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "tok-secret")
+    r = subprocess.run(
+        [str(SCRIPT), "--repo", str(env.repo), "--push"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert r.returncode == 1
+    assert "tok-secret" not in r.stdout + r.stderr
+
+
+def test_remote_runs_script_over_ssh_and_pushes_that_report(env, monkeypatch):
+    fake_ssh = env.bindir / "ssh"
+    # Stands in for the remote: ignores host/command, runs the script from stdin.
+    fake_ssh.write_text(
+        '#!/bin/sh\nexec python3 - --json --repo "$FAKE_REPO"\n', encoding="utf-8"
+    )
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("FAKE_REPO", str(env.repo))
+    with FakeMcp(False) as mcp:
+        monkeypatch.setenv("PRECIS_FLEET_MCP_URL", mcp.url)
+        out = run_script(env, "--remote", "someone@remote")
+    assert out.strip() == "someone@remote: reported ok"
+    sent = mcp.posts[2][1]["params"]["arguments"]["args"]
+    assert sent["report"]["rows"] == [] and sent["host"]

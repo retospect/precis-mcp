@@ -115,7 +115,8 @@ live under ``workers/auto_check_evaluators/``: ``paper_ingested``,
 ``child_job_succeeded``, ``derived_job_succeeded``,
 ``all_child_findings_resolved``, ``placement_legal``, ``route_complete``,
 ``netlist_drc_clean`` (the last three are the pcb-guided-place-route
-phase-machine gates).
+phase-machine gates), ``checklist_clean`` (every blocking item of a
+checklist settled on its target with no ``fail``).
 
 **Recurring (Watches).** ``meta.schedule`` presence *is* recurring — cron
 / ``every:`` shorthand, or a one-shot ``at``; no separate tag

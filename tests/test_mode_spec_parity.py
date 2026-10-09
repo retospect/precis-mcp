@@ -64,6 +64,10 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    real one-element vocabulary, not the reject-all `()` shape
     #    (gr343755) -----------------------------------------------------
     ("job", "put"): ("retry",),
+    # -- fleet: put is the collector report only; edit rewrites the
+    #    coordinator-owned fields (assigned/slice/note) -----------------
+    ("fleet", "put"): ("report",),
+    ("fleet", "edit"): ("replace",),
     # -- put: message recognises mode= but rejects every value outright —
     #    messages are immutable once queued, so there's no create/import
     #    axis at all. This is the canonical `()` (not None) example the

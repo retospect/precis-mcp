@@ -711,6 +711,11 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     )
     if reaped_logs:
         log.info("sweeper: GC'd %d stale agentlog(s)", reaped_logs)
+    from precis import fleet
+
+    reaped_fleet = fleet.gc_dead_rows(store)
+    if reaped_fleet:
+        log.info("sweeper: retired %d dead fleet row(s)", reaped_fleet)
     from precis import route_log
 
     reaped_calls = route_log.gc(store, retention_days=_route_log_retention_days())

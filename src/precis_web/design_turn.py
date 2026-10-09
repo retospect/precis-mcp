@@ -13,6 +13,16 @@ written. The model never holds a tool: ``LlmRequest(tools_needed=False)``,
 no MCP config — so a reply that *narrates* a ``put(...)`` is just prose that
 fails to parse, never a write.
 
+**Routes** (slice 3): ``POST /se/{slug}/chat`` + ``/chat/apply`` and
+``POST /structure/{slug}/chat`` + ``/chat/apply`` share ``design_chat.py`` and
+``_design_chat.html.j2``. Each blocking POST returns 303 with its outcome; a
+past ``?rev=`` returns 409. ``run_turn`` makes one tool-less ``Tier.BIG``
+``route()`` call; an unknown op, raw coordinates, invalid JSON or failed dry
+run gets one repair round, then rejects the whole turn without writing. Each
+design has one ``conv`` (``design-chat-<slug>``, ``related-to``); each answered
+turn adds one applied/proposal/rejected/no-op block, and its revision stores
+``<conv-slug>~<block ordinal>`` as ``turn``.
+
 **Apply policy by op class** (the spec's "Apply policy, by op class"):
 
 * non-destructive pure se ops (:func:`precis_se.ops.known_ops`, L0–L2,

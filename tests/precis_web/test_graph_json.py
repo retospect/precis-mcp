@@ -10,6 +10,7 @@ the round-trip count — not the store's own semantics
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -79,15 +80,28 @@ def _h(kind: str, ref_id: int) -> str:
 
 
 @contextmanager
-def _query_counter(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, int]]:
-    counts = {"n": 0}
+def _query_counter(
+    monkeypatch: pytest.MonkeyPatch, store: Store
+) -> Iterator[dict[str, Any]]:
+    counts: dict[str, Any] = {"n": 0, "sql": []}
     original = psycopg.Connection.execute
+    # Only threads born after this point (the TestClient portal and its
+    # worker): a background thread an earlier test left in the same xdist
+    # worker shares the session store's pool and would be counted too
+    # (gr477303).
+    before = {t.ident for t in threading.enumerate()}
 
     def counting_execute(self: Any, *args: Any, **kwargs: Any) -> Any:
-        # the pool's liveness probe (``check_connection`` -> ``execute("")``)
-        # is not a query
-        if str(args[0]).strip():
+        # The pool's liveness probe (``check_connection`` -> ``execute("")``)
+        # is not a query.
+        sql = str(args[0]).strip()
+        if (
+            sql
+            and threading.get_ident() not in before
+            and getattr(self, "_pool", None) is store.pool
+        ):
             counts["n"] += 1
+            counts["sql"].append(sql.split("\n", 1)[0][:80])
         return original(self, *args, **kwargs)
 
     with monkeypatch.context() as m:
@@ -247,8 +261,8 @@ def test_round_trips(
     not count."""
     focus = fixture_graph["focus"]
     store.inverse_relation("cites")
-    with _query_counter(monkeypatch) as c1:
+    with _query_counter(monkeypatch, store) as c1:
         assert graph_client.get(f"/graph/paper/{focus}.json").status_code == 200
-    with _query_counter(monkeypatch) as c2:
+    with _query_counter(monkeypatch, store) as c2:
         assert graph_client.get(f"/graph/paper/{focus}.json?depth=2").status_code == 200
-    assert (c1["n"], c2["n"]) == (2, 3)
+    assert (c1["n"], c2["n"]) == (2, 3), (c1["sql"], c2["sql"])

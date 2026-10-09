@@ -129,6 +129,20 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("draft", "put", "origin"),
         ("draft", "put", "permission"),
         ("draft", "put", "voice"),
+        # -- checklist: kind-scoping and pcb anchors, args= like fleet
+        # (97b07bd96 landed them undeclared; anchors is documented in
+        # precis-checklist-help).
+        ("checklist", "put", "default_for"),
+        ("checklist", "edit", "anchors"),
+        # -- fleet: collector report + coordinator fields, args= by design
+        # (2026-10-09, fleet step 2): a script and the coordinator are the
+        # only callers, both reading precis-fleet-help; declaring them would
+        # put five fleet-only params in every agent's tools/list.
+        ("fleet", "put", "host"),
+        ("fleet", "put", "report"),
+        ("fleet", "edit", "assigned"),
+        ("fleet", "edit", "note"),
+        ("fleet", "edit", "slice"),
         # -- put: diagram kinds ------------------------------------------
         ("figure", "put", "viewbox"),
         ("figure", "put", "vocab"),

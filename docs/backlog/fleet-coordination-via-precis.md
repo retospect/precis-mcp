@@ -183,6 +183,72 @@ and that headless volume is within each plan's terms.
    Coordinator spawn/close of sessions.
 6. **Harness as todo executor.**
 
+### Step 2 schema (2026-10-09, Fable-reviewed; built)
+
+- **One numeric-ref kind `fleet`**, handle code `fl`, a
+  `NumericRefHandler`. No migration: the `kinds` row comes from the boot
+  upsert (`_kinds_ops.upsert_kinds`) and no index is needed (below). The
+  handler keeps `emits_card=False` (no embedding); the KindSpec sets
+  `supports_search=False`. Dreaming never sees it (`_DREAM_EYE_KINDS` is an
+  allowlist), and no revision trigger fires for it.
+- **A row is a tree per vendor, not a session.** The handler folds every
+  session of one vendor in one tree into one row (newest `last_active`
+  wins).
+  A rename or move makes a new key; the old row goes `dead` and is retired
+  after 24 h.
+- **Row types** in `meta.type`:
+  - `agent`, keyed `meta.key = "<vendor>:<host>:<project>:<tree>"` (a
+    Claude pane and a Codex thread can share a tree; every repo has a
+    `main`). Reporter-owned fields: `vendor`, `host`, `project`, `tree`,
+    `branch`, `purpose` (from `.claude/purpose`), `state`
+    (working/idle/asking/waiting/dead), `last_active` (UTC, the transcript
+    time, not a derived "quiet N min"), `ctx_pct`, `dirty`, `ahead`,
+    `behind`, `pane`, `attach`, `exceptions` (list of codes). The
+    reporter sends explicit `null` for a vanished `pane`/`attach`
+    (`meta || patch` merges top level only and cannot delete a key).
+    Coordinator-owned fields (`assigned`, `slice`, `note`) are never
+    touched by a report.
+  - `host`, keyed `"host:<host>"`: `reported_at`, `quota` (per vendor,
+    replaced whole), reporter version, `exceptions_hash` (the step-3 wake
+    compares it). No `reported_at` on agent rows; a host whose
+    `reported_at` is over 3 min old (three missed ticks) shows all its
+    agents as stale in the view.
+  - `msg` (step 4) and `round` (step 5) are added in their steps. Mail
+    will address the agent row's numeric id, which survives a key change
+    of display fields.
+- **Write path:** `put(kind='fleet', mode='report', args={'host': …,
+  'report': <fleet-report --json>})`, the only put mode (a plain create is
+  refused). One transaction per call under
+  `pg_advisory_xact_lock(hashtext('fleet:' || host))` (the `alerts.py`
+  precedent): load that host's live rows, `update_ref(meta_patch=…)` only
+  where a reporter-owned field changed, insert new keys, mark vanished
+  keys `dead`. The lock makes the upsert race-free, so there is no unique
+  index; at tens of rows the lookup is a cheap kind scan, and leaving
+  `meta` unindexed keeps updates HOT (the lesson of 0099). An idle fleet
+  writes one host row per tick.
+- **Coordinator edits:** `edit(kind='fleet', id=…, mode='replace',
+  args={'assigned': …})` on coordinator-owned fields only;
+  `edit_modes=("replace",)`, with a parity-test entry.
+- **Transport:** the Mac's caddy proxy listens on loopback only, so
+  melchior cannot push. The Mac runs the collector: its own report plus
+  `ssh reto@melchior python3 - --json < scripts/fleet-report` (the step-1
+  pattern), then one `put` per host to the loopback MCP with the existing
+  bearer token (`PRECIS_MCP_TOKEN`). It is a stdlib JSON-RPC client
+  (initialize, initialized, tools/call). The Mac being down stops
+  reporting, which the view shows as stale hosts.
+- **Read:** `get(kind='fleet')` renders the fisheye (EXCEPTIONS / AGENTS /
+  QUOTA); `get(kind='fleet', id='<key>'|'fl123')` returns one row (a key
+  resolves like an `llm` slug); `args={'project': …, 'host': …}` filters.
+- **`owner_login` deferred.** 0164 has no opt-in hook and the MCP runtime
+  has no caller identity (only anki sets the column), so "default to the
+  caller's rows" is new auth work. There is a single owner today and
+  `project` scopes. Revisit when a second login runs agents.
+- **Tests:** `test_kind_totality` (handle code), `test_mode_spec_parity`
+  (`report`, `replace`), `test_item_view`, handler tests on the dev DB
+  for diff, insert, dead marking, null clearing and the coordinator fields
+  surviving a report, and the collector against a fake MCP.
+  `scripts/inflight --all-hosts` reads the agent rows.
+
 Write-path tests on the dev DB. Fallback when prod precis is down: local
 files (`round.json`, `.claude/purpose`, `inflight`) keep working.
 
