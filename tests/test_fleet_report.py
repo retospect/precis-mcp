@@ -205,6 +205,12 @@ def test_codex_rate_limits_and_context(env):
         {
             "timestamp": stamp(60),
             "type": "session_meta",
+            # Daemon mode: session_meta holds the daemon's cwd, not the tree.
+            "payload": {"cwd": str(env.tmp_path / "home")},
+        },
+        {
+            "timestamp": stamp(55),
+            "type": "turn_context",
             "payload": {"cwd": str(env.repo.resolve())},
         },
         {
@@ -225,6 +231,52 @@ def test_codex_rate_limits_and_context(env):
     assert row["ctx_pct"] == 50.0
     assert row["rate_limits"]["secondary"]["used_percent"] == 61.0
     assert "QUOTA   codex 5h 18% · codex week 61%" in run_script(env)
+
+
+def test_codex_footer_without_rollout_and_account_quota(env):
+    # A fresh Codex pane has no rollout yet; its footer gives state and context.
+    env.panes.write_text(pane_line(env, command="codex"), encoding="utf-8")
+    env.capture.write_text(
+        "› Ask Codex to do anything\n"
+        "  proj · ~/proj · main · No changes · Context 87% left · Ready\n",
+        encoding="utf-8",
+    )
+    # An editor session in $HOME still carries the account's quota.
+    sessions = env.tmp_path / "codex" / "sessions"
+    write_jsonl(
+        sessions / "rollout-2026-10-09T00-00-00-home.jsonl",
+        [
+            {
+                "timestamp": stamp(60),
+                "type": "session_meta",
+                "payload": {"cwd": str(env.tmp_path / "home")},
+            },
+            {
+                "timestamp": stamp(40),
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "primary": {"used_percent": 50.0, "window_minutes": 10080},
+                        "secondary": None,
+                    },
+                },
+            },
+        ],
+        age_s=40,
+    )
+    rep = report(env)
+    row = next(r for r in rep["rows"] if r["vendor"] == "codex")
+    assert (row["state"], row["ctx_pct"]) == ("idle", 13.0)
+    assert "QUOTA   codex week 50%" in run_script(env)
+
+    env.capture.write_text(
+        "  proj · ~/proj · main · Context 60% left · Working (12s)\n", encoding="utf-8"
+    )
+    assert (
+        next(r for r in report(env)["rows"] if r["vendor"] == "codex")["state"]
+        == "working"
+    )
 
 
 def test_approval_pattern_marks_waiting_with_attach(env):
@@ -298,7 +350,7 @@ def test_json_shape(env):
     )
     env.panes.write_text(pane_line(env), encoding="utf-8")
     rep = report(env)
-    assert set(rep) == {"host", "generated", "rows", "exceptions"}
+    assert set(rep) == {"host", "generated", "rows", "exceptions", "quota"}
     assert rep["generated"].endswith("Z") and "." not in rep["host"]
     keys = {
         "vendor",

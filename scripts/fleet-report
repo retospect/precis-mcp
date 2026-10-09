@@ -138,11 +138,29 @@ def tmux_panes() -> list[dict]:
     return panes
 
 
-def pane_approval(pane_id: str) -> bool:
-    text = run("tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-15")
-    if not text:
-        return False
+def pane_screen(pane_id: str) -> str:
+    return run("tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-15") or ""
+
+
+def pane_approval(text: str) -> bool:
     return any(re.search(p, text, re.I) for p in APPROVAL_PATTERNS)
+
+
+def codex_footer(text: str) -> tuple[str | None, float | None]:
+    """State and context fill from the Codex TUI status line.
+
+    A fresh Codex writes no rollout until its first turn, and a rollout lags
+    a live turn; the footer (`… · Context 87% left · Ready`) is current.
+    """
+    state = ctx = None
+    m = re.search(r"Context (\d+)% left", text)
+    if m:
+        ctx = float(100 - int(m.group(1)))
+    lines = [ln for ln in text.splitlines() if "Context" in ln and "left" in ln]
+    if lines:
+        last = lines[-1].rsplit("·", 1)[-1].strip().lower()
+        state = "idle" if last.startswith("ready") else "working" if last else None
+    return state, ctx
 
 
 def git(path: str | Path, *args: str) -> str | None:
@@ -308,6 +326,11 @@ def codex_sessions(since_s: float) -> dict[str, dict]:
         except (OSError, ValueError):
             continue
         cwd = (meta.get("payload") or {}).get("cwd") if isinstance(meta, dict) else None
+        # Daemon-mode sessions record the daemon's cwd in session_meta; the
+        # worker's directory is in each turn_context, so the newest one wins.
+        for d in json_tail(p):
+            if d.get("type") == "turn_context":
+                cwd = (d.get("payload") or {}).get("cwd") or cwd
         if cwd and (cwd not in newest_by_cwd or m > newest_by_cwd[cwd][0]):
             newest_by_cwd[cwd] = (m, p)
     out = {}
@@ -421,7 +444,13 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
         mt = [x for x in (sess and sess["mtime"], pane and pane["activity"]) if x]
         latest = max(mt) if mt else None
         state = sess["state"] if sess else ("unknown" if pane else "idle")
-        if pane and vendor != "devin" and pane_approval(pane["pane_id"]):
+        ctx_pct = sess["ctx_pct"] if sess else None
+        screen = pane_screen(pane["pane_id"]) if pane else ""
+        if vendor == "codex" and screen:
+            f_state, f_ctx = codex_footer(screen)
+            state = f_state or state
+            ctx_pct = f_ctx if f_ctx is not None else ctx_pct
+        if screen and vendor != "devin" and pane_approval(screen):
             state = "waiting"
         if wt["lock_alive"] is False or (
             pane is None
@@ -447,7 +476,7 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
             "state": state,
             "quiet_min": round((t - latest) / 60, 1) if latest else None,
             "transcript_mtime": iso(sess["mtime"]) if sess else None,
-            "ctx_pct": sess["ctx_pct"] if sess else None,
+            "ctx_pct": ctx_pct,
             "ctx_tokens": sess["ctx_tokens"] if sess else None,
             "rate_limits": sess.get("rate_limits") if sess else None,
             "tmux": None,
@@ -486,11 +515,17 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
         if ("codex", key) not in seen and key in codex_by_tree:
             rows.append(make_row("codex", key, None))
 
+    # Quota is per account: take the newest rollout anywhere, even one whose
+    # cwd is not a worktree (an editor session in $HOME still reports it).
+    newest_codex = max(codex.values(), key=lambda s: s["mtime"], default=None)
     return {
         "host": host,
         "generated": iso(t),
         "rows": rows,
         "exceptions": exceptions(rows, quiet_min),
+        "quota": {"codex": newest_codex["rate_limits"]}
+        if newest_codex and newest_codex["rate_limits"]
+        else {},
     }
 
 
@@ -534,6 +569,9 @@ def render(rep: dict) -> str:
     if not rep["rows"]:
         lines.append("  none")
     quota = {}
+    for vendor, limits in (rep.get("quota") or {}).items():
+        for w in limits.values():
+            quota[(vendor, window_label(w.get("window_minutes")))] = w["used_percent"]
     for r in rep["rows"]:
         for w in (r.get("rate_limits") or {}).values():
             quota[(r["vendor"], window_label(w.get("window_minutes")))] = w[
