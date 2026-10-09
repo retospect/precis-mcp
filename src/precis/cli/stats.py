@@ -49,7 +49,7 @@ from precis.cli._common import (
 )
 from precis.format import serialize
 from precis.store import Store
-from precis.store._stub_predicate import NO_OA_MIN_PASSES
+from precis.store._stub_predicate import no_oa_bucket_sql
 
 # Pinned column order for each section. Adding a column lands in
 # one place so TOON / JSON / table all stay in sync.
@@ -250,9 +250,10 @@ def _query_stubs(store: Store) -> list[dict[str, Any]]:
 
     * ``awaiting`` — stub created, never fetched (no
       ``ref_events.source LIKE 'fetcher:%'`` row).
-    * ``no-oa`` — at least :data:`NO_OA_MIN_PASSES` passes and every
-      fetcher event was ``no_oa_version``: not pending, a candidate for
-      hand retrieval (``precis stubs --no-oa``, gr453859).
+    * ``no-oa`` — the cooled bucket (:func:`no_oa_bucket_sql`: at least
+      ``NO_OA_MIN_PASSES`` passes and every fetcher event was
+      ``no_oa_version``): not pending, a candidate for hand retrieval
+      (``precis stubs --manual``, gr453859).
     * ``retry`` — any other attempted stub still without a PDF.
 
     A stub that has a PDF (``pdf_sha256 IS NOT NULL``) is no
@@ -260,19 +261,15 @@ def _query_stubs(store: Store) -> list[dict[str, Any]]:
     """
     sql = (
         "SELECT CASE "
-        "         WHEN fs.passes IS NULL THEN 'awaiting' "
-        "         WHEN fs.passes >= %s AND fs.all_no_oa THEN 'no-oa' "
+        "         WHEN NOT EXISTS (SELECT 1 FROM ref_events e "
+        "                          WHERE e.ref_id = r.ref_id "
+        "                            AND starts_with(e.source, 'fetcher:')) "
+        "         THEN 'awaiting' "
+        f"        WHEN {no_oa_bucket_sql('r')} THEN 'no-oa' "
         "         ELSE 'retry' "
         "       END AS state, "
         "       count(*)::int AS count "
         "FROM refs r "
-        "LEFT JOIN LATERAL ( "
-        "  SELECT count(DISTINCT date_trunc('hour', ts)) AS passes, "
-        "         bool_and(event = 'no_oa_version') AS all_no_oa "
-        "  FROM ref_events "
-        "  WHERE ref_id = r.ref_id AND source LIKE 'fetcher:%%' "
-        "  HAVING count(*) > 0 "
-        ") fs ON TRUE "
         "WHERE r.kind = 'paper' "
         "  AND r.pdf_sha256 IS NULL "
         "  AND r.retired_at IS NULL "
@@ -280,7 +277,7 @@ def _query_stubs(store: Store) -> list[dict[str, Any]]:
         "ORDER BY state ASC"
     )
     with store.pool.connection() as conn:
-        cur = conn.execute(sql, (NO_OA_MIN_PASSES,))
+        cur = conn.execute(sql)
         return [{"state": r[0], "count": int(r[1])} for r in cur.fetchall()]
 
 

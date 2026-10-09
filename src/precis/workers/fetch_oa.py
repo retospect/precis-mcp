@@ -40,6 +40,21 @@ payload), ``no_oa_version``, ``fetch_failed`` (URL but download failed),
 ``identifier_missing``. ``precis stubs`` reads the latest event per stub
 for the backlog.
 
+**Stub states as the readouts see them** (``precis stats --stubs``,
+``stub_backlog_count``, the ``/drive`` stub queue): *awaiting* — no
+``fetcher:%`` event yet; *no-oa* (cooled) — at least
+``store._stub_predicate.NO_OA_MIN_PASSES`` hour-bucketed passes and every
+event ``no_oa_version`` (:func:`~precis.store._stub_predicate.
+no_oa_bucket_sql`); *retry* — anything else still without a PDF. Cooled
+is a readout bucket, not a terminal state: ``claim_stubs_to_fetch`` still
+claims such a stub on its monthly backoff (embargoes lift, authors
+self-archive), it is only kept out of the pending counts and listed as
+the manual-retrieval set (``precis stubs --manual``, the ``/drive``
+"Manual retrieval" section) so a human can buy it. An explicit acquire's
+``Store.pin_stub_for_fetch`` re-stamps the backoff bypass only once the
+previous stamp is consumed and the newest attempt is over 24 h old, so
+re-acquiring a cited stub cannot re-arm it (gr453859).
+
 **Fetch-time retraction gate** (:func:`_apply_retraction_gate`) — a cheap
 DOI-only Crossref check (``ingest.provenance.check_doi``) ahead of the
 cascade: ``retracted`` hard-skips (stamps ``refs.retraction_status``,
@@ -338,7 +353,9 @@ def claim_stubs_to_fetch(
     last fetch attempt* (an operator re-queue or an explicit-acquire
     pin — ``Store.pin_stub_for_fetch``) bypasses the window for exactly
     one retry; the attempt it triggers dates the stamp, so backoff
-    resumes unless someone stamps again.
+    resumes unless someone stamps again. The pin itself declines to
+    re-stamp while a stamp is unconsumed or the last attempt is under
+    24 h old, so repeated acquires of one cite do not chain bypasses.
 
     Ordering: **``prio`` ascending, NULLs last** — the ``stub_rank``
     pass writes ``refs.prio`` (1=hottest .. 10=coldest, ``NULL`` =

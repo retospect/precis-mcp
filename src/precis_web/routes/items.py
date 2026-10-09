@@ -306,6 +306,7 @@ def _recent_rows(
     has_chunks: bool | None = None,
     has_schedule: bool | None = None,
     has_external_id: bool | None = None,
+    no_oa: bool | None = None,
     unfiled_only: bool = False,
     ref_ids: list[int] | None = None,
     deleted: bool = False,
@@ -324,7 +325,9 @@ def _recent_rows(
     filter (``has_pdf=False`` → only stubs, the "papers to get" queue), the
     fetchable-id filter (``has_external_id=True`` → only refs with a
     DOI/arXiv/S2 — paired with ``has_pdf=False`` by the "Stubs (to get)" queue
-    so id-less, non-fetchable papers don't crowd it), the
+    so id-less, non-fetchable papers don't crowd it), the cooled no-OA
+    filter (``no_oa=False`` — the same queue drops stubs every OA source has
+    already said no to; they list in its manual-retrieval section instead), the
     ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
     state facet), the folder facet (``folder_id`` — one folder's direct
     children; only artifact kinds carry a ``parent_id``, so this is a no-op
@@ -345,6 +348,7 @@ def _recent_rows(
         has_chunks=has_chunks,
         has_schedule=has_schedule,
         has_external_id=has_external_id,
+        no_oa=no_oa,
         parent_id=folder_id,
         unfiled_only=unfiled_only,
         ref_ids=ref_ids,

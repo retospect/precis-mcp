@@ -221,6 +221,79 @@ def test_stub_backlog_no_oa_lists_only_exhausted_stubs(store: Store) -> None:
     assert [r["ref_id"] for r in rows] == [exhausted]
     assert rows[0]["identifier"] == "10.1/paywalled"
     assert len(store.stub_backlog()) == 4
+    assert store.stub_backlog_count(no_oa=True) == 1
+    assert store.stub_backlog_count() == 4
+
+
+def test_stub_backlog_awaiting_excludes_the_cooled_bucket(store: Store) -> None:
+    # gr453859 (b): a cooled stub is not "awaiting" — the pending view and
+    # its count leave it out — while the plain backlog still lists it (it
+    # stays claimable on its monthly backoff; no terminal state).
+    cooled = _stub(store, cite_key="cooled1970", doi="10.1/cooled")
+    _passes(store, cooled, "no_oa_version", [100, 50, 30])
+    two_passes = _stub(store, cite_key="two2020", doi="10.1/two")
+    _passes(store, two_passes, "no_oa_version", [50, 30])
+    never = _stub(store, cite_key="never2020", doi="10.1/never")
+
+    awaiting = {r["ref_id"] for r in store.stub_backlog(awaiting=True)}
+    assert awaiting == {two_passes, never}
+    assert store.stub_backlog_count(awaiting=True) == 2
+    assert {r["ref_id"] for r in store.stub_backlog()} == {cooled, two_passes, never}
+    assert store.stub_backlog_count() == 3
+
+
+def test_manual_retrieval_list_is_the_cooled_bucket_newest_first(store: Store) -> None:
+    # gr453859 (c): the buy-list — DOI, title, year, cites — newest request
+    # first, restricted to the cooled no-OA bucket.
+    older = _stub(store, cite_key="older1999", doi="10.1/older")
+    newer = _stub(store, cite_key="newer2005", doi="10.1/newer")
+    _passes(store, older, "no_oa_version", [100, 50, 3])
+    _passes(store, newer, "no_oa_version", [80, 40, 2])
+    pending = _stub(store, cite_key="pending2020", doi="10.1/pending")
+    _passes(store, pending, "no_oa_version", [50, 3])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET title = 'Older paper', year = 1999, "
+            "meta = meta || '{\"s2_citation_count\": 1200}'::jsonb, "
+            "created_at = now() - interval '10 days' WHERE ref_id = %s",
+            (older,),
+        )
+        conn.execute(
+            "UPDATE refs SET title = 'Newer paper', year = 2005, "
+            'meta = meta || \'{"openalex": {"cited_by_count": 7}}\'::jsonb, '
+            "created_at = now() - interval '1 day' WHERE ref_id = %s",
+            (newer,),
+        )
+        conn.commit()
+
+    rows = store.manual_retrieval_list()
+    assert [r["ref_id"] for r in rows] == [newer, older]
+    assert rows[0]["doi"] == "10.1/newer"
+    assert (rows[0]["title"], rows[0]["year"], rows[0]["cites"]) == (
+        "Newer paper",
+        2005,
+        7,
+    )
+    assert (rows[1]["title"], rows[1]["year"], rows[1]["cites"]) == (
+        "Older paper",
+        1999,
+        1200,
+    )
+    assert rows[1]["passes"] == 3
+    assert rows[0]["requested"]
+    assert store.manual_retrieval_list(limit=1)[0]["ref_id"] == newer
+    assert store.manual_retrieval_list(limit=1, offset=1)[0]["ref_id"] == older
+
+
+def test_manual_retrieval_list_drops_promoted_and_retracted(store: Store) -> None:
+    held = _stub(store, cite_key="held1980", doi="10.1/held")
+    _passes(store, held, "no_oa_version", [100, 50, 3])
+    _mark_held(store, held)
+    retracted = _stub(store, cite_key="retracted1980", doi="10.1/retracted")
+    _passes(store, retracted, "no_oa_version", [100, 50, 3])
+    store.set_retraction_status(retracted, status="retracted")
+    assert store.manual_retrieval_list() == []
+    assert store.stub_backlog_count(no_oa=True) == 0
 
 
 def test_stub_backlog_limit(store: Store) -> None:

@@ -48,19 +48,46 @@ STUB_ID_KINDS: frozenset[str] = frozenset(_STUB_ID_KIND_ORDER)
 #: queue floats DOI/arXiv rows ahead of it (``downloadable_first``).
 MANUAL_DOWNLOAD_ID_KINDS: frozenset[str] = frozenset(("doi", "arxiv"))
 
-#: A stub is in the **no-OA** bucket once this many distinct fetch passes
-#: have run and every ``fetcher:%`` event it ever got was
+#: A stub is in the **no-OA** (cooled) bucket once this many distinct
+#: fetch passes have run and every ``fetcher:%`` event it ever got was
 #: ``no_oa_version`` — no download failure, no API error, nothing that
 #: says a free copy might exist. Not terminal (embargoes lift and the
 #: backoff keeps a monthly retry), but it stops counting as "pending" and
-#: is the list a human buys or retrieves by hand (gr453859).
+#: is the list a human buys or retrieves by hand (gr453859). SQL test:
+#: :func:`no_oa_bucket_sql`.
 NO_OA_MIN_PASSES: int = 3
 
-#: How long an explicit acquire's ``meta.oa_requeued`` stamp stays
-#: authoritative. A re-acquire inside this window keeps the existing stamp,
-#: so a draft that re-acquires its cites on every save cannot re-arm the
-#: backoff bypass each time (gr453859).
-ACQUIRE_REARM_DAYS: int = 7
+#: An explicit acquire re-stamps ``meta.oa_requeued`` (the backoff bypass)
+#: only when the stub's newest ``fetcher:%`` event is at least this old —
+#: the fetcher's base retry window. A re-acquire inside it, or one whose
+#: stamp the fetcher has not yet consumed, keeps the existing stamp, so a
+#: draft that re-acquires its cites on every save cannot re-arm the backoff
+#: (gr453859).
+ACQUIRE_RESTAMP_MIN_HOURS: int = 24
+
+
+def no_oa_bucket_sql(alias: str = "r") -> str:
+    """``EXISTS (...)`` fragment: is ``<alias>`` in the cooled no-OA bucket?
+
+    True when the ref has at least :data:`NO_OA_MIN_PASSES` hour-bucketed
+    fetch passes (one cascade writes one event per leg within the same
+    hour, so distinct hours recover the pass count — the convention
+    ``claim_stubs_to_fetch``'s backoff and ``stub_backlog``'s ``attempts``
+    share) and every one of those events was ``no_oa_version``. Shared by
+    :meth:`Store.stub_backlog`, :meth:`Store.stub_backlog_count`,
+    :meth:`Store.manual_retrieval_list` and the ``/drive`` stub queue
+    (``_recent_refs_where``) so "cooled" means one thing everywhere.
+    Negate with ``NOT`` to exclude the bucket. ``starts_with`` rather than
+    ``LIKE 'fetcher:%'`` so the fragment is safe in both parameterised
+    (``%`` must be doubled) and bare queries.
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM ref_events noa "
+        f"WHERE noa.ref_id = {alias}.ref_id "
+        f"AND starts_with(noa.source, 'fetcher:') "
+        f"HAVING count(DISTINCT date_trunc('hour', noa.ts)) >= {NO_OA_MIN_PASSES} "
+        f"AND bool_and(noa.event = 'no_oa_version'))"
+    )
 
 
 def _accepted_id_kinds(id_kinds: Iterable[str], *, caller: str) -> list[str]:

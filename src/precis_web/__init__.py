@@ -138,18 +138,19 @@ placeholder workflows.
 
 ``routes/drive.py::index`` searches cross-kind chunks with ``q=``, kind/tag
 facets, ``sort=relevance|recency|oldest|untried`` and
-``state=stub|deleted``. Legacy bare URLs list unfiled refs by ``updated_at``;
-``folder=*`` ("Anywhere") removes that filter for a whole-kind pivot. Explicit
-``k=`` beats ``items_kinds``, but only ``submitted=1`` writes the cookie.
-``state=stub`` selects fetchable DOI/arXiv/S2 stubs, defaults to
-``sort=untried`` via ``manual:open`` ``ref_events``, and ``POST
+``state=stub|deleted``. Bare URLs list unfiled refs by ``updated_at``;
+``folder=*`` ("Anywhere") lifts that filter. Explicit
+``k=`` beats ``items_kinds``; only ``submitted=1`` writes the cookie.
+``state=stub`` selects fetchable DOI/arXiv/S2 stubs less the cooled no-OA
+bucket, which page 1 lists read-only (``Store.manual_retrieval_list``);
+defaults to
+``sort=untried`` via ``manual:open`` ``ref_events``; ``POST
 /downloads/mark-tried`` sinks opened rows. "Fetch next 25"
 (``POST /drive/requeue-stubs``) stamps ``meta.oa_requeued`` for ``fetch_oa``;
 ``cited_by=<draft>`` scopes to papers-to-fetch via
-``handlers/_citations_view.draft_fetch_ref_ids``. Replaced bespoke lists
+``handlers/_citations_view.draft_fetch_ref_ids``. Bespoke lists
 (``/items``, ``/papers``, ``/drafts``, ``/papers-needed``,
-``/refs/{oracle,patent}``, ``/cfp``) 307 to Drive presets; per-kind detail
-readers stay. ``/`` → ``/drive``.
+``/refs/{oracle,patent}``, ``/cfp``) 307 to Drive presets. ``/`` → ``/drive``.
 
 **System (`/status?tab=health|services|models|budget|now`)** —
 ``routes/status.py::index`` dispatches on ``tab=``: health strip, the

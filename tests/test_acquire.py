@@ -14,7 +14,7 @@ from precis.errors import BadInput
 from precis.handlers import paper as paper_mod
 from precis.handlers.paper import PaperHandler, _parse_acquire_identifier
 from precis.store import Store
-from precis.store._stub_predicate import ACQUIRE_REARM_DAYS
+from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from tests.conftest import record_handle
 
 
@@ -170,14 +170,24 @@ def _stamp_is_fresh(store: Store, rid: int) -> bool:
     return bool(row[0])
 
 
-def test_reacquire_repins_but_keeps_recent_stamp(
-    handler: PaperHandler, store: Store
-) -> None:
+def _fetcher_event(store: Store, rid: int, *, age: str, event: str) -> None:
+    """One ``fetcher:%`` leg event ``age`` ago (what a cascade pass writes)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+            "VALUES (%s, 'fetcher:unpaywall', %s, '{}', now() - %s::interval)",
+            (rid, event, age),
+        )
+        conn.commit()
+
+
+def test_reacquire_keeps_unconsumed_stamp(handler: PaperHandler, store: Store) -> None:
     # gr453859: a draft that re-acquires its cites on every save must not
-    # re-arm the backoff bypass each time. Inside ACQUIRE_REARM_DAYS the
-    # re-acquire still re-pins prio, but leaves the existing stamp alone.
+    # re-arm the backoff bypass each time. A stamp the fetcher has not yet
+    # consumed (no fetcher event after it) is still armed, however old, so
+    # the re-acquire re-pins prio but leaves the stamp alone.
     rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2").body)
-    _age_pin(store, rid, stamp_age="1 day")
+    _age_pin(store, rid, stamp_age="9 days")
     second = handler.acquire(identifier="doi:10.1/pin2")
     assert _ref_id(second.body) == rid
     assert "pinned to front of fetch queue" in second.body
@@ -187,18 +197,49 @@ def test_reacquire_repins_but_keeps_recent_stamp(
     assert _stamp_is_fresh(store, rid) is False
 
 
-def test_reacquire_restamps_after_rearm_window(
+def test_reacquire_skips_stamp_after_a_fresh_attempt(
     handler: PaperHandler, store: Store
 ) -> None:
-    # A stamp older than ACQUIRE_REARM_DAYS is refreshed, so an explicit
-    # re-acquire a week later still lifts a backed-off stub out of its
-    # retry window once.
+    # The stamp was consumed (a fetcher event postdates it) but that
+    # attempt is under ACQUIRE_RESTAMP_MIN_HOURS old: re-stamping would
+    # only re-run the cascade that just said no, so the stamp stays.
     rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2b").body)
-    _age_pin(store, rid, stamp_age=f"{ACQUIRE_REARM_DAYS + 1} days")
+    _age_pin(store, rid, stamp_age="3 days")
+    _fetcher_event(store, rid, age="2 hours", event="no_oa_version")
     handler.acquire(identifier="doi:10.1/pin2b")
     prio, prio_by, _ = _fetch_pin(store, rid)
     assert (prio, prio_by) == (1, "acquire")
+    assert _stamp_is_fresh(store, rid) is False
+
+
+def test_reacquire_restamps_a_consumed_stamp_after_the_window(
+    handler: PaperHandler, store: Store
+) -> None:
+    # Consumed stamp, newest attempt older than the window: this is the
+    # one case an explicit re-acquire still lifts a backed-off stub out
+    # of its retry window for one more pass.
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2c").body)
+    _age_pin(store, rid, stamp_age="3 days")
+    _fetcher_event(
+        store, rid, age=f"{ACQUIRE_RESTAMP_MIN_HOURS + 1} hours", event="no_oa_version"
+    )
+    handler.acquire(identifier="doi:10.1/pin2c")
+    prio, prio_by, _ = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (1, "acquire")
     assert _stamp_is_fresh(store, rid) is True
+
+
+def test_pin_without_stamp_skips_when_just_tried(store: Store) -> None:
+    # No stamp at all but a fetcher event minutes old (a chase-minted stub
+    # the worker already tried): pin prio, write no stamp.
+    rid, _ = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/pin2d")], title="t", set_by="chase"
+    )
+    _fetcher_event(store, rid, age="10 minutes", event="no_oa_version")
+    assert store.pin_stub_for_fetch(rid) is True
+    prio, prio_by, requeued_at = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (1, "acquire")
+    assert requeued_at is None
 
 
 def test_pin_stub_for_fetch_without_conn(handler: PaperHandler, store: Store) -> None:

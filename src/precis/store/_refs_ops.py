@@ -45,10 +45,10 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._stub_predicate import (
-    ACQUIRE_REARM_DAYS,
+    ACQUIRE_RESTAMP_MIN_HOURS,
     MANUAL_DOWNLOAD_ID_KINDS,
-    NO_OA_MIN_PASSES,
     fetchable_id_exists_sql,
+    no_oa_bucket_sql,
     stub_predicate_sql,
 )
 from precis.store._tag_filter import build_tag_filter
@@ -780,10 +780,14 @@ class RefsMixin:
         stamps ``meta.oa_requeued.at=now()`` — ``claim_stubs_to_fetch``'s
         backoff bypass treats a stamp newer than the last attempt as
         "retry immediately once", so a stub deep in backoff still fetches
-        next pass. The stamp is written at most once per
-        :data:`ACQUIRE_REARM_DAYS`: a re-acquire inside that window keeps
-        the existing stamp (and still re-pins prio), so repeated acquires
-        of the same cite cannot defeat the backoff (gr453859).
+        next pass. The stamp is skipped (prio still re-pinned) when the
+        stub already holds an *unconsumed* stamp — no ``fetcher:%`` event
+        after it, so the bypass is still armed — or when its newest
+        fetcher event is under :data:`ACQUIRE_RESTAMP_MIN_HOURS` old (it
+        was just tried; stamping again would only re-run the same
+        cascade). A fresh mint has neither and always stamps. Together
+        this stops a draft that re-acquires its cites on every save from
+        re-arming a backed-off stub each time (gr453859).
 
         Auto-discovered stubs (chase/watch/orcid/draft-import/
         finding-acquire) deliberately skip this, flowing through
@@ -794,12 +798,14 @@ class RefsMixin:
         def _do(c: Connection) -> bool:
             cur = c.execute(
                 """
-                UPDATE refs
+                UPDATE refs r
                    SET prio = 1,
-                       meta = meta || jsonb_build_object('prio_by', 'acquire')
+                       meta = r.meta || jsonb_build_object('prio_by', 'acquire')
                            || CASE
-                                WHEN (meta #>> '{oa_requeued,at}')::timestamptz
-                                     > now() - make_interval(days => %s)
+                                WHEN fe.last_ts > now() - make_interval(hours => %s)
+                                THEN '{}'::jsonb
+                                WHEN (r.meta #>> '{oa_requeued,at}')::timestamptz
+                                     > COALESCE(fe.last_ts, '-infinity'::timestamptz)
                                 THEN '{}'::jsonb
                                 ELSE jsonb_build_object(
                                     'oa_requeued',
@@ -807,10 +813,12 @@ class RefsMixin:
                                 )
                               END,
                        updated_at = now()
-                 WHERE ref_id = %s AND kind = 'paper'
-                   AND pdf_sha256 IS NULL AND retired_at IS NULL
+                  FROM (SELECT max(ts) AS last_ts FROM ref_events
+                         WHERE ref_id = %s AND starts_with(source, 'fetcher:')) fe
+                 WHERE r.ref_id = %s AND r.kind = 'paper'
+                   AND r.pdf_sha256 IS NULL AND r.retired_at IS NULL
                 """,
-                (ACQUIRE_REARM_DAYS, ref_id),
+                (ACQUIRE_RESTAMP_MIN_HOURS, ref_id, ref_id),
             )
             return cur.rowcount == 1
 
@@ -869,10 +877,12 @@ class RefsMixin:
         'chase-queue')`` (MCP) off one query
         (``store/_stub_predicate.py``). ``awaiting=True`` restricts to
         rows the fetcher would try next pass: never attempted, or
-        attempted >24h ago and not yet ``fetch_ok``. ``no_oa=True``
-        restricts to the manual-retrieval list: at least
-        :data:`NO_OA_MIN_PASSES` passes, every fetcher event
-        ``no_oa_version`` (gr453859).
+        attempted >24h ago and not yet ``fetch_ok`` — and not in the
+        cooled no-OA bucket, which is on a monthly cadence rather than
+        pending. ``no_oa=True`` restricts to that bucket
+        (:func:`no_oa_bucket_sql`: at least ``NO_OA_MIN_PASSES`` passes,
+        every fetcher event ``no_oa_version``); the buy-list shape of it
+        is :meth:`manual_retrieval_list` (gr453859).
         """
         tiebreak_sql = {
             "oldest-request": "s.created_at ASC, s.ref_id ASC",
@@ -946,8 +956,7 @@ class RefsMixin:
                 -- leg-events — the same bucketing claim_stubs_to_fetch's
                 -- backoff uses, so "N passes" means one thing everywhere.
                 SELECT ref_id,
-                       count(DISTINCT date_trunc('hour', ts)) AS attempts,
-                       bool_and(event = 'no_oa_version') AS all_no_oa
+                       count(DISTINCT date_trunc('hour', ts)) AS attempts
                   FROM ref_events
                  WHERE source LIKE 'fetcher:%%'
                  GROUP BY ref_id
@@ -991,9 +1000,9 @@ class RefsMixin:
                 CASE WHEN %s::bool THEN
                     (le.ref_id IS NULL
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
+                    AND NOT {no_oa_bucket_sql("s")}
                 ELSE TRUE END
-               AND (NOT %s::bool
-                    OR (COALESCE(fs.attempts, 0) >= %s AND fs.all_no_oa))
+               AND (NOT %s::bool OR {no_oa_bucket_sql("s")})
              -- Deprioritized stubs (FALSE < TRUE, so ASC) last, then
              -- the requested sort within each bucket.
              ORDER BY (dp.ref_id IS NOT NULL) ASC, {order_sql}
@@ -1001,9 +1010,7 @@ class RefsMixin:
         """
         out: list[dict[str, Any]] = []
         with self.pool.connection() as conn:
-            rows = conn.execute(
-                sql, (awaiting, no_oa, NO_OA_MIN_PASSES, limit, offset)
-            ).fetchall()
+            rows = conn.execute(sql, (awaiting, no_oa, limit, offset)).fetchall()
         for row in rows:
             out.append(
                 {
@@ -1024,13 +1031,15 @@ class RefsMixin:
             )
         return out
 
-    def stub_backlog_count(self, *, awaiting: bool = False) -> int:
+    def stub_backlog_count(self, *, awaiting: bool = False, no_oa: bool = False) -> int:
         """Total stub count under the same filter as :meth:`stub_backlog`.
 
         Lets the pager show "page N of M" and a grand total instead of a
         bare next/prev probe. Shares the stub predicate with
-        :meth:`stub_backlog` via :func:`stub_predicate_sql`, so the two
-        can't drift out of sync.
+        :meth:`stub_backlog` via :func:`stub_predicate_sql` and the cooled
+        bucket via :func:`no_oa_bucket_sql`, so the two can't drift out
+        of sync: ``awaiting=True`` excludes the cooled no-OA bucket,
+        ``no_oa=True`` counts only it.
         """
         sql = f"""
             WITH stubs AS (
@@ -1051,11 +1060,69 @@ class RefsMixin:
                 CASE WHEN %s::bool THEN
                     (le.ref_id IS NULL
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
+                    AND NOT {no_oa_bucket_sql("s")}
                 ELSE TRUE END
+               AND (NOT %s::bool OR {no_oa_bucket_sql("s")})
         """
         with self.pool.connection() as conn:
-            row = conn.execute(sql, (awaiting,)).fetchone()
+            row = conn.execute(sql, (awaiting, no_oa)).fetchone()
         return int(row[0]) if row else 0
+
+    def manual_retrieval_list(
+        self, *, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """The cooled no-OA bucket as a buy-list a human can act on.
+
+        One dict per stub in :func:`no_oa_bucket_sql`'s bucket, newest
+        request first (``created_at DESC``): ``ref_id``, ``cite_key``,
+        ``doi`` (the DOI; an arXiv/S2 stub falls back to its
+        ``arxiv:``/``s2:`` identifier so the row is never blank),
+        ``title``, ``year``, ``cites`` (``meta.s2_citation_count`` from
+        the S2 enrichment, else OpenAlex's ``cited_by_count``, else
+        ``None``), ``requested`` (ISO ``created_at``) and ``passes``.
+        Backs ``precis stubs --manual`` and the ``/drive`` manual-retrieval
+        section; the bucket's size is ``stub_backlog_count(no_oa=True)``
+        (gr453859).
+        """
+        sql = f"""
+            SELECT r.ref_id,
+                   (SELECT min(id_value) FROM ref_identifiers
+                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+                   COALESCE(
+                     (SELECT min(id_value) FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 'doi'),
+                     (SELECT 'arxiv:' || min(id_value) FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),
+                     (SELECT 's2:' || min(id_value) FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 's2')
+                   ) AS doi,
+                   r.title, r.year,
+                   COALESCE((r.meta->>'s2_citation_count')::int,
+                            (r.meta->'openalex'->>'cited_by_count')::int) AS cites,
+                   r.created_at,
+                   (SELECT count(DISTINCT date_trunc('hour', ts)) FROM ref_events
+                     WHERE ref_id = r.ref_id AND starts_with(source, 'fetcher:')) AS passes
+              FROM refs r
+             WHERE {stub_predicate_sql("r")}
+               AND {no_oa_bucket_sql("r")}
+             ORDER BY r.created_at DESC, r.ref_id DESC
+             LIMIT %s OFFSET %s
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (limit, offset)).fetchall()
+        return [
+            {
+                "ref_id": int(row[0]),
+                "cite_key": row[1] or "",
+                "doi": row[2] or "",
+                "title": row[3] or "",
+                "year": int(row[4]) if row[4] is not None else None,
+                "cites": int(row[5]) if row[5] is not None else None,
+                "requested": row[6].isoformat() if row[6] is not None else "",
+                "passes": int(row[7]),
+            }
+            for row in rows
+        ]
 
     def requeue_stubs_for_fetch(
         self,
@@ -2422,6 +2489,7 @@ class RefsMixin:
         has_chunks: bool | None,
         has_schedule: bool | None = None,
         has_external_id: bool | None = None,
+        no_oa: bool | None = None,
         parent_id: int | None,
         unfiled_only: bool = False,
         ref_ids: list[int] | None,
@@ -2437,7 +2505,11 @@ class RefsMixin:
         doi/arxiv/s2): ``True`` keeps only refs carrying one, matching
         :meth:`stub_backlog`'s stub definition (a PDF-less paper with no
         DOI/arXiv/S2 isn't fetchable, so it shouldn't crowd the download
-        queue).
+        queue). ``no_oa`` filters on the cooled no-OA bucket
+        (:func:`no_oa_bucket_sql`): ``False`` drops it — the stub queue
+        passes this so its count reads as "pending", not "pending plus
+        everything every OA source already said no to" (gr453859);
+        ``True`` keeps only it.
 
         ``has_schedule`` filters on ``meta ? 'schedule'`` (replaces the
         old ``level:recurring`` tag). ``unfiled_only`` keeps refs with no
@@ -2471,6 +2543,9 @@ class RefsMixin:
             # definition. gr189161.
             exists = fetchable_id_exists_sql("r")
             clauses.append(exists if has_external_id else f"NOT {exists}")
+        if no_oa is not None:
+            cooled = no_oa_bucket_sql("r")
+            clauses.append(cooled if no_oa else f"NOT {cooled}")
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
             params.append(parent_id)
@@ -2494,6 +2569,7 @@ class RefsMixin:
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
         has_external_id: bool | None = None,
+        no_oa: bool | None = None,
         parent_id: int | None = None,
         unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
@@ -2517,7 +2593,8 @@ class RefsMixin:
         with a PDF. ``has_external_id=True`` further keeps refs with a
         fetchable id (DOI/arXiv/S2) — paired with ``has_pdf=False`` for
         the "Stubs (to get)" queue, matching :meth:`stub_backlog`'s
-        definition. ``has_chunks`` filters on ≥1 body chunk (chunked
+        definition; ``no_oa=False`` further drops the cooled no-OA bucket
+        from that queue. ``has_chunks`` filters on ≥1 body chunk (chunked
         vs unchunked facet). ``parent_id`` narrows to one folder's
         *direct* children; ``unfiled_only`` keeps refs with no folder
         (default top-level view, mutually exclusive with ``parent_id``).
@@ -2549,6 +2626,7 @@ class RefsMixin:
             has_chunks=has_chunks,
             has_schedule=has_schedule,
             has_external_id=has_external_id,
+            no_oa=no_oa,
             parent_id=parent_id,
             unfiled_only=unfiled_only,
             ref_ids=ref_ids,
@@ -2608,6 +2686,7 @@ class RefsMixin:
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
         has_external_id: bool | None = None,
+        no_oa: bool | None = None,
         parent_id: int | None = None,
         unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
@@ -2626,6 +2705,7 @@ class RefsMixin:
             has_chunks=has_chunks,
             has_schedule=has_schedule,
             has_external_id=has_external_id,
+            no_oa=no_oa,
             parent_id=parent_id,
             unfiled_only=unfiled_only,
             ref_ids=ref_ids,

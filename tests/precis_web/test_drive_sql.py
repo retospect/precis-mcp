@@ -227,6 +227,51 @@ def test_recent_refs_has_external_id_filter(store):
     ) == len(listed)
 
 
+def test_recent_refs_no_oa_false_drops_the_cooled_bucket(store):
+    """``no_oa=False`` (what the "Stubs (to get)" queue passes) drops a stub
+    that has been through NO_OA_MIN_PASSES hour-bucketed passes with every
+    fetcher event ``no_oa_version``; a stub with one ``fetch_failed`` stays.
+    ``no_oa=True`` is the complement, and the count tracks the list (gr453859)."""
+    from precis.store._stub_predicate import NO_OA_MIN_PASSES
+
+    cooled, _ = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/cooled")], title="Paywalled", set_by="system"
+    )
+    failed, _ = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/failed")], title="Blipped", set_by="system"
+    )
+    with store.pool.connection() as conn:
+        for rid in (cooled, failed):
+            for h in range(NO_OA_MIN_PASSES):
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                    "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}', "
+                    "        now() - make_interval(hours => %s))",
+                    (rid, 10 * (h + 1)),
+                )
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:arxiv', 'fetch_failed', '{}')",
+            (failed,),
+        )
+
+    queue = {
+        r.id
+        for r in store.recent_refs(
+            ["paper"], has_pdf=False, has_external_id=True, no_oa=False
+        )
+    }
+    assert failed in queue
+    assert cooled not in queue
+    assert store.count_recent_refs(
+        ["paper"], has_pdf=False, has_external_id=True, no_oa=False
+    ) == len(queue)
+
+    bucket = {r.id for r in store.recent_refs(["paper"], has_pdf=False, no_oa=True)}
+    assert bucket == {cooled}
+    assert store.count_recent_refs(["paper"], has_pdf=False, no_oa=True) == 1
+
+
 def test_recent_refs_downloadable_first_ranks_doi_arxiv_ahead_of_s2(store):
     """``downloadable_first=True`` (the "Stubs (to get)" queue) floats rows
     with a hand-downloadable id (DOI/arXiv → a LibKey/arXiv PDF link) ahead of

@@ -620,6 +620,39 @@
           {% else %}Nothing here yet — ingest a paper, place something in a folder, or run a search above.{% endif %}
         </p>
       {% endif %}
+      {# Manual retrieval — the cooled no-OA bucket (every OA source said no
+         across NO_OA_MIN_PASSES passes), kept OUT of the queue and its count
+         above and listed here read-only as a buy-list: DOI, title, year,
+         cites, newest request first. Same rows as `precis stubs --manual`.
+         Only on the stub queue's first page (routes/drive.py). gr453859 #}
+      {% if state == 'stub' and manual_total %}
+      <section class="mt-8" id="manual-retrieval">
+        <h2 class="text-sm font-semibold text-slate-600">Manual retrieval — no OA copy anywhere</h2>
+        <p class="text-xs text-slate-500 mb-2">
+          {{ "{:,}".format(manual_total) }} stub{{ '' if manual_total == 1 else 's' }} tried in {{ manual_min_passes }}+ fetch passes with every source reporting no open-access version — not counted above; buy or retrieve by hand. Showing {{ manual_rows | length }}, newest request first; <code>precis stubs --manual</code> has the full list.
+        </p>
+        <table class="w-full text-xs">
+          <thead class="text-left text-slate-500">
+            <tr><th class="py-1 pr-3">DOI</th><th class="py-1 pr-3">Title</th><th class="py-1 pr-3">Year</th><th class="py-1 pr-3 text-right">Cites</th><th class="py-1">Requested</th></tr>
+          </thead>
+          <tbody>
+            {% for m in manual_rows %}
+            <tr class="border-t border-slate-100 align-top">
+              <td class="py-1 pr-3 font-mono whitespace-nowrap">
+                {% if m.doi and not m.doi.startswith('arxiv:') and not m.doi.startswith('s2:') %}
+                <a href="https://doi.org/{{ m.doi }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">{{ m.doi }}</a>
+                {% else %}{{ m.doi }}{% endif %}
+              </td>
+              <td class="py-1 pr-3"><a href="/papers/{{ m.ref_id }}" class="hover:underline">{{ m.title or m.cite_key }}</a></td>
+              <td class="py-1 pr-3">{{ m.year if m.year is not none else '' }}</td>
+              <td class="py-1 pr-3 text-right">{{ m.cites if m.cites is not none else '' }}</td>
+              <td class="py-1 whitespace-nowrap">{{ m.requested[:10] }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      {% endif %}
     {% endif %}
   </section>
 </div>

@@ -675,6 +675,39 @@ def test_drive_stub_queue_requires_fetchable_id(runtime, client) -> None:
     assert runtime.store.recent_has_external_id is True
     # …and ranks hand-downloadable (DOI/arXiv) rows ahead of S2-only ones.
     assert runtime.store.recent_downloadable_first is True
+    # …and drops the cooled no-OA bucket from both the page and its count
+    # (gr453859), so "N stubs" reads as what is still pending.
+    assert runtime.store.recent_no_oa is False
+    assert runtime.store.count_no_oa is False
+
+
+def test_drive_stub_queue_renders_manual_retrieval_section(runtime, client) -> None:
+    """The stub queue carries a read-only manual-retrieval section — the
+    cooled no-OA bucket as DOI / title / year / cites with the bucket's
+    size — the same rows ``precis stubs --manual`` prints (gr453859)."""
+    resp = client.get("/drive?state=stub")
+    assert resp.status_code == 200
+    assert 'id="manual-retrieval"' in resp.text
+    assert "1 stub tried in 3+ fetch passes" in resp.text
+    assert 'href="https://doi.org/10.1080/00268977000101561"' in resp.text
+    assert "The calculation of small molecular interactions" in resp.text
+    assert '<td class="py-1 pr-3">1970</td>' in resp.text
+    assert "25000" in resp.text
+    assert "2026-09-20" in resp.text
+    assert "precis stubs --manual" in resp.text
+
+
+def test_drive_manual_retrieval_section_only_on_stub_queue_first_page(
+    runtime, client
+) -> None:
+    for url in ("/drive", "/drive?paper_chunks=without", "/drive?state=stub&page=2"):
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert 'id="manual-retrieval"' not in resp.text, url
+    runtime.store.manual_rows = []
+    resp = client.get("/drive?state=stub")
+    assert resp.status_code == 200
+    assert 'id="manual-retrieval"' not in resp.text
 
 
 def test_drive_non_stub_views_do_not_require_fetchable_id(runtime, client) -> None:

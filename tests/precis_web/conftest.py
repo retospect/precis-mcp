@@ -1058,6 +1058,7 @@ class FakeStore(_FakeStoreBase):
         has_chunks=None,
         has_schedule=None,
         has_external_id=None,
+        no_oa=None,
         parent_id=None,
         unfiled_only=False,
         ref_ids=None,
@@ -1090,6 +1091,7 @@ class FakeStore(_FakeStoreBase):
         self.recent_has_chunks = has_chunks
         self.recent_has_schedule = has_schedule
         self.recent_has_external_id = has_external_id
+        self.recent_no_oa = no_oa
         self.recent_parent_id = parent_id
         self.recent_unfiled_only = unfiled_only
         self.recent_ref_ids = ref_ids
@@ -1134,6 +1136,7 @@ class FakeStore(_FakeStoreBase):
         has_chunks=None,
         has_schedule=None,
         has_external_id=None,
+        no_oa=None,
         parent_id=None,
         unfiled_only=False,
         ref_ids=None,
@@ -1141,6 +1144,7 @@ class FakeStore(_FakeStoreBase):
     ):
         """Exact count for the /drive browse "of N" header — mirrors
         ``recent_refs``'s filtered set (see ``_recent_src``)."""
+        self.count_no_oa = no_oa
         return len(self._recent_src(kinds, deleted=deleted, ref_ids=ref_ids))
 
     def list_folders(self):
@@ -1216,10 +1220,11 @@ class FakeStore(_FakeStoreBase):
         awaiting: bool = False,
         id_kinds: tuple = ("doi", "arxiv", "s2"),
         sort: str = "oldest-request",
+        no_oa: bool = False,
     ):
         # Two canned stubs: one never-attempted (always shown),
         # one attempted >24h ago with a failure (shown in both views).
-        # ``id_kinds``/``sort`` accepted for signature parity with the
+        # ``id_kinds``/``sort``/``no_oa`` accepted for signature parity with the
         # real store — the fake's canned two rows aren't re-filtered or
         # re-ordered on them (no route test exercises that combination
         # against this fake; the real predicate/order is covered by
@@ -1254,9 +1259,32 @@ class FakeStore(_FakeStoreBase):
         # would be excluded; both canned rows are awaiting here.
         return all_rows[offset : offset + limit]
 
-    def stub_backlog_count(self, *, awaiting: bool = False) -> int:
-        # Mirrors the two canned rows above (both awaiting under the fake).
-        return 2
+    def stub_backlog_count(self, *, awaiting: bool = False, no_oa: bool = False) -> int:
+        # Mirrors the two canned rows above (both awaiting under the fake);
+        # ``no_oa=True`` sizes the canned manual-retrieval bucket below.
+        return len(self.manual_retrieval_list()) if no_oa else 2
+
+    def manual_retrieval_list(self, *, limit: int = 50, offset: int = 0):
+        # One canned cooled no-OA stub for the /drive stub queue's
+        # manual-retrieval section (gr453859). Tests that want the section
+        # absent set ``self.manual_rows = []``.
+        rows = getattr(
+            self,
+            "manual_rows",
+            [
+                {
+                    "ref_id": 92,
+                    "cite_key": "boys1970",
+                    "doi": "10.1080/00268977000101561",
+                    "title": "The calculation of small molecular interactions",
+                    "year": 1970,
+                    "cites": 25000,
+                    "requested": "2026-09-20T08:00:00+00:00",
+                    "passes": 4,
+                }
+            ],
+        )
+        return rows[offset : offset + limit]
 
     def requeue_stubs_for_fetch(
         self,

@@ -46,6 +46,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
 from precis.handlers._query_identifier import resolve_query_identifier
+from precis.store._stub_predicate import NO_OA_MIN_PASSES
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
 from precis_web.item_view import artifact_kinds, display_title, presenter_for
@@ -82,6 +83,11 @@ router = APIRouter(prefix="/drive", tags=["drive"])
 downloads_router = APIRouter(tags=["drive"])
 
 log = logging.getLogger(__name__)
+
+#: Rows shown in the stub queue's manual-retrieval section (the cooled
+#: no-OA bucket, ``Store.manual_retrieval_list``); the bucket's full size
+#: prints beside it and ``precis stubs --manual --limit N`` has the rest.
+_MANUAL_LIST_SIZE = 50
 
 #: Same autocomplete backend as the legacy ``/items/tags/suggest`` — one
 #: function, two mounted paths (no logic fork).
@@ -575,6 +581,11 @@ async def index(
     # stub queue only; the broader ``paper_chunks=without`` browse still lists
     # id-less un-ingested papers.
     has_external_id = True if state == "stub" else None
+    # ...and drops the cooled no-OA bucket (every OA source said no across
+    # NO_OA_MIN_PASSES passes) so the queue's count reads as what is still
+    # pending; that bucket renders below the queue as the manual-retrieval
+    # section instead (gr453859).
+    no_oa = False if state == "stub" else None
     show_deleted = state == "deleted"
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
@@ -709,6 +720,7 @@ async def index(
             unfiled_only=unfiled_only,
             has_schedule=has_schedule,
             has_external_id=has_external_id,
+            no_oa=no_oa,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
             oldest=(sort == "oldest"),
@@ -736,12 +748,27 @@ async def index(
             has_chunks=has_chunks,
             has_schedule=has_schedule,
             has_external_id=has_external_id,
+            no_oa=no_oa,
             parent_id=folder_id,
             unfiled_only=unfiled_only,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
         )
         total_exact = True
+
+    # The manual-retrieval section under the stub queue: the cooled no-OA
+    # bucket as a buy-list (DOI, title, year, cites; newest request first),
+    # read-only — the same rows ``precis stubs --manual`` prints. Only on the
+    # stub queue's first page, where the operator is already deciding what
+    # to go get by hand; capped so the page stays light, with the bucket's
+    # true size alongside.
+    manual_rows: list[dict[str, Any]] = []
+    manual_total = 0
+    if state == "stub" and not q and page == 1:
+        manual_rows = await asyncio.to_thread(
+            store.manual_retrieval_list, limit=_MANUAL_LIST_SIZE
+        )
+        manual_total = await asyncio.to_thread(store.stub_backlog_count, no_oa=True)
 
     # Where a flag toggle / row action bounces back to — this exact search.
     return_to = request.url.path + (
@@ -934,6 +961,9 @@ async def index(
             "rows": rows,
             "recent": recent,
             "result_total": result_total,
+            "manual_rows": manual_rows,
+            "manual_total": manual_total,
+            "manual_min_passes": NO_OA_MIN_PASSES,
             "flag_defs": FLAG_DEFS,
             "acquire_flag_defs": ACQUIRE_FLAG_DEFS,
             "return_to": return_to,

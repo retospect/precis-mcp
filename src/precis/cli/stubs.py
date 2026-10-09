@@ -17,9 +17,12 @@ Typical use:
 * ``precis stubs`` — full backlog, newest stubs first.
 * ``precis stubs --limit 100``
 * ``precis stubs --awaiting`` — only stubs never attempted (or
-  attempted >24h ago and still pending).
-* ``precis stubs --no-oa`` — the manual-retrieval list: several passes,
-  every source said no open-access copy (gr453859).
+  attempted >24h ago and still pending); excludes the cooled no-OA
+  bucket.
+* ``precis stubs --manual`` — the manual-retrieval list: the cooled
+  no-OA bucket (several passes, every source said no open-access copy)
+  as DOI, title, year and cite count, newest-requested first, so a
+  human can go buy them (gr453859). ``--no-oa`` is the same flag.
 * ``precis stubs --format json`` — for piping into a workflow.
 
 Sibling commands:
@@ -55,6 +58,19 @@ _SCHEMA: list[str] = [
     "state",
 ]
 
+#: ``--manual``'s shape: what a human needs to buy or retrieve a paper
+#: by hand (``Store.manual_retrieval_list``).
+_MANUAL_SCHEMA: list[str] = [
+    "doi",
+    "title",
+    "year",
+    "cites",
+    "requested",
+    "passes",
+    "cite_key",
+    "ref_id",
+]
+
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
@@ -77,13 +93,16 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Show only stubs never attempted or attempted >24h ago "
         "and still pending (i.e. the queue the fetcher would target "
-        "on its next pass).",
+        "on its next pass). Excludes the cooled no-OA bucket.",
     )
     p.add_argument(
+        "--manual",
         "--no-oa",
+        dest="manual",
         action="store_true",
-        help="Show only stubs the fetcher has given up on for now: "
-        "several passes, every source said no open-access copy. "
+        help="The manual-retrieval list: stubs the fetcher has cooled on "
+        "(several passes, every source said no open-access copy), as "
+        "DOI, title, year and cite count, newest-requested first. "
         "This is the list to retrieve by hand or buy.",
     )
     p.add_argument(
@@ -98,13 +117,15 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
     try:
-        rows = store.stub_backlog(
-            limit=args.limit, awaiting=args.awaiting, no_oa=args.no_oa
-        )
+        if args.manual:
+            rows = store.manual_retrieval_list(limit=args.limit)
+            total = store.stub_backlog_count(no_oa=True)
+        else:
+            rows = store.stub_backlog(limit=args.limit, awaiting=args.awaiting)
     finally:
         store.close()
 
-    if not rows and args.no_oa:
+    if not rows and args.manual:
         print("stubs: no stub has exhausted its no-OA passes", file=sys.stderr)
         return
     if not rows:
@@ -113,6 +134,14 @@ def run(args: argparse.Namespace) -> None:
             "(every paper has either a pdf_sha256 or no external identifier)",
             file=sys.stderr,
         )
+        return
+    if args.manual:
+        print(
+            f"stubs: {total} cooled no-OA stub{'s' if total != 1 else ''} "
+            f"need manual retrieval (showing {len(rows)})",
+            file=sys.stderr,
+        )
+        print(serialize(rows, format=resolve_format(args), schema=_MANUAL_SCHEMA))
         return
     print(serialize(rows, format=resolve_format(args), schema=_SCHEMA))
 
