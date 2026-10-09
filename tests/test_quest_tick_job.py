@@ -1358,9 +1358,10 @@ class TestRoadmapArm:
             "precis.quest.roadmap_tick.roadmap_role", lambda store, qid: choice
         )
 
-        def _fake_tick(store: Any, client: Any, qid: int, **kw: Any) -> dict[str, Any]:
+        def _fake_tick(hub: Any, client: Any, qid: int, **kw: Any) -> dict[str, Any]:
             seen["calls"] += 1
             seen["client_tier"] = client.tier
+            seen["hub"] = hub
             return dict(result)
 
         monkeypatch.setattr("precis.quest.roadmap_tick.roadmap_tick", _fake_tick)

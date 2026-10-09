@@ -962,14 +962,13 @@ def _phase_roadmap_tick(
     )
 
     search_embedder = build_search_embedder(ctx.store)
+    hub = Hub(store=ctx.store)
     try:
         result = roadmap_tick(
-            ctx.store,
+            hub,
             client,
             quest_id,
-            search_fn=make_acquiring_search(
-                quest_id, Hub(store=ctx.store), search_embedder
-            ),
+            search_fn=make_acquiring_search(quest_id, hub, search_embedder),
             embedder=search_embedder,
         )
     except Exception as exc:  # defensive — mirrors _phase_weave_tick

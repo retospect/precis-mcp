@@ -52,14 +52,25 @@ _PLUGIN_GROUPS = (
 #: attributed* rather than invisible — the grandfathering the (deleted) 09-16
 #: package-split item asked for. Delete the entry when the gripe lands; do
 #: not add one without a gripe id, and never to make a new import pass.
-_GRANDFATHERED: dict[str, str] = {
-    "precis/quest/roadmap_tick.py": (
-        "gr459054 — _se_measures_text imports SeHandler to render a part's "
-        "measures view. The fix is threading the booted hub down so "
-        "hub.sibling('se') can resolve it by name; the file is the quest "
-        "thread's and under active edit."
-    ),
-}
+#: Empty since gr459054 landed (roadmap_tick reaches ``se`` through
+#: ``Hub.sibling``); the test that reads it still runs so the next entry
+#: is held to the same rule.
+_GRANDFATHERED: dict[str, str] = {}
+
+#: ``precis_se`` named as an import target — a statement or a string handed
+#: to ``importlib`` — in core. Prose mentions (docstrings explaining a seam,
+#: ``:mod:`` cross-references) are not matched: those are the convention
+#: being documented, not a breach of it.
+_SE_IMPORT_RE = re.compile(
+    r"""^\s*(?:from\s+precis_se\b|import\s+precis_se\b)"""
+    r"""|import_module\(\s*["']precis_se""",
+    re.MULTILINE,
+)
+
+#: Sanctioned ``precis_se`` import sites in core, keyed by path relative to
+#: ``src``. None today; an entry needs the reason and the gripe or spec
+#: that approved it.
+_SE_IMPORT_ALLOWLIST: dict[str, str] = {}
 
 
 def _plugin_packages() -> set[str]:
@@ -113,6 +124,31 @@ def test_core_does_not_import_a_plugin() -> None:
         "orchestrate it by job_type name as quest/compute.py does. "
         f"Offenders: {offenders}"
     )
+
+
+def test_core_never_imports_precis_se() -> None:
+    """gr459054, the string form: no ``from precis_se`` / ``import precis_se``
+    / ``import_module('precis_se…')`` anywhere under ``src/precis``. The AST
+    test above catches the first two; this one also catches the string
+    handed to ``importlib`` that an AST walk never sees, and it is the
+    acceptance fixture the gripe asked for — it was red on
+    ``quest/roadmap_tick.py`` the day it was filed."""
+    offenders: list[str] = []
+    for path in sorted(_CORE.rglob("*.py")):
+        rel = path.relative_to(_SRC).as_posix()
+        if rel in _SE_IMPORT_ALLOWLIST:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for m in _SE_IMPORT_RE.finditer(text):
+            line = text.count("\n", 0, m.start()) + 1
+            offenders.append(f"{rel}:{line}: {m.group(0).strip()}")
+    assert not offenders, (
+        "core names precis_se as an import target — reach the se kind by "
+        "name through Hub.sibling('se') instead. "
+        f"Offenders: {offenders}"
+    )
+    for rel in _SE_IMPORT_ALLOWLIST:
+        assert (_SRC / rel).exists(), f"allowlist names a missing file: {rel}"
 
 
 def test_grandfathered_entries_still_violate() -> None:

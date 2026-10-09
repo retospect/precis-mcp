@@ -3683,7 +3683,7 @@ class TestQuestBodyInquiry:
             choice = rt.roadmap_role(store, root)
             assert choice is not None
             prompt = rt.build_role_prompt(
-                store, store.get_ref(kind="quest", id=root), choice
+                Hub(store=store), store.get_ref(kind="quest", id=root), choice
             )
             for token in self._MATERIALS_ONLY_TOKENS:
                 assert token not in prompt, (choice.role, token)

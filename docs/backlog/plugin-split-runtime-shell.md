@@ -139,10 +139,12 @@ packages, so they are fair game before 10-16.
    not go stale. The plugin set is read from `pyproject.toml`'s entry-point
    groups, so a newly registered model is covered without editing the test.
    AST-walked, so a function-local import counts — that is the flavour both
-   real violations had. `_GRANDFATHERED` holds one entry, gr459054
-   (`quest/roadmap_tick.py` → `precis_se.handler`), which keeps the suite
-   green while leaving the breach counted and attributed; the staleness
-   assertion forces the entry out when the gripe lands. SQL matching strips
+   real violations had. `_GRANDFATHERED` is empty since gr459054 landed
+   (`quest/roadmap_tick.py` now reaches `se` through `Hub.sibling`, which
+   resolves a plugin kind by its `precis.handlers` entry point); the
+   staleness assertion still forces any future entry out when its gripe
+   lands, and `test_core_never_imports_precis_se` pins the string form
+   (`import_module('precis_se…')`) the AST walk cannot see. SQL matching strips
    `--` comments and single-quoted literals, because core migrations
    deliberately *discuss* the plugin tables they must not touch
    (`0162_design_core.sql` on `se_blocks`, `0158_checklist_kind.sql` on

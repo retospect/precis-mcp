@@ -360,7 +360,11 @@ def _cmd_roadmap_tick(store: Store, args: argparse.Namespace) -> None:
     from precis.workers.job_types.quest_tick import build_search_embedder
 
     if args.dry_run:
-        print(render_role_report(roadmap_tick(store, None, args.id, dry_run=True)))
+        print(
+            render_role_report(
+                roadmap_tick(Hub(store=store), None, args.id, dry_run=True)
+            )
+        )
         return
 
     if args.tier:
@@ -376,13 +380,12 @@ def _cmd_roadmap_tick(store: Store, args: argparse.Namespace) -> None:
     # Without an embedder the local graph leg is lexical-only and misses
     # semantic matches, so S2 runs on queries the graph already answers.
     embedder = build_search_embedder(store)
+    hub = Hub(store=store, embedder=embedder)
     result = roadmap_tick(
-        store,
+        hub,
         client,
         args.id,
-        search_fn=make_acquiring_search(
-            args.id, Hub(store=store, embedder=embedder), embedder
-        ),
+        search_fn=make_acquiring_search(args.id, hub, embedder),
         embedder=embedder,
     )
     if not result.get("ok"):

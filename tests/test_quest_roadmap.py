@@ -54,6 +54,12 @@ class ScriptedClient:
         return SimpleNamespace(text=json.dumps(payload), data=None)
 
 
+def _hub(store: Any) -> Hub:
+    """A bare hub, as the worker builds one: ``se`` is not pre-registered,
+    so the tick reaches it through ``Hub.sibling``'s entry-point lookup."""
+    return Hub(store=store)
+
+
 def _quests(store: Any) -> QuestHandler:
     return QuestHandler(hub=Hub(store=store))
 
@@ -154,7 +160,7 @@ class TestRoadmapRole:
         assert choice.capability_statement == long_title
         assert len(choice.capability_title) == 60, "the ledger stub is untouched"
         prompt = rt.build_role_prompt(
-            store, store.get_ref(kind="quest", id=root), choice
+            _hub(store), store.get_ref(kind="quest", id=root), choice
         )
         assert long_title in prompt
         assert "where we choose,\n" not in prompt, (
@@ -318,7 +324,7 @@ class TestDemandRole:
         assert se_ref is not None
         store.add_link(src_ref_id=se_ref.id, dst_ref_id=root, relation="serves")
 
-        result = rt.roadmap_tick(store, None, root, dry_run=True)
+        result = rt.roadmap_tick(_hub(store), None, root, dry_run=True)
         assert result["ok"] and result["applied"] is False
         assert result["role"] == "demand"
         report = rt.render_role_report(result)
@@ -332,6 +338,31 @@ class TestDemandRole:
         assert "demand" not in (cap_ref.meta or {})
         assert _pinned_ledger_chunks(store, root) == []
 
+    def test_demand_prompt_degrades_to_the_part_title_without_the_se_plugin(
+        self, store: Any, se_handler: SeHandler
+    ) -> None:
+        """gr459054: the se measures come through ``hub.sibling('se')``, never
+        a ``precis_se`` import. A hub that cannot resolve ``se`` (the plugin
+        not installed) still yields a prompt that names the part."""
+        root, _cap = make_root(store, demand=None, supply=None)
+        se_handler.put(
+            id="hexfold-valve",
+            text=json.dumps({"ops": [{"op": "add_block", "name": "port"}]}),
+        )
+        se_ref = store.get_ref(kind="se", id="hexfold-valve")
+        store.add_link(src_ref_id=se_ref.id, dst_ref_id=root, relation="serves")
+
+        class NoSeHub(Hub):
+            def sibling(self, kind: str) -> Any:
+                if kind == "se":
+                    raise KeyError("se: plugin not installed")
+                return super().sibling(kind)
+
+        result = rt.roadmap_tick(NoSeHub(store=store), None, root, dry_run=True)
+        assert result["role"] == "demand"
+        assert "se:hexfold-valve" in result["prompt"]
+        assert "(measures view unavailable)" in result["prompt"]
+
     def test_live_demand_writes_meta_and_a_decision(self, store: Any) -> None:
         root, cap = make_root(store, demand=None, supply=None)
         client = ScriptedClient(
@@ -342,7 +373,7 @@ class TestDemandRole:
                 "calculation": "pitch / 1 = 2 nm",
             }
         )
-        result = rt.roadmap_tick(store, client, root)
+        result = rt.roadmap_tick(_hub(store), client, root)
         assert result["ok"] and result["role"] == "demand"
         cap_ref = store.get_ref(kind="quest", id=cap)
         assert cap_ref.meta["demand"][KEY] == {
@@ -392,7 +423,7 @@ class TestSupplyRole:
             seen_queries.append(query)
             return [(paper, 1.0)]
 
-        result = rt.roadmap_tick(store, client, root, search_fn=_search)
+        result = rt.roadmap_tick(_hub(store), client, root, search_fn=_search)
         assert result["ok"] and result["role"] == "supply"
         assert seen_queries == ["DNA origami positional accuracy nm"]
         assert result["searches_run"] == 1 and result["papers_linked"] == 1
@@ -429,7 +460,7 @@ class TestSupplyRole:
             {"searches": ["probe drift per cycle"]}, {"findings": []}
         )
         result = rt.roadmap_tick(
-            store, client, root, search_fn=lambda s, q, ex: [(new, 1.0)]
+            _hub(store), client, root, search_fn=lambda s, q, ex: [(new, 1.0)]
         )
         assert result["papers_linked"] == 1
         extraction_prompt = client.prompts[1]
@@ -439,7 +470,9 @@ class TestSupplyRole:
     def test_supply_without_papers_writes_nothing(self, store: Any) -> None:
         root, cap = make_root(store, demand=2.0, supply=None)
         client = ScriptedClient({"searches": ["nothing held"]})
-        result = rt.roadmap_tick(store, client, root, search_fn=lambda s, q, ex: [])
+        result = rt.roadmap_tick(
+            _hub(store), client, root, search_fn=lambda s, q, ex: []
+        )
         assert result["ok"] and result["role"] == "supply"
         assert "supply_written" not in result
         assert "supply" not in (store.get_ref(kind="quest", id=cap).meta or {})
@@ -495,7 +528,9 @@ class TestSupplyRole:
                 ]
             },
         )
-        result = rt.roadmap_tick(store, client, root, search_fn=lambda s, q, ex: [])
+        result = rt.roadmap_tick(
+            _hub(store), client, root, search_fn=lambda s, q, ex: []
+        )
         prompt = client.prompts[1]
         # (the search prompt still counts it among the papers already held)
         assert not re.search(rf"\bpa{empty}\b", prompt) and ok_body in prompt
@@ -554,7 +589,7 @@ class TestSupplyRole:
             },
         )
         result = rt.roadmap_tick(
-            store, client, root, search_fn=lambda s, q, ex: [(p, 1.0)]
+            _hub(store), client, root, search_fn=lambda s, q, ex: [(p, 1.0)]
         )
         assert result["refused"] == 1 and result["hubs"] == []
         assert "supply_written" not in result
@@ -616,7 +651,7 @@ class TestSupplyEscalation:
 
     def _dry_tick(self, store: Any, root: int, fn: Any, query: str) -> dict[str, Any]:
         client = ScriptedClient({"searches": [query]})
-        result = rt.roadmap_tick(store, client, root, search_fn=fn)
+        result = rt.roadmap_tick(_hub(store), client, root, search_fn=fn)
         assert result["ok"] and result["role"] == "supply"
         return result
 
@@ -689,7 +724,7 @@ class TestSupplyEscalation:
                 ]
             },
         )
-        result = rt.roadmap_tick(store, client, root, search_fn=fn)
+        result = rt.roadmap_tick(_hub(store), client, root, search_fn=fn)
         assert result["supply_written"]["value"] == 2.1
         assert _supply_metas(store, cap, "supply_outcome")[-1]["dry"] is False
         assert ledger.supply_history(store, cap, KEY) == ledger.SupplyHistory()
@@ -788,7 +823,7 @@ class TestSupplyEscalation:
                 ]
             },
         )
-        result = rt.roadmap_tick(store, client, root, search_fn=fn)
+        result = rt.roadmap_tick(_hub(store), client, root, search_fn=fn)
         assert result["supply_written"]["value"] == 2.1
         assert ledger.supply_history(store, cap, KEY) == ledger.SupplyHistory()
         assert "outside search failed (" not in _unmet_gap_detail(store, root)
@@ -820,7 +855,7 @@ class TestSupplyEscalation:
 
         for q in ("a", "b"):
             result = rt.roadmap_tick(
-                store, ScriptedClient({"searches": [q]}), root, search_fn=_plain
+                _hub(store), ScriptedClient({"searches": [q]}), root, search_fn=_plain
             )
             assert result["ok"]
         # No report_for → external never counted; the outcome is still logged.
@@ -1033,7 +1068,7 @@ class TestBridgeRole:
         reply = _rung_reply(
             cap, pathway, value=1.9, evidence=["fi99"], title="Place one tile at 1.9 nm"
         )
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and result["role"] == "bridge"
         assert result["tier"] == "frontier"
         rid = result["rung_id"]
@@ -1060,7 +1095,7 @@ class TestBridgeRole:
         # replaying the same title — the near-dup gate refuses the twin.
         _todos(store).tag(id=rid, add=["STATUS:won't-do"])
         assert rt.roadmap_role(store, root).role == "bridge"  # type: ignore[union-attr]
-        result2 = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result2 = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result2["ok"] and result2.get("near_dup_of") == rid
         assert _rungs_on(store, cap) == [rid]
 
@@ -1070,7 +1105,7 @@ class TestBridgeRole:
         reply = _rung_reply(
             cap, pathway, value=1.0, evidence=[], title="Beat the demand"
         )
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and "no number, no rung" in result["note"]
         assert _rungs_on(store, cap) == []
 
@@ -1079,7 +1114,7 @@ class TestBridgeRole:
         make_pathway(store, root, "Pathway: A")
         make_pathway(store, root, "Pathway: B")
         reply = _rung_reply(cap, 999_999, value=6.0, evidence=["fi42"], title="x y z")
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and "not one serving this root" in result["note"]
         assert _rungs_on(store, cap) == []
 
@@ -1087,7 +1122,7 @@ class TestBridgeRole:
         root, cap = make_root(store, demand=2.0, supply=6.0)
         make_pathway(store, root)
         reply = {"outcome": "dead-end", "dead_end": {"reason": "no bet reaches 2 nm"}}
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and result["dead_end"] == "no bet reaches 2 nm"
         (entry,) = _entries(store, cap, "dead-end")
         assert KEY in entry.text and "demanded 2" in entry.text and "6" in entry.text
@@ -1106,7 +1141,7 @@ class TestBridgeRole:
                 "statement": "Enzymes place tiles.",
             },
         }
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and "pathway_id" in result
         pid = result["pathway_id"]
         assert "STATUS:dormant" in _tags(store, pid)
@@ -1142,7 +1177,7 @@ class TestBridgeRole:
         reply = _rung_reply(
             cap, pathway, value=6.0, evidence=["fi42"], title="Deliver the part"
         )
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and result["terminal"] is True
         assert result["benign_added"] == ["benign_fragments"]
         rung = store.get_ref(kind="todo", id=result["rung_id"])
@@ -1176,7 +1211,7 @@ class TestBridgeRole:
         reply = _rung_reply(
             cap, pathway, value=6.0, evidence=["fi42"], title="Place one tile"
         )
-        result = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert result["ok"] and "rung_id" in result
         assert result["terminal"] is False
         assert rt.rung_is_terminal(store, result["rung_id"], root) is False
@@ -1196,7 +1231,7 @@ class TestRungReadingIsTheLedgers:
         root_ref = store.get_ref(kind="quest", id=root)
 
         assert "[done] rung: place one tile" in rt.build_role_prompt(
-            store, root_ref, choice
+            _hub(store), root_ref, choice
         )
 
         real = ledger.rungs_for
@@ -1208,7 +1243,7 @@ class TestRungReadingIsTheLedgers:
             }
 
         monkeypatch.setattr(ledger, "rungs_for", patched)
-        prompt = rt.build_role_prompt(store, root_ref, choice)
+        prompt = rt.build_role_prompt(_hub(store), root_ref, choice)
         assert "[sentinel-status] rung: place one tile" in prompt
 
     def test_rungs_under_dedups_across_capabilities(self, store: Any) -> None:
@@ -1235,14 +1270,14 @@ class TestDeed:
         reply = _rung_reply(
             cap, pathway, value=1.9, evidence=["fi99"], title="Place a tile at 1.9"
         )
-        r1 = rt.roadmap_tick(store, ScriptedClient(reply), root)
+        r1 = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
         assert r1["ok"] and r1["deeds"] == 0
         assert rt.previous_ledger_signature(store, root) == {f"qu{cap}:{KEY}": 6.0}
         rid = r1["rung_id"]
         # A human completes the rung between ticks.
         _todos(store).tag(id=rid, add=["STATUS:done"])
 
-        r2 = rt.roadmap_tick(store, ScriptedClient(), root)
+        r2 = rt.roadmap_tick(_hub(store), ScriptedClient(), root)
         assert r2["ok"] and r2["role"] is None  # the axis is met — nothing to act on
         assert r2["improved"] is True and r2["dry"] is False
         assert r2["ledger_delta"] == {f"qu{cap}:{KEY}": [6.0, 1.9]}
@@ -1263,14 +1298,14 @@ class TestDeed:
         assert root_deeds[0].text.startswith(f"qu{cap} ")
         # The chunk now carries the new signature; a third tick stamps nothing.
         assert rt.previous_ledger_signature(store, root) == {f"qu{cap}:{KEY}": 1.9}
-        r3 = rt.roadmap_tick(store, ScriptedClient(), root)
+        r3 = rt.roadmap_tick(_hub(store), ScriptedClient(), root)
         assert r3["deeds"] == 0 and r3["dry"] is True
         assert len(_entries(store, cap, "milestone")) == 1
 
     def test_first_tick_seeds_the_signature_without_stamping(self, store: Any) -> None:
         root, cap = make_root(store, demand=2.0, supply=1.5)  # already met
         assert rt.previous_ledger_signature(store, root) is None
-        result = rt.roadmap_tick(store, ScriptedClient(), root)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(), root)
         assert result["deeds"] == 0 and result["improved"] is False
         assert _entries(store, cap, "milestone") == []
         assert rt.previous_ledger_signature(store, root) == {f"qu{cap}:{KEY}": 1.5}
@@ -1313,7 +1348,7 @@ class TestViews:
         )
         # N ticks → exactly one regenerated chunk, never appended.
         for _ in range(3):
-            rt.roadmap_tick(store, ScriptedClient({"outcome": "nonsense"}), root)
+            rt.roadmap_tick(_hub(store), ScriptedClient({"outcome": "nonsense"}), root)
         chunks = _pinned_ledger_chunks(store, root)
         assert len(chunks) == 1
         assert "| unmet |" in chunks[0].text and rt._LEDGER_SEED not in chunks[0].text
@@ -1340,7 +1375,7 @@ class TestViews:
 class TestTickShape:
     def test_not_a_roadmap_root_is_an_error(self, store: Any) -> None:
         qid = _qid(_quests(store).put(text="a plain quest"))
-        result = rt.roadmap_tick(store, ScriptedClient(), qid)
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(), qid)
         assert result == {
             "ok": False,
             "error": "not_a_roadmap_root",
@@ -1355,13 +1390,15 @@ class TestTickShape:
             def complete(self, messages: Any) -> Any:
                 raise RuntimeError("model down")
 
-        result = rt.roadmap_tick(store, Boom(), root)
+        result = rt.roadmap_tick(_hub(store), Boom(), root)
         assert result["ok"] is False and "model down" in result["error"]
         assert result["role"] == "demand"
 
     def test_dry_run_report_names_role_gap_and_prompt(self, store: Any) -> None:
         root, cap = make_root(store, demand=2.0, supply=6.0)
-        report = rt.render_role_report(rt.roadmap_tick(store, None, root, dry_run=True))
+        report = rt.render_role_report(
+            rt.roadmap_tick(_hub(store), None, root, dry_run=True)
+        )
         assert report.startswith("role: bridge\ntier: frontier\ngap: unmet-capability:")
         assert f"[qu{cap}]" in report and "── prompt ──" in report
         assert "best cited supply: 6 nm [fi42]" in report

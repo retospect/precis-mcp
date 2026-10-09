@@ -153,6 +153,35 @@ def test_sibling_unknown_kind_raises_key_error(store: Store) -> None:
         r.sibling("nosuchkind")
 
 
+def test_sibling_reaches_an_installed_plugin_by_entry_point(store: Store) -> None:
+    """gr459054: a bare worker hub must reach the ``se`` plugin by kind name
+    through its ``precis.handlers`` entry point — the registration that
+    already exists — so core never imports ``precis_se``. The map stays
+    plugin-free; the entry point is the mapping."""
+    assert "se" not in Hub._SIBLING_HANDLERS
+    r = Hub(store=store)
+    inst = r.sibling("se")
+    assert type(inst).__name__ == "SeHandler"
+    assert type(inst).__module__.startswith("precis_se.")
+    assert r.sibling("se") is inst
+
+
+def test_sibling_entry_point_miss_names_the_group(store: Store) -> None:
+    r = Hub(store=store)
+    with pytest.raises(KeyError, match="no 'precis.handlers' entry point"):
+        r.sibling("not_an_installed_plugin")
+
+
+def _plugin_handler_kinds() -> set[str]:
+    """Kinds a ``precis.handlers`` entry point in ``pyproject.toml`` registers."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    return set(data["project"]["entry-points"].get("precis.handlers", {}))
+
+
 def test_every_sibling_call_site_kind_has_a_lazy_mapping() -> None:
     """gr343754: ``_SIBLING_HANDLERS`` is a hand-maintained allowlist with
     nothing coupling it to the call sites. On a booted hub every kind is
@@ -160,7 +189,10 @@ def test_every_sibling_call_site_kind_has_a_lazy_mapping() -> None:
     works in production and KeyErrors only on a bare/test hub or when
     that kind's handler failed boot — silently, later. Pin the coupling:
     every literal ``sibling("<kind>")`` in the source tree must be
-    lazily constructible, and every mapped class must import."""
+    lazily constructible — a core kind through the map, a plugin kind
+    through its ``precis.handlers`` entry point (and never through the
+    map, which would hardcode a plugin module path in core) — and every
+    mapped class must import."""
     import importlib
     import re
     from pathlib import Path
@@ -172,10 +204,18 @@ def test_every_sibling_call_site_kind_has_a_lazy_mapping() -> None:
         for kind in pattern.findall(path.read_text(encoding="utf-8")):
             requested.setdefault(kind, set()).add(str(path.relative_to(src)))
     assert requested, "no sibling() call sites found — the regex rotted"
-    unmapped = {k: v for k, v in requested.items() if k not in Hub._SIBLING_HANDLERS}
+    plugins = _plugin_handler_kinds()
+    unmapped = {
+        k: v
+        for k, v in requested.items()
+        if k not in Hub._SIBLING_HANDLERS and k not in plugins
+    }
     assert not unmapped, (
         "Hub.sibling() is called for kinds _SIBLING_HANDLERS cannot lazily "
         f"construct — extend the map in precis.dispatch: {unmapped}"
+    )
+    assert not plugins & set(Hub._SIBLING_HANDLERS), (
+        "a plugin kind is in _SIBLING_HANDLERS — its entry point is the mapping"
     )
     for kind, (module, cls) in Hub._SIBLING_HANDLERS.items():
         assert hasattr(importlib.import_module(module), cls), (kind, module, cls)

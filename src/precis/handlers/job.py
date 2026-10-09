@@ -13,7 +13,10 @@ See ``precis-job-help`` for the agent-facing surface and
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl
 
@@ -59,6 +62,91 @@ _LOGS_MESSAGE_TRUNC = 300
 #: Default window for the ``/builds`` fleet-build view. A day covers a
 #: normal deploy + restart cycle; every lane claims something within it.
 _BUILDS_DEFAULT_SINCE_HOURS = 24
+#: Per-call ceiling on the ``git merge-base`` shell-out behind
+#: ``/builds`` ``sha=``; a wedged git must not stall the doctor's read.
+_ANCESTRY_GIT_TIMEOUT_S = 5
+#: Host-local clone the fix lane reads (``deploy/roles/precis_worker_agent``
+#: keeps it on ``main``); a third place the commit graph can be read from.
+_FIX_REPO_ENV = "PRECIS_FIX_REPO_DIR"
+
+
+def _ancestry_repos() -> list[Path]:
+    """Git checkouts to answer ``/builds`` ``sha=`` ancestry from, in order.
+
+    Ancestry is a property of the commit graph, not of a particular tree,
+    so any checkout holding both commits gives the same answer. Candidates:
+    the tree the running code loaded from (``precis.__file__``, the same
+    root ``skill.py::_live_git_info`` reads — empty on a pip-from-git
+    install, which has no ``.git``), the watched checkout the shared
+    server snapshots from (``install_watchdog.watched_checkout_root``), and
+    the fix lane's host-local clone (:data:`_FIX_REPO_ENV`). The first
+    where git answers wins; when none does the column reads ``unknown``
+    with the reason, never an exception.
+    """
+    import precis
+
+    out = [Path(precis.__file__).resolve().parent]
+    try:
+        from precis.install_watchdog import watched_checkout_root
+
+        watched = watched_checkout_root()
+    except Exception:  # pragma: no cover — defensive, must never raise
+        watched = None
+    if watched is not None:
+        out.append(Path(watched))
+    if fix_repo := (os.environ.get(_FIX_REPO_ENV) or "").strip():
+        out.append(Path(fix_repo))
+    return out
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run ``git -C repo args`` with a short timeout; ``None`` when the
+    binary is missing or the call times out. ``safe.directory`` is widened
+    because the watched checkout is typically a read-only mount owned by
+    another uid, which git otherwise refuses to read at all — this is a
+    read-only object-graph query, no hooks or repo config get executed."""
+    try:
+        return subprocess.run(
+            ["git", "-c", "safe.directory=*", "-C", str(repo), *args],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=_ANCESTRY_GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _git_contains(repo: Path, sha: str, build_sha: str) -> tuple[str, str | None]:
+    """``git merge-base --is-ancestor sha build_sha`` → ``(verdict, reason)``.
+
+    ``verdict`` is ``yes`` / ``no`` / ``unknown``; ``reason`` is set only
+    for ``unknown`` (git's last stderr line, e.g. ``Not a valid commit
+    name <x>`` when the checkout has never fetched that commit).
+    """
+    proc = _git(repo, "merge-base", "--is-ancestor", sha, build_sha)
+    if proc is None:
+        return "unknown", "git unavailable or timed out"
+    if proc.returncode == 0:
+        return "yes", None
+    if proc.returncode == 1:
+        return "no", None
+    err = (proc.stderr or "").strip().splitlines()
+    return "unknown", (
+        err[-1].removeprefix("fatal: ") if err else f"git exit {proc.returncode}"
+    )
+
+
+def _ancestry_repo() -> tuple[Path | None, str | None]:
+    """The first candidate checkout git can read, or ``(None, why)``."""
+    tried: list[str] = []
+    for repo in _ancestry_repos():
+        proc = _git(repo, "rev-parse", "--show-toplevel")
+        if proc is None:
+            return None, "git binary unavailable"
+        if proc.returncode == 0 and proc.stdout.strip():
+            return Path(proc.stdout.strip()), None
+        tried.append(str(repo))
+    return None, f"no git checkout reachable (tried {', '.join(tried)})"
 
 
 def _idem_lock_key(idem: str) -> int:
@@ -163,6 +251,30 @@ class JobHandler(NumericRefHandler):
     def _supported_list_views(self) -> tuple[str, ...]:
         return ("recent", "logs", "builds")
 
+    def get(
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        q: str | None = None,
+        sha: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
+        # declared here, not read off the query string alone, so
+        # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the
+        # extras whitelist; ``id='/builds?sha=...'`` works too.
+        if sha is not None:
+            path = id.lstrip("/") if isinstance(id, str) else ""
+            if path != "builds" and not path.startswith("builds?"):
+                raise BadInput(
+                    "sha= only applies to the /builds view",
+                    next="get(kind='job', id='/builds', args={'sha': '<commit>'})",
+                )
+            _, _, query_string = path.partition("?")
+            return self._render_builds_view(query_string, sha=sha)
+        return super().get(id=id, view=view, q=q, **_kw)
+
     def _list_view(self, view: str) -> Response | None:
         # '/logs' and '/logs?handler=...&since=...' both route here —
         # the query string (if any) carries the worker_logs filters.
@@ -174,7 +286,9 @@ class JobHandler(NumericRefHandler):
             return self._render_builds_view(query_string)
         return super()._list_view(view)
 
-    def _render_builds_view(self, query_string: str) -> Response:
+    def _render_builds_view(
+        self, query_string: str, *, sha: str | None = None
+    ) -> Response:
         """``id='/builds?since=<hrs>'`` — which build each worker is running.
 
         Every claim stamps ``meta.lease_code`` (``<version>@<short sha>``)
@@ -198,8 +312,20 @@ class JobHandler(NumericRefHandler):
         restart boundary, not a conflict — read the newest. Two builds on
         *different* processes of one host is the 20b/20e split (a per-unit
         env or code difference), which is exactly what it looks like.
+
+        **``sha=<commit>``** (``args={'sha': ...}`` or ``?sha=``) answers the
+        question the plain view only hinted at — "does this build contain
+        commit X?" — with a ``contains_sha=yes|no|unknown`` column per row,
+        from ``git merge-base --is-ancestor <sha> <build sha>`` against the
+        first readable checkout (:func:`_ancestry_repos`). The doctor has
+        no Bash, so before this it compared two shas by eye and once filed a
+        P0 "fix not deployed" ask against a build that had carried the fix
+        for 11 hours (gr463592). ``unknown`` carries a short reason (no
+        checkout reachable, a commit the checkout has never fetched, an
+        unstamped row); it never raises.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
+        sha = (sha if sha is not None else params.get("sha") or "").strip() or None
         since_hours = _parse_logs_int(
             params.get("since"),
             default=_BUILDS_DEFAULT_SINCE_HOURS,
@@ -238,6 +364,12 @@ class JobHandler(NumericRefHandler):
             "# one row per host/process/build; newest build per process "
             "is what it is running now"
         )
+        repo: Path | None = None
+        if sha is not None:
+            repo, why = _ancestry_repo()
+            header += f"\n# contains_sha: does the build contain {sha}? " + (
+                f"(git ancestry via {repo})" if repo else f"(unknown: {why})"
+            )
         if not rows:
             body = (
                 f"{header}\n"
@@ -256,17 +388,39 @@ class JobHandler(NumericRefHandler):
             return Response(body=body)
 
         lines = [header, ""]
+        verdicts: dict[str, tuple[str, str | None]] = {}
         for host, process, lease_code, jobs, last_seen in rows:
             seen = as_utc(last_seen)
             seen_str = seen.strftime("%Y-%m-%dT%H:%M:%SZ") if seen else "?"
-            lines.append(
+            line = (
                 f"{host} {process} {lease_code or 'unstamped'} "
                 f"jobs={jobs} last={seen_str}"
             )
+            if sha is not None:
+                build_sha = (lease_code or "").rpartition("@")[2].strip()
+                if repo is None:
+                    verdict: tuple[str, str | None] = ("unknown", "no checkout")
+                elif not build_sha:
+                    verdict = ("unknown", "row carries no build sha")
+                else:
+                    # One git call per distinct build sha, not per row.
+                    if build_sha not in verdicts:
+                        verdicts[build_sha] = _git_contains(repo, sha, build_sha)
+                    verdict = verdicts[build_sha]
+                line += f" contains_sha={verdict[0]}"
+                if verdict[1]:
+                    line += f" ({verdict[1]})"
+            lines.append(line)
         lines.append("")
         lines.append(
             f"{len(rows)} host/process/build row(s). A fix is live on a "
-            "process when its newest build's sha is that fix or a descendant."
+            "process when its newest build's sha is that fix or a descendant"
+            + (
+                "."
+                if sha is not None
+                else " — pass args={'sha': '<commit>'} to have git answer that "
+                "per row (contains_sha=yes|no|unknown)."
+            )
         )
         return Response(body="\n".join(lines))
 

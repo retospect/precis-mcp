@@ -240,6 +240,8 @@ class Hub:
         "todo": ("precis.handlers.todo", "TodoHandler"),
         "job": ("precis.handlers.job", "JobHandler"),
         "taxon": ("precis.handlers.taxon", "TaxonHandler"),
+        "quest": ("precis.handlers.quest", "QuestHandler"),
+        "finding": ("precis.handlers.finding", "FindingHandler"),
     }
 
     def sibling(self, kind: str) -> Any:
@@ -257,23 +259,38 @@ class Hub:
         hub (e.g. a test fixture, or a call site that only ever had
         ``store=``) it lazily constructs the handler with ``hub=self``,
         caches it in :attr:`handlers` so a repeat call is free, and
-        returns it. Raises :class:`KeyError` for a kind this method
-        doesn't know how to lazily construct — extend
-        :attr:`_SIBLING_HANDLERS` rather than hand-rolling the
-        construction at the call site.
+        returns it. Core kinds come from :attr:`_SIBLING_HANDLERS`; a
+        kind not listed there is looked up by name in the
+        :data:`PLUGIN_GROUP` entry points, the same registration
+        :func:`_load_plugins` reads at boot — so a worker's bare hub
+        reaches an *installed* plugin (``sibling('se')``) without core
+        ever naming the plugin's module (gr459054). Raises
+        :class:`KeyError` when neither knows the kind (a plugin that is
+        not installed here). Extend :attr:`_SIBLING_HANDLERS` for a core
+        kind rather than hand-rolling the construction at the call site;
+        never add a plugin there — the entry point is its registration.
         """
         existing = self.handlers.get(kind)
         if existing is not None:
             return existing
         target = self._SIBLING_HANDLERS.get(kind)
-        if target is None:
-            raise KeyError(
-                f"Hub.sibling: no lazy-construction mapping for kind={kind!r}; "
-                f"known: {sorted(self._SIBLING_HANDLERS)}"
-            )
-        module_name, class_name = target
-        module = importlib.import_module(module_name)
-        cls = getattr(module, class_name)
+        if target is not None:
+            module_name, class_name = target
+            cls = getattr(importlib.import_module(module_name), class_name)
+        else:
+            try:
+                eps = [
+                    ep for ep in _entry_points(group=PLUGIN_GROUP) if ep.name == kind
+                ]
+            except Exception as exc:  # defensive — importlib surface is stable
+                raise KeyError(f"Hub.sibling: plugin discovery failed: {exc}") from exc
+            if not eps:
+                raise KeyError(
+                    f"Hub.sibling: no lazy-construction mapping for kind={kind!r}; "
+                    f"known: {sorted(self._SIBLING_HANDLERS)}, and no "
+                    f"{PLUGIN_GROUP!r} entry point of that name is installed"
+                )
+            cls = eps[0].load()
         inst = cls(hub=self)
         self.handlers[kind] = inst
         return inst

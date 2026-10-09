@@ -64,15 +64,23 @@ where:
 ```python
 get(kind='job', id='/builds')        # one row per host/process/build, 24h
 get(kind='job', id='/builds?since=168')  # widen to a week
+get(kind='job', id='/builds', args={'sha': '<fix commit>'})
+# each row gains contains_sha=yes|no|unknown — git's answer, not yours
 ```
 
 **Never file a "deploy X" ask without checking it first.** A fix is live on
 a process when that process's newest build sha is the fix or a descendant of
-it. Read per PROCESS, not per host: one host runs several worker units
-(e.g. a collapsed worker and a dedicated agent lane) and an env or code
-difference between two units of the same host is a real, common failure
-shape — grouping them together hides it. Two builds for the SAME
-host/process inside the window is just a restart boundary; read the newest.
+it. Do NOT infer that from two shas — call `/builds` with `args={'sha':
+'<fix commit>'}` and read `contains_sha` on that process's newest row:
+`yes` means the fix is live there, `no` means it is not, `unknown
+(<reason>)` means git could not tell from here (no checkout reachable, or a
+commit this checkout has never fetched) and is evidence of nothing — say
+"could not verify", do not file. Read per PROCESS, not per host: one host
+runs several worker units (e.g. a collapsed worker and a dedicated agent
+lane) and an env or code difference between two units of the same host is a
+real, common failure shape — grouping them together hides it. Two builds for
+the SAME host/process inside the window is just a restart boundary; read the
+newest.
 
 This matters because getting it wrong is expensive and self-perpetuating: a
 2026-09-26 tick made "fix X has not reached this host in 8 days" its P0 and

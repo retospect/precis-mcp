@@ -426,6 +426,8 @@ in the agent surface (no Bash, no raw SQL) — this is it.
 ```python
 get(kind='job', id='/builds')             # per host/process build, last 24h
 get(kind='job', id='/builds?since=168')   # widen to a week
+get(kind='job', id='/builds', args={'sha': '<fix commit>'})
+# ...and does each build CONTAIN that commit? adds contains_sha=yes|no|unknown
 ```
 
 Every claim stamps the claiming worker's `version@sha` on the job
@@ -434,12 +436,18 @@ table records what code actually ran where. Each row is
 `host process version@sha jobs=N last=<UTC>`.
 
 A fix is live on a process when that process's newest build sha is the fix
-or a descendant of it. Read per **process**, not per host: one host can run
-several worker units, and an env or code difference between two units of the
-same host is a common failure shape that per-host reading hides. Two builds
-for the same host/process in the window is a restart boundary — read the
-newest. `precis-status` answers a different question (the build serving
-*your own* process, which in a container is not the fleet's).
+or a descendant of it. Do not judge that by eye: pass the fix's commit as
+`args={'sha': ...}` (or `id='/builds?sha=...'`) and git answers per row —
+`contains_sha=yes` (the build is that commit or descends from it), `no`
+(it does not), or `unknown (<reason>)` when no checkout is reachable from
+this process, the checkout has never fetched one of the two commits, or the
+row carries no build sha. `unknown` is "cannot tell", never evidence either
+way. Read per **process**, not per host: one host can run several worker
+units, and an env or code difference between two units of the same host is
+a common failure shape that per-host reading hides. Two builds for the same
+host/process in the window is a restart boundary — read the newest.
+`precis-status` answers a different question (the build serving *your own*
+process, which in a container is not the fleet's).
 
 ## See also
 

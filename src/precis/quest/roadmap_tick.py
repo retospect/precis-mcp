@@ -97,9 +97,18 @@ from precis.utils.coerce import num
 from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
+    from precis.dispatch import Hub
     from precis.store import Ref, Store
 
 log = logging.getLogger(__name__)
+
+
+def _store(hub: Hub) -> Store:
+    """The hub's store; a roadmap tick has nothing to do without one."""
+    if hub.store is None:
+        raise ValueError("roadmap_tick needs a hub with a store")
+    return hub.store
+
 
 ROLE_DEMAND = "demand"
 ROLE_SUPPLY = "supply"
@@ -377,16 +386,19 @@ def _axis_line(choice: RoleChoice) -> str:
     return f"axis: `{choice.key}`{unit} ({arrow})"
 
 
-def _se_measures_text(store: Store, ref: Ref) -> str:
+def _se_measures_text(hub: Hub, ref: Ref) -> str:
     """The se part's ``view='measures'`` render, via the plugin handler when
-    it is installed; degrades to the part's title otherwise (the prompt
-    still names the part, the model just has no numbers to read)."""
+    the hub carries it; degrades to the part's title otherwise (the prompt
+    still names the part, the model just has no numbers to read).
+
+    Reached by kind name through :meth:`Hub.sibling`, never by importing
+    the plugin: core may not import ``precis_se`` (gr459054,
+    ``tests/test_plugin_import_boundary.py``). ``se`` is on a hub only when
+    the plugin registered through its entry point — ``sibling`` raises
+    ``KeyError`` otherwise, which is the degrade path."""
     head = f"### se:{ref.slug} — {(ref.title or '').splitlines()[0]}"
     try:
-        from precis.dispatch import Hub
-        from precis_se.handler import SeHandler  # plugin — may be absent
-
-        body = SeHandler(hub=Hub(store=store)).get(id=str(ref.slug), view="measures")
+        body = hub.sibling("se").get(id=str(ref.slug), view="measures")
         return f"{head}\n{body.body}"
     except Exception:
         log.debug(
@@ -418,10 +430,10 @@ def _served_se_parts(store: Store, root_id: int, choice: RoleChoice) -> list[Ref
     return parts
 
 
-def _demand_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
-    parts = _served_se_parts(store, root.id, choice)
+def _demand_prompt(hub: Hub, root: Ref, choice: RoleChoice) -> str:
+    parts = _served_se_parts(_store(hub), root.id, choice)
     part_text = (
-        "\n\n".join(_se_measures_text(store, p) for p in parts)
+        "\n\n".join(_se_measures_text(hub, p) for p in parts)
         if parts
         else "(no se part serves this root or capability yet — say so in "
         "`reason` and derive the number from the capability statement alone)"
@@ -746,11 +758,12 @@ def _bridge_context(
     return pathways, rungs, statuses, _benign_capability(capabilities), capabilities
 
 
-def build_role_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
+def build_role_prompt(hub: Hub, root: Ref, choice: RoleChoice) -> str:
     """The first (or only) model prompt for ``choice`` — what ``--dry-run``
     prints."""
     if choice.role == ROLE_DEMAND:
-        return _demand_prompt(store, root, choice)
+        return _demand_prompt(hub, root, choice)
+    store = _store(hub)
     if choice.role == ROLE_SUPPLY:
         return _supply_search_prompt(store, root, choice)
     pathways, rungs, statuses, benign, _caps = _bridge_context(store, root.id, choice)
@@ -783,20 +796,6 @@ def _ask(client: Any, prompt: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _quest_handler(store: Store) -> Any:
-    from precis.dispatch import Hub
-    from precis.handlers.quest import QuestHandler
-
-    return QuestHandler(hub=Hub(store=store))
-
-
-def _todo_handler(store: Store) -> Any:
-    from precis.dispatch import Hub
-    from precis.handlers.todo import TodoHandler
-
-    return TodoHandler(hub=Hub(store=store))
-
-
 def _merged_axis_map(store: Store, capability_id: int, field: str) -> dict[str, Any]:
     cap = store.get_ref(kind="quest", id=capability_id)
     existing = (cap.meta or {}).get(field) if cap is not None else None
@@ -807,8 +806,9 @@ def _merged_axis_map(store: Store, capability_id: int, field: str) -> dict[str, 
 
 
 def _run_demand(
-    store: Store, client: Any, root: Ref, choice: RoleChoice, prompt: str
+    hub: Hub, client: Any, root: Ref, choice: RoleChoice, prompt: str
 ) -> dict[str, Any]:
+    store = _store(hub)
     reply = _ask(client, prompt)
     value = num(reply.get("value"))
     source = str(reply.get("source") or "").strip()
@@ -819,7 +819,7 @@ def _run_demand(
     demand = _merged_axis_map(store, choice.capability_id, "demand")
     demand[choice.key] = {"value": value, "source": source, "reason": reason}
     # Through the handler so the shape gate fires — never raw stamp_ref_meta.
-    _quest_handler(store).edit(id=choice.capability_id, meta={"demand": demand})
+    hub.sibling("quest").edit(id=choice.capability_id, meta={"demand": demand})
     unit = f" {choice.unit}" if choice.unit else ""
     append_entry(
         store,
@@ -869,7 +869,7 @@ def _hold_supply_finding(
 
 
 def _run_supply(
-    store: Store,
+    hub: Hub,
     client: Any,
     root: Ref,
     choice: RoleChoice,
@@ -897,6 +897,7 @@ def _run_supply(
     nothing about the literature. Both stops last until a supply lands."""
     from precis.quest.search import AcquiringSearch
 
+    store = _store(hub)
     hist = ledger.supply_history(store, choice.capability_id, choice.key)
     escalate = False
     if hist.ext_dry >= 2:
@@ -947,7 +948,7 @@ def _run_supply(
         search_fn.force_external = True
     try:
         result = _supply_tick(
-            store,
+            hub,
             client,
             choice,
             prompt,
@@ -1004,7 +1005,7 @@ def _run_supply(
 
 
 def _supply_tick(
-    store: Store,
+    hub: Hub,
     client: Any,
     choice: RoleChoice,
     prompt: str,
@@ -1017,6 +1018,7 @@ def _supply_tick(
     ``queries`` for :func:`_run_supply`'s outcome entry."""
     from precis.quest.search import MAX_QUERIES, _parse_search_entry, run_search_step
 
+    store = _store(hub)
     reply = _ask(client, prompt)
     raw_searches = reply.get("searches")
     searches = (
@@ -1058,10 +1060,7 @@ def _supply_tick(
         )
         by_handle = {_handle("paper", c.paper.id): c for c in cards}
         axis_unit = _axis_unit(choice.key, choice.unit)
-        from precis.dispatch import Hub
-        from precis.handlers.finding import FindingHandler
-
-        fh = FindingHandler(hub=Hub(store=store))
+        fh = hub.sibling("finding")
         for f in findings:
             claim = str(f.get("claim") or "").strip()
             value = num(f.get("value"))
@@ -1087,7 +1086,7 @@ def _supply_tick(
                 )
             try:
                 # dedup=False: the semantic-dedup cascade needs an embedder
-                # this worker-side hub does not carry; a repeated claim
+                # a worker-side hub may not carry; a repeated claim
                 # sentence still converges onto the same hub (pub_id).
                 resp = fh.put(title=claim, supporters=[supporter], dedup=False)
             except Exception:
@@ -1097,8 +1096,8 @@ def _supply_tick(
             if m is None:
                 continue
             hub_id = int(m.group(1))
-            hub = _handle("finding", hub_id)
-            hubs.append(hub)
+            hub_handle = _handle("finding", hub_id)
+            hubs.append(hub_handle)
             if check.verdict == "hold":
                 held += 1
                 _hold_supply_finding(
@@ -1106,9 +1105,9 @@ def _supply_tick(
                 )
                 continue
             if _improved(best, value, choice.sense):
-                best, best_evidence = value, [hub]
-            elif value == best and hub not in best_evidence:
-                best_evidence.append(hub)
+                best, best_evidence = value, [hub_handle]
+            elif value == best and hub_handle not in best_evidence:
+                best_evidence.append(hub_handle)
 
     note = f"supply: {searches_run} search(es), {papers_linked} paper(s) linked, {len(hubs)} hub(s)"
     if refused:
@@ -1137,7 +1136,7 @@ def _supply_tick(
         }
     supply = _merged_axis_map(store, choice.capability_id, "supply")
     supply[choice.key] = {"value": best, "evidence": best_evidence}
-    _quest_handler(store).edit(id=choice.capability_id, meta={"supply": supply})
+    hub.sibling("quest").edit(id=choice.capability_id, meta={"supply": supply})
     unit = f" {choice.unit}" if choice.unit else ""
     append_entry(
         store,
@@ -1220,8 +1219,9 @@ def _clean_entries(raw: Any, *, produces: bool) -> list[dict[str, Any]]:
 
 
 def _run_bridge(
-    store: Store, client: Any, root: Ref, choice: RoleChoice, prompt: str
+    hub: Hub, client: Any, root: Ref, choice: RoleChoice, prompt: str
 ) -> dict[str, Any]:
+    store = _store(hub)
     pathways, rungs, statuses, benign, capabilities = _bridge_context(
         store, root.id, choice
     )
@@ -1266,7 +1266,7 @@ def _run_bridge(
         if not title:
             return {"note": "bridge: pathway with no title — nothing minted"}
         text = f"{title}\n\n{statement}" if statement else title
-        resp = _quest_handler(store).put(text=text, tags=["STATUS:dormant"])
+        resp = hub.sibling("quest").put(text=text, tags=["STATUS:dormant"])
         pid = _parse_quest_handle(_first_handle(resp.body, "qu"))
         if pid is None:
             return {"note": "bridge: pathway mint returned no handle"}
@@ -1385,7 +1385,7 @@ def _run_bridge(
 
     deliverable = str(spec.get("deliverable") or "").strip()
     text = f"{title}\n\n{deliverable}" if deliverable else title
-    resp = _todo_handler(store).put(
+    resp = hub.sibling("todo").put(
         text=text, meta={"rung": rung_meta}, tags=list(RUNG_TAGS)
     )
     rid = _first_id(resp.body)
@@ -1549,7 +1549,7 @@ def stamp_deeds(
 
 
 def roadmap_tick(
-    store: Store,
+    hub: Hub,
     client: Any,
     quest_id: int,
     *,
@@ -1558,6 +1558,13 @@ def roadmap_tick(
     embedder: Any | None = None,
 ) -> dict[str, Any]:
     """Run one roadmap tick against root ``quest_id``.
+
+    ``hub`` is the caller's live :class:`~precis.dispatch.Hub` (its store is
+    the tick's store). Every handler the tick writes through — quest, todo,
+    finding, and the ``se`` plugin's measures view — is reached with
+    :meth:`Hub.sibling`, so a booted hub's wiring (embedder, hints, the
+    plugin set its entry points registered) is what the tick uses, and
+    core never names a plugin module (gr459054).
 
     Returns the weave-shaped dict the coordinator reads — ``ok``,
     ``applied``, ``note`` — plus ``role`` (``None`` when no gap maps to
@@ -1574,6 +1581,7 @@ def roadmap_tick(
     (:func:`precis.quest.search.run_search_step`); ``None`` uses the
     held-corpus lexical default.
     """
+    store = _store(hub)
     root = _is_roadmap_root(store, quest_id)
     if root is None:
         return {"ok": False, "error": "not_a_roadmap_root", "role": None, "gap": None}
@@ -1617,7 +1625,7 @@ def roadmap_tick(
             "note": "no capability axis needs demand, supply or a bridge",
         }
 
-    prompt = build_role_prompt(store, root, choice)
+    prompt = build_role_prompt(hub, root, choice)
     if dry_run:
         return {
             "ok": True,
@@ -1633,10 +1641,10 @@ def roadmap_tick(
 
     try:
         if choice.role == ROLE_DEMAND:
-            result = _run_demand(store, client, root, choice, prompt)
+            result = _run_demand(hub, client, root, choice, prompt)
         elif choice.role == ROLE_SUPPLY:
             result = _run_supply(
-                store,
+                hub,
                 client,
                 root,
                 choice,
@@ -1645,7 +1653,7 @@ def roadmap_tick(
                 embedder=embedder,
             )
         else:
-            result = _run_bridge(store, client, root, choice, prompt)
+            result = _run_bridge(hub, client, root, choice, prompt)
     except Exception as exc:
         log.exception("roadmap_tick: role %s raised on quest %s", choice.role, quest_id)
         return {
