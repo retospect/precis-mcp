@@ -1747,18 +1747,26 @@ class PcbMixin:
         run_id: str,
         findings: list[dict[str, Any]],
         *,
+        pads_only: bool = False,
         conn: Connection | None = None,
     ) -> None:
-        """Persist one DRC run's findings — ``pcb_drc_findings`` is
-        durable and linkable (0138): every row is a plain INSERT, never
-        mutated or DELETEd by a later run (unlike ``pcb_copper``'s
-        DELETE+INSERT regeneration discipline — a DRC run is a dated
-        finding, not a derived-and-replaced artifact)."""
+        """Persist one DRC run — a ``pcb_drc_runs`` row (0191, written even
+        when ``findings`` is empty: a clean run is a run, and the previous
+        run a delta compares against) plus its ``pcb_drc_findings`` rows.
+        The finding table is durable and linkable (0138): every row is a
+        plain INSERT, never mutated or DELETEd by a later run (unlike
+        ``pcb_copper``'s DELETE+INSERT regeneration discipline — a DRC
+        run is a dated finding, not a derived-and-replaced artifact).
+
+        Each row carries its ``finding_key`` (:func:`precis.pcb.drc.
+        finding_key`, from the finding's own ``to_row``), ``margin_mm``,
+        ``location`` and ``first_seen_at`` — the earliest ``created_at``
+        of a row on this board with the same key, or now."""
         if conn is not None:
-            self._pcb_write_drc_findings(conn, board_id, run_id, findings)
+            self._pcb_write_drc_findings(conn, board_id, run_id, findings, pads_only)
             return
         with self._pcb_tx() as c:
-            self._pcb_write_drc_findings(c, board_id, run_id, findings)
+            self._pcb_write_drc_findings(c, board_id, run_id, findings, pads_only)
 
     def _pcb_write_drc_findings(
         self,
@@ -1766,12 +1774,23 @@ class PcbMixin:
         board_id: int,
         run_id: str,
         findings: list[dict[str, Any]],
+        pads_only: bool,
     ) -> None:
+        n_error = sum(1 for f in findings if f["severity"] == "error")
+        conn.execute(
+            "INSERT INTO pcb_drc_runs (board_id, run_id, pads_only, n_error, n_warn) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (board_id, run_id, pads_only, n_error, len(findings) - n_error),
+        )
         for f in findings:
             conn.execute(
                 "INSERT INTO pcb_drc_findings "
-                "(board_id, run_id, rule, severity, objects, detail) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "(board_id, run_id, rule, severity, objects, detail, "
+                " finding_key, margin_mm, location, first_seen_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE("
+                "  (SELECT MIN(COALESCE(first_seen_at, created_at)) "
+                "     FROM pcb_drc_findings "
+                "    WHERE board_id = %s AND finding_key = %s), now()))",
                 (
                     board_id,
                     run_id,
@@ -1779,8 +1798,50 @@ class PcbMixin:
                     f["severity"],
                     Jsonb(f.get("objects") or []),
                     f.get("detail"),
+                    f.get("finding_key"),
+                    f.get("margin_mm"),
+                    f.get("location"),
+                    board_id,
+                    f.get("finding_key"),
                 ),
             )
+
+    _DRC_FINDING_COLS = (
+        "rule, severity, objects, detail, waived_by, "
+        "finding_key, margin_mm, location, first_seen_at"
+    )
+
+    @staticmethod
+    def _drc_finding_row(r: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "rule": r[0],
+            "severity": r[1],
+            "objects": r[2],
+            "detail": r[3],
+            "waived_by": r[4],
+            "finding_key": r[5],
+            "margin_mm": r[6],
+            "location": r[7],
+            "first_seen_at": r[8],
+        }
+
+    def _pcb_drc_latest_run_id(self, conn: Connection, board_id: int) -> str | None:
+        """The most recent run on ``board_id``: ``pcb_drc_runs`` when any
+        run has been recorded there (0191 onward — a clean run has a row
+        here and none in the finding table), else the newest finding row's
+        run (a pre-0191 run, which only existed if it had findings)."""
+        run_row = conn.execute(
+            "SELECT run_id FROM pcb_drc_runs "
+            "WHERE board_id = %s ORDER BY created_at DESC LIMIT 1",
+            (board_id,),
+        ).fetchone()
+        if run_row is None:
+            run_row = conn.execute(
+                "SELECT run_id FROM pcb_drc_findings "
+                "WHERE board_id = %s ORDER BY created_at DESC LIMIT 1",
+                (board_id,),
+            ).fetchone()
+        return None if run_row is None else str(run_row[0])
 
     def pcb_drc_findings_latest(
         self, ref_id: int
@@ -1788,7 +1849,9 @@ class PcbMixin:
         """The most recent DRC run's ``(run_id, findings)`` for the design's
         board — ``(None, [])`` when there is no board yet or no run has
         ever been recorded (the ``netlist_drc_clean`` gate evaluator reads
-        this: no run yet means "not yet", not "clean")."""
+        this: no run yet means "not yet", not "clean"). A clean run
+        recorded since 0191 is ``(run_id, [])`` — a verdict, not an
+        absence."""
         with self._pcb_conn() as conn:
             board_row = conn.execute(
                 "SELECT board_id FROM pcb_boards "
@@ -1798,30 +1861,41 @@ class PcbMixin:
             if board_row is None:
                 return None, []
             board_id = int(board_row[0])
-            run_row = conn.execute(
-                "SELECT run_id FROM pcb_drc_findings "
-                "WHERE board_id = %s ORDER BY created_at DESC LIMIT 1",
-                (board_id,),
-            ).fetchone()
-            if run_row is None:
+            run_id = self._pcb_drc_latest_run_id(conn, board_id)
+            if run_id is None:
                 return None, []
-            run_id = str(run_row[0])
-            rows = conn.execute(
-                "SELECT rule, severity, objects, detail, waived_by "
-                "FROM pcb_drc_findings WHERE board_id = %s AND run_id = %s "
-                "ORDER BY finding_id",
-                (board_id, run_id),
-            ).fetchall()
-            return run_id, [
-                {
-                    "rule": r[0],
-                    "severity": r[1],
-                    "objects": r[2],
-                    "detail": r[3],
-                    "waived_by": r[4],
-                }
-                for r in rows
-            ]
+            return run_id, self._pcb_drc_run_rows(conn, board_id, run_id)
+
+    def pcb_drc_findings_for_run(
+        self, board_id: int, run_id: str
+    ) -> list[dict[str, Any]]:
+        """Every persisted finding of one run, in ``finding_id`` order."""
+        with self._pcb_conn() as conn:
+            return self._pcb_drc_run_rows(conn, board_id, run_id)
+
+    def _pcb_drc_run_rows(
+        self, conn: Connection, board_id: int, run_id: str
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            f"SELECT {self._DRC_FINDING_COLS} "
+            "FROM pcb_drc_findings WHERE board_id = %s AND run_id = %s "
+            "ORDER BY finding_id",
+            (board_id, run_id),
+        ).fetchall()
+        return [self._drc_finding_row(r) for r in rows]
+
+    def pcb_drc_previous_run(
+        self, board_id: int
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """The latest recorded run on ``board_id`` and its rows — what the
+        run about to be written diffs against (``view='drc'`` calls this
+        BEFORE :meth:`pcb_write_drc_findings`). ``(None, [])`` when no run
+        has ever been recorded."""
+        with self._pcb_conn() as conn:
+            run_id = self._pcb_drc_latest_run_id(conn, board_id)
+            if run_id is None:
+                return None, []
+            return run_id, self._pcb_drc_run_rows(conn, board_id, run_id)
 
     def pcb_set_placement(
         self,

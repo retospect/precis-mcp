@@ -2149,3 +2149,149 @@ def test_a_ring_drawn_at_the_floor_in_mil_is_not_short_of_it():
     findings = drc.check_annular_ring(model, _CAP4)
     errors = [f.where.split(" ")[0] for f in findings if f.severity == "error"]
     assert errors == ["pad[E2]"]
+
+
+# ── finding identity (docs/backlog/finding-stable-identity.md) ───────────
+
+
+def _clearance_pair(
+    land_x: float, *, refdes: str = "U1", pin: str = "3"
+) -> drc.DrcFinding:
+    """One via-vs-pad clearance finding with the land at ``land_x`` — the
+    same participants at a different margin."""
+    via = _via("NET_A", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    land = _pad("NET_B", "F.Cu", land_x, 0.0, w=0.2, h=0.2)
+    land.update(refdes=refdes, pin=pin)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [land]}
+    (f,) = [f for f in drc.check_clearance(model, _CAP4) if f.rule == "clearance"]
+    return f
+
+
+def test_finding_key_is_the_same_for_the_same_pair_at_a_different_margin():
+    """The spec's acceptance: ``R0C2 clears RESV by -0.114mm`` and the same
+    pair at ``-0.090mm`` after a nudge are ONE finding with a changed
+    margin — coordinates and the margin are payload, never identity."""
+    a, b = _clearance_pair(0.45), _clearance_pair(0.47)
+    assert a.margin_mm != b.margin_mm
+    assert a.where != b.where or a.detail != b.detail
+    assert drc.finding_identity(a) == drc.finding_identity(b)
+    assert drc.finding_key(a) == drc.finding_key(b)
+    assert len(drc.finding_key(a)) == 12
+    assert a.to_row()["finding_key"] == drc.finding_key(a)
+    assert a.to_row()["margin_mm"] == a.margin_mm
+    assert a.to_row()["location"] == a.where
+
+
+def test_finding_key_differs_when_a_participant_differs():
+    a, b = _clearance_pair(0.45, pin="3"), _clearance_pair(0.45, pin="4")
+    assert drc.finding_key(a) != drc.finding_key(b)
+
+
+def test_finding_identity_is_unordered_over_a_pair():
+    """A courtyard overlap keys the same from either end."""
+    ab = drc.DrcFinding(
+        "courtyard_overlap", "error", "R1 <-> C1", "", ({"a": "R1", "b": "C1"},)
+    )
+    ba = drc.DrcFinding(
+        "courtyard_overlap", "error", "C1 <-> R1", "", ({"a": "C1", "b": "R1"},)
+    )
+    assert drc.finding_key(ab) == drc.finding_key(ba)
+    vv = drc.DrcFinding(
+        "via_via_keepout",
+        "error",
+        "x",
+        "",
+        ({"a_net": "N1", "a_x": 1, "b_net": "N2", "b_x": 9},),
+    )
+    vv2 = drc.DrcFinding(
+        "via_via_keepout",
+        "error",
+        "y",
+        "",
+        ({"a_net": "N2", "a_x": 5, "b_net": "N1", "b_x": 2},),
+    )
+    assert drc.finding_key(vv) == drc.finding_key(vv2)
+    assert drc.finding_identity(vv)[1] == ("via:N1", "via:N2")
+
+
+def test_finding_key_is_deterministic_across_processes_not_a_counter():
+    """Recomputable from the finding alone: the key is a content hash, so
+    it carries no sequence or run id — a fixed vector pins the derivation."""
+    f = drc.DrcFinding(
+        "clearance",
+        "error",
+        "pad[U1/3 net B] <-> via[A] on F.Cu",
+        "",
+        (
+            {"ctype": "pad", "net": "B", "layer": "F.Cu", "refdes": "U1", "pin": "3"},
+            {"ctype": "via", "net": "A", "layer": "F.Cu"},
+        ),
+        margin_mm=-0.1,
+    )
+    assert drc.finding_identity(f) == ("clearance", ("pad:U1/3", "via:A:F.Cu"), "F.Cu")
+    import hashlib
+
+    expect = hashlib.sha1(b"clearance|F.Cu|pad:U1/3+via:A:F.Cu").hexdigest()[:12]
+    assert drc.finding_key(f) == expect
+
+
+def test_delta_against_pairs_by_key_and_reports_margin_change_as_still():
+    before = [_clearance_pair(0.45), _clearance_pair(0.45, pin="9")]
+    prev_rows = [{**f.to_row(), "run_id": "prev"} for f in before]
+    # pin 3 nudged (worse), pin 9 gone, a new pin 5 appears.
+    after = [_clearance_pair(0.44), _clearance_pair(0.45, pin="5")]
+    d = drc.delta_against("prev", prev_rows, after)
+    assert d.previous_run_id == "prev"
+    assert [drc.finding_key(f) for f in d.new] == [drc.finding_key(after[1])]
+    assert len(d.still) == 1
+    still_f, old_margin = d.still[0]
+    assert still_f is after[0]
+    assert old_margin is not None and still_f.margin_mm is not None
+    assert old_margin == pytest.approx(before[0].margin_mm)
+    assert still_f.margin_mm < old_margin
+    assert [(f.rule, f.where) for f, _ in d.worse] == [(after[0].rule, after[0].where)]
+    assert d.label(after[0]).startswith("still, worse (was ")
+    assert d.label(after[1]) == "new"
+    assert [r["finding_key"] for r in d.gone] == [drc.finding_key(before[1])]
+    assert d.gone[0]["location"] == before[1].where
+
+
+def test_delta_against_an_unchanged_board_is_all_still_nothing_new_or_gone():
+    findings = [_clearance_pair(0.45), _clearance_pair(0.45, pin="9")]
+    d = drc.delta_against("prev", [f.to_row() for f in findings], findings)
+    assert not d.new and not d.gone and not d.worse
+    assert len(d.still) == 2
+    assert all(d.label(f) == "still" for f in findings)
+
+
+def test_delta_against_pairs_shared_keys_rank_for_rank_by_margin():
+    """Many hits under one key: the extra one is the new one, the matched
+    ranks are still — the key is honest about not being unique."""
+    one = _clearance_pair(0.45)
+    prev = [one.to_row()]
+    now = [_clearance_pair(0.46), _clearance_pair(0.44)]
+    d = drc.delta_against("prev", prev, now)
+    assert len(d.still) == 1 and len(d.new) == 1 and not d.gone
+    # The most negative current margin pairs with the previous row.
+    assert d.still[0][0] is now[1]
+    assert d.new[0] is now[0]
+
+
+def test_delta_against_a_keyless_previous_run_refuses_to_call_anything_new():
+    """A run written before 0191 has no keys: half a comparison would call
+    some findings new on no evidence, so the delta says 'nothing to compare
+    against' and labels nothing."""
+    f = _clearance_pair(0.45)
+    legacy = {**f.to_row(), "finding_key": None}
+    d = drc.delta_against("legacy", [legacy], [f])
+    assert d.previous_run_id is None
+    assert not d.new and not d.gone
+    assert d.still == [(f, None)]
+    assert d.label(f) == ""
+
+
+def test_delta_against_a_clean_previous_run_calls_everything_new():
+    f = _clearance_pair(0.45)
+    d = drc.delta_against("clean", [], [f])
+    assert d.previous_run_id == "clean"
+    assert d.new == [f] and not d.still and not d.gone

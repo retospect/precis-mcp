@@ -277,7 +277,11 @@ def test_op_footprint_fill_clears_synthesized_footprint_drc_finding(pcb, monkeyp
     assert "2/2 cached" in resp.body
 
     after = pcb.get(id="ewod-no-footprints-2", view="drc")
-    assert "synthesized_footprint" not in after.body
+    # The run's own findings no longer include it; the delta's "gone"
+    # block (finding-stable-identity) is where it is NAMED as cleared.
+    current, _, gone = after.body.partition("## gone since run")
+    assert "synthesized_footprint" not in current
+    assert "synthesized_footprint: part ARR1_SINK_0" in gone
 
 
 # ── (f) a declared pin name with no pad on a CACHED footprint ────────────

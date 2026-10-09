@@ -3012,3 +3012,165 @@ def test_footprint_judge_crash_still_stores_the_footprint(pcb, store, monkeypatc
     )
     row = store.part_footprint_get(_FP_P2)
     assert row is not None and row["pads"][0]["w"] == 3.0
+
+
+# ── finding identity: new / still / gone (docs/backlog/finding-stable-identity.md)
+
+
+def _two_real_pads(ax: float, ay: float, bx: float, by: float) -> dict[str, Any]:
+    """Two parts with REAL (authored-local) 1x1 pad geometry on one shared
+    net, so ``view='drc'`` runs its pads-only pass instead of bailing on
+    synthesized bounds. The net is never routed here, so every run also
+    carries one standing ``unrouted`` finding — a useful control: it must
+    read ``still`` through every move below."""
+    fp = {
+        "name": "pad1",
+        "pads": [{"pin": "1", "shape": "rect", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}],
+    }
+    part = {"label": "e", "footprint": "pad1", "pins": [{"name": "1"}]}
+    return {
+        "footprints": [fp],
+        "components": [
+            {"refdes": "A", "x": ax, "y": ay, **part},
+            {"refdes": "B", "x": bx, "y": by, **part},
+        ],
+        "nets": [{"name": "N1"}],
+        "connections": [
+            {"net": "N1", "refdes": "A", "pin": "1"},
+            {"net": "N1", "refdes": "B", "pin": "1"},
+        ],
+    }
+
+
+def _drc_rows(store, slug):
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    return store.pcb_drc_findings_latest(ref.id)
+
+
+def _by_rule(rows):
+    return {r["rule"]: r for r in rows}
+
+
+def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store):
+    """The spec's acceptance, end to end on the persisted surface: two runs
+    over an unchanged board produce identical key sets and read 'still';
+    a nudge that changes a margin is 'still, better (was …)', never gone +
+    new; moving clear lists the overlap as GONE while the untouched
+    ``unrouted`` finding stays 'still'; re-breaking it reads 'new' (broken
+    AGAIN, not still broken) while the finding's lifetime
+    (``first_seen_at``) still starts at the first run."""
+    slug = "finding-ids"
+    _put_standing(pcb, store, slug, _two_real_pads(0.0, 0.0, 1.2, 0.0))
+
+    first = pcb.get(id=slug, view="drc").body
+    assert "error(s)" in first and "none to compare against" in first
+    run1, rows1 = _drc_rows(store, slug)
+    assert run1 is not None
+    # One overlap plus the fixture's standing per-net findings (unrouted,
+    # connectivity) — those are the control group that must read 'still'.
+    assert "courtyard_overlap" in {r["rule"] for r in rows1}
+    n_standing = len(rows1) - 1
+    assert n_standing >= 1
+    assert all(r["finding_key"] and r["first_seen_at"] and r["location"] for r in rows1)
+    overlap_key = _by_rule(rows1)["courtyard_overlap"]["finding_key"]
+    unrouted_key = _by_rule(rows1)["unrouted"]["finding_key"]
+    assert _by_rule(rows1)["courtyard_overlap"]["margin_mm"] < 0
+    keys1 = sorted(r["finding_key"] for r in rows1)
+    # The id column is the key; it is rendered, and there is no delta column yet.
+    assert all(r["finding_key"] in first for r in rows1)
+    assert "{id\tseverity\trule\twhere\tmargin_mm\tdetail}" in first
+
+    second = pcb.get(id=slug, view="drc").body
+    run2, rows2 = _drc_rows(store, slug)
+    assert run2 != run1
+    assert sorted(r["finding_key"] for r in rows2) == keys1
+    assert f"vs run {run1[:8]}: 0 new, {len(rows1)} still, 0 gone" in second
+    assert "## gone" not in second
+    first_seen = {r["finding_key"]: r["first_seen_at"] for r in rows1}
+    assert {r["finding_key"]: r["first_seen_at"] for r in rows2} == first_seen
+
+    # Nudge A away from B: same participants, better margin -> still.
+    _move_a(pcb, slug, -0.1, 0.0)
+    third = pcb.get(id=slug, view="drc").body
+    assert "{id\tseverity\trule\twhere\tmargin_mm\tdelta\tdetail}" in third
+    assert f"vs run {run2[:8]}: 0 new, {len(rows1)} still, 0 gone" in third
+    overlap_line = next(ln for ln in third.splitlines() if ln.startswith(overlap_key))
+    m1 = _by_rule(rows1)["courtyard_overlap"]["margin_mm"]
+    assert f"still, better (was {m1:+.3f})" in overlap_line
+    unrouted_line = next(ln for ln in third.splitlines() if ln.startswith(unrouted_key))
+    assert "\tstill\t" in unrouted_line
+    run3, rows3 = _drc_rows(store, slug)
+    assert sorted(r["finding_key"] for r in rows3) == keys1
+
+    # Move clear: the overlap is GONE and named by id; unrouted is still.
+    _move_a(pcb, slug, 20.0, 20.0)
+    fourth = pcb.get(id=slug, view="drc").body
+    assert f"vs run {run3[:8]}: 0 new, {n_standing} still, 1 gone" in fourth
+    assert f"## gone since run {run3[:8]} (1)" in fourth
+    m3 = _by_rule(rows3)["courtyard_overlap"]["margin_mm"]
+    assert m3 > m1
+    assert (
+        f"- {overlap_key}  error  courtyard_overlap: A <-> B  ({m3:+.3f}mm)" in fourth
+    )
+    run4, rows4 = _drc_rows(store, slug)
+    assert overlap_key not in {r["finding_key"] for r in rows4}
+    assert len(rows4) == n_standing
+
+    # Break it again (plant the pose; `put` would refuse a new violation):
+    # the overlap is NEW relative to the previous run, with its original
+    # first_seen_at — broken again, not still broken.
+    ref = store.get_ref(kind="pcb", id=slug)
+    store.pcb_set_pose(ref.id, {"A": (0.0, 0.0, 0.0)})
+    fifth = pcb.get(id=slug, view="drc").body
+    assert f"vs run {run4[:8]}: 1 new, {n_standing} still, 0 gone" in fifth
+    overlap_line = next(ln for ln in fifth.splitlines() if ln.startswith(overlap_key))
+    assert "\tnew\t" in overlap_line
+    _run5, rows5 = _drc_rows(store, slug)
+    assert sorted(r["finding_key"] for r in rows5) == keys1
+    assert {r["finding_key"]: r["first_seen_at"] for r in rows5} == first_seen
+
+
+def test_drc_view_counts_new_and_gone_separately_never_netted(pcb, store):
+    """The honest-count rule: a change that removes one finding and adds
+    another must not read as 'no change'. Here A moves off B and onto C —
+    the A<->B overlap goes, an A<->C overlap comes, the unrouted finding
+    stands — and the head says so even though the totals match."""
+    slug = "finding-ids-netted"
+    design = _two_real_pads(0.0, 0.0, 1.2, 0.0)
+    design["components"].append({**design["components"][0], "refdes": "C", "x": 10.0})
+    design["connections"].append({"net": "N1", "refdes": "C", "pin": "1"})
+    _put_standing(pcb, store, slug, design)
+    pcb.get(id=slug, view="drc")
+    run1, rows1 = _drc_rows(store, slug)
+    assert "courtyard_overlap" in {r["rule"] for r in rows1}
+    ref = store.get_ref(kind="pcb", id=slug)
+    store.pcb_set_pose(ref.id, {"A": (8.8, 0.0, 0.0)})
+    body = pcb.get(id=slug, view="drc").body
+    _run2, rows2 = _drc_rows(store, slug)
+    assert len(rows2) == len(rows1)
+    assert f"vs run {run1[:8]}: 1 new, {len(rows1) - 1} still, 1 gone" in body
+    assert (
+        _by_rule(rows2)["courtyard_overlap"]["finding_key"]
+        != (_by_rule(rows1)["courtyard_overlap"]["finding_key"])
+    )
+    assert "courtyard_overlap: A <-> B" in body.partition("## gone since run")[2]
+
+
+def test_drc_clean_run_is_recorded_as_a_verdict_not_an_absence(pcb, store):
+    """0191's ``pcb_drc_runs``: a run with no findings used to leave no
+    trace, so ``pcb_drc_findings_latest`` (the ``netlist_drc_clean`` gate)
+    read a clean board as 'no run yet'. Now a clean run is ``(run_id, [])``
+    and the next run diffs against it."""
+    slug = "finding-ids-clean"
+    pcb.put(id=slug, args=_two_real_pads(0.0, 0.0, 20.0, 20.0))
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert store.pcb_drc_findings_latest(ref.id) == (None, [])
+    board_id = store.pcb_ensure_board(ref.id)
+    store.pcb_write_drc_findings(board_id, "clean-run", [])
+    assert store.pcb_drc_findings_latest(ref.id) == ("clean-run", [])
+    assert store.pcb_drc_previous_run(board_id) == ("clean-run", [])
+    body = pcb.get(id=slug, view="drc").body
+    _run, rows = store.pcb_drc_findings_latest(ref.id)
+    assert rows
+    assert f"vs run clean-ru: {len(rows)} new, 0 still, 0 gone" in body

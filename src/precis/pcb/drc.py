@@ -84,6 +84,17 @@ with a partially-overlapping span could be silently skipped). Agreement
 with a synthetic-fixture oracle proves agreement on the shapes tested,
 not correctness against production geometry.
 
+**Findings have an identity, not just a present** (docs/backlog/
+finding-stable-identity.md). :func:`finding_key` hashes ``(rule,
+canonicalised participants, layer)`` — never coordinates, the margin or
+list position — so the same pair at a different margin is the same
+finding across runs; :func:`delta_against` pairs one run's findings with
+the previous run's persisted rows by that key (rank for rank by margin
+when several share one) into new / still / gone. The handler's
+``view='drc'`` renders that delta; the group-move judge in
+``handlers/pcb.py`` keys on the same :func:`finding_identity`, so the two
+agree on what "the same finding" means.
+
 **STRtree is used only for the clearance rule**: copper-to-copper
 clearance is the one genuinely O(n^2) rule (every different-net pair per
 layer is a candidate); trace width, annular ring, NPTH clearance and
@@ -94,8 +105,11 @@ machinery, at instance rather than copper-item scale.
 
 from __future__ import annotations
 
+import collections
+import dataclasses
+import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -178,7 +192,215 @@ class DrcFinding:
             "severity": self.severity,
             "objects": list(self.objects),
             "detail": self.detail,
+            "finding_key": finding_key(self),
+            "margin_mm": self.margin_mm,
+            "location": self.where,
         }
+
+
+# ── finding identity ──────────────────────────────────────────────────────
+#
+# docs/backlog/finding-stable-identity.md: a finding's identity is
+# ``(rule, participants)``, never a row id, a list position or a
+# coordinate. The participants are the durable things the finding is ABOUT
+# — the two nets of a clearance hit, the pad and the via of a keep-out,
+# the two parts of a courtyard overlap — canonicalised (sorted, so an
+# unordered pair keys the same either way) and independent of the measured
+# value. ``R0C2 <-> RESV at -0.114mm`` and the same pair at ``-0.090mm``
+# after a nudge are ONE finding with a changed margin. Coordinates and the
+# margin are payload: they are how you find the finding on the board and
+# how bad it is, not what it is. Position would be the tempting key and is
+# wrong — every participant here moves; keying on where it sat would report
+# resolved-and-recreated on every placement nudge, the exact noise this
+# removes.
+
+
+def _object_identity(o: dict[str, Any], prefix: str = "") -> str:
+    """Coordinate-free identity of one object of a finding: a pad is
+    ``refdes/pin``, authored fixed copper its ``fixed_id``. An object with
+    neither is a courtyard finding's ``a``/``b`` pair (``part:<refdes>``, or
+    ``hole:<label>``); a silk draw is ``role:refdes:side``; a bare part is
+    ``part:<refdes>``; anything else falls back to ``ctype:net:layer``.
+    ``prefix`` reads the ``a_``/``b_``-style halves of a paired object."""
+    refdes, pin = o.get(prefix + "refdes"), o.get(prefix + "pin")
+    if refdes and pin:
+        return f"pad:{refdes}/{pin}"
+    fid = o.get(prefix + "fixed_id")
+    if fid is not None:
+        return f"fixed:{fid}"
+    a, b = o.get(prefix + "a"), o.get(prefix + "b")
+    if a is not None and b is not None:
+        # courtyard_overlap / courtyard_hole: ``a`` is a refdes, ``b`` another
+        # refdes or a hole label. Unordered, so the pair keys the same from
+        # either end.
+        side = [f"part:{a}", f"hole:{b}" if str(b).startswith("hole") else f"part:{b}"]
+        return "+".join(sorted(side))
+    role = o.get(prefix + "role")
+    if role is not None:
+        # outline_containment of a silk draw: role + refdes + side.
+        return f"silk:{role}:{o.get(prefix + 'refdes')}:{o.get(prefix + 'side')}"
+    if refdes:
+        # outline_containment of a whole part (courtyard): no pin.
+        return f"part:{refdes}"
+    return (
+        f"{o.get(prefix + 'ctype')}:{o.get(prefix + 'net')}:{o.get(prefix + 'layer')}"
+    )
+
+
+def finding_identity(f: DrcFinding) -> tuple[str, tuple[str, ...], str | None]:
+    """``(rule, sorted participant identities, layer)`` — no coordinates,
+    so a finding between two members of a rigidly moved group keeps its
+    key, and the same pair at a different margin is the same finding.
+
+    Paired-object rules whose single ``objects`` entry carries both halves
+    under prefixes (``via_pad_keepout``: ``via_*``/``pad_*``;
+    ``via_via_keepout``: ``a_*``/``b_*``) are split into their two
+    participants here; every other rule's participants are its ``objects``
+    one by one through :func:`_object_identity`."""
+    if f.rule == "via_pad_keepout" and f.objects:
+        o = f.objects[0]
+        via = (
+            f"fixed:{o['via_fixed_id']}"
+            if o.get("via_fixed_id") is not None
+            else f"via:{o.get('via_net')}"
+        )
+        pad = (
+            f"pad:{o.get('pad_refdes')}/{o.get('pad_pin')}"
+            if o.get("pad_refdes") and o.get("pad_pin")
+            else f"pad:{o.get('pad_net')}"
+        )
+        return (f.rule, tuple(sorted((via, pad))), o.get("pad_layer"))
+    if f.rule == "via_via_keepout" and f.objects:
+        o = f.objects[0]
+        pair = (f"via:{o.get('a_net')}", f"via:{o.get('b_net')}")
+        return (f.rule, tuple(sorted(pair)), None)
+    ids = tuple(sorted(_object_identity(o) for o in f.objects))
+    layer = f.where.rsplit(" on ", 1)[-1] if " on " in f.where else None
+    return (f.rule, ids, layer)
+
+
+def finding_key(f: DrcFinding) -> str:
+    """The persisted form of :func:`finding_identity`: 12 hex chars of a
+    SHA-1 over ``rule|layer|participant+participant``. Deterministic and
+    recomputable from the finding alone — no counter, sequence, run id or
+    list position — so two runs of the same check over an unchanged board
+    produce identical key sets, and ``pcb_drc_findings.finding_key`` can
+    be joined across runs. Several findings may legitimately share a key
+    (many clearance hits between the same two nets on one layer):
+    :func:`delta_against` pairs those rank for rank by margin rather than
+    pretending the key is unique."""
+    rule, ids, layer = finding_identity(f)
+    canon = "|".join((rule, layer or "", "+".join(ids)))
+    return hashlib.sha1(canon.encode("utf-8")).hexdigest()[:12]
+
+
+#: A standing finding whose margin fell by more than this is reported as
+#: worse, not merely still — float noise on a re-measured, unchanged board
+#: must never read as a regression.
+WORSE_MARGIN_EPS_MM = 1e-4
+
+
+@dataclass(frozen=True, slots=True)
+class FindingDelta:
+    """One run against the previous run on the same board, by
+    :func:`finding_key`. ``still`` carries ``(finding, previous margin)``
+    so "same finding, now -0.114 instead of -0.090" is reportable (the
+    spec's acceptance: a move that changes a margin without changing
+    participants is ``still``, never ``gone`` + ``new``). ``gone`` holds
+    the previous run's rows (``rule``/``location``/``margin_mm``/
+    ``finding_key``) that have no counterpart now. ``previous_run_id`` is
+    ``None`` when there was nothing keyed to compare against — the first
+    run after 0191, or a previous run written before it — and then every
+    finding sits in ``still`` with no previous margin, deliberately NOT in
+    ``new``: "we cannot tell" must not be rendered as "all new"."""
+
+    previous_run_id: str | None
+    new: list[DrcFinding] = dataclasses.field(default_factory=list)
+    still: list[tuple[DrcFinding, float | None]] = dataclasses.field(
+        default_factory=list
+    )
+    gone: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+
+    @property
+    def worse(self) -> list[tuple[DrcFinding, float]]:
+        """The ``still`` findings whose margin fell by more than
+        :data:`WORSE_MARGIN_EPS_MM`, with the previous margin."""
+        return [
+            (f, prev)
+            for f, prev in self.still
+            if prev is not None
+            and f.margin_mm is not None
+            and f.margin_mm < prev - WORSE_MARGIN_EPS_MM
+        ]
+
+    def label(self, f: DrcFinding) -> str:
+        """The per-row delta cell: ``new`` / ``still`` / ``still, worse
+        (was -0.090)`` / ``still, better (was -0.114)``; empty when there
+        was no previous run to compare against."""
+        if self.previous_run_id is None:
+            return ""
+        if any(f is g for g in self.new):
+            return "new"
+        for g, prev in self.still:
+            if f is g:
+                if prev is None or f.margin_mm is None:
+                    return "still"
+                if f.margin_mm < prev - WORSE_MARGIN_EPS_MM:
+                    return f"still, worse (was {prev:+.3f})"
+                if f.margin_mm > prev + WORSE_MARGIN_EPS_MM:
+                    return f"still, better (was {prev:+.3f})"
+                return "still"
+        return ""
+
+
+def _margin_rank(m: float | None) -> float:
+    return math.inf if m is None else m
+
+
+def delta_against(
+    previous_run_id: str | None,
+    previous: Iterable[dict[str, Any]],
+    findings: Sequence[DrcFinding],
+) -> FindingDelta:
+    """Pair ``findings`` with the ``previous`` run's persisted rows by
+    :func:`finding_key`, most negative margin first within a key, so one
+    new hit among old ones between the same two nets is the one reported
+    as new. Extra current findings under a key are ``new``, extra previous
+    rows are ``gone``, matched ranks are ``still`` with the old margin.
+
+    A previous run with ANY keyless row (written before 0191) is treated
+    as absent: half a comparison would render some findings as new and
+    others as still on no evidence. A clean previous run (a run id, no
+    rows) is a real comparison — everything now is new."""
+    prev_rows = list(previous)
+    if previous_run_id is None or any(not r.get("finding_key") for r in prev_rows):
+        return FindingDelta(None, still=[(f, None) for f in findings])
+    old: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for r in prev_rows:
+        old[str(r["finding_key"])].append(r)
+    for rows in old.values():
+        rows.sort(key=lambda r: _margin_rank(r.get("margin_mm")))
+    now: dict[str, list[DrcFinding]] = collections.defaultdict(list)
+    for f in findings:
+        now[finding_key(f)].append(f)
+    delta = FindingDelta(previous_run_id)
+    for key, items in now.items():
+        items.sort(key=lambda f: _margin_rank(f.margin_mm))
+        was = old.pop(key, [])
+        for i, f in enumerate(items):
+            if i < len(was):
+                m = was[i].get("margin_mm")
+                delta.still.append((f, None if m is None else float(m)))
+            else:
+                delta.new.append(f)
+        delta.gone.extend(was[len(items) :])
+    for rows in old.values():
+        delta.gone.extend(rows)
+    # Report in the caller's finding order, not grouped by key.
+    order = {id(f): i for i, f in enumerate(findings)}
+    delta.new.sort(key=lambda f: order[id(f)])
+    delta.still.sort(key=lambda fp: order[id(fp[0])])
+    return delta
 
 
 def process_for_stackup(stackup: list[dict[str, Any]]) -> str:
@@ -2666,7 +2888,9 @@ def run_placement_drc(
 __all__ = [
     "DEFAULT_COURTYARD_RADIUS_MM",
     "SILK_LEGIBILITY_HEIGHT_MM",
+    "WORSE_MARGIN_EPS_MM",
     "DrcFinding",
+    "FindingDelta",
     "check_annular_ring",
     "check_board_edge_clearance",
     "check_clearance",
@@ -2686,6 +2910,9 @@ __all__ = [
     "check_via_via_keepout",
     "clearance_pairs_indexed",
     "clearance_violations_naive",
+    "delta_against",
+    "finding_identity",
+    "finding_key",
     "process_for_stackup",
     "run_geometric_drc",
     "run_placement_drc",

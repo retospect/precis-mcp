@@ -272,7 +272,7 @@ get(
 )  # coarse H/V via estimate (NOT real routing) + pins a class "layers" lock strands
 get(
     kind="pcb", id="s", view="drc"
-)  # DRC-lite findings (unplaced, off-board, overlaps…)
+)  # geometric DRC: findings with stable ids + new/still/gone vs the previous run
 get(
     kind="pcb", id="s", view="route-status"
 )  # per-net route status: unrouted|sketched|realized|failed
@@ -473,6 +473,25 @@ put(
 
 `view='mechanical'` emits a JSON profile (outline + holes + component
 height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
+
+## Read a DRC run as a delta — finding ids
+
+Every DRC finding carries a stable `id` (12 hex chars): a content hash over
+`(rule, participants, layer)` — the two nets of a clearance hit, the pad and
+the via of a keep-out, the two parts of a courtyard overlap — never over
+coordinates, the margin or list position, so the same pair at a different
+margin after a nudge is the SAME finding. Each `view='drc'` call is a
+recorded run (clean runs too) and the head reports the delta against the
+previous run on that board: `vs run b13770b5: 3 new, 127 still (2 worse),
+5 gone` — new and gone counted separately, never netted, because a move
+that fixes three and creates three is not "no change". The table's `delta`
+column reads `new` / `still` / `still, worse (was -0.090)` /
+`still, better (was …)`; a `## gone since run …` list names what went,
+by id. The first run after this landed says "none to compare against"
+rather than calling everything new. Findings persist in
+`pcb_drc_findings` with `finding_key`, `margin_mm` and `first_seen_at`
+(the lifetime start — surviving a clean run in between, so "broken again"
+reads `new` while keeping its original first-seen).
 
 ## Find a design — `search`
 

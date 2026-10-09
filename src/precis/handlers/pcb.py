@@ -74,7 +74,7 @@ import uuid
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 from precis.config import load_config
 from precis.dispatch import Hub, InitError
@@ -228,37 +228,6 @@ _MOVES_EXAMPLE = (
 )
 
 
-def _finding_object_identity(o: dict[str, Any], prefix: str = "") -> str:
-    """Coordinate-free identity of one object of a DRC finding: a pad is
-    ``refdes/pin``, authored fixed copper its ``fixed_id``. An object with
-    neither is a courtyard finding's ``a``/``b`` pair (``part:<refdes>``, or
-    ``hole:<label>``); an object with none of these falls back to
-    ``ctype:net:layer``."""
-    refdes, pin = o.get(prefix + "refdes"), o.get(prefix + "pin")
-    if refdes and pin:
-        return f"pad:{refdes}/{pin}"
-    fid = o.get(prefix + "fixed_id")
-    if fid is not None:
-        return f"fixed:{fid}"
-    a, b = o.get(prefix + "a"), o.get(prefix + "b")
-    if a is not None and b is not None:
-        # courtyard_overlap / courtyard_hole: ``a`` is a refdes, ``b`` another
-        # refdes or a hole label. Unordered, so the pair keys the same from
-        # either end.
-        side = [f"part:{a}", f"hole:{b}" if str(b).startswith("hole") else f"part:{b}"]
-        return "+".join(sorted(side))
-    role = o.get(prefix + "role")
-    if role is not None:
-        # outline_containment of a silk draw: role + refdes + side.
-        return f"silk:{role}:{o.get(prefix + 'refdes')}:{o.get(prefix + 'side')}"
-    if refdes:
-        # outline_containment of a whole part (courtyard): no pin.
-        return f"part:{refdes}"
-    return (
-        f"{o.get(prefix + 'ctype')}:{o.get(prefix + 'net')}:{o.get(prefix + 'layer')}"
-    )
-
-
 #: A pose conflict the move deepens by more than this is a new fault (mm²;
 #: the via-keepout shortfall is a length, same threshold).
 _POSE_DEPTH_EPS = 1e-6
@@ -322,25 +291,68 @@ def _pose_delta(
     return problems, standing
 
 
+class _DrcRun(NamedTuple):
+    """What :meth:`PcbHandler._drc_run` hands its two callers."""
+
+    run_id: str
+    findings: list[pcb_drc.DrcFinding]
+    pads_only: bool
+    delta: pcb_drc.FindingDelta
+
+
+#: Gone findings listed in full up to this many; past it, a count.
+_DRC_GONE_SHOWN = 40
+
+
+def _drc_delta_line(delta: pcb_drc.FindingDelta) -> str:
+    """The honest-count line under the DRC head: new / still (worse) /
+    gone against the previous run, each counted separately and NEVER
+    netted — a move that fixes three findings and creates three others
+    must not read as "no change" (docs/backlog/finding-stable-identity.md).
+    With no keyed previous run it says so, rather than calling everything
+    new."""
+    if delta.previous_run_id is None:
+        return (
+            "vs previous run: none to compare against (first run with finding "
+            "ids on this board) — every finding below is reported without a "
+            "new/still verdict"
+        )
+    n_worse = len(delta.worse)
+    worse = f" ({n_worse} worse)" if n_worse else ""
+    return (
+        f"vs run {delta.previous_run_id[:8]}: {len(delta.new)} new, "
+        f"{len(delta.still)} still{worse}, {len(delta.gone)} gone"
+    )
+
+
+def _drc_gone_block(delta: pcb_drc.FindingDelta) -> str:
+    """The previous run's findings that have no counterpart now, one line
+    each (``id rule where margin``) so "these two went away" is a
+    statement about named findings, not a change in a count."""
+    if not delta.gone:
+        return ""
+    lines = [
+        "",
+        f"## gone since run {(delta.previous_run_id or '')[:8]} ({len(delta.gone)})",
+    ]
+    for r in delta.gone[:_DRC_GONE_SHOWN]:
+        m = r.get("margin_mm")
+        margin = "" if m is None else f"  ({float(m):+.3f}mm)"
+        lines.append(
+            f"- {r.get('finding_key') or '-'}  {r.get('severity')}  {r.get('rule')}: "
+            f"{r.get('location') or r.get('detail') or ''}{margin}"
+        )
+    if len(delta.gone) > _DRC_GONE_SHOWN:
+        lines.append(f"- … {len(delta.gone) - _DRC_GONE_SHOWN} more")
+    return "\n".join(lines)
+
+
 def _finding_identity(f: pcb_drc.DrcFinding) -> tuple[Any, ...]:
-    """``(rule, sorted object identities, layer)`` — no coordinates, so a
-    finding between two members of a rigidly moved group keeps its key."""
-    if f.rule == "via_pad_keepout" and f.objects:
-        o = f.objects[0]
-        via = (
-            f"fixed:{o['via_fixed_id']}"
-            if o.get("via_fixed_id") is not None
-            else f"via:{o.get('via_net')}"
-        )
-        pad = (
-            f"pad:{o.get('pad_refdes')}/{o.get('pad_pin')}"
-            if o.get("pad_refdes") and o.get("pad_pin")
-            else f"pad:{o.get('pad_net')}"
-        )
-        return (f.rule, tuple(sorted((via, pad))), o.get("pad_layer"))
-    ids = tuple(sorted(_finding_object_identity(o) for o in f.objects))
-    layer = f.where.rsplit(" on ", 1)[-1] if " on " in f.where else None
-    return (f.rule, ids, layer)
+    """The shared finding identity (:func:`precis.pcb.drc.finding_identity`)
+    — the same ``(rule, participants, layer)`` ``view='drc'`` persists as
+    ``finding_key``, so a group move and the DRC delta agree on what "the
+    same finding" means."""
+    return pcb_drc.finding_identity(f)
 
 
 def _margin_delta[T](
@@ -3515,10 +3527,11 @@ class PcbHandler(Handler):
                 "id='slug', args={'op':'route'}) to realize copper, then "
                 "re-check this view."
             )
-        run_id, findings, pads_only = ran
+        run_id, findings, pads_only, delta = ran
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
         head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        head += "\n" + _drc_delta_line(delta)
         n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
         if n_synth:
             head += (
@@ -3532,24 +3545,26 @@ class PcbHandler(Handler):
             # (e.g. every net is unrouted by construction) — is never
             # mistaken for a full pass over realized copper.
             head += "\n(pads-only DRC — no routed copper yet)"
+        gone = _drc_gone_block(delta)
         if not findings:
-            return Response(body=head + "\n— no findings ✓")
+            return Response(body=head + "\n— no findings ✓" + gone)
         rows = [
             {
+                "id": pcb_drc.finding_key(f),
                 "severity": f.severity,
                 "rule": f.rule,
                 "where": f.where,
                 "margin_mm": "" if f.margin_mm is None else f"{f.margin_mm:+.3f}",
+                "delta": delta.label(f),
                 "detail": f.detail,
             }
             for f in findings
         ]
+        schema = ["id", "severity", "rule", "where", "margin_mm", "delta", "detail"]
+        if delta.previous_run_id is None:
+            schema.remove("delta")
         return Response(
-            body=head
-            + "\n"
-            + render_agent_table(
-                rows, schema=["severity", "rule", "where", "margin_mm", "detail"]
-            )
+            body=head + "\n" + render_agent_table(rows, schema=schema) + gone
         )
 
     def _drc_rule_inputs(
@@ -3629,13 +3644,13 @@ class PcbHandler(Handler):
         }
         return courtyards, courtyard_bottom, net_rules, net_voltages
 
-    def _drc_run(
-        self, ref_id: int, design: dict[str, Any]
-    ) -> tuple[str, list[pcb_drc.DrcFinding], bool] | None:
+    def _drc_run(self, ref_id: int, design: dict[str, Any]) -> _DrcRun | None:
         """One geometric DRC run over ``design`` (which must have a board):
-        ``(run_id, findings, pads_only)``, findings persisted under
-        ``run_id``. ``None`` when there is nothing real to check — no
-        realized copper and every placed pad a synthesized bound.
+        the findings persisted under a fresh ``run_id`` (a ``pcb_drc_runs``
+        row even when clean), plus the delta against the board's previous
+        run (:func:`precis.pcb.drc.delta_against`, by ``finding_key``).
+        ``None`` when there is nothing real to check — no realized copper
+        and every placed pad a synthesized bound.
 
         Split out of :meth:`_render_drc` so ``view='gerber'`` asks the SAME
         question the DRC view answers before it hands over a fab bundle,
@@ -3762,11 +3777,16 @@ class PcbHandler(Handler):
                 for h in ir.mounting_holes
             ],
         )
+        board_id = int(board["board_id"])
+        # Read the previous run BEFORE writing this one — it is what this
+        # run is compared against; afterwards it would be this run itself.
+        prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id)
         run_id = uuid.uuid4().hex
         self.store.pcb_write_drc_findings(
-            int(board["board_id"]), run_id, [f.to_row() for f in findings]
+            board_id, run_id, [f.to_row() for f in findings], pads_only=pads_only
         )
-        return run_id, list(findings), pads_only
+        delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
+        return _DrcRun(run_id, list(findings), pads_only, delta)
 
     def _validity_findings(self, ref_id: int) -> list[pcb_drc.DrcFinding]:
         """The findings of the geometric-validity rules on the board as
@@ -3948,7 +3968,7 @@ class PcbHandler(Handler):
                 "to check; this bundle is unverified",
                 0,
             )
-        run_id, findings, pads_only = ran
+        run_id, findings, pads_only, _delta = ran
         errors = [f for f in findings if f.severity == "error"]
         scope = " (pads-only — no routed copper yet)" if pads_only else ""
         if not errors:
