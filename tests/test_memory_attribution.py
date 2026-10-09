@@ -236,10 +236,25 @@ def test_unit_aware_comparison(world):
     assert _check("thickness 10 um [pa12]") == []
 
 
-def test_unitless_evidence_falls_back_to_bare_run(world):
+def test_bare_digit_run_never_grounds_a_unit_claim(world):
+    # The first prod dogfood write (2026-10-09) passed because the cited
+    # websearch body carried "10." as a DOI prefix and nothing in nm.
+    world[(170350, None)] = (
+        "Surface stress and elasticity. doi 10.1098/rspa.2020.0477; "
+        "results for 10 samples, see refs 1-10."
+    )
+    assert [m.token for m in _check("ell_c is ~10 nm per websearch:170350.")] == [
+        "10 nm"
+    ]
     world[(12, None)] = "Title: results for 10 samples"
-    assert _check("thickness 10 nm [pa12]") == []
-    assert _check("thickness 11 nm [pa12]") != []
+    assert _check("thickness 10 nm [pa12]") != []
+
+
+def test_range_leaves_its_neighbours_alone():
+    from precis.handlers._attribution import _quantities
+
+    toks = [t for t, _s, _e in _quantities("5 nm before, 10-20 nm, then 30 nm")]
+    assert toks == ["5 nm", "10 nm", "20 nm", "30 nm"]
 
 
 def test_ranges_yield_both_endpoints_no_negative():

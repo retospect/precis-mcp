@@ -6,9 +6,11 @@ claim deterministically (no LLM): every unit-bearing number
 (:func:`precis.utils.numerics.numeric_spans`) that sits in the same sentence
 as a citation, attributed to the *nearest* citation (a cluster of adjacent
 citations pools its evidence), must appear in that evidence as the same
-``(number, unit)`` pair; evidence with no units at all is matched on its bare
-digit runs, and evidence that is empty is nothing to check against (no flag).
-A miss is an :class:`UngroundedNumber`.
+``(number, unit)`` pair. A bare digit run never grounds a unit-bearing claim:
+a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
+"10 nm" (the first dogfood write slipped through on exactly that, 2026-10-09).
+Evidence that is empty is nothing to check against (no flag). A miss is an
+:class:`UngroundedNumber`.
 
 Spec and rationale: ``docs/backlog/memory-attribution-gate.md`` (the
 ``DREAM:speculative`` tag licenses unsourced claims, not mis-sourced ones).
@@ -124,7 +126,8 @@ def _reword():
 @dataclass(frozen=True)
 class Evidence:
     """What a cited target carries: ``(unit, digit-run)`` pairs, bare digit
-    runs, and whether there was any text to check against at all."""
+    runs (only a unit-less claim may match on those), and whether there was
+    any text to check against at all."""
 
     units: frozenset[tuple[str, str]] = frozenset()
     runs: frozenset[str] = frozenset()
@@ -197,13 +200,15 @@ def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
 def _grounded(token: str, ev: Evidence) -> bool:
     """Is the claim ``token`` ("10 nm") present in ``ev``?
 
-    Same ``(number, unit)`` pair when the evidence carries any units; bare
-    digit-run match only for unit-less evidence (titles, plain prose).
+    A unit-bearing claim needs the same ``(number, unit)`` pair in the
+    evidence; its bare digit runs do not count (DOIs, years and ref ids make
+    every small integer "present" otherwise). Only a unit-less claim, which
+    :func:`_quantities` does not produce today, falls back to the runs.
     Decimal-prefix tolerance / integer exactness come from the reword check.
     """
     number, unit = _split_token(token)
     claim = _runs(number)
-    if ev.units:
+    if unit:
         have = {r for u, r in ev.units if u == unit}
     else:
         have = set(ev.runs)

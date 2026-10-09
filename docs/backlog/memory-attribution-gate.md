@@ -8,10 +8,19 @@ model: sonnet
 
 # Memory attribution gate
 
-**State (2026-10-09):** §1–§5 shipped in warn mode. Remaining: run
-`scripts/memory-attribution-audit` dry against prod, read the sample, then
-flip `PRECIS_MEMORY_ATTRIBUTION_GATE` default to `reject` and `--apply` the
-backfill. Delete this file in that commit.
+**State (2026-10-09):** §1–§5 shipped in warn mode (b88ae940e, deployed).
+Dogfood against the deployed server found the motivating case slipping
+through: the websearch body's only "10" is a DOI prefix, and the bare
+digit-run fallback counted it. Fixed in the follow-up commit (a unit-bearing
+claim needs the same ``(number, unit)`` pair; see §1 step 4). Remaining, in
+order: (1) re-dogfood after that deploy (a write pinning "~10 nm" to
+`websearch:170350` must come back tagged `AUDIT:ungrounded-number`); (2) run
+`scripts/memory-attribution-audit --sample 40` dry against prod — it needs
+the tunnel DSN the way `scripts/prod-precis` builds it (rewrite the stored
+`~/.secrets/pw/PRECIS_DATABASE_URL` to `127.0.0.1` and `agent_ro`); an agent
+session cannot read that file, so Reto runs it; (3) read the sample for
+false positives; (4) flip `PRECIS_MEMORY_ATTRIBUTION_GATE` default to
+`reject` and `--apply` the backfill. Delete this file in that commit.
 
 ## Motivation / why
 
@@ -84,6 +93,9 @@ Algorithm:
    text. Both sides go through `taproot/reword._canon_grounding`;
    grounding decided by `taproot/reword._is_grounded` (decimal-prefix
    tolerance, integers exact). Import those two helpers; do not copy them.
+   A unit-bearing claim is grounded only by the same `(number, unit)` pair
+   in the evidence — never by a bare digit run (DOIs, years and ref ids
+   make every small integer "present" in any body).
 5. **Exemption phrase.** A number within 60 characters *after* which the
    text says `my estimate`, `my own estimate`, `(est.)`, `(estimate)` or
    `rough guess` is exempt. This is the escape hatch the nudge tells the

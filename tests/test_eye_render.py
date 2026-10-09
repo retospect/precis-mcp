@@ -13,7 +13,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 from precis.utils.eye_render import _cluster_map, _fisheye_split, render_eye
 from precis.utils.toc_db import cluster_blocks
@@ -57,6 +57,24 @@ def test_memory_eye_1hop_shows_link_neighborhood_by_relation(hub: Hub) -> None:
     # each neighbor by handle + relation type
     assert f"supports: pa{paper.id} — XPS depth profiling" in out
     assert f"related-to: me{mem2.id} — Kinetics vs thermodynamics" in out
+
+
+def test_memory_eye_1hop_marks_an_audit_flagged_neighbour(hub: Hub) -> None:
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Focus")
+    clean = store.insert_ref(kind="memory", slug=None, title="Clean note")
+    flagged = store.insert_ref(kind="memory", slug=None, title="Flagged note")
+    for near in (clean, flagged):
+        store.add_link(src_ref_id=mem.id, dst_ref_id=near.id, relation="related-to")
+    store.add_tag(flagged.id, Tag.closed("AUDIT", "ungrounded-number"), set_by="system")
+
+    out = render_eye(
+        store, handle_registry.format_handle("memory", mem.id), "fisheye+1hop"
+    )
+
+    assert f"me{flagged.id} — Flagged note  [AUDIT:ungrounded-number]" in out
+    assert f"me{clean.id} — Clean note\n" in out
+    assert out.count("[AUDIT:ungrounded-number]") == 1
 
 
 def test_memory_eye_1hop_caps_a_relation_group_with_overflow_line(hub: Hub) -> None:
@@ -421,10 +439,13 @@ def test_second_hop_counts_distinct_refs_per_kind_and_label(hub: Hub) -> None:
 def test_second_hop_expands_one_group_with_q(hub: Hub) -> None:
     store, focus, papers = _two_hop_fixture(hub)
     h = handle_registry.format_handle("memory", focus.id)
+    store.add_tag(
+        papers[1].id, Tag.closed("AUDIT", "ungrounded-number"), set_by="system"
+    )
     out = render_eye(store, h, "fisheye+2hop", q="paper:cites")
     assert "— second hop: 2 paper via cites —" in out
-    for p in papers:
-        assert f"pa{p.id} — Paper" in out
+    assert f"pa{papers[0].id} — Paper 1\n" in out
+    assert f"pa{papers[1].id} — Paper 2  [AUDIT:ungrounded-number]" in out
     assert "— linked (1 hop) —" not in out, "an expansion shows the group only"
     with pytest.raises(ValueError, match="groups here: paper:cites"):
         render_eye(store, h, "fisheye+2hop", q="patent:cites")

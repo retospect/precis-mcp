@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from threading import Barrier, Event
@@ -1610,7 +1611,10 @@ def test_agent_can_tag_audit_on_memory(handler: MemoryHandler, store: Store) -> 
 
 
 def test_attribution_fail_open_keeps_existing_flag(
-    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+    handler: MemoryHandler,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     src = id_of(handler.put(text="no figures here").body)
     mid = id_of(handler.put(text=f"it is 5 nm per memory:{src}.").body)
@@ -1620,7 +1624,11 @@ def test_attribution_fail_open_keeps_existing_flag(
         raise RuntimeError("db down")
 
     monkeypatch.setattr("precis.handlers.memory.ungrounded_cited_numbers", boom)
-    assert handler._attribution_misses("anything 5 nm memory:1") is None
+    with caplog.at_level(logging.WARNING, logger="precis.handlers.memory"):
+        assert handler._attribution_misses("anything 5 nm memory:1") is None
+    warned = [r for r in caplog.records if "failed open" in r.getMessage()]
+    assert warned, "the fail-open path must log"
+    assert warned[0].exc_info is not None, "with the traceback, or it is undebuggable"
     handler.edit(id=mid, mode="replace", text="no figures at all")
     assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
 

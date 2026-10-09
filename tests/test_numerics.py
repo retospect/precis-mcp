@@ -62,6 +62,10 @@ class TestDeduplication:
         # 5 nm first, 3 nm second, 5 nm dedup'd.
         assert out == ["5 nm", "3 nm"]
 
+    def test_dedup_keeps_scanning_past_a_repeat(self) -> None:
+        # A repeat skips that token only; later new tokens still land.
+        assert extract_numerics("5 nm then 5 nm then 7 nm") == ["5 nm", "7 nm"]
+
 
 # ── non-trivia ──────────────────────────────────────────────────────
 
