@@ -100,8 +100,12 @@ Optional ship message from the user: `$ARGUMENTS`
 7. **Deploy — the GATED sha, not the branch name.** Only after a green ship,
    push **exactly the tree the gate validated** to the cluster:
 
+   Two separate Bash calls — the worktree guard refuses a `$(…)` target
+   (it cannot prove the substitution is not git), so read the sha first and
+   pass it literally:
    ```
-   scripts/deploy "$(cat .ship-sha)" --pinned
+   cat .ship-sha
+   scripts/deploy <that 40-hex sha> --pinned
    ```
 
    `scripts/ship` wrote `.ship-sha` on its way out (full-gate runs only). Bare
@@ -119,8 +123,8 @@ Optional ship message from the user: `$ARGUMENTS`
    (`scripts/lib/env-pointers.sh`). From any other worktree, the gated sha is
    `git rev-parse origin/gated` after a fetch and the cluster's is
    `origin/prod` — deploy `gated` from there as
-   `scripts/deploy "$(git rev-parse origin/gated)" --pinned`, never as the
-   branch name. Nobody commits to either ref.
+   `git rev-parse origin/gated`, then `scripts/deploy <that sha> --pinned`,
+   never as the branch name. Nobody commits to either ref.
 
    You do not have to get this right from memory: while `.ship-sha` is
    unconsumed, `scripts/deploy` **refuses** any other target and prints this

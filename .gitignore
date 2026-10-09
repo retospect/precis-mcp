@@ -180,3 +180,6 @@ docs/backlog/threads/PRIORITIES.md
 
 # PCB snapshot/replay capture: exact board data is opt-in, not public test data.
 .scratch/pcb-snapshot/
+
+# Per-checkout scratch (session caches, one-off merge probes): never source.
+.scratch/
