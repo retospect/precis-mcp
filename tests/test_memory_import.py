@@ -756,13 +756,23 @@ def test_export_dir_writes_one_file_per_topic_node_by_handle(
     assert sorted(p.name for p in dest.iterdir()) == sorted(
         [f"{_handle(r.id)}.md" for r in topics] + ["_sections.tsv"]
     )  # one per topic, no section node, the stale file gone
-    # handle<TAB>section for every topic: imported topics carry their section
-    # slug, the native node (no section tag) an empty one
-    manifest = dict(
+    # a row per node, section in column 2: imported topics carry their
+    # section slug, the native node (no section tag) an empty one, and the
+    # section nodes — rows but no files — `index`
+    rows = [
         line.split("\t")
         for line in (dest / "_sections.tsv").read_text(encoding="utf-8").splitlines()
-    )
-    assert sorted(manifest) == sorted(_handle(r.id) for r in topics)
+    ]
+    assert {len(r) for r in rows} == {8}
+    manifest = {r[0]: r[1] for r in rows}
+    topic_ids = {r.id for r in topics}
+    sections = [
+        r.id
+        for r in store.list_refs(kind="memory", tags=[SPACE_TAG], limit=1000)
+        if r.id not in topic_ids
+    ]
+    assert sorted(manifest) == sorted(_handle(i) for i in [*topic_ids, *sections])
+    assert [manifest.pop(_handle(i)) for i in sections] == ["index"] * len(SECTIONS)
     assert manifest.pop(_handle(native_id)) == ""
     assert all(manifest.values()), manifest
     for r in topics:
@@ -776,6 +786,45 @@ def test_export_dir_writes_one_file_per_topic_node_by_handle(
     )
     # no temp / old sibling dirs left behind
     assert sorted(p.name for p in dest.parent.iterdir()) == ["memory-nodes"]
+
+
+def test_export_manifest_records_the_fisheye_shape(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    # What a fisheye+1hop read shows, per node: body chars against the eye's
+    # cap, live ring neighbours, those the per-relation cap hides, dead ends.
+    from precis.utils.eye_render import _NEIGHBOR_GROUP_CAP, _VERBATIM_CAP
+
+    handler = MemoryHandler(hub=hub)
+
+    def note(title: str, body: str = "body") -> int:
+        return _created_id(handler.put(text=body, title=title, tags=[SPACE_TAG]))
+
+    hub_id = note("Hub", "x" * (_VERBATIM_CAP + 500))
+    spokes = [note(f"Spoke {i}") for i in range(_NEIGHBOR_GROUP_CAP + 2)]
+    gone = note("Gone")
+    orphan = note("Orphan")
+    for spoke in [*spokes, gone]:
+        store.add_link(src_ref_id=hub_id, dst_ref_id=spoke, relation="related-to")
+    store.retire_ref(gone)
+
+    export_memory_nodes(store, tmp_path / "nodes")
+
+    manifest = (tmp_path / "nodes" / "_sections.tsv").read_text(encoding="utf-8")
+    rows = {r[0]: r[2:] for r in (line.split("\t") for line in manifest.splitlines())}
+    today = rows[_handle(orphan)][0]
+    # updated, chars, eye chars, live links, hidden by the group cap, dead
+    assert rows[_handle(hub_id)] == [
+        today,
+        str(_VERBATIM_CAP + 500),
+        str(_VERBATIM_CAP),
+        str(len(spokes)),
+        "2",
+        "1",
+    ]
+    assert rows[_handle(spokes[0])][3:] == ["1", "0", "0"]
+    assert rows[_handle(orphan)][1:] == ["4", "4", "0", "0", "0"]
+    assert _handle(gone) not in rows
 
 
 def test_export_failure_leaves_the_index_output_and_exit_code_alone(

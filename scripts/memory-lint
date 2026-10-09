@@ -22,6 +22,13 @@
 # edited after MEMORY.md.pre-cutover was written to a file the graph never
 # reads (a session that started before the cutover) and needs porting by hand.
 #
+# The export's manifest (_sections.tsv: handle, section, updated, body chars,
+# chars the fisheye eye shows, live ring links, links hidden by the eye's
+# per-group cap, dead-end links — src/precis/cli/memory.py::SECTIONS_MANIFEST)
+# carries what the bodies cannot: check 2 scopes by section, check 7 ages by
+# the node's real updated_at (the export rewrites every file, so mtimes are
+# all "today"), and check 8 lints the graph as recall walks it.
+#
 # Retire candidates (check 7, both modes): lists — never retires — notes the
 # memory should drop: a thread-type note whose every resolvable cited sha is in
 # main and whose NEXT line is empty/done, and any note untouched >30d. Cited
@@ -35,7 +42,8 @@
 #      Runs over every linked topic file, not just those grouped under
 #      `## Threads` — the live index is a flat list, and a missing/empty
 #      `## Threads` section is itself flagged rather than silently no-op'd
-#      (file mode). Graph mode scans every node file.
+#      (file mode). Graph mode scans the manifest's `threads` nodes; a manifest
+#      with no sections at all is flagged and every node is scanned.
 #   3. MEMORY.md (graph mode: the rendered index) over byte budget; 3b: payload
 #      smell (fenced code blocks in a topic file / node body).
 #   4. reconsolidation cadence (once/day; same clock and log in both modes).
@@ -46,6 +54,11 @@
 #      open-source Claude-Code memory tool verifies memories against repo ground
 #      truth — this is the novel bit. Backlog: OPEN-ITEMS "Repo-dev" — 1-month
 #      check-in on whether it earns its own pip.
+#   8. (graph mode) fisheye shape, per node, from the manifest: a body longer
+#      than the eye shows (recall reads `fisheye+1hop`, which cuts the body),
+#      an orphan (no live links: search is its only way in), neighbours the
+#      eye hides past its per-group cap (a flat hub — group under sections),
+#      dead-end links (to retired/missing refs).
 #   6. sibling-repo path currency (always runs; internally weekly-gated, self-
 #      stamping) — deliberately NOT part of check 5's in-repo path scan: that
 #      scan explicitly skips external `~/work/<name>` paths as "legitimately
@@ -117,7 +130,9 @@ fi
 is_topic() { [[ "$1" != MEMORY.md && "$1" != memory_consolidation_log.md ]]; }
 ident() { if (( GRAPH )); then printf '%s' "${1%.md}"; else printf '%s' "$1"; fi; }
 label_of() {   # label_of <basename> <path>
-    if (( GRAPH )); then
+    if (( GRAPH )) && [[ ! -f "$2" ]]; then
+        printf '%s (section node)' "${1%.md}"   # manifest-only: no body file
+    elif (( GRAPH )); then
         printf '%s (%s)' "${1%.md}" "$(head -n 1 "$2" 2>/dev/null | sed -E 's/^# +//' | cut -c1-60)"
     else
         printf '%s' "$1"
@@ -207,11 +222,20 @@ open_re='unshipped|not deployed|NOT shipped|deferred|remain|residual|pending|blo
 # gotchas routinely cite the sha of a landed fix with no open-work words, and
 # they are durable knowledge, not landed threads (first graph run, 2026-10-03:
 # 11 of 11 flags were runbooks/gotchas). No manifest → every node is scanned.
+# A manifest in which no node has a section is itself a finding (the 2026-10-09
+# state: all 153 nodes unsectioned, so a threads-only scan covered nothing and
+# reported clean); the scan then falls back to every node.
 threads=""
+MANIFEST=""
+[[ -n "$SCAN_DIR" && -f "$SCAN_DIR/_sections.tsv" ]] && MANIFEST="$SCAN_DIR/_sections.tsv"
 if (( GRAPH )); then
-    if [[ -n "$SCAN_DIR" && -f "$SCAN_DIR/_sections.tsv" ]]; then
-        threads=$(awk -F'\t' '$2 == "threads" { print $1 ".md" }' "$SCAN_DIR/_sections.tsv")
+    if [[ -n "$MANIFEST" ]] && awk -F'\t' '$2 != "" && $2 != "index" { found = 1; exit } END { exit !found }' "$MANIFEST"; then
+        threads=$(awk -F'\t' '$2 == "threads" { print $1 ".md" }' "$MANIFEST")
     elif [[ -n "$SCAN_DIR" ]]; then
+        if [[ -n "$MANIFEST" ]]; then
+            echo "  no memory node carries a section:<slug> tag — the index renders one flat Unfiled list and the landed-thread scan falls back to every node (runbooks/gotchas citing a landed fix may false-positive): tag each node into a section (tag(kind='memory', id=…, add=['section:threads']))"
+            problems=$((problems+1))
+        fi
         threads=$(cd "$SCAN_DIR" && ls -- *.md 2>/dev/null || true)
     fi
 else
@@ -273,6 +297,36 @@ for tf in "$SCAN_DIR"/*.md; do
 done
 fi  # SCAN_DIR (check 3b)
 
+# 8. fisheye shape (graph mode, manifest with the shape columns). Recall is
+# search → get(view='fisheye+1hop+recall'), so a node is only as good as what
+# that read shows: the eye cuts the body to a fixed cap, lists at most a fixed
+# number of neighbours per relation, and hides dead ends. The caps live in
+# src/precis/utils/eye_render.py; the export applies them, this only compares.
+if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
+    while IFS=$'\t' read -r h _sec _upd chars eye live hidden dead; do
+        [[ -n "$dead" ]] || continue          # pre-shape manifest: nothing to check
+        tf="$SCAN_DIR/$h.md"
+        if (( chars > eye )); then
+            echo "  eye-truncated → $(label_of "$h.md" "$tf"): fisheye shows $eye of $chars chars — split it (one node per thread/pass, linked) or move the payload to a doc, keeping the resume state first: edit(kind='memory', id='$h')"
+            problems=$((problems+1))
+        fi
+        if (( live == 0 )); then
+            echo "  orphan → $(label_of "$h.md" "$tf"): no live links, reachable by search only — link it to its section and neighbours: link(kind='memory', id='$h', target='memory:me…')"
+            problems=$((problems+1))
+        fi
+        if (( hidden > 0 )); then
+            echo "  flat hub → $(label_of "$h.md" "$tf"): fisheye+1hop hides $hidden neighbour(s) past its per-relation cap — prune weak links or route them through section nodes"
+            problems=$((problems+1))
+        fi
+        if (( dead > 0 )); then
+            echo "  dead links → $(label_of "$h.md" "$tf"): $dead link(s) to retired/missing refs — repoint or unlink: get(kind='memory', id='$h', view='links')"
+            problems=$((problems+1))
+        fi
+    # (tab is IFS whitespace, so `read` would merge an empty section column:
+    # awk fills it first)
+    done < <(awk -F'\t' -v OFS='\t' '{ if ($2 == "") $2 = "-"; print }' "$MANIFEST")
+fi
+
 if (( problems == 0 )) && (( GRAPH )); then
     echo "memory-lint: ✓ clean ($bytes B rendered index, within high-water)"
 elif (( problems == 0 )); then
@@ -305,9 +359,10 @@ fi
 #   landed      = thread-type, >=1 resolvable cited sha, every resolvable sha in
 #                 main (unresolvable hex tokens are words/cross-repo: ignored),
 #                 and its NEXT line (if any) empty or done/shipped/none/nothing.
-#   stale >30d  = frontmatter `modified:` date, else file mtime.
+#   stale >30d  = frontmatter `modified:` date, else the manifest's updated
+#                 date (graph mode), else file mtime.
 # Graph-mode node bodies carry no frontmatter, so there the title/NEXT rules and
-# the export's mtime apply.
+# the node's updated_at apply.
 retire=0
 if [[ -n "$SCAN_DIR" ]]; then
     now_e=$(date +%s)
@@ -334,6 +389,7 @@ if [[ -n "$SCAN_DIR" ]]; then
         fi
         mod=$(printf '%s\n' "$fm" | sed -nE 's/^[[:space:]]*modified:[[:space:]]*"?([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' | head -n 1)
         mod_e=""
+        [[ -z "$mod" && -n "$MANIFEST" ]] && mod=$(awk -F'\t' -v h="${b%.md}" '$1 == h { print $3; exit }' "$MANIFEST")
         [[ -n "$mod" ]] && mod_e=$(epoch_of "$mod" || true)
         [[ -z "$mod_e" ]] && mod_e=$(stat -c %Y "$tf" 2>/dev/null || stat -f %m "$tf" 2>/dev/null || echo "$now_e")
         age_d=$(( (now_e - mod_e) / 86400 ))

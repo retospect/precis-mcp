@@ -123,7 +123,13 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      cache that `memory index --export-dir` writes, and a stray-write check
      is added. The first graph reconsolidation ran on 2026-10-03 and is
      logged in `memory_consolidation_log.md`. The landed scan is now
-     scoped to thread nodes.
+     scoped to thread nodes. Since 2026-10-09 (gr477164) the export
+     manifest also carries each node's updated date and its fisheye
+     shape, and memory-lint checks the graph as recall reads it: bodies
+     cut by the eye, orphans, hubs whose neighbours the eye hides, and
+     dead links. A manifest with no sections at all is flagged. The first
+     run on prod showed 51 cut bodies, 1 orphan and the root hiding 139
+     neighbours, and found no node carrying a section tag.
    - **Next on this item:** memory `edit` needs `find-replace` (decisions
      log, 2026-10-03).
    - **Blocked:** tests 4b/4c, which need `backlog/file-mirror.md`

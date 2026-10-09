@@ -41,6 +41,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -638,7 +639,10 @@ def _render_loaded(
     )
 
 
-#: Handle → section-slug manifest written beside the exported node files.
+#: Per-node manifest written beside the exported node files, one row per
+#: node (a section node's section is ``index``): handle, section slug, updated (UTC date), body chars, chars the
+#: fisheye eye shows, live ring neighbours, neighbours the eye's per-group cap
+#: hides, dead-end links. Column order is the contract with scripts/memory-lint.
 SECTIONS_MANIFEST = "_sections.tsv"
 
 
@@ -656,17 +660,26 @@ def export_memory_nodes(
     written into a sibling temp dir and swapped in with renames, so a reader
     sees the old set or the new one, never a half-written one (the one gap is
     the instant between the two renames, when ``dest`` is briefly absent).
-    ``<dest>/_sections.tsv`` maps each handle to its section slug (the
-    renderer's rule: first ``section:*`` tag), so ``scripts/memory-lint`` can
-    scope its landed-thread scan to ``threads``.
+    ``<dest>/_sections.tsv`` (:data:`SECTIONS_MANIFEST`) gives each handle —
+    section nodes too, as section ``index``, though they get no file — its
+    section slug (the renderer's rule: first ``section:*`` tag), its last
+    update, and what a ``fisheye+1hop`` read of it shows — body chars against
+    the eye's cap, ring neighbours live / hidden by the group cap / dead — so
+    ``scripts/memory-lint`` lints the graph, not just the bodies.
     ``loaded`` reuses a :func:`_load_nodes` result.
     """
     from precis.dispatch import Hub
     from precis.handlers.memory import MemoryHandler
     from precis.utils import handle_registry
+    from precis.utils.eye_render import (
+        _NEIGHBOR_GROUP_CAP,
+        _VERBATIM_CAP,
+        first_hop_shape,
+    )
 
     refs, tags = loaded if loaded is not None else _load_nodes(store)
     handler = MemoryHandler(hub=Hub(store=store))
+    shape = first_hop_shape(store, [r.id for r in refs])
     final = Path(dest)
     tmp = final.with_name(f"{final.name}.tmp.{os.getpid()}")
     old = final.with_name(f"{final.name}.old.{os.getpid()}")
@@ -678,21 +691,37 @@ def export_memory_nodes(
         manifest: list[str] = []
         for ref in refs:
             values = {v for _ns, v in tags.get(ref.id, [])}
-            if SECTION_INDEX_TAG in values:
-                continue
             handle = handle_registry.try_format("memory", ref.id) or str(ref.id)
-            text = f"# {ref.title}\n\n{handler._body_text(ref)}"
-            (tmp / f"{handle}.md").write_text(text, encoding="utf-8")
-            section = next(
-                (
-                    v[len(SECTION_TAG_PREFIX) :]
-                    for v in sorted(values)
-                    if v.startswith(SECTION_TAG_PREFIX)
-                ),
-                "",
+            body = handler._body_text(ref)
+            if SECTION_INDEX_TAG in values:
+                # a section node: a manifest row (section ``index``) for its
+                # shape — it is where fisheye navigation starts — but no file
+                section = SECTION_INDEX_TAG[len(SECTION_TAG_PREFIX) :]
+            else:
+                text = f"# {ref.title}\n\n{body}"
+                (tmp / f"{handle}.md").write_text(text, encoding="utf-8")
+                count += 1
+                section = next(
+                    (
+                        v[len(SECTION_TAG_PREFIX) :]
+                        for v in sorted(values)
+                        if v.startswith(SECTION_TAG_PREFIX)
+                    ),
+                    "",
+                )
+            live, largest, dead = shape.get(ref.id, (0, 0, 0))
+            chars = len(body.strip())
+            row = (
+                handle,
+                section,
+                ref.updated_at.astimezone(UTC).strftime("%Y-%m-%d"),
+                chars,
+                min(chars, _VERBATIM_CAP),
+                live,
+                max(0, largest - _NEIGHBOR_GROUP_CAP),
+                dead,
             )
-            manifest.append(f"{handle}\t{section}\n")
-            count += 1
+            manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")
         if final.exists():
             os.replace(final, old)

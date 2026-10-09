@@ -56,7 +56,25 @@
 
 set -euo pipefail
 
-REPO="${PRECIS_MCP_REPO:-${HOME}/work/projects/code/precis-mcp}"
+# Host-side state: mounted secrets copy, md vector cache, Caddyfile, the live
+# colour, the log. Overridable so a test rig (another NAME/PORT) does not share
+# prod's files.
+STATE_DIR="${PRECIS_MCP_HTTP_STATE:-${HOME}/.cache/precis-mcp-http}"
+# The main checkout: the image build context, mounted at /main (python/md
+# kinds, worktree discovery — the agents' git worktrees live under it), and
+# the parent of the prod clone below. Per-host: PRECIS_MCP_REPO, else the
+# single path in ${STATE_DIR}/main-checkout, else the default layout. One
+# path for all three, so a host never builds from one clone while its
+# agents work in another.
+REPO="${PRECIS_MCP_REPO:-}"
+if [ -z "$REPO" ] && [ -f "${STATE_DIR}/main-checkout" ]; then
+    REPO="$(tr -d '[:space:]' < "${STATE_DIR}/main-checkout")"
+    if [ ! -d "${REPO}/.git" ]; then
+        printf "precis-mcp: main-checkout: '%s' is not a git checkout; using the default\n" "$REPO" >&2
+        REPO=""
+    fi
+fi
+REPO="${REPO:-${HOME}/work/projects/code/precis-mcp}"
 # What the server SERVES: a plain clone kept on origin/prod (the sha the
 # cluster runs) — by scripts/deploy on the deploying machine, and by
 # follow_prod below everywhere. REPO stays the build context for the image.
@@ -69,10 +87,6 @@ SECRETS="${HOME}/.secrets/pw"
 IMAGE="${PRECIS_MCP_IMAGE:-precis-mcp:dev}"
 NAME="${PRECIS_MCP_HTTP_NAME:-precis-mcp-http}"
 PORT="${PRECIS_MCP_HTTP_PORT:-8765}"
-# Host-side state: mounted secrets copy, md vector cache, Caddyfile, the live
-# colour, the log. Overridable so a test rig (another NAME/PORT) does not share
-# prod's files.
-STATE_DIR="${PRECIS_MCP_HTTP_STATE:-${HOME}/.cache/precis-mcp-http}"
 # How long `docker stop` lets the serve child drain before SIGKILL. A slow
 # cross-kind search measured 24 s on prod (gr457887); the child's own drain
 # bound is 120 s, but this one blocks a SessionStart hook.
@@ -393,16 +407,11 @@ POOL_MAX="${PRECIS_DB_POOL_MAX_SIZE:-16}"
 # public repo names no machine's layout. Each is mounted read-only at
 # /roots/<alias>; a change alters the container spec, so the next run
 # recreates (blue-green) on its own.
-# The live main checkout mounted at /main (python/md kinds, worktree
-# discovery). Per-host override: PRECIS_MCP_MAIN, else the single path in
-# ${STATE_DIR}/main-checkout, else REPO. A host whose agents work in another
-# clone (their git worktrees registered there) names that clone here.
-MAIN_CHECKOUT="${PRECIS_MCP_MAIN:-}"
-if [ -z "$MAIN_CHECKOUT" ] && [ -f "${STATE_DIR}/main-checkout" ]; then
-    MAIN_CHECKOUT="$(tr -d '[:space:]' < "${STATE_DIR}/main-checkout")"
-fi
-if [ -z "$MAIN_CHECKOUT" ] || [ ! -d "${MAIN_CHECKOUT}/.git" ]; then
-    [ -z "$MAIN_CHECKOUT" ] || note "main-checkout: '${MAIN_CHECKOUT}' is not a git checkout; using ${REPO}"
+# What /main mounts: REPO (resolved at the top, ${STATE_DIR}/main-checkout
+# included); PRECIS_MCP_MAIN overrides it for a test rig.
+MAIN_CHECKOUT="${PRECIS_MCP_MAIN:-$REPO}"
+if [ ! -d "${MAIN_CHECKOUT}/.git" ]; then
+    note "PRECIS_MCP_MAIN: '${MAIN_CHECKOUT}' is not a git checkout; using ${REPO}"
     MAIN_CHECKOUT="$REPO"
 fi
 

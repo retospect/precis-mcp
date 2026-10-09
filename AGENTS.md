@@ -64,7 +64,11 @@ Retire (soft delete, recoverable at the SQL layer) so recall stays current:
 - A mirrored node whose file was deleted: retire it (the importer's
   `--missing retire`, or by hand).
 Any session may retire a node it has shown landed or superseded.
-`scripts/memory-lint` lists candidates; it never retires.
+`scripts/memory-lint` lists candidates; it never retires. It also lints
+each node as `fisheye+1hop` shows it. A body longer than the eye's cap
+gets cut, so split it or lead with the resume state. Link every node to
+its section and its neighbours: a node with no links can only be reached
+by search, and a hub can show only a few neighbours per relation.
 
 Imported and legacy memories are dated evidence, not current permissions,
 runtime proof or service/ship instructions. Current user rulings and repository/

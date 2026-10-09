@@ -481,33 +481,82 @@ def _first_hop(
     the collected form of :func:`_link_neighbors`, shared with the second
     hop, which walks out from exactly these neighbours."""
     links = store.links_for(ref_id, direction="both")
+    by_label = _bucket_edges(
+        store,
+        ref_id,
+        [(int(lk.src_ref_id), int(lk.dst_ref_id), lk.relation) for lk in links],
+    )
+    if not by_label:
+        return {}, {}
+    refs = store.fetch_refs_by_ids({o for oids in by_label.values() for o in oids})
+    live = {
+        key: [oid for oid in oids if _live(refs, oid)] for key, oids in by_label.items()
+    }
+    return {key: oids for key, oids in live.items() if oids}, refs
+
+
+def _live(refs: dict[int, Any], oid: int) -> bool:
+    r = refs.get(oid)
+    return r is not None and getattr(r, "retired_at", None) is None
+
+
+def _bucket_edges(
+    store: Store, ref_id: int, edges: list[tuple[int, int, Any]]
+) -> dict[tuple[str, str], list[int]]:
+    """Group ``ref_id``'s ``(src, dst, relation)`` edges by ``(ring group,
+    label as seen from here)``, listing the other endpoint of each — dead
+    ends included; the caller filters by liveness."""
     inverses, symmetric = _relation_reading(store)
     by_label: dict[tuple[str, str], list[int]] = {}
-    ids: set[int] = set()
-    for link in links:
-        rel = getattr(link, "relation", None)
+    for src, dst, rel in edges:
         group = ring_group(str(rel)) if rel is not None else None
         if group is None:
             continue
-        outbound = int(link.src_ref_id) == ref_id
-        other = int(link.dst_ref_id) if outbound else int(link.src_ref_id)
+        outbound = src == ref_id
+        other = dst if outbound else src
         if other == ref_id:
             continue
         label = _as_seen_from_here(
             str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
         )
         by_label.setdefault((group, label), []).append(other)
-        ids.add(other)
-    if not by_label:
-        return {}, {}
-    refs = store.fetch_refs_by_ids(list(ids))
+    return by_label
 
-    def _live(oid: int) -> bool:
-        r = refs.get(oid)
-        return r is not None and getattr(r, "retired_at", None) is None
 
-    live = {key: [oid for oid in oids if _live(oid)] for key, oids in by_label.items()}
-    return {key: oids for key, oids in live.items() if oids}, refs
+def first_hop_shape(
+    store: Store, ref_ids: list[int]
+) -> dict[int, tuple[int, int, int]]:
+    """What ``fisheye+1hop`` shows of each ref's link ring, in three queries:
+    ``{ref id: (live neighbours, largest live label group, dead ends)}``.
+
+    The largest group is what :data:`_NEIGHBOR_GROUP_CAP` truncates; a dead
+    end is a ring edge to a retired or missing ref, which the eye hides.
+    ``scripts/memory-lint`` reads these from the memory export manifest."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id, relation FROM links "
+            "WHERE src_ref_id = ANY(%s) OR dst_ref_id = ANY(%s)",
+            (ref_ids, ref_ids),
+        ).fetchall()
+    wanted = set(ref_ids)
+    edges: dict[int, list[tuple[int, int, Any]]] = {r: [] for r in ref_ids}
+    for src, dst, rel in rows:
+        for end in {int(src), int(dst)} & wanted:
+            edges[end].append((int(src), int(dst), rel))
+    buckets = {r: _bucket_edges(store, r, e) for r, e in edges.items()}
+    others = {o for b in buckets.values() for oids in b.values() for o in oids}
+    refs = store.fetch_refs_by_ids(others)
+    shape: dict[int, tuple[int, int, int]] = {}
+    for r, by_label in buckets.items():
+        live_groups = [
+            {o for o in oids if _live(refs, o)} for oids in by_label.values()
+        ]
+        every = {o for oids in by_label.values() for o in oids}
+        live = set().union(*live_groups) if live_groups else set()
+        shape[r] = (len(live), max(map(len, live_groups), default=0), len(every - live))
+    return shape
 
 
 def _audit_flagged(store: Store, ref_ids: Any) -> frozenset[int]:

@@ -618,3 +618,97 @@ def test_retire_candidates_graph_mode_reads_the_node_cache(
     assert "me3" not in res.stdout, res.stdout
     assert "retire candidates: 2 " in res.stdout, res.stdout
     assert _snapshot(nodes) == before
+
+
+def _days_ago(days: int) -> str:
+    then = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+    return then.strftime("%Y-%m-%d")
+
+
+def test_graph_mode_stale_reads_the_manifest_date_not_the_export_mtime(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    # The export rewrites every file each session, so file mtimes are all
+    # "now"; the manifest's updated column is the node's real age.
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me2.md").write_text("# Gotcha\n\nold trap\n", encoding="utf-8")
+    (nodes / "me3.md").write_text("# Fresh gotcha\n\nnew trap\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        f"me2\tgotchas\t{_days_ago(40)}\t8\t8\t1\t0\t0\n"
+        f"me3\tgotchas\t{_days_ago(1)}\t8\t8\t1\t0\t0\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert "retire candidate → me2 (Gotcha): stale >30d (40d)" in res.stdout, res.stdout
+    assert "me3" not in res.stdout, res.stdout
+
+
+def test_graph_mode_unsectioned_manifest_is_a_finding_and_scans_every_node(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    # 2026-10-09: no node carried a section tag, so the threads-only scan
+    # covered nothing and reported clean. A section node (`index`) alone does
+    # not count as sectioning.
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    (nodes / "me5.md").write_text(
+        f"# Old campaign\n\nstate: SHIPPED. commit {sha} landed in main.\n",
+        encoding="utf-8",
+    )
+    today = _days_ago(0)
+    (nodes / "_sections.tsv").write_text(
+        f"me4\tindex\t{today}\t8\t8\t1\t0\t0\nme5\t\t{today}\t8\t8\t1\t0\t0\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert "no memory node carries a section:<slug> tag" in res.stdout, res.stdout
+    assert "landed thread → me5 (Old campaign)" in res.stdout, res.stdout
+    assert "memory-lint: 2 hygiene issue(s) above" in res.stdout, res.stdout
+
+
+def test_graph_mode_flags_the_fisheye_shape_from_the_manifest(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    for h in ("me6", "me7", "me8", "me9"):
+        (nodes / f"{h}.md").write_text(f"# Note {h}\n\nbody\n", encoding="utf-8")
+    today = _days_ago(0)
+    (nodes / "_sections.tsv").write_text(
+        f"me1\tindex\t{today}\t17000\t4000\t150\t139\t1\n"  # section node, no file
+        f"me6\tgotchas\t{today}\t9000\t4000\t2\t0\t0\n"
+        f"me7\tgotchas\t{today}\t100\t100\t0\t0\t0\n"
+        f"me8\tgotchas\t{today}\t100\t100\t3\t0\t2\n"
+        f"me9\tgotchas\t{today}\t100\t100\t3\t0\t0\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    out = res.stdout
+    assert "eye-truncated → me6 (Note me6): fisheye shows 4000 of 9000 chars" in out, (
+        out
+    )
+    assert "eye-truncated → me1 (section node): fisheye shows 4000 of 17000" in out, out
+    assert "flat hub → me1 (section node): fisheye+1hop hides 139 neighbour(s)" in out
+    assert "dead links → me1 (section node): 1 link(s)" in out, out
+    assert "orphan → me7 (Note me7): no live links" in out, out
+    assert "dead links → me8 (Note me8): 2 link(s)" in out, out
+    assert "me9" not in out, out
+    assert "memory-lint: 6 hygiene issue(s) above" in out, out
+
+
+def test_graph_mode_skips_the_shape_check_on_a_two_column_manifest(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    # an export from before the shape columns: sections only, no shape lint
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me6.md").write_text("# Note\n\nbody\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text("me6\tgotchas\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert "memory-lint: ✓ clean" in res.stdout, res.stdout
