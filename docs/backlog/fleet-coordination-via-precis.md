@@ -73,7 +73,8 @@ they change in the same diff as the code, under review and the gate. Gripes,
 todos, Reto's queue and quests stay in precis. The friction is link rot
 between the two — orphan gripes relinked by hand at pillar reviews, stale
 backlog cites, claims split between a `wip:` tag and `.claude/purpose`, no
-single "in flight / owner / blocked on" query. Options, not decided:
+single "in flight / owner / blocked on" query. Reto 2026-10-09: the gate
+check (second option) comes first; the read-only index waits. Options:
 
 - precis indexes the repo layer read-only (frontmatter: slug, status,
   pillar, thread) so `link` joins a gripe or todo to a backlog slug.
