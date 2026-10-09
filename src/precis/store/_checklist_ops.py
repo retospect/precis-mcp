@@ -22,14 +22,14 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-_CHECKLIST_COLS = "id, name, origin, created_at, retired_at"
+_CHECKLIST_COLS = "id, name, origin, created_at, retired_at, default_for"
 _ITEM_COLS = (
     "id, checklist_id, name, rev, phase, severity, decidability, "
     "prevents, applies, body, origin, target_ref_id, created_at, retired_at"
 )
 _VERDICT_COLS = (
     "id, target_ref_id, checklist_id, item_name, item_rev, verdict, "
-    "evidence, fingerprint, checked_at, checked_by, retired_at"
+    "evidence, fingerprint, checked_at, checked_by, retired_at, anchors"
 )
 _NOTE_COLS = (
     "id, target_ref_id, checklist_id, item_name, name, kind, body, re, "
@@ -44,6 +44,7 @@ def _row_to_checklist(row: tuple[Any, ...]) -> dict[str, Any]:
         "origin": row[2],
         "created_at": row[3],
         "retired_at": row[4],
+        "default_for": list(row[5] or []),
     }
 
 
@@ -79,6 +80,7 @@ def _row_to_verdict(row: tuple[Any, ...]) -> dict[str, Any]:
         "checked_at": row[8],
         "checked_by": row[9],
         "retired_at": row[10],
+        "anchors": list(row[11] or []),
     }
 
 
@@ -124,22 +126,45 @@ class ChecklistMixin:
         return None if row is None else _row_to_checklist(row)
 
     def checklist_create(
-        self, *, name: str, origin: str = "local", conn: Connection | None = None
+        self,
+        *,
+        name: str,
+        origin: str = "local",
+        default_for: list[str] | None = None,
+        conn: Connection | None = None,
     ) -> dict[str, Any]:
         """Insert a new checklist row. Caller has already checked ``name``
         doesn't exist (the DB UNIQUE constraint is the backstop, not the
-        primary error path — the handler wants a friendlier message)."""
+        primary error path — the handler wants a friendlier message).
+        ``default_for`` is the kind-default assignment list (0192)."""
         sql = (
-            "INSERT INTO checklists (name, origin) VALUES (%s, %s) "
+            "INSERT INTO checklists (name, origin, default_for) VALUES (%s, %s, %s) "
             f"RETURNING {_CHECKLIST_COLS}"
         )
+        params = (name, origin, list(default_for or []))
         if conn is not None:
-            row = conn.execute(sql, (name, origin)).fetchone()
+            row = conn.execute(sql, params).fetchone()
         else:
             with self.tx() as c:
-                row = c.execute(sql, (name, origin)).fetchone()
+                row = c.execute(sql, params).fetchone()
         assert row is not None
         return _row_to_checklist(row)
+
+    def checklist_set_default_for(
+        self,
+        *,
+        checklist_id: int,
+        default_for: list[str],
+        conn: Connection | None = None,
+    ) -> None:
+        """Replace the kind-default assignment list (sync owns it for
+        shipped checklists — the YAML's ``default_for`` is the source)."""
+        sql = "UPDATE checklists SET default_for = %s WHERE id = %s"
+        if conn is not None:
+            conn.execute(sql, (list(default_for), checklist_id))
+        else:
+            with self.tx() as c:
+                c.execute(sql, (list(default_for), checklist_id))
 
     def checklist_list(
         self, *, q: str | None = None, limit: int = 50
@@ -200,8 +225,10 @@ class ChecklistMixin:
     ) -> list[dict[str, Any]]:
         """Every live current-rev item, scoped to the checklist-wide items
         (``target_ref_id IS NULL``) plus any items scoped to
-        ``target_ref_id`` when given. Ordered by phase then name for a
-        stable, phase-grouped rendering."""
+        ``target_ref_id`` when given. Ordered by phase (in order of first
+        appearance — the checklist owns its phase sequence, the file/put
+        order IS that sequence) then by the item's first-ever rev, so a
+        revved item keeps its place and a new one lands at the end."""
         clauses = ["ci.retired_at IS NULL", "ci.checklist_id = %s"]
         params: list[Any] = [checklist_id]
         if target_ref_id is None:
@@ -212,14 +239,22 @@ class ChecklistMixin:
         cols = ", ".join("ci." + c.strip() for c in _ITEM_COLS.split(", "))
         with self.pool.connection() as conn:
             rows = conn.execute(
-                f"SELECT DISTINCT ON (ci.name) {cols} "
-                "FROM checklist_items ci "
-                f"WHERE {' AND '.join(clauses)} "
-                "ORDER BY ci.name, ci.rev DESC",
+                "SELECT * FROM ("
+                f"  SELECT DISTINCT ON (ci.name) {cols}, "
+                "    (SELECT MIN(x.id) FROM checklist_items x "
+                "     WHERE x.checklist_id = ci.checklist_id AND x.name = ci.name)"
+                "    AS first_id "
+                "  FROM checklist_items ci "
+                f"  WHERE {' AND '.join(clauses)} "
+                "  ORDER BY ci.name, ci.rev DESC"
+                ") t ORDER BY first_id",
                 params,
             ).fetchall()
         items = [_row_to_item(r) for r in rows]
-        items.sort(key=lambda it: (it.get("phase") or "", it["name"]))
+        phase_rank: dict[str, int] = {}
+        for it in items:
+            phase_rank.setdefault(it["phase"] or "", len(phase_rank))
+        items.sort(key=lambda it: phase_rank[it["phase"] or ""])
         return items
 
     def checklist_item_add_rev(
@@ -324,18 +359,22 @@ class ChecklistMixin:
         return row is not None
 
     def checklist_assignments_for_target(
-        self, target_ref_id: int
+        self, target_ref_id: int, *, target_kind: str | None = None
     ) -> list[dict[str, Any]]:
-        """Every checklist live-assigned to a target."""
+        """Every checklist assigned to a target — explicitly (a live
+        ``checklist_assignments`` row) or by kind default (``target_kind``
+        in ``checklists.default_for``, 0192)."""
+        cols = ", ".join("c." + c.strip() for c in _CHECKLIST_COLS.split(", "))
         with self.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT c.id, c.name, c.origin, c.created_at, c.retired_at "
-                "FROM checklist_assignments ca "
-                "JOIN checklists c ON c.id = ca.checklist_id "
-                "WHERE ca.target_ref_id = %s AND ca.retired_at IS NULL "
-                "AND c.retired_at IS NULL "
-                "ORDER BY c.name",
-                (target_ref_id,),
+                f"SELECT {cols} FROM checklists c "
+                "WHERE c.retired_at IS NULL AND ("
+                "  EXISTS (SELECT 1 FROM checklist_assignments ca "
+                "          WHERE ca.checklist_id = c.id "
+                "          AND ca.target_ref_id = %s AND ca.retired_at IS NULL)"
+                "  OR %s = ANY (c.default_for)"
+                ") ORDER BY c.name",
+                (target_ref_id, target_kind),
             ).fetchall()
         return [_row_to_checklist(r) for r in rows]
 
@@ -352,16 +391,18 @@ class ChecklistMixin:
         evidence: dict[str, Any] | None = None,
         fingerprint: str | None = None,
         checked_by: str | None = None,
+        anchors: list[str] | None = None,
     ) -> int:
         """Append one verdict row. Never updates a prior verdict — the
         ledger is the primitive, "current status" is a read-time query
-        over ``checked_at DESC``."""
+        over ``checked_at DESC``. ``anchors`` names the sub-objects the
+        fingerprint was narrowed to (empty = whole target)."""
         with self.tx() as conn:
             row = conn.execute(
                 "INSERT INTO checklist_verdicts "
                 "(target_ref_id, checklist_id, item_name, item_rev, verdict, "
-                " evidence, fingerprint, checked_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                " evidence, fingerprint, checked_by, anchors) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     target_ref_id,
                     checklist_id,
@@ -371,6 +412,7 @@ class ChecklistMixin:
                     Jsonb(evidence or {}),
                     fingerprint,
                     checked_by,
+                    list(anchors or []),
                 ),
             ).fetchone()
         assert row is not None

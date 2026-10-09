@@ -84,6 +84,7 @@ def test_validate_known_registry_keys() -> None:
         "placement_legal",
         "route_complete",
         "netlist_drc_clean",
+        "checklist_clean",
     }
 
 

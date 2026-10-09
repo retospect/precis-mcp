@@ -63,6 +63,7 @@ leaf.
 | `placement_legal` | The PCB design's latest persisted placement has every instance placed, no courtyard overlaps, and every courtyard inside the board outline (pcb-guided-place-route Slice 10) | `pcb` (slug or ref id) |
 | `route_complete` | Every net on the PCB design's board is `pcb_routes.status='realized'` — none `unrouted`/`sketched`/`failed` | `pcb` (slug or ref id) |
 | `netlist_drc_clean` | The PCB design's latest persisted geometric-DRC run has zero `severity='error'` findings (`warn` doesn't block); `None` (leaf stays open) if DRC has never run | `pcb` (slug or ref id) |
+| `checklist_clean` | Every *blocking* item of the named checklist is settled on the target (current `pass`/`n/a`/`waived` verdict, or a live tool checker reading `pass`) with no `fail`; `None` while any blocking item is not checked, stale, its checker cannot run, or the checklist is not assigned. Advisory items never block. See precis-checklist-help | `checklist` (name), `target` (`'<kind>:<slug>'`) |
 
 All shapes accept two optional fields: `timeout_at` — when the
 timeout passes before the evaluator resolves, the leaf flips to

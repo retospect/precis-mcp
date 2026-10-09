@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from precis.errors import BadInput
 from precis.workers.auto_check_evaluators import (
     all_child_findings_resolved,
+    checklist_clean,
     child_job_succeeded,
     derived_job_succeeded,
     discord_reply_received,
@@ -75,6 +76,9 @@ REGISTRY: dict[str, Evaluator] = {
     # — reads the latest persisted geometric-DRC run (precis.pcb.drc),
     # never recomputes it.
     "netlist_drc_clean": netlist_drc_clean.evaluate,
+    # checklist-kind slice 2 (docs/backlog/checklist-kind.md) — every
+    # blocking item of a checklist settled on the target, no fail.
+    "checklist_clean": checklist_clean.evaluate,
 }
 
 # Optional write-time argument validators, keyed like REGISTRY. An
@@ -83,6 +87,7 @@ REGISTRY: dict[str, Evaluator] = {
 # shared type / on_resolve / timeout_at checks.
 VALIDATORS: dict[str, Callable[[dict[str, Any]], None]] = {
     "paper_ingested": paper_ingested.validate,
+    "checklist_clean": checklist_clean.validate,
 }
 
 

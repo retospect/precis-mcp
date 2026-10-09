@@ -1,0 +1,252 @@
+# pcb-tapeout.yaml — the pcb pre-tapeout checklist (docs/backlog/checklist-kind.md,
+# first instance). Curated from the cached perplexity-research survey
+# "Comprehensive PCB design review checklist of industry best practices…" plus
+# the 2026-09-09 design session; curation rule: keep what names a real,
+# concrete failure, discard cargo cult. Context: small-run boards fabbed and
+# assembled at JLCPCB, designed by an LLM-guided place+route system with an
+# existing geometric DRC — so per-rule DRC restatements never appear here;
+# they collapse into the coarse tool items (never decomposed).
+#
+# Three tool items bridge to the rules layer (checkers keyed by item name in
+# src/precis/checklist/pcb.py); everything else is a judgment item an agent
+# checks and argues. `prevents` is mandatory (no failure statement, no item);
+# `applies` makes n/a verdicts honest. Edit here, never in the DB: the next
+# boot's sync appends a new rev for whatever changed.
+#
+# Phases in order: schematic → netlist → layout → fab.
+
+name: pcb-tapeout
+default_for: [pcb]
+items:
+  - name: connector-mates-counterpart
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "Gender/pinout mismatch against the real mating cable or header swaps power or reverses a diff pair — passes ERC, non-functional in hardware."
+  - name: rail-readback-considered
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "No spare-ADC divider on a supply rail means a brownout or sag looks like an unrelated comms/reset fault with no way to confirm it in-system."
+  - name: current-budget-per-rail
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "Per-rail load was never summed against the regulator's rated current, so the rail droops or the regulator trips overcurrent under real load."
+  - name: regulator-dropout-margin
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "Upstream supply sag (battery discharge, cascaded regulator) pulls the rail out of regulation because dropout margin was never checked against worst-case input."
+  - name: regulator-thermal-margin
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "Regulator or IC overheats or thermally shuts down because dissipated power vs. thermal resistance/copper area was never calculated."
+  - name: decoupling-adequate
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "Missing, undersized, or wrong-ESR decoupling on a power pin causes regulator oscillation, ground bounce, or EMI susceptibility that surfaces as intermittent failures later."
+  - name: pull-resistors-present
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "A bus (I2C, open-drain) sits stuck low, or a logic input floats, because a required pull-up/pull-down was omitted or undersized."
+  - name: strap-boot-pins-vs-datasheet
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "A floated or mis-strapped configuration pin boots the device into the wrong mode (bootloader instead of application, wrong boot source)."
+  - name: reset-supervision
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "Missing reset filtering/pull-up or bad supervisor sequencing leaves the device in an indeterminate state at power-up or causes spurious resets from noise."
+  - name: unused-pin-handling
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "A floating unused pin acts as a noise antenna, or a floating config input leaves the part in an undocumented mode."
+  - name: esd-tvs-at-connectors
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "An ESD event at an exposed connector damages or latches up the downstream IC because TVS protection was missing or undersized for that interface."
+  - name: level-shifting-domains
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "A voltage-domain crossing without a level shifter overvoltages an IO pin or is misread as a logic level, causing damage or comms failure."
+  - name: test-points-present
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "No way to probe or reprogram the assembled board without bodge wires, because no test point was placed for a signal needed at bring-up."
+  - name: mounting-hole-grounding-intent
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "A mounting hole's PTH/NPTH choice doesn't match the intended chassis-ground or isolation, creating a ground loop or losing an intended EMI-shield path."
+  - name: power-on-sequencing-planned
+    phase: schematic
+    severity: blocking
+    decidability: judgment
+    prevents: "Rails rising in an undefined order latch up mixed-voltage ICs or back-power a domain through IO protection diodes, damaging parts or hanging the boot."
+  - name: inrush-protection-present
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "Bulk-capacitance inrush at plug-in droops the upstream supply into a brownout-reset loop or pits connector contacts; no soft-start/load-switch slew control was provided."
+  - name: rail-switches-mcu-controlled
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "Without MCU-controlled high-side switches on subsystem rails, a hung peripheral cannot be power-cycled in-system and a faulty domain cannot be isolated during bring-up."
+  - name: watchdog-provision
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "Hung firmware permanently wedges the board with no recovery path because no watchdog (external chip, or at minimum a plan for the MCU's internal one) can reset it."
+    applies: "unattended/remote operation"
+  - name: spare-pin-self-diagnostics
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "Leftover MCU inputs left unallocated instead of wired to diagnostic senses (presence detects, ID straps, temperature) leave field faults undiagnosable in-system — the digital counterpart of rail-readback-considered."
+  - name: bringup-self-check-plan
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "No planned power-on self-test means first bring-up cannot distinguish a board fault from a firmware fault — and the senses the POST would need (rail dividers, ID pins) were never provisioned because no plan demanded them."
+  - name: programming-access-provision
+    phase: schematic
+    severity: advisory
+    decidability: judgment
+    prevents: "No flash/debug access point (Tag-Connect-style pin-free pad footprint, or a header) on a board with a factory-blank MCU means assembled units cannot be programmed without hand rework."
+  - name: netlist-exceptions-clean
+    phase: netlist
+    severity: blocking
+    decidability: tool
+    prevents: "Unconnected pins, single-node nets, or unresolved measure operands reach layout undetected."
+    body: "Checker: the connectivity graph (pcb_graph) — pins on no net and nets with fewer than two members. Read live by the pcb bridge; evidence lists the offenders. A legitimately unconnected pin (NC, test point) is argued and waived with rationale, not edited away."
+  - name: functional-proximity-intents-declared
+    phase: netlist
+    severity: advisory
+    decidability: judgment
+    prevents: "A sensor whose reading depends on physical placement (temp sensor at the hot part, light/pressure sensor with its stimulus, mic away from a noise source) gets placed by wire-length alone because no `proximity`/`separation` measure declared the intent — the board works electrically and measures the wrong thing."
+  - name: drc-clean
+    phase: layout
+    severity: blocking
+    decidability: tool
+    prevents: "Any of the 15 encoded geometric/connectivity rules (clearance, annular ring, courtyard, silk, etc.) is violated on the fabricated board."
+    body: "Checker: the latest persisted geometric DRC run (get(kind='pcb', id=..., view='drc') writes it). Status is pass when that run has zero unwaived error findings; warnings spend house margin but do not block. Evidence is the run id and the per-rule error breakdown. Not run until a DRC run exists."
+  - name: all-nets-routed
+    phase: layout
+    severity: blocking
+    decidability: tool
+    prevents: "An unrouted net ships to fab as an open circuit."
+    body: "Checker: pcb_routes status per live net (view='route-status'). pass when every net is realized; evidence names the pending nets. Not run on a design with no nets."
+  - name: footprint-vs-datasheet
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "A footprint rotated, mirrored, or pin-mapped wrong on a symmetric-looking part solders fine and passes DRC but is completely non-functional."
+  - name: pin1-polarity-silkscreen
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "Missing or wrong pin-1/polarity silkscreen causes assembly (human or machine) to seat a polarized part backwards, destroying it at first power-on."
+  - name: connector-mechanical-fit
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "A connector or board edge doesn't clear the mating cable, enclosure wall, or neighboring part — discovered only at physical assembly, forcing a full respin."
+  - name: board-shape-mountable
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "The board outline or mounting-hole placement doesn't actually fit the intended enclosure or standoff pattern, found only after the board is in hand."
+  - name: return-path-continuity
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "A signal or analog return crosses a ground-plane split or gap, injecting a reference error (ADC inaccuracy) or coupling digital switching noise into an analog section."
+  - name: crystal-clock-layout
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "Vias on a clock line, excess loop area, or missing ground/cap placement around the crystal keeps the oscillator from starting or adds enough jitter to break timing-sensitive comms."
+  - name: antenna-keepout
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "Copper or a component inside the antenna keepout detunes it, cutting range or failing radio certification."
+    applies: "boards with an RF antenna"
+  - name: thermal-via-stitching-adequate
+    phase: layout
+    severity: advisory
+    decidability: judgment
+    prevents: "A thermal pad has too few stitching vias for the power actually budgeted to it, so the part overheats despite passing the generic thermal-relief pattern check."
+  - name: test-point-accessibility
+    phase: layout
+    severity: advisory
+    decidability: judgment
+    prevents: "A test point ends up buried under a part or with no probe clearance, defeating the point of having placed it."
+  - name: soft-measure-residuals-acceptable
+    phase: layout
+    severity: advisory
+    decidability: judgment
+    prevents: "A `soft` measure the placer traded away (rubber band left stretched) ships unreviewed: the eyes report the violation-mm but nobody makes the call — \"cap 3mm from the pin\" may be fine while \"temp sensor 40mm from the hot part\" defeats the design and needs serious re-placement work, and without an explicit per-residual verdict the second ships as silently as the first. Evidence anchor: the measures view."
+  - name: test-pads-jig-ready
+    phase: layout
+    severity: advisory
+    decidability: judgment
+    prevents: "Test pads placed at arbitrary coordinates instead of on an even-coordinate grid (ideally grouped along one edge) make a bed-of-nails test jig impractical, so every unit must be hand-probed forever. A test pad is just a component: widened exposed copper, one pad, silk label — free to place on-grid now, expensive to retrofit."
+  - name: stackup-vs-fab-capability
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "The stackup JLC actually builds (dielectric heights, copper weights) diverges from the one assumed for a controlled-impedance or diff-pair calculation, silently missing the target impedance."
+  - name: bom-availability-lifecycle
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "A BOM line is NRND/obsolete or references the wrong voltage/variant suffix on an electrically-similar footprint, stalling the order or substituting a part that doesn't work as designed."
+    body: "TTL item: the world moves even when the board does not — re-check before each order; a pass older than the order cycle is stale regardless of fingerprint."
+  - name: gerber-export-integrity
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "A missing layer, swapped polarity, or netlist-vs-copper mismatch in the exported Gerbers ships to fab undetected — must render red, not absent, until the export-side check is wired (`pcb-fab-output-unwired.md`)."
+  - name: drill-npth-grounding-intent
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "A hole built as NPTH when the schematic intended a grounded PTH (or vice versa) breaks the chassis-ground/EMI-shield path decided at schematic time."
+  - name: paste-aperture-thermal-pad
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "A thermal-pad paste window follows a generic percentage instead of the datasheet-recommended pattern, causing solder voiding or poor thermal/electrical contact under a QFN-style part."
+  - name: fiducials-panelization-jlc
+    phase: fab
+    severity: advisory
+    decidability: judgment
+    prevents: "An unusual outline or a fiducial JLC's standard prototype flow doesn't expect stalls the order or cracks boards at depanelization."
+    applies: "boards needing non-standard panelization"
+  - name: assembly-drawing-consistency
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "A DNP note or polarity/orientation mark is missing or inconsistent between schematic, layout, and assembly drawing, so assembly places or populates a part wrong even though it \"matches the Gerbers.\""
+  - name: fastener-galvanic-compatibility
+    phase: fab
+    severity: advisory
+    decidability: judgment
+    prevents: "A screw/standoff/nut pairing of dissimilar metals corrodes or seizes in service (worse in humid/outdoor use)."
+  - name: bringup-procedure-written
+    phase: fab
+    severity: advisory
+    decidability: judgment
+    prevents: "No step-by-step bring-up procedure (power-up order, what to measure where with expected values, when to flash which firmware) written before boards ship means missing provisions — a test point, a rail sense, a current-limit setting — surface with the board in hand instead of while they could still be added. Deliberately a forcing function: the procedure will change at bring-up; *authoring the walk-through* is what surfaces the gaps, and its evidence anchor is the procedure document itself."

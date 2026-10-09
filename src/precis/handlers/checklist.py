@@ -20,20 +20,25 @@ instead of restarting on every re-check.
   lifted to :mod:`precis.utils.notes`), ``assign``/``unassign`` (the
   target/checklist binding that makes silence honest).
 * ``get(id=<name>)`` renders the checklist definition; ``get(id=<name>,
-  target=<kind:id>)`` renders the **per-target status view**,
-  three-valued: an item with no verdict is "not checked"; a verdict whose
-  ``item_rev`` is behind the item's current rev is "stale (item
-  revised)"; a verdict whose caller-supplied ``fingerprint=`` disagrees
-  with the current one (when the caller supplies one — fingerprints are
-  an OPAQUE caller-supplied string in this slice, never computed here)
-  is "stale (target changed)"; otherwise the recorded verdict. An
-  unassigned target renders "no checklist assigned", never empty-clean.
+  target=<kind:id>)`` renders the **per-target status view** (derivation
+  in :mod:`precis.checklist`): an item with no verdict is "not checked";
+  a verdict whose ``item_rev`` is behind the item's current rev is "stale
+  (item revised)"; a verdict whose stored fingerprint disagrees with the
+  target's current one — computed by the kind's bridge over the verdict's
+  ``anchors`` (pcb), or the caller-supplied opaque ``fingerprint=`` for
+  kinds without a bridge — is "stale (target changed)"; a ``tool`` item
+  with a registered checker shows the checker's LIVE result (or ``not run
+  (<reason>)``); otherwise the recorded verdict. Below the table, the
+  argument threads (open questions first, dangling anchors flagged). An
+  unassigned target renders "no checklist assigned", never empty-clean;
+  a target whose kind is in the checklist's ``default_for`` counts as
+  assigned. ``get(target=<kind:id>)`` alone lists what applies to it.
 * ``search(q=...)`` matches checklist names.
 
-NOT in this slice: any pcb-specific code, fingerprint computation, the
-pcb-tapeout content, the ``checklist_clean`` evaluator, kind-default
-assignments, skills. See the design doc's "Explicitly NOT in scope"
-section.
+Shipped checklists (``src/precis/data/checklists/*.yaml``, first instance
+``pcb-tapeout``) arrive via :mod:`precis.jobs.checklist_sync`; the
+``checklist_clean`` ``auto_check`` evaluator gates a todo on the same
+status. Grammar and workflow: skill ``precis-checklist-help``.
 """
 
 from __future__ import annotations
@@ -41,12 +46,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from precis.checklist import ItemStatus, bridge_for, compute_statuses
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.utils.notes import NOTE_KINDS, NoteError, validate_about
+from precis.utils.notes import (
+    NOTE_KINDS,
+    NoteError,
+    NoteSpec,
+    dangling_anchors,
+    open_questions,
+    validate_about,
+)
 
 _SEVERITIES: tuple[str, ...] = ("blocking", "advisory")
 _DECIDABILITY: tuple[str, ...] = ("tool", "judgment")
@@ -87,10 +100,14 @@ class ChecklistHandler(Handler):
             "retire_item, verdict, add_note, remove_note, assign, "
             "unassign — op='add_item'/'retire_item' on a shipped item rev "
             "is REJECTED (add a local item or file a gripe instead). "
-            "get(id=<name>) renders the definition; get(id=<name>, "
-            "target='<kind>:<id>') renders the per-target status view "
-            "(not checked / stale / current verdict per item — an "
-            "unassigned target says so, never empty-clean). "
+            "op='verdict' takes item=, verdict=pass|fail|n/a|waived, "
+            "evidence={...}, anchors=[refdes/net names] (pcb: narrows the "
+            "change fingerprint to those sub-objects). get(id=<name>) "
+            "renders the definition; get(id=<name>, target='<kind>:<id>') "
+            "the per-target status view (not checked / stale / live tool "
+            "result / verdict per item, then the argument threads — an "
+            "unassigned target says so, never empty-clean); "
+            "get(target=...) lists the checklists that apply. "
             "search(q=...) matches checklist names. See "
             "precis-checklist-help."
         ),
@@ -127,6 +144,7 @@ class ChecklistHandler(Handler):
         *,
         id: str | int | None = None,
         items: list[dict[str, Any]] | None = None,
+        default_for: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -150,9 +168,12 @@ class ChecklistHandler(Handler):
         if items is not None and not isinstance(items, list):
             raise BadInput("put(kind='checklist') items= must be a list of dicts")
         payloads = [_validate_item_payload(raw) for raw in (items or [])]
+        kinds = _validate_kinds(default_for)
 
         with self.store.tx() as conn:
-            row = self.store.checklist_create(name=name, origin="local", conn=conn)
+            row = self.store.checklist_create(
+                name=name, origin="local", default_for=kinds, conn=conn
+            )
             for p in payloads:
                 self.store.checklist_item_add_rev(
                     checklist_id=row["id"],
@@ -194,6 +215,7 @@ class ChecklistHandler(Handler):
         verdict: str | None = None,
         evidence: dict[str, Any] | None = None,
         fingerprint: str | None = None,
+        anchors: Any = None,
         checked_by: str | None = None,
         name: str | None = None,
         note_kind: str | None = None,
@@ -234,6 +256,7 @@ class ChecklistHandler(Handler):
                 verdict=verdict,
                 evidence=evidence,
                 fingerprint=fingerprint,
+                anchors=anchors,
                 checked_by=checked_by,
             )
         if op == "add_note":
@@ -375,6 +398,7 @@ class ChecklistHandler(Handler):
         verdict: str | None,
         evidence: dict[str, Any] | None,
         fingerprint: str | None,
+        anchors: Any,
         checked_by: str | None,
     ) -> Response:
         if item is None or not str(item).strip():
@@ -386,12 +410,41 @@ class ChecklistHandler(Handler):
             )
         if evidence is not None and not isinstance(evidence, dict):
             raise BadInput("evidence= must be a dict")
+        if verdict == "waived" and not (evidence or {}).get("rationale"):
+            raise BadInput(
+                "verdict='waived' requires evidence={'rationale': ...} — a "
+                "waiver is the argued outlet for an item deliberately not met",
+                next="evidence={'rationale': 'why this board does not need it'}",
+            )
         item_name = str(item).strip()
+        try:
+            anchor_list = validate_about(anchors)
+        except NoteError as exc:
+            raise BadInput(f"anchors= {exc}") from exc
         ref = self._resolve_target(target)
         current = self.store.checklist_item_current(checklist["id"], item_name)
         if current is None:
             raise NotFound(
                 f"item {item_name!r} has no live rev on checklist {checklist['name']!r}"
+            )
+        fp = str(fingerprint).strip() if fingerprint else None
+        note = ""
+        bridge = bridge_for(ref.kind)
+        if fp is None and bridge is not None:
+            computed = bridge.fingerprint(self.store, ref.id, anchor_list)
+            if computed.missing:
+                raise NotFound(
+                    f"anchors not found on {ref.kind}:{ref.label}: "
+                    f"{', '.join(computed.missing)}",
+                    next="anchors= names refdes or nets as they appear on the target",
+                )
+            fp = computed.digest
+            scope = ", ".join(anchor_list) if anchor_list else "whole target"
+            note = f"; fingerprint over {scope}"
+        elif anchor_list and bridge is None:
+            raise BadInput(
+                f"anchors= needs a kind with a fingerprint bridge (pcb); "
+                f"{ref.kind} has none — supply an opaque fingerprint= instead"
             )
         self.store.checklist_verdict_insert(
             target_ref_id=ref.id,
@@ -400,13 +453,14 @@ class ChecklistHandler(Handler):
             item_rev=current["rev"],
             verdict=verdict,
             evidence=evidence,
-            fingerprint=(str(fingerprint).strip() if fingerprint else None),
+            fingerprint=fp,
             checked_by=checked_by,
+            anchors=anchor_list,
         )
         return Response(
             body=(
                 f"recorded {checklist['name']}.{item_name} = {verdict} for "
-                f"{ref.kind}:{ref.label} (item rev {current['rev']})"
+                f"{ref.kind}:{ref.label} (item rev {current['rev']}{note})"
             )
         )
 
@@ -495,6 +549,12 @@ class ChecklistHandler(Handler):
             target_ref_id=ref.id, checklist_id=checklist["id"]
         )
         if not removed:
+            if ref.kind in checklist["default_for"]:
+                raise BadInput(
+                    f"{checklist['name']!r} applies to every {ref.kind} by kind "
+                    "default — there is no explicit assignment to remove",
+                    next="record n/a or waived verdicts (with rationale) instead",
+                )
             raise NotFound(
                 f"{checklist['name']!r} is not assigned to {ref.kind}:{ref.label}"
             )
@@ -517,6 +577,8 @@ class ChecklistHandler(Handler):
         if v and v != "page":
             raise BadInput(f"unknown checklist view {view!r}", next="omit view=")
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
+            if target is not None:
+                return self._render_for_target(self._resolve_target(target))
             return self._render_list()
         name = str(id).strip()
         checklist = self.store.checklist_get(name)
@@ -541,9 +603,35 @@ class ChecklistHandler(Handler):
             + render_agent_table(table, schema=["checklist", "origin"])
         )
 
+    def _render_for_target(self, ref: _Target) -> Response:
+        rows = self.store.checklist_assignments_for_target(ref.id, target_kind=ref.kind)
+        head = f"# checklists for {ref.kind}:{ref.label}"
+        if not rows:
+            return Response(
+                body=f"{head}\n\nno checklist assigned\n\nNext: "
+                "edit(kind='checklist', id=<name>, op='assign', "
+                f"target='{ref.kind}:{ref.label}')"
+            )
+        table = [
+            {
+                "checklist": r["name"],
+                "origin": r["origin"],
+                "via": ("kind default" if ref.kind in r["default_for"] else "explicit"),
+            }
+            for r in rows
+        ]
+        return Response(
+            body=f"{head}\n"
+            + render_agent_table(table, schema=["checklist", "origin", "via"])
+            + f"\n\nNext: get(kind='checklist', id={rows[0]['name']!r}, "
+            f"target='{ref.kind}:{ref.label}')"
+        )
+
     def _render_definition(self, checklist: dict[str, Any]) -> Response:
         items = self.store.checklist_items_current(checklist["id"])
         head = f"# checklist {checklist['name']} ({checklist['origin']})"
+        if checklist["default_for"]:
+            head += f" — default for {', '.join(checklist['default_for'])}"
         if not items:
             return Response(
                 body=f"{head}\n\n(no items yet)\n\nNext: edit(kind='checklist', "
@@ -586,15 +674,18 @@ class ChecklistHandler(Handler):
         fingerprint: str | None,
     ) -> Response:
         head = f"# checklist {checklist['name']} — {ref.kind}:{ref.label}"
-        if not self.store.checklist_assignment_live(
+        explicit = self.store.checklist_assignment_live(
             target_ref_id=ref.id, checklist_id=checklist["id"]
-        ):
+        )
+        if not explicit and ref.kind not in checklist["default_for"]:
             return Response(
                 body=f"{head}\n\nno checklist assigned\n\nNext: "
                 f"edit(kind='checklist', id={checklist['name']!r}, "
                 f"op='assign', target={ref.kind!r} + ':' + "
                 f"{ref.label!r})"
             )
+        if not explicit:
+            head += f" (kind default for {ref.kind})"
         items = self.store.checklist_items_current(
             checklist["id"], target_ref_id=ref.id
         )
@@ -603,25 +694,85 @@ class ChecklistHandler(Handler):
         verdicts = self.store.checklist_verdicts_latest_for_target(
             target_ref_id=ref.id, checklist_id=checklist["id"]
         )
-        table = []
-        for it in items:
-            v = verdicts.get(it["name"])
-            status = _status_for(it, v, fingerprint)
-            table.append(
-                {
-                    "phase": it["phase"] or "—",
-                    "item": it["name"],
-                    "severity": it["severity"],
-                    "status": status,
-                    "checked_at": str(v["checked_at"]) if v else "—",
-                }
-            )
-        return Response(
-            body=f"{head}\n"
-            + render_agent_table(
-                table, schema=["phase", "item", "severity", "status", "checked_at"]
-            )
+        statuses = compute_statuses(
+            self.store,
+            items=items,
+            verdicts=verdicts,
+            kind=ref.kind,
+            ref_id=ref.id,
+            caller_fingerprint=fingerprint,
         )
+        table = [
+            {
+                "phase": st.item["phase"] or "—",
+                "item": st.name,
+                "severity": st.item["severity"],
+                "status": st.status,
+                "evidence": _evidence_summary(st),
+                "checked_at": (
+                    str(st.verdict["checked_at"])
+                    if st.verdict is not None and st.source == "ledger"
+                    else ("live" if st.source == "tool" else "—")
+                ),
+            }
+            for st in statuses
+        ]
+        body = f"{head}\n{_summary_line(statuses)}\n" + render_agent_table(
+            table,
+            schema=["phase", "item", "severity", "status", "evidence", "checked_at"],
+        )
+        body += self._render_threads(checklist, ref, items)
+        return Response(body=body)
+
+    def _render_threads(
+        self, checklist: dict[str, Any], ref: _Target, items: list[dict[str, Any]]
+    ) -> str:
+        rows = self.store.checklist_notes_list(
+            target_ref_id=ref.id, checklist_id=checklist["id"]
+        )
+        if not rows:
+            return ""
+        specs = [
+            NoteSpec(
+                name=r["name"],
+                kind=r["kind"],
+                body=r["body"],
+                re=r["re"],
+                about=list(r["about"] or []),
+                origin=r["origin"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+        item_names = {it["name"] for it in items}
+        bridge = bridge_for(ref.kind)
+
+        def _resolves(anchor: str) -> bool:
+            if anchor in item_names:
+                return True
+            if bridge is None:
+                return False
+            return bool(bridge.anchor_exists(self.store, ref.id, anchor))
+
+        dangling = {(n, a) for n, a in dangling_anchors(specs, _resolves)}
+        open_q = {n.name for n in open_questions(specs)}
+        out = [f"\n\n## argument ({len(rows)} note(s), {len(open_q)} open question(s))"]
+        for r in rows:
+            scope = r["item_name"] or "(run)"
+            flags = []
+            if r["name"] in open_q:
+                flags.append("OPEN")
+            bad = [a for a in (r["about"] or []) if (r["name"], a) in dangling]
+            if bad:
+                flags.append("dangling: " + ", ".join(bad))
+            re_part = f" re {r['re']}" if r["re"] else ""
+            about_part = f" about {', '.join(r['about'])}" if r["about"] else ""
+            flag_part = f" [{'; '.join(flags)}]" if flags else ""
+            out.append(
+                f"- {scope} · {r['kind']} {r['name']}{re_part}{about_part}"
+                f"{flag_part}: {r['body']}"
+            )
+        return "\n".join(out)
 
     # ── search ───────────────────────────────────────────────────────────
 
@@ -684,22 +835,61 @@ class ChecklistHandler(Handler):
         return _Target(id=rid, kind=kind, label=str(rid))
 
 
-def _status_for(
-    item: dict[str, Any], verdict: dict[str, Any] | None, fingerprint: str | None
-) -> str:
-    """Three-valued status honesty: not checked / stale (with reason) /
-    the recorded verdict. Never "clean" by omission."""
-    if verdict is None:
-        return "not checked"
-    if verdict["item_rev"] < item["rev"]:
-        return "stale (item revised)"
-    if (
-        fingerprint is not None
-        and verdict.get("fingerprint") is not None
-        and verdict["fingerprint"] != fingerprint
+def _summary_line(statuses: list[ItemStatus]) -> str:
+    """One line a gate can read: blocking failures, unsettled blocking
+    items, and the per-status tally — never "clean" by omission."""
+    tally: dict[str, int] = {}
+    for st in statuses:
+        key = st.status.split(" (")[0]
+        tally[key] = tally.get(key, 0) + 1
+    blocking_fail = sum(1 for st in statuses if st.blocking and st.status == "fail")
+    blocking_open = sum(1 for st in statuses if st.blocking and not st.settled)
+    parts = [f"{k} {v}" for k, v in sorted(tally.items())]
+    if blocking_fail:
+        verdict = f"BLOCKED — {blocking_fail} blocking failure(s)"
+    elif blocking_open:
+        verdict = f"INCOMPLETE — {blocking_open} blocking item(s) unsettled"
+    else:
+        verdict = "blocking items settled"
+    return f"{verdict} · {', '.join(parts)}"
+
+
+def _evidence_summary(st: ItemStatus) -> str:
+    ev = st.evidence
+    if not ev:
+        return "—"
+    if st.source == "tool":
+        bits = []
+        if "run_id" in ev:
+            bits.append(f"run {ev['run_id']}")
+        for key in (
+            "errors",
+            "warnings",
+            "nets",
+            "unconnected_pin_count",
+            "dangling_net_count",
+        ):
+            if key in ev:
+                bits.append(f"{key} {ev[key]}")
+        if ev.get("pending"):
+            bits.append("pending " + ", ".join(ev["pending"][:5]))
+        return "; ".join(bits) or "—"
+    keys = ", ".join(sorted(str(k) for k in ev))
+    rationale = ev.get("rationale")
+    if rationale:
+        return f"rationale: {str(rationale)[:60]}"
+    return keys[:60]
+
+
+def _validate_kinds(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    items = [raw] if isinstance(raw, str) else raw
+    if not isinstance(items, list) or not all(
+        isinstance(k, str) and k.strip() for k in items
     ):
-        return "stale (target changed)"
-    return str(verdict["verdict"])
+        raise BadInput("default_for= must be a list of ref kind slugs, e.g. ['pcb']")
+    return [k.strip() for k in items]
 
 
 def _validate_item_payload(raw: Any) -> dict[str, Any]:

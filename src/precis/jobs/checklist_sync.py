@@ -11,6 +11,7 @@ Shipped format: one YAML file per checklist under
 ``src/precis/data/checklists/*.yaml``::
 
     name: my-checklist
+    default_for: [pcb]          # optional: kinds implicitly assigned (0192)
     items:
       - name: item-one
         phase: setup            # optional
@@ -89,6 +90,7 @@ class ChecklistFile:
     items: list[dict[str, Any]]
     sha256: str
     path: Path
+    default_for: tuple[str, ...] = ()
 
 
 def load_checklist_file(path: Path) -> ChecklistFile:
@@ -114,11 +116,19 @@ def load_checklist_file(path: Path) -> ChecklistFile:
             or not str(raw_item.get("name") or "").strip()
         ):
             raise ValueError(f"{path}: every item needs a non-empty 'name'")
+    default_for = data.get("default_for") or []
+    if isinstance(default_for, str):
+        default_for = [default_for]
+    if not isinstance(default_for, list) or not all(
+        isinstance(k, str) and k.strip() for k in default_for
+    ):
+        raise ValueError(f"{path}: 'default_for' must be a list of kind slugs")
     return ChecklistFile(
         name=name,
         items=items,
         sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         path=path,
+        default_for=tuple(k.strip() for k in default_for),
     )
 
 
@@ -177,7 +187,13 @@ def _sync_one(
     missing shipped items; never touches ``origin='local'`` rows."""
     checklist = store.checklist_get(cf.name)
     if checklist is None:
-        checklist = store.checklist_create(name=cf.name, origin="shipped", conn=conn)
+        checklist = store.checklist_create(
+            name=cf.name, origin="shipped", default_for=list(cf.default_for), conn=conn
+        )
+    elif tuple(checklist.get("default_for") or ()) != cf.default_for:
+        store.checklist_set_default_for(
+            checklist_id=checklist["id"], default_for=list(cf.default_for), conn=conn
+        )
 
     created = 0
     revved = 0
@@ -374,6 +390,14 @@ def check_drift(store: Any, *, src_dir: Path | None = None) -> list[dict[str, An
                 }
             )
             continue
+        if tuple(checklist.get("default_for") or ()) != cf.default_for:
+            findings.append(
+                {
+                    "checklist": cf.name,
+                    "item": None,
+                    "reason": "default_for differs from the shipped file",
+                }
+            )
         file_items = {str(it["name"]).strip(): it for it in cf.items}
         db_items = {
             it["name"]: it

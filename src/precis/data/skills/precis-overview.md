@@ -79,7 +79,7 @@ name/path.
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |
 | `plan` | `po3` | A thread's reasoning outline — hierarchical todo-list + notes, never exported. One per project (`plan-of` link). See `precis-plan-help`. | store |
-## The ref kinds, continued — designs and materials
+## The ref kinds, continued — designs
 
 | Kind | Example id | What | Needs |
 |---|---|---|---|
@@ -89,7 +89,13 @@ name/path.
 | `cad` | `cd7` | Parametric solid-model design — a boolean DAG of placed analytic primitives authored as a text node-list (`cyl:r3mmh12mm`, `box:w40mmd20mmh10mm`); no meshing in the design loop. See `precis-cad-help`. | store |
 | `structure` | `st7` | Atomistic cell + bond-graph design for DFT / molecular modelling — typed ops (`add_atom`, `add_bond`, `constrain`, `relax`), relaxed on a fidelity ladder, exported POSCAR/extXYZ/CIF. See `precis-structure-help`. | store |
 | `pcb` | `pb7` | Electronics/PCB design — netlist + placement graph, read as a traversable graph, never pixels. Parts via `kind='part'`, datasheets via `kind='datasheet'`. See `precis-pcb-help`. | store |
+| `checklist` | `ck7` | Argued, invalidating check ledgers — a named set of items (each stating the failure it prevents), assigned to a target (every `pcb` gets `pcb-tapeout`), per-target verdicts that go stale when the item or the anchored part of the design changes; tool items read DRC/route/netlist state live, judgment items you decide and argue. See `precis-checklist-help`. | store |
 | `se` | `switch1` | Structural/mechanical design in metres — block tree with envelopes, ports, joints (incl. prestressed `axial` members), measures, BOM; views check what you claimed (validate/drc/stability/fasten/freedom). Its ATOMIC mode is the merged nanomachine kind: blocks realized as chemistry, bound into `structure` designs (rotaxanes, molecular motors). See `precis-se-help` (surface, incl. atomic mode) + `precis-se-design-help` (workflow) + `precis-se-fasten-help` (screwing it together: ISO screws, threaded holes, printed bosses) + `precis-se-print-help` (`realize` → build orientation → process DRC → STL/3MF, plus `view='fab'`'s whole-design table) + `precis-se-states-help` (discrete states, transitions, `view='kinematics'`/`'sweep'`) + `precis-se-fret-help` (FRET links, `view='fret'`) + `precis-se-flatpack-help` (flat-pack boxes from one sheet: finger joints, nesting, laser SVG / DXF) + `precis-se-chain-help` (DNA/RNA: helix/strand/domain, derived pairing, chain_* DRC) + `precis-se-regions-help` (properties on part of a block: taxonomy measurands, patch/ring/sites/atoms selectors, pockets). | store |
+
+## The ref kinds, continued — materials and sourced values
+
+| Kind | Example id | What | Needs |
+|---|---|---|---|
 | `material` | `ma7` | Engineering material properties store — sourced values per property, canonical-units-only; `search(property=, min=, max=)` filters by range. See `precis-material-help`. | store |
 | `rxn` | `rx7` | Reaction-fact store — one transformation plus every reported yield/condition, each sourced to a paper or patent. MANY rows per (reaction, property) is the point: the spread IS the answer, never an average. `search(property='yield', reaction_class=)` is the precedent read. Distinct from `route` (a planned synthesis) and `pathway` (a computed surface network). See `precis-rxn-help`. | store |
 | `component` | `cp7` | General procurable-part store (bolt/hose/pipe/beam/gasket/bearing/adhesive/electronic part) — sourced per-spec values, canonical-units-only. Distinct from `part` (the JLCPCB/LCSC ingest-only catalog). See `precis-component-help`. | store |

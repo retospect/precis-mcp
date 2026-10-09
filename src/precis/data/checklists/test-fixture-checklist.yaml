@@ -1,8 +1,7 @@
 # test-fixture-checklist.yaml
 #
-# A minimal fixture checklist proving the checklist_sync mechanism
-# (docs/backlog/checklist-kind.md slice 1). NOT a real, curated checklist
-# — pcb-tapeout content ships in slice 2. Exercised by
+# A minimal fixture checklist proving the checklist_sync mechanism. NOT a
+# real, curated checklist — that is pcb-tapeout.yaml. Exercised by
 # tests/test_checklist_sync.py.
 
 name: test-fixture-checklist
