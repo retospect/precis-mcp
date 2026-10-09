@@ -944,6 +944,9 @@ class _Ctx:
     #: under ``placeholder_figures``: rendered as a withheld box, the image
     #: is never loaded or embedded.
     withheld_figures: frozenset[str] = frozenset()
+    #: ``dc`` handles of heading chunks that render as unnumbered
+    #: ``\\paragraph`` — cross-referenced with ``\\nameref``, not ``\\cref``.
+    paragraph_handles: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -1066,7 +1069,60 @@ def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
         return _encode_unicode(_latex_escape(surface or dc))
     if surface:
         return f"\\hyperref[chunk:{dc}]{{{_encode_unicode(_latex_escape(surface))}}}"
+    if dc in ctx.paragraph_handles:
+        # ``\\paragraph`` is unnumbered: ``\\cref`` would print the parent
+        # section's number, so name the heading instead.
+        return f"\\nameref{{chunk:{dc}}}"
     return f"\\cref{{chunk:{dc}}}"
+
+
+_CREF_RUN = re.compile(r"\\cref\{([^{}]*)\}\s*\\cref\{([^{}]*)\}")
+_CITE_MARK_END = re.compile(r"\\cite(?:\[[^\]]*\])?\{[^{}]*\}$")
+_SENTENCE_END = re.compile(r"[.?!]\s+$")
+
+
+def _polish_xrefs(s: str) -> str:
+    """Post-pass over one rendered chunk's ``\\cref`` marks: merge adjacent
+    runs into one ``\\cref{a,b}`` (cleveref prints "sections 1 and 2"),
+    space a ``\\cref`` off a directly preceding ``\\cite`` mark (and its
+    ``{\\scriptsize …}`` link run), and capitalise to ``\\Cref`` at the
+    start of the chunk or a sentence (the :func:`_glsify` rule)."""
+    if "\\cref{" not in s:
+        return s
+    prev = None
+    while prev != s:
+        prev = s
+        s = _CREF_RUN.sub(lambda m: f"\\cref{{{m.group(1)},{m.group(2)}}}", s)
+    out: list[str] = []
+    pos = 0
+    for m in re.finditer(r"\\cref\{", s):
+        pre = s[pos : m.start()]
+        head = "".join(out) + pre
+        if head.endswith("}"):
+            # walk back over a trailing ``{\\scriptsize …}`` link run
+            depth, i = 0, len(head) - 1
+            while i >= 0:
+                if head[i] == "}":
+                    depth += 1
+                elif head[i] == "{":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i -= 1
+            base = (
+                head[:i] if i >= 0 and head[i:].startswith("{\\scriptsize ") else head
+            )
+            if _CITE_MARK_END.search(base):
+                pre += " "
+                head += " "
+        out.append(pre)
+        if _SENTENCE_END.search(head) or not head.strip():
+            out.append("\\Cref{")
+        else:
+            out.append("\\cref{")
+        pos = m.end()
+    out.append(s[pos:])
+    return "".join(out)
 
 
 def _handle_cite(tgt: str, ctx: _Ctx) -> tuple[str | None, bool]:
@@ -2053,7 +2109,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     # superscript-comma separator. Renderer-side because footmisc's
     # [multiple] stays inert under this preamble's hyperref.
     s = s.replace("\x02\\footnote{", "\\textsuperscript{,}\\footnote{")
-    return s.replace("\x02", "")
+    return _polish_xrefs(s.replace("\x02", ""))
 
 
 def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
@@ -2102,6 +2158,58 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
 #: to a run-in paragraph heading.
 _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
 
+#: Top-level headings that are journal back matter: exported unnumbered
+#: (``\\section*`` + a TOC line), their subsections likewise.
+_BACK_MATTER_HEADINGS = frozenset(
+    {
+        "author information",
+        "author contributions",
+        "acknowledgements",
+        "acknowledgments",
+        "notes",
+        "conflicts of interest",
+        "competing interests",
+        "data availability",
+        "supporting information",
+    }
+)
+
+
+def _is_back_matter_heading(text: str) -> bool:
+    return " ".join((text or "").split()).casefold() in _BACK_MATTER_HEADINGS
+
+
+def _title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
+    """The ``dc`` of a first-in-reading-order depth-0 heading whose text is
+    the draft's title (whitespace-normalised, case-insensitive) — the chunk
+    ``create_draft`` seeds; ``None`` when the draft doesn't start that way."""
+    if not chunks or not title:
+        return None
+    first = chunks[0]
+    if first.chunk_kind != "heading" or int(first.depth) != 0:
+        return None
+
+    def norm(s: str | None) -> str:
+        return " ".join((s or "").split()).lower()
+
+    return str(first.dc) if norm(first.text) == norm(title) else None
+
+
+def _back_matter_handles(chunks: list[Any]) -> frozenset[str]:
+    """``dc`` handles of every heading inside a back-matter section: a
+    matching depth-0 heading and the headings nested under it, up to the
+    next depth-0 heading."""
+    out: set[str] = set()
+    inside = False
+    for c in chunks:
+        if c.chunk_kind != "heading":
+            continue
+        if c.depth == 0:
+            inside = _is_back_matter_heading(c.text or "")
+        if inside:
+            out.add(c.dc)
+    return frozenset(out)
+
 
 def render_body(
     store: Store,
@@ -2129,6 +2237,20 @@ def render_body(
     ``\\cite{...}`` mark (:func:`_cite_link_group`) — no effect in
     patent/footnote mode, which never emit ``\\cite`` at all."""
     chunks = store.drafts.reading_order(ref.id)
+    back_matter = _back_matter_handles(chunks)
+    # ``create_draft`` seeds every draft with a depth-0 heading carrying the
+    # title; ``\maketitle`` already prints it, so rendering that chunk too
+    # made every paper open with "1 <Title>" and number its sections 1.x.
+    # Skip it (keeping its label for cross-refs) and lift the rest one
+    # level so the real sections number from 1.
+    title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
+    # Lift only when the body is nested UNDER the title chunk; a draft whose
+    # sections sit beside it at depth 0 already numbers from 1.
+    shift = 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+
+    def depth_of(c: Any) -> int:
+        return max(0, int(c.depth) - shift)
+
     abbrevs: dict[str, str] = store.drafts.defined_abbrevs(ref.id)
     from precis.config import load_config
 
@@ -2146,6 +2268,12 @@ def render_body(
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
+        paragraph_handles=frozenset(
+            c.dc
+            for c in chunks
+            if c.chunk_kind == "heading" and depth_of(c) >= len(_SECTION_CMD) - 1
+        )
+        | back_matter,
     )
     lines: list[str] = []
     # Open list environments (migration 0037): ulist→itemize, olist→
@@ -2154,7 +2282,8 @@ def render_body(
     # depth (i.e. we've left its subtree). The stack handles nested lists.
     list_stack: list[tuple[str, int]] = []
     for c in chunks:
-        while list_stack and c.depth <= list_stack[-1][1]:
+        depth = depth_of(c)
+        while list_stack and depth <= list_stack[-1][1]:
             lines.append(f"\\end{{{list_stack.pop()[0]}}}")
         label = f"\\label{{chunk:{c.dc}}}"
         # term + Glossary heading don't render as body — but keep an
@@ -2163,13 +2292,13 @@ def render_body(
         is_glossary_heading = (
             c.chunk_kind == "heading" and (c.text or "").strip().lower() == "glossary"
         )
-        if c.chunk_kind == "term" or is_glossary_heading:
+        if c.chunk_kind == "term" or is_glossary_heading or c.dc == title_dc:
             lines.append(f"\\phantomsection{label}%")
             continue
         if c.chunk_kind in ("ulist", "olist"):
             env = "itemize" if c.chunk_kind == "ulist" else "enumerate"
             lines.append(f"\\begin{{{env}}}")
-            list_stack.append((env, c.depth))
+            list_stack.append((env, depth))
             continue  # the container carries no prose; its items do
         if c.chunk_kind == "item":
             body = _render_inline(c.text or "", ctx)
@@ -2183,9 +2312,14 @@ def render_body(
         if c.chunk_kind == "figure":
             lines.extend(_render_figure(c, ctx, label))
         elif c.chunk_kind == "heading":
-            cmd = _SECTION_CMD[min(c.depth, len(_SECTION_CMD) - 1)]
+            cmd = _SECTION_CMD[min(depth, len(_SECTION_CMD) - 1)]
             title = _render_moving_arg(c.text or "", ctx)
-            lines.append(f"\\{cmd}{{{title}}}{label}")
+            if c.dc in back_matter and cmd != "paragraph":
+                # unnumbered journal back matter, still listed in the TOC
+                lines.append(f"\\{cmd}*{{{title}}}{label}")
+                lines.append(f"\\addcontentsline{{toc}}{{{cmd}}}{{{title}}}")
+            else:
+                lines.append(f"\\{cmd}{{{title}}}{label}")
         elif c.chunk_kind in ("listing", "code"):
             # Code is verbatim — no inline rendering / escaping.
             lines.append(f"% {label[1:]}")
@@ -2744,7 +2878,7 @@ def build_published_claims_section(store: Any, trust: Any) -> str:
     entries = published_claim_entries(store, trust)
     if not entries:
         return ""
-    lines = [f"\\section*{{{_NANOPUB_SECTION_TITLE}}}", ""]
+    lines = ["\\appendix", f"\\section{{{_NANOPUB_SECTION_TITLE}}}", ""]
     for e in entries:
         lines.append(
             f"\\par\\noindent ``{_tex(e.sentence)}''\\\\"
@@ -2840,7 +2974,8 @@ def assemble_document(
     (:func:`build_unverified_claims_section`/
     :func:`build_published_claims_section`/
     :func:`build_data_package_section`) are optional pre-rendered blocks
-    placed in that order before the bibliography — each empty-means-absent
+    placed in that order before the bibliography (``published_section``
+    goes after it, as an appendix) — each empty-means-absent
     (AC 6: an all-clean draft's output is unchanged).
 
     ``extra_preamble`` injects right after the checked-in preamble (same
@@ -2877,12 +3012,13 @@ def assemble_document(
     ]
     if unverified_section:
         parts += ["", unverified_section]
-    if published_section:
-        parts += ["", published_section]
     if data_package_section:
         parts += ["", data_package_section]
     if not patent_mode:
         parts.append("\\printbibliography")
+    if published_section:
+        # after the bibliography, as an appendix: deletable as one block
+        parts += ["", published_section]
     if appendix:
         parts += ["", appendix]
     parts += ["\\end{document}", ""]
@@ -2902,6 +3038,7 @@ def export_draft(
     library_links: bool = True,
     bib_style: str | None = None,
     withheld_figures: frozenset[str] = frozenset(),
+    claim_appendix: bool = True,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -2919,7 +3056,8 @@ def export_draft(
 
     ``doi_links=False`` / ``library_links=False`` independently turn off the
     inline ``doi`` / library-search runs (:func:`render_body`) — default
-    both on.
+    both on. ``claim_appendix=False`` omits the "Published claim artifacts"
+    appendix.
 
     ``bib_style`` picks the biblatex bibliography style (see
     :data:`_BIB_STYLES`): the explicit argument wins, else the draft's own
@@ -2992,7 +3130,9 @@ def export_draft(
         )
 
     unverified_tex = build_unverified_claims_section(rendered.trust)
-    published_tex = build_published_claims_section(store, rendered.trust)
+    published_tex = (
+        build_published_claims_section(store, rendered.trust) if claim_appendix else ""
+    )
     data_package_tex = build_data_package_section(rendered.data_package)
     main_tex = assemble_document(
         title=title,

@@ -1170,6 +1170,11 @@ class DraftHandler(Handler):
                 body += _draft_lint.temperature_form_hint(str(text))
                 body += _draft_lint.math_form_hint(str(text))
                 body += _draft_lint.house_style_hint(str(text), kind)
+                body += _draft_lint.bare_xref_hint(str(text))
+                for _c in chunks:
+                    body += _draft_lint.title_heading_dup_hint(
+                        self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
+                    )
             return Response(body=body)
 
         # else: create the draft
@@ -1951,6 +1956,10 @@ class DraftHandler(Handler):
                 body += _draft_lint.temperature_form_hint(new_text)
                 body += _draft_lint.math_form_hint(new_text, old_text)
                 body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
+                body += _draft_lint.bare_xref_hint(new_text, old_text)
+                body += _draft_lint.title_heading_dup_hint(
+                    self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                )
                 body += _draft_lint.dangling_edit_hint(self.store, new_text, old_text)
                 body += _landed_sha_line(c.text)
             return Response(body=body)
@@ -1986,6 +1995,10 @@ class DraftHandler(Handler):
                 body += _draft_lint.bare_identifier_hint(str(text))
                 body += _draft_lint.temperature_form_hint(str(text))
                 body += _draft_lint.math_form_hint(str(text), old_text)
+                body += _draft_lint.bare_xref_hint(str(text), old_text)
+                body += _draft_lint.title_heading_dup_hint(
+                    self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                )
                 body += _draft_lint.dangling_edit_hint(self.store, str(text), old_text)
                 body += _landed_sha_line(c.text)
             return Response(body=body)

@@ -77,6 +77,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--no-library-links.",
     )
     ex.add_argument(
+        "--no-claim-appendix",
+        action="store_true",
+        help="Omit the closing 'Published claim artifacts' appendix. "
+        "Default: included when cited claims have minted nanopubs.",
+    )
+    ex.add_argument(
         "--no-library-links",
         action="store_true",
         help="Skip the library-discovery-search hyperlink run normally "
@@ -323,6 +329,7 @@ def _run_export(args: argparse.Namespace) -> None:
             include_sources=args.include_sources,
             doi_links=not args.no_doi_links,
             library_links=not args.no_library_links,
+            claim_appendix=not args.no_claim_appendix,
             bib_style=args.bib_style,
         )
     finally:

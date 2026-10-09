@@ -567,6 +567,83 @@ def math_form_hint(new_text: str, old_text: str = "") -> str:
     )
 
 
+#: An intra-draft chunk cross-ref: legacy ``[¶base58]`` or ``[dc<id>]``
+#: (``[¶dc123]`` too). Exports render it as ``\cref`` ("section 1.2").
+_XREF_STRICT_RE = re.compile(r"\[(?:¶[A-Za-z0-9]+|dc\d+)\]")
+
+#: Words (or a bracket/comma) a cross-ref may directly follow without
+#: reading as a bare, dangling pointer.
+_XREF_LEAD_ENDS: tuple[str, ...] = (
+    "subsection",
+    "section",
+    "sec.",
+    "see",
+    "fig.",
+    "figure",
+    "eq.",
+    "equation",
+    "(",
+    ",",
+)
+
+
+def bare_xref_hint(new_text: str, old_text: str = "") -> str:
+    """Advisory ⚠ for a ``[¶…]`` / ``[dc<id>]`` cross-ref dropped into prose
+    with no lead-in ("... lattice [¶dc123]."): the export prints a bare
+    "section 1.4.3" with no sentence role. The lead-in wants "see", a
+    "section"/"figure"/"equation" word, an opening bracket or a comma. A
+    cross-ref after another cross-ref (``[¶a] and [¶b]``) is exempt.
+    Scoped to refs this write introduced. A hint, never a refusal."""
+    already = set(_XREF_STRICT_RE.findall(old_text)) if old_text else set()
+    bare: list[str] = []
+    for m in _XREF_STRICT_RE.finditer(new_text):
+        token = m.group(0)
+        lead = new_text[: m.start()].rstrip().lower()
+        if not lead or lead.endswith(_XREF_LEAD_ENDS):
+            continue
+        if re.search(r"\]\s*(?:and|or|&)?$", lead):
+            continue
+        if token in already or token in bare:
+            continue
+        bare.append(token)
+    if not bare:
+        return ""
+    return "".join(
+        f"\n\n⚠ bare cross-ref {t}: write 'see [¶…]' or '([¶…])'" for t in bare[:5]
+    )
+
+
+def title_heading_dup_hint(
+    store: Store, ref_id: int, chunk_id: int, chunk_kind: str | None, text: str
+) -> str:
+    """Advisory ⚠ when a heading chunk that sits first in reading order
+    repeats the draft title (case-insensitive, whitespace-normalised): the
+    exporter prints the title once already, so the heading shows it twice.
+    A hint, never a refusal."""
+    if chunk_kind != "heading":
+        return ""
+
+    def norm(t: str) -> str:
+        return " ".join((t or "").split()).casefold()
+
+    try:
+        ref = store.get_ref(kind="draft", id=int(ref_id))
+        order = store.drafts.reading_order(int(ref_id))
+    except Exception:  # pragma: no cover — advisory, not correctness
+        log.warning("title_heading_dup_hint failed", exc_info=True)
+        return ""
+    title = norm(getattr(ref, "title", "") or "")
+    if not title or not order or order[0].chunk_id != chunk_id:
+        return ""
+    if norm(text) != title:
+        return ""
+    return (
+        "\n\n⚠ duplicate title: this first heading repeats the draft title "
+        f"({text.strip()[:60]!r}), so the export shows the title twice. "
+        "Delete the heading or rename it to a real section."
+    )
+
+
 def dangling_finding_tokens(store: Store, text: str) -> list[str]:
     """The ``finding #slug`` markers in ``text`` that resolve to no live
     finding ref — the placeholder slugs a reader could mistake for a real

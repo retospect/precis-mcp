@@ -2727,3 +2727,147 @@ def test_glsify_collapses_long_form_containing_another_short() -> None:
     assert "functionalized" not in out and "(FCNB)" not in out
     assert r"\glspltip{fcnb}" in out
     assert "{cnb}" not in out
+
+
+# ── cross-ref polish (_polish_xrefs / nameref) ────────────────────────
+
+
+def test_adjacent_crefs_merge() -> None:
+    out, _ = _inline("See [dc1][dc2] and [dc3] [dc4].")
+    assert r"\cref{chunk:dc1,chunk:dc2}" in out
+    assert r"\cref{chunk:dc3,chunk:dc4}" in out
+
+
+def test_cref_after_cite_gets_space() -> None:
+    out, _ = _inline("Shown by paper:smith2024[dc7].")
+    assert r"\cite{smith2024} \cref{chunk:dc7}" in out
+    # also past a trailing link run
+    s = latex._polish_xrefs(r"x \cite{a}{\scriptsize \href{u}{doi}}\cref{chunk:dc7}")
+    assert s.endswith(r"} \cref{chunk:dc7}")
+
+
+def test_cref_capitalised_at_start_and_after_sentence() -> None:
+    out, _ = _inline("[dc1] shows it. [dc2] too, see [dc3]; what? [dc4]")
+    assert r"\Cref{chunk:dc1}" in out
+    assert r"\Cref{chunk:dc2}" in out
+    assert r"\cref{chunk:dc3}" in out
+    assert r"\Cref{chunk:dc4}" in out
+
+
+def test_cref_to_paragraph_heading_uses_nameref() -> None:
+    ctx = latex._Ctx(
+        keymap={},
+        known_handles={"dc1", "dc2"},
+        paragraph_handles=frozenset({"dc2"}),
+    )
+    out = latex._render_inline("Look at the part in [dc2] and [dc1].", ctx)
+    assert r"\nameref{chunk:dc2}" in out
+    assert r"\cref{chunk:dc1}" in out
+
+
+def test_render_body_deep_heading_xref_is_nameref(hub) -> None:
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="nr", title="T", project=proj)
+    ref = store.get_ref(kind="draft", id="nr")
+    parent = store.drafts.reading_order(ref.id)[0]
+    deep = ""
+    for n in range(4):
+        d.put(
+            id="nr",
+            chunk_kind="heading",
+            text=f"Level {n}",
+            at={"into": "¶" + parent.handle, "last": True},
+        )
+        parent = store.drafts.reading_order(ref.id)[-1]
+        deep = parent.dc
+    d.put(
+        id="nr", chunk_kind="paragraph", text=f"Refer to [{deep}].", at={"last": True}
+    )
+    chunks = store.drafts.reading_order(ref.id)
+    body = latex.render_body(store, ref).body
+    depths = {c.dc: c.depth for c in chunks}
+    assert depths[deep] >= 3, depths
+    assert f"\\label{{chunk:{deep}}}" in body
+    assert f"\\nameref{{chunk:{deep}}}" in body
+
+
+def test_back_matter_headings_are_unnumbered(hub, tmp_path) -> None:
+    """Journal back matter (Acknowledgements, Notes, ...) and its
+    subsections export as starred headings with a TOC line; ordinary
+    sections and a non-matching nested heading stay numbered; a cross-ref
+    to a back-matter heading uses \\nameref."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="bm", title="Paper", project=proj)
+    ref = store.get_ref(kind="draft", id="bm")
+    title = store.drafts.reading_order(ref.id)[0]
+
+    def heading(text, after=None, into=None):
+        at = {"after": "¶" + after} if after else {"into": "¶" + into, "last": True}
+        d.put(id="bm", chunk_kind="heading", text=text, at=at)
+        return next(
+            c for c in store.drafts.reading_order(ref.id) if c.text == text.strip()
+        )
+
+    intro = heading("Introduction", after=title.handle)
+    ack = heading("  acknowledgements ", after=intro.handle)
+    sub = heading("Funding", into=ack.handle)
+    other = heading("Outlook", after=ack.handle)
+    sub2 = heading("Details", into=other.handle)
+    d.put(
+        id="bm",
+        chunk_kind="paragraph",
+        text=f"Thanks, see [{sub.dc}].",
+        at={"last": True},
+    )
+
+    body = latex.render_body(store, ref).body
+
+    assert "\\section{Introduction}" in body
+    assert "\\section*{acknowledgements}" in body
+    assert "\\addcontentsline{toc}{section}{acknowledgements}" in body
+    assert "\\subsection*{Funding}" in body
+    assert "\\addcontentsline{toc}{subsection}{Funding}" in body
+    assert "\\section{Outlook}" in body
+    assert "\\subsection{Details}" in body
+    assert f"\\nameref{{chunk:{sub.dc}}}" in body
+    assert sub2.dc not in latex._back_matter_handles(store.drafts.reading_order(ref.id))
+
+
+def test_render_body_skips_seeded_title_heading_and_lifts_depths(hub) -> None:
+    """``create_draft`` seeds a depth-0 heading with the title; ``\\maketitle``
+    prints it already, so it must not also open the body as section 1 (which
+    numbered every real section 1.x). Its label survives for cross-refs."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="tt", title="Carbon Nanobuds", project=proj)
+    ref = store.get_ref(kind="draft", id="tt")
+    title = store.drafts.reading_order(ref.id)[0]
+    d.put(
+        id="tt",
+        chunk_kind="heading",
+        text="Introduction",
+        at={"into": "¶" + title.handle, "last": True},
+    )
+    intro = store.drafts.reading_order(ref.id)[-1]
+    d.put(
+        id="tt",
+        chunk_kind="heading",
+        text="Scope",
+        at={"into": "¶" + intro.handle, "last": True},
+    )
+    body = latex.render_body(store, ref).body
+    assert "\\section{Carbon Nanobuds}" not in body
+    assert f"\\phantomsection\\label{{chunk:{title.dc}}}" in body
+    assert "\\section{Introduction}" in body
+    assert "\\subsection{Scope}" in body

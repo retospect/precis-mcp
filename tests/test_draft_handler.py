@@ -2833,3 +2833,57 @@ def test_house_style_write_hint_and_hygiene_view(draft: DraftHandler, hub: Hub) 
     assert "⚠ house style: 3 violation(s) in 1 chunk(s)" in out
     assert "1 em_dash, 1 bold, 1 double_hyphen" in out
     assert "✓ house style" not in out
+
+
+def test_bare_xref_hint(draft: DraftHandler, hub: Hub) -> None:
+    """A ``[¶…]`` cross-ref with no lead-in word warns; 'see'/'section'/
+    '(' /',' lead-ins and chained refs are silent."""
+    proj = _proj(hub)
+    draft.put(id="bx", title="T", project=proj)
+    title_h = _order(hub, "bx")[0].handle
+    title_dc = _order(hub, "bx")[0].dc
+
+    r = draft.put(
+        id="bx",
+        chunk_kind="paragraph",
+        text="Atoms sit within a continuous covalent lattice [¶dc123].",
+        at={"after": "¶" + title_h},
+    )
+    assert "bare cross-ref [¶dc123]" in r.body
+    assert "write 'see [¶…]' or '([¶…])'" in r.body
+
+    for ok in (
+        "Atoms sit in a lattice, see [¶dc123].",
+        "Atoms sit in a lattice (see section [¶dc123]).",
+        "Atoms sit in a lattice ([¶dc123]).",
+        "Atoms sit in a lattice, [¶dc123].",
+        "Atoms sit in a lattice, see [¶dc1] and [¶dc2].",
+        f"Atoms sit in Fig. [{title_dc}].",
+    ):
+        r2 = draft.put(
+            id="bx", chunk_kind="paragraph", text=ok, at={"after": "¶" + title_h}
+        )
+        assert "bare cross-ref" not in r2.body, ok
+
+
+def test_title_heading_dup_hint(draft: DraftHandler, hub: Hub) -> None:
+    """A heading first in reading order that repeats the draft title warns."""
+    from precis.handlers import _draft_lint
+
+    proj = _proj(hub)
+    draft.put(id="td", title="Carbon  Nanobuds", project=proj)
+    store = hub.store
+    assert store is not None
+    ref = store.get_ref(kind="draft", id="td")
+    assert ref is not None
+    first = _order(hub, "td")[0]
+    assert "duplicate title" in _draft_lint.title_heading_dup_hint(
+        store, ref.id, first.chunk_id, "heading", "carbon nanobuds"
+    )
+    # different text, non-heading, or not first: silent
+    for kind, text, cid in (
+        ("heading", "Introduction", first.chunk_id),
+        ("paragraph", "Carbon Nanobuds", first.chunk_id),
+        ("heading", "Carbon Nanobuds", first.chunk_id + 999),
+    ):
+        assert _draft_lint.title_heading_dup_hint(store, ref.id, cid, kind, text) == ""

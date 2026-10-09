@@ -1081,10 +1081,13 @@ def test_export_docx_defaults_to_endnote_fields_and_stamps_name(
         r'filename="?nt-\d{8}-\d{4}Z\.docx', r.headers["content-disposition"]
     )
 
-    r = draft_client.get("/drafts/nt/export.docx?citations=plain&links=0")
+    assert seen[-1]["claim_appendix"] is True
+
+    r = draft_client.get("/drafts/nt/export.docx?citations=plain&links=0&claims=0")
     assert r.status_code == 200
     assert seen[-1]["citations"] == "plain"
     assert seen[-1]["doi_links"] is False and seen[-1]["library_links"] is False
+    assert seen[-1]["claim_appendix"] is False
 
 
 def test_pdf_cache_dir_separates_nolinks_builds() -> None:
@@ -1096,6 +1099,8 @@ def test_pdf_cache_dir_separates_nolinks_builds() -> None:
     plain = drafts_mod._pdf_cache_dir(7, "12.34", links=False)
     assert linked != plain
     assert plain.name.endswith("-nolinks")
+    noclaims = drafts_mod._pdf_cache_dir(7, "12.34", claims=False)
+    assert noclaims not in (linked, plain) and noclaims.name.endswith("-noclaims")
 
 
 def test_export_docx_soft_status_does_not_block(
@@ -2576,9 +2581,7 @@ def test_draft_pdf_serves_cached(
     monkeypatch.setattr(
         drafts_mod,
         "_pdf_cache_dir",
-        lambda ref_id, version, *, sources=False, withheld=frozenset(), links=True: (
-            tmp_path
-        ),
+        lambda ref_id, version, **_kw: tmp_path,
     )
     (tmp_path / "main.pdf").write_bytes(b"%PDF-1.4 fake\n%%EOF\n")
     r = draft_client.get("/drafts/nt/pdf", follow_redirects=False)

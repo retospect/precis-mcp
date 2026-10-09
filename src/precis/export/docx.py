@@ -384,6 +384,7 @@ def export_docx(
     doi_links: bool = True,
     library_links: bool = True,
     withheld_figures: frozenset[str] = frozenset(),
+    claim_appendix: bool = True,
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -399,7 +400,10 @@ def export_docx(
     ``doi_links=False`` / ``library_links=False`` independently turn off
     the small doi / library-search hyperlink runs normally appended after
     each plain ``[n]`` marker (:func:`_cite_link_group`) — both default on;
-    no effect in patent/endnote mode."""
+    no effect in patent/endnote mode.
+
+    ``claim_appendix=False`` omits the closing "Published claim artifacts"
+    section (otherwise the last section, after References)."""
     from docx import Document
 
     from precis.export import guard_exportable
@@ -509,11 +513,13 @@ def export_docx(
     # the bibliography/end — no-op when nothing was marked. Independent of
     # patent_mode: a finding cite renders (and can be marked) either way.
     _append_unverified_claims(doc, ctx)
-    _append_published_claims(doc, ctx)
     _append_data_package(doc, ctx.data_package)
     if not ctx.patent_mode:
         # A patent specification cites prior art in-text — no References list.
         _append_references(doc, ctx)
+    if claim_appendix:
+        # Last section, after References, so it deletes as one block.
+        _append_published_claims(doc, ctx)
     if ctx.endnote and ctx.cited:
         from precis.export.endnote import install_document_vars
 

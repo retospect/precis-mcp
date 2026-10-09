@@ -133,3 +133,60 @@ def test_docx_unminted_has_no_section(hub: Hub, tmp_path: Path) -> None:
     text = _export_docx_text(hub, ref, tmp_path, "unminted")
 
     assert SECTION_TITLE not in text
+
+
+def test_latex_claim_appendix_after_bibliography(
+    hub: Hub, tmp_path: Path, monkeypatch: Any
+) -> None:
+    claim_hub, _row = _signed_hub(hub.live_store, monkeypatch, "DFT shows order.")
+    handle = handle_registry.format_handle("finding", claim_hub)
+    ref = _draft_citing(hub, slug="dappx", text=f"Claim [{handle}] holds.")
+
+    tex = _export_tex(hub, ref, tmp_path, "appx")
+
+    bib = tex.index("\\printbibliography")
+    app = tex.index("\\appendix")
+    assert bib < app < tex.index(f"\\section{{{SECTION_TITLE}}}")
+    assert tex.index(SECTION_TITLE) > bib
+    assert tex.rstrip().endswith("\\end{document}")
+
+
+def test_latex_claim_appendix_flag_omits(
+    hub: Hub, tmp_path: Path, monkeypatch: Any
+) -> None:
+    claim_hub, row = _signed_hub(hub.live_store, monkeypatch, "DFT shows omission.")
+    handle = handle_registry.format_handle("finding", claim_hub)
+    ref = _draft_citing(hub, slug="dnoappx", text=f"Claim [{handle}] holds.")
+
+    out = tmp_path / "noappx"
+    latex.export_draft(hub.live_store, ref, target_dir=out, claim_appendix=False)
+    tex = (out / "main.tex").read_text(encoding="utf-8")
+
+    assert SECTION_TITLE not in tex
+    assert "\\appendix" not in tex
+    assert str(row.trusty_uri) not in tex
+
+
+def test_docx_claim_appendix_last_and_flag(
+    hub: Hub, tmp_path: Path, monkeypatch: Any
+) -> None:
+    claim_hub, _row = _signed_hub(hub.live_store, monkeypatch, "DFT shows docx order.")
+    handle = handle_registry.format_handle("finding", claim_hub)
+    ref = _draft_citing(hub, slug="ddocxapx", text=f"Claim [{handle}] holds.")
+
+    out = tmp_path / "apx.docx"
+    docx.export_docx(hub.live_store, ref, target_path=out)
+    heads = [
+        p.text
+        for p in docx_lib.Document(str(out)).paragraphs
+        if p.style is not None and p.style.name.startswith("Heading")
+    ]
+    assert SECTION_TITLE in heads
+    assert heads[-1] == SECTION_TITLE
+    if "References" in heads:
+        assert heads.index("References") < heads.index(SECTION_TITLE)
+
+    out2 = tmp_path / "noapx.docx"
+    docx.export_docx(hub.live_store, ref, target_path=out2, claim_appendix=False)
+    text = "\n".join(p.text for p in docx_lib.Document(str(out2)).paragraphs)
+    assert SECTION_TITLE not in text

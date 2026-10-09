@@ -1343,6 +1343,7 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         withheld_figures=pf.withheld_handles,
         doi_links=links,
         library_links=links,
+        claim_appendix=_claims_wanted(request),
     )
     if not with_sources:
         return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
@@ -1878,6 +1879,12 @@ def _links_wanted(request: Request) -> bool:
     return request.query_params.get("links") not in ("0", "false", "no")
 
 
+def _claims_wanted(request: Request) -> bool:
+    """``?claims=0`` omits the "Published claim artifacts" appendix (both
+    exporters); anything else keeps it."""
+    return request.query_params.get("claims") not in ("0", "false", "no")
+
+
 def _pdf_cache_dir(
     ref_id: int,
     version: int | str,
@@ -1885,6 +1892,7 @@ def _pdf_cache_dir(
     sources: bool = False,
     withheld: frozenset[str] = frozenset(),
     links: bool = True,
+    claims: bool = True,
 ) -> Path:
     """Per-(draft, version) build dir for the compiled PDF. Lives under
     the system temp so it survives within a deploy and is cheap to
@@ -1912,6 +1920,8 @@ def _pdf_cache_dir(
         tag = f"{tag}-wh{digest[:8]}"
     if not links:
         tag = f"{tag}-nolinks"
+    if not claims:
+        tag = f"{tag}-noclaims"
     return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / tag
 
 
@@ -1981,6 +1991,7 @@ async def pdf(request: Request, ident: str) -> Response:
 
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
     links = _links_wanted(request)
+    claims = _claims_wanted(request)
     cache_token = _pdf_cache_token(store, ref)
     cache_dir = _pdf_cache_dir(
         ref.id,
@@ -1988,6 +1999,7 @@ async def pdf(request: Request, ident: str) -> Response:
         sources=with_sources,
         withheld=pf.withheld_handles,
         links=links,
+        claims=claims,
     )
     pdf_path = cache_dir / "main.pdf"
     suffix = "-with-sources" if with_sources else ""
@@ -2027,6 +2039,7 @@ async def pdf(request: Request, ident: str) -> Response:
             withheld_figures=pf.withheld_handles,
             doi_links=links,
             library_links=links,
+            claim_appendix=claims,
         )
         result = compile_pdf(cache_dir)
         if not result.ok:

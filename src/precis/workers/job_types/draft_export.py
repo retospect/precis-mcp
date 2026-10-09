@@ -53,6 +53,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # in-text \cite{...} mark (render_body's library_links). Default
         # on. Independent of doi_links.
         "library_links": {"type": "boolean"},
+        # Closing "Published claim artifacts" appendix (export_draft's
+        # claim_appendix). Default on; false omits it.
+        "claim_appendix": {"type": "boolean"},
         # biblatex bibliography style (precis.export.latex._BIB_STYLES:
         # numeric-comp | chem-rsc/rsc | chem-acs/acs | nature). Absent →
         # the draft's meta.workspace.style, else numeric-comp.
@@ -284,6 +287,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             retraction_override=retraction_override,
             doi_links=bool(params.get("doi_links", True)),
             library_links=bool(params.get("library_links", True)),
+            claim_appendix=bool(params.get("claim_appendix", True)),
             bib_style=str(params.get("bib_style") or "").strip() or None,
             withheld_figures=withheld,
         )
