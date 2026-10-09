@@ -58,6 +58,9 @@
 # has checked the dump is not running. DEPLOY_NOW_UTC=HH:MM fakes the clock
 # (tests, rehearsing the message).
 #
+# PRECIS_DEPLOY_SKIP_HOSTS — comma-separated hosts left out of the ping and
+# the rollout (a wedged host); they keep their old sha. Loud, deliberate only.
+#
 # PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
 # the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
@@ -657,6 +660,21 @@ fi
 [[ -f "${CLUSTER_DIR}/redeploy-precis.yml" ]] || die "redeploy-precis.yml not in ${CLUSTER_DIR}."
 
 cd "$CLUSTER_DIR"
+
+# PRECIS_DEPLOY_SKIP_HOSTS=h1,h2 — deliberately leave named hosts out of the
+# ping and the rollout (Reto 2026-10-09: castor wedged out of memory, the rest
+# of the cluster still gets the fix). The skipped hosts stay on their old sha
+# — mixed versions until the next full deploy — so it is loud, never a default.
+if [[ -n "${PRECIS_DEPLOY_SKIP_HOSTS:-}" ]]; then
+    [[ -z "${PRECIS_DEPLOY_CANARY:-}" ]] || die "PRECIS_DEPLOY_SKIP_HOSTS and PRECIS_DEPLOY_CANARY both set — the canary path owns --limit; use one."
+    _skip_limit="all"
+    IFS=',' read -r -a _skip_hosts <<< "${PRECIS_DEPLOY_SKIP_HOSTS}"
+    for _h in "${_skip_hosts[@]}"; do
+        if [[ -n "$_h" ]]; then _skip_limit+=":!${_h}"; fi
+    done
+    INV_ARGS+=(--limit "$_skip_limit")
+    say "WARNING: skipping ${PRECIS_DEPLOY_SKIP_HOSTS} (PRECIS_DEPLOY_SKIP_HOSTS) — those hosts keep their old sha until the next full deploy"
+fi
 
 # ── 1. reachability ─────────────────────────────────────────────────────
 # Ping only the groups redeploy-precis.yml actually targets, NOT `all` — the

@@ -755,3 +755,33 @@ def test_pinned_with_no_target_refuses_rather_than_defaulting_to_main(
     )
     assert "no target" in result.stderr
     assert fx.marker_sha() == fx.base, "nothing may have been deployed"
+
+
+def test_skip_hosts_limits_ping_and_rollout(
+    fx: Fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRECIS_DEPLOY_SKIP_HOSTS leaves a wedged host out of both the ping and
+    the playbook (Reto 2026-10-09, castor out of memory), loudly."""
+    fakebin = _make_fake_bin(tmp_path)
+    argv_log = tmp_path / "argv.log"
+    for tool in ("ansible", "ansible-playbook"):
+        wrapper = fakebin / tool
+        wrapper.rename(fakebin / f"{tool}.real")
+        wrapper.write_text(
+            f'#!/usr/bin/env bash\necho "{tool} $*" >> "{argv_log}"\n'
+            f'exec "{fakebin}/{tool}.real" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+    fx.set_marker(fx.base)
+    monkeypatch.setenv("PRECIS_DEPLOY_SKIP_HOSTS", "castor,")
+
+    result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "WARNING: skipping castor" in result.stdout
+    calls = argv_log.read_text(encoding="utf-8").splitlines()
+    assert any(c.startswith("ansible ") and "--limit all:!castor" in c for c in calls)
+    assert any(
+        c.startswith("ansible-playbook ") and "--limit all:!castor" in c for c in calls
+    )
