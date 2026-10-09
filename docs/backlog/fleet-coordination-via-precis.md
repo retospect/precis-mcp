@@ -1,82 +1,151 @@
 ---
-status: idea
+status: draft
 pillar: platform
 ---
 
 # Fleet coordination via precis
 
-Idea, not specced. The 2026-10-07 token-review pass measured coordination
-chatter at about 10% of fleet cache reads (~55M tokens in 24h): the
-coordinator took ~180 message turns (72 peer messages in, 112 `SendMessage`
-out) and the gripe loop 41 `ScheduleWakeup` ticks. Each costs a full turn at
-the receiver's ~250k context, whatever the message says. Reto's ruling: fine
-for now, worth considering later.
+Precis becomes the control plane for agent sessions across hosts, vendors
+and projects: who is running where, doing what, how to reach them, and what
+needs a decision. The harnesses (Claude Code, Codex, Devin) stay the
+engines. Ruled with Reto 2026-10-09.
 
-Direction to consider: move the status relay into precis state that sessions
-read when they choose to, instead of messages that wake them — for example
-round status and per-thread purpose lines as precis refs, written by
-`scripts/round in|none|eta` and read with one `get` at a natural break. Keep
-direct messages for things that need an answer now.
+## Why
 
+- Coordination chatter was ~10% of fleet cache reads on 10-07: 72 inbound
+  messages to the coordinator, 51% status, and 23 of those 37 repeated a
+  `scripts/round` mark the sender had already written. 41 `ScheduleWakeup`
+  ticks. Each wake is a full turn at ~250k context.
+- Coordination state is per machine. `scripts/round` keeps marks in
+  `<git-common-dir>/precis-round/`; `scripts/inflight` liveness is a local
+  pid. Codex on melchior and Claude on the Mac cannot see each other.
+- `SendMessage` is Claude-only and `codex queue` is Codex-only. Every pool
+  speaks MCP.
 
-## Measurement (2026-10-08, coordinator transcript of 10-07)
+## Decisions
 
-72 inbound messages, hand-bucketed (±5): status 37 (51%), rulings/orders
-relayed from Reto 18 (25%), questions/blockers 10 (14%), cross-machine relay
-7 (10%; 6 from the Codex fleet on melchior). Coordinator turns after them:
-64.4M cache reads, upper bound — status 30%, rulings 40%, questions 19%,
-relay 10%. 23 of the 37 status messages repeated a `scripts/round` mark the
-sender had already written. Gripe loop: 41 `ScheduleWakeup` calls were
-mostly re-arms inside message-woken turns; ~5 timer fires, ~2 noop.
+- **New `fleet` kind**, not tagged `todo`/`memory`: keeps ~10–40 churning
+  rows out of the todo queue, the memory index and dreaming. Opts in to
+  `refs.owner_login` (0164) so the view defaults to the caller's rows.
+- **Scope:** agent sessions, rounds, and a mailbox. Not precis worker jobs
+  (`kind='job'`), not outbound Discord (`kind='message'`), not a chat UI
+  (tmux attach is the text interface). Release/deploy logic stays in
+  `scripts/round`.
+- **One registry across projects.** Every row carries `project` (repo
+  top-level name). A project gets its own coordinator only while it has
+  several active workers. Round marks apply where `scripts/round` exists.
+- **One reporter per host, not per agent.** Agents never heartbeat, so the
+  Codex daemon and Devin need no change. Staleness past N minutes = dead.
+- **Agent output is not altered.** Transcripts already timestamp every
+  entry; the status line (not in context) carries clock and capacity.
+- **Fleet sessions run in tmux**, one tmux session per host, windows named
+  `project-tree`. Sessions outside tmux (desktop app, IDE) are listed from
+  their transcript and marked unreachable.
+- **Typing into a pane:** only when the agent is idle at an empty prompt
+  (`pane_current_command` is the harness, transcript ends on a finished
+  turn), only from a fixed list (`/clear`, `/fleet resume`, message text).
+  Anything else, approval dialogs included, is an exception reported to
+  Reto with the attach line. Fewer dialogs come from config (auto mode,
+  `approvals_reviewer = "auto_review"`, allow-lists), never from an
+  auto-answerer. Replaces the unexplained "never types into a terminal"
+  rule in `docs/runbooks/codex-fleet.md`.
+- **Behind main is not an event.** `scripts/ship` merges main at land time.
+  The reporter runs `git merge-tree` per branch and raises only a predicted
+  conflict or a duplicate migration number.
+- **Squash-merge stays.** Out of scope; small slices make it near-lossless.
+- **No VM per interactive session** (RAM, credential sprawl, lost shared
+  caches). Headless runs get a container each via `sandbox_run` (ADR-0048).
+- **No reuse of harness subscription tokens** in a home-built loop (terms
+  risk to the main account; loses the model–harness tuning). Plan pricing
+  comes from running the harness itself headless.
 
-So: most status chatter is senders messaging *after* marking — a prompt
-fix, no store needed. That fix is in (round-open message, AGENTS.md
-§Rules by pointer, runbook codex-fleet); re-measure a round's coordinator
-transcript before building anything here. A shared store removes the 10% relay only if the
-melchior clone writes to it too. Rulings and questions stay messages.
+## Shape
 
-## Why it is more than a token saving (2026-10-08)
+### Reporter (`scripts/fleet-report`)
 
-- **Cost is small in dollars.** 55M cache reads ≈ $11/day at API rates
-  ($0.20/MTok on Opus 5.5 and Sonnet 5.5); on Max it is plan quota. Not a
-  reason to build on its own.
-- **Round state does not cross machines.** `scripts/round` keeps it in
-  `<git-common-dir>/precis-round/round.json` (`_state_dir`), one per clone.
-  Codex workers on melchior and Claude sessions on the Mac cannot read each
-  other's marks; messages are the only shared channel. State in the prod DB
-  is visible from every node.
-- **Vendor-neutral.** `codex queue` is Codex-only and `SendMessage` is
-  Claude-only. Every pool that speaks MCP can `get`/`put` — Devin CLI on the
-  Mac already has the precis MCP wired.
+Runs every ~60 s per host (launchd on the Mac, cron on melchior). Sees,
+per session:
 
-## Shape if the measurement says build
+- **Git:** worktree, branch, dirty, ahead/behind, last commit,
+  `.claude/purpose`; `merge-tree` conflict prediction.
+- **Liveness:** worktree-lock pid alive; tmux pane, `pane_current_command`,
+  `window_activity`.
+- **State** (working / idle / waiting / dead): Claude transcript JSONL
+  mtime and whether the last entry is a finished turn or a pending tool
+  call; Codex rollout JSONL last event; approval prompt by matching the
+  tail of `capture-pane`. Devin: tmux only at first.
+- **Capacity:** context fill from per-turn usage in each transcript;
+  account quota from Codex rollout `rate_limits` (verify on melchior) and
+  for Claude whatever the status-line input exposes (verify).
 
-1. **Store.** One ref per open round (each peer's mark) and one per worker
-   (purpose line, claim). Prefer an existing kind (tagged `todo`, or
-   `memory` in a fleet space); a new kind also needs `test_kind_totality` +
-   `test_item_view` and a migration.
-2. **Dual-write, then flip.** `scripts/round in|none|eta|open` and the
-   purpose write also write through `scripts/prod-precis tools …`; `round
-   status` reads precis with `round.json` as fallback. Flip after a few
-   rounds. Release/deploy logic in `scripts/round` stays untouched.
-3. **Readers and prompts.** Coordinator does one `get` at natural breaks;
-   Codex prompts and AGENTS.md route status to precis, messages only for
-   what needs an answer now.
+It writes only changed rows (one cheap last-seen update per host) and
+computes the **exception set**: dead, waiting on Reto or approval, quiet
+past N minutes, red gate, predicted conflict, unread urgent mail, low
+capacity, coordinator past ~40% context. When the set changes it wakes the
+coordinator with one message naming the delta; otherwise it is silent.
 
-Fallback when prod precis is down: `round.json`. Write-path tests on the dev
-DB.
+### Coordinator fisheye
 
-## Beyond messaging: one view, two stores
+One `get(kind='fleet')`:
 
-Pillars (`docs/roadmap.md`), threads and backlog items stay in the repo:
-they change in the same diff as the code, under review and the gate. Gripes,
-todos, Reto's queue and quests stay in precis. The friction is link rot
-between the two — orphan gripes relinked by hand at pillar reviews, stale
-backlog cites, claims split between a `wip:` tag and `.claude/purpose`, no
-single "in flight / owner / blocked on" query. Reto 2026-10-09: the gate
-check (second option) comes first; the read-only index waits. Options:
+```
+EXCEPTIONS
+  codex@melchior/w7   waiting on approval 14m   attach: ssh … tmux attach -t 0:7
+AGENTS  vendor@host/project/tree · state · quiet · purpose · mark · mail · ctx%
+QUOTA   claude 5h 42% · codex 5h 18% / week 61%
+```
 
-- precis indexes the repo layer read-only (frontmatter: slug, status,
-  pillar, thread) so `link` joins a gripe or todo to a backlog slug.
-- A gate check fails when an item or thread cites a closed or missing
-  gripe/todo id, and lists gripes no item points to.
+The coordinator never polls. It wakes on Reto, an urgent message, or an
+exception-set change. It slices work, assigns, runs one `/go` per round,
+and never reads code. Its state lives in `fleet` and round refs, so the
+reporter can `/clear` + `/fleet resume` it when idle past ~40% context.
+
+Workers: one slice = one tree = one session; `/qland` on done, handoff
+into the `fleet` row, exit. New slices go to the vendor with headroom; a
+session past ~60% context finishes its slice and restarts.
+
+### Mailbox
+
+Messages are refs addressed to a `fleet` agent ref: sender, body, sent,
+read. `scripts/fleet-msg send AGENT TEXT [--urgent]` stores, and with
+`--urgent` also pushes over the agent's transport (`codex queue` over ssh,
+`SendMessage` locally, tmux paste via `scripts/fleet-remote`). Push only
+when the receiver must act before its next natural break (a ruling that
+changes current work, an answer it is blocked on). Status, deploy notices
+and FYIs are stored only. Claude reads unread mail through a Stop /
+PostToolUse hook that appends it to a turn already running; Codex and
+Devin read at the handoff points their prompts name (check for a Codex
+hook equivalent).
+
+### Harness as todo executor
+
+A todo executor that runs `claude -p` / `codex exec` headless in its own
+worktree inside a `sandbox_run` container, scoped token, push to its own
+branch only; it reports to the todo and its `fleet` row. Verify first
+that `codex exec` keeps code mode (override flags force embedded mode)
+and that headless volume is within each plan's terms.
+
+## Steps
+
+1. **Reporter, read-only, no DB.** Prints the fisheye locally on the Mac
+   and melchior; run against live sessions for a day to tune state
+   detection and exception rules. Verify the capacity sources.
+2. **`fleet` kind + migration** (`/go`), `test_kind_totality`,
+   `test_item_view`, skill `precis-fleet-help`; reporter writes it;
+   `scripts/inflight --all-hosts` reads it.
+3. **Exception-change wake** of the coordinator; reporter-driven `/clear`.
+4. **Mailbox** + `scripts/fleet-msg` + Claude hook delivery.
+5. **Round marks:** `scripts/round` dual-writes; `status` merges remote
+   marks; flip after a few rounds, `round.json` as fallback.
+6. **Harness as todo executor.**
+
+Write-path tests on the dev DB. Fallback when prod precis is down: local
+files (`round.json`, `.claude/purpose`, `inflight`) keep working.
+
+## Also ruled (2026-10-09): one view, two stores
+
+Pillars, threads and backlog stay in the repo; gripes, todos, quests stay
+in precis. The link rot between them gets a **gate check** first: fail
+when an item or thread cites a closed or missing gripe/todo id, and list
+gripes no item points to. A read-only precis index of repo frontmatter
+waits.
