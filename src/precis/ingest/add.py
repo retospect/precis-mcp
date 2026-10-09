@@ -545,16 +545,9 @@ def _link_supplement(
     si_ref_id: int, parent_ref_id: int, *, store: Store, conn: Any
 ) -> None:
     """Idempotently write the SI -> parent edge (``si_links.SI_RELATION``)."""
-    from precis.store.si_links import SI_LINK_META, SI_RELATION
+    from precis.store.si_links import link_supplement
 
-    store.add_link(
-        src_ref_id=si_ref_id,
-        dst_ref_id=parent_ref_id,
-        relation=SI_RELATION,
-        set_by="system",
-        meta=dict(SI_LINK_META),
-        conn=conn,
-    )
+    link_supplement(si_ref_id, parent_ref_id, store=store, conn=conn)
 
 
 def _reuse_supplement(

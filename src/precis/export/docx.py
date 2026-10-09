@@ -77,6 +77,7 @@ from precis.export.latex import (
     preprocess_draft_inline,
 )
 from precis.nanopub import pin_lint
+from precis.store.si_links import SI_PDF_ROLE, cite_target_for
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -174,6 +175,7 @@ class _Ctx:
     seen_acr: set[str] = field(default_factory=set)  # already expanded once
     used_acr: set[str] = field(default_factory=set)  # for the acronyms list
     last_cite: str | None = None  # paper of the immediately-preceding mark
+    last_cite_si: bool = False  # ...and whether that mark carried "(SI)"
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
@@ -201,6 +203,14 @@ class _Ctx:
     #: ``{ref_id: identifier}`` memo, mirrors ``export/latex.py``'s
     #: ``_Ctx._identifier_cache``.
     _identifier_cache: dict[int, str] = field(default_factory=dict, repr=False)
+    #: Memos for :func:`precis.store.si_links.cite_target_for` and the
+    #: slug-level SI resolution in :func:`_resolve_si_slug`.
+    _cite_target_cache: dict[int, tuple[Any, bool]] = field(
+        default_factory=dict, repr=False
+    )
+    _si_slug_cache: dict[str, tuple[str, bool]] = field(
+        default_factory=dict, repr=False
+    )
     #: Trust-mark bookkeeping (the trust-surfaces export marking), mirrors
     #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
     trust: Any = None
@@ -806,6 +816,13 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
     the EndNote path embeds as a traveling note. ``None`` if it doesn't
     resolve to a live paper. Mirrors :func:`precis.export.latex._handle_cite_key`
     so the docx and PDF paths cite the identical resolved key."""
+    hit = _handle_cite_si(tgt, ctx)
+    return None if hit is None else (hit[0], hit[1])
+
+
+def _handle_cite_si(tgt: str, ctx: _Ctx) -> tuple[str, int | None, bool] | None:
+    """:func:`_handle_cite_key` plus whether the handle sits in a
+    supplementary-information record (the key is then its parent's)."""
     if ctx.store is None:
         return None
     try:
@@ -815,9 +832,11 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
     if resolved is None or not resolved.public_id:
         return None
     # An SI ref cites as its parent paper (si-attachments ruling 3).
+    parent = getattr(resolved, "cite_public_id", None)
     return (
-        getattr(resolved, "cite_public_id", None) or resolved.public_id,
+        parent or resolved.public_id,
         resolved.chunk_id,
+        bool(parent and parent != resolved.public_id),
     )
 
 
@@ -932,10 +951,10 @@ def _render_target(
             if ctx.patent_mode:
                 _inline_source_cite(tgt, kind, surface, ctx, paragraph)
                 return
-            hit = _handle_cite_key(tgt, ctx)
+            hit = _handle_cite_si(tgt, ctx)
             if hit:
-                slug, chunk_id = hit
-                _cite(slug, ctx, paragraph, chunk_id=chunk_id)
+                slug, chunk_id, via_si = hit
+                _cite(slug, ctx, paragraph, chunk_id=chunk_id, si=via_si)
             return
         if kind == "finding":
             for slug in _finding_cite_keys_pinned(tgt, pin, ctx):
@@ -1061,7 +1080,37 @@ def _cite_link_group(slug: str, ctx: _Ctx, paragraph: Any) -> None:
             _add_hyperlink(paragraph, ul, ctx.library_label, size_pt=_CITE_LINK_PT)
 
 
-def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> None:
+def _resolve_si_slug(slug: str, ctx: _Ctx) -> tuple[str, bool]:
+    """A bare cite slug -> ``(slug_to_cite, is_si)``; mirrors
+    :func:`precis.export.latex._resolve_si_slug` (an SI record cites as its
+    parent; with no live parent it keeps its own slug and warns)."""
+    if ctx.store is None:
+        return slug, False
+    if slug in ctx._si_slug_cache:
+        return ctx._si_slug_cache[slug]
+    result = (slug, False)
+    get_ref = getattr(ctx.store, "get_ref", None)
+    ref = get_ref(kind="paper", id=slug) if callable(get_ref) else None
+    if ref is not None and getattr(ref, "pdf_role", None) == SI_PDF_ROLE:
+        target, is_si = cite_target_for(ctx.store, ref, ctx._cite_target_cache)
+        if is_si and target.slug:
+            result = (str(target.slug), True)
+        else:
+            ctx.warnings.append(
+                f"cite {slug!r}: supplementary record has no live parent paper"
+                " - cited under its own entry"
+            )
+    ctx._si_slug_cache[slug] = result
+    return result
+
+
+def _cite(
+    slug: str,
+    ctx: _Ctx,
+    paragraph: Any,
+    chunk_id: int | None = None,
+    si: bool = False,
+) -> None:
     """Emit a numbered citation marker — a superscript ``[n]`` keyed on the
     **paper**. The numbered **References** section at the document end
     (:func:`_append_references`) carries the resolved entry, so entry ``n``
@@ -1087,15 +1136,22 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> 
             render_paper_inline_citation(ref) if ref is not None else slug
         )
         return
+    # A supplementary-information record cites as its parent paper; the plain
+    # marker gains " (SI)". EndNote fields cite the parent only (no postnote).
+    if not si:
+        slug, si = _resolve_si_slug(slug, ctx)
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
-    if ctx.last_cite == slug:
+    if ctx.last_cite == slug and ctx.last_cite_si == si:
         return  # consecutive cite to the same paper — one mark for the run
     ctx.last_cite = slug
+    ctx.last_cite_si = si
     if ctx.endnote:
         _cite_endnote(slug, n, ctx, paragraph, chunk_id)
         return
     run = paragraph.add_run(f"[{n}]")
     run.font.superscript = True
+    if si:
+        paragraph.add_run(" (SI)").font.superscript = True
     _cite_link_group(slug, ctx, paragraph)
 
 

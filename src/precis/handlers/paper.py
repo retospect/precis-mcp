@@ -1152,10 +1152,16 @@ class PaperHandler(Handler):
         arxiv: str | None = None,
         journal: str | None = None,
         entry_type: str | None = None,
+        supplement_of: str | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Repair a paper's bibliographic metadata.
+
+        ``supplement_of=<parent slug | paN>`` instead declares this record
+        the supplementary information (SI) of that paper
+        (:meth:`_declare_supplement`); it takes no other field in the same
+        call.
 
         The operator / agent affordance for fixing parse errors — wrong
         DOI, missing authors, off-by-one year. Paper *bodies* stay
@@ -1199,6 +1205,18 @@ class PaperHandler(Handler):
         """
         dry_mode = normalize_dry_run(dry_run)
         ref_id = self._resolve_paper_ref_id(id)
+        if supplement_of is not None and str(supplement_of).strip():
+            if any(
+                v is not None
+                for v in (title, year, authors, abstract, doi, arxiv, journal)
+            ) or (entry_type is not None):
+                raise BadInput(
+                    "supplement_of= cannot be combined with other edit fields",
+                    next="make the supplement_of= call alone, then edit the rest",
+                )
+            return self._declare_supplement(
+                ref_id, str(supplement_of).strip(), dry=bool(dry_mode)
+            )
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         new_authors = normalize_authors(authors) if authors else None
         if authors and not new_authors:
@@ -1340,6 +1358,128 @@ class PaperHandler(Handler):
             if doi_warning:
                 body = f"{body}\n{doi_warning}"
         return Response(body=body)
+
+    def _declare_supplement(
+        self, child_id: int, parent_handle: str, *, dry: bool = False
+    ) -> Response:
+        """Declare paper ``child_id`` the supplementary information of
+        ``parent_handle`` (slug, ``pa<id>`` or numeric id) after the fact.
+
+        Refuses (``BadInput``, with a ``next=`` hint) when the parent is not
+        a live paper, is the child itself, is itself an SI record, or the
+        child already has a supplement parent or holds a DOI of its own.
+        One transaction: ``pdf_role='supplement'``, the part-of edge
+        (:func:`precis.store.si_links.link_supplement`), ``meta.si_parent``,
+        a ``Supporting Information: <parent title>`` retitle (unless it
+        already has that prefix), the parent's year when the child has none,
+        and a ``supplement_declared`` ref_event.
+        """
+        from precis.store.si_links import (
+            SI_PDF_ROLE,
+            link_supplement,
+            supplement_parent,
+            utc_stamp,
+        )
+
+        m = re.fullmatch(r"pa(\d+)", parent_handle, flags=re.IGNORECASE)
+        try:
+            _pslug, parent_id = self._resolve_paper_slug(
+                int(m.group(1)) if m else parent_handle
+            )
+        except NotFound as exc:
+            raise BadInput(
+                f"supplement_of={parent_handle!r}: no such live paper",
+                next="search(kind='paper', q='...') for the parent's slug or paN",
+            ) from exc
+        if parent_id == child_id:
+            raise BadInput(
+                "supplement_of= names the record itself",
+                next="pass the PARENT paper's slug or paN",
+            )
+        refs = self.store.fetch_refs_by_ids(
+            [child_id, parent_id], include_deleted=False
+        )
+        child, parent = refs.get(child_id), refs.get(parent_id)
+        if child is None or parent is None:
+            raise NotFound(f"{self.spec.kind} not found")
+        child_h = child.slug or f"pa{child_id}"
+        parent_h = parent.slug or f"pa{parent_id}"
+        if parent.pdf_role == SI_PDF_ROLE:
+            raise BadInput(
+                f"{parent_h} is itself a supplement record; an SI cannot be the "
+                "parent of another SI",
+                next="pass the main paper this supplement belongs to",
+            )
+        with self.store.pool.connection() as conn:
+            existing = supplement_parent(conn, child_id)
+        if existing is not None:
+            raise BadInput(
+                f"{child_h} is already the supplement of "
+                f"{existing[1] or 'pa' + str(existing[0])}",
+                next="no change needed; to re-point it, unlink the existing "
+                "part-of edge first",
+            )
+        if self.store.identifiers_for_refs([child_id]).get(child_id, {}).get("doi"):
+            raise BadInput(
+                f"{child_h} holds a DOI of its own; a supplement record carries "
+                "none (it cites as its parent)",
+                next=f"edit(kind='paper', id='{child_h}', mode='replace', "
+                "args={'doi': ''}) to drop it first, then retry",
+            )
+        title = child.title or ""
+        if not title.startswith("Supporting Information:"):
+            title = f"Supporting Information: {parent.title or parent_h}"
+        new_year = parent.year if child.year is None else None
+        if dry:
+            return Response(
+                body=f"DRY RUN (no write) - would declare {child_h} the "
+                f"supplementary information of {parent_h}; title {title!r}."
+            )
+        declared_at = utc_stamp()
+        si_parent = {
+            "ref_id": parent_id,
+            "source": "manual",
+            "declared_at": declared_at,
+        }
+        with self.store.tx() as conn:
+            updated = self.store.update_paper_fields(
+                child_id,
+                title=title if title != child.title else None,
+                year=new_year,
+                meta_patch={"si_parent": si_parent},
+                source="edit",
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE refs SET pdf_role = %s WHERE ref_id = %s",
+                (SI_PDF_ROLE, child_id),
+            )
+            link_supplement(
+                child_id, parent_id, store=self.store, conn=conn, set_by="agent"
+            )
+            self.store.append_event(
+                child_id,
+                source="edit",
+                event="supplement_declared",
+                payload={"parent_ref_id": parent_id, "parent": parent_h},
+                conn=conn,
+            )
+            if title != child.title:
+                meta = updated.meta or {}
+                abstract_val = meta.get("abstract", "")
+                kw = meta.get("keywords", [])
+                rewrite_cards(
+                    conn,
+                    child_id,
+                    title=updated.title or "",
+                    author_names=_shared_author_names(updated.authors),
+                    abstract=abstract_val if isinstance(abstract_val, str) else "",
+                    keywords=list(kw) if isinstance(kw, list) else [],
+                )
+        return Response(
+            body=f"declared {child_h} the supplementary information of "
+            f"{parent_h}; cite as {parent_h}."
+        )
 
     def _doi_edit_warning(self, ref_id: int, *, doi: str, current_title: str) -> str:
         """Warn when a DOI edit risks a future wrong-paper metadata clobber.

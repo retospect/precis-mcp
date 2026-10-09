@@ -92,6 +92,53 @@ def supplement_children(
     ]
 
 
+def link_supplement(
+    si_ref_id: int,
+    parent_ref_id: int,
+    *,
+    store: Any,
+    conn: Any,
+    set_by: str = "system",
+) -> None:
+    """Idempotently write the SI -> parent edge (``SI_RELATION``) on ``conn``."""
+    store.add_link(
+        src_ref_id=si_ref_id,
+        dst_ref_id=parent_ref_id,
+        relation=SI_RELATION,
+        set_by=set_by,
+        meta=dict(SI_LINK_META),
+        conn=conn,
+    )
+
+
+def cite_target_for(
+    store: Any, ref: Any, cache: dict[int, tuple[Any, bool]] | None = None
+) -> tuple[Any, bool]:
+    """``(parent_ref, True)`` when ``ref`` is a supplement with a live parent
+    that has a cite key, else ``(ref, False)``: exports cite an SI record as
+    its parent paper. ``cache`` (keyed by ``ref.id``) memoises per export
+    context. Never raises: a lookup failure degrades to ``(ref, False)``.
+    """
+    if getattr(ref, "pdf_role", None) != SI_PDF_ROLE:
+        return ref, False
+    rid = ref.id
+    if cache is not None and rid in cache:
+        return cache[rid]
+    result: tuple[Any, bool] = (ref, False)
+    try:
+        with store.pool.connection() as conn:
+            parent = supplement_parent(conn, rid)
+        if parent is not None and parent[1]:
+            pref = store.get_ref(kind="paper", id=parent[1])
+            if pref is not None:
+                result = (pref, True)
+    except Exception as exc:  # export must not die on a lookup hiccup
+        log.warning("si cite target lookup failed for ref %s: %s", rid, exc)
+    if cache is not None:
+        cache[rid] = result
+    return result
+
+
 #: Per-call cap on attention-queued papers from one walker touch, so a wide
 #: ring never turns into a sweep.
 ATTENTION_WALK_CAP = 20

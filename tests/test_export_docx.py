@@ -6,6 +6,7 @@ validity check (a corrupt part would fail to re-open)."""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -886,6 +887,9 @@ class _RefStore:
     """Minimal store for the pure reference/EndNote resolvers: resolves a
     slug to a paper/patent/datasheet ref, no DOI/arXiv aliases."""
 
+    #: Set by the SI tests to a stub whose ``connection()`` yields a dummy.
+    pool: Any = None
+
     def __init__(self, refs):
         self._refs = refs  # (kind, slug) -> Ref-ish
 
@@ -1393,3 +1397,69 @@ def test_pin_on_non_hub_finding_ignored_with_warning(
 
     assert res.cited_slugs == ["docxn01"]  # unchanged — pin is meaningless here
     assert any("pin on" in w and "ignored" in w for w in res.warnings)
+
+
+def _si_docx_ctx(monkeypatch, *, with_parent: bool):
+    import contextlib
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+    from precis.store import si_links
+
+    parent = SimpleNamespace(id=1, slug="parent24", kind="paper", pdf_role=None)
+    si = SimpleNamespace(id=2, slug="parent24si", kind="paper", pdf_role="supplement")
+    store = _RefStore({("paper", "parent24"): parent, ("paper", "parent24si"): si})
+    store.pool = type(
+        "P", (), {"connection": lambda s: contextlib.nullcontext(object())}
+    )()
+    monkeypatch.setattr(
+        si_links,
+        "supplement_parent",
+        lambda _conn, rid: (1, "parent24") if with_parent and rid == 2 else None,
+    )
+    return dx._Ctx(
+        store=store,
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+
+
+def test_si_cite_numbers_as_parent_with_si_note(monkeypatch) -> None:
+    import docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    para = docx.Document().add_paragraph()
+    dx._cite("parent24si", ctx, para)
+    assert ctx.cited == ["parent24"]
+    assert para.text == "[1] (SI)"
+
+
+def test_si_cite_without_parent_falls_back_with_warning_docx(monkeypatch) -> None:
+    import docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=False)
+    para = docx.Document().add_paragraph()
+    dx._cite("parent24si", ctx, para)
+    assert ctx.cited == ["parent24si"]
+    assert para.text == "[1]"
+    assert any("no live parent" in w for w in ctx.warnings)
+
+
+def test_si_mark_survives_after_plain_mark_of_same_parent(monkeypatch) -> None:
+    import docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    para = docx.Document().add_paragraph()
+    dx._cite("parent24", ctx, para)
+    dx._cite("parent24si", ctx, para)  # same parent, SI flag differs
+    dx._cite("parent24si", ctx, para)  # identical consecutive -> collapses
+    assert para.text == "[1][1] (SI)"

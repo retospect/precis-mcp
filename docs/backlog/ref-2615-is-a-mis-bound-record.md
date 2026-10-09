@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: ref 2615 binds a NanoBud paper's chunks to a mining-journal DOI
 pillar: memory-graph
 prio: high
@@ -77,3 +77,17 @@ supplement; the mining paper, if wanted, is a fresh import.
 hubs. `docs/backlog/ingest-strips-greek-glyphs.md` is a
 different defect in the same "the evidence is not what it claims to be"
 family.
+
+## State 2026-10-09
+
+Declared the supplement of pa2069 through the new
+`edit(kind='paper', id='wang22c', args={'supplement_of': 'nasibulin07a'})`
+path: `pdf_role = 'supplement'`, `part-of` link with `meta.role =
+'supplement'`, `meta.si_parent` (source manual), title "Supporting
+Information: A novel hybrid carbon material", year 2007; the mining DOI was
+already gone. Exports now cite it as the parent with an "SI" postnote.
+Left: the handle `wang22c` is still the mining paper's (rename to a
+`nasibulin07a`-derived handle once nothing else needs the old one), and
+open question 1 (which ingest path folded a second PDF into the ref; see
+`docs/backlog/si-reuse-adopts-existing-record.md` for the SI-fetch side of
+the same hash collision).

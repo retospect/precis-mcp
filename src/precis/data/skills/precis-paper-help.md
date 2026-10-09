@@ -256,6 +256,12 @@ parent's. **An SI ref cites as its parent:** a search hit in SI text reads
 exports as the parent's citation. `get(id=<parent>)` lists its SI refs;
 `get(id=<SI>)` names its parent. To attach an SI PDF by hand, drop it in the
 inbox with a sidecar `role: supplement` and `ref_id` = the parent's ref id.
+To declare an existing record as an SI after the fact, run
+`edit(kind="paper", id="<si handle>", mode="replace",
+args={"supplement_of": "<parent slug or paN>"})`; it refuses when the record
+already is an SI, holds a DOI of its own, or the parent is itself an SI. Draft
+exports cite an SI record as its parent with an SI postnote (`\cite[SI]{parent}`
+in LaTeX, `\cites{a}[SI]{parent}` inside a group, "[n] (SI)" in docx).
 
 ## See additional papers after a search
 ## Page through more search results

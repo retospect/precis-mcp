@@ -2545,3 +2545,115 @@ def test_build_bib_article_for_journal_or_missing_entry_type() -> None:
     assert _bib_one({"entry_type": "journal-article"}).startswith("@article{")
     assert _bib_one({"journal": "J"}).startswith("@article{")
     assert _bib_one(None).startswith("@article{")
+
+
+# ── supplementary-information records cite as their parent ───────────────
+
+
+class _SIStore:
+    """Fake store with a parent paper and an SI record (``pdf_role``
+    supplement). ``supplement_parent`` is monkeypatched, so ``pool`` is a
+    null-connection stub."""
+
+    def __init__(self, refs):
+        import contextlib
+
+        self._refs = refs
+        self.pool = type(
+            "P", (), {"connection": lambda s: contextlib.nullcontext(object())}
+        )()
+
+    def get_ref(self, *, kind, id):
+        return self._refs.get((kind, id))
+
+    def identifiers_for_refs(self, ref_ids):
+        return {}
+
+
+def _si_store(monkeypatch, *, with_parent: bool):
+    from types import SimpleNamespace
+
+    from precis.store import si_links
+
+    parent = _bibref(1, "parent24", "paper", title="Parent paper", year=2024)
+    si = SimpleNamespace(
+        **{
+            **vars(_bibref(2, "parent24si", "paper", title="SI", year=2024)),
+            "pdf_role": "supplement",
+        }
+    )
+    monkeypatch.setattr(
+        si_links,
+        "supplement_parent",
+        lambda _conn, rid: (1, "parent24") if with_parent and rid == 2 else None,
+    )
+    return _SIStore({("paper", "parent24"): parent, ("paper", "parent24si"): si})
+
+
+def test_si_cite_resolves_to_parent_with_postnote(monkeypatch) -> None:
+    store = _si_store(monkeypatch, with_parent=True)
+    out, ctx = _inline("see [§parent24si~3] here", store=store)
+    assert r"\cite[SI]{parent24}" in out
+    assert "parent24si" not in out
+    assert ctx.cited == ["parent24"] and ctx.si_cited == ["parent24"]
+    bib = latex.build_bib(store, ctx.cited, [])
+    assert "Parent paper" in bib and "parent24si" not in bib
+
+
+def test_si_cite_group_uses_cites_with_postnote_on_si_key_only(monkeypatch) -> None:
+    store = _si_store(monkeypatch, with_parent=True)
+    ctx = _ctx("", store=store)
+    out = latex._cite_keys(["other", "parent24si"], ctx)
+    assert out.startswith(r"\cites{other}[SI]{parent24}")
+    assert ctx.cited == ["other", "parent24"] and ctx.si_cited == ["parent24"]
+
+
+def test_multicite_is_terminated_before_link_group(monkeypatch) -> None:
+    store = _si_store(monkeypatch, with_parent=True)
+    ctx = _ctx("", store=store)
+    monkeypatch.setattr(latex, "_cite_link_group", lambda _k, _c: r"{\scriptsize L}")
+    out = latex._cite_keys(["other", "parent24si"], ctx)
+    assert out == r"\cites{other}[SI]{parent24}\relax{\scriptsize L}"
+
+
+def test_aliases_canonicalise_to_one_key_and_one_bib_entry(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    store = _si_store(monkeypatch, with_parent=True)
+    canon = _bibref(1, "canon", "paper", title="Canon paper", year=2024)
+    si = SimpleNamespace(
+        **{**vars(_bibref(2, "sirec", "paper", title="SI")), "pdf_role": "supplement"}
+    )
+    store._refs = {
+        ("paper", "canon"): canon,
+        ("paper", "alias1"): canon,
+        ("paper", "sirec"): si,
+    }
+    # SI parent is reached through the alias key
+    monkeypatch.setattr(
+        "precis.store.si_links.supplement_parent", lambda _c, rid: (1, "alias1")
+    )
+    ctx = _ctx("", store=store)
+    out = latex._cite_keys(["alias1", "canon"], ctx)
+    assert out.startswith(r"\cite{canon}") and "alias1" not in out
+    out_si = latex._cite_keys(["sirec"], _ctx("", store=store))
+    assert out_si.startswith(r"\cite[SI]{canon}")
+    assert ctx.cited == ["canon"]
+    bib = latex.build_bib(store, ctx.cited, [])
+    assert bib.count("@") == 1 and "alias1" not in bib
+
+
+def test_plain_cite_group_stays_cite(monkeypatch) -> None:
+    store = _si_store(monkeypatch, with_parent=True)
+    ctx = _ctx("", store=store)
+    out = latex._cite_keys(["parent24", "other"], ctx)
+    assert out.startswith(r"\cite{parent24,other}")
+    assert ctx.si_cited == []
+
+
+def test_si_cite_without_parent_falls_back_with_warning(monkeypatch) -> None:
+    store = _si_store(monkeypatch, with_parent=False)
+    out, ctx = _inline("see [§parent24si] here", store=store)
+    assert r"\cite{parent24si}" in out and "[SI]" not in out
+    assert ctx.cited == ["parent24si"] and ctx.si_cited == []
+    assert any("no live parent" in w for w in ctx.warnings)

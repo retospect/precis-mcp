@@ -203,7 +203,7 @@ def _seed_paper(
     slug: str = "wang2020state",
     title: str = "State of the art in nitrate reduction",
     authors: list[dict[str, Any]] | None = None,
-    year: int = 2020,
+    year: int | None = 2020,
     journal: str = "Nature",
     doi: str = "10.1/x",
     abstract: str = "An abstract.",
@@ -1731,6 +1731,73 @@ class TestPaperEdit:
         ref_id = _seed_paper(store, slug="wang2020state")
         with pytest.raises(BadInput):
             handler.edit(id=ref_id)
+
+    # -- supplement_of: declare an existing record as SI ---------------------
+
+    def test_supplement_of_declares_si(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        from precis.store.si_links import SI_RELATION, supplement_parent
+
+        parent = _seed_paper(store, slug="parent2024main", year=2024)
+        child = _seed_paper(
+            store,
+            slug="stray2024si",
+            title="stray pdf",
+            doi="",
+            year=None,
+        )
+        resp = handler.edit(id=child, supplement_of="parent2024main")
+        assert "stray2024si" in resp.body and "cite as parent2024main" in resp.body
+        ref = store.fetch_refs_by_ids([child])[child]
+        assert ref.pdf_role == "supplement"
+        assert (
+            ref.title == "Supporting Information: State of the art in nitrate reduction"
+        )
+        assert ref.year == 2024
+        si = ref.meta["si_parent"]
+        assert si["ref_id"] == parent and si["source"] == "manual"
+        assert si["declared_at"].endswith("Z")
+        with store.pool.connection() as conn:
+            assert supplement_parent(conn, child) == (parent, "parent2024main")
+            rel = conn.execute(
+                "SELECT relation, meta->>'role' FROM links WHERE src_ref_id=%s",
+                (child,),
+            ).fetchone()
+        assert rel == (SI_RELATION, "supplement")
+
+    def test_supplement_of_accepts_pa_handle_and_keeps_si_title(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        parent = _seed_paper(store, slug="parent2024main")
+        child = _seed_paper(
+            store, slug="stray2024si", title="Supporting Information: Custom", doi=""
+        )
+        handler.edit(id=child, supplement_of=f"pa{parent}")
+        ref = store.fetch_refs_by_ids([child])[child]
+        assert ref.title == "Supporting Information: Custom"
+        assert ref.year == 2020  # child's own year kept
+
+    def test_supplement_of_refusals(self, store: Store, handler: PaperHandler) -> None:
+        parent = _seed_paper(store, slug="parent2024main")
+        child = _seed_paper(store, slug="stray2024si", doi="")
+        with_doi = _seed_paper(store, slug="hasdoi2024x", doi="10.9/own")
+        with pytest.raises(BadInput, match="no such live paper"):
+            handler.edit(id=child, supplement_of="nonesuch1999")
+        with pytest.raises(BadInput, match="itself"):
+            handler.edit(id=child, supplement_of="stray2024si")
+        with pytest.raises(BadInput, match="DOI of its own") as exc:
+            handler.edit(id=with_doi, supplement_of="parent2024main")
+        assert exc.value.next
+        with pytest.raises(BadInput, match="cannot be combined"):
+            handler.edit(id=child, supplement_of="parent2024main", year=2000)
+        handler.edit(id=child, supplement_of="parent2024main")
+        # the declared SI cannot be a parent, nor re-declared
+        other = _seed_paper(store, slug="other2024si", doi="")
+        with pytest.raises(BadInput, match="itself a supplement"):
+            handler.edit(id=other, supplement_of="stray2024si")
+        with pytest.raises(BadInput, match="already the supplement of parent2024main"):
+            handler.edit(id=child, supplement_of=f"pa{parent}")
 
     def test_edit_unknown_id_raises_notfound(
         self, store: Store, handler: PaperHandler
