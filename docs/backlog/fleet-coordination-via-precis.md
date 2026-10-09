@@ -167,7 +167,9 @@ and that headless volume is within each plan's terms.
    null`, no 5h window); a live Codex pane's footer (`Context N% left ·
    Ready`) gives state and context before the first rollout exists;
    daemon-mode rollouts record `$HOME` in `session_meta.cwd`, the tree in
-   `turn_context.cwd`. Open: real approval-dialog text
+   `turn_context.cwd`. A Codex question (`request_user_input_async`)
+   completes the turn and the footer says Ready; the rollout's
+   function_call marks the row `asking`. Open: real approval-dialog text
    (`APPROVAL_PATTERNS` are guesses), the Codex footer while working,
    Claude context window per model (assumes 200k, `--claude-window`),
    and `merge-tree` conflict prediction.

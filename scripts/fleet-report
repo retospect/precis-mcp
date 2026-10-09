@@ -338,14 +338,21 @@ def codex_sessions(since_s: float) -> dict[str, dict]:
         entries = json_tail(p)
         last_ts = m
         state, ctx, window, limits = "unknown", None, None, {}
+        asking = False
         for d in entries:
             last_ts = parse_iso(d.get("timestamp")) or last_ts
             pl = d.get("payload") or {}
             kind = pl.get("type")
+            # request_user_input_async returns at once and the turn completes
+            # ("Ready" in the footer) while the question waits for Reto.
+            if kind == "function_call" and str(pl.get("name", "")).startswith(
+                "request_user_input"
+            ):
+                asking = True
             if d.get("type") != "event_msg":
                 continue
             if kind == "task_started":
-                state = "working"
+                state, asking = "working", False
             elif kind in ("task_complete", "turn_aborted"):
                 state = "idle"
             elif kind == "token_count":
@@ -364,6 +371,8 @@ def codex_sessions(since_s: float) -> dict[str, dict]:
                         }
         if state == "unknown" and entries:
             state = "working"
+        if asking:
+            state = "asking"
         out[cwd] = {
             "file": str(p),
             "mtime": m,
@@ -448,7 +457,8 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
         screen = pane_screen(pane["pane_id"]) if pane else ""
         if vendor == "codex" and screen:
             f_state, f_ctx = codex_footer(screen)
-            state = f_state or state
+            if state != "asking":
+                state = f_state or state
             ctx_pct = f_ctx if f_ctx is not None else ctx_pct
         if screen and vendor != "devin" and pane_approval(screen):
             state = "waiting"
@@ -538,6 +548,8 @@ def exceptions(rows: list[dict], quiet_min: float, ctx_max: float = 60.0) -> lis
             reasons.append("dead")
         if r["state"] == "waiting":
             reasons.append("waiting on approval")
+        if r["state"] == "asking":
+            reasons.append("question for Reto")
         if (
             r["state"] == "working"
             and r["quiet_min"] is not None

@@ -279,6 +279,42 @@ def test_codex_footer_without_rollout_and_account_quota(env):
     )
 
 
+def test_codex_async_question_beats_ready_footer(env):
+    # request_user_input_async completes the turn; the footer says Ready while
+    # the question still waits for Reto. Shape seen on melchior 2026-10-09.
+    env.panes.write_text(pane_line(env, command="codex"), encoding="utf-8")
+    env.capture.write_text(
+        "  proj · ~/proj · main · Context 98% left · Ready\n", encoding="utf-8"
+    )
+    call = {"type": "function_call", "name": "request_user_input_async"}
+    write_jsonl(
+        env.tmp_path / "codex" / "sessions" / "rollout-2026-10-09T10-48-00-q.jsonl",
+        [
+            {"timestamp": stamp(60), "type": "session_meta", "payload": {}},
+            {
+                "timestamp": stamp(59),
+                "type": "turn_context",
+                "payload": {"cwd": str(env.repo.resolve())},
+            },
+            {
+                "timestamp": stamp(58),
+                "type": "event_msg",
+                "payload": {"type": "task_started"},
+            },
+            {"timestamp": stamp(50), "type": "response_item", "payload": call},
+            {
+                "timestamp": stamp(45),
+                "type": "event_msg",
+                "payload": {"type": "task_complete"},
+            },
+        ],
+        age_s=45,
+    )
+    rep = report(env)
+    assert next(r for r in rep["rows"] if r["vendor"] == "codex")["state"] == "asking"
+    assert any(x["reason"] == "question for Reto" for x in rep["exceptions"])
+
+
 def test_approval_pattern_marks_waiting_with_attach(env):
     write_jsonl(
         env.transcript_dir / "a.jsonl",
