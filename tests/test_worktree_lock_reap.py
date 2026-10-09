@@ -155,6 +155,13 @@ def _lock_reason_for(primary: Path, worktree: Path) -> str | None:
     return None
 
 
+def _pid_written(path: Path) -> bool:
+    """``echo $$ > file`` truncates before it writes: a reader that only
+    checks ``exists()`` can see the empty file on a loaded host and fail
+    ``int('')``. Wait for the content, not the inode."""
+    return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+
+
 def _wait_for(predicate, timeout: float = 10.0, interval: float = 0.1) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -308,8 +315,10 @@ sleep 60
         env=_test_env(),
     )
     try:
-        assert _wait_for(lambda: claude_pid_file.exists()), "durable pid never recorded"
-        assert _wait_for(lambda: wrapper_pid_file.exists()), (
+        assert _wait_for(lambda: _pid_written(claude_pid_file)), (
+            "durable pid never recorded"
+        )
+        assert _wait_for(lambda: _pid_written(wrapper_pid_file)), (
             "wrapper pid never recorded"
         )
         durable_pid = int(claude_pid_file.read_text(encoding="utf-8").strip())
@@ -502,7 +511,9 @@ sleep 60
         env=_test_env(),
     )
     try:
-        assert _wait_for(lambda: outer_pid_file.exists()), "outer pid never recorded"
+        assert _wait_for(lambda: _pid_written(outer_pid_file)), (
+            "outer pid never recorded"
+        )
         outer_pid = int(outer_pid_file.read_text(encoding="utf-8").strip())
         assert outer_pid == proc.pid
 
@@ -510,7 +521,9 @@ sleep 60
             "outer session-start-lock.sh never locked B to itself"
         )
 
-        assert _wait_for(lambda: nested_pid_file.exists()), "nested pid never recorded"
+        assert _wait_for(lambda: _pid_written(nested_pid_file)), (
+            "nested pid never recorded"
+        )
         nested_pid = int(nested_pid_file.read_text(encoding="utf-8").strip())
         assert nested_pid != outer_pid
 
