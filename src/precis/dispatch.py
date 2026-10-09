@@ -886,9 +886,15 @@ def boot(
 
             wt_spec = parse_worktrees_spec(os.environ.get("PRECIS_PYTHON_WORKTREES"))
             try:
-                wt_max = int(os.environ.get("PRECIS_PYTHON_WORKTREE_MAX", "4"))
+                wt_max = int(os.environ.get("PRECIS_PYTHON_WORKTREE_MAX", "0"))
             except ValueError:
-                wt_max = 4
+                wt_max = 0
+            try:
+                wt_idle_h = float(
+                    os.environ.get("PRECIS_PYTHON_WORKTREE_IDLE_HOURS", "24")
+                )
+            except ValueError:
+                wt_idle_h = 24.0
             registry = (
                 WorktreeRegistry(
                     wt_spec[0],
@@ -897,6 +903,7 @@ def boot(
                         os.environ.get("PRECIS_PYTHON_GITDIR_MAP")
                     ),
                     max_indexes=wt_max,
+                    idle_ttl=wt_idle_h * 3600.0,
                 )
                 if wt_spec
                 else None

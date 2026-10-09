@@ -129,6 +129,20 @@ def test_lru_eviction(env):
     assert any(p.name == "main" for p in h.cache.known_roots())
 
 
+def test_idle_expiry_keeps_recent(env):
+    h, reg, clock = _make(env, ("a", "b", "c", "d", "e"))
+    for n in ("a", "b", "c", "d", "e"):
+        h.get(id=f"wt-{n}::m.f")  # no cap by default: all five stay
+    assert {"a", "b", "c", "d", "e"} <= {p.name for p in h.cache.known_roots()}
+    clock.t += 23 * 3600
+    h.get(id="wt-e::m.f")
+    clock.t += 2 * 3600  # a-d idle 25 h, e idle 2 h
+    h.get(id="main::m.f")
+    h._resolve_alias("wt-e")
+    known = {p.name for p in h.cache.known_roots()}
+    assert "e" in known and not ({"a", "b", "c", "d"} & known)
+
+
 def test_read_only_refusal(env):
     h, _, _ = _make(env)
     with pytest.raises(BadInput, match="read-only worktree"):

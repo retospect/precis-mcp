@@ -8,8 +8,10 @@ translates host paths to container paths; a worktree is a root only when its
 translated path exists here. Aliases are ``<prefix>-<basename>``.
 
 The listing is re-read at most every ``ttl`` seconds. Worktree indexes build
-lazily on first query; at most ``max_indexes`` stay cached (LRU), the rest are
-forgotten through ``RepoCache.drop``. Worktree roots are never part of the
+lazily on first query and stay cached until unused for ``idle_ttl`` seconds
+(default 24 h: many worktrees coexist), the worktree vanishes, or an optional
+``max_indexes`` cap (0 = none) evicts the least recently used; eviction goes
+through ``RepoCache.drop``. Worktree roots are never part of the
 default search fan-out and never writable.
 """
 
@@ -65,19 +67,22 @@ class WorktreeRegistry:
         main: Path,
         *,
         gitdir_map: tuple[str, str] | None = None,
-        max_indexes: int = 4,
+        max_indexes: int = 0,
+        idle_ttl: float = 24 * 3600.0,
         ttl: float = 5.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.prefix = prefix
         self.main = Path(main).resolve()
         self.gitdir_map = gitdir_map
-        self.max_indexes = max(1, max_indexes)
+        self.max_indexes = max(0, max_indexes)
+        self.idle_ttl = idle_ttl
         self.ttl = ttl
         self._clock = clock
         self._listing: dict[str, Worktree] = {}
         self._listed_at: float | None = None
-        self._lru: OrderedDict[str, Path] = OrderedDict()
+        # alias -> (path, last used); oldest first.
+        self._lru: OrderedDict[str, tuple[Path, float]] = OrderedDict()
 
     def owns(self, alias: str) -> bool:
         return alias.startswith(self.prefix + "-")
@@ -123,16 +128,27 @@ class WorktreeRegistry:
         self._listing = self._scan()
         self._listed_at = now
         gone_aliases = [a for a in self._lru if a not in self._listing]
-        gone = [self._lru.pop(a) for a in gone_aliases]
-        return self._listing, gone
+        gone = [self._lru.pop(a)[0] for a in gone_aliases]
+        return self._listing, gone + self._expire(now)
+
+    def _expire(self, now: float) -> list[Path]:
+        expired: list[Path] = []
+        while self._lru:
+            alias, (path, used) = next(iter(self._lru.items()))
+            if now - used < self.idle_ttl:
+                break
+            del self._lru[alias]
+            expired.append(path)
+        return expired
 
     def touch(self, alias: str, path: Path) -> list[Path]:
-        """Mark ``alias`` used; return paths evicted to stay within the bound."""
-        self._lru[alias] = path
+        """Mark ``alias`` used; return paths evicted (idle too long, or over the cap)."""
+        now = self._clock()
+        self._lru[alias] = (path, now)
         self._lru.move_to_end(alias)
-        evicted: list[Path] = []
-        while len(self._lru) > self.max_indexes:
-            _, p = self._lru.popitem(last=False)
+        evicted = self._expire(now)
+        while self.max_indexes and len(self._lru) > self.max_indexes:
+            _, (p, _used) = self._lru.popitem(last=False)
             evicted.append(p)
         return evicted
 
