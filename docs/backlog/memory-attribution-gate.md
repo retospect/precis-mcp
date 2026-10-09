@@ -8,19 +8,21 @@ model: sonnet
 
 # Memory attribution gate
 
-**State (2026-10-09):** §1–§5 shipped in warn mode (b88ae940e, deployed).
-Dogfood against the deployed server found the motivating case slipping
-through: the websearch body's only "10" is a DOI prefix, and the bare
-digit-run fallback counted it. Fixed in the follow-up commit (a unit-bearing
-claim needs the same ``(number, unit)`` pair; see §1 step 4). Remaining, in
-order: (1) re-dogfood after that deploy (a write pinning "~10 nm" to
-`websearch:170350` must come back tagged `AUDIT:ungrounded-number`); (2) run
+**State (2026-10-09):** §1–§5 shipped in warn mode (b88ae940e). Dogfood
+against the deployed server found the motivating case slipping through: the
+websearch body's only "10" is a DOI prefix, and the bare digit-run fallback
+counted it. Fixed in b042138bc (a unit-bearing claim needs the same
+``(number, unit)`` pair; see §1 step 4), deployed as a5920f7d6, and
+re-dogfooded there: a write pinning "~10 nm" to `websearch:170350` comes
+back tagged `AUDIT:ungrounded-number`, a grounded write does not, and a
+rewrite to "(my estimate)" clears the tag. Remaining, in order: (1) run
 `scripts/memory-attribution-audit --sample 40` dry against prod — it needs
 the tunnel DSN the way `scripts/prod-precis` builds it (rewrite the stored
 `~/.secrets/pw/PRECIS_DATABASE_URL` to `127.0.0.1` and `agent_ro`); an agent
-session cannot read that file, so Reto runs it; (3) read the sample for
-false positives; (4) flip `PRECIS_MEMORY_ATTRIBUTION_GATE` default to
-`reject` and `--apply` the backfill. Delete this file in that commit.
+session can neither read that file nor run prod reads from a shell, so Reto
+runs it and hands over the log; (2) read the sample for false positives;
+(3) flip `PRECIS_MEMORY_ATTRIBUTION_GATE` default to `reject` and `--apply`
+the backfill. Delete this file in that commit.
 
 ## Motivation / why
 
