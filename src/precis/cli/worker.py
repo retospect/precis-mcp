@@ -236,6 +236,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_hub_tagline_pass": PassPriority.BACKGROUND,
     "_conflict_search_pass": PassPriority.BACKGROUND,
     "_chase_trigger_pass": PassPriority.BACKGROUND,
+    "_inbound_ground_pass": PassPriority.BACKGROUND,
     "_fetch_pass": PassPriority.BACKGROUND,
     "_gp_fetch_pass": PassPriority.BACKGROUND,
     "_stub_rank_pass": PassPriority.BACKGROUND,
@@ -356,6 +357,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "bib_retag",
             "chase",
             "chase_trigger",
+            "inbound_ground",
             "fetch",
             "gp_fetch",
             "stub_rank",
@@ -956,6 +958,19 @@ def run(args: argparse.Namespace) -> None:
             # either way. See _build_chase_pass's sibling registration above.
             _chase_trigger_pass = _build_chase_trigger_pass(args, store, handlers)
             ref_passes.append(_chase_trigger_pass)
+
+        # inbound_ground — the claim-hub half of inbound completeness
+        # (docs/backlog/taproot-inbound-grounding.md part b): a paper whose
+        # body just finished embedding is ANN-matched against the claim-hub
+        # index, each near pair verified through the shared chase verifier,
+        # and a certified corroborates/disputes edge written — support with
+        # no citation path. Default-OFF, dark like every other taproot
+        # service (§L: `service prio` controls it). Needs an embedder; same
+        # reuse-the-booted-EmbedHandler-or-construct-fresh-LAZILY pattern and
+        # embedder-unavailable no-op degrade as chase_trigger above.
+        if _register("inbound_ground"):
+            _inbound_ground_pass = _build_inbound_ground_pass(args, store, handlers)
+            ref_passes.append(_inbound_ground_pass)
 
         # Hierarchical SOM cluster maps (precis-web /clusters grid).
         # Time-gated full rebuild per scope; see workers/clusterize.py.
@@ -2619,6 +2634,57 @@ def _build_chase_trigger_pass(
         )
 
     return _chase_trigger_pass
+
+
+def _build_inbound_ground_pass(
+    args: argparse.Namespace, store: Store, handlers: list[WorkerHandler]
+) -> RefPass:
+    """Build the inbound_ground pass (``workers/inbound_ground.py``). Mirrors
+    :func:`_build_chase_trigger_pass`: lazy embedder resolution with the
+    no-op degrade, and the shared loop ``batch_size`` is NOT forwarded — the
+    pass's own ``PRECIS_INBOUND_GROUND_PAPERS_PER_PASS`` knob governs how
+    many papers (each up to ``PRECIS_INBOUND_GROUND_MAX_LLM`` verifier
+    calls) one cycle grounds, so the generic ``--batch-size`` default can't
+    silently multiply LLM spend.
+    """
+    from precis.workers.embed import EmbedHandler as _InboundGroundEmbedHandler
+    from precis.workers.inbound_ground import run_inbound_ground_pass
+    from precis.workers.runner import BatchResult as _InboundGroundBatchResult
+
+    _inbound_ground_embed_handler = next(
+        (h for h in handlers if isinstance(h, _InboundGroundEmbedHandler)), None
+    )
+    _inbound_ground_embedder_cache: list[Any] = []
+
+    def _inbound_ground_get_embedder() -> Any:
+        if _inbound_ground_embedder_cache:
+            return _inbound_ground_embedder_cache[0]
+        if _inbound_ground_embed_handler is not None:
+            embedder = _inbound_ground_embed_handler.embedder
+        else:
+            try:
+                embedder = _resolve_embedder(args, store)
+            except Exception:
+                log.warning(
+                    "inbound_ground: embedder unavailable -- pass will degrade to no-op",
+                    exc_info=True,
+                )
+                embedder = None
+        _inbound_ground_embedder_cache.append(embedder)
+        return embedder
+
+    def _inbound_ground_pass(batch_size: int) -> _InboundGroundBatchResult:
+        r = run_inbound_ground_pass(
+            store, embedder=_inbound_ground_get_embedder(), limit=None
+        )
+        return _InboundGroundBatchResult(
+            handler="inbound_ground",
+            claimed=r["claimed"],
+            ok=r["ok"],
+            failed=r["failed"],
+        )
+
+    return _inbound_ground_pass
 
 
 def _build_handlers(

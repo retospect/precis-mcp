@@ -228,6 +228,13 @@ them into ``service prio``. Enable a service producer on **one host** —
 - **chase_trigger** (``workers/chase_trigger.py``) — the incremental
   due-set watermark: reverse ANN from newly-embedded paper/patent chunks
   marks near hubs ``TAPROOT_DUE``.
+- **inbound_ground** (``workers/inbound_ground.py``) — the paper-grained
+  sibling of chase_trigger: once a paper's body is fully embedded, its
+  top-k nearest claim hubs are verified through the shared verifier and
+  attached as certified ``corroborates`` (or non-blocking ``disputes``)
+  edges in the same pass — support found with no citation path. Bounded
+  per paper (``PRECIS_INBOUND_GROUND_TOPK``/``_MAX_LLM``); shares this
+  module's rejection memo so neither pass re-judges the other's pairs.
 - **TAPROOT axis classifier** (``data/axes/taproot.yaml`` via
   ``workers/axis_pass.py``) — tags ``finding`` rows ``TAPROOT:claim`` vs
   ``TAPROOT:review``; fail-open (ambiguous stays re-claimable).

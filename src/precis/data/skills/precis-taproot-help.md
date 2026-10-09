@@ -76,6 +76,19 @@ disputes_filed}` is the coverage ledger — "no known conflict as of
 missing or stale-version ledger means the hub was never swept by the
 current method.
 
+**A new paper is checked against the claim set as it lands.** The
+`inbound_ground` worker pass (dark until enabled) takes each paper whose
+body just finished embedding, ANN-matches its passages against the
+claim-hub index (top-k hubs, default 5), verifies each near pair with
+the shared chase verifier (capped per paper) and writes the verdict:
+support → a chunk-grounded `corroborates` edge born certified
+(`meta.verified_by='inbound-ground'`), a same-setup contradiction → a
+non-blocking `disputes` edge (`meta.via='inbound_ground'`), neutral →
+the hub's rejection memo only. No citation path is needed. The paper
+carries an `INBOUND_GROUND:<version>` tag once grounded; its
+`ref_events` row (`source='inbound_ground'`) says how many hubs matched
+and were verified.
+
 **A composite hub holds no direct evidence.** When a claim decomposes into
 several atomic sub-claims, the bundling sentence gets its own hub — cite-able,
 but attach-only-through-atoms: `link(...,

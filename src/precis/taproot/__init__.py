@@ -130,9 +130,11 @@ Module map (detail lives in each module's own docstring):
   predicate, shared (not duplicated) by backfill, reground, chase, repair.
 
 Producers (dark by default; no-op with no embedder): the forward chase bridge,
-``hub_refine`` (stage 5, grown into reground), ``chase_trigger`` and the
-TAPROOT axis classifier, with their enablement rules — owned by the
-``precis.workers.hub_refine`` module docstring.
+``hub_refine`` (stage 5, grown into reground), ``chase_trigger``,
+``inbound_ground`` (a freshly embedded paper verified against its nearest
+hubs — evidence with no citation path) and the TAPROOT axis classifier, with
+their enablement rules — owned by the ``precis.workers.hub_refine`` module
+docstring.
 
 Authoring doors (all through :mod:`.hub`): ``put(kind='finding',
 supporters=[…])`` / ``precis taproot mint`` (:mod:`.authoring`);

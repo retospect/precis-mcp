@@ -933,6 +933,30 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-taproot-help",
     ),
     ServiceSpec(
+        # precis.workers.inbound_ground (taproot-inbound-grounding part b):
+        # a freshly embedded paper is ANN-matched against the claim-hub
+        # index, each near pair verified through the shared chase verifier
+        # and attached as a certified evidence (or disputes) edge -- support
+        # found with no citation path. Top-k hubs and a per-paper verifier
+        # cap bound the spend. Same shape as the taproot services above:
+        # dark by default (§L: `service prio` controls it) / --only
+        # inbound_ground.
+        name="inbound_ground",
+        label="Inbound claim grounding",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_INBOUND_GROUND_ENABLED",
+        uses_model=True,
+        cost_sources=("inbound_ground",),
+        one_line=(
+            "Newly ingested papers ANN-match claim hubs; each near pair is "
+            "LLM-verified and attached as certified evidence (no citation "
+            "path needed)."
+        ),
+        doc_skill="precis-taproot-help",
+    ),
+    ServiceSpec(
         name="llm_reconcile",
         label="LLM catalog reconcile",
         category="review",
