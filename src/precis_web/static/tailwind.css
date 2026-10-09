@@ -2889,6 +2889,14 @@ video {
   transition-duration: 200ms;
 }
 
+.\[error\:Gone\] {
+  error: Gone;
+}
+
+.\[error\:NotFound\] {
+  error: NotFound;
+}
+
 .\[error\:Unsupported\] {
   error: Unsupported;
 }

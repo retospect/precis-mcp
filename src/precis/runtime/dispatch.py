@@ -267,6 +267,33 @@ def _forwards_catchall(func: Any, catchall_name: str) -> bool:
     return False
 
 
+def _eye_extent(args: dict[str, Any]) -> str | None:
+    """The ladder rung a ``get`` asks for, or ``None`` for an ordinary get.
+
+    ``extent=`` is the one argument (popped here, top-level or inside
+    ``args=``, so the kwargs gate never sees it); a ladder label in
+    ``view=`` means the same, because the ladder shipped on that door first
+    (``precis-fisheye-help``). Both given and disagreeing is a ``BadInput``
+    — the rung is one argument, not two.
+    """
+    from precis.handlers._eye import is_eye_view
+
+    extent = args.pop("extent", None)
+    extras = args.get(_EXTRAS_KEY)
+    if extent is None and isinstance(extras, dict):
+        extent = extras.pop("extent", None)
+    view = args.get("view")
+    if extent is not None:
+        extent = str(extent).strip()
+        if view is not None and str(view) != extent:
+            raise BadInput(
+                f"extent={extent!r} and view={view!r} both given; the rung is one argument",
+                next=f"get(kind=…, id=…, extent={extent!r})",
+            )
+        return extent
+    return str(view) if is_eye_view(view if view is None else str(view)) else None
+
+
 @functools.cache
 def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
     """Every kwarg ``cls().<verb>(...)`` can actually consume (gr334695).
@@ -1546,6 +1573,23 @@ class DispatchMixin(RuntimeShape):
         specific kind that was tried.
         """
         method = getattr(handler, verb)
+
+        # The eye ladder is one door on every kind (fisheye-everywhere
+        # in-scope 2): a ``get`` carrying ``extent=`` — or a ladder label
+        # in ``view=``, the spelling the ladder shipped on — goes to
+        # ``Handler.eye`` instead of ``get``, so no handler has to accept
+        # the kwarg and the kwargs gate below never sees it.
+        if verb == "get":
+            extent = _eye_extent(args)
+            if extent is not None:
+                try:
+                    return handler.eye(
+                        id=args.get("id"), extent=extent, q=args.get("q")
+                    )
+                except PrecisError as exc:
+                    if kind_was_defaulted:
+                        exc.cause = f"(searched kind={kind!r}) {exc.cause}"
+                    raise
 
         # local-mesh-upkeep §2b: edit's reason= belongs to the revision
         # log, not the handler — consume it before the kwargs gate. put's

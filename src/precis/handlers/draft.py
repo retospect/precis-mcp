@@ -39,6 +39,7 @@ from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import toon
 from precis.handlers import _draft_lint
+from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     format_link_tag_ack,
@@ -67,7 +68,6 @@ from precis.utils.table_data import (
     table_payload,
     table_to_markdown,
 )
-from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
 
@@ -463,6 +463,27 @@ class DraftHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
 
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+    ) -> Response:
+        """The eye ladder on a draft section. A ``dc<id>`` handle takes the
+        shared path; the legacy ``¶<base58>`` anchor (which no registry
+        parser decodes) renders directly, since the tree renderer resolves
+        it itself. A whole draft has no eye — the shared path says so."""
+        s = str(id or "").strip()
+        if _is_draft_chunk_handle(s) and handle_registry.parse(s) is None:
+            if ".." in s:
+                raise BadInput(
+                    f"an eye focuses one node, not a window ({s!r})",
+                    next="drop the -B..A suffix, or omit extent= to read the window",
+                )
+            return Response(body=eye_body(self.store, s, extent, q=q))
+        return super().eye(id=id, extent=extent, q=q)
+
     def get(
         self,
         *,
@@ -489,28 +510,12 @@ class DraftHandler(Handler):
             return self._render_list()
         s = str(id).strip()
         if _is_draft_chunk_handle(s):
-            # Turn-taking persona threads eye — render this node at a focus extent via ``view=``:
-            # the ladder kwd|summary|verbatim|fisheye|fisheye+1hop (labels
-            # derived from ``Extent`` so they can't drift from the enum).
-            # Exposes the composer one node at a time; ``view='backfill'``
-            # composes many.
-            extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
-            if view in extent_ladder:
-                from precis.utils.eye_render import render_eye
-
-                if ".." in s:
-                    raise BadInput(
-                        f"view={view!r} targets one chunk, not a window ({s!r})",
-                        next="drop the -B..A suffix, or omit view= to read the window",
-                    )
-
-                try:
-                    return Response(body=render_eye(self.store, s, view))
-                except ValueError as e:
-                    raise BadInput(
-                        str(e),
-                        next=f"view ∈ {'|'.join(extent_ladder)}",
-                    ) from e
+            # Turn-taking persona threads eye — render this node at a focus
+            # extent (``extent=`` on the MCP door, a ladder label on
+            # ``view=`` here). Exposes the composer one node at a time;
+            # ``view='backfill'`` composes many.
+            if is_eye_view(view):
+                return self.eye(id=s, extent=view)
             if view == "backfill":  # source-backfill workspace for this section
                 from precis.backfill import render_backfill
 
@@ -542,7 +547,7 @@ class DraftHandler(Handler):
                     f"unknown draft chunk view {view!r}",
                     next="view ∈ backfill|toc|wordcount|review-diff|history|"
                     "proposals, or a "
-                    f"focus-ladder label {'|'.join(extent_ladder)}",
+                    f"focus-ladder label {'|'.join(EYE_LADDER)}",
                 )
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="draft", id=s)

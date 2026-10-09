@@ -52,6 +52,7 @@ from precis.handlers._attribution import (
     grounding_failures,
     ungrounded_cited_numbers,
 )
+from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -68,8 +69,6 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
-from precis.utils.eye_render import RECALL_SUFFIX, render_eye
-from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
 
@@ -273,24 +272,15 @@ class MemoryHandler(NumericRefHandler):
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
-        extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
-        if concrete and (view in extent_ladder or (view or "").endswith(RECALL_SUFFIX)):
-            ref = self._resolve_live_ref(self._coerce_id(id))
-            try:
-                body = render_eye(self.store, f"me{int(ref.id)}", str(view), q=q)
-            except ValueError as e:
-                raise BadInput(
-                    str(e),
-                    next=f"view ∈ {'|'.join(extent_ladder)}, optionally +recall",
-                ) from e
-            return Response(body=body)
+        if concrete and is_eye_view(view):
+            return self.eye(id=id, extent=view, q=q)
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='memory'",
-                options=["argument", *extent_ladder, *_BASE_VIEWS],
+                options=["argument", *EYE_LADDER, *_BASE_VIEWS],
                 next=(
                     "view='argument' (kind:lemma/kind:inference proof tree) "
-                    f"· {'|'.join(extent_ladder)}, optionally +recall (the eye) "
+                    f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
                     "· links, log, raw (generic)"
                 ),
             )

@@ -42,6 +42,7 @@ from collections import Counter
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
+from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
@@ -68,7 +69,6 @@ from precis.store import Ref, Tag
 from precis.store.types import ChunkRow
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
-from precis.workers.working_set import Extent
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
 #: never completes (``quest-layer`` (git-only)). STATUS is a shared union
@@ -312,17 +312,6 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "measures",
     "logbook",
 )
-
-
-#: The eye-ladder rungs ``get(view=…)`` accepts on a concrete quest — the
-#: :class:`~precis.workers.working_set.Extent` labels, as on finding.
-_EYE_LADDER: tuple[str, ...] = tuple(e.label for e in Extent if e is not Extent.NONE)
-
-
-def _is_eye_view(view: str) -> bool:
-    from precis.utils.eye_render import RECALL_SUFFIX
-
-    return view in _EYE_LADDER or view.endswith(RECALL_SUFFIX)
 
 
 #: ``view='results'``/``'frontier'`` default token budget — the tick's own
@@ -871,18 +860,8 @@ class QuestHandler(NumericRefHandler):
         # quests it serves and the ones serving it under `Roadmap`, plus the
         # papers/structures that serve it (`served-by`) and findings that
         # support it (`supported-by`, under `Notes & links`).
-        if concrete and view is not None and _is_eye_view(view):
-            ref = self._resolve_live_ref(self._coerce_id(id))
-            from precis.utils.eye_render import render_eye
-
-            try:
-                body = render_eye(self.store, f"qu{int(ref.id)}", view, q=q)
-            except ValueError as e:
-                raise BadInput(
-                    str(e),
-                    next=f"view ∈ {'|'.join(_EYE_LADDER)}, optionally +recall",
-                ) from e
-            return Response(body=body)
+        if concrete and is_eye_view(view):
+            return self.eye(id=id, extent=view, q=q)
         # An unrecognised view on a concrete id would otherwise fall through to
         # NumericRefHandler.get, whose error lists only links/log/raw — hiding
         # the six quest views above. "deeds" is a shape a caller reaches for
@@ -892,7 +871,7 @@ class QuestHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='quest'",
-                options=[*_QUEST_CONCRETE_VIEWS, *_EYE_LADDER, *_BASE_VIEWS],
+                options=[*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
                     "results, series, measures, logbook (quest-specific) · "

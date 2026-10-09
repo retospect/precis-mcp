@@ -1,237 +1,184 @@
 ---
 id: precis-fisheye-help
-title: precis — the fisheye neighborhood render (focus + context)
-summary: view='fisheye'/'fisheye+1hop' on a draft or finding chunk, a memory, or a quest — the extent ladder, the spatial neighborhood, the reference ring. Partial rollout — see "which kinds actually support this today".
+title: precis — the fisheye neighborhood render (focus + context) on every kind
+summary: get(kind=<any>, id=…, extent='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall]) — one node plus its surroundings, scaled by distance; the extent ladder, the spatial neighborhood (draft/plan sections), the cluster map (papers), the link neighborhood grouped by ring (memory, quest, taxon, concept, component, todo, finding, …). Every kind renders or says in one sentence why not.
 answers:
   - how do I read a chunk along with the text around it, not just the chunk itself?
+  - how do I see the neighbourhood of a quest, a memory, a taxon or a todo?
   - what's the difference between the fisheye neighborhood and fisheye+1hop?
+  - what does extent= do on get, and is it the same as view='fisheye'?
+  - which kinds have the fisheye ladder?
   - how is fisheye different from view='toc'?
-  - does the fisheye neighborhood shape change per kind?
-  - why does view='fisheye' on a paper raise Unsupported?
   - how do I walk a memory's links and see its mirror filename?
-applies-to: get(kind='draft'|'finding'|'memory'|'quest', view=)
+  - why does extent='fisheye' on a measure or a web page raise Unsupported?
+applies-to: get(kind=<any>, id=, extent=)
 tags: addressing, verbs
-kinds: draft, finding, memory, quest
 status: active
 ---
 
 # precis-fisheye-help — focus a node and get its neighborhood, not a bare chunk
 
-A **fisheye** is a degree-of-interest render (ADR 0051 §6): focus one
-node and get it **plus its surroundings**, scaled by distance — not a
-bare chunk floating with no context, and not the whole document either.
-It is pure assembly of data that already exists (reading order, chunk
-summaries/keywords, link edges) — no new storage, no background job.
+A **fisheye** is a degree-of-interest render: focus one node and get it
+**plus its surroundings**, scaled by distance — not a bare chunk floating
+with no context, and not the whole document either. Pure assembly of
+data that already exists (reading order, chunk gists, link edges) —
+nothing is stored, nothing runs in the background.
 
 Classifying refs into taxon nodes and walking their concept hierarchy:
 `precis-classify-help`.
 
-**Partial rollout.** `view='fisheye'`/`'fisheye+1hop'` is live on
-`get(kind='draft', …)`, `get(kind='finding', …)`, `get(kind='memory', …)`
-and `get(kind='quest', …)` today. On a quest, `fisheye+1hop` lists the quests
-it serves (`serves`) and the ones serving it (`served-by`) under
-`Roadmap:`, along with the papers and structures linked to it by `serves`
-(also `served-by`); findings that `supports` it show as `supported-by`
-under `Notes & links:`. Each group is capped at 8 with a `… +N more` line.
-Every other kind — `plan`, `paper`, `patent`, `web`, `datasheet`, `cfp` —
-raises `Unsupported`; the per-kind renderer described below
-(`precis.utils.eye_render`) exists in code but isn't wired into those
-handlers' `view=` dispatch yet, so it's reachable only internally (the
-planner/dream working-set composer), not through `get()`. Don't infer
-availability from the shape of this skill — try the kind and read the
-error.
-
-## Read a chunk with its surroundings
-## What does view='fisheye' return?
-## I want more than the verbatim text but not the whole document
+## One door: extent= on every kind's get
+## Is extent= the same as view='fisheye'?
 
 ```python
-get(kind="draft", id="dc41", view="fisheye")  # verbatim center + spatial neighborhood
-get(
-    kind="draft", id="dc41", view="fisheye+1hop"
-)  # + everything the section references, one edge out
+get(kind="memory", id="me4641", extent="fisheye+1hop")  # the note + its links by ring
+get(kind="quest", id="qu202467", extent="fisheye+1hop")  # serves / served-by under Roadmap
+get(kind="taxon", id="tn88", extent="fisheye+1hop")  # specialises / has-instance under Taxonomy
+get(kind="paper", id="mao18", extent="fisheye")  # the cluster map; pc<id> rows to drill
+get(id="pc13234", extent="fisheye")  # a chunk, bare handle: the split within its cluster
+get(kind="draft", id="dc41", extent="fisheye+1hop")  # a section + reading order + reference ring
+get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: body, no ring
 ```
 
-`view=` is the door; `kwd` / `summary` / `verbatim` / `fisheye` /
-`fisheye+1hop` are the accepted values. Anything else on a chunk
-address is an error, not a silent fall-back to the lone chunk.
+`extent=` selects the rung; `view='fisheye'` (and the other rung labels
+on `view=`) means the same thing — the ladder shipped on that door
+first. Passing both with different values is a `BadInput`. A kind with
+no graph node answers `Unsupported` with the reason in one sentence,
+never a silent fall-back to the lone chunk.
 
 ## The extent ladder — how much to render
 
 Each rung **strictly contains** the previous one:
 
-| `view=` | Shows |
+| `extent=` | Shows |
 |---|---|
-| `kwd` | one-line bookmark, under its ancestor path |
+| `kwd` | one-line bookmark (a section: under its ancestor path) |
 | `summary` | the node's gloss (summary → keywords → first line) — alone |
 | `verbatim` | the node's full text — alone |
 | `fisheye` | verbatim center **+ the spatial neighborhood** |
-| `fisheye+1hop` | `fisheye` **+ the reference ring** (what it points at) |
+| `fisheye+1hop` | `fisheye` **+ the ring**: what it points at / what points at it, one edge out |
 | `fisheye+2hop` | `fisheye+1hop` **+ the second hop as counts** (not on draft/plan) |
 
 Any rung takes a **`+recall` suffix** (`fisheye+1hop+recall`; bare
-`+recall` means that one): it appends the k=8 nearest refs of the same
-kind and `finding` by embedding, each with a gist line — what is *about*
-the same thing but was never linked. Similarity, not edges; a line in
-recall is a lead to check, not a connection. Not on draft/plan sections.
+`+recall` means that one): the k=8 nearest refs of the same kind and
+`finding` by embedding, each with a gist line and a similarity score —
+what is *about* the same thing but was never linked. A recall line is
+a lead to check, not a connection. Not on draft/plan sections. On a
+memory, recall stays inside the focus's own `SPACE:` value (a
+`repo-dev` memory never recalls a `research` one).
 
-The first three rungs render the node **alone** — no surroundings.
-Surroundings appear only at `fisheye` and up: that's the whole point of
-this skill.
+The first three rungs render the node **alone**. Surroundings appear
+only at `fisheye` and up.
 
-### The second hop (`fisheye+2hop`)
+## Which kinds have the ladder — every kind, by family
 
-What the ring's refs link to, excluding this ref and the ring itself,
-as one count line per kind and relation: `12 paper via cites` reads
-"twelve papers that the ring's refs cite". Counts keep a hub with
-hundreds of second-hop edges inside one response. To list one group, call
-the same view with `q='<kind>:<relation>'`:
+| Family | Kinds | `fisheye` shows | `fisheye+1hop` adds |
+|---|---|---|---|
+| Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | the reference ring (Cited / Cross-refs / Notes / Claims) |
+| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
+| Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, … | the card (title → gist → body) | the link neighborhood by ring |
+| Skill | `skill` (`sk:<slug>`) | the verbatim body; `kwd` a bookmark | nothing — a file has no corpus position |
 
-```python
-get(kind="finding", id="fi42", view="fisheye+2hop")                   # counts
-get(kind="finding", id="fi42", view="fisheye+2hop", q="paper:cites")  # that group
-```
+`Unsupported`, with the reason: a **whole draft or plan** (the eye
+focuses one section — `view='toc'` lists the `dc<id>` handles); a
+**measure** (a row of a run, not a node — fish-eye its paper or quest);
+**`web`** and the other query/URL-addressed providers (`calc`, `math`,
+`wikipedia`, `youtube`, …: no stored ref, no handle); **`python`**,
+**`md`** (file-backed, no refs row); **`tag`** (a vocabulary row).
 
-`more()` does not expand a group; it only pages a body that was too long.
-
-## The spatial neighborhood (the `fisheye` rung)
+## The spatial neighborhood (the `fisheye` rung on a section)
 
 For a tree kind (`draft`/`plan`), `fisheye` renders a **graduated,
-forward-biased span over reading-order neighbours** — not just
-siblings — centered on the focused node:
+forward-biased span over reading-order neighbours** centered on the
+focused section:
 
 - **±5** neighbours render **full** (verbatim)
 - **±10** render as a **summary** line
 - **±15** render as a **keyword** (`kwd`) bookmark
-- backward reach is **half** the forward reach (forward-biased — you've
-  passed what's behind, you're heading into what's ahead)
+- backward reach is **half** the forward reach (you've passed what's
+  behind, you're heading into what's ahead)
 
-The whole span renders under the node's **ancestor branch**
-(`section_path`) so the focus never floats free of its heading — you
-always see which `§` you're inside, not just the paragraph.
+The whole span renders under the node's **ancestor branch** so the focus
+never floats free of its heading.
 
-## The reference ring (`fisheye+1hop`)
+## The reference ring (`fisheye+1hop` on a section)
 
-Where the spatial fisheye walks *reading order* ("what's physically
-near this"), `fisheye+1hop` adds the **reference ring** — what the
-section *points at*, one edge out:
+Where the spatial fisheye walks *reading order*, `fisheye+1hop` adds
+what the section *points at*, one edge out:
 
 - **Cited** — papers / datasheets / patents the section cites
 - **Cross-refs** — other draft/plan chunks it links (`[dc<id>]`)
-- **Notes** — memories/findings/etc. **linked to** the section (inbound
-  edges — `related-to`, `see-also`, `cites`, …)
-- **Claims** (Taproot) — a `[fi<id>]` (or `[pub_id]`) claim-hub cite in
-  the section explodes into its evidence: the claim, its derived
-  `establishes` originator(s) (★-marked, with the grounding chunk
-  pointer when the chase has populated one), and a one-line
-  corroborator/contradictor summary, recomputed on
-  every render. A handle naming an ordinary (non-hub) finding isn't
-  mined into the ring. An authorial pin (Taproot slice A2 —
-  `[fi<id>>pa5]` / `[fi<id>+pa5]`, same grammar the draft export
-  reads) marks the pinned paper 📌 and, when it diverges from the
-  derived originator, adds a short `(pinned; derived: pa99)` note.
-  Each cited hub also surfaces its advisory `refines` neighbours
-  (`derive_refines`): `↰ refined by fi<id> — <sentence>` (a sharper
-  version of this claim exists) and `↳ refines fi<id> — …` (the coarser
-  claim this one sharpens). Link-only — no evidence flows across it;
-  authored via `link(kind='finding', rel='refines', target='fi<id>')` or
-  `precis taproot refine`.
-  Evidence population depends on the forward chase
-  (`PRECIS_TAPROOT_CHASE_ENABLED`, default-off, not yet run at corpus
-  scale) — most hubs today show the claim with little or no derived
-  evidence, so a populated Claims group is rare. The ring surfaces
-  `refines` neighbours only — it does not yet render a composite hub's
-  `conjunct-of` atom structure; `get(id='fi<id>', view='links')` is the
-  meanwhile way to see a composite's atoms.
+- **Notes** — memories/findings **linked to** the section (inbound
+  `related-to`, `see-also`, `cites`, …)
+- **Claims** — a `[fi<id>]` (or `[pub_id]`) cite naming a live claim hub
+  explodes into its evidence: the claim, its derived `establishes`
+  originator(s) (★, with the grounding chunk when known), a one-line
+  corroborator/contradictor count, and its advisory `refines` neighbours
+  (`↰ refined by fi<id>` — a sharper claim exists; `↳ refines fi<id>` —
+  what this one sharpens). An authorial pin (`[fi<id>>pa5]` /
+  `[fi<id>+pa5]`) marks the pinned paper 📌 and notes a divergence from
+  the derived originator. A hub nobody has chased yet shows the claim
+  with `(no evidence derived yet)`. A composite hub's `conjunct-of`
+  atoms are not in the ring — `get(id='fi<id>', view='links')`.
 
-It follows **edges only**, both directions, capped per group with a
-visible `+N more — focus to expand` line — never a silent truncation.
-A memory that's merely *about* the section but was never linked is a
-`search` hit, not a hop.
+Edges only, both directions, each group capped with a visible
+`+N more — focus to expand` line. A memory merely *about* the section
+but never linked is a `search` hit, not a hop.
 
-## Per-kind scope — the neighborhood shape depends on the kind
+## The link neighborhood — one heading per ring, one line per edge
 
-The renderer (`precis.utils.eye_render`) is written generically per
-kind-family, but each kind's `get(view=)` dispatch has to be wired to
-it separately — the ladder generalizes in code, live availability
-does not:
+On a link or document kind, `fisheye+1hop` lists every ref linked to the
+focus, either direction, under one heading per ring group, each
+`(group, label)` block capped at 8 with a `… +N more` line. Each line
+reads from the focus's side: an edge it is the source of keeps its name
+(`serves: qu12`), an edge pointing at it reads as the inverse
+(`served-by: qu7`, `contradicted-by: pa3`), and an inbound edge with no
+inverse reads `<-establishes: pa5` ("pa5 establishes this"). A neighbour
+carrying `AUDIT:ungrounded-number` is flagged on its line. A memory with
+a mirrored file reads `me4641 (worker_busy_vs_starved_diagnosis.md)`.
 
-- **Tree kinds** (`draft`, `plan`) — the reading-order span above.
-  **`draft` is live.** `plan` is not wired (`PlanHandler.get` has no
-  `extent=` kwarg and silently ignores one) — `view='fisheye'` on a
-  plan is `Unsupported`.
-- **Doc kinds** (`paper`, `patent`, `web`, `datasheet`, `cfp`) — no
-  heading tree, so the "neighborhood" *would be* the per-chunk
-  keyword-cluster TOC (F20/ADR-0018) around the focused chunk: a
-  whole-doc handle (`pa5`) rendering the **cluster map** (one row per
-  cluster); a chunk handle (`pc13234`) rendering the **fisheye split
-  within its cluster** — before/after chunks as gloss lines, the eye
-  chunk verbatim, every *other* cluster collapsed to a label. **None
-  of these five kinds are wired today** — `view='fisheye'` on
-  `paper`/`patent`/`web`/`datasheet`/`cfp` raises `Unsupported`
-  (their `accepted_views()` lists don't include `fisheye`/
-  `fisheye+1hop`). Use `view='toc'` (`precis-toc-help`) instead.
-- **Link kinds** (`memory`, `finding`, and anything else not above) —
-  the ref renders as its note (title → gist → body); `fisheye+1hop`
-  grows the **link neighborhood** — every ref linked to it, either
-  direction, under one heading per relation family: **Claim graph**
-  (`establishes`, `corroborates`, `contradicts`, `refines`,
-  `conjunct-of`, `disputes`, `motivated-by`), **Roadmap** (`serves`),
-  **Taxonomy** (`specialises`, `instance-of`), **Concepts**
-  (`has-prerequisite`, `analogy-of`, `contrasts-with`), **Parts**
-  (`contains`, `made-of`), **Argument** (`entails`, `qualifies`,
-  `derived-from`), **Notes & links** (`related-to`, `see-also`,
-  `supports`, `cites`, …). Each line reads from the focused ref's side:
-  an edge it is the source of keeps its name (`serves: qu12`), an edge
-  pointing at it reads as the inverse (`served-by: qu7`,
-  `contradicted-by: pa3`), and an inbound edge with no inverse name reads
-  `<-establishes: pa5` ("pa5 establishes this"). Each label is capped,
-  with an overflow line naming what it withheld. A claim hub eye shows
-  its evidence and its refines chain. A `finding` that is
-  a claim hub additionally leads with its trust posture — see
-  `precis-finding-help`. **`finding` and `memory` are the live link-kind
-  eyes.** On a memory, a handle with a mirrored file reads
-  `me4641 (worker_busy_vs_starved_diagnosis.md)`, a `part-of` section
-  lands under **Parts** and `related-to` siblings under **Notes &
-  links**, and `+recall` stays inside the focus's own `SPACE:` value
-  (a `repo-dev` memory never recalls a `research` one, and vice versa).
-- **Skill eyes** (`sk:<slug>`) — file-backed, no corpus position, so
-  there's no neighborhood to have: `kwd`/`none` collapse to a bookmark,
-  anything richer is the verbatim skill body. Not directly reachable
-  through `get(kind='skill', …)` either (`accepted_views()` there is
-  `['toc']` only) — a skill eye only renders as a *neighbor* inside
-  another ref's `fisheye+1hop` ring.
+| Ring | Relations | Worked example |
+|---|---|---|
+| **Claim graph** | `establishes`, `corroborates`, `contradicts`, `refines`, `conjunct-of`, `disputes`, `motivated-by` | `get(kind='finding', id='fi42', extent='fisheye+1hop')` → `Claim graph:` · `<-establishes: pa5 — …` · `<-refines: fi77 — …` (fi77 refines this); a claim hub leads with its trust posture (`precis-finding-help`) |
+| **Roadmap** | `serves`, `served-by` | `get(kind='quest', id='qu12', extent='fisheye+1hop')` → `Roadmap:` · `serves: qu3 — Grow the mesh` · `served-by: qu40 — …` · `served-by: pa88 — …`; a todo that `serves` a quest shows the same block |
+| **Taxonomy** | `specialises`, `generalises`, `instance-of`, `has-instance`, `quantifies`, `quantified-by` | `get(kind='taxon', id='tn88', extent='fisheye+1hop')` → `Taxonomy:` · `specialises: tn2 — Faradaic efficiency` · `has-instance: me5 — FE at −0.5 V` |
+| **Concepts** | `has-prerequisite`, `prerequisite-of`, `analogy-of`, `contrasts-with` | `get(kind='concept', id='cn9', extent='fisheye+1hop')` → `Concepts:` · `has-prerequisite: cn4 — Maxwell counting` |
+| **Parts** | `contains`, `part-of`, `made-of`, `used-in` | `get(kind='component', id='cp3', extent='fisheye+1hop')` → `Parts:` · `contains: cp7 — Bipolar plate`; on `cp7` the same row reads `part-of: cp3`; a memory section `part-of` its file reads `contains:` on the file's eye |
+| **Argument** | `entails`, `entailed-by`, `qualifies`, `qualified-by`, `derived-from`, `derived-into` | `get(kind='memory', id='me12', extent='fisheye+1hop')` → `Argument:` · `derived-from: me3 — …` (the proof tree itself: `view='argument'`, `precis-memory-help`) |
+| **Notes & links** | `related-to`, `see-also`, `supports`, `cites`, `generalises`, `corrects` | `get(kind='paper', id='pa5', extent='fisheye+1hop')` → `Notes & links:` · `related-to: me77 — Read this for the floppy modes`; a finding that `supports` a quest reads `supported-by:` on the quest |
+
+A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
+structural and not in the ring; `view='links'` lists everything.
+
+## The second hop (`fisheye+2hop`)
+
+What the ring's refs link to, excluding the focus and the ring itself,
+as one count line per kind and relation: `12 paper via cites` reads
+"twelve papers that the ring's refs cite". Counts keep a hub with
+hundreds of second-hop edges inside one response. To list one group,
+repeat the call with `q='<kind>:<label>'`:
 
 ```python
-get(kind="finding", id="fi42", view="fisheye+1hop")  # hub + its claim graph — LIVE
-get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # links + same-SPACE neighbours — LIVE
-# paper/patent/web/datasheet/cfp/plan: view='fisheye' raises
-# Unsupported today — see the availability note above.
+get(kind="finding", id="fi42", extent="fisheye+2hop")  # counts
+get(kind="finding", id="fi42", extent="fisheye+2hop", q="paper:cites")  # that group, ≤40 refs
 ```
+
+`more()` does not expand a group; it only pages a body that was too long.
 
 ## Read the same neighborhood in a browser
 
-The smartdraft web reader is the fisheye rendered as a three-pane page
-— left: TOC nav, middle: the focus + its neighborhood, right: relevance
-overlay:
-
-```
-/smartdraft/<draft-slug>?focus=dc<id>
-```
+`/eye/<handle>?extent=<rung>` renders the same text the `get` returns,
+every handle in it a link to its own focus page, the ladder as a row of
+links; `/eye/` takes a handle or a query. A draft section also has the
+three-pane reader, `/smartdraft/<draft-slug>?focus=dc<id>`.
 
 ## Don't confuse `fisheye` with `view='toc'`
 
 `view='toc'` (`precis-toc-help`) is a **separate, recursive drill-down**
-render for long documents (paper/skill) — you pick a range, it
-re-clusters, you drill again, and it's the one that's widely available
-today — see `precis-toc-help`'s own `kinds:` line for the authoritative
-list (`paper`, `skill`, `draft`, `markdown`, `tex`, `plan`, `python`,
-`datasheet`, `edgar`, `cfp`). Note `patent` and `web` are **not** on it:
-`PatentHandler` supports `biblio`/`abstract`/`description`/`claims`/
-`bibtex`/`links` only, so `view='toc'` there is `Unsupported`. `fisheye` is the
-opposite move: you've already picked one node, and want its immediate
-surroundings rendered around it — live on `draft`, `finding`, `memory` and `quest` only
-(see the availability note above).
+render for long documents — you pick a range, it re-clusters, you drill
+again; its `kinds:` line is the authoritative list of where it works.
+`fisheye` is the opposite move: you've already picked one node and want
+its immediate surroundings rendered around it.
 
 ## See also
 
@@ -241,3 +188,4 @@ surroundings rendered around it — live on `draft`, `finding`, `memory` and `qu
 - [[precis-paper-help]] — paper chunk handles (pc<id>), citation export
 - [[precis-relations]] — link relation vocabulary (cites, see-also, …)
 - [[precis-taproot-help]] — the Claims group's claim hubs, evidence edges
+- [[precis-memory-help]] — the memory walk, view='argument'

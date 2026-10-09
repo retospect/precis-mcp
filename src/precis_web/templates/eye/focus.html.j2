@@ -1,0 +1,20 @@
+{% extends "base.html.j2" %}
+{% block title %}Eye · {{ handle }}{% endblock %}
+{% block content %}
+<div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold font-mono">{{ handle }}</h1>
+    <p class="text-xs text-slate-500">
+      <a href="/eye/" class="underline">eye</a>
+      {% if reader_url %}· <a href="{{ reader_url }}" class="underline">open in its reader</a>{% endif %}
+      · <span class="font-mono">get(id='{{ handle }}', extent='{{ extent }}'{% if q %}, q='{{ q }}'{% endif %})</span>
+    </p>
+  </div>
+  <nav class="flex flex-wrap gap-1 text-xs" aria-label="extent ladder">
+    {% for r in ladder %}
+    <a href="{{ r.href }}" class="rounded px-2 py-0.5 font-mono {% if r.on %}bg-slate-800 text-white{% else %}bg-slate-100 text-slate-700 hover:bg-slate-200{% endif %}">{{ r.label }}</a>
+    {% endfor %}
+  </nav>
+</div>
+<pre class="eye-body whitespace-pre-wrap rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-700{% else %}border-slate-200 bg-white text-slate-800{% endif %} p-4 text-sm leading-relaxed">{{ body | safe }}</pre>
+{% endblock %}

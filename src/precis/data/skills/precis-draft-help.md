@@ -305,8 +305,9 @@ text) → `fisheye` (graduated span, ±5 full text/±10 gloss/±15 bookmark,
 under the ancestor heading) → `fisheye+1hop` (+ the reference ring:
 cited papers/patents/datasheets, cross-referenced `[dc…]`/`[¶…]` chunks,
 linked notes; a cited `[fi<id>]` naming a live Taproot claim hub gets
-its own **Claims** group — see `precis-fisheye-help`). Only wired for
-`dc<id>`/`¶<base58>` on `kind='draft'` today, not `kind='plan'`.
+its own **Claims** group — see `precis-fisheye-help`). `extent=<rung>`
+is the same door on every kind; a section handle (`dc<id>`/`¶<base58>`,
+`pe<id>` on a plan) is the eye — a whole draft has none.
 
 The outline ends with a **`## Work in progress`** block when todos
 working on this draft are stuck or in flight (walked draft → project →

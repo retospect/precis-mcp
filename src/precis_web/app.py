@@ -138,6 +138,7 @@ def create_app(
         drafts,
         drive,
         env,
+        eye,
         factory,
         figure,
         flags,
@@ -203,6 +204,7 @@ def create_app(
     app.include_router(agentlogs.router)
     app.include_router(claim.router)
     app.include_router(preview.router)
+    app.include_router(eye.router)
     app.include_router(console.router)
     app.include_router(status.router)
     app.include_router(budget.router)

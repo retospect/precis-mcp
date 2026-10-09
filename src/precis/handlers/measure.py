@@ -42,6 +42,7 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _measure_render as render
+from precis.handlers._eye import is_eye_view
 from precis.handlers._measure_write import RunParser, flag_lines
 from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
@@ -182,6 +183,16 @@ class MeasureHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
 
+    def eye(
+        self, *, id: Any = None, extent: Any = "fisheye", q: str | None = None
+    ) -> Response:
+        raise Unsupported(
+            "a measure is a row of a run, not a node: it has no neighbourhood "
+            "to fish-eye",
+            next="get(kind='measure', id=N) reads the row with its conditions "
+            "and anchor; fish-eye the paper or the quest instead",
+        )
+
     def get(
         self,
         *,
@@ -190,17 +201,8 @@ class MeasureHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if view is not None:
-            from precis.utils.eye_render import RECALL_SUFFIX
-            from precis.workers.working_set import Extent
-
-            ladder = {e.label for e in Extent}
-            if view in ladder or view.endswith(RECALL_SUFFIX):
-                raise Unsupported(
-                    "a measure is a row of a run, not a node: it has no neighbourhood "
-                    "to fish-eye",
-                    next="get(kind='measure', id=N) reads the row with its conditions "
-                    "and anchor; fish-eye the paper or the quest instead",
-                )
+            if is_eye_view(view):
+                return self.eye(id=id, extent=view)
             raise BadInput(
                 f"kind='measure' has no view {view!r}",
                 next="get(kind='measure', id=N) — the one view",

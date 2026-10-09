@@ -43,6 +43,7 @@ get(kind="math", q="population of Ireland")  # compute
 | `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Some kinds accept `id` *or* `q`. |
 | `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). |
 | `q` | str | Free-text query for compute-style kinds. |
+| `extent` | str | The fisheye ladder's rung on any kind — `fisheye`, `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` — the node with its neighborhood (`precis-fisheye-help`). |
 | `args` | dict | Typed extras for views that need them. Reserved keys (`kind`, `id`, `view`, `q`) are rejected. |
 
 ## Pass typed extras to a view

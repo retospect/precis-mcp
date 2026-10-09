@@ -114,7 +114,6 @@ from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
-from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
     from precis.nanopub.overview import HubOverviewRow
@@ -892,23 +891,21 @@ class FindingHandler(NumericRefHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_merge.render_merge_plan_view(self.store, int(ref.id), loser)
-        extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
-        from precis.utils.eye_render import RECALL_SUFFIX
-
-        if view in extent_ladder or (view or "").endswith(RECALL_SUFFIX):
-            ref_id = self._coerce_id(id)
-            ref = self._resolve_live_ref(ref_id)
-            from precis.utils.eye_render import render_eye
-
-            try:
-                body = render_eye(self.store, f"fi{int(ref.id)}", str(view), q=q)
-            except ValueError as e:
-                raise BadInput(
-                    str(e),
-                    next=f"view ∈ {'|'.join(extent_ladder)}, optionally +recall",
-                ) from e
-            return Response(body=_hub_eye_header(self.store, ref) + body)
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+    ) -> Response:
+        """The eye ladder on a finding: the shared render led by the
+        claim-hub posture header (:func:`_hub_eye_header`); a ``pub_id``
+        slug resolves like it does on ``get``."""
+        ref = self._resolve_live_ref(self._coerce_id(self._resolve_pub_id_slug(id)))
+        resp = super().eye(id=int(ref.id), extent=extent, q=q)
+        return Response(body=_hub_eye_header(self.store, ref) + resp.body)
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:
         """Translate a bare ``pub_id`` slug (e.g. ``'tbx2hd'``) to its ref_id.

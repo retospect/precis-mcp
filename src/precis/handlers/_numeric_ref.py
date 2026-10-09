@@ -36,6 +36,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
+from precis.handlers._eye import is_eye_view
 from precis.handlers._link_tag_ops import (
     check_relation_constraints,
     guard_and_route_contradicts_disputes,
@@ -343,6 +344,20 @@ class NumericRefHandler(Handler):
 
     # ── get ─────────────────────────────────────────────────────────
 
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+    ) -> Response:
+        """The eye ladder on one ref, resolved the way this kind's ``get``
+        resolves it — ``kind:id`` link targets, pub-id slugs where the
+        subclass overrides ``_coerce_id``, and ``Gone`` for a soft-deleted
+        row — before the shared render (:mod:`precis.handlers._eye`)."""
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        return super().eye(id=int(ref.id), extent=extent, q=q)
+
     def get(
         self,
         *,
@@ -395,6 +410,10 @@ class NumericRefHandler(Handler):
                 next=f"search(kind={self.kind!r}, view={view!r})",
             )
 
+        if is_eye_view(view):
+            # The eye ladder on a direct handler call; the MCP door reaches
+            # ``eye`` through the dispatcher before ``get`` runs.
+            return self.eye(id=id, extent=view, q=q)
         ref_id = self._coerce_id(id)
         ref = self._resolve_live_ref(ref_id)
         if view is not None:

@@ -435,6 +435,12 @@ def get(
     view: str | None = None,
     q: str | None = None,
     args: dict[str, Any] | None = None,
+    # every kind (see precis-fisheye-help): the eye ladder's rung —
+    # kwd|summary|verbatim|fisheye|fisheye+1hop|fisheye+2hop, any of them
+    # +recall-suffixed. Routed by the dispatcher to ``Handler.eye`` for the
+    # kind, so a kind with no graph node answers Unsupported with the reason
+    # rather than a bare chunk. The ladder labels in ``view=`` mean the same.
+    extent: str | None = None,
     # draft (see precis-draft-help): reverse lookup — the draft(s) bound
     # to a project todo via the ``draft-of`` link. Mutually exclusive
     # with id=. Declared at the verb level so strict-schema MCP clients
@@ -474,6 +480,9 @@ def get(
     query for compute-style kinds. `args=` is a dict of typed extras
     for views that need them (callgraph, runtrace, ...); reserved
     keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
+    `extent=` (every kind) selects the fisheye ladder's rung — `fisheye`,
+    `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` — rendering the
+    node with its neighbourhood (get(kind='skill', id='precis-fisheye-help')).
     `project=` (draft only) looks up by owning project todo instead of id=.
     `spec=` (component only) picks the spec for `view='bom'`'s consistency
     query. `full=` (skill only) forces a full re-serve past the session
@@ -491,6 +500,8 @@ def get(
             if err is not None:
                 return err
             payload["__extras__"] = dict(args)
+        if extent is not None:
+            payload["extent"] = extent
         if project is not None:
             payload["project"] = project
         # component range/consistency filter — forwarded only when set so a

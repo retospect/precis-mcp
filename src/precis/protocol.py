@@ -340,6 +340,38 @@ class Handler(ABC):
         """
         raise Unsupported(f"{self.spec.kind} does not support cross-kind search")
 
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+    ) -> Response:
+        """The fisheye ladder on one node of this kind — ``get(kind=K,
+        id=…, extent=<rung>)``, where ``extent`` is ``kwd`` / ``summary``
+        / ``verbatim`` / ``fisheye`` / ``fisheye+1hop`` / ``fisheye+2hop``,
+        any of them ``+recall``-suffixed; ``q='<kind>:<label>'`` expands one
+        second-hop group.
+
+        Not a dispatch-table verb: the dispatcher routes a ``get`` carrying
+        ``extent=`` (or a ladder label in ``view=``) here, so every kind has
+        the ladder without threading the kwarg through sixty ``get``
+        signatures (``docs/backlog/fisheye-everywhere.md`` in-scope 2). The
+        default resolves ``(kind, id)`` to the node's handle and renders it
+        with :func:`precis.utils.eye_render.render_eye`; a kind with no
+        graph node gets ``Unsupported`` with the reason in one sentence.
+        Override to add a header (``finding``'s trust posture), accept a
+        legacy address (``draft``'s ``¶`` anchors) or refuse (``measure``).
+        """
+        from precis.handlers._eye import eye_response
+
+        store = getattr(self, "store", None) or getattr(self.hub, "store", None)
+        if store is None:
+            raise Unsupported(
+                f"no eye on kind={self.spec.kind!r}: this process has no store bound"
+            )
+        return eye_response(store, kind=self.spec.kind, id=id, extent=extent, q=q)
+
     def accepted_views(self, *, id: Any = None) -> list[str]:
         """Per-kind list of accepted ``view=`` values.
 

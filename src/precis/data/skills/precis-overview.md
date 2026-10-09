@@ -263,7 +263,7 @@ shows up in output and is ambiguous:
 - [[precis-files-help]] — shared file-backed address grammar
 - [[precis-addressing-help]] — handle format, relative grammar, type codes
 - [[precis-toc-help]] — TOC navigation, sub-range zoom
-- [[precis-fisheye-help]] — view='fisheye'/'fisheye+1hop' — read a chunk with its neighborhood
+- [[precis-fisheye-help]] — extent='fisheye'/'fisheye+1hop' on any kind — read a node with its neighborhood
 - [[precis-random-help]] — random corpus pick
 - [[precis-folder-help]] — folders, placement, folder= search scope
 - [[precis-taproot-help]] — cross-paper claim hubs, living citation
