@@ -771,8 +771,10 @@ def test_title_boost_ubiquitous_token_alone_does_not_bypass_coverage_bar(
     """A multi-word query whose only identity overlap is a ubiquitous
     word ("help" — a title/slug token on 100+ skills) must NOT get
     title-boosted just because the word is present; it's exactly the
-    "documented limitation guard" the 70% bar exists to keep."""
-    out = skill.search(q="help documentation reference guide extra words here")
+    "documented limitation guard" the 70% bar exists to keep. (The filler
+    words must stay off every skill's identity: "reference" left this
+    query when ``precis-draft-reference-help`` made it a DF==1 token.)"""
+    out = skill.search(q="help documentation manual guide extra words here")
     assert "title match" not in out.body, out.body
 
 

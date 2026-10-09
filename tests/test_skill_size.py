@@ -38,18 +38,7 @@ WARN_BYTES = 16 * 1024
 #: slug (filename stem, no ``.md``) -> justification. Every entry here is
 #: exempt from ``FAIL_BYTES`` but still counted toward the ``WARN_BYTES``
 #: drift warning, so its shrink-back is visible too.
-_ALLOWLIST: dict[str, str] = {
-    "precis-se-help": (
-        "33KB and still the call surface for the whole se kind — blocks, ports, "
-        "joints, loads, measures, modes, BOM, discrete states, FRET optics, "
-        "kinematics, library search, composition. The companion skills "
-        "(design/fasten/print/atomic) were already split out; the remaining "
-        "over-cap mass is the FRET/optical and discrete-states domains, which "
-        "want their own skill on the same pattern rather than prose trimming. "
-        "Tracked in docs/backlog/precis-se-help-exceeds-the-skill-size-cap.md; "
-        "drop this entry when that split lands."
-    )
-}
+_ALLOWLIST: dict[str, str] = {}
 
 
 def _skill_files() -> list[Path]:
