@@ -16,6 +16,8 @@ ref detail: optional kinds still render when their handler is absent. ORCID
 reads its stored identity/authored papers without upstream refresh. File kinds
 read stored chunks; calling filesystem ``get`` could retire a ref merely
 because this web process lacks its originating corpus mount.
+``/graph/{kind}/{id}.json`` (``routes/graph.py``) is ``Store.neighbourhood``
+as JSON plus ``ring_group`` buckets.
 
 **Claim approval.** The open-disputes panel reads stored support verdicts
 and reasoning alongside pinned passages, including typed paper, patent
@@ -178,9 +180,7 @@ Ambiguous dotted block/port subjects stay unavailable rather than guessing.
 Molecular drawing uses a shared core and captured host: retiring overlays
 cannot touch replacement scenes. Standalone structure remains fixture-only.
 Decoded keys prevent ordinal-ID invention; invalid graphs retain atoms
-with explicit unavailability. No web completion classifier is introduced.
-Selection changes
-view state only, preserving diagnostics, design data and compute state.
+with explicit unavailability. Selection changes view state only.
 
 **Manual (`/manual`)** — ``routes/manual.py`` renders user how-to chapters
 from ``src/precis_web/manual/``. They live in-package because the wheel ships

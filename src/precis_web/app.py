@@ -141,6 +141,7 @@ def create_app(
         factory,
         figure,
         flags,
+        graph,
         gripes,
         items,
         llm,
@@ -183,6 +184,7 @@ def create_app(
     app.include_router(drive.router)
     app.include_router(drive.downloads_router)
     app.include_router(refs.router)
+    app.include_router(graph.router)
     app.include_router(rxn.router)
     app.include_router(tags.router)
     app.include_router(clusters.router)

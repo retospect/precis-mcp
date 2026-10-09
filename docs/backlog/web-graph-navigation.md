@@ -11,15 +11,15 @@ Orchestrator proposal, from Reto 2026-10-06: "can we make a web plan for graph n
 
 ## Motivation / why
 
-Agents move through the graph with `get(view='links')` and the fisheye ladder. A human has no equivalent: `routes/refs.py::detail` (`/refs/{kind}/{ref_id}`) is a per-kind reader, and the generic link reads are bespoke (`links_for` calls for `serves`/`refines`/`derived-from` in `routes/refs.py`; `routes/papers.py` Sources/Cited tabs read S2 `s2_neighbors`, not typed links). No `/graph`, neighbourhood JSON or path endpoint exists (grepped `src/precis_web/routes`). Once memory nodes live in the graph, a person who cannot walk it cannot audit it.
+Agents move through the graph with `get(view='links')` and the fisheye ladder. A human has no equivalent: `routes/refs.py::detail` (`/refs/{kind}/{ref_id}`) is a per-kind reader, and the generic link reads are bespoke (`links_for` calls for `serves`/`refines`/`derived-from` in `routes/refs.py`; `routes/papers.py` Sources/Cited tabs read S2 `s2_neighbors`, not typed links). Only the slice-1 neighbourhood JSON exists under `/graph`; no panel, focus page or path endpoint yet. Once memory nodes live in the graph, a person who cannot walk it cannot audit it.
 
 Reuse, do not rebuild: the agent link read is `store/_links_ops.py::Store.links_for` (`direction`, `relation`); the rel vocabulary is skill `precis-relations` (closed list, auto-mirrored inverses); ring grouping is `utils/refeye.py::RING_GROUPS`/`ring_group`.
 
 ## In scope
 
-Slice order; each slice ships alone.
+Slice order; each slice ships alone. Slice 1 shipped (kept below as the seam the rest build on).
 
-1. **Neighbourhood JSON.** One store-level function (one query over `links` joined to `refs`) returning `{focus, nodes:[{kind,id,label,state}], edges:[{src,dst,rel,dir}], counts:{rel:{kind:n}}}`, with `depth` (1|2), `rels`, `kinds`, `since`/`until`, `trust` and a node cap. Exposed as `GET /graph/<kind>/<id>.json`. Panel, focus page and agent tooling read this one shape. Cost: inverse rows are not all stored (`links_for` rewrites `cited-by`), so the query must apply the same inverse rule; reuse it, do not re-derive. **Seam (2026-10-07):** the store function landed as `store/_links_ops.py::Store.neighbourhood` (memory-recall-walk-keep slice 1a; shape as above plus `truncated`, and `counts2` for the second hop); this slice is now only the `GET /graph/<kind>/<id>.json` route over it. Its `trust` filter duplicates the finding handler's tier predicate (store cannot import handlers); slice 4 should single-source it before exposing `trust` in the browser. **Route-slice input:** the liaison contract proposal td470556 (2026-10-06, drive-ux; its spec text lived only on the dropped `work/graph-memory/r17-gate-repair` branch) adds to this shape `link_id` + chunk endpoint ids per edge, `dir=cross` for depth-2 edges between non-focus nodes, retired endpoints as tombstones, `meta.native_targets` (typed id → handle/selector for a follow-up `get`), and per-group `{total,returned,next}` continuation windows under the 25/group cap. Take what the route needs from there; the todo is the durable copy.
+1. **Neighbourhood JSON.** Shipped: `GET /graph/<kind>/<id>.json` (`precis_web/routes/graph.py`) over `store/_links_ops.py::Store.neighbourhood` (`depth`, `rels`, `kinds`, `since`/`until`, `cap` ≤200, default 60), plus `groups` (hop-1 rels under `ring_group` headings, "Other" for the rest). Not exposed: `trust` — the store's tier predicate duplicates `handlers.finding._passes_trust` (store cannot import handlers); slice 4 single-sources it before the browser sees it. Still open from the liaison contract td470556 (2026-10-06, drive-ux; spec text lived only on the dropped `work/graph-memory/r17-gate-repair` branch), to take as later slices need: `link_id` + chunk endpoint ids per edge, `dir=cross` for depth-2 edges between non-focus nodes, retired endpoints as tombstones, `meta.native_targets` (typed id → handle/selector for a follow-up `get`), per-group `{total,returned,next}` continuation windows under the 25/group cap. The todo is the durable copy.
 2. **Neighbourhood panel** on the ref page: inbound and outbound links grouped by rel then kind, counts, per-group "expand" (HTMX fragment from slice 1 with a group filter). Browser form of fisheye level 1; headings follow `ring_group`, "Other" for rels in no group. Lives in the shared detail template, not per-kind readers. "Show memories" toggle; default per the memories decision.
 3. **Focus page** `GET /graph/<kind>/<id>`, beside the ref reader (not a replacement): 2-hop neighbourhood as **server-rendered SVG**, kinds as node shapes, rels as edge labels, node click = plain link to that node's `/graph/...` (re-focus, no JS). Layout is radial rings (focus centre, hop 1, hop 2) computed in Python. Precedent is server-side SVG (`precis_web/blocktree_svg.py`; `routes/mermaid.py` inlines SVG sanitised by `precis.figure.svg.sanitize_svg`), so no JS graph library and no force layout. Cost: no drag/zoom; acceptable under the node cap; optional pan/zoom script deferred. Fisheye distortion: `fisheye-level2.md` defines none for the browser (it is the `focus` verb and render loop), so this page shows rings by hop and collapses far nodes to count chips. `fisheye-everywhere.md` in-scope 4 (`/eye/<handle>`, the text ladder) owns the handle page; this page is the picture and the two cross-link.
 4. **Filters** as query params on panel and page: `kind`, `rel`, `since`/`until` (parsed as `/drive` does, `routes/drive.py::index`), `trust` for findings (`verified|signed|disputed|any`, as in search). The URL is the state; chips reflect it.
@@ -40,7 +40,7 @@ Slice order; each slice ships alone.
 
 ## Acceptance criteria
 
-1. Slice 1: for a fixture ref with links in both directions across ≥3 rels, the JSON edge set equals `links_for(direction='both')` row for row (inverse rule included), fetched in one query (query-count test).
+1. Slice 1: shipped — `tests/precis_web/test_graph_json.py` pins links_for parity (inverse rule included), `groups`, filters and the round-trip count.
 2. Slice 2: the panel on `/refs/paper/<id>` lists every row `get(view='links')` shows, grouped by rel then kind, counts correct; a non-paper fixture renders it too.
 3. Slice 3: `/graph/<kind>/<id>` for the fixture renders SVG with exactly N nodes (hop ≤2, under cap) and one labelled edge per row; a node past the cap shows a count chip and the response stays under the frame budget.
 4. Slice 4: each filter narrows nodes and edges identically on JSON, panel and page; a `since` after every link's creation gives the empty state.
@@ -49,7 +49,7 @@ Slice order; each slice ships alone.
 
 ## Target + blast radius
 
-New `src/precis_web/routes/graph.py` (registered like the other routers), a neighbourhood function beside `Store.links_for`, a panel partial in the shared ref template, route tests. Read-only, no migration, same auth gate as `/refs`.
+`src/precis_web/routes/graph.py` (exists; slices 3–6 add routes there), a panel partial in the shared ref template, route tests. Read-only, no migration, same auth gate as `/refs`.
 
 ## Open questions / decisions log
 
