@@ -2226,6 +2226,29 @@ DATASHEET_SUBTYPE_LABELS = {
 }
 
 
+# Crossref ``type`` (stored as ``meta.entry_type``) -> biblatex entry type for a
+# paper. Missing / unrecognised types fall back to ``article``.
+_CROSSREF_BIBLATEX = {
+    "book": "book",
+    "monograph": "book",
+    "edited-book": "book",
+    "reference-book": "book",
+    "book-chapter": "incollection",
+    "book-section": "incollection",
+    "book-part": "incollection",
+    "proceedings-article": "inproceedings",
+    "report": "report",
+    "dissertation": "thesis",
+    "posted-content": "online",
+}
+
+
+def paper_bib_type(meta: dict[str, Any] | None) -> str:
+    """The biblatex entry type for a paper ref's ``meta.entry_type``."""
+    et = str((meta or {}).get("entry_type") or "").strip().lower()
+    return _CROSSREF_BIBLATEX.get(et, "article")
+
+
 def datasheet_pub_label(meta: dict[str, Any] | None) -> str:
     """The human sub-type label for a datasheet ref's ``meta`` (default
     ``"Datasheet"``). Shared by the LaTeX bib, the docx reference line, and
@@ -2253,7 +2276,7 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
         for kind, etype in _CITE_ENTRY_TYPES:
             pref = store.get_ref(kind=kind, id=slug)
             if pref is not None:
-                entry_type = etype
+                entry_type = paper_bib_type(pref.meta) if kind == "paper" else etype
                 break
         if pref is None:
             warnings.append(f"cite {slug!r}: no source in corpus — stub bib entry")
@@ -2269,8 +2292,17 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
     for slug, pref in ref_by_slug.items():
         fields = [f"  title = {{{_bib_text(pref.title or slug)}}}"]
         authors = _encode_unicode(_bibtex_authors(pref.authors))
+        pmeta = pref.meta or {}
+        editors = _encode_unicode(_bibtex_authors(pmeta.get("editors")))
+        # Crossref's editor fallback stores editors as the authors too: when
+        # the two lists render identically, emit ``editor`` only (an
+        # ``author`` equal to the editors would misattribute the book).
+        if authors and authors == editors:
+            authors = ""
         if authors:
             fields.append(f"  author = {{{authors}}}")
+        if editors and entry_type_by_slug[slug] in ("book", "incollection"):
+            fields.append(f"  editor = {{{editors}}}")
         if pref.year:
             fields.append(f"  year = {{{pref.year}}}")
         alias = aliases.get(pref.id, {})
@@ -2303,6 +2335,35 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
                 value = str(meta.get(meta_key) or "").strip()
                 if value:
                     fields.append(f"  {bib_key} = {{{_tex(value)}}}")
+        if entry_type in ("book", "incollection", "inproceedings"):
+            meta = pref.meta or {}
+            if entry_type != "book":
+                booktitle = str(
+                    meta.get("container_title") or meta.get("journal") or ""
+                ).strip()
+                if booktitle:
+                    fields.append(f"  booktitle = {{{_bib_text(booktitle)}}}")
+            for bib_key, meta_key in (
+                ("publisher", "publisher"),
+                ("pages", "pages"),
+                ("isbn", "isbn"),
+                ("series", "series"),
+            ):
+                if bib_key == "pages" and entry_type == "book":
+                    continue
+                if bib_key in ("isbn", "series") and entry_type == "inproceedings":
+                    continue
+                value = str(meta.get(meta_key) or "").strip()
+                if value:
+                    fields.append(f"  {bib_key} = {{{_bib_text(value)}}}")
+        if entry_type in ("report", "thesis", "online"):
+            meta = pref.meta or {}
+            inst = str(meta.get("institution") or meta.get("publisher") or "").strip()
+            if inst:
+                fields.append(f"  institution = {{{_bib_text(inst)}}}")
+            url = str(meta.get("url") or "").strip()
+            if url:
+                fields.append(f"  url = {{{_tex(url)}}}")
         if entry_type == "manual":
             # A datasheet: vendor → @manual organization, sub-type → the
             # howpublished genre label, and the documented part (if recorded

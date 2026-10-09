@@ -118,22 +118,25 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
             continue
         authors.append({"name": name})
 
+    editors: list[dict[str, str]] = []
+    for e in raw_editors:
+        family = (e.get("family") or "").strip()
+        given = (e.get("given") or "").strip()
+        if family or given:
+            entry = {}
+            if given:
+                entry["given"] = given
+            if family:
+                entry["family"] = family
+            editors.append(entry)
+        else:
+            name = (e.get("name") or "").strip()
+            if name and not _looks_like_affiliation(name):
+                editors.append({"name": name})
+
     # Editors are a last-resort fallback for edited collections.
     if not authors:
-        for e in raw_editors:
-            family = (e.get("family") or "").strip()
-            given = (e.get("given") or "").strip()
-            if family or given:
-                entry = {}
-                if given:
-                    entry["given"] = given
-                if family:
-                    entry["family"] = family
-                authors.append(entry)
-            else:
-                name = (e.get("name") or "").strip()
-                if name and not _looks_like_affiliation(name):
-                    authors.append({"name": name})
+        authors = list(editors)
 
     year = None
     for date_field in ("published-print", "published-online", "created"):
@@ -174,4 +177,21 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
         text = str(raw).strip() if raw is not None else ""
         if text:
             out[key] = text
+    # Book fields: publisher / ISBN / editors (kept even when they also stood
+    # in as authors above) / the container (book) title under its own key.
+    # ``series`` is not extracted: Crossref's ordering of multiple
+    # ``container-title`` values is not reliable enough to name a series.
+    publisher = str(msg.get("publisher") or "").strip()
+    if publisher:
+        out["publisher"] = publisher
+    isbn_list = msg.get("ISBN") or []
+    isbn = str(isbn_list[0]).strip() if isbn_list else ""
+    if isbn:
+        out["isbn"] = isbn
+    if editors:
+        out["editors"] = editors
+    container = msg.get("container-title") or []
+    container_title = str(container[0]).strip() if container else ""
+    if container_title:
+        out["container_title"] = container_title
     return out

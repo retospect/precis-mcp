@@ -150,3 +150,28 @@ class TestCrossrefNormalizeLocators:
         assert "volume" not in result
         assert "issue" not in result
         assert "pages" not in result
+
+
+class TestCrossrefBookFields:
+    def test_book_fields_kept(self):
+        msg = {
+            "title": ["A Book"],
+            "type": "book",
+            "publisher": " Springer ",
+            "ISBN": ["978-3-16-148410-0", "9783161484100"],
+            "editor": [{"given": "Ann", "family": "Lee"}],
+            "container-title": ["Series Title"],
+        }
+        result = _normalize(msg, "10.1007/b1")
+        assert result["publisher"] == "Springer"
+        assert result["isbn"] == "978-3-16-148410-0"
+        assert result["editors"] == [{"given": "Ann", "family": "Lee"}]
+        assert result["authors"] == result["editors"]
+        assert result["container_title"] == "Series Title"
+        assert result["journal"] == "Series Title"
+
+    def test_journal_message_has_no_book_fields(self):
+        msg = {"title": ["P"], "type": "journal-article", "author": [{"family": "S"}]}
+        result = _normalize(msg, "10.1/x")
+        for key in ("publisher", "isbn", "editors", "container_title"):
+            assert key not in result

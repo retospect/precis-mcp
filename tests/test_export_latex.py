@@ -2488,3 +2488,60 @@ def test_glsify_sentence_initial_first_use_capitalised() -> None:
     assert r"\Gls{gga}" in out
     out, _ = _inline("It fails with GGA functionals.", abbrevs)
     assert r"\gls{gga}" in out
+
+
+def _bib_one(meta, *, authors=None, title="T"):
+    ref = _bibref(1, "p1", "paper", title=title, authors=authors, meta=meta)
+    return latex.build_bib(_BibStore({("paper", "p1"): ref}), ["p1"], [])
+
+
+def test_build_bib_book_emits_publisher_isbn_editor() -> None:
+    eds = [{"given": "Ann", "family": "Lee"}]
+    bib = _bib_one(
+        {
+            "entry_type": "book",
+            "publisher": "Springer",
+            "isbn": "978-3-16-148410-0",
+            "editors": eds,
+            "journal": "Ignored",
+        },
+        authors=eds,
+    )
+    assert bib.startswith("@book{p1,")
+    assert "publisher = {Springer}" in bib
+    assert "isbn = {978-3-16-148410-0}" in bib
+    assert "editor = {Ann Lee}" in bib
+    assert "author =" not in bib
+    assert "journaltitle" not in bib
+
+
+def test_build_bib_chapter_emits_booktitle_and_pages() -> None:
+    bib = _bib_one(
+        {
+            "entry_type": "book-chapter",
+            "container_title": "Handbook of Things",
+            "pages": "10-20",
+            "publisher": "Wiley",
+        },
+        authors=[{"given": "Bo", "family": "Kim"}],
+    )
+    assert bib.startswith("@incollection{p1,")
+    assert "booktitle = {Handbook of Things}" in bib
+    assert "pages = {10-20}" in bib
+    assert "author = {Bo Kim}" in bib
+
+
+def test_build_bib_other_crossref_types() -> None:
+    assert _bib_one({"entry_type": "proceedings-article"}).startswith("@inproceedings{")
+    assert _bib_one({"entry_type": "dissertation", "publisher": "MIT"}).startswith(
+        "@thesis{"
+    )
+    assert "institution = {MIT}" in _bib_one(
+        {"entry_type": "report", "publisher": "MIT", "url": "https://x.org/a"}
+    )
+
+
+def test_build_bib_article_for_journal_or_missing_entry_type() -> None:
+    assert _bib_one({"entry_type": "journal-article"}).startswith("@article{")
+    assert _bib_one({"journal": "J"}).startswith("@article{")
+    assert _bib_one(None).startswith("@article{")

@@ -131,6 +131,9 @@ class Resolution:
     abstract: str = ""
     entry_type: str = ""
     issn: str = ""
+    #: Book fields from Crossref (publisher / isbn / editors /
+    #: container_title), merged into ``meta`` verbatim when non-empty.
+    extra_meta: dict[str, Any] = field(default_factory=dict)
     doi: str | None = None
     arxiv: str | None = None
     sim: float | None = None
@@ -304,6 +307,11 @@ def _from_meta(ref_id: int, meta: dict[str, Any], *, track: str) -> Resolution:
         abstract=(meta.get("abstract") or "").strip(),
         entry_type=(meta.get("entry_type") or "").strip(),
         issn=(meta.get("issn") or "").strip(),
+        extra_meta={
+            k: meta[k]
+            for k in ("publisher", "isbn", "editors", "container_title")
+            if meta.get(k)
+        },
         doi=meta.get("doi"),
         arxiv=meta.get("arxiv_id"),
     )
@@ -434,6 +442,7 @@ def apply_resolution(
         meta_patch["entry_type"] = res.entry_type
     if res.issn:
         meta_patch["issn"] = res.issn
+    meta_patch.update(res.extra_meta)
     with store.tx() as conn:
         store.update_paper_fields(
             res.ref_id,
