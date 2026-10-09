@@ -2929,7 +2929,7 @@ def test_paper_detail_shows_doi_link(client) -> None:
 
 def test_paper_pdf_404_when_missing(client) -> None:
     resp = client.get("/papers/10/pdf")
-    assert resp.status_code == 400  # NotFound -> PrecisError handler
+    assert resp.status_code == 404  # NotFound handler
 
 
 def test_paper_pdf_streams_when_present(client, tmp_path) -> None:
@@ -3003,7 +3003,7 @@ def test_paper_pdf_error_reports_resolved_path(client) -> None:
     # Held paper (pdf_sha256 set) but no file on disk → the error must
     # name the resolved path so a corpus_dir misconfig is diagnosable.
     resp = client.get("/papers/10/pdf")
-    assert resp.status_code == 400
+    assert resp.status_code == 404
     assert "smith2024.pdf" in resp.text
     assert "PRECIS_CORPUS_DIR" in resp.text
 
@@ -3034,7 +3034,7 @@ def test_refs_index_search(client) -> None:
 
 def test_refs_unknown_kind_rejected(client) -> None:
     resp = client.get("/refs/banana")
-    assert resp.status_code == 400  # NotFound -> PrecisError handler
+    assert resp.status_code == 404  # NotFound handler
 
 
 def test_refs_detail_dispatches_get_by_id(client, runtime) -> None:
@@ -3056,7 +3056,7 @@ def test_refs_detail_slug_kind_addresses_by_slug(client, runtime) -> None:
 def test_refs_detail_wrong_kind_404(client) -> None:
     # id 20 is a memory; requesting it under /refs/oracle must not match.
     resp = client.get("/refs/oracle/20")
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 def test_memory_refs_detail_renders_references_panel(client, runtime) -> None:
@@ -3709,9 +3709,9 @@ def test_todo_pdf_route_serves_and_rejects(runtime, tmp_path) -> None:
     assert served.status_code == 200
     assert served.headers["content-type"] == "application/pdf"
 
-    # No workspace PDF → PrecisError (NotFound) → 400, like the papers route.
+    # No workspace PDF → NotFound → 404, like the papers route.
     missing = client.get("/todo/2/pdf")
-    assert missing.status_code == 400
+    assert missing.status_code == 404
 
 
 def test_history_attempt_detail_renders(client, monkeypatch) -> None:
@@ -4280,10 +4280,10 @@ def test_gripes_detail_renders_body_and_comments(client) -> None:
 
 
 def test_gripes_detail_missing_is_a_precis_error(client) -> None:
-    # NotFound -> PrecisError handler, same 400 posture as /refs (see
-    # test_refs_detail_wrong_kind_404) — not a bare FastAPI 404.
+    # NotFound handler, same 404 posture as /refs (see
+    # test_refs_detail_wrong_kind_404) — the error page, not a bare FastAPI 404.
     resp = client.get("/gripes/999999")
-    assert resp.status_code == 400
+    assert resp.status_code == 404
     assert "gripe id=999999 not found" in resp.text
 
 

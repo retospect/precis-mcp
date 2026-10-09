@@ -168,7 +168,7 @@ def test_browse_roster_is_not_a_detail_gate(client, runtime, monkeypatch):
     assert response.status_code == 200
     assert "Optional plugin stored body" in response.text
     assert "[error:NotFound]" not in response.text
-    assert client.get("/refs/wrong-kind/9000").status_code == 400
+    assert client.get("/refs/wrong-kind/9000").status_code == 404
 
 
 def test_orcid_includes_inverse_authorship_and_omits_retired_papers(

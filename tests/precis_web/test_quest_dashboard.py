@@ -235,11 +235,11 @@ def test_quest_logbook_renders_and_paginates(client, runtime) -> None:
 
 
 def test_quest_logbook_not_found_for_non_quest_id(client, runtime) -> None:
-    """A ``NotFound`` maps to a 400 error page (``PrecisError`` convention —
-    ``precis_web/errors.py``), same as the generic ``/{kind}/{ref_id}``
-    detail route's own not-found guard."""
+    """A ``NotFound`` maps to a 404 error page (``precis_web/errors.py``),
+    same as the generic ``/{kind}/{ref_id}`` detail route's own not-found
+    guard."""
     resp = client.get("/refs/quest/1/logbook")  # id=1 is a todo, not a quest
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 def test_quest_hub_links_to_full_logbook(client, runtime) -> None:

@@ -160,12 +160,12 @@ def test_refs_fragment_calls_ensure_s2_neighbors(
 
 def test_refs_fragment_unknown_paper_errors(client) -> None:
     resp = client.get("/papers/999999/refs/sources")
-    assert resp.status_code == 400  # NotFound -> PrecisError handler
+    assert resp.status_code == 404  # NotFound handler
 
 
 def test_refs_fragment_unknown_direction_errors(client) -> None:
     resp = client.get("/papers/10/refs/bogus")
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 def test_refs_fragment_non_paper_docfamily_ref_errors(

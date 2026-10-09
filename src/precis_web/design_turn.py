@@ -98,6 +98,7 @@ from precis_se import persist as se_persist
 from precis_se.atomic.apply import HANDLER_LEVEL_OPS, all_op_names
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import prepare_generate, prepare_realize_chain
+from precis_se.atomic.join import prepare_join
 from precis_se.handler import (
     SeHandler,
     _binding_line,
@@ -574,45 +575,54 @@ def is_auto_apply(ops: list[dict[str, Any]], *, kind: DesignKind) -> bool:
 
 # ── dry runs ───────────────────────────────────────────────────────────
 
+#: The handler-level ops (:data:`HANDLER_LEVEL_OPS`) :func:`dry_run_se`
+#: runs through their read-only/in-memory halves: ``bind_structure``/
+#: ``unbind_structure`` never write; ``generate``/``realize``/``join``/
+#: ``realize_chain`` run ``prepare_*`` on the scratch tree and skip
+#: ``finish_*``, the half that mints designs (the mint + bind are the
+#: proposal's Apply). Every handler-level op is either here or in
+#: :data:`_SE_DRY_RUN_SKIPPED` — a test pins that, because the roster was
+#: once maintained by hand and drifted (``join`` fell through to the pure
+#: table, which reported it as an unknown op in every workbench proposal).
+_SE_DRY_RUN_PREPARE: dict[str, Callable[[Any, SeTree, dict[str, Any], str], Any]] = {
+    "bind_structure": lambda store, tree, op, _slug: bind_structure(store, tree, op),
+    "unbind_structure": lambda _store, tree, op, _slug: unbind_structure(tree, op),
+    "generate": prepare_generate,
+    "realize": prepare_realize,
+    "realize_chain": prepare_realize_chain,
+    "join": prepare_join,
+}
+
+#: Handler-level ops deliberately NOT run in the pure dry-run, or the work
+#: happens twice (see :mod:`precis_se.chain`) — these are the ops whose
+#: whole cost IS the work (a FIRE settle, an O(n³) fold, a ``make`` tree
+#: written to another kind), and the proposal's Apply runs them for real.
+#: ``fold_layout`` would also raise ``Unsupported`` here on a web host
+#: without the ``[chain]`` extra, turning a proposal into an error.
+#: Skipping is not the same as passing them to ``se_apply_ops``, which
+#: knows only the pure table and would report the op as unknown.
+_SE_DRY_RUN_SKIPPED: frozenset[str] = frozenset(
+    {"relax_chain", "fold_layout", "make_steps"}
+)
+
 
 def dry_run_se(
     store: Any, tree: SeTree, ops: list[dict[str, Any]], *, design_slug: str
 ) -> str | None:
     """Walk ``ops`` on a deep copy of ``tree``: pure ops through
-    :func:`precis_se.ops.apply_ops`; the store-aware ones through their
-    read-only/in-memory halves only (``bind_structure``/``unbind_structure``
-    never write; ``generate``/``realize`` run ``prepare_*`` and skip
-    ``finish_*``, the half that mints designs). Returns the first error
+    :func:`precis_se.ops.apply_ops`; the store-aware ones through
+    :data:`_SE_DRY_RUN_PREPARE` (their read-only/in-memory halves), and
+    :data:`_SE_DRY_RUN_SKIPPED` not at all. Returns the first error
     message, or ``None``."""
     scratch = copy.deepcopy(tree)
     try:
         for op in ops:
             name = op["op"]
-            if name == "bind_structure":
-                bind_structure(store, scratch, op)
-            elif name == "unbind_structure":
-                unbind_structure(scratch, op)
-            elif name == "generate":
-                prepare_generate(store, scratch, op, design_slug)
-            elif name == "realize":
-                prepare_realize(store, scratch, op, design_slug)
-            elif name == "realize_chain":
-                # The pure half only (frames → atoms on the scratch tree);
-                # the mint + bind are the proposal's Apply.
-                prepare_realize_chain(store, scratch, op, design_slug)
-            elif name in ("relax_chain", "fold_layout", "make_steps"):
-                # Deliberately NOT run here: neither may run in this
-                # pure dry-run, or the work happens twice (see
-                # :mod:`precis_se.chain`) — these are the two handler-level
-                # ops whose
-                # whole cost IS the work (a FIRE settle, an O(n³) fold), and
-                # the proposal's Apply runs them for real. ``fold_layout``
-                # would also raise ``Unsupported`` here on a web host without
-                # the ``[chain]`` extra, turning a proposal into an error.
-                # Skipping is not the same as passing either to
-                # ``se_apply_ops``, which knows only the pure table and would
-                # report the op as unknown.
+            if name in _SE_DRY_RUN_SKIPPED:
                 continue
+            prepare = _SE_DRY_RUN_PREPARE.get(name)
+            if prepare is not None:
+                prepare(store, scratch, op, design_slug)
             else:
                 se_apply_ops(scratch, [op])
     except (SeOpError, BadInput, NotFound, ValueError) as exc:

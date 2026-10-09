@@ -131,7 +131,7 @@ def test_detail_finds_pdf_filed_under_nondisplay_alias(client, tmp_path) -> None
 
 def test_detail_unknown_slug_404s(client) -> None:
     resp = client.get("/papers/nope9999", follow_redirects=False)
-    assert resp.status_code == 400  # NotFound -> PrecisError handler
+    assert resp.status_code == 404  # NotFound handler
 
 
 # ── search endpoint ─────────────────────────────────────────────────

@@ -29,9 +29,9 @@ def test_deleted_ref_renders_tombstone_404(runtime: Any, client: Any) -> None:
 
 def test_genuinely_absent_ref_is_not_a_tombstone(client: Any) -> None:
     # nothing seeded → the include-deleted fallback finds nothing → the
-    # existing NotFound path (PrecisError → 400), NOT a tombstone.
+    # existing NotFound path (404 error page), NOT a tombstone.
     resp = client.get("/refs/memory/424242")
-    assert resp.status_code == 400
+    assert resp.status_code == 404
     assert "undelete" not in resp.text.lower()
 
 
@@ -50,6 +50,6 @@ def test_undelete_rejects_kind_mismatch(runtime: Any, client: Any) -> None:
     # it (restore_ref keys on id alone — the route guards kind).
     ref_id = _seed_deleted(runtime, id=193556, kind="memory", title="stay hidden")
     resp = client.post(f"/refs/oracle/{ref_id}/undelete", follow_redirects=False)
-    assert resp.status_code == 400  # NotFound → PrecisError → 400
+    assert resp.status_code == 404  # NotFound → 404
     assert runtime.store.restored_ref_ids == []
     assert ref_id in runtime.store.deleted_refs  # still deleted
