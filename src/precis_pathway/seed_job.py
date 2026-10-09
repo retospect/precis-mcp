@@ -77,6 +77,18 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "content_key": {"type": "string"},
         # The node this job pins itself to (claim gate -> runs here).
         "target_node": {"type": ["string", "null"]},
+        # Step-level retry (precis_pathway.step_retry): record ONLY these
+        # step(s) of the network run, and name the failed measurement this
+        # unit replaces so the aggregate can prune it.
+        "only_steps": {"type": ["array", "null"], "items": {"type": "string"}},
+        "step_retry": {
+            "type": ["object", "null"],
+            "properties": {
+                "step": {"type": "string"},
+                "from_seed": {"type": "integer"},
+            },
+            "required": ["step", "from_seed"],
+        },
     },
     "required": ["config", "seed", "model_index"],
     "additionalProperties": True,
@@ -96,9 +108,27 @@ DESCRIPTION = (
 def _provenance_meta(params: dict[str, Any]) -> dict[str, Any]:
     """``{"pathway_ref": <int>}`` when the mint carried ``pathway_ref_id``,
     else empty — pre-existing queued rows (minted before the param existed)
-    stamp nothing rather than a null."""
+    stamp nothing rather than a null. A step retry additionally stamps its
+    ``step_retry`` marker, the aggregate's cue to replace the measurement
+    it names (:func:`precis_pathway.step_retry.apply_step_replacements`)."""
     pref = params.get("pathway_ref_id")
-    return {"pathway_ref": pref} if isinstance(pref, int) else {}
+    out: dict[str, Any] = {"pathway_ref": pref} if isinstance(pref, int) else {}
+    marker = params.get("step_retry")
+    if isinstance(marker, dict):
+        out["step_retry"] = dict(marker)
+    return out
+
+
+def _only_steps(params: dict[str, Any]) -> list[str] | None:
+    steps = params.get("only_steps")
+    return [str(s) for s in steps] if isinstance(steps, list) and steps else None
+
+
+def _retry_suffix(params: dict[str, Any]) -> str:
+    marker = params.get("step_retry")
+    if not isinstance(marker, dict):
+        return ""
+    return f" — step retry of {marker.get('step')} (replaces seed {marker.get('from_seed')})"
 
 
 def _dispatch(ctx: Any, spec: Any) -> None:
@@ -134,7 +164,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     ctx.append_chunk(
         "job_event",
-        f"autocatpath_seed: {config.get('name', '?')} seed={seed} model#{model_index}",
+        f"autocatpath_seed: {config.get('name', '?')} seed={seed} model#{model_index}"
+        + _retry_suffix(params),
     )
 
     try:
@@ -153,6 +184,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             kw["timeout"] = timeout_s
         if cpuset:
             kw["cpuset"] = cpuset
+        if _only_steps(params):
+            kw["only_steps"] = _only_steps(params)
         result = runner.run_seed_partial_subprocess(config, seed, model_index, **kw)
     except runner.ChildKilledError as exc:
         # INFRA-class (parked-leaf-recovery, docs/backlog/
@@ -230,7 +263,7 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
     ctx.append_chunk(
         "job_event",
         f"autocatpath_seed: {config.get('name', '?')} seed={seed} "
-        f"model#{model_index} (detached submit)",
+        f"model#{model_index} (detached submit)" + _retry_suffix(params),
     )
 
     try:
@@ -240,6 +273,8 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
         cpuset = (params.get("resources") or {}).get("cpuset")
         if cpuset:
             submit_kw["cpuset"] = cpuset
+        if _only_steps(params):
+            submit_kw["only_steps"] = _only_steps(params)
         return runner.submit_seed_partial_detached(
             config,
             seed,

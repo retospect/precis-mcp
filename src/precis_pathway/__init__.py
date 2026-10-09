@@ -49,11 +49,21 @@ coverage scan for one MLIP model (the anchors, on a recorded footing:
 scan on the same key into the CHE sweep — resting termination along U, each
 boundary with its propagated and model-form bands kept apart.
 
-``step_retry`` is an unwired eligibility prerequisite: it selects only
-quantity-cited fatal convergence records and withholds all selection on
-endpoint mismatch. State-only basin failures cannot safely name a retry
-step; the pinned engine's seed entry point still runs whole networks.
-Dispatch, durable retry caps and partial replacement remain unimplemented.
+``step_retry`` + the tail of ``aggregate_job`` are the step-level retry:
+when the just-aggregated ``trust_summary`` names a quantity blocker that is
+a fatal ``neb_convergence``/``relax_convergence`` record, the aggregate
+re-queues ONLY that step at a fresh seed (a new ``autocatpath_seed`` job,
+``params.only_steps``/``step_retry``, its own idem key) under a new
+aggregate todo on the candidate, capped at ``PRECIS_PATHWAY_STEP_RETRIES``
+(default 2) per step and model, each dispatch logged on the pathway ref's
+``meta.step_retries``; the retry round's aggregate inherits the base
+partials, swaps the failed step measurement for the narrowed retry and
+persists onto the same pathway. Endpoint-mismatch-class records are never
+retried (basin diagnosis, not a re-roll); infra/budget failures never reach
+this path. Trade-off: the pinned engine has no single-step entry point, so
+the retry seed still computes the whole network and precis narrows what it
+records — the evidence and replacement semantics are step-scoped, the
+compute saving waits on an engine step filter.
 
 Gated on **dependency presence**, not a feature flag: with no
 ``autocatpath``/``[catalyst]`` extra installed the handler raises

@@ -41,6 +41,7 @@ from autocatpath import __version__, provenance
 from autocatpath.config import Config
 from autocatpath.pipeline import Results, run
 
+from .step_retry import narrow_partial, narrow_structures
 from .types import (
     CoverageScanResult,
     DetachedHandle,
@@ -365,6 +366,29 @@ def seed_content_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def root_state(config: dict[str, Any]) -> str:
+    """The network's root (``Network.order()[0]`` — the clean slab, the
+    energy zero every partial is referenced to in ``aggregate_partials``).
+    Built the way the engine's own ``_build_net`` builds it (template /
+    desorb / leavers included), rule-based, no ML."""
+    from autocatpath.network import build_network
+
+    cfg = Config.from_dict(config)
+    net = build_network(
+        cfg.slab,
+        cfg.network,
+        cfg.reagents,
+        cfg.substrate,
+        cfg.target,
+        max_extra=cfg.auto.max_extra,
+        max_states=cfg.auto.max_states,
+        template=cfg.template,
+        desorb=cfg.auto.desorb,
+        leavers=cfg.auto.leavers,
+    )
+    return str(net.order()[0])
+
+
 def run_seed_partial(
     config: dict[str, Any],
     seed: int,
@@ -372,9 +396,19 @@ def run_seed_partial(
     *,
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
+    only_steps: Sequence[str] | None = None,
     log: Any = lambda *a, **k: None,
 ) -> SeedPartialResult:
     """Run ONE ``(model, seed)`` unit of a pathway exploration.
+
+    ``only_steps`` (the step-level retry, :mod:`precis_pathway.step_retry`)
+    narrows what this unit RECORDS to the named step(s): the pinned engine
+    has no single-step entry point, so the network still runs whole, and
+    the partial is reduced afterwards (:func:`~precis_pathway.step_retry.
+    narrow_partial` — step entry, its trust records, endpoint + root
+    energies) so the retry's evidence is exactly the one measurement the
+    aggregate replaces. One step per retry in practice; a sequence is
+    accepted so a future engine step filter can take the same argument.
 
     The precis-side wrapper around ``autocatpath.pipeline.run_one_seed`` —
     the function autocatpath built for exactly this ("deliberately
@@ -447,6 +481,12 @@ def run_seed_partial(
         for name, (energy, atoms) in (collect or {}).items()
         if not name.startswith("poison:")
     }
+    if only_steps:
+        log(f"[{tag}] seed={seed}: step retry — recording only {list(only_steps)}")
+        partial = narrow_partial(partial, only_steps, root=root_state(config))
+        structures = cast(
+            "dict[str, SeedStructureEntry]", narrow_structures(structures, partial)
+        )
     return {
         "seed": seed,
         "model": tag,
@@ -548,6 +588,7 @@ def run_seed_partial_subprocess(
     slab_extxyz: str | None = None,
     timeout: int = _DEFAULT_SEED_TIMEOUT_S,
     cpuset: str | None = None,
+    only_steps: Sequence[str] | None = None,
 ) -> SeedPartialResult:
     """Run :func:`run_seed_partial` in a FRESH child process — killable + isolated.
 
@@ -577,6 +618,7 @@ def run_seed_partial_subprocess(
         "model_index": model_index,
         "force_backend": force_backend,
         "slab_extxyz": slab_extxyz,
+        "only_steps": list(only_steps) if only_steps else None,
     }
     result = _run_request_subprocess(
         request,
@@ -934,6 +976,7 @@ def submit_seed_partial_detached(
     slab_extxyz: str | None = None,
     work_dir: str | None = None,
     cpuset: str | None = None,
+    only_steps: Sequence[str] | None = None,
 ) -> DetachedHandle:
     """Launch :func:`run_seed_partial` in a DETACHED child — the ssh_node
     ``submit`` half of the detached submit/poll protocol (gr187627). Where
@@ -972,6 +1015,7 @@ def submit_seed_partial_detached(
         "model_index": model_index,
         "force_backend": force_backend,
         "slab_extxyz": slab_extxyz,
+        "only_steps": list(only_steps) if only_steps else None,
     }
     scratch = work_dir or tempfile.mkdtemp(prefix="autocatpath-seed-")
     req_path = os.path.join(scratch, "request.json")
@@ -1526,6 +1570,9 @@ def _subprocess_main(argv: list[str]) -> int:
                     int(req["model_index"]),
                     force_backend=req.get("force_backend"),
                     slab_extxyz=req.get("slab_extxyz"),
+                    # Absent on a request file an older build wrote (the
+                    # detached protocol leaves them on disk) -> whole network.
+                    only_steps=req.get("only_steps") or None,
                     # Child logs go to stdout (parent captures + logs them);
                     # the JSON result travels by file, so this can't corrupt
                     # the envelope.

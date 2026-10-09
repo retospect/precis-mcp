@@ -209,6 +209,14 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   **messages** (the flat prose, collapsed by numeric-literal template,
   capped at 25). A ~0 eV barrier carries no auto-flag — see `precis-quest-
   help`'s trust section for the full auto-flag list.
+- **Step retry.** A blocker that is a fatal `neb_convergence`/
+  `relax_convergence` record is re-measured automatically: the aggregate
+  re-queues only that step at a fresh seed (up to 2 per step and model),
+  and a clean retry replaces the failed measurement so the quantity flips
+  to available on the next aggregate. `meta.step_retries` lists every
+  retry (step, seed → seed, the record it answered, the job); a blocker
+  still shown after that has spent its retries or is an endpoint-mismatch
+  class failure, which is never re-rolled.
 - `view='methods'` — the citable methods paragraph; `view='config'` — the snapshot.
 
 ## See the reaction — the interactive web explorer
