@@ -2568,9 +2568,11 @@ def build_author_block(authors_raw: Any, *, fallback: str) -> str:
     From a draft ref's ``authors`` column: one ``\\author[marks]{Name}``
     per author + one ``\\affil[i]{Org}`` per distinct affiliation (ROR
     hyperlinked), deduped + numbered by :func:`build_byline`. A single
-    shared affiliation drops the numbers. When the draft has no authors
-    the block degrades to a single ``\\author{<fallback>}`` (the legacy
-    ``meta.author`` string), so old drafts export unchanged.
+    shared affiliation drops the numbers. An author with an ``orcid``
+    gets the ``\\orcidlink{<iD>}`` icon after the name (the preamble
+    defines the macro as an https://orcid.org hyperlink). When the draft
+    has no authors the block degrades to a single ``\\author{<fallback>}``
+    (the legacy ``meta.author`` string), so old drafts export unchanged.
     """
     byline = build_byline(authors_raw)
     people = byline["authors"]
@@ -2580,7 +2582,8 @@ def build_author_block(authors_raw: Any, *, fallback: str) -> str:
     multi = byline["multi"]
     for a in people:
         opt = f"[{a['sup']}]" if (multi and a["sup"]) else ""
-        lines.append(f"\\author{opt}{{{_tex(a['name'])}}}")
+        orcid = f"\\,\\orcidlink{{{a['orcid']}}}" if a.get("orcid") else ""
+        lines.append(f"\\author{opt}{{{_tex(a['name'])}{orcid}}}")
     for aff in byline["affiliations"]:
         opt = f"[{aff['index']}]" if multi else ""
         lines.append(f"\\affil{opt}{{{_affil_tex(aff['org'], aff['ror'])}}}")

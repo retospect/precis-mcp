@@ -147,6 +147,27 @@ class TestToAuthorDicts:
         ]
         assert to_author_dicts(None) == []
 
+    def test_orcid_key_and_bracket(self) -> None:
+        # explicit key (URL form normalised), trailing bracket on the name,
+        # key wins over bracket, malformed iD dropped
+        raw = [
+            {"name": "Doe, Jane", "orcid": "https://orcid.org/0000-0002-1825-0097"},
+            {"name": "Roe, John [0000-0001-5109-3700]", "affiliation": "MIT"},
+            {"name": "Poe, Ann [0000-0001-5109-3700]", "orcid": "0000-0002-1825-0097"},
+            {"name": "Lee, Kim", "orcid": "not-an-orcid"},
+        ]
+        assert to_author_dicts(raw) == [
+            {"name": "Doe, Jane", "orcid": "0000-0002-1825-0097"},
+            {"name": "Roe, John", "affiliation": "MIT", "orcid": "0000-0001-5109-3700"},
+            {"name": "Poe, Ann", "orcid": "0000-0002-1825-0097"},
+            {"name": "Lee, Kim"},
+        ]
+        # bracket grammar also works on the packed-string form
+        assert to_author_dicts("Smith, J. [0000-0002-1825-0097]; Doe, A.") == [
+            {"name": "Smith, J.", "orcid": "0000-0002-1825-0097"},
+            {"name": "Doe, A."},
+        ]
+
 
 class TestBuildByline:
     def test_distinct_affiliations_get_marks(self) -> None:
@@ -188,6 +209,25 @@ class TestBuildByline:
         assert b["multi"] is False
         assert b["affiliations"] == []
         assert [a["name"] for a in b["authors"]] == ["X Y", "Z W"]
+        assert [a["orcid"] for a in b["authors"]] == ["", ""]
+
+    def test_orcid_rides_through(self) -> None:
+        raw = [
+            {"name": "Doe, Jane", "orcid": "https://orcid.org/0000-0002-1825-0097"},
+            "Roe, John [0000-0001-5109-3700]",
+            {"name": "Lee, Kim"},
+        ]
+        b = build_byline(raw)
+        assert [a["name"] for a in b["authors"]] == [
+            "Doe, Jane",
+            "Roe, John",
+            "Lee, Kim",
+        ]
+        assert [a["orcid"] for a in b["authors"]] == [
+            "0000-0002-1825-0097",
+            "0000-0001-5109-3700",
+            "",
+        ]
         assert all(a["sup"] == "" for a in b["authors"])
 
     def test_empty(self) -> None:

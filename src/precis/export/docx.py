@@ -293,12 +293,18 @@ def _standalone_equation_numbers(chunks: list[Any]) -> dict[str, int]:
 
 
 def _add_hyperlink(
-    paragraph: Any, url: str, text: str, *, size_pt: float | None = None
+    paragraph: Any,
+    url: str,
+    text: str,
+    *,
+    size_pt: float | None = None,
+    superscript: bool = False,
 ) -> None:
     """Append a real external hyperlink run to ``paragraph`` (python-docx
     has no native helper). Styled blue + underlined so it reads as a link.
-    Used for a ROR affiliation id, and (``size_pt`` set) the small doi/UL
-    cite-link runs (:func:`_cite_link_group`) — ``w:sz`` is half-points."""
+    Used for a ROR affiliation id, the byline's ORCID ``iD`` mark
+    (``superscript``), and (``size_pt`` set) the small doi/UL cite-link
+    runs (:func:`_cite_link_group`) — ``w:sz`` is half-points."""
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
     from docx.oxml.ns import qn
     from docx.oxml.shared import OxmlElement
@@ -318,6 +324,10 @@ def _add_hyperlink(
         sz = OxmlElement("w:sz")
         sz.set(qn("w:val"), str(int(size_pt * 2)))
         rpr.append(sz)
+    if superscript:
+        va = OxmlElement("w:vertAlign")
+        va.set(qn("w:val"), "superscript")
+        rpr.append(va)
     run.append(rpr)
     t = OxmlElement("w:t")
     t.text = text
@@ -329,9 +339,11 @@ def _add_hyperlink(
 def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
     """Emit the author byline + affiliation block under the title heading.
 
-    Names on one line (superscript marks when >1 affiliation), then one
-    affiliation per line (``¹ Org``, org hyperlinked to its ROR id). A no-
-    author draft renders nothing, matching the legacy title-only output."""
+    Names on one line (superscript marks when >1 affiliation; an ORCID
+    iD as a superscript ``iD`` hyperlinked to the orcid.org record), then
+    one affiliation per line (``¹ Org``, org hyperlinked to its ROR id).
+    A no-author draft renders nothing, matching the legacy title-only
+    output."""
     authors = byline.get("authors") or []
     if not authors:
         return
@@ -341,6 +353,11 @@ def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
         if i:
             names_p.add_run(", ")
         names_p.add_run(a["name"])
+        if a.get("orcid"):
+            names_p.add_run(" ")
+            _add_hyperlink(
+                names_p, f"https://orcid.org/{a['orcid']}", "iD", superscript=True
+            )
         if multi and a.get("sup"):
             sup = names_p.add_run(a["sup"])
             sup.font.superscript = True

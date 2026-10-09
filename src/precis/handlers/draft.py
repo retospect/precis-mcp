@@ -1575,7 +1575,8 @@ class DraftHandler(Handler):
         # id is the slug (or any handle in the draft), not a single chunk.
         # Stored on the draft ref's first-class ``authors`` column, so the
         # exporters + web reader render a byline; ROR ids on each entry
-        # join to the canonical institution (https://ror.org).
+        # join to the canonical institution (https://ror.org), ORCID iDs
+        # render as the linked iD mark after the name.
         if authors is not None:
             _reject_dry_run("authors")
             ref = self._resolve_draft_any(id)
@@ -1583,7 +1584,13 @@ class DraftHandler(Handler):
             self.store.update_paper_fields(ref.id, authors=entries, source="draft-edit")
             n = len(entries)
             affil = sum(1 for e in entries if e.get("affiliation"))
-            note = f" ({affil} with affiliation)" if affil else ""
+            orcids = sum(1 for e in entries if e.get("orcid"))
+            bits = [
+                f"{count} with {what}"
+                for count, what in ((affil, "affiliation"), (orcids, "ORCID"))
+                if count
+            ]
+            note = f" ({', '.join(bits)})" if bits else ""
             return Response(
                 body=f"set {n} author{'s' if n != 1 else ''} on {ref.slug or ref.id}{note}"
             )

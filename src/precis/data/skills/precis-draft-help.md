@@ -116,8 +116,10 @@ rejected on a table chunk)
 | `caption=` / `regen=` | metadata only, data untouched |
 
 **`authors=` grammar** — a list, each entry `{'name', 'affiliation'?,
-'ror'?}` (or `{'family','given',…}`, or a bare name string). Replaces the
-whole byline (not additive).
+'ror'?, 'orcid'?}` (or `{'family','given',…}`, or a bare name string; a
+name may carry the ORCID as a trailing bracket, `'Doe, Jane
+[0000-0002-1825-0097]'`). Replaces the whole byline (not additive). Exports
+render the ORCID as a linked iD mark after the name.
 
 **`put`** creates: a new draft, a chunk (`at=` places it —
 `{'first'\|'last': True}`, `{'into': 'dc<id>'}`, `{'before'\|'after':
@@ -278,8 +280,9 @@ edit(
             "name": "Doe, Jane",
             "affiliation": "Massachusetts Institute of Technology",
             "ror": "https://ror.org/042nb2s44",
+            "orcid": "0000-0002-1825-0097",
         },
-        {"name": "Roe, John", "affiliation": "Caltech"},  # affiliation/ror optional
+        {"name": "Roe, John", "affiliation": "Caltech"},  # affiliation/ror/orcid optional
     ],
 )
 ```

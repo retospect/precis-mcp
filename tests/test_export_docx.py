@@ -872,6 +872,35 @@ def test_render_byline_names_marks_and_ror_link() -> None:
     assert any(r.reltype.endswith("hyperlink") for r in rels.values())
 
 
+def test_render_byline_orcid_is_a_superscript_id_link() -> None:
+    """An author's ORCID renders as a superscript ``iD`` hyperlink to the
+    orcid.org record, right after the name."""
+    from precis.export.docx import _render_byline
+    from precis.utils.authors import build_byline
+
+    doc = docx.Document()
+    doc.add_heading("Title", level=0)
+    _render_byline(
+        doc,
+        build_byline(
+            [
+                {"name": "Doe, Jane", "orcid": "0000-0002-1825-0097"},
+                {"name": "Roe, John"},
+            ]
+        ),
+    )
+    names_p = doc.paragraphs[1]
+    xml = names_p._p.xml
+    assert "hyperlink" in xml and ">iD<" in xml
+    assert 'w:vertAlign w:val="superscript"' in xml
+    rels = doc.part.rels
+    assert any(
+        r.reltype.endswith("hyperlink")
+        and r.target_ref == "https://orcid.org/0000-0002-1825-0097"
+        for r in rels.values()
+    )
+
+
 def test_render_byline_empty_authors_is_noop() -> None:
     from precis.export.docx import _render_byline
     from precis.utils.authors import build_byline

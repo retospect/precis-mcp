@@ -2305,6 +2305,24 @@ class TestBuildAuthorBlock:
         assert "[1]" not in out  # no superscript numbers for a single affiliation
         assert out.count("\\affil{") == 1
 
+    def test_orcid_renders_as_orcidlink_after_the_name(self) -> None:
+        raw = [
+            {"name": "A B", "affiliation": "MIT", "orcid": "0000-0002-1825-0097"},
+            {"name": "C D", "affiliation": "Caltech"},
+        ]
+        out = latex.build_author_block(raw, fallback="precis")
+        assert "\\author[1]{A B\\,\\orcidlink{0000-0002-1825-0097}}" in out
+        assert "\\author[2]{C D}" in out
+        # the preamble defines the macro, so the byline compiles everywhere
+        preamble = (
+            Path(latex.__file__).parents[1]
+            / "data"
+            / "templates"
+            / "draft"
+            / "preamble.tex"
+        ).read_text(encoding="utf-8")
+        assert "\\providecommand{\\orcidlink}[1]" in preamble
+
 
 def test_export_draft_emits_byline_from_ref_authors(hub) -> None:
     """End-to-end: authors set on the draft ref flow into main.tex."""

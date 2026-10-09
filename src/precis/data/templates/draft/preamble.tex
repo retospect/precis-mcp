@@ -71,6 +71,12 @@
 % affiliation renders unnumbered.
 \usepackage{authblk}
 \renewcommand\Affilfont{\small\itshape}
+% ORCID iD after an author name: \orcidlink{0000-0002-1825-0097} renders a
+% small "iD" superscript hyperlinked to the orcid.org record. Defined here
+% (not via the orcidlink package, which the render image may lack) so the
+% byline compiles on every TeX Live; \providecommand yields to a real
+% orcidlink.sty if a template loads one.
+\providecommand{\orcidlink}[1]{\href{https://orcid.org/#1}{\textsuperscript{\scriptsize\textsf{iD}}}}
 
 % Glossary / acronyms. `acronym` makes the acronym list; the long-short
 % style means first use expands to the full term and every later use is

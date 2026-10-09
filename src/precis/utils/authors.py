@@ -584,30 +584,40 @@ def to_author_dicts(raw: Any) -> list[dict[str, str]]:
     """Canonical draft-author storage shape, preserving affiliation + ROR.
 
     Like :func:`to_name_dicts` (sortable ``{"name"}``) but carries the
-    optional ``affiliation`` (institution string) and ``ror`` (an
-    https://ror.org id) through to storage. Accepts the same tolerant
-    inputs as the readers — a list of dicts (``{"name"}`` /
-    ``{"family", "given"}``, either with ``affiliation`` / ``ror``) or
-    bare strings, or a semicolon-packed string (names only). Entries
-    with no resolvable name are dropped. Pure — never raises.
+    optional ``affiliation`` (institution string), ``ror`` (an
+    https://ror.org id) and ``orcid`` (dashed iD, normalised) through to
+    storage. Accepts the same tolerant inputs as the readers — a list of
+    dicts (``{"name"}`` / ``{"family", "given"}``, either with
+    ``affiliation`` / ``ror`` / ``orcid``) or bare strings, or a
+    semicolon-packed string. A name string may carry the ORCID as the
+    web textarea's trailing bracket (``Doe, Jane [0000-0002-1825-0097]``);
+    an explicit ``orcid`` key wins over the bracket. Entries with no
+    resolvable name are dropped. Pure — never raises.
     """
     if isinstance(raw, str):
-        return [{"name": n} for n in author_names(raw, order="sortable")]
-    if not isinstance(raw, list):
+        items: list[Any] = list(author_names(raw, order="sortable"))
+    elif isinstance(raw, list):
+        items = raw
+    else:
         return []
     out: list[dict[str, str]] = []
-    for a in raw:
-        name = author_display(a, order="sortable")
+    for a in items:
+        name, bracket = _strip_orcid_bracket(author_display(a, order="sortable"))
+        name = name.strip()
         if not name:
             continue
         entry: dict[str, str] = {"name": name}
+        orcid = bracket
         if isinstance(a, dict):
             aff = (a.get("affiliation") or "").strip()
             ror = (a.get("ror") or "").strip()
+            orcid = normalize_orcid(a.get("orcid")) or bracket
             if aff:
                 entry["affiliation"] = aff
             if ror:
                 entry["ror"] = ror
+        if orcid:
+            entry["orcid"] = orcid
         out.append(entry)
     return out
 
@@ -619,10 +629,12 @@ def build_byline(raw: Any) -> dict[str, Any]:
     Returns ``{"authors": [...], "affiliations": [...], "multi": bool}``:
 
     * ``authors`` — ordered ``{"name": "Given Family", "marks": [int...],
-      "sup": "1,2"}``. ``marks`` indexes into ``affiliations``; ``sup`` is
-      the pre-rendered comma-joined superscript, blank when there is only
-      one distinct affiliation (a single shared institution reads better
-      listed once, unnumbered).
+      "sup": "1,2", "orcid": "0000-…" | ""}``. ``marks`` indexes into
+      ``affiliations``; ``sup`` is the pre-rendered comma-joined
+      superscript, blank when there is only one distinct affiliation (a
+      single shared institution reads better listed once, unnumbered).
+      ``orcid`` is the normalised dashed iD (blank when the entry has
+      none) for the renderers' iD icon link.
     * ``affiliations`` — ordered ``{"index": int, "org": str, "ror": str}``,
       **deduped by ROR id** (falling back to the lower-cased org string),
       numbered 1.. in order of first appearance.
@@ -644,13 +656,16 @@ def build_byline(raw: Any) -> dict[str, Any]:
     by_key: dict[str, int] = {}
     authors: list[dict[str, Any]] = []
     for a in items:
-        name = author_display(a, order="natural")
+        name, bracket = _strip_orcid_bracket(author_display(a, order="natural"))
+        name = name.strip()
         if not name:
             continue
         aff = ror = ""
+        orcid = bracket or ""
         if isinstance(a, dict):
             aff = (a.get("affiliation") or "").strip()
             ror = (a.get("ror") or "").strip()
+            orcid = normalize_orcid(a.get("orcid")) or bracket or ""
         marks: list[int] = []
         if aff or ror:
             key = ror.lower() if ror else aff.lower()
@@ -660,7 +675,7 @@ def build_byline(raw: Any) -> dict[str, Any]:
                 by_key[key] = idx
                 affiliations.append({"index": idx, "org": aff, "ror": ror})
             marks = [idx]
-        authors.append({"name": name, "marks": marks, "sup": ""})
+        authors.append({"name": name, "marks": marks, "sup": "", "orcid": orcid})
 
     multi = len(affiliations) > 1
     if multi:

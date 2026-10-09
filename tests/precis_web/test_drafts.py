@@ -2623,6 +2623,35 @@ def test_draft_author_lines_round_trips() -> None:
     assert _parse_author_lines(lines) == ref.authors
 
 
+def test_author_lines_orcid_bracket_round_trips() -> None:
+    """``Name [ORCID] | Affiliation | ROR``: the bracket parses to an
+    ``orcid`` key and renders back; a malformed bracket is dropped."""
+    from precis_web.routes.drafts import _draft_author_lines, _parse_author_lines
+
+    text = (
+        "Doe, Jane [https://orcid.org/0000-0002-1825-0097] | MIT | https://ror.org/x\n"
+        "Roe, John [0000-0001-5109-3700]\n"
+        "Lee, Kim [garbage] | Caltech"
+    )
+    parsed = _parse_author_lines(text)
+    assert parsed == [
+        {
+            "name": "Doe, Jane",
+            "affiliation": "MIT",
+            "ror": "https://ror.org/x",
+            "orcid": "0000-0002-1825-0097",
+        },
+        {"name": "Roe, John", "orcid": "0000-0001-5109-3700"},
+        {"name": "Lee, Kim", "affiliation": "Caltech"},
+    ]
+    lines = _draft_author_lines(make_ref(kind="draft", slug="nt", authors=parsed))
+    assert lines.splitlines()[0] == (
+        "Doe, Jane [0000-0002-1825-0097] | MIT | https://ror.org/x"
+    )
+    assert lines.splitlines()[1] == "Roe, John [0000-0001-5109-3700]"
+    assert _parse_author_lines(lines) == parsed
+
+
 def test_draft_author_lines_empty() -> None:
     from precis_web.routes.drafts import _draft_author_lines
 

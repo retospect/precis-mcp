@@ -124,7 +124,9 @@ from precis.taproot.canon import extract_claim_strict as _backfill_extract_claim
 from precis.taproot.canon import merge_confirm as _backfill_merge_confirm
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
+    _strip_orcid_bracket,
     author_display,
+    normalize_orcid,
     to_author_dicts,
 )
 
@@ -649,15 +651,17 @@ def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
 
 
 def _parse_author_lines(text: str) -> list[dict[str, str]]:
-    """Parse the draft author textarea into ``{name, affiliation?, ror?}``
-    entries — one author per line, fields split on ``|`` as
-    ``Name | Affiliation | ROR`` (affiliation + ROR optional; extra fields
-    ignored). Blank lines and name-less lines dropped. The result is fed
-    through :func:`to_author_dicts` (canonical name, keys preserved)."""
+    """Parse the draft author textarea into ``{name, affiliation?, ror?,
+    orcid?}`` entries — one author per line, fields split on ``|`` as
+    ``Name [ORCID] | Affiliation | ROR`` (the bracketed ORCID, affiliation
+    and ROR optional; extra fields ignored). Blank lines and name-less
+    lines dropped. The result is fed through :func:`to_author_dicts`
+    (canonical name, keys preserved)."""
     out: list[dict[str, str]] = []
     for raw in (text or "").splitlines():
         parts = [p.strip() for p in raw.split("|")]
-        name = parts[0] if parts else ""
+        name, orcid = _strip_orcid_bracket(parts[0] if parts else "")
+        name = name.strip()
         if not name:
             continue
         entry: dict[str, str] = {"name": name}
@@ -665,13 +669,16 @@ def _parse_author_lines(text: str) -> list[dict[str, str]]:
             entry["affiliation"] = parts[1]
         if len(parts) > 2 and parts[2]:
             entry["ror"] = parts[2]
+        if orcid:
+            entry["orcid"] = orcid
         out.append(entry)
     return out
 
 
 def _draft_author_lines(ref: Any) -> str:
     """Existing byline rendered back into the textarea's
-    ``Name | Affiliation | ROR`` line format for round-trip editing."""
+    ``Name [ORCID] | Affiliation | ROR`` line format for round-trip
+    editing."""
     lines: list[str] = []
     for a in getattr(ref, "authors", None) or []:
         name = author_display(a, order="sortable")
@@ -681,6 +688,9 @@ def _draft_author_lines(ref: Any) -> str:
         if isinstance(a, dict):
             aff = (a.get("affiliation") or "").strip()
             ror = (a.get("ror") or "").strip()
+            orcid = normalize_orcid(a.get("orcid"))
+            if orcid:
+                name = f"{name} [{orcid}]"
         parts = [name]
         if ror:
             parts += [aff, ror]  # keep the position even if aff is blank
