@@ -200,8 +200,14 @@ def _mirror_name(ref: Any) -> str:
 
 def _handle_with_file(kind: str, ref: Any, ref_id: int) -> str:
     """The handle, with the mirror filename beside it when the ref has one:
-    ``me4641 (worker_busy_vs_starved_diagnosis.md)``."""
-    hid = handle_registry.format_handle(kind, ref_id)
+    ``me4641 (worker_busy_vs_starved_diagnosis.md)``. A code-less kind
+    (``handle_registry.CODELESS_KINDS``: websearch, web, perplexity-*, …)
+    is addressed by ``<kind>:<slug>``, the form ``get`` resolves, so a memory
+    whose ring cites a websearch cache renders instead of raising
+    (gr476896)."""
+    hid = handle_registry.try_format(kind, ref_id)
+    if hid is None:
+        hid = f"{kind}:{getattr(ref, 'slug', None) or ref_id}"
     name = _mirror_name(ref)
     return f"{hid} ({name})" if name else hid
 

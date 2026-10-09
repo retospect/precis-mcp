@@ -77,6 +77,31 @@ def test_memory_eye_1hop_marks_an_audit_flagged_neighbour(hub: Hub) -> None:
     assert out.count("[AUDIT:ungrounded-number]") == 1
 
 
+def test_memory_eye_1hop_labels_a_codeless_neighbour_by_kind_and_slug(
+    hub: Hub,
+) -> None:
+    """gr476896: a ring holding a websearch cache (no handle code) raised
+    KeyError and the whole eye failed. The neighbour renders as
+    ``websearch:<slug>``, the handle ``get`` resolves."""
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Focus")
+    cache = store.insert_ref(
+        kind="websearch", slug="characteristic-length-nanoparticles", title="ℓc search"
+    )
+    paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS profiling")
+    for near in (cache, paper):
+        store.add_link(src_ref_id=mem.id, dst_ref_id=near.id, relation="related-to")
+
+    out = render_eye(
+        store, handle_registry.format_handle("memory", mem.id), "fisheye+1hop"
+    )
+
+    assert (
+        "related-to: websearch:characteristic-length-nanoparticles — ℓc search" in out
+    )
+    assert f"related-to: pa{paper.id} — XPS profiling" in out
+
+
 def test_memory_eye_1hop_caps_a_relation_group_with_overflow_line(hub: Hub) -> None:
     """A relation group over ``_NEIGHBOR_GROUP_CAP`` (8) is capped, not
     dumped flat — the truncated tail surfaces as an explicit ``… +N more``
