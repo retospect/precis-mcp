@@ -54,6 +54,26 @@ cadence; ``meta.authors_resolved_at`` is its idempotency stamp and
 ``refs.title``/``refs.year`` when — and only when — the ref has none of
 its own (:func:`precis.identity.is_placeholder_title`), which is how a
 DOI-only acquire's title-less stub ever gets a name.
+
+Supplementary information (SI)
+------------------------------
+
+Reto's ruling (2026-10-03): found SI is always fetched and ingested, never a
+placeholder; discovery runs where attention is (web paper open, MCP
+``get(kind='paper')``, a fisheye ring walk), never as a corpus sweep; each
+SI file is its own ``paper`` ref with ``pdf_role='supplement'``, linked to
+the parent and cited as the parent. :mod:`precis.ingest.si_discovery` is
+the pure discovery layer (Figshare, Crossref relation, component-DOI probe,
+publisher landing-page patterns, ``safe_get`` only; a Cloudflare challenge
+is a recorded miss). :mod:`precis.workers.si_fetch` claims flagged parents
+ahead of the stub backlog inside the fetch pass, downloads into the inbox
+with a ``role: supplement`` sidecar, and records ``meta.si_checked_at`` /
+``si_found`` so a paper is checked once. :mod:`precis.store.si_links` holds
+the edge vocabulary: the link is ``part-of`` with ``links.meta.role =
+'supplement'`` (the skill ``precis-relations`` defines that use; a
+dedicated ``supplements`` pair would need a relations seed migration and a
+backfill) and ``cite_target_for`` / ``ResolvedHandle.cite_public_id``
+redirect a cite of the SI to its parent.
 """
 
 from precis.ingest.add import IngestResult
