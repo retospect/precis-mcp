@@ -473,11 +473,17 @@ def _resolve_head_sha(root: Path) -> str | None:
         if not head.startswith("ref:"):
             return head or None  # detached HEAD is already a sha
         ref = head.split(":", 1)[1].strip()
-        loose = git_dir / ref
-        if loose.exists():
-            return loose.read_text(encoding="utf-8").strip() or None
+        # A linked worktree's gitdir holds HEAD but its branch refs and
+        # packed-refs live in the common dir that ``commondir`` names.
+        common = git_dir
+        if (commondir := git_dir / "commondir").is_file():
+            pointer = commondir.read_text(encoding="utf-8").strip()
+            common = Path(pointer) if Path(pointer).is_absolute() else git_dir / pointer
+        for loose in (git_dir / ref, common / ref):
+            if loose.exists():
+                return loose.read_text(encoding="utf-8").strip() or None
         # Packed refs: a freshly-cloned or gc'd tree has no loose ref file.
-        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+        for line in (common / "packed-refs").read_text(encoding="utf-8").splitlines():
             if line.startswith(("#", "^")):
                 continue
             sha, _, name = line.partition(" ")

@@ -50,7 +50,7 @@ subsystem down only with its failure id open or its check `stale`.
 does not mean no deploy visibility:
 
 ```python
-get(kind="skill", id="precis-status")  # Build block: git_sha_short, git_source, build_time
+get(kind="skill", id="precis-status")  # Build block: served_sha, served_from, build_age, WARN lines
 ```
 
 `precis-status` reports the build actually serving this MCP. Trust it only

@@ -43,7 +43,8 @@ import subprocess
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -1761,11 +1762,15 @@ class SkillHandler(Handler):
 
         Four sections:
 
-        1. **Build** — version + git/build metadata baked into the
-           image at ``docker build`` time via env vars from
-           ``scripts/build-image``. Surfaces ``"unknown"`` when the
-           image was built without the build-args (so the response
-           still answers "what is this build" honestly).
+        1. **Build** — ``served_sha``/``served_from`` (the commit this
+           process executes), ``image_sha`` and the baked build
+           metadata, ``source_drift`` and ``build_age``, then one
+           ``⚠ WARN`` line per staleness finding (drift unknown, tree
+           moved, build older than :data:`_BUILD_AGE_WARN_DAYS`). Any
+           WARN makes the overall verdict ``WARN`` rather than ``OK``.
+           Surfaces ``"unknown"`` when the image was built without the
+           build-args (so the response still answers "what is this
+           build" honestly).
         2. **Runtime** — live process facts: container hostname, OS
            platform, python version, pid, uptime.
         3. **Database** — connected DB host/port/name/user, server
@@ -1788,16 +1793,25 @@ class SkillHandler(Handler):
         if last_exit is not None:
             lines.append(f"**{last_exit}**")
             lines.append("")
+        staleness = _staleness()
+        stale_warnings = staleness.warnings()
         lines += [
             "**Build**",
             "",
             render_agent_table(
                 [
                     {"field": field, "value": value}
-                    for field, value in _collect_build_info()
+                    for field, value in _collect_build_info(staleness)
                 ],
                 schema=["field", "value"],
             ),
+        ]
+        # gr458061: a stale process whose status page read "Overall: OK"
+        # cost two false root-cause analyses. Anything that cannot be shown
+        # fresh is said out loud here, next to the fields it qualifies.
+        for warning in stale_warnings:
+            lines.extend(["", f"**⚠ {warning}**"])
+        lines += [
             "",
             "**Runtime**",
             "",
@@ -1900,6 +1914,8 @@ class SkillHandler(Handler):
                 schema=["module", "status", "backs", "install_hint"],
             )
         )
+        if worst == "OK" and stale_warnings:
+            worst = "WARN"
         lines.append("")
         lines.append(f"**Overall: {worst}**")
         if worst == "DEGRADED":
@@ -1907,6 +1923,13 @@ class SkillHandler(Handler):
                 "\nMissing entries above mean the listed kinds will "
                 "raise at runtime even though `tools/list` advertises "
                 "them.  Install the missing extra and restart the MCP."
+            )
+        if stale_warnings:
+            lines.append(
+                f"\n{len(stale_warnings)} staleness warning"
+                f"{'s' if len(stale_warnings) != 1 else ''} under **Build** "
+                "above: the code this process serves may not be the code you "
+                "expect. Verify there before trusting a negative result."
             )
 
         # Embedder + store are deeper than a bare import probe, but
@@ -1950,10 +1973,11 @@ def _live_git_info() -> dict[str, str]:
     """Read the git state of the *source tree the running code loaded from*.
 
     Shells ``git`` against the directory holding ``precis/__init__.py``
-    (``Path(precis.__file__).parent``). Returns ``{}`` when that dir is
-    not inside a git checkout — an installed wheel in ``site-packages``,
-    or a host without the ``git`` binary — so a baked Docker image (which
-    answers via :data:`_BUILD_ENV_KEYS` env vars instead) is unaffected.
+    (``Path(precis.__file__).parent``). When ``git`` cannot answer, falls
+    back to :func:`_dotgit_info`, which parses ``.git`` directly. Returns
+    ``{}`` when that dir is not inside a git checkout at all — an installed
+    wheel in ``site-packages`` — so a baked Docker image (which answers via
+    :data:`_BUILD_ENV_KEYS` env vars instead) is unaffected.
 
     Complements the build-time env vars: those describe the *image*, this
     describes a *live checkout* (local dev, an editable install, or the
@@ -1966,6 +1990,11 @@ def _live_git_info() -> dict[str, str]:
     import precis
 
     src = Path(precis.__file__).resolve().parent
+    return _git_cli_info(src) or _dotgit_info(src)
+
+
+def _git_cli_info(src: Path) -> dict[str, str]:
+    """The ``git``-binary half of :func:`_live_git_info`; ``{}`` if git can't answer."""
 
     def _git(*args: str) -> str | None:
         try:
@@ -1983,8 +2012,8 @@ def _live_git_info() -> dict[str, str]:
 
     top = _git("rev-parse", "--show-toplevel")
     if top is None:
-        # Not a git checkout (installed wheel) or no git binary — let the
-        # baked env vars answer, or render "unknown" honestly.
+        # Not a git checkout (installed wheel), no git binary, or git
+        # refusing the tree — the ``.git`` parser gets the next look.
         return {}
 
     info: dict[str, str] = {"source_path": top}
@@ -2003,14 +2032,45 @@ def _live_git_info() -> dict[str, str]:
     return info
 
 
-#: Live git state of the running source tree, **frozen at process start**
-#: (module import). Freezing is deliberate: ``precis-status`` answers "which
-#: commit is *this process* running", not "what does the checkout say now".
-#: If the checkout is later moved ahead (``git pull`` / a ship reset) without
-#: restarting, this stays at the loaded sha — so the drift is *visible* and
-#: the reader knows to restart, rather than a fresh on-demand read falsely
-#: reporting "current". Mirrors how the baked env vars freeze at build time.
-_SOURCE_GIT_INFO: dict[str, str] = _live_git_info()
+def _dotgit_info(src: Path) -> dict[str, str]:
+    """Checkout identity of ``src``'s tree read from ``.git`` without git.
+
+    The lane gr458061's per-session container needed and did not have:
+    ``/app`` there is a read-only bind mount of the live main checkout,
+    ``.git`` included, owned by another uid — where ``git`` refuses to
+    operate ("dubious ownership") and :func:`_git_cli_info` returns ``{}``.
+    With nothing else under the import path to say which commit the
+    served files are, the image's baked ``PRECIS_GIT_SHA`` won and
+    ``precis-status`` reported a three-week-old image sha for a tree that
+    was current to the minute. Walking up from the import path to the
+    nearest ``.git`` and parsing it with the watchdog's reader (the same
+    three files, no subprocess) makes the mounted tree visible.
+
+    Same partiality as the watched lane: a sha and a branch, no
+    ``git_dirty``/``git_describe``/``git_last_tag`` — those need real git.
+    ``site-packages`` is excluded so a venv living inside a checkout does
+    not pass the checkout's HEAD off as the identity of an installed wheel.
+    """
+    if "site-packages" in src.parts:
+        return {}
+    for root in (src, *src.parents):
+        if (root / ".git").exists():
+            break
+    else:
+        return {}
+    try:
+        from precis.install_watchdog import checkout_fingerprint
+
+        sha = checkout_fingerprint(root)
+    except Exception:  # pragma: no cover — must never raise at import
+        return {}
+    info = {"source_path": str(root)}
+    if sha is None:
+        return info
+    info.update({"git_sha": sha, "git_sha_short": sha[:12]})
+    if (branch := _head_ref_branch(root)) is not None:
+        info["git_branch"] = branch
+    return info
 
 
 def _dist_git_info() -> dict[str, str]:
@@ -2130,6 +2190,17 @@ def _head_ref_branch(root: Path) -> str | None:
     except (OSError, ValueError, IndexError):
         return None
 
+
+#: Live git state of the running source tree, **frozen at process start**
+#: (module import). Freezing is deliberate: ``precis-status`` answers "which
+#: commit is *this process* running", not "what does the checkout say now".
+#: If the checkout is later moved ahead (``git pull`` / a ship reset) without
+#: restarting, this stays at the loaded sha — so the drift is *visible* and
+#: the reader knows to restart, rather than a fresh on-demand read falsely
+#: reporting "current". Mirrors how the baked env vars freeze at build time.
+#: Assigned here, after :func:`_head_ref_branch`, because the ``.git``
+#: fallback runs at import and needs it defined.
+_SOURCE_GIT_INFO: dict[str, str] = _live_git_info()
 
 #: Git identity of the watched checkout, **frozen at process start** — the
 #: sha this process booted from, not whatever the tree says now. The drift
@@ -2256,19 +2327,26 @@ def _git_identity_lane() -> tuple[str, dict[str, str]]:
     1. ``watched-checkout`` — :data:`_WATCHED_GIT_INFO`. Ranked top because
        it is the only lane that can be right when a process imports from a
        copy of a tree: the baked env describes the venv, not the copy.
-    2. ``image-build`` — the ``PRECIS_GIT_*`` build args. Correct and
+    2. ``working-tree`` / ``image+mount`` — :data:`_SOURCE_GIT_INFO`, the
+       checkout ``precis.__file__`` sits in. Named ``image+mount`` when a
+       real baked ``PRECIS_GIT_SHA`` is also present: that is a live
+       checkout mounted over an image's source, and the files being served
+       are the mount's, not the image's (gr458061: the baked sha used to
+       win here and reported a three-week-old image for a tree that was
+       current). The image's own sha stays visible as ``image_sha``.
+    3. ``image-build`` — the ``PRECIS_GIT_*`` build args. Correct and
        authoritative for a genuine runtime/worker image, where the baked
-       sha *is* the code and there is no watched tree.
-    3. ``working-tree`` — :data:`_SOURCE_GIT_INFO`, the checkout
-       ``precis.__file__`` sits in. Local dev and editable installs.
+       sha *is* the code and there is no checkout anywhere.
     4. ``vcs-install`` — :data:`_DIST_GIT_INFO`, the commit in the wheel's
        ``direct_url.json``. The cluster's ``… @main`` venv.
     5. ``unknown`` — no git anywhere; say so rather than guess.
     """
+    baked = _baked_git_info()
+    source_lane = "image+mount" if baked.get("git_sha") else "working-tree"
     candidates = (
         ("watched-checkout", _WATCHED_GIT_INFO),
-        ("image-build", _baked_git_info()),
-        ("working-tree", _SOURCE_GIT_INFO),
+        (source_lane, _SOURCE_GIT_INFO),
+        ("image-build", baked),
         ("vcs-install", _DIST_GIT_INFO),
     )
     for name, info in candidates:
@@ -2277,10 +2355,150 @@ def _git_identity_lane() -> tuple[str, dict[str, str]]:
     return "unknown", {}
 
 
-def _source_drift() -> str:
-    """Has the tree this process loaded from moved since it loaded?
+#: ``build_time`` older than this many days is a WARN on ``precis-status``.
+#: Three days is longer than any intended gap between a build and its
+#: redeploy; the 22-day-old image in gr458061 comment 6 was the only signal
+#: that discriminated, and it had to be date-subtracted by hand.
+#: ``PRECIS_BUILD_AGE_WARN_DAYS`` overrides.
+_BUILD_AGE_WARN_DAYS = 3
 
-    The field that answers "is my MCP stale?" — repeatedly, from the
+
+def _build_age_warn_days() -> float:
+    raw = (os.environ.get("PRECIS_BUILD_AGE_WARN_DAYS") or "").strip()
+    try:
+        return float(raw) if raw else float(_BUILD_AGE_WARN_DAYS)
+    except ValueError:
+        return float(_BUILD_AGE_WARN_DAYS)
+
+
+def _format_age(age: timedelta) -> str:
+    """``22d 4h`` / ``3h 12m`` / ``<1m`` — an age a reader need not subtract."""
+    total = int(age.total_seconds())
+    if total < 0:
+        return "in the future"
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m" if minutes else "<1m"
+
+
+def _parse_build_time(raw: str | None) -> datetime | None:
+    """``scripts/build-image``'s ``%Y-%m-%dT%H:%M:%SZ`` as an aware UTC datetime."""
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _commits_behind(root: Path, old: str, new: str) -> int | None:
+    """``git rev-list --count old..new`` on ``root``; ``None`` when git can't."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--count", f"{old}..{new}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class _Staleness:
+    """Everything ``precis-status`` says about whether this process is stale.
+
+    One live computation feeds both the Build rows (``source_drift``,
+    ``build_age``) and the WARN lines under them, so the two cannot
+    disagree. ``drift`` is one of ``none`` / ``moved`` / ``unknown``;
+    ``why_unknown`` names what could not be compared when it is
+    ``unknown``.
+    """
+
+    served_from: str
+    drift: str
+    booted: str | None = None
+    now: str | None = None
+    behind: int | None = None
+    why_unknown: str | None = None
+    build_time: str | None = None
+    build_age: timedelta | None = None
+
+    @property
+    def drift_row(self) -> str:
+        if self.drift == "moved" and self.booted and self.now:
+            return f"moved {self.booted[:12]}→{self.now[:12]}"
+        return self.drift
+
+    @property
+    def build_age_row(self) -> str:
+        if self.build_age is not None:
+            return f"{_format_age(self.build_age)} (built {self.build_time})"
+        return "unparseable" if self.build_time else "unknown"
+
+    def warnings(self) -> list[str]:
+        """WARN lines, each one sentence a reader can act on. Empty when fresh."""
+        out: list[str] = []
+        if self.drift == "unknown":
+            out.append(
+                "WARN staleness unknown — "
+                f"{self.why_unknown or 'nothing to compare the served sha against'}. "
+                "Nothing here can tell whether this process is behind the code "
+                "it should be serving; go by build_age and started_at, and "
+                "reconnect or restart if in doubt."
+            )
+        elif self.drift == "moved":
+            old = (self.booted or "?")[:12]
+            new = (self.now or "?")[:12]
+            if self.behind is not None:
+                n = self.behind
+                head = f"served tree is {n} commit{'s' if n != 1 else ''} behind"
+            else:
+                head = "served tree is behind"
+            out.append(
+                f"WARN {head} the mounted checkout ({old}→{new}): this process "
+                f"still runs {old}; restart it to serve {new}."
+            )
+        if self.build_age is not None:
+            limit = _build_age_warn_days()
+            if self.build_age > timedelta(days=limit):
+                out.append(
+                    f"WARN build is {_format_age(self.build_age)} old "
+                    f"(build_time {self.build_time}; WARN above "
+                    f"{limit:g}d) — rebuild and redeploy, or confirm this "
+                    "image is the one meant to be running."
+                )
+        return out
+
+
+def _served_tree() -> tuple[str, Path] | None:
+    """``(sha at import, root)`` of the tree the served code came from."""
+    if booted := _WATCHED_GIT_INFO.get("git_sha"):
+        from precis.install_watchdog import watched_checkout_root
+
+        root = watched_checkout_root()
+        return (booted, root) if root is not None else None
+    booted = _SOURCE_GIT_INFO.get("git_sha")
+    path = _SOURCE_GIT_INFO.get("source_path")
+    return (booted, Path(path)) if booted and path else None
+
+
+def _staleness() -> _Staleness:
+    """Compare the sha frozen at import against the served tree's HEAD now.
+
+    The check that answers "is my MCP stale?" — repeatedly, from the
     surface built to answer it, rather than once per bounce from the
     watchdog's exit breadcrumb. It is the one check that would have caught
     gr458061's incident: in that container ``stat``, ``grep`` and a fresh
@@ -2289,68 +2507,112 @@ def _source_drift() -> str:
     three agreed and all three were wrong. Comparing a sha frozen at import
     against the tree's HEAD read now cannot agree by construction.
 
-    * ``"none"`` — the watched tree is still at the sha this process
-      imported.
-    * ``"moved <old>→<new>"`` — it has advanced; this process serves code
-      that is no longer what the tree says. Restarting is the fix.
-    * ``"unknown"`` — no watched tree, or its ``.git`` is unreadable. Not
-      "clean": nothing was checked.
+    * ``none`` — the served tree is still at the sha this process imported.
+    * ``moved`` — it has advanced; this process serves code that is no
+      longer what the tree says. ``behind`` counts the commits when git
+      can read the tree. Restarting is the fix.
+    * ``unknown`` — no tree to compare (a baked image, a from-git wheel,
+      no identity at all), or the tree's ``.git`` is unreadable now. Not
+      "clean": nothing was checked, and the render says so as a WARN.
 
-    Scoped to the watched tree on purpose. ``_SOURCE_GIT_INFO``'s checkout
-    could be re-read the same way, but for the deployment that needs this
-    the executing code is a *copy* and its own directory has no ``.git``.
+    The tree is the watched checkout when ``PRECIS_CHECKOUT_WATCHDOG``
+    names one (the shared server imports from a ``.git``-less copy of it),
+    else the checkout ``precis.__file__`` sits in — which covers the local
+    run, the editable install and the bind-mounted dev container.
     """
-    booted = _WATCHED_GIT_INFO.get("git_sha")
-    if not booted:
-        return "unknown"
+    served_from, _ = _git_identity_lane()
+    build_time = _real_baked("PRECIS_BUILD_TIME")
+    built = _parse_build_time(build_time)
+    age = (datetime.now(UTC) - built) if built is not None else None
+
+    def mk(**kw: Any) -> _Staleness:
+        return _Staleness(
+            served_from=served_from, build_time=build_time, build_age=age, **kw
+        )
+
+    tree = _served_tree()
+    if tree is None:
+        why = {
+            "image-build": ("baked image with no mounted checkout to compare against"),
+            "vcs-install": "installed from a git URL; no checkout to compare against",
+            "unknown": "no git identity for the served code at all",
+        }.get(served_from, "the served tree's checkout root is not known")
+        return mk(drift="unknown", why_unknown=why)
+    booted, root = tree
     try:
-        from precis.install_watchdog import checkout_fingerprint, watched_checkout_root
+        from precis.install_watchdog import checkout_fingerprint
 
-        root = watched_checkout_root()
-        now = checkout_fingerprint(root) if root is not None else None
+        now = checkout_fingerprint(root)
     except Exception:  # pragma: no cover — a status field must not raise
-        return "unknown"
+        now = None
     if now is None:
-        return "unknown"
+        return mk(
+            drift="unknown",
+            booted=booted,
+            why_unknown=f"the served tree's .git at {root} could not be read",
+        )
     if now == booted:
-        return "none"
-    return f"moved {booted[:12]}→{now[:12]}"
+        return mk(drift="none", booted=booted, now=now)
+    return mk(
+        drift="moved", booted=booted, now=now, behind=_commits_behind(root, booted, now)
+    )
 
 
-def _collect_build_info() -> list[tuple[str, str]]:
+def _source_drift() -> str:
+    """The ``source_drift`` row: ``none`` / ``moved <old>→<new>`` / ``unknown``."""
+    return _staleness().drift_row
+
+
+def _collect_build_info(staleness: _Staleness | None = None) -> list[tuple[str, str]]:
     """Return ``(field, value)`` rows for the **Build** section.
 
+    Leads with ``served_sha`` / ``served_from`` — the commit this process
+    executes and where it came from — and ``image_sha``, the commit the
+    image was built from, as separate rows. They differ exactly when a
+    checkout is mounted over an image (``served_from: image+mount``), and
+    showing one where the other belongs was gr458061's masking defect.
+
     Every git-identity field comes from a single lane, chosen by
-    :func:`_git_identity_lane` and named in ``git_source``; a field that
-    lane does not carry renders ``"unknown"`` rather than borrowing from
-    the next one. Mixing was the defect: the shared server reported a
+    :func:`_git_identity_lane` and named in ``served_from`` (``git_source``
+    is the same value, kept for readers that know it by that name); a field
+    that lane does not carry renders ``"unknown"`` rather than borrowing
+    from the next one. Mixing was the defect: the shared server reported a
     three-week-old baked sha beside a working-tree ``source_path`` and a
     ``git_dirty`` that described neither (gr457361).
 
     ``build_time`` / ``build_host`` / ``build_user`` stay env-only — they
     describe the image build, which is a different question from which
-    commit runs, and answering both separately is the point.
+    commit runs, and answering both separately is the point. ``build_age``
+    renders that time as an age so staleness is read, not computed.
 
     Also emits ``source_path`` (the tree the running code came from, when
-    known) and ``source_drift`` (see :func:`_source_drift`) so a reader can
+    known) and ``source_drift`` (see :func:`_staleness`) so a reader can
     tell "this sha is current" from "nothing was checked".
     """
     from precis import __version__
 
     git_source, lane = _git_identity_lane()
-    rows: list[tuple[str, str]] = [("version", __version__)]
+    st = staleness if staleness is not None else _staleness()
+    rows: list[tuple[str, str]] = [
+        ("version", __version__),
+        ("served_sha", lane.get("git_sha") or "unknown"),
+        ("served_from", git_source),
+        ("image_sha", _real_baked("PRECIS_GIT_SHA") or "none"),
+    ]
     for env_name, label in _BUILD_ENV_KEYS:
         if label in _GIT_IDENTITY_LABELS:
             rows.append((label, lane.get(label) or "unknown"))
         else:
             rows.append((label, _real_baked(env_name) or "unknown"))
+        if label == "build_time":
+            rows.append(("build_age", st.build_age_row))
 
     rows.append(("git_source", git_source))
     # ``source_path`` is a location, not an identity claim, so an
     # sha-less live checkout (an unborn branch) may still name itself.
     source_path = lane.get("source_path") or _SOURCE_GIT_INFO.get("source_path")
     rows.append(("source_path", source_path or "unknown"))
-    rows.append(("source_drift", _source_drift()))
+    rows.append(("source_drift", st.drift_row))
     return rows
 
 

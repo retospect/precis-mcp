@@ -109,6 +109,32 @@ def test_fingerprint_follows_a_gitdir_pointer_file(tmp_path: Path) -> None:
     assert checkout_fingerprint(tree) == SHA_A
 
 
+def test_fingerprint_resolves_a_linked_worktree_branch(tmp_path: Path) -> None:
+    """A real ``git worktree add`` layout: the worktree's gitdir holds only
+    HEAD and a ``commondir`` pointer; the branch ref (loose or packed) lives
+    in the main repo's ``.git``. Before this read the fingerprint was
+    ``None`` on every worktree, which ``precis-status`` then had to report
+    as "staleness unknown" for every local dev run (gr458061)."""
+    main = _checkout(tmp_path / "main", sha=SHA_A, branch="main")
+    (main / ".git" / "refs" / "heads" / "feature").write_text(
+        SHA_B + "\n", encoding="utf-8"
+    )
+    wt_gitdir = main / ".git" / "worktrees" / "feature"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    tree = tmp_path / "feature-tree"
+    tree.mkdir()
+    (tree / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+    assert checkout_fingerprint(tree) == SHA_B
+    # Packed in the common dir, no loose file anywhere.
+    (main / ".git" / "refs" / "heads" / "feature").unlink()
+    (main / ".git" / "packed-refs").write_text(
+        f"{SHA_A} refs/heads/feature\n", encoding="utf-8"
+    )
+    assert checkout_fingerprint(tree) == SHA_A
+
+
 def test_fingerprint_is_none_for_a_non_checkout(tmp_path: Path) -> None:
     assert checkout_fingerprint(tmp_path) is None
 

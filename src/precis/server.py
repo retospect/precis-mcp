@@ -1395,7 +1395,7 @@ def _log_version_banner() -> None:
             fields.get("version", "?"),
             fields.get("git_sha_short", "unknown"),
             fields.get("git_branch", "unknown"),
-            fields.get("git_source", "unknown"),
+            fields.get("served_from", "unknown"),
             fields.get("source_path", ""),
         )
     except Exception:  # pragma: no cover — banner must never break boot

@@ -289,13 +289,22 @@ def test_resource_read_numeric_id_kind_coerces(
 
 
 def test_precis_status_renders_optional_dep_table(
-    runtime_with_store: PrecisRuntime,
+    runtime_with_store: PrecisRuntime, monkeypatch, tmp_path
 ) -> None:
     """``get(kind='skill', id='precis-status')`` returns a markdown
     body listing every probe in the optional-deps table with an OK
     / MISSING / ERROR status.  Sentence-transformers must be
     present (we [all]-installed in CI).
+
+    The git lane is pinned to a fresh fake checkout: the test container
+    mounts a worktree whose ``.git`` points outside the mount, and an
+    unreadable tree is (correctly) a staleness WARN, which is not what
+    this test is about.
     """
+    sha = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    _fake_checkout(tmp_path, sha)
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch, source={"git_sha": sha, "source_path": str(tmp_path)})
     body = runtime_with_store.dispatch("get", {"kind": "skill", "id": "precis-status"})
     assert "# precis-status" in body
     assert "sentence-transformers" in body
@@ -384,22 +393,212 @@ def test_precis_status_build_section_reads_env(monkeypatch) -> None:
     assert "unknown" in body
 
 
-def test_precis_status_build_prefers_env_over_live_git(monkeypatch) -> None:
-    """A baked image identity (``PRECIS_GIT_SHA`` set) wins over the
-    live-checkout git read, and ``git_source`` reports ``image-build``.
+def _clear_build_env(monkeypatch) -> None:
+    from precis.handlers import skill as skill_mod
+
+    for env_name, _ in skill_mod._BUILD_ENV_KEYS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("PRECIS_CHECKOUT_WATCHDOG", raising=False)
+    monkeypatch.delenv("PRECIS_BUILD_AGE_WARN_DAYS", raising=False)
+
+
+def _pin_lane(monkeypatch, *, source=None, watched=None, dist=None) -> None:
+    """Pin every frozen identity lane so a test owns the whole picture."""
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(skill_mod, "_SOURCE_GIT_INFO", source or {})
+    monkeypatch.setattr(skill_mod, "_WATCHED_GIT_INFO", watched or {})
+    monkeypatch.setattr(skill_mod, "_DIST_GIT_INFO", dist or {})
+
+
+def test_precis_status_mounted_checkout_beats_baked_sha(monkeypatch, tmp_path) -> None:
+    """gr458061: a baked ``PRECIS_GIT_SHA`` must not win over a live checkout
+    under the import path. That is the per-session dev container — image
+    with a baked sha, ``/app`` a bind mount of the real checkout — and the
+    served files are the mount's. ``served_from`` names the shape
+    ``image+mount``; the image's sha stays visible, separately, as
+    ``image_sha``.
     """
     from precis.handlers import skill as skill_mod
 
+    live = "1111222233334444555566667777888899990000"
+    _fake_checkout(tmp_path, live)
+    _clear_build_env(monkeypatch)
     monkeypatch.setenv("PRECIS_GIT_SHA", "bakedsha0000")
-    monkeypatch.setattr(
-        skill_mod,
-        "_SOURCE_GIT_INFO",
-        {"git_sha": "livesha1111", "source_path": "/live/checkout"},
+    _pin_lane(
+        monkeypatch,
+        source={
+            "git_sha": live,
+            "git_sha_short": live[:12],
+            "source_path": str(tmp_path),
+        },
     )
     rows = dict(skill_mod._collect_build_info())
 
-    assert rows["git_sha"] == "bakedsha0000"
-    assert rows["git_source"] == "image-build"
+    assert rows["served_sha"] == live
+    assert rows["served_from"] == "image+mount"
+    assert rows["git_sha"] == live
+    assert rows["git_source"] == "image+mount"
+    assert rows["image_sha"] == "bakedsha0000"
+    assert rows["source_drift"] == "none"
+    assert skill_mod._staleness().warnings() == []
+
+
+def test_precis_status_image_build_lane_warns_staleness_unknown(monkeypatch) -> None:
+    """A baked image with no checkout anywhere: the served sha is the image's,
+    ``image_sha`` agrees, and because nothing can be compared the page says
+    so as a WARN — overall is not OK. gr458061 comment 6: the stale server
+    came back ``Overall: OK`` with no drift row, which read as healthy.
+    """
+    from precis.handlers import skill as skill_mod
+
+    _clear_build_env(monkeypatch)
+    monkeypatch.setenv("PRECIS_GIT_SHA", "bakedsha0000")
+    _pin_lane(monkeypatch)
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["served_sha"] == "bakedsha0000"
+    assert rows["served_from"] == "image-build"
+    assert rows["image_sha"] == "bakedsha0000"
+    assert rows["source_drift"] == "unknown"
+
+    body = SkillHandler(hub=Hub())._render_status()
+    assert "WARN staleness unknown" in body
+    assert "Overall: WARN" in body
+    assert "Overall: OK" not in body
+
+
+def test_precis_status_working_tree_lane_is_fresh_without_warnings(
+    monkeypatch, tmp_path
+) -> None:
+    """A local checkout at the sha it imported: ``served_from: working-tree``,
+    ``image_sha: none``, drift ``none``, no WARN, overall OK."""
+    from precis.handlers import skill as skill_mod
+
+    sha = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    _fake_checkout(tmp_path, sha)
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch, source={"git_sha": sha, "source_path": str(tmp_path)})
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["served_sha"] == sha
+    assert rows["served_from"] == "working-tree"
+    assert rows["image_sha"] == "none"
+    assert rows["source_drift"] == "none"
+    assert rows["build_age"] == "unknown"
+    body = SkillHandler(hub=Hub())._render_status()
+    assert "WARN" not in body
+    assert "Overall: OK" in body
+
+
+def test_precis_status_unknown_lane_warns_staleness_unknown(monkeypatch) -> None:
+    """No git identity at all still gets the WARN, with the reason named."""
+    from precis.handlers import skill as skill_mod
+
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch)
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["served_sha"] == "unknown"
+    assert rows["served_from"] == "unknown"
+    assert rows["source_drift"] == "unknown"
+    warnings = skill_mod._staleness().warnings()
+    assert len(warnings) == 1
+    assert warnings[0].startswith("WARN staleness unknown")
+    assert "no git identity" in warnings[0]
+
+
+def test_precis_status_served_tree_behind_counts_commits(monkeypatch, tmp_path) -> None:
+    """When the mounted checkout's HEAD moves past the import-time sha the
+    page says how far behind the served tree is, in commits, from git; and
+    says "behind" without a count when git cannot read the tree."""
+    from precis.handlers import skill as skill_mod
+
+    booted = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    moved_to = "9999888877776666555544443333222211110000"
+    _fake_checkout(tmp_path, booted)
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch, source={"git_sha": booted, "source_path": str(tmp_path)})
+    _fake_checkout(tmp_path, moved_to)
+
+    # No real git history behind the fake .git — the count is unavailable.
+    warnings = skill_mod._staleness().warnings()
+    assert len(warnings) == 1
+    assert warnings[0].startswith("WARN served tree is behind the mounted checkout")
+    assert "aaaa1111bbbb→999988887777" in warnings[0]
+
+    monkeypatch.setattr(skill_mod, "_commits_behind", lambda root, old, new: 7)
+    warnings = skill_mod._staleness().warnings()
+    assert warnings[0].startswith("WARN served tree is 7 commits behind")
+    body = SkillHandler(hub=Hub())._render_status()
+    assert "7 commits behind the mounted checkout" in body
+    assert "Overall: WARN" in body
+
+
+def test_precis_status_build_age_is_an_age_and_warns_past_threshold(
+    monkeypatch, tmp_path
+) -> None:
+    """``build_time`` renders as an age next to the timestamp, and a build
+    older than the threshold (default 3 days) is a WARN of its own — the
+    22-day-old image in gr458061 comment 6 was the only discriminating
+    signal and had to be date-subtracted by hand."""
+    from datetime import UTC, datetime, timedelta
+
+    from precis.handlers import skill as skill_mod
+
+    sha = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    _fake_checkout(tmp_path, sha)
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch, source={"git_sha": sha, "source_path": str(tmp_path)})
+
+    old = (datetime.now(UTC) - timedelta(days=22, hours=4)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    monkeypatch.setenv("PRECIS_BUILD_TIME", old)
+    rows = dict(skill_mod._collect_build_info())
+    assert rows["build_age"].startswith("22d 4h (built ")
+    warnings = skill_mod._staleness().warnings()
+    assert len(warnings) == 1
+    assert warnings[0].startswith("WARN build is 22d 4h old")
+    assert "Overall: WARN" in SkillHandler(hub=Hub())._render_status()
+
+    fresh = (datetime.now(UTC) - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setenv("PRECIS_BUILD_TIME", fresh)
+    assert dict(skill_mod._collect_build_info())["build_age"].startswith("5h ")
+    assert skill_mod._staleness().warnings() == []
+
+    # The threshold is tunable; a 1-day limit makes the 5h build still fine
+    # and a 2-day build a WARN.
+    monkeypatch.setenv("PRECIS_BUILD_AGE_WARN_DAYS", "1")
+    two_days = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setenv("PRECIS_BUILD_TIME", two_days)
+    assert skill_mod._staleness().warnings()[0].startswith("WARN build is 2d 0h old")
+
+    monkeypatch.setenv("PRECIS_BUILD_TIME", "not a timestamp")
+    assert dict(skill_mod._collect_build_info())["build_age"] == "unparseable"
+
+
+def test_dotgit_info_reads_a_checkout_git_refuses(monkeypatch, tmp_path) -> None:
+    """The import-time read must see a mounted checkout even where the
+    ``git`` binary cannot (read-only bind mount owned by another uid): the
+    ``.git`` parser walks up from the import path and yields sha + branch,
+    and stays silent inside ``site-packages``."""
+    from precis.handlers import skill as skill_mod
+
+    sha = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    _fake_checkout(tmp_path, sha)
+    src = tmp_path / "src" / "precis"
+    src.mkdir(parents=True)
+    info = skill_mod._dotgit_info(src)
+    assert info == {
+        "source_path": str(tmp_path),
+        "git_sha": sha,
+        "git_sha_short": sha[:12],
+        "git_branch": "main",
+    }
+    venv = tmp_path / ".venv" / "lib" / "site-packages" / "precis"
+    venv.mkdir(parents=True)
+    assert skill_mod._dotgit_info(venv) == {}
 
 
 def test_precis_status_build_falls_back_to_live_git(monkeypatch) -> None:
@@ -608,7 +807,7 @@ def test_source_drift_is_unknown_not_clean_without_a_watched_tree(
     from precis.handlers import skill as skill_mod
 
     monkeypatch.delenv("PRECIS_CHECKOUT_WATCHDOG", raising=False)
-    monkeypatch.setattr(skill_mod, "_WATCHED_GIT_INFO", {})
+    _pin_lane(monkeypatch)
 
     assert skill_mod._source_drift() == "unknown"
     assert dict(skill_mod._collect_build_info())["source_drift"] == "unknown"
@@ -627,9 +826,7 @@ def test_watched_checkout_lane_absent_when_tree_is_unreadable(
 
     monkeypatch.setenv("PRECIS_CHECKOUT_WATCHDOG", str(tmp_path / "nope"))
     monkeypatch.setenv("PRECIS_GIT_SHA", "bakedsha00000000")
-    monkeypatch.setattr(
-        skill_mod, "_WATCHED_GIT_INFO", skill_mod._watched_checkout_git_info()
-    )
+    _pin_lane(monkeypatch, watched=skill_mod._watched_checkout_git_info())
     rows = dict(skill_mod._collect_build_info())
 
     assert rows["git_source"] == "image-build"
@@ -639,7 +836,9 @@ def test_watched_checkout_lane_absent_when_tree_is_unreadable(
 def test_live_git_info_reads_the_running_checkout() -> None:
     """When the code runs from a git checkout (the dev/gate case),
     ``_live_git_info`` returns a plausible 40-hex sha and a real path.
-    On an installed wheel it returns ``{}`` — both are acceptable.
+    On an installed wheel it returns ``{}``; a checkout whose ``.git``
+    points outside the mount (a worktree inside the test container) names
+    its ``source_path`` and nothing else — all three are acceptable.
     """
     from precis.handlers import skill as skill_mod
 
@@ -647,9 +846,11 @@ def test_live_git_info_reads_the_running_checkout() -> None:
     assert isinstance(info, dict)
     if info:  # inside a git checkout
         assert "source_path" in info
+    if "git_sha" in info:
         assert len(info["git_sha"]) == 40
         assert all(c in "0123456789abcdef" for c in info["git_sha"])
-        assert info["git_dirty"] in ("true", "false")
+        # ``git_dirty`` needs the git binary; the ``.git`` parser omits it.
+        assert info.get("git_dirty", "false") in ("true", "false")
 
 
 def test_precis_status_runtime_section_present() -> None:

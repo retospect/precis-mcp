@@ -20,9 +20,10 @@ kinds: skill
 The `precis-status` synthesised skill answers the questions an
 agent or operator asks when they're not sure what container, build,
 or database they're talking to. One call returns four sections:
-**Build** (version, git sha, branch, dirty flag, last release tag,
-`git_source` + `source_path` provenance, `source_drift`, build
-time/host/user),
+**Build** (`served_sha` + `served_from` — the commit this process
+executes and where it came from — `image_sha`, git branch, dirty flag,
+last release tag, `source_path`, `source_drift`, build time + `build_age`,
+host/user, then one `⚠ WARN` line per staleness finding),
 **Runtime** (container hostname, python, pid, cwd, uptime, and
 `md_vector_warmup` when the `md` kind is registered, which reads
 `warming: batch i/N (k new)` while the pass runs, then one of
@@ -37,18 +38,26 @@ cold),
 version, last applied migration + count), and the existing
 **Optional dependencies** import probe.
 
-The git facts come from one of four lanes, shown by the `git_source`
-field: `watched-checkout` (the HEAD of the tree `PRECIS_CHECKOUT_WATCHDOG`
+## Where the git facts come from: the five `served_from` lanes
+
+The git facts come from one of five lanes, shown by `served_from`
+(`git_source` is the same value under its older name):
+`watched-checkout` (the HEAD of the tree `PRECIS_CHECKOUT_WATCHDOG`
 names — the shared session server, which imports from a `.git`-less
-snapshot of that tree), `image-build` (baked into a Docker image by
-`scripts/build-image`), `working-tree` (read from the live checkout
-the code loaded from — local dev or an editable install), or
+snapshot of that tree), `image+mount` (a live checkout mounted over an
+image's source — the per-session dev container; the served files are
+the mount's, and the image's own commit is shown separately as
+`image_sha`), `working-tree` (read from the live checkout the code
+loaded from — local dev or an editable install), `image-build` (baked
+into a Docker image by `scripts/build-image`, nothing mounted), or
 `vcs-install` (recovered from the installed wheel's `direct_url.json`
 when the package was `pip`/`uv`-installed straight from a git URL —
 the cluster's `… @main` venv, or a git-sourced image). Whichever lane
 answers, the values are **frozen at process start**, so they tell you
 what *this running process* loaded, not what the checkout says right
-now.
+now. A baked `image_sha` never outranks a mounted checkout: that
+masking is how a three-week-old image sha was reported for a tree that
+was current to the minute (gr458061).
 
 **One lane answers every git-identity field.** A field the winning lane
 cannot supply renders `unknown` rather than being filled in from the next
@@ -58,20 +67,32 @@ sha look corroborated (gr457361). `build_time`/`build_host`/`build_user`
 are the exception — they describe the image build, which is a separate
 question, and are always read from the baked env.
 
+## Is my MCP stale? `source_drift`, the WARN lines, and a missing row
+
 `source_drift` is the one field read *live* rather than frozen, and it is
-what answers "is my MCP stale?": `none` (the watched tree is still at the
+what answers "is my MCP stale?": `none` (the served tree is still at the
 sha this process imported), `moved <old>→<new>` (it advanced; this process
 is serving code the tree no longer has — restart it), or `unknown` (no
-watched tree, so **nothing was checked** — not a claim of freshness).
+tree to compare, so **nothing was checked** — not a claim of freshness).
+The served tree is the watched checkout when one is named, else the
+checkout the code imported from (the local run, the editable install,
+the bind-mounted dev container).
 
-**A fourth case has no value because the row is missing entirely**: a
-process that started before the field existed renders no `source_drift`
-row at all. Absence is the strongest staleness signal on the page — it
-means the process is older than the field, so it is stale by definition
-and cannot tell you by how much. Do not read a missing row as `none`.
-Together with `git_source: image-build` on a session MCP it identifies a
-pre-2026-09-30 per-session stdio container; reconnect (`/mcp` → the
-server → reconnect) to land on the shared server.
+Anything short of `none` is also said out loud as a `⚠ WARN` line under
+the Build table, and any WARN makes the verdict `Overall: WARN` instead
+of `OK`: `WARN staleness unknown — <what could not be compared>`,
+`WARN served tree is N commits behind the mounted checkout (<old>→<new>)`
+(N from git when it can read the tree; "behind" without a count when it
+cannot), and `WARN build is <age> old` when `build_time` is older than
+`PRECIS_BUILD_AGE_WARN_DAYS` (default 3). `build_age` renders the age
+beside the timestamp so nobody has to date-subtract by hand.
+
+**A row missing entirely is the oldest signal of all**: a process that
+started before `source_drift` (or `served_sha`) existed renders no such
+row and no WARN. Absence means the process is older than the field, so
+it is stale by definition and cannot tell you by how much. Do not read a
+missing row as `none`. Reconnect (`/mcp` → the server → reconnect) to
+land on the shared server.
 
 A bare `docker build` that skips `scripts/build-image` (so no
 `--build-arg` git values are passed) does **not** count as
@@ -134,14 +155,22 @@ The `git_source` field tells you the lane:
   reader parses `.git` directly (it must: the tree is usually a read-only
   mount owned by another uid, where `git` refuses to run) and those three
   need real git.
-- `image-build` — baked into the image by `scripts/build-image` at
-  `docker build` time (`git_dirty` reads `0`/`1`). Requires *real*
-  build-args: an image built without them (the Dockerfile's `unknown`
-  default) is treated as absent and falls through below.
+- `image+mount` — a live checkout under the import path *and* a real
+  baked sha: the per-session dev container, whose `/app` is a bind mount
+  of the host checkout. The git fields are the mount's; `image_sha` is
+  the image's. Where git refuses the mount (read-only, foreign uid) the
+  `.git` is parsed directly, so `git_dirty`/`git_describe`/`git_last_tag`
+  may read `unknown` while the sha and branch are right.
 - `working-tree` — read from the live checkout at
   `source_path`, frozen when the process started (`git_dirty` reads
   `true`/`false`). This is what you get on a local run or an editable
   install.
+- `image-build` — baked into the image by `scripts/build-image` at
+  `docker build` time (`git_dirty` reads `0`/`1`), with no checkout
+  anywhere under the import path. Requires *real* build-args: an image
+  built without them (the Dockerfile's `unknown` default) is treated as
+  absent and falls through below. Nothing can be compared here, so the
+  page carries `WARN staleness unknown`; `build_age` is the signal.
 - `vcs-install` — recovered from the installed wheel's
   `direct_url.json` (`vcs_info.commit_id` + `requested_revision`), for
   a `pip`/`uv` install straight from a git URL: a cluster node running
@@ -205,23 +234,28 @@ want to confirm "yes, this process is fresh".
 ## How do I check for stale builds?
 ## How do I know if I need to rebuild?
 
-Read `source_drift`. It does the comparison below for you, and on the
-shared session server it is the only check that works:
+Read the `⚠ WARN` lines under **Build** and `Overall:` at the bottom.
+`Overall: OK` now means every staleness check ran and passed; anything
+the page could not verify is a WARN, never silence. Then `source_drift`,
+which does the comparison below for you and on the shared session server
+is the only check that works:
 
-- `none` — the watched tree is still at the sha this process imported.
+- `none` — the served tree is still at the sha this process imported.
 - `moved <old>→<new>` — the tree advanced and the process never
-  restarted. It is serving the old code. Restart it.
-- `unknown` — no watched tree, so nothing was compared. Fall back to the
-  manual check.
+  restarted. It is serving the old code; the WARN says how many commits
+  behind. Restart it.
+- `unknown` — no tree to compare, so nothing was checked; the WARN names
+  why. Fall back to the manual check and to `build_age`.
 - *no `source_drift` row at all* — the process predates the field, so it
   is stale by definition. Reconnect rather than measuring; a process that
   cannot report drift also cannot tell you how far it has drifted.
 
-The `git_sha` in the **Build** section is **frozen at the moment the
+`served_sha` in the **Build** section is **frozen at the moment the
 process started** — it is what *this running process* loaded, not
-what the checkout on disk says now. That is exactly the signal you
-want: to tell whether a long-running server/worker is behind the
-code, compare its reported `git_sha` against the tip of the branch:
+what the checkout on disk says now, and not the image's `image_sha`.
+That is exactly the signal you want: to tell whether a long-running
+server/worker is behind the code, compare its `served_sha` against the
+tip of the branch:
 
 ```bash
 git -C <source_path> rev-parse HEAD    # what the checkout is at now
@@ -244,23 +278,24 @@ it cannot agree by construction.
 
 Other fields to cross-reference:
 
-- `git_source` — `working-tree` means a live checkout you can diff as
-  above; `image-build` means a baked image, so compare against the
-  image you expect to be deployed.
+- `served_from` — `working-tree`/`image+mount` mean a live checkout you
+  can diff as above; `image-build` means a baked image, so compare
+  against the image you expect to be deployed.
 - `version` vs `git_last_tag` — with `version` now sourced from the
   installed distribution metadata, a gap here means the checkout is
   between releases, not that a literal lagged.
 - `git_dirty` — uncommitted changes were present when the process
   loaded. Fine for dev iteration; surprising in prod.
-- `build_time` (image builds) — how stale is this image? Compare
-  against your most recent merge to `main`.
+- `build_age` (image builds) — how stale is this image, as an age;
+  past 3 days it is already a WARN. Compare against your most recent
+  merge to `main`.
 
 For a Docker image, rebuild fresh metadata with `scripts/build-image`
 from the repo root; for a from-source run, restart the process after
 updating the checkout.
 
 The same one-liner is logged to stderr at server boot
-(`precis-mcp <version> @ <sha> (<branch>) [<git_source>] <path>`), so
+(`precis-mcp <version> @ <sha> (<branch>) [<served_from>] <path>`), so
 you can also read it straight from the process log.
 
 ## Is the running server the code in this directory?
@@ -278,8 +313,8 @@ finding no process says nothing about health.
 Reconcile the *connected* server against the checkout in front of you:
 
 1. **Boot facts** — `get(kind='skill', id='precis-status')`, read
-   **Build**: `git_sha`, `git_branch`, `git_source`, `source_path`
-   (frozen at process start).
+   **Build**: `served_sha`, `git_branch`, `served_from`, `source_path`
+   (frozen at process start) and any `⚠ WARN` line.
 2. **Map `source_path` to a host dir** — `source_path`/`cwd` are
    container-internal (a bare `/app`). For a Dockerized server, find the
    bind mount on the host:
@@ -296,8 +331,8 @@ Reading it:
   your worktree; matching shas just mean you haven't committed yet (they
   diverge on first commit — the frozen server never picks up worktree
   commits).
-- **server `git_sha` != HOST_PATH HEAD** → checkout moved, process never
-  restarted → stale, restart to refresh.
+- **server `served_sha` != HOST_PATH HEAD** → checkout moved, process
+  never restarted → stale, restart to refresh.
 - **mount path != your worktree** → different tree; a local dev MCP
   usually mounts the main repo `:ro` at prod, so worktree edits are
   invisible until you rebuild + restart pointed at the worktree.
