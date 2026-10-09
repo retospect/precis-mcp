@@ -151,10 +151,10 @@ def test_expired_session_and_gone_stdio_child_are_down_until_reconnected(
         "-a",
         "c1",
         [("2026-10-02T16:00:00Z", "stdio", STDIO_GONE)],
-        "claude-context",
+        "other",
     )
     assert _run(capsys) == {"%1": "DOWN", "%2": "ok", "%3": "ok"}  # precis column
-    assert _module().main(["--server", "claude-context"]) == 0
+    assert _module().main(["--server", "other"]) == 0
     assert dict(line.split() for line in capsys.readouterr().out.splitlines()) == {
         "%1": "-",
         "%2": "-",
@@ -174,10 +174,29 @@ def test_servers_flag_prints_one_column_per_server(
         "-a",
         "c",
         [("2026-10-02T14:00:00Z", "b", CONNECTED)],
+        "other",
+    )
+    assert _module().main(["--servers", "precis,other"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "%1 precis=DOWN other=-",
+        "%2 precis=- other=ok",
+    ]
+
+
+def test_servers_precis_alone_is_the_fleet_form(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`scripts/fleet` asks for precis only (claude-context retired 2026-10-08);
+    a retired server's leftover log contributes no column."""
+    sessions, cache = dirs
+    _session(sessions, 1, "a", "%1")
+    _log(cache, "-a", "p", [("2026-10-02T14:00:00Z", "a", CONNECTED)])
+    _log(
+        cache,
+        "-a",
+        "c",
+        [("2026-10-02T14:00:00Z", "a", STDIO_GONE)],
         "claude-context",
     )
-    assert _module().main(["--servers", "precis,claude-context"]) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "%1 precis=DOWN claude-context=-",
-        "%2 precis=- claude-context=ok",
-    ]
+    assert _module().main(["--servers", "precis"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["%1 precis=ok"]

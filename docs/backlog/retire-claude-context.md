@@ -12,21 +12,23 @@ skill and `bash-reflex-nudge` point at the precis python kind
 (`get(kind='python', id='main::<qualname>')`, `search(kind='python',
 mode='pattern', ...)`) plus Grep and `scripts/coderef`.
 
-Left:
+Repo half shipped 2026-10-09: `scripts/fleet mcp-check` / `watch` and
+`scripts/lib/fleet_mcp_state.py` ask for `--servers precis` alone;
+`scripts/code-index`, `scripts/code-search/` and `docker/code-search/` are
+deleted; `scripts/coderef` and `docs/how-to-setup-like-this.md` describe the
+python kind instead of the vector store.
 
-- **Fleet health check.** `scripts/fleet mcp-check` and
-  `scripts/lib/fleet_mcp_state.py` check `--servers precis,claude-context`;
-  every window now reports `claude-context` as dead or unknown. Drop it to
-  `precis` alone; update `tests/test_fleet_watch.py` and
-  `tests/test_fleet_mcp_state.py`.
-- **Infra deletion.** `scripts/code-index`, `scripts/code-search/`,
-  `docker/code-search/compose.yaml`. Stop the Milvus containers on the Mac.
-- **Stale prose.** `scripts/coderef` docstring, `docs/how-to-setup-like-this.md`.
+Left (local ops and a product question, not repo code):
+
+- **Stop the Milvus containers on the Mac.** The `precis-code-search` compose
+  project (etcd + minio + milvus, named volumes) is no longer referenced by
+  anything in the tree; `docker compose -p precis-code-search down -v` on the
+  host, then confirm nothing on :19530 / :8182.
 - **Fuzzy search gap.** Plain `search(kind='python', q='<phrase>')` returned
   nothing for a natural-language query on 2026-10-08; only `mode='pattern'`
   hits. Find out whether the python index lacks embeddings in the session MCP
   container, and whether `search(kind='md')` covers "where is the code that
   does X" well enough.
 
-test: sessions boot without the Milvus stack; `scripts/fleet mcp-check`
-reports only precis; a natural-language python search returns hits.
+test: sessions boot without the Milvus stack; a natural-language python
+search returns hits.

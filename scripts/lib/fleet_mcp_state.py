@@ -20,11 +20,13 @@ Connection closed"), ``-`` with no event yet.
     → %3 ok
       %7 DOWN
 
-    python3 scripts/lib/fleet_mcp_state.py --servers precis,claude-context
-    → %3 precis=ok claude-context=-
-      %7 precis=DOWN claude-context=ok
+    python3 scripts/lib/fleet_mcp_state.py --servers precis
+    → %3 precis=ok
+      %7 precis=DOWN
 
-`scripts/fleet mcp-check` and `watch` use the second form.
+`scripts/fleet mcp-check` and `watch` use the second form (``--servers``
+takes a comma-separated list; since claude-context was retired on
+2026-10-08 the fleet asks for precis alone).
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ OK_MARKERS = (
 def is_down(text: str) -> bool:
     if any(m in text for m in DOWN_MARKERS):
         return True
-    # A stdio server whose process is gone (claude-context): the client logs
+    # A stdio server whose process is gone: the client logs
     # "Connection failed …: MCP error -32000: Connection closed".
     return "Connection failed" in text and "Connection closed" in text
 

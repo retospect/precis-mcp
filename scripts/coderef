@@ -43,7 +43,8 @@ module-granularity and need the real import graph, so they lazy-import `grimp`
 they print a one-line install nudge and exit 1 instead of failing the script.
 
 Python-only (the repo is ~all Python); stdlib ``ast``, no deps, no running index —
-deterministic, exact, fast. The semantic code index (claude-context/Milvus) is for
+deterministic, exact, fast. The precis python kind (``search(kind='python',
+mode='pattern', ...)``, ``get(kind='python', id='main::<qualname>')``) is for
 DISCOVERY (find the symbol the first time you write an anchor); this is for
 RESOLUTION (exact symbol -> line). Complementary, cleanly separated. Nudge only in
 citation surfaces (docs/ + memory) — NOT inline code comments, where a :line sits

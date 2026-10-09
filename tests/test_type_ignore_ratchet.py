@@ -11,13 +11,22 @@ The ceilings landed with +3 slack per tree: main gained an ignore on three
 of the four CI runs that tried to ship this, and an exact ceiling can't
 land under that churn. Lower them to the exact count at the next quiet
 ship, and whenever you remove ignores, so the slack doesn't accumulate.
+
+An ``OSError`` mid-walk surfaces as ``ScanIncomplete`` (``tests/_policy_scan.py``),
+not as "the count grew".
 """
 
 from __future__ import annotations
 
+import errno
 import re
 from collections import Counter
 from pathlib import Path
+from typing import Any
+
+import pytest
+
+from tests._policy_scan import ScanIncomplete, read_text, walk_files
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _IGNORE = re.compile(r"#\s*type:\s*ignore\b")
@@ -51,10 +60,10 @@ CEILINGS = {"src": 142, "tests": 214}
 
 def _count(tree: str) -> Counter[str]:
     hits: Counter[str] = Counter()
-    for path in sorted((REPO_ROOT / tree).rglob("*.py")):
+    for path in walk_files(REPO_ROOT / tree, "*.py"):
         if path == Path(__file__).resolve():
             continue
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in read_text(path).splitlines():
             if _IGNORE.search(line):
                 hits[str(path.relative_to(REPO_ROOT))] += 1
     return hits
@@ -71,3 +80,21 @@ def test_type_ignore_count_never_grows() -> None:
             f"CEILINGS in {Path(__file__).name} is the deliberate, reviewed "
             f"escape. Heaviest files: {worst}"
         )
+
+
+def test_oserror_mid_scan_is_incomplete_not_growth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_read, seen = Path.read_text, 0
+
+    def flaky(self: Path, *a: Any, **kw: Any) -> str:
+        nonlocal seen
+        seen += 1
+        if seen == 2:
+            raise OSError(errno.ENFILE, "Too many open files in system")
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    with pytest.raises(ScanIncomplete, match="ENFILE") as info:
+        test_type_ignore_count_never_grows()
+    assert "ceiling" not in str(info.value)

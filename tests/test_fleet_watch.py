@@ -273,12 +273,10 @@ def _log(f: Fleet, server: str, sid: str, text: str, stamp: str) -> None:
         )
 
 
-def _mcp(f: Fleet, n: int, win: str, precis: str | None, cc: str | None) -> None:
+def _mcp(f: Fleet, n: int, win: str, precis: str | None) -> None:
     sid = _session(f, n, pane_id(f, win))
     if precis:
         _log(f, "precis", sid, precis, "2026-10-03T12:00:00Z")
-    if cc:
-        _log(f, "claude-context", sid, cc, "2026-10-03T12:00:00Z")
 
 
 def _mcp_fleet(wf: Fleet) -> None:
@@ -291,11 +289,14 @@ def _mcp_fleet(wf: Fleet) -> None:
         ("epsilon", IDLE),
     ):
         wf.window(name, text)
-    _mcp(wf, 1, "seat", GAVE_UP, CONNECTED)
-    _mcp(wf, 2, "alpha", GAVE_UP, CONNECTED)  # precis dead
-    _mcp(wf, 3, "beta", CONNECTED, STDIO_GONE)  # claude-context dead
-    _mcp(wf, 4, "gamma", SESSION_GONE, CONNECTED)  # precis session expired
-    _mcp(wf, 5, "delta", CONNECTED, CONNECTED)
+    _mcp(wf, 1, "seat", GAVE_UP)
+    _mcp(wf, 2, "alpha", GAVE_UP)  # precis dead
+    _mcp(wf, 3, "beta", GAVE_UP)  # precis dead, but busy
+    _mcp(wf, 4, "gamma", SESSION_GONE)  # precis session expired
+    _mcp(wf, 5, "delta", CONNECTED)
+    # A retired server's stale log (claude-context, dropped 2026-10-08) must not
+    # make a window read dead: precis is the only column.
+    _log(wf, "claude-context", "sid-5", STDIO_GONE, "2026-10-03T12:00:00Z")
     # epsilon: no session record at all
 
 
@@ -304,12 +305,12 @@ def test_mcp_check_reports_each_window(wf: Fleet) -> None:
     cp = wf.run("mcp-check")
     assert cp.returncode == 0, cp.stderr
     assert sorted(cp.stdout.splitlines()) == [
-        "alpha precis=dead claude-context=connected",
-        "beta precis=connected claude-context=dead",
-        "delta precis=connected claude-context=connected",
-        "epsilon precis=unknown claude-context=unknown",
-        "gamma precis=dead claude-context=connected",
-        "seat precis=dead claude-context=connected",
+        "alpha precis=dead",
+        "beta precis=dead",
+        "delta precis=connected",
+        "epsilon precis=unknown",
+        "gamma precis=dead",
+        "seat precis=dead",
     ]
     for name in ("alpha", "beta", "gamma", "delta", "epsilon"):
         assert "/mcp" not in wf.pane(name)  # plain check never sends
@@ -481,14 +482,14 @@ def test_watch_new_ci_runs_come_out_oldest_first(wf: Fleet) -> None:
 def test_watch_emits_mcp_dead_on_transition_only(wf: Fleet) -> None:
     wf.window("alpha", IDLE)
     wf.window("beta", IDLE)
-    _mcp(wf, 1, "alpha", GAVE_UP, CONNECTED)  # dead before the watch starts
-    _mcp(wf, 2, "beta", CONNECTED, CONNECTED)
+    _mcp(wf, 1, "alpha", GAVE_UP)  # dead before the watch starts
+    _mcp(wf, 2, "beta", CONNECTED)
     assert _watch(wf) == []  # seeded, not announced
     assert _watch(wf) == []
-    _log(wf, "claude-context", "sid-2", STDIO_GONE, "2026-10-03T13:00:00Z")
+    _log(wf, "precis", "sid-2", GAVE_UP, "2026-10-03T13:00:00Z")
     assert _watch(wf) == ["mcp beta dead"]
     assert _watch(wf) == []
-    _log(wf, "claude-context", "sid-2", CONNECTED, "2026-10-03T14:00:00Z")
+    _log(wf, "precis", "sid-2", CONNECTED, "2026-10-03T14:00:00Z")
     assert _watch(wf) == []  # recovery is not announced
     _log(wf, "precis", "sid-2", SESSION_GONE, "2026-10-03T15:00:00Z")
     assert _watch(wf) == ["mcp beta dead"]  # a second death is a new transition

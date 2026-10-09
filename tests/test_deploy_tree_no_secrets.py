@@ -33,14 +33,22 @@ name RFC1918 and CGNAT *ranges*, and this file's own self-test must quote the
 shapes it blocks. Those carry the ``secret-gate: allow`` marker with a reason.
 Keep such uses vanishingly few: the marker is for naming a *range* or a
 *sample*, never a real host address.
+
+An ``OSError`` during the walk or a read (ENFILE on a shared VM, 2026-09-29)
+surfaces as ``ScanIncomplete`` — never as a violation, never as a pass over a
+partial tree. See ``tests/_policy_scan.py``.
 """
 
 from __future__ import annotations
 
+import errno
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from tests._policy_scan import ScanIncomplete, read_text, walk_files
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO_ROOT / "deploy"
@@ -115,26 +123,19 @@ _BINARY_SUFFIXES = {
 
 def _scannable_files(root: Path) -> list[Path]:
     """Every text file under ``root``, minus skipped dirs and binaries."""
-    if not root.is_dir():
-        return []
-    out: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
-            continue
-        if path.suffix.lower() in _BINARY_SUFFIXES:
-            continue
-        out.append(path)
-    return out
+    return [
+        path
+        for path in walk_files(root, skip_dirs=_SKIP_DIRS)
+        if path.suffix.lower() not in _BINARY_SUFFIXES
+    ]
 
 
 def _scan(root: Path, patterns: list[tuple[str, re.Pattern[str]]]) -> list[str]:
     hits: list[str] = []
     for path in _scannable_files(root):
         try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+            text = read_text(path)
+        except UnicodeDecodeError:
             continue  # not text we can meaningfully scan
         rel = path.relative_to(_REPO_ROOT)
         lines = text.splitlines()
@@ -207,7 +208,7 @@ def test_allow_marker_is_not_overused() -> None:
         f"{path.relative_to(_REPO_ROOT)}:{lineno}"
         for path in _scannable_files(_REPO_ROOT)
         for lineno, line in enumerate(
-            path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1
+            read_text(path, errors="ignore").splitlines(), start=1
         )
         if _ALLOW_MARKER in line
     ]
@@ -229,3 +230,65 @@ def test_repo_walk_is_not_vacuous() -> None:
     found = _scannable_files(_REPO_ROOT)
     assert len(found) > 100, f"tree-wide walk found only {len(found)} files"
     assert any(p.name == "safe_fetch.py" for p in found), "walk missed src/"
+
+
+_ENFILE = OSError(errno.ENFILE, "Too many open files in system")
+
+
+def test_oserror_mid_walk_is_an_incomplete_scan_not_a_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-09-29 shape: ``is_file()`` dies with ENFILE partway through."""
+    real_is_file, seen = Path.is_file, 0
+
+    def flaky(self: Path) -> bool:
+        nonlocal seen
+        seen += 1
+        if seen == 3:
+            raise _ENFILE
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky)
+    with pytest.raises(ScanIncomplete) as info:
+        _scan(_REPO_ROOT, _FORBIDDEN_ANYWHERE)
+    msg = str(info.value)
+    assert "ABORTED" in msg and "ENFILE" in msg and "NOT a verdict" in msg
+    assert "cluster address" not in msg
+
+
+def test_oserror_mid_read_is_an_incomplete_scan_not_a_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read that fails must not be skipped: a partial scan is no scan."""
+    real_read, seen = Path.read_text, 0
+
+    def flaky(self: Path, *a: Any, **kw: Any) -> str:
+        nonlocal seen
+        seen += 1
+        if seen == 3:
+            raise _ENFILE
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    with pytest.raises(ScanIncomplete, match="ENFILE"):
+        _scan(_REPO_ROOT, _FORBIDDEN_ANYWHERE)
+    seen = 0
+    with pytest.raises(ScanIncomplete, match="ENFILE"):
+        test_allow_marker_is_not_overused()
+    # A stray ``except OSError`` must not swallow it; a summary line must not
+    # read as an assertion about the tree.
+    assert not issubclass(ScanIncomplete, (OSError, AssertionError))
+
+
+def test_a_real_hit_still_fails_as_a_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The violation path is untouched: a plain ``AssertionError`` naming it."""
+    tailnet = ".".join(("100", "100", "7", "7"))  # assembled, so this file stays clean
+    (tmp_path / "hosts.yml").write_text(f"ansible_host: {tailnet}\n", encoding="utf-8")
+    monkeypatch.setattr(f"{__name__}._REPO_ROOT", tmp_path)
+    with pytest.raises(AssertionError, match=r"cluster address\(es\) found") as info:
+        test_repo_carries_no_cluster_addresses()
+    assert f"hosts.yml:1: tailscale ip (CGNAT) → ansible_host: {tailnet}" in str(
+        info.value
+    )

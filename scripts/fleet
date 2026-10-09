@@ -29,7 +29,7 @@
 #       (PRECIS_FLEET_COMPACT_GRACE 90 s, PRECIS_FLEET_COMPACT_WAIT 1800 s per window).
 #       Exit 3 = refused: busy or dialog (without --at-idle), wait timed out, or
 #       the caller's own / window 0 / claude / organizer. Exit code = worst window.
-#   scripts/fleet mcp-check [--fix]  per window: precis= and claude-context= connected|dead|unknown;
+#   scripts/fleet mcp-check [--fix]  per window: precis= connected|dead|unknown;
 #       --fix sends `/mcp reconnect all` to idle windows with a dead one (busy or
 #       dialog: `pending: <win> (busy|dialog)`; the orchestrator's seat is skipped)
 #   scripts/fleet watch              ONE watcher, typed lines on transition only:
@@ -580,38 +580,39 @@ cmd_compact() {
   exit "$rc"
 }
 
-# mcp_states -> one `<win> <precis> <claude-context>` line per window, each
-# connected | dead | unknown. Fails (quietly) when the helper is missing or fails.
+# mcp_states -> one `<win> <precis>` line per window, connected | dead |
+# unknown. Fails (quietly) when the helper is missing or fails. precis is the
+# only MCP a session needs (claude-context retired 2026-10-08).
 mcp_states() {
   local helper out list w pid
   helper=$(mcp_helper_path)
   [ -f "$helper" ] || return 1
-  out=$(python3 "$helper" --servers precis,claude-context 2>/dev/null) || return 1
+  out=$(python3 "$helper" --servers precis 2>/dev/null) || return 1
   list=$(tmux list-windows -F '#{window_name} #{pane_id}') || return 1
   printf '%s\n' "$list" | while read -r w pid; do
     printf '%s\n' "$out" | awk -v w="$w" -v p="$pid" '
       function m(s) { return s == "ok" ? "connected" : s == "DOWN" ? "dead" : "unknown" }
-      BEGIN { a = "-"; b = "-" }
-      $1 == p { split($2, x, "="); split($3, y, "="); a = x[2]; b = y[2]; exit }
-      END { print w, m(a), m(b) }'
+      BEGIN { a = "-" }
+      $1 == p { split($2, x, "="); a = x[2]; exit }
+      END { print w, m(a) }'
   done
 }
 
 cmd_mcp_check() {
   need_tmux
-  local fix=0 states w p c st
+  local fix=0 states w p st
   case "${1:-}" in
     --fix) fix=1 ;;
     "") ;;
     *) echo "usage: scripts/fleet mcp-check [--fix]" >&2; exit 2 ;;
   esac
   states=$(mcp_states) || { echo "scripts/fleet mcp-check: no usable fleet_mcp_state.py — states unknown" >&2; exit 1; }
-  printf '%s\n' "$states" | while read -r w p c; do
-    echo "$w precis=$p claude-context=$c"
+  printf '%s\n' "$states" | while read -r w p; do
+    echo "$w precis=$p"
   done
   [ "$fix" = 1 ] || return 0
-  printf '%s\n' "$states" | while read -r w p c; do
-    [ "$p" = dead ] || [ "$c" = dead ] || continue
+  printf '%s\n' "$states" | while read -r w p; do
+    [ "$p" = dead ] || continue
     if orch_window "$w"; then echo "skipped: $w (orchestrator)"; continue; fi
     st=$(win_state "$w")
     case "$st" in
@@ -736,13 +737,13 @@ EOF
 }
 
 watch_mcp() {
-  local states w p c seeded
+  local states w p seeded
   states=$(mcp_states) || return 0
   seeded=$(st_get seed mcp)
   wn_mcp_ran=1
-  while read -r w p c; do
+  while read -r w p; do
     [ -n "$w" ] || continue
-    if [ "$p" = dead ] || [ "$c" = dead ]; then
+    if [ "$p" = dead ]; then
       wn_mcp="$wn_mcp$(st_line mcp "$w" 1)"$'\n'
       if [ -n "$seeded" ] && [ -z "$(st_get mcp "$w")" ]; then echo "mcp $w dead"; fi
     fi

@@ -80,7 +80,6 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/ship` / `scripts/deploy` | the full pre-merge gate / the deploy | never hand-roll the git dance or the deploy |
 | `scripts/db` | psql to the LOCAL dev DB | container-first |
 | `scripts/prod-psql "SELECT …"` | read prod through a bastion hop | prefer read-only; local `db` never reaches prod |
-| `scripts/code-index` | seed/refresh the semantic code-search index | reproducible from shell, no MCP session needed |
 | `scripts/docs-index` | regenerate the gitignored backlog/runbook indexes + codebase package map | SessionStart hook, per-worktree; never committed |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
 | `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal; `--currency` audits each memory claim against git/fs anchors (kept repo-local by decision, 2026-09-30) | advisory; `/whatneedsdoing` |
@@ -112,8 +111,9 @@ Small, single-purpose, never-block-unless-guarding:
 - **`map-staleness-reminder`** (PostToolUse, Write) — on a Write to a
   handler/migration/other-usually-drifts path, print a one-line nudge to update
   the maps. Silent otherwise.
-- **`code-search-up`** (SessionStart) — bring the code-search stack up + print
-  the one path a session needs to hit the shared index. Never fails start.
+- **`code-search-up`** (SessionStart) — print where code search reads from
+  (the MAIN checkout) versus where this session's shell operates (its
+  worktree), and the exact structural tools. Never fails start.
 - **In-flight worktree table** (SessionStart) — print a live per-worktree table
   (session, dirty, ahead/behind, PURPOSE, last commit) so you scan for overlap.
 - **`.claude/purpose`** (gitignored, self-cleaning) — once the task is clear,
@@ -140,10 +140,14 @@ re-driven from memory each session:
 
 ## 5. Workspace aids
 
-- **Semantic code search** — a local vector index (e.g. Milvus + a
-  `claude-context` MCP) over the code. **One shared MAIN index** serves every
-  worktree (hits are repo-relative). Seed once; freshness is lazy (Merkle
-  re-sync). A SessionStart hook keeps the stack up.
+- **Structural code search** — the product's own `python` kind
+  (`search(kind='python', mode='pattern', q=...)`, `get(kind='python',
+  id='main::<qualname>')` for signature, callers and callees) indexes the
+  **MAIN checkout**, so one index serves every worktree; a worktree queries
+  its own tree as `wt-<name>::<qualname>`. Grep is truth for uncommitted
+  edits. A separate vector-store stack (Milvus + a `claude-context` MCP) was
+  tried first and retired in 2026-10: a second index to keep up and a node
+  stack to boot per session, for discovery the product kind already does.
 - **A read-only `navigator` subagent** — orientation specialist ("where is X",
   "how does Y flow", "what calls Z") that reads the orientation docs + runs code
   search and returns `file:line` answers, so navigation doesn't burn main
@@ -166,7 +170,7 @@ Name the *need*; the tool is an example, not a mandate.
 |---|---|
 | Compress noisy cmd output → signal (token saver) | **`rtk`** — CLI proxy: `rtk git/psql/rg …`, `rtk err -- <cmd>`; shows a filtered digest, tees the full log to disk |
 | Compact tabular output for an LLM reader | **TOON** — token-lean table serialization, far terser than JSON rows (header once, values aligned); the format a verb *returns* |
-| Semantic code search over the repo | a **`claude-context`**-style MCP over a local vector store (**Milvus** + any OpenAI-compatible embedder — here bge-m3 reused via a thin shim) — one shared MAIN index, repo-relative hits |
+| Structural code search over the repo | the product's own `python` kind over the MAIN checkout (signature, callers, callees), plus `scripts/coderef` for exact anchors — no separate vector store |
 | Reproducible env / package mgr | **`uv`** (forbid bare `pip`/`pytest`/`mypy` — not reproducible) |
 | Containerized dev + ops | **Docker** + **Compose** |
 | Lint + format (auto-fixed inside the gate) | **`ruff`** |

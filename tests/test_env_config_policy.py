@@ -10,14 +10,22 @@ A small frozen grandfather list carries the pre-policy offenders (deep
 code that reads ``PRECIS_ROOT`` raw and does its own path handling). Do
 not add to it to silence a new violation — route the read through
 ``load_config()`` instead.
+
+An ``OSError`` mid-walk surfaces as ``ScanIncomplete`` (``tests/_policy_scan.py``),
+not as a policy red.
 """
 
 from __future__ import annotations
 
+import errno
 import re
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from precis.config import PrecisConfig
+from tests._policy_scan import ScanIncomplete, read_text, walk_files
 
 _SRC = Path(__file__).parent.parent / "src" / "precis"
 
@@ -55,11 +63,11 @@ def _raw_read_re(var: str) -> re.Pattern[str]:
 def _find_violations() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     patterns = {var: _raw_read_re(var) for var in _TIER1_VARS}
-    for path in _SRC.rglob("*.py"):
+    for path in walk_files(_SRC, "*.py"):
         rel = path.relative_to(_SRC).as_posix()
         if any(rel.startswith(p) for p in _BOOTSTRAP_PREFIXES):
             continue
-        text = path.read_text(encoding="utf-8")
+        text = read_text(path)
         for var, pat in patterns.items():
             if pat.search(text):
                 found.add((rel, var))
@@ -82,3 +90,21 @@ def test_grandfather_list_has_no_stale_entries() -> None:
         "These grandfathered raw reads are gone — remove them from "
         f"_GRANDFATHERED: {sorted(stale)}"
     )
+
+
+def test_oserror_mid_scan_is_incomplete_not_a_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_read, seen = Path.read_text, 0
+
+    def flaky(self: Path, *a: Any, **kw: Any) -> str:
+        nonlocal seen
+        seen += 1
+        if seen == 2:
+            raise OSError(errno.ENFILE, "Too many open files in system")
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    with pytest.raises(ScanIncomplete, match="ENFILE") as info:
+        test_no_new_raw_reads_of_tier1_config_vars()
+    assert "load_config()" not in str(info.value)
