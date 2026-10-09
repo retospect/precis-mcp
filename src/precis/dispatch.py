@@ -795,7 +795,7 @@ def boot(
     :func:`_try` so any :class:`InitError` is logged and the kind
     silently drops off the LLM surface.
 
-    Stateless handlers (calc) are always attempted. Store-backed
+    Stateless handlers (calc, time) are always attempted. Store-backed
     handlers (memory, todo, paper, ...) are skipped when ``store`` is
     ``None`` — this preserves the phase-1 stateless deployment mode
     from the old ``registry.builtins()``.
@@ -859,6 +859,11 @@ def boot(
     from precis.handlers.calc import CalcHandler
 
     _gated(CalcHandler)
+
+    # Time — stdlib clock / timestamp parse / zone convert. No deps.
+    from precis.handlers.time import TimeHandler
+
+    _gated(TimeHandler)
 
     # Provenance — Crossref-backed retraction / amendment check.
     # Works with or without a store: when the parent paper is in

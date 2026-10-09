@@ -24,7 +24,7 @@ status: active
   paper address — `get(kind='paper', id=5)` is read as a cite_key and fails;
   use its `pa5` handle.
 - **Compute** — pass `q=` (or `id=` for some kinds) and the handler
-  computes a fresh result. Used by `calc`, `math`, `web`, `youtube`,
+  computes a fresh result. Used by `calc`, `time`, `math`, `web`, `youtube`,
   `perplexity-research`, `perplexity-reasoning`, `websearch`.
 
 ```python
@@ -158,6 +158,7 @@ the call raises — register a finding via `precis-finding-help`.
 ```python
 get(kind="calc", q="42 * 365")  # local arithmetic, free
 get(kind="math", q="speed of light in km/h")  # Wolfram, paid
+get(kind="time", q="in 3 hours", args={"to": "Asia/Tokyo"})  # clock + zone convert, free
 get(kind="web", q="https://example.com/page")  # fetch + extract a URL
 get(kind="youtube", q="dQw4w9WgXcQ")  # transcript
 ```

@@ -405,12 +405,13 @@ def test_boot_stateless_registers_calc_only() -> None:
     """Stateless path (no store) registers stateless handlers.
 
     Originally just ``calc``; ``provenance`` was added (also store-
-    optional, gated on habanero). Both must show up on the
-    no-store boot path.
+    optional, gated on habanero), then ``time`` (stdlib only). All
+    must show up on the no-store boot path.
     """
     r = boot(store=None)
     assert isinstance(r, Hub)
-    assert {"calc", "provenance"}.issubset(r.kinds)
+    assert {"calc", "time", "provenance"}.issubset(r.kinds)
+    assert r.verbs_for("time") == {"get"}
     # calc exposes only ``get``.
     assert r.verbs_for("calc") == {"get"}
     # Overview blurb was registered.

@@ -51,7 +51,7 @@ PLUGIN_GROUP = "precis.handle_codes"
 # --- record codes (the addressable persistent-ref kinds) ------------------
 # Authoritative kind list: dispatch.boot() composition root. Providers
 # (web/youtube/wikipedia/semanticscholar/perplexity-*) and stateless tools
-# (calc/math/provenance/random) are addressed by URL/query/compute, not
+# (calc/time/math/provenance/random) are addressed by URL/query/compute, not
 # handles.
 
 KIND_CODES: dict[str, str] = {
@@ -210,6 +210,7 @@ _OTHER_TABLE_KINDS = frozenset({"tag"})
 CODELESS_KINDS: Final[tuple[str, ...]] = (
     # stateless compute / lookups
     "calc",
+    "time",
     "math",
     "provenance",
     "random",

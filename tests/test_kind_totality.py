@@ -69,6 +69,7 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
         "email",  # live IMAP browse — addressed by folder/uid, never a ref
         # stateless compute — addressed by the query/expression itself
         "calc",
+        "time",
         "math",
         "provenance",
         "random",

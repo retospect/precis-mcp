@@ -87,6 +87,7 @@ semantics live in `precis-tags`.
 |---|---|---|
 | Exact / symbolic math | `get(kind='calc', q='integrate(sin(x)**2, x)')` | free |
 | Unit conversion | `get(kind='calc', q='3 ft to m')` · `q='1 ton to kg'` (local, exact, disambiguates ton/gallon/oz) | free |
+| Current time / zone conversion | `get(kind='time')` · `get(kind='time', q='2026-10-09 14:30', args={'to': 'Asia/Tokyo'})` | free |
 | Real-world fact | `get(kind='math', q='speed of light in km/h')` | paid |
 | Fetch + extract a URL | `get(kind='web', q='https://example.com')` | free |
 | One Wikipedia article | `get(kind='wikipedia', q='CRISPR gene editing')` | free |

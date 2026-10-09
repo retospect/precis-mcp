@@ -132,6 +132,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | Kind | What | Example `q=` | Cost |
 |---|---|---|---|
 | `calc` | Local SymPy: exact arithmetic, calculus (integrals/derivatives/ODEs), solve, linear algebra; trig in degrees by default; **+ local unit conversion** (`3 ft to m`, disambiguates ton/gallon/oz). See `precis-calc-help`. | `2+3*4` · `1 ton to kg` | free |
+| `time` | Local clock: now in UTC + server local + epoch; parse ISO/RFC 2822/epoch/`in 3 hours`/`next monday`; `args={'to': 'Asia/Tokyo'}` converts, `args={'format': ...}` renders. See `precis-time-help`. | `in 3 hours` · `1791556200` | free |
 | `math` | Wolfram Alpha: facts, world data | `population of Ireland` | paid |
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
 | `web` | Fetch + extract a URL | `https://example.com/page` | free |
@@ -227,6 +228,7 @@ tag(kind="todo", id=122, add=["STATUS:done"])
 get(kind="calc", q="42 * 365")  # → 15330        (free)
 get(kind="calc", q="3 ft to m")  # → 0.9144 m     (free, local — not Wolfram)
 get(kind="math", q="speed of light in km/h")  # → 1.079e9 km/h (paid)
+get(kind="time", q="in 3 hours", args={"to": "Asia/Tokyo"})  # now+3h in UTC, local, Tokyo (free)
 ```
 
 ## Overloaded words — which one do you mean?
