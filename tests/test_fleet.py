@@ -10,7 +10,7 @@ import pytest
 from precis import fleet
 from precis.dispatch import boot
 from precis.errors import BadInput
-from precis.handlers.fleet import FleetHandler
+from precis.handlers.fleet import FleetHandler, _age_min, _window_label
 from precis.store import Store
 
 HOST = "melchior"
@@ -152,6 +152,35 @@ def test_same_vendor_tree_sessions_fold_newest_wins(h: FleetHandler) -> None:
     m = agent(h, KEY).meta
     assert (m["state"], m["ctx_pct"]) == ("working", 10.0)
     assert h.store.count_refs(kind="fleet") == 2  # one agent + the host row
+
+
+def test_fold_keeps_newest_whatever_the_row_order(h: FleetHandler) -> None:
+    send(
+        h,
+        rep(
+            [
+                row(state="working", last_active=iso(1)),
+                row(state="idle", last_active=iso(30)),
+            ]
+        ),
+    )
+    assert agent(h, KEY).meta["state"] == "working"
+
+
+def test_age_minutes_and_quota_window_labels() -> None:
+    now = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+    assert _age_min("2026-10-09T11:00:00Z", now) == 60.0
+    assert _age_min("", now) is None
+    assert _age_min(None, now) is None
+    assert _age_min("not a time", now) is None
+    assert [_window_label(m) for m in (None, 300, 360, 361, 9999, 10000)] == [
+        "?",
+        "5h",
+        "5h",
+        "6h",
+        "167h",
+        "week",
+    ]
 
 
 def test_vendors_share_a_tree_with_separate_rows(h: FleetHandler) -> None:
