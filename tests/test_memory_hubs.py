@@ -213,11 +213,11 @@ def test_manifest_carries_hub_and_qualified_columns(hub: Hub, tmp_path: Path) ->
             .splitlines()
         )
     }
-    assert all(len(r) == 13 for r in rows.values())
+    assert all(len(r) == 14 for r in rows.values())
     assert rows[_h(root)][8:10] == ["-", "0"]
     assert rows[_h(thread)][8:10] == [_h(root), "1"]
     assert rows[_h(gotcha)][8:10] == [_h(root), "0"]
-    assert rows[_h(stray)][8:] == ["", "0", "", "", ""]
+    assert rows[_h(stray)][8:] == ["", "0", "", "", "", "0"]
     # an agent read of a node's own view stamps last_recalled_at -> accessed
     store.touch_recalled(stray)
     export_memory_nodes(store, tmp_path / "n2")
@@ -294,3 +294,19 @@ def test_hub_listing_is_capped_with_a_more_line_and_reads_hooks_in_one_query(
     assert "q='contains')" in out
     assert out.splitlines()[-1].startswith("search within:")
     assert "first line" in out and seen == []  # no per-member chunk reads
+
+
+def test_first_hop_shape_ignores_inbound_edges_from_retired_sources(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    target = _note(handler, "Target", "x")
+    gone_src = _note(handler, "Gone src", "x")
+    gone_dst = _note(handler, "Gone dst", "x")
+    store.add_link(src_ref_id=gone_src, dst_ref_id=target, relation="related-to")
+    store.add_link(src_ref_id=target, dst_ref_id=gone_dst, relation="related-to")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE ref_id = ANY(%s)",
+            ([gone_src, gone_dst],),
+        )
+    # inbound from retired source: unremovable, not counted; outbound: counted
+    assert first_hop_shape(store, [target])[target] == (0, 0, 1)

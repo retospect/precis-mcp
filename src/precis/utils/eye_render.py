@@ -777,9 +777,17 @@ def first_hop_shape(
             edges[end].append((int(src), int(dst), rel))
     buckets = {r: _bucket_edges(store, r, e) for r, e in edges.items()}
     others = {o for b in buckets.values() for oids in b.values() for o in oids}
-    refs = store.fetch_refs_by_ids(others)
+    refs = store.fetch_refs_by_ids(others | {int(src) for src, _d, _r in rows})
     shape: dict[int, tuple[int, int, int]] = {}
     for r, by_label in buckets.items():
+        # inbound edges from a retired source are unremovable from this end
+        # (the source is Gone), so they are not this ref's dead links
+        removable = {dst for src, dst, _rel in edges[r] if src == r}
+        orphaned = {
+            src
+            for src, dst, _rel in edges[r]
+            if dst == r and src not in removable and not _live(refs, src)
+        }
         live_groups = [
             {o for o in oids if _live(refs, o)}
             for (_g, label), oids in by_label.items()
@@ -788,7 +796,11 @@ def first_hop_shape(
         live_all = [{o for o in oids if _live(refs, o)} for oids in by_label.values()]
         every = {o for oids in by_label.values() for o in oids}
         live = set().union(*live_all) if live_all else set()
-        shape[r] = (len(live), max(map(len, live_groups), default=0), len(every - live))
+        shape[r] = (
+            len(live),
+            max(map(len, live_groups), default=0),
+            len(every - live - orphaned),
+        )
     return shape
 
 

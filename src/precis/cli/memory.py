@@ -762,7 +762,8 @@ def _render_loaded(
 #: ``accessed`` (UTC date of the last human view / agent recall; empty if never),
 #: ``parent`` (handle of the direct ``part-of`` parent; empty if none),
 #: ``review`` (comma-separated ``td<id>:<created date>`` of the open
-#: ``memory-review`` todos linked to the node; empty if none). ``hub``
+#: ``memory-review`` todos linked to the node; empty if none), ``gotchas_none``
+#: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies). ``hub``
 #: is the nearest ``section:index`` *ancestor* along the part-of chain, so a
 #: detail node under a summary node names the summary's hub.
 #: Column order is the contract with scripts/memory-lint.
@@ -879,6 +880,7 @@ def export_memory_nodes(
                 accessed.get(ref.id, ""),
                 _handle_of(parent_of.get(ref.id, [])),
                 reviews.get(ref.id, ""),
+                1 if "gotchas:none" in values else 0,
             )
             manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")

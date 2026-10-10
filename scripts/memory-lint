@@ -315,7 +315,7 @@ fi  # SCAN_DIR (check 3b)
 # number of neighbours per relation, and hides dead ends. The caps live in
 # src/precis/utils/eye_render.py; the export applies them, this only compares.
 if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
-    while IFS=$'\t' read -r h sec upd chars eye live hidden dead hubh qual hubgot members acc review; do
+    while IFS=$'\t' read -r h sec upd chars eye live hidden dead hubh qual hubgot members acc review gnone parsec; do
         [[ -n "$dead" ]] || continue          # pre-shape manifest: nothing to check
         tf="$SCAN_DIR/$h.md"
         if (( chars > eye )); then
@@ -368,8 +368,9 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
         if [[ "$hubh" == "-" ]]; then
             echo "  no hub → $(label_of "$h.md" "$tf"): not part-of any section:index hub — link it: link(kind='memory', id='$h', target=<hub>, rel='part-of')"
             problems=$((problems+1))
-        elif [[ "$sec" == threads ]] && [[ "$qual" != "?" ]] && (( qual == 0 && hubgot >= 1 )); then
-            echo "  unqualified thread → $(label_of "$h.md" "$tf"): hub $hubh has gotchas, none linked — link relevant ones with rel='qualifies'"
+        elif [[ "$sec" == threads ]] && [[ "$qual" != "?" ]] && (( qual == 0 && hubgot >= 1 )) \
+                && [[ "$gnone" != 1 && "$parsec" != threads ]]; then
+            echo "  unqualified thread → $(label_of "$h.md" "$tf"): hub $hubh has gotchas, none linked — link relevant ones with rel='qualifies', or tag gotchas:none if reviewed and none applies"
             problems=$((problems+1))
         fi
     # (tab is IFS whitespace, so `read` would merge an empty column: awk fills
@@ -383,6 +384,7 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
                 if (direct != "") members[direct]++
                 if ($2 == "gotchas") gotchas[$9]++
             }
+            if ($2 != "") secof[$1] = $2
             next
         }
         NF < 8 { if ($2 == "") $2 = "-"; print; next }
@@ -392,7 +394,10 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             qual = (NF < 10) ? "?" : $10
             acc = (NF < 11) ? "?" : (($11 == "") ? "-" : $11)
             rev = (NF < 13 || $13 == "") ? "-" : $13
-            print $1, sec, $3, $4, $5, $6, $7, $8, hub, qual, gotchas[hub] + 0, members[$1] + 0, acc, rev
+            gn = (NF >= 14 && $14 == 1) ? 1 : 0
+            # a part-of child of another thread inherits the parent thread qualification
+            ps = ((NF >= 12 && $12 != "") ? secof[$12] : "") ; if (ps == "") ps = "-"
+            print $1, sec, $3, $4, $5, $6, $7, $8, hub, qual, gotchas[hub] + 0, members[$1] + 0, acc, rev, gn, ps
         }' "$MANIFEST" "$MANIFEST")
 fi
 
@@ -446,6 +451,11 @@ if [[ -n "$SCAN_DIR" ]]; then
             nextline=$(grep -m1 -E '^[-*[:space:]]*NEXT\b' "$tf" || true)
             if printf '%s %s' "$b" "$title" | grep -qiE 'thread|campaign' || [[ -n "$nextline" ]]; then
                 nexttext=$(printf '%s' "$nextline" | sed -E 's/^[-*[:space:]]*NEXT\b[^A-Za-z0-9]*//')
+                if [[ -z "${nexttext//[[:space:]]/}" ]]; then
+                    # bare `NEXT:` heading: open if a list item follows on the next non-blank line
+                    nexttext=$(awk '/^[-*[:space:]]*NEXT([^A-Za-z0-9_]|$)/ { f=1; next } f && NF { print; exit }' "$tf" \
+                        | sed -E 's/^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]+//' | grep -E '^[[:space:]]*[^[:space:]]' || true)
+                fi
                 if [[ -z "${nexttext//[[:space:]]/}" ]] || printf '%s' "$nexttext" | grep -qiE '^(done|shipped|none|nothing)\b'; then
                     n_res=0; n_out=0
                     while IFS= read -r s; do

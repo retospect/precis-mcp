@@ -20,7 +20,9 @@ the `Next:` hint or the `remember` skill, not just the node.
      works on retired targets.
    - `unqualified thread` → link the hub's relevant gotchas with
      `rel='qualifies'` (`search(kind='memory', tags=['SPACE:repo-dev',
-     'section:gotchas'], args={'under': 'me<hub>'}, q=…)`).
+     'section:gotchas'], args={'under': 'me<hub>'}, q=…)`); if none
+     applies, tag the thread `gotchas:none` (a `part-of` child of a thread
+     inherits its parent's qualification).
    - `stalled review` (a `memory-review` todo open > 7 days) → read
      `get(kind='todo', id='td…')`, settle the memory yourself (edit with
      `reason='misled: …'`, caveat / `qualifies` gotcha, or retire), mark the

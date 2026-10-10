@@ -804,3 +804,47 @@ def test_graph_mode_reports_open_review_todos_from_the_review_column(
     assert f"stalled review → me32 (Note me32): td8 open since {old}" in out, out
     assert "review → me33" not in out, out
     assert "memory-lint: 1 hygiene issue(s) above" in out, out  # only the stalled one
+
+
+def test_unqualified_thread_inherits_parent_and_honours_gotchas_none(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    for h in ("me21", "me22", "me23", "me24", "me25"):
+        (nodes / f"{h}.md").write_text(f"# Note {h}\n\nbody\n", encoding="utf-8")
+    today = _days_ago(0)
+    # cols: handle sec upd chars eye live hidden dead hub qual accessed parent review gnone
+    rows = [
+        f"me1\tindex\t{today}\t10\t10\t9\t0\t0\t-\t0",
+        f"me20\tgotchas\t{today}\t10\t10\t2\t0\t0\tme1\t0",
+        f"me21\tthreads\t{today}\t10\t10\t2\t0\t0\tme1\t1\t\tme1\t",
+        f"me22\tthreads\t{today}\t10\t10\t2\t0\t0\tme1\t0\t\tme21\t",  # child of qualified
+        f"me23\tthreads\t{today}\t10\t10\t2\t0\t0\tme1\t0\t\tme1\t\t1",  # gotchas:none
+        f"me24\tthreads\t{today}\t10\t10\t2\t0\t0\tme1\t0\t\tme1\t",  # flagged
+        f"me25\tthreads\t{today}\t10\t10\t2\t0\t0\tme1\t0\t\tme24\t",  # child of flagged
+    ]
+    (nodes / "_sections.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "unqualified thread → me24" in out, out
+    for h in ("me21", "me22", "me23", "me25"):
+        assert f"unqualified thread → {h}" not in out, out
+    assert "tag gotchas:none" in out, out
+
+
+def test_bare_next_heading_with_list_keeps_thread_open(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    (nodes / "me31.md").write_text(
+        f"# Old campaign\n\nshipped at {sha}.\n\nNEXT:\n\n1. do the thing\n2. more\n",
+        encoding="utf-8",
+    )
+    (nodes / "me32.md").write_text(
+        f"# Done campaign\n\nshipped at {sha}.\n\nNEXT:\n", encoding="utf-8"
+    )
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+    assert "retire candidate → me31 (Old campaign): thread landed" not in out, out
+    assert "retire candidate → me32 (Done campaign): thread landed" in out, out
