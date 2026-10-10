@@ -56,6 +56,9 @@ def _call(runtime: PrecisRuntime, kind: str, verb: str, extras: dict) -> str:
 def test_junk_args_key_rejected_naming_accepted_keys(
     runtime_with_store: PrecisRuntime, kind: str, verb: str
 ) -> None:
+    if runtime_with_store.hub.handler_for(kind) is None:
+        # Gated out in this build (e.g. pathway without autocatpath on CI).
+        pytest.skip(f"kind {kind!r} disabled in this build")
     out = _call(runtime_with_store, kind, verb, {"zz_bogus_key": 1})
     assert "[error:BadInput]" in out, out
     assert f"not accepted by {kind}.{verb}" in out, out
