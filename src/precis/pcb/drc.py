@@ -239,6 +239,20 @@ def _object_identity(o: dict[str, Any], prefix: str = "") -> str:
     if role is not None:
         # outline_containment of a silk draw: role + refdes + side.
         return f"silk:{role}:{o.get(prefix + 'refdes')}:{o.get(prefix + 'side')}"
+    if refdes and prefix == "" and o.get("kind") is not None:
+        # silk_missing / silk_printability: several findings per component,
+        # one per silk element (pin1 marker, courtyard, refdes label), and a
+        # stroke-width vs. cap-height printability finding on the same label.
+        # The refdes label keeps the bare ``part:<refdes>`` it always had
+        # (existing keys stay put); any other element (with its side) or the
+        # stroke-width measure is appended so the findings stop sharing a key.
+        base = f"part:{refdes}"
+        kind = str(o["kind"])
+        if kind != "refdes":
+            base += f"#{kind}:{o.get('side')}"
+        if "stroke_width_mm" in o:
+            base += "#stroke"
+        return base
     if refdes:
         # outline_containment of a whole part (courtyard): no pin.
         return f"part:{refdes}"

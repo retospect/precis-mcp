@@ -2295,3 +2295,45 @@ def test_delta_against_a_clean_previous_run_calls_everything_new():
     d = drc.delta_against("clean", [], [f])
     assert d.previous_run_id == "clean"
     assert d.new == [f] and not d.still and not d.gone
+
+
+def _silk_missing(kind: str, side: str = "bottom") -> drc.DrcFinding:
+    return drc.DrcFinding(
+        "silk_missing",
+        "error",
+        f"ARR1_SINK_0 ({kind}, {side})",
+        "",
+        ({"refdes": "ARR1_SINK_0", "kind": kind, "side": side},),
+    )
+
+
+def test_silk_missing_findings_on_one_component_get_distinct_keys():
+    """gr477794: pin1 and refdes silk of one component shared a key."""
+    pin1, refdes = _silk_missing("pin1"), _silk_missing("refdes")
+    assert drc.finding_key(pin1) != drc.finding_key(refdes)
+    assert drc.finding_key(pin1) != drc.finding_key(_silk_missing("courtyard"))
+    # Stable across runs (rebuilt from scratch), and the refdes label keeps
+    # the key it had before the discriminator existed.
+    assert drc.finding_key(pin1) == drc.finding_key(_silk_missing("pin1"))
+    import hashlib
+
+    old = hashlib.sha1(b"silk_missing||part:ARR1_SINK_0").hexdigest()[:12]
+    assert drc.finding_key(refdes) == old
+
+
+def test_silk_printability_stroke_and_height_findings_get_distinct_keys():
+    stroke = drc.DrcFinding(
+        "silk_printability",
+        "warn",
+        "w",
+        "",
+        ({"refdes": "U1", "kind": "refdes", "stroke_width_mm": 0.05},),
+    )
+    height = drc.DrcFinding(
+        "silk_printability",
+        "warn",
+        "w",
+        "",
+        ({"refdes": "U1", "kind": "refdes", "height_mm": 0.5},),
+    )
+    assert drc.finding_key(stroke) != drc.finding_key(height)
