@@ -177,6 +177,11 @@ _WEEKDAY_RE = re.compile(
     re.IGNORECASE,
 )
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# ``friday 17:00`` / ``tomorrow at 9am`` — a day phrase plus a time of day.
+_DAY_TIME_RE = re.compile(
+    r"^(?P<day>.+?)\s+(?:at\s+)?(?P<tod>\d{1,2}(?::\d{2}(?::\d{2})?)?(?:\s*[ap]m)?)$",
+    re.IGNORECASE,
+)
 _EPOCH_RE = re.compile(r"^@?(\d{9,})(?:\.(\d+))?$")
 _ZONEINFO_KEY_RE = re.compile(r"zoneinfo[^/]*/(.+)$")
 _TRAILING_ZONE_RE = re.compile(
@@ -221,6 +226,7 @@ def parse_instant(expr: str, *, now: datetime, zone: tzinfo) -> datetime:
     text = expr.strip()
     if not text:
         raise BadInput("time: empty expression", next=_NEXT_NOW)
+    zone_given = False
     # ``2026-10-09 14:30 Europe/Zurich`` — a trailing zone token overrides
     # ``zone`` for this input only.
     m = _TRAILING_ZONE_RE.match(text)
@@ -228,19 +234,30 @@ def parse_instant(expr: str, *, now: datetime, zone: tzinfo) -> datetime:
         tz = _try_zone(m.group(2))
         if tz is not None:
             text, zone = m.group(1), tz
+            zone_given = True
     low = text.lower()
     local_now = now.astimezone(zone)
 
     if low == "now":
         return now
-    if low in ("today", "tomorrow", "yesterday"):
-        shift = {"today": 0, "tomorrow": 1, "yesterday": -1}[low]
-        return datetime.combine(local_now.date() + timedelta(days=shift), time(), zone)
-    m = _WEEKDAY_RE.match(low)
+    day = _day_phrase(low, local_now, zone)
+    if day is not None:
+        return day
+    m = _DAY_TIME_RE.match(low)
     if m is not None:
-        return _weekday(local_now, m.group(1), m.group(2)[:3], zone)
+        tod = _time_of_day(m.group("tod"))
+        base = _day_phrase(m.group("day"), local_now, zone)
+        if tod is not None and base is not None:
+            return datetime.combine(base.date(), tod, zone)
     rel = _relative_span(low)
     if rel is not None:
+        if zone_given:
+            raise BadInput(
+                f"time: {text!r} is relative to the clock, so a zone suffix "
+                "has no effect; drop it and use args={'to': '<IANA zone>'} "
+                "to render the result in that zone.",
+                next=_NEXT_CONVERT,
+            )
         sign, span = rel
         return _shift(now, span, sign)
     m = _EPOCH_RE.match(text)
@@ -259,12 +276,34 @@ def parse_instant(expr: str, *, now: datetime, zone: tzinfo) -> datetime:
             f"could not parse time expression {text!r}. Accepted: ISO 8601 "
             "(2026-10-09T14:30:00Z, 2026-10-09 14:30, 2026-10-09), RFC 2822, "
             "epoch seconds or millis, or now / today / tomorrow / yesterday / "
-            "in 3 hours / 2 days ago / next monday / 9 Oct 2026 14:30.",
+            "in 3 hours / 2 days ago / next monday / friday 17:00 / tomorrow 9am / 9 Oct 2026 14:30.",
             next=_NEXT_PARSE,
         )
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=zone)
     return parsed
+
+
+def _day_phrase(low: str, local_now: datetime, zone: tzinfo) -> datetime | None:
+    """``today`` / ``tomorrow`` / ``yesterday`` / ``[next|last|this] <weekday>``
+    → midnight of that day in ``zone``; ``None`` if ``low`` is neither."""
+    if low in ("today", "tomorrow", "yesterday"):
+        shift = {"today": 0, "tomorrow": 1, "yesterday": -1}[low]
+        return datetime.combine(local_now.date() + timedelta(days=shift), time(), zone)
+    m = _WEEKDAY_RE.match(low)
+    if m is not None:
+        return _weekday(local_now, m.group(1), m.group(2)[:3], zone)
+    return None
+
+
+def _time_of_day(text: str) -> time | None:
+    norm = re.sub(r"\s*([AP]M)$", r" \1", text.strip().upper())
+    for fmt in _TIME_FORMATS:
+        try:
+            return datetime.strptime(norm, fmt).time()
+        except ValueError:
+            continue
+    return None
 
 
 def _parse_absolute(text: str) -> datetime | None:

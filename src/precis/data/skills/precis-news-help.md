@@ -61,7 +61,8 @@ put(kind="news", text="mastodon:Gargron@mastodon.social")  # → https://mastodo
 put(kind="news", text="reddit:r/python", title="Python subreddit", tags=["topic:python"])
 ```
 
-Only these two forms are accepted. `tags=` become the row's `default_tags`
+Only these two source kinds are accepted; the `r/` after `reddit:` is
+optional (`reddit:python` is `reddit:r/python`). `tags=` become the row's `default_tags`
 (stamped on every article from it); `title=` overrides the label. Articles
 are tagged `source:reddit-<name>` / `source:mastodon-<user>-<instance>`
 (dots → dashes), so `search(kind="news", tags=["source:reddit-python"])`

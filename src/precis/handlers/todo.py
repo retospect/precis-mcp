@@ -508,6 +508,15 @@ class TodoHandler(NumericRefHandler):
         # identically. The booleans are what persists.
         meta = guards.normalize_tier_meta(meta)
         guards.check_facets_on_create(meta)
+        # ``meta={'llm_tier': None}`` is the documented auto-dispatch
+        # opt-out (precis-todo-tree-help): drop the key (a stored null
+        # would still satisfy dispatch's ``meta ? 'llm_tier'`` check) and
+        # suppress the parented-child ``opus`` default below (gr474987).
+        llm_tier_opt_out = (
+            isinstance(meta, dict) and "llm_tier" in meta and meta["llm_tier"] is None
+        )
+        if llm_tier_opt_out and meta is not None:
+            meta = {k: v for k, v in meta.items() if k != "llm_tier"}
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
@@ -588,6 +597,7 @@ class TodoHandler(NumericRefHandler):
         if (
             id is None
             and parent_int is not None
+            and not llm_tier_opt_out
             and not (isinstance(meta, dict) and "llm_tier" in meta)
             and not (isinstance(meta, dict) and meta.get("executor"))
             and not (isinstance(meta, dict) and "schedule" in meta)

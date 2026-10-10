@@ -850,3 +850,22 @@ def test_edit_rejects_blank_and_bad_mode(handler: TodoHandler) -> None:
         handler.edit(id=tid, mode="replace", text="   ")
     with pytest.raises(BadInput, match="only supports mode='replace'"):
         handler.edit(id=tid, mode="append", text="x")
+
+
+def test_put_parented_llm_tier_none_opts_out_of_dispatch(
+    handler: TodoHandler,
+) -> None:
+    """gr474987: meta={"llm_tier": None} on a parented put parks the leaf.
+
+    The key is absent (not stored null) and the opus default is not stamped.
+    """
+    parent = _id_of(handler.put(text="parent").body)
+    r = handler.put(text="parked child", meta={"llm_tier": None}, parent_id=parent)
+    ref = handler.store.get_ref(kind="todo", id=_id_of(r.body))
+    assert ref is not None
+    assert "llm_tier" not in ref.meta
+    assert "stamped" not in r.body
+    # control: without the opt-out the parented default still arms opus
+    r2 = handler.put(text="armed child", parent_id=parent)
+    ref2 = handler.store.get_ref(kind="todo", id=_id_of(r2.body))
+    assert ref2 is not None and ref2.meta.get("llm_tier") == "opus"

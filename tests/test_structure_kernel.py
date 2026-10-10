@@ -940,6 +940,44 @@ def test_relax_clean_separates_overlap() -> None:
     assert probe.distance(scene, "aPd1", "aPd2") >= 2.7
 
 
+def test_relax_clean_does_not_claim_converged_while_over_coordinated() -> None:
+    """gr461792: clean parks a pushed atom at the covalent-radii sum, still inside
+    the bond-detection cutoff, so a crowded centre stays over-valent. The sweep
+    going quiet must not read as success."""
+    scene = Scene(cell=_cubic(20.0))
+    c = 0.5
+    ops = [{"op": "add_atom", "element": "C", "frac": [c, c, c]}]
+    for dx, dy, dz in [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)]:
+        ops.append(
+            {
+                "op": "add_atom",
+                "element": "C",
+                "frac": [c + 1.5 * dx / 20, c + 1.5 * dy / 20, c + 1.5 * dz / 20],
+            }
+        )
+    # a fifth neighbour sunk into the centre atom
+    ops.append({"op": "add_atom", "element": "C", "frac": [c, c, c + 0.9 / 20]})
+    apply_ops(scene, ops)
+    assert any(f.rule == "over_valence" for f in validate(scene))
+    res = relax(scene, fidelity="clean")
+    assert any(f.rule == "over_valence" for f in validate(scene))
+    assert not res.converged
+    assert "geo" in (res.note or "")
+
+
+def test_relax_clean_converged_has_no_note() -> None:
+    scene = Scene(cell=_cubic(20.0))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.05, 0.0, 0.0]},
+        ],
+    )
+    res = relax(scene, fidelity="clean")
+    assert res.converged and res.note is None
+
+
 def test_relax_clean_respects_fixed() -> None:
     scene = Scene(cell=_cubic(20.0))
     apply_ops(

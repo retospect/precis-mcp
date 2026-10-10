@@ -799,7 +799,7 @@ def test_walk_author_papers_backoff_retries_a_429_mid_walk(
 
 
 def test_s2_get_json_backoff_raises_after_5_consecutive_429s(
-    s2handler: SemanticScholarHandler, monkeypatch
+    monkeypatch,
 ) -> None:
     """5 consecutive 429s exhaust the retry budget: 4 sleeps (between
     attempts 1-4 and 2-5), then an ``Upstream`` with the exact
@@ -807,6 +807,10 @@ def test_s2_get_json_backoff_raises_after_5_consecutive_429s(
     was unreachable (reviewer finding 3 on 83c0abca)."""
     from precis.errors import Upstream
 
+    # Pure HTTP-retry logic, no DB: skip ``__init__`` (which demands a
+    # Store) so this test stays off the per-test Store and the leak check
+    # can't blame it for a neighbour's lingering backend (gr475521).
+    s2handler = SemanticScholarHandler.__new__(SemanticScholarHandler)
     sleeps: list[float] = []
     monkeypatch.setattr("precis.handlers.semanticscholar.time.sleep", sleeps.append)
 

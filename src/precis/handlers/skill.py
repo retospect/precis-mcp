@@ -780,7 +780,9 @@ class SkillHandler(Handler):
             lines.append("")
         lines.append(
             "unchanged since you read it this session — "
-            f"get(kind='skill', id='{slug}', full=true) to resend"
+            f"get(kind='skill', id='{slug}', full=true) to resend. "
+            "Subagents share their parent's session: if you have not read "
+            "this skill yourself, call it with full=true now."
         )
         return Response(body="\n".join(lines))
 

@@ -19,7 +19,9 @@ from precis.utils.llm.router import LlmRequest, LlmResult, Tier, Transport, rout
 from tests.test_budget import SqlStore
 
 NOW = datetime.now(UTC).replace(microsecond=0)
-RESET = NOW + timedelta(hours=1)
+# Import-time constants can be hours stale under xdist; keep RESET far enough
+# ahead that real-clock checks (evaluate/route) still see an open window.
+RESET = NOW + timedelta(days=1)
 NOTICE = "You've hit your session limit · resets 9pm (UTC)"
 
 
@@ -184,11 +186,11 @@ def test_quota_check_refreshes_early_when_probe_is_due(
 
     monkeypatch.setattr(qc, "refresh_snapshot", _refresh)
     monkeypatch.setattr(qc, "_resolve_host_name", lambda: "t")
-    # Fresh snapshot (ts = NOW), no stamp → cadence short-circuits.
+    # Fresh snapshot (ts = build time), no stamp → cadence short-circuits.
     qc.run_quota_check_pass(cast("Any", store))
     assert probes == []
     # A stamp whose probe instant has passed forces the refresh.
     assert store.data is not None
-    store.data["probe_due"] = (NOW - timedelta(seconds=1)).isoformat()
+    store.data["probe_due"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     qc.run_quota_check_pass(cast("Any", store))
     assert probes == [1]

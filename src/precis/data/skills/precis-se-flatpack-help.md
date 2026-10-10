@@ -33,7 +33,8 @@ design cannot yet hold one.
 ## What it makes
 
 `flatpack_box(W, H, D, material='corrugated-3mm', t=None, shelves=[],
-joint='finger', fit=None, kerf=None, cutter_d=0, sheet=None)` — all mm.
+joint='finger', fit=None, kerf=None, cutter_d=0, sheet=None,
+shelf_load_n=None)` — all mm except `shelf_load_n`.
 An open-front box `W × H × D` (width × height × depth): two sides, top,
 bottom, back, one shelf per height in `shelves` (inside bottom to the
 shelf's underside). Every figure derives from the sheet thickness `t`
@@ -64,6 +65,11 @@ The 50 mm cube in `corrugated-3mm` (`t = 3`) is the first box: five
   from the material (outline out, slot in), square corners kept.
 - `cutter_d > 0` means a CNC: a dog-bone of radius `cutter_d/2` sits on
   every inside corner so a square mate seats. `0` is the laser or Cricut.
+
+`sheet=(w, h)` is the sheet size in mm (see nesting below).
+`shelf_load_n` (newtons per shelf, default `None`) is only recorded in the
+result's `params` for the se build's shelf-sag check; this generator does
+not compute with it, so it changes no panel.
 
 Explicit `fit`/`kerf` win; otherwise the material's recorded figure for
 the machine (`laser` at `cutter_d = 0`, `cnc` otherwise); otherwise 0 mm.

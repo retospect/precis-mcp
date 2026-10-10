@@ -67,7 +67,9 @@ BARE_CONV_PATTERN = re.compile(
 
 #: Bare paper cite_key: ``<surname><2-digit year><optional letter>``.
 #: Either a chunk suffix disambiguates a ≥2-letter key, or (no suffix)
-#: ≥3 surname letters keep ``ai99`` / ``ml22`` off prose.
+#: ≥3 surname letters keep ``ai99`` / ``ml22`` off prose. A trailing ``-``
+#: disqualifies: ``zhang09-bilayer-gap`` is one hyphenated slug, not the
+#: key ``zhang09`` plus prose (gr477964).
 BARE_PAPER_PATTERN = re.compile(
     r"(?<![\w-])"
     r"(?:"
@@ -75,7 +77,7 @@ BARE_PAPER_PATTERN = re.compile(
     r"|"
     r"[a-z]{3,}[0-9]{2}[a-z]?"
     r")"
-    r"(?!\w)"
+    r"(?![\w-])"
 )
 
 #: Kinds we resolve. The regex over-fires on ``noun:value`` prose

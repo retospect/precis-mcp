@@ -122,7 +122,10 @@ def validate(scene: Scene) -> list[ValidationIssue]:
                     expected=mv,
                     suggested_fix=(
                         f"{label} ({atom.element}{charge_note}) has {cn} neighbours "
-                        f"but max valence is {mv} — remove a bond or a neighbour."
+                        f"but max valence is {mv} — remove a bond or a neighbour; if the "
+                        "extras are non-bonded atoms pressed into contact "
+                        "(interpenetrating parts), relax fidelity='geo' pulls "
+                        "them apart (fidelity='clean' cannot)."
                     ),
                 )
             )

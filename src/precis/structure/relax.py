@@ -38,7 +38,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from . import export, georelax
+from . import elements, export, georelax
 from .scene import Scene
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
@@ -141,6 +141,10 @@ class RelaxResult:
     forces_source: str | None = (
         None  # 'emt' (rung 1, or the clean estimate) or an MLIP name
     )
+    # A human-readable caveat the rung wants shown beside the envelope (e.g. the
+    # clean rung stopped with atoms still over-coordinated, gr461792). ``None``
+    # when there is nothing to caveat.
+    note: str | None = None
     # Whether an explicit dispersion (DFT-D3) correction was added on top of
     # the MLIP. Part of the calculator's *identity*, not bookkeeping: the same
     # model with and without D3 gives different energies, so the handler folds
@@ -241,6 +245,20 @@ def _free_axes(fixed: int) -> np.ndarray:
     return np.array([0.0 if (fixed >> ax) & 1 else 1.0 for ax in range(3)])
 
 
+def _over_coordinated(scene: Scene) -> list[str]:
+    """Labels of atoms whose bond-cutoff neighbour count exceeds their valence
+    budget — the same test as ``validate``'s ``over_valence`` rule."""
+    from . import probe
+
+    cov_cn = probe.covalent_coordination_all(scene)
+    out: list[str] = []
+    for label, atom in scene.atoms.items():
+        mv, _known = elements.effective_valence(atom.element, atom.charge)
+        if mv is not None and cov_cn[label] > mv:
+            out.append(label)
+    return out
+
+
 def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     """Rung 0: iteratively separate too-close pairs toward their covalent bond
     length. Pure, fixed-aware. Not an energy minimiser — a geometry sanitiser."""
@@ -275,8 +293,26 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     # geometry this pass just repaired. ``None`` (never fabricated) when the
     # element set falls outside EMT's coverage or ASE isn't installed.
     approx_forces = estimate_forces_emt(scene)
+    # A pair sweep that goes quiet is not a repaired structure (gr461792): it
+    # pushes pairs only to 98 % of the covalent-radii sum, which is still inside
+    # the 1.2x bond-detection cutoff, and it cannot tell a bonded neighbour from
+    # an interpenetrating one. Atoms left over-coordinated therefore mean the
+    # clash is unresolved, whatever the last sweep's move was.
+    over = _over_coordinated(scene)
+    note = None
+    if over:
+        converged = False
+        shown = ", ".join(over[:5]) + (", ..." if len(over) > 5 else "")
+        note = (
+            f"{len(over)} atom(s) still have more neighbours within bond cutoff "
+            f"than their valence allows ({shown}); 'clean' only separates pairs "
+            "to the covalent-radii sum and cannot pull non-bonded atoms out of "
+            "bonding range - use fidelity='geo' (bond-aware) for interpenetrating "
+            "parts"
+        )
     return RelaxResult(
         rung="clean",
+        note=note,
         converged=converged,
         n_steps=n,
         max_disp=max_disp,

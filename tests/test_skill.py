@@ -1704,6 +1704,8 @@ def test_ledger_stub_on_repeat_get_unchanged(
         second = skill.get(id="a")
         assert "unchanged this session" in second.body
         assert "get(kind='skill', id='a', full=true) to resend" in second.body
+        # gr477798: a subagent sharing the session must be told to retry.
+        assert "Subagents share their parent's session" in second.body
 
 
 def test_ledger_full_override_resends_full_body(

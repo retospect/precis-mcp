@@ -2008,6 +2008,8 @@ class StructureHandler(Handler):
             out["max_force"] = res.max_force
         if res.model is not None:
             out["model"] = res.model
+        if res.note:
+            out["note"] = res.note
         if res.dispersion:
             out["dispersion"] = True
         return out
@@ -2234,8 +2236,10 @@ class StructureHandler(Handler):
             state = "converged" if lr.get("converged") else "not converged"
             head += (
                 f"\n# relax[{lr.get('rung')}]: {state} in {lr.get('n_steps')} steps "
-                f"(max move {lr.get('max_disp')} Å)"
+                f"(last-step max move {lr.get('max_disp')} Å)"
             )
+            if lr.get("note"):
+                head += f"\n# relax note: {lr['note']}"
         if scene.atoms:
             cart = np.array(
                 [

@@ -28,4 +28,4 @@ as its own pip later.  Export seed (README, examples, CITATION) is the
 repo-root ``hexfold/`` directory.
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"

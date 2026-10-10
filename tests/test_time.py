@@ -95,6 +95,12 @@ def test_default_clock_is_aware_utc() -> None:
         ("friday", "2026-10-16T00:00:00Z"),  # today is Friday → next one
         ("last friday", "2026-10-02T00:00:00Z"),
         ("this wed", "2026-10-07T00:00:00Z"),
+        ("next friday 17:00", "2026-10-16T17:00:00Z"),  # gr477795
+        ("friday 17:00", "2026-10-16T17:00:00Z"),
+        ("tomorrow 17:00", "2026-10-10T17:00:00Z"),
+        ("tomorrow at 9am", "2026-10-10T09:00:00Z"),
+        ("today 08:15:30", "2026-10-09T08:15:30Z"),
+        ("last friday 5 pm", "2026-10-02T17:00:00Z"),
     ],
 )
 def test_parse_shapes(handler: TimeHandler, q: str, expected: str) -> None:
@@ -229,3 +235,14 @@ def test_non_dict_args_raises_bad_input(handler: TimeHandler) -> None:
     not_a_dict: Any = "Asia/Tokyo"
     with pytest.raises(BadInput):
         handler.get(args=not_a_dict)
+
+
+def test_relative_span_with_zone_suffix_is_refused(handler: TimeHandler) -> None:
+    """gr477795: 'in 3 hours Europe/Zurich' used to drop the zone silently."""
+    with pytest.raises(BadInput, match="zone suffix"):
+        handler.get(q="in 3 hours Europe/Zurich")
+
+
+def test_weekday_time_honours_trailing_zone(handler: TimeHandler) -> None:
+    out = _lines(handler.get(q="friday 17:00 Europe/Zurich").body)
+    assert out["utc"].startswith("2026-10-16T15:00:00Z"), out["utc"]

@@ -122,7 +122,8 @@ class NewsSourceSpec:
 def parse_source_spec(spec: str) -> NewsSourceSpec:
     """``reddit:r/<name>`` / ``mastodon:<user>@<instance>`` → feed row.
 
-    Only the two documented forms are accepted; a bare URL is refused
+    Only the two documented source kinds are accepted (the ``r/`` is
+    optional: ``reddit:python`` == ``reddit:r/python``); a bare URL is refused
     here (operators add arbitrary feeds by SQL, ``docs/runbooks/news-ops.md``).
     """
     text = (spec or "").strip()

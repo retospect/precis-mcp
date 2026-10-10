@@ -31,6 +31,16 @@ def test_extract_prefixed_bare_paper_and_conv() -> None:
     assert ("paper", "futrell25", None) in handles
 
 
+def test_hyphenated_slug_is_not_a_bare_key_prefix() -> None:
+    """gr477964: ``paper:zhang09-bilayer-gap`` must not also yield the bare
+    key ``zhang09`` (a real alias of an unrelated paper)."""
+    handles = mentions.extract_handles("see paper:zhang09-bilayer-gap and zhang09-foo")
+    assert ("paper", "zhang09", None) not in handles
+    assert ("paper", "zhang09-bilayer-gap", None) in handles
+    # the plain key still resolves, incl. before sentence punctuation
+    assert ("paper", "zhang09", None) in mentions.extract_handles("see zhang09.")
+
+
 def test_extract_dedups_and_strips_hash() -> None:
     # ``memory:#6134`` and ``memory:6134`` collapse; repeats dropped.
     handles = mentions.extract_handles("memory:#6134 memory:6134 memory:6134")

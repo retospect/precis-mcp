@@ -60,6 +60,8 @@ _STATE_KEY = "paper_reconcile:last_run"
 #: Env var + default for the cadence throttle (see :func:`_throttle.due`).
 _REFRESH_ENV_VAR = "PRECIS_PAPER_RECONCILE_REFRESH_HOURS"
 _DEFAULT_REFRESH_HOURS = 24.0
+# Max junk-title todos filed per pass (gr477964).
+_TITLE_FIX_PER_PASS = 10
 
 
 def _due(store: Store) -> bool:
@@ -121,6 +123,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 heal_drifted_cards,
                 metadata_hygiene_stats,
                 migrate_dangling_paper_links,
+                raise_junk_title_papers,
                 requeue_stranded_fetches,
             )
 
@@ -140,6 +143,17 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 extract_limit=bodiless_extract_per_pass(),
             )
             bodiless_judged = [o for o in bodiless if o.outcome != "deferred"]
+            # Junk titles automation can't fix go to the owner's queue
+            # (gr477964); idempotent, so the daily pass never re-files.
+            # Capped per pass so a backlog trickles into the queue
+            # instead of flooding it on the first run after deploy.
+            raised = raise_junk_title_papers(
+                store,
+                dry_run=False,
+                limit=min(limit or _TITLE_FIX_PER_PASS, _TITLE_FIX_PER_PASS),
+            )
+            if raised:
+                log.info("paper_reconcile: raised %d junk-title paper(s)", len(raised))
             stats = metadata_hygiene_stats(store)
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 

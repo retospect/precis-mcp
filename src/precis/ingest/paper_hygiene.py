@@ -1328,6 +1328,117 @@ def requeue_placeholder_title_papers(
     return candidates
 
 
+#: Tag + ``meta.source`` marking a "fix this paper's title" human todo.
+TITLE_FIX_TAG = "paper-title-fix"
+TITLE_FIX_SOURCE = "paper_hygiene:title_fix"
+#: A junk-titled paper younger than this is left to ingest/enrich first.
+_TITLE_FIX_GRACE_DAYS = 3
+
+
+def raise_junk_title_papers(
+    store: Store,
+    *,
+    dry_run: bool = True,
+    limit: int | None = None,
+    grace_days: int = _TITLE_FIX_GRACE_DAYS,
+) -> list[int]:
+    """File a ``waiting-for:<login>`` todo per junk-titled paper automation can't fix.
+
+    A paper whose stored title is junk (``"__"``, a filename, PII, blank,
+    or the no-title sentinel) still resolves in citations, so an untitled
+    paper silently stands in for a real one (gr477964). Automation that
+    *can* fix it (a placeholder with a DOI is re-armed by
+    :func:`requeue_placeholder_title_papers`; ``paper_meta_enrich`` fills
+    it) is left alone; the rest is raised to the paper's owner
+    (``refs.owner_login``, else the deployment owner ``PRECIS_OWNER``)
+    as a todo tagged ``waiting-for:<login>`` + ``paper-title-fix``.
+
+    Skipped: retired papers; placeholder-titled papers that carry a DOI
+    (the enrich route owns them); papers younger than ``grace_days``.
+
+    Idempotent: ``meta.source``/``meta.paper_ref_id`` identify the todo,
+    and a paper with *any* such todo, open or closed, is never re-filed:
+    a human who closed it without fixing chose to; re-filing daily would
+    only nag. Returns the paper ref_ids a todo was (or, dry-run, would be)
+    filed for.
+    """
+    from precis.config import load_config
+    from precis.identity import is_placeholder_title
+    from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
+    from precis.store.types import Tag
+    from precis.utils.handle_registry import format_handle
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.owner_login,
+                   COALESCE(ck.id_value, ''),
+                   EXISTS (SELECT 1 FROM ref_identifiers d
+                            WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi')
+              FROM refs r
+              LEFT JOIN ref_identifiers ck
+                     ON ck.ref_id = r.ref_id AND ck.id_kind = 'cite_key'
+             WHERE r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND r.created_at < now() - make_interval(days => %s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM refs t
+                      WHERE t.kind = 'todo'
+                        AND t.meta->>'source' = %s
+                        AND t.meta->>'paper_ref_id' = r.ref_id::text)
+             ORDER BY r.ref_id
+            """,
+            (grace_days, TITLE_FIX_SOURCE),
+        ).fetchall()
+
+    todo: list[tuple[int, str, str | None, str]] = []
+    for ref_id, title, owner, cite_key, has_doi in rows:
+        t = (title or "").strip()
+        if is_placeholder_title(t):
+            if has_doi:
+                continue  # paper_meta_enrich / requeue_placeholder_title_papers
+        elif not (is_pii(t) or is_garbage_title(t)):
+            continue
+        todo.append((int(ref_id), t, owner, cite_key))
+    if limit:
+        todo = todo[:limit]
+    if dry_run:
+        return [t[0] for t in todo]
+
+    default_owner = load_config().owner
+    for ref_id, t, owner, cite_key in todo:
+        login = owner or default_owner
+        handle = f"paper:{format_handle('paper', ref_id)}"
+        text = (
+            f"Fix title/metadata of {handle} (cite_key {cite_key or '?'}): "
+            f"stored title {t!r} is junk and automation could not repair it. "
+            "Set the real title (and authors/year) on the paper; until then "
+            "citations resolve to an untitled paper."
+        )
+        with store.tx() as conn:
+            todo_ref = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title=text,
+                meta={"source": TITLE_FIX_SOURCE, "paper_ref_id": ref_id},
+                conn=conn,
+            )
+            store.add_tag(
+                todo_ref.id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            for tag in (f"waiting-for:{login}", TITLE_FIX_TAG):
+                store.add_tag(
+                    todo_ref.id, Tag.parse_strict(tag), set_by="system", conn=conn
+                )
+    if todo:
+        log.info("raise_junk_title_papers: filed %d title-fix todo(s)", len(todo))
+    return [t[0] for t in todo]
+
+
 def requeue_papers_for_enrich(
     store: Store, ref_ids: list[int], *, dry_run: bool = True
 ) -> list[int]:

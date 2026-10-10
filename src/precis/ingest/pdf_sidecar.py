@@ -206,6 +206,10 @@ def is_pii(text: str) -> bool:
 # Passing them to a title-based search engine (S2, CrossRef title fuzz)
 # poisons the lookup and returns an unrelated paper with high confidence.
 _GARBAGE_TITLE_RES = [
+    # Content-free: no letter or digit anywhere ("__", "-", "...", "--- ").
+    # ``\w`` includes the underscore, hence the explicit ``_``. A real
+    # title always carries a letter or digit.
+    re.compile(r"^[\W_]+$"),
     # Ends with "N..M" page-range notation (InDesign / Quark XPress page refs).
     # Examples: "nl404795z 1..9", "LQ8388 2..5", "acs_nn_nn-2013-02954e 1..6",
     # "78868 651..703"

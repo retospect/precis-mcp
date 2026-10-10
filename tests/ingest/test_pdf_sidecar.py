@@ -478,3 +478,15 @@ class TestFiveImportersSurviveFitzBlocked:
             monkeypatch.delitem(sys.modules, name, raising=False)
 
         importlib.import_module(module_name)  # must not raise
+
+
+class TestContentFreeTitle:
+    """gr477964: a title with no letter/digit ("__") is junk."""
+
+    def test_punctuation_and_underscore_only(self):
+        for t in ("__", "_", "-", "...", "--- ", "* * *", "—"):
+            assert is_garbage_title(t) is True, t
+
+    def test_real_titles_survive(self):
+        for t in ("A", "2024", "C-3PO: a study", "_Foo_", "量子"):
+            assert is_garbage_title(t) is False, t

@@ -10,6 +10,7 @@ from precis.ingest.paper_hygiene import (
     heal_drifted_cards,
     is_filename_like_title,
     migrate_dangling_paper_links,
+    raise_junk_title_papers,
     requeue_papers_for_enrich,
     requeue_placeholder_title_papers,
 )
@@ -1009,3 +1010,56 @@ class TestHealBodilessPdfs:
         assert bodiless_extract_per_pass() == 0
         monkeypatch.setenv("PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS", "junk")
         assert bodiless_extract_per_pass() == 5
+
+
+class TestRaiseJunkTitlePapers:
+    """gr477964: unfixable junk-titled papers are raised to a human queue."""
+
+    def _old(
+        self, store: Store, *, slug: str, title: str, doi: str | None = None
+    ) -> int:
+        rid = store.insert_ref(kind="paper", slug=slug, title=title).id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        if doi:
+            store.set_ref_identifier(rid, "doi", doi, source="manual")
+        return rid
+
+    def _todos(self, store: Store, paper_id: int) -> list[Any]:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT ref_id, title FROM refs WHERE kind='todo' "
+                "AND meta->>'paper_ref_id' = %s",
+                (str(paper_id),),
+            ).fetchall()
+
+    def test_files_one_todo_for_underscore_title(self, store: Store) -> None:
+        rid = self._old(store, slug="anon24d", title="__")
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        assert "anon24d" in todo[1] and "'__'" in todo[1]
+        rendered = {str(t) for t in store.tags_for(todo[0])}
+        assert any("paper-title-fix" in r for r in rendered), rendered
+        assert any("waiting-for:" in r for r in rendered), rendered
+        assert any("open" in r for r in rendered), rendered
+
+    def test_not_refiled_while_open(self, store: Store) -> None:
+        rid = self._old(store, slug="anon24f", title="-")
+        raise_junk_title_papers(store, dry_run=False)
+        assert raise_junk_title_papers(store, dry_run=False) == []
+        assert len(self._todos(store, rid)) == 1
+
+    def test_dry_run_writes_nothing(self, store: Store) -> None:
+        rid = self._old(store, slug="anon24g", title="...")
+        assert raise_junk_title_papers(store, dry_run=True) == [rid]
+        assert self._todos(store, rid) == []
+
+    def test_skips_fixable_and_young_papers(self, store: Store) -> None:
+        self._old(store, slug="good24", title="A Real Title")
+        self._old(store, slug="stub24", title=PLACEHOLDER_TITLE, doi="10.1234/z")
+        store.insert_ref(kind="paper", slug="young24", title="__")
+        assert raise_junk_title_papers(store, dry_run=True) == []

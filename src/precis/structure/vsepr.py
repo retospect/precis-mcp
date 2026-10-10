@@ -191,7 +191,8 @@ def _angle_strain(
                     suggested_fix=(
                         f"{a}-{label}-{c} measures {ang:.1f}°, {dev:.1f}° off "
                         f"the {ideal:.1f}° {hyb} ideal for {atom.element} — "
-                        "displace an atom or run relax fidelity='clean'; if "
+                        "displace an atom or run relax fidelity='geo' (restores angles; "
+                        "'clean' only fixes pair distances); if "
                         "the double/single bond intent is wrong, fix the "
                         "bond orders instead."
                     ),

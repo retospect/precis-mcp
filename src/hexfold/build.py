@@ -3271,7 +3271,16 @@ def _fuse_transform(
         a = ang(pos[p_dang[i]], c_p)
         b = ang(r0 @ pos[q_dang[(k - i) % n]], c_qr)
         offs.append(a - b)
-    th = math.atan2(sum(math.sin(o) for o in offs), sum(math.cos(o) for o in offs))
+    s_sum = sum(math.sin(o) for o in offs)
+    c_sum = sum(math.cos(o) for o in offs)
+    if math.hypot(s_sum, c_sum) < 1e-6 * n:
+        # The offsets are spread evenly round the circle (the two rims'
+        # dangling lists wind opposite ways, gr459812), so the circular mean
+        # is 0/0 and atan2 of the rounding noise picks an arbitrary twist that
+        # differs per host and per run (gr464502). Pin pair 0 instead.
+        th = offs[0]
+    else:
+        th = math.atan2(s_sum, c_sum)
     r = _rot_axis(n_p, th) @ r0
     t = c_p + sigma * n_p - r @ c_q
     return r, t
