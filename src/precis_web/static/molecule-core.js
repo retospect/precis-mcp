@@ -401,9 +401,16 @@ export async function createMoleculeCore(host, data, {
     throw err;
   }
 
+  //: Is this block's object eyed on? One answer from the host's shared
+  //: visibility state, consulted by every mesh kind below.
+  const objectShown = (uid) => (host.objectShown ? host.objectShown(uid) : true);
+  let curT = 0;
+
   function applyT(t) {
     if (disposed) return;
+    curT = t;
     for (const blk of blocks) {
+      const shown = objectShown(blk.src.uid);
       const { coords, smooth, atomMesh, bondMesh, bondEntries, atomR, bondR, surfMesh, surfPositions } = blk;
       const n = coords.length;
       // Kept for `applyStrain`, which re-composes bond matrices at the
@@ -431,7 +438,7 @@ export async function createMoleculeCore(host, data, {
       refreshBounds(atomMesh);
       refreshBounds(bondMesh);
       atomMesh.material.opacity = bondMesh.material.opacity = 1 - t;
-      atomMesh.visible = bondMesh.visible = t < 0.999;
+      atomMesh.visible = bondMesh.visible = shown && t < 0.999;
       surfMesh.geometry.attributes.position.needsUpdate = true;
       surfMesh.geometry.computeVertexNormals();
       surfMesh.material.opacity = t;
@@ -445,7 +452,7 @@ export async function createMoleculeCore(host, data, {
       const surfaceIsBody = t >= _SURFACE_BODY_T;
       surfMesh.material.depthWrite = surfaceIsBody;
       atomMesh.material.depthWrite = bondMesh.material.depthWrite = !surfaceIsBody;
-      surfMesh.visible = t > 0.001;
+      surfMesh.visible = shown && t > 0.001;
     }
     try {
       host.redraw();
@@ -480,6 +487,26 @@ export async function createMoleculeCore(host, data, {
       host.redraw();
     } catch (err) {
       console.error("blocktree-3d: atom visibility redraw failed", err);
+    }
+  }
+
+  //: Re-derive every mesh's visibility from the shared object state (an
+  //: eye was clicked): atoms, bonds, surfaces and target surfaces alike.
+  function refreshVisibility() {
+    if (disposed) return;
+    for (const blk of blocks) {
+      const shown = objectShown(blk.src.uid);
+      blk.atomMesh.visible = blk.bondMesh.visible = shown && curT < 0.999;
+      blk.surfMesh.visible = shown && curT > 0.001;
+    }
+    for (const mesh of targetGroup ? targetGroup.children : []) {
+      mesh.visible = objectShown(mesh.userData.uid);
+    }
+    setEnvelopesCaged(group.visible);
+    try {
+      host.redraw();
+    } catch (err) {
+      console.error("blocktree-3d: object visibility redraw failed", err);
     }
   }
 
@@ -566,6 +593,8 @@ export async function createMoleculeCore(host, data, {
           depthWrite: false,
         })
       );
+      mesh.userData.uid = b.uid;
+      mesh.visible = objectShown(b.uid);
       targetGroup.add(followClipping(mesh));
     }
     targetBuilt = true;
@@ -682,5 +711,5 @@ export async function createMoleculeCore(host, data, {
 
   const bindings = new Map(blocks.map((b) => [String(b.src.uid), b.src.binding]));
   const pickMolecule = (x, y, canvas) => pickAtom(x, y, canvas, true);
-  return { applyT, setVisible, pickAtom, pickMolecule, hasTarget, setTargetVisible, strainStats, applyStrain, bindings, dispose };
+  return { applyT, setVisible, refreshVisibility, pickAtom, pickMolecule, hasTarget, setTargetVisible, strainStats, applyStrain, bindings, dispose };
 }

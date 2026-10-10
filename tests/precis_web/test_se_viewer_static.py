@@ -90,7 +90,7 @@ def test_scrubber_rides_the_live_scene_seam() -> None:
     assert scrub is not None
     body = scrub.group(1)
     assert "await loadScene();" in body  # camera held, UI state re-applied
-    assert "revisionEl.innerHTML = await panel;" in body
+    assert "revisionEl.innerHTML = html;" in body
     assert "applyRevisionState();" in body
     # The URL is rewritten, never navigated: `rev` joins replaceState.
     sync = re.search(r"function syncUrl\(\) \{(.*?)\n  \}\n", js, re.S)

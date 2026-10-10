@@ -34,7 +34,9 @@ export function createMoleculeMarkers(THREE, scene, points, radius, name) {
   return group;
 }
 
-export function createSEHost(viewer, pathForUid) {
+//: `visibility` is the page's shared object-visibility state; the caged
+// envelope follows it, so atoms toggling never un-hides an eyed-off block.
+export function createSEHost(viewer, pathForUid, visibility = null) {
   const rendered = viewer?._rendered;
   const caged = new Set();
   const groups = rendered?.nestedGroup?.groups || {};
@@ -55,11 +57,19 @@ export function createSEHost(viewer, pathForUid) {
       groups[path].setShapeVisible(false);
       caged.add(path);
     },
+    objectShown(uid) {
+      const path = pathForUid(uid);
+      return !visibility || !path || visibility.shapeShown(path);
+    },
     setCaged(on) {
-      for (const path of caged) groups[path]?.setShapeVisible(!on);
+      for (const path of caged) {
+        groups[path]?.setShapeVisible(!on && (!visibility || visibility.shapeShown(path)));
+      }
     },
     restore() {
-      for (const path of caged) groups[path]?.setShapeVisible(true);
+      for (const path of caged) {
+        groups[path]?.setShapeVisible(!visibility || visibility.shapeShown(path));
+      }
       caged.clear();
     },
   };

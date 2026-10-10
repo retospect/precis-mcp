@@ -47,6 +47,7 @@ import {
 import { createMoleculeCore } from "/static/molecule-core.js";
 import { createSEHost, createMoleculeMarkers, focusMoleculePoints } from "/static/molecule-host.js";
 import { renderTopologyCloud } from "/static/topology-cloud.js";
+import { createObjectVisibility, createLatest } from "/static/se-view-state.js";
 
 //: Amber = a partner of the selection, sky blue = the selection itself.
 const HIGHLIGHT_COLOUR = "#f59e0b";
@@ -847,10 +848,12 @@ function _fetchTargetPayload(url) {
   return p;
 }
 
-async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, progress = null, isStale = () => false) {
-  const host = createSEHost(viewer, (uid) => findPathByUid(sceneShapes, uid));
+//: `preloaded` is an already-fetched atomic payload (a scene reload fetches it
+//: beside the scene, so the overlay is built in the same task as the scene).
+async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, progress = null, isStale = () => false, visibility = null, preloaded = null) {
+  const host = createSEHost(viewer, (uid) => findPathByUid(sceneShapes, uid), visibility);
   host.targetFailed = () => { if (smoothEls.targetToggle) smoothEls.targetToggle.checked = false; };
-  const data = await _fetchAtomicPayload(atomicUrl, progress);
+  const data = preloaded || (await _fetchAtomicPayload(atomicUrl, progress));
   _bt3dMark("bt3d-atomic-fetched");
   return createMoleculeCore(host, data, {
     progress, isStale,
@@ -1170,6 +1173,12 @@ export async function blocktreeViewer3D({
   const viewerOptions = { up: "Z", collapse: 2 };
 
   let viewer;
+  //: The ONE per-object eye state (se-view-state.js): fed by the viewer's tree
+  //: eyes, read by every renderer, re-applied after each scene render.
+  const visibility = createObjectVisibility();
+  //: True while renderScene drives the viewer: its default-state
+  //: notifications must not overwrite the remembered eyes.
+  let rendering = false;
   const highlighted = new Map(); // path -> original colour, for revert
 
   // ── container envelope mode (viewer fix: a design's ROOT can carry
@@ -1226,7 +1235,7 @@ export async function blocktreeViewer3D({
         if (mode === "hidden") {
           grp.setShapeVisible(false);
         } else {
-          grp.setShapeVisible(true);
+          grp.setShapeVisible(visibility.shapeShown(path));
           grp.setTransparent(mode === "translucent");
           grp.setOpacity(mode === "translucent" ? _CONTAINER_OPACITY : 1.0);
         }
@@ -1651,6 +1660,7 @@ export async function blocktreeViewer3D({
   }
 
   function notify(change) {
+    if (change && change.states && !rendering) visibility.update(change.states.new);
     const pick = change && change.lastPick && change.lastPick.new;
     if (!pick) return;
     selectPath(primaryPathOf(`${pick.path}/${pick.name}`));
@@ -1915,14 +1925,25 @@ export async function blocktreeViewer3D({
   //: Bumped per render: a build that yielded across a newer render is stale.
   let renderGen = 0;
 
-  function renderScene(shapes, { camera = null, refit = true } = {}) {
+  function renderScene(shapes, { camera = null, refit = true, atomicPayload = null } = {}) {
     clearValidationSelection();
     validationStatus("");
     shownShapes = shapes;
     renderGen++;
     atomicOverlay?.dispose();
-    viewer.clear();
-    viewer.render(shapes, renderOptions, viewerOptions);
+    rendering = true;
+    try {
+      viewer.clear();
+      viewer.render(shapes, renderOptions, viewerOptions);
+      // A fresh render starts from default states: put the user's eyes
+      // (envelope, interface-shape grid lines, ...) back before it paints.
+      visibility.restore(viewer);
+    } catch (err) {
+      if (!viewer._rendered) throw err;
+      console.error("blocktree-3d: eye restore failed", err);
+    } finally {
+      rendering = false;
+    }
     if (!firstRenderMarked) {
       firstRenderMarked = true;
       _bt3dMark("bt3d-first-render");
@@ -1955,7 +1976,7 @@ export async function blocktreeViewer3D({
       // phases: only the first overlay load drives the bar.
       const prog = progressSpent ? null : progress;
       progressSpent = true;
-      atomicReady = _setupAtomicOverlay(viewer, revUrl(atomicUrl), smoothEls, shapes, prog, () => gen !== renderGen)
+      atomicReady = _setupAtomicOverlay(viewer, revUrl(atomicUrl), smoothEls, shapes, prog, () => gen !== renderGen, visibility, atomicPayload)
         .then((overlay) => {
           if (gen !== renderGen) { overlay?.dispose(); return; }
           atomicOverlay = overlay;
@@ -2251,6 +2272,9 @@ export async function blocktreeViewer3D({
     });
   }
   if (atomsToggle) atomsToggle.addEventListener("change", applyAtomState);
+  // An eye click: atoms, surfaces and targets follow the same state the
+  // envelope does.
+  visibility.onChange(() => atomicOverlay?.refreshVisibility());
   if (smoothEls && smoothEls.targetToggle) {
     smoothEls.targetToggle.addEventListener("change", applyTargetState);
   }
@@ -2338,7 +2362,9 @@ export async function blocktreeViewer3D({
         busyFocus = null;
       }
     }
-    for (const el of [levelSelect, overridesInput, revSlider()]) {
+    // The revision slider stays live: disabling it blurred it mid-keyboard-step,
+    // and a step during a load now just supersedes the load (sceneLatest).
+    for (const el of [levelSelect, overridesInput]) {
       if (el) el.disabled = busy;
     }
     // The per-block chips start the same refetch, so they go dark with
@@ -2472,8 +2498,12 @@ export async function blocktreeViewer3D({
     });
   }
 
+  //: Latest request wins: a newer load aborts the one in flight and the older
+  //: one never renders, so overlapping revision steps draw once, newest only.
+  const sceneLatest = createLatest();
+
   async function loadScene() {
-    if (reloading) return;
+    const req = sceneLatest.begin();
     reloading = true;
     setBusy(true);
     const camera = (() => {
@@ -2494,22 +2524,38 @@ export async function blocktreeViewer3D({
       // Server-side isolate is retired: the client filters instead, so
       // the fetched scene is always the whole design.
       url.searchParams.delete("isolate");
-      const resp = await fetch(url);
+      // The atom payload rides beside the scene, so envelopes and atoms
+      // are drawn in one task instead of envelopes first, atoms a fetch
+      // later (the double redraw). A failure falls back to renderScene's
+      // own fetch, which reports it.
+      const atomicPre =
+        atomicUrl && smoothEls && smoothEls.slider
+          ? _fetchAtomicPayload(revUrl(atomicUrl), null).catch(() => null)
+          : null;
+      const resp = await fetch(url, { signal: req.signal });
+      if (req.isStale()) return;
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
+        if (req.isStale()) return;
         showError(viewerEl, body.error || `failed to load scene (${resp.status})`);
         return;
       }
-      data = await resp.json();
+      const next = await resp.json();
+      const atomicPayload = atomicPre ? await atomicPre : null;
+      if (req.isStale()) return;
+      data = next;
       const name = currentIsolate();
       const shapes = name ? isolateSubtree(data.shapes, name) || data.shapes : data.shapes;
-      renderScene(shapes, { camera, refit: false });
+      renderScene(shapes, { camera, refit: false, atomicPayload });
       syncUrl();
     } catch (err) {
+      if (req.isStale()) return;
       showError(viewerEl, "failed to load scene: " + String(err));
     } finally {
-      reloading = false;
-      setBusy(false);
+      if (!req.isStale()) {
+        reloading = false;
+        setBusy(false);
+      }
     }
   }
 
@@ -2542,9 +2588,11 @@ export async function blocktreeViewer3D({
     for (const el of currentOnlyEls || []) el.hidden = past;
   }
 
+  let panelSeq = 0;
   async function scrubTo(rev) {
-    if (reloading || !Number.isFinite(rev) || rev === shownRev) return;
+    if (!Number.isFinite(rev) || rev === shownRev) return;
     shownRev = rev;
+    const mine = ++panelSeq;
     // The panel's own HTML (Jinja-escaped, same origin as the page): the
     // one innerHTML here, fetched alongside the scene, applied after it.
     const panel = revisionUrl
@@ -2557,9 +2605,14 @@ export async function blocktreeViewer3D({
     // logging as unhandled in the meantime.
     if (panel) panel.catch(() => {});
     await loadScene();
+    // A newer step took over while this one loaded: it owns the panel
+    // and the badge, and this one's body would be stale.
+    if (mine !== panelSeq) return;
     if (panel) {
       try {
-        revisionEl.innerHTML = await panel;
+        const html = await panel;
+        if (mine !== panelSeq) return;
+        revisionEl.innerHTML = html;
         revisionEl.dataset.rev = String(rev);
       } catch (err) {
         console.error("blocktree-3d: revision panel swap failed", err);
