@@ -71,6 +71,7 @@ from precis.skill_index import (
     build_skill_graph,
     chunk_by_h2,
 )
+from precis.store import _refs_ops
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -3496,6 +3497,11 @@ def skill_exists(slug: str) -> bool:
     (gr332020 item 2 — the auto-generated ``precis-<kind>-help`` error
     breadcrumb must not point at a skill that doesn't exist)."""
     return slug in _load_skills_map()
+
+
+# The store stamps skill reads without importing handlers (import-linter:
+# "store is the bottom layer"); it takes the existence probe by registration.
+_refs_ops.set_skill_probe(skill_exists)
 
 
 def skill_corpus_texts() -> dict[str, str]:

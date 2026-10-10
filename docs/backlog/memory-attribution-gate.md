@@ -8,34 +8,41 @@ model: sonnet
 
 # Memory attribution gate
 
-**State (2026-10-10, second dry run):** §1–§5 shipped in warn mode
-(b88ae940e); the DOI digit-run fix is deployed as a5920f7d6; the gloss /
-decade / chunk-fallback / micro-unit fixes landed as 25abd28fd (not yet
-deployed). Second prod dry run (Reto, on 25abd28fd): 3,089 candidates, 910
-flagged (29%, down from 1,087), 0 errors; by cite kind pa 544 · me 341 ·
-pc 267 · paper-key 229 · paper 81 · websearch 75. Reading the 40-row sample
-against the sources found four more false-positive classes, fixed in the
-follow-up commit (§1 steps 3–4): (e) the exponent of `10^7 cm/s` read as
-"7 cm" (me34846); (f) a patent reference numeral `216A-N` read as amperes
-(me34864); (g) a `~a..b` chunk range collapsed to a document cite, so the
-cited chunks' "0.44 and 0.26 eV" / "from 1.169 to 1.182 Å" grounded only
-their last member through the `numerics` column (me35150 ×3); (h) table
-cells whose unit sits in the header (me35246 ×2, wang20d Table 2) — fixed
-for chunk-text evidence, still residual for document-level `numerics`
-(me25065 "0.15 nm"). Genuine flags confirmed against the sources: me34865
-"0.3 eV" hwang25 (the paper says 0.14 eV); me34846 "100 GHz" zhu12a (not in
-the text); me35024 / me35027 (review findings quoting the mis-sourced
-numbers they report); slug collisions `anon24d` (me23148) and
-`zhang09-bilayer-gap` (me34846, resolves to a DNA paper). Residual classes,
-not fixed: a number derived next to its source ("75% … the missing 25%",
-"250–350 °C … ~100 °C earlier"); a scale restated in an analogy sentence
-that cites the analogue (me35192 "1-10 nm" against evans24); a range's zero
-endpoint ("0–0.3 eV"); list heads in document-level `numerics` (needs
-`extract_numerics` to expand lists at ingest). Remaining, in order: (1) Reto
-re-runs the dry run on the fixed tree; (2) if the sample reads as real plus
-the residuals above, `--apply` the backfill in warn mode; the `reject` flip
-waits until the residual classes are rare in a fresh sample. Delete this
-file in that commit.
+**State (2026-10-10, third dry run):** §1–§5 shipped in warn mode
+(b88ae940e). Deployed on the cluster (cf586b9dc): the DOI digit-run fix and
+the gloss / decade / chunk-fallback / micro-unit round (25abd28fd). Landed
+on main, not yet deployed: the chunk-range / evidence-list / table-header
+round (6c1326c9a) and this commit's round. Three prod dry runs (Reto, via
+the pgbouncer tunnel): 1,087 → 910 → 876 flagged of ~3,089 candidates
+(28%), 0 errors; by cite kind pa 538 · me 338 · paper-key 225 · pc 225 ·
+websearch 74 · paper 72. Every 40-row sample was read against the sources.
+False-positive classes fixed so far: (a) gloss parenthetical pinned to the
+nearer following cite; (b) "2010s" as seconds; (c) chunk pinpoint a few
+chunks off; (d) micro units the `numerics` column cannot see; (e) the
+exponent of `10^7 cm/s`; (f) patent reference numerals `216A-N`; (g) a
+`~a..b` range collapsed to a document cite; (h) table cells with the unit
+in the header; (i) a parenthetical 50 chars after its cite pinned to the
+next cite (me35525 — now any parenthetical glosses the nearest cite before
+its opener, same sentence); (j) "… simulations. patent:x envisions" not a
+sentence break because the next word is lowercase (me36301); (k) evidence
+spelled "2,000 and 6,000 p.p.m." (me35789). Genuine flags confirmed against
+the sources: me34865 "0.3 eV" hwang25 (the paper says 0.14 eV); me34846
+"100 GHz" zhu12a; me35569 "0.65 V" lamagni20 (the paper's potentials are
+0.97 and 1.19 V — the number is hermawan23's); me35605 "80 °C"
+naghshnejad25 (no °C in the text); me35024 / me35027 (review findings
+quoting the mis-sourced numbers they report); slug collisions `anon24d`
+(me23148) and `zhang09-bilayer-gap` (me34846, resolves to a DNA paper) —
+gr477964. Residual classes, not fixed: a number derived next to its source
+("75% … the missing 25%", "250–350 °C … ~100–150 °C earlier"); a scale
+restated in an analogy sentence that cites the analogue (me35192 "1-10 nm"
+against evans24, me36499 "±10%" against benoist25); a range's zero endpoint
+("0–0.3 eV"); a websearch cited by its quoted query (`websearch:'…'`, not a
+cite form, me35601); table-header units and list heads in document-level
+`numerics` (me25065 "0.15 nm"; needs `extract_numerics` at ingest).
+Remaining, in order: (1) Reto re-runs the dry run on the fixed tree; (2) if
+the sample reads as real plus the residuals above, `--apply` the backfill
+in warn mode; the `reject` flip waits until the residual classes are rare
+in a fresh sample. Delete this file in that commit.
 
 ## Motivation / why
 
@@ -101,10 +108,13 @@ Algorithm:
    (unit-bearing values and percentages) — nothing else. Years, ordinals,
    equation and figure numbers, exponents of `r²`/`r³`, and bare counts
    never fire. The number inside the citation token itself is excluded.
-   `2010s` is a decade, not seconds. A number inside a parenthetical that
-   opens right after a citation belongs to that citation (its gloss:
-   `paper:x (… 60 kPa …) and paper:y`), unless a citation inside the gloss
-   is nearer; otherwise it goes to the nearest citation in the sentence.
+   `2010s` is a decade, not seconds. A parenthetical glosses what precedes
+   it: a number inside one belongs to the nearest citation before the
+   opening bracket in the same sentence (`paper:x (… 60 kPa …) and
+   paper:y` pins 60 kPa to x), unless a citation inside the brackets is
+   nearer; otherwise it goes to the nearest citation in the sentence. A
+   sentence ends before a lowercase `kind:` cite too (`… simulations.
+   patent:x envisions`).
    The exponent of `10^7 cm/s` and a patent reference numeral `216A-N` are
    tokenizer artefacts, not claims.
 4. **Evidence.** For a chunk-level cite: that chunk's text and its
@@ -124,7 +134,8 @@ Algorithm:
    is unverifiable, which is not ungrounded. A `~a..b` range cite is
    checked against every chunk in it (capped at 40). Evidence text is read
    generously: list members share the trailing unit ("0.44 and 0.26 eV"),
-   markdown table cells take the unit their header names (`[Å]`).
+   markdown table cells take the unit their header names (`[Å]`), and
+   "2,000 p.p.m." is read as "2000 ppm" alongside the raw spelling.
 5. **Exemption phrase.** A number within 60 characters *after* which the
    text says `my estimate`, `my own estimate`, `(est.)`, `(estimate)` or
    `rough guess` is exempt. This is the escape hatch the nudge tells the
@@ -194,7 +205,9 @@ attach it to the handle.* Already applied in this tree.
   cite is nearer; `2010s` never fires; a chunk cite falls back to the
   document; micro units are unverifiable against numerics-only evidence;
   `10^7 cm/s` and `216A-N` are not claims; evidence lists and table headers
-  ground their members; `~a..b` parses to the whole range.
+  ground their members; `~a..b` parses to the whole range; a parenthetical
+  50 chars after its cite still glosses it; a lowercase `kind:` cite starts
+  a sentence; thousands commas and `p.p.m.` in evidence.
 - Handler (`tests/test_memory.py` additions, dev DB): create with a
   mis-sourced number → tag present + nudge line; `reject` mode → BadInput;
   a follow-up clean edit removes the tag; agent `tag(add=['AUDIT:ungrounded-number'])`

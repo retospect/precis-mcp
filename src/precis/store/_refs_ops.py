@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -57,6 +57,20 @@ from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
 from precis.utils.authors import author_row_from_entry, entry_from_author_row
+
+#: "Does this slug name a shipped skill?" — the skill handler registers its
+#: probe here at import (:func:`set_skill_probe`); the store must not import
+#: :mod:`precis.handlers` (import-linter: "store is the bottom layer"). Unset,
+#: a skill read mints and stamps nothing (fail-soft, as with the DB down).
+_SKILL_PROBE: Callable[[str], bool] | None = None
+
+
+def set_skill_probe(probe: Callable[[str], bool] | None) -> None:
+    """Register the skill-existence predicate :meth:`RefsMixin._touch_skill_recalled`
+    consults before minting a skill anchor row."""
+    global _SKILL_PROBE
+    _SKILL_PROBE = probe
+
 
 #: A live prose citation of a finding hub (gr265228's audit predicate):
 #: ``ord >= 0`` excludes synthesized card variants (``chunks_check``
@@ -2576,12 +2590,12 @@ class RefsMixin:
         ``slug~N`` / ``slug~A..B`` and ``slug/toc`` all count as a read of
         ``slug``. Mints the anchor row on the first read; unknown or synthesised
         ids (``toc``, ``precis-help``, an alias) are skipped. Fail-soft: skills
-        must stay readable with the DB down."""
-        from precis.handlers.skill import skill_exists
-
+        must stay readable with the DB down, and with no probe registered
+        (:func:`set_skill_probe`) nothing is minted."""
+        probe = _SKILL_PROBE
         slug = ident.split("~", 1)[0].split("/", 1)[0].strip()
         try:
-            if not slug or not skill_exists(slug):
+            if probe is None or not slug or not probe(slug):
                 return
             self.ensure_skill_ref(slug)
         except Exception:

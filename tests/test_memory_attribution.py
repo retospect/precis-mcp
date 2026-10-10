@@ -413,3 +413,37 @@ def test_table_header_unit_grounds_its_cells(world):
 )
 def test_chunk_range_parses(chunk, want):
     assert attr._chunk_range(chunk) == want
+
+
+def test_parenthetical_glosses_the_cite_before_it(world):
+    """Prod sample 2026-10-10 (me35525): the parenthetical sits 50 chars
+    after its cite and the next cite is nearer."""
+    world[(12, None)] = "releasing 660 mg of 5-FU per gram"
+    world[(13, None)] = "nothing numeric"
+    body = (
+        "the bond which [pa12] (~151, ~157) exploits as a pH-triggered release "
+        "mechanism (dissolves at pH 5.5 releasing 660 mg 5-FU/g) — is the bond "
+        "that [pa13] (~10) describes as the precursor."
+    )
+    assert _check(body) == []
+    world[(12, None)] = "nothing numeric"
+    assert [(m.token, m.cite) for m in _check(body)] == [("660 mg", "pa12")]
+
+
+def test_lowercase_kind_cite_starts_a_sentence(world):
+    """Prod sample 2026-10-10 (me36301): "… simulations. patent:x envisions"
+    is a sentence break although the next word is lowercase."""
+    world[(12, None)] = "nothing numeric"
+    world[(170350, None)] = "nothing numeric"
+    body = (
+        "[pa12] reports switching at ~277 K. websearch:170350 envisions droplet arrays."
+    )
+    assert [(m.token, m.cite) for m in _check(body)] == [("277 K", "pa12")]
+
+
+def test_evidence_thousands_separator_and_ppm(world):
+    """Prod sample 2026-10-10 (me35789): the paper writes "between 2,000 and
+    6,000 p.p.m."."""
+    world[(12, None)] = "between 2,000 and 6,000 p.p.m. for CO2; a 1,200 nm film"
+    assert _check("2000–6000 ppm CO2, 1200 nm and 1,200 nm films [pa12]") == []
+    assert [m.token for m in _check("7000 ppm [pa12]")] == ["7000 ppm"]

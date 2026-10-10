@@ -6,10 +6,14 @@ claim deterministically (no LLM): every unit-bearing number
 (:func:`precis.utils.numerics.numeric_spans`) that sits in the same sentence
 as a citation, attributed to the *nearest* citation (a cluster of adjacent
 citations pools its evidence), must appear in that evidence as the same
-``(number, unit)`` pair. A parenthetical that opens right after a citation is
-that citation's gloss: "paper:x (… 60 kPa …) and paper:y" pins 60 kPa to x,
-whatever is nearer (the dream prose shape; the prod sample of 2026-10-10 had
-it mis-pinned to the following cite in 4 of 40 rows). A chunk cite is checked
+``(number, unit)`` pair. A parenthetical glosses what precedes it: a number
+inside one belongs to the nearest citation before its opening bracket (in
+the same sentence), or to a citation inside the brackets when that is
+nearer — never to a citation after the closing bracket. "paper:x (… 60 kPa
+…) and paper:y" pins 60 kPa to x, and so does "paper:x (~151) exploits …
+(releasing 660 mg/g) — the same bond paper:y describes" (the dream prose
+shapes; the prod samples of 2026-10-10 had them mis-pinned to the following
+cite in 5 of 80 rows). A chunk cite is checked
 against its chunk and, failing that, the whole document: a pinpoint a few
 chunks off is a reading aid, not a mis-sourced number. A chunk range
 (``~18..28``) is checked against every chunk in it. Evidence text is read
@@ -54,7 +58,7 @@ from precis.utils.mentions import (
 from precis.utils.numerics import _UNITS_RE_PART, numeric_spans
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from precis.store.store import Store
 
@@ -86,7 +90,7 @@ _SENTENCE_BREAK_RE = re.compile(
     r"(?<=[.!?])"
     r"(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\bFig\.)(?<!\bFigs\.)(?<!\bEq\.)"
     r"(?<!\bet al\.)(?<!\bvs\.)(?<!\bcf\.)(?<!\bca\.)(?<!\bapprox\.)"
-    r"\s+(?=[A-Z(\[\"~≈<>\-\d])|\n\s*"
+    r"\s+(?=[A-Z(\[\"~≈<>\-\d]|[a-z]+:\w)|\n\s*"
 )
 
 #: Citation spans closer than this (same sentence) form one cluster whose
@@ -126,6 +130,11 @@ _LIST_HEAD_RE = re.compile(
     r"(?<![\w.])(-?\d+(?:\.\d+)?)(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)$"
 )
 _LIST_HEAD_CHARS = 40
+
+#: Evidence spellings the tokenizer misses: "2,000 p.p.m." is "2000 ppm".
+#: Both forms are read (the ``numerics`` column holds only the raw one).
+_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}\b)")
+_PPM_RE = re.compile(r"\bp\.p\.m\.?")
 
 #: ``~a..b`` chunk ranges are read whole, capped at this many chunks.
 _RANGE_MAX_CHUNKS = 40
@@ -305,10 +314,13 @@ def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
     flags): list members share the trailing unit, table cells take their
     header's unit."""
     units: set[tuple[str, str]] = set()
-    spans = _quantities(text)
-    tokens = [tok for tok, _s, _e in spans]
-    tokens += _list_heads(text, spans)
-    tokens += _table_quantities(text)
+    tokens: list[str] = []
+    norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
+    for variant in {text, norm}:
+        spans = _quantities(variant)
+        tokens += [tok for tok, _s, _e in spans]
+        tokens += _list_heads(variant, spans)
+        tokens += _table_quantities(variant)
     for tok in tokens:
         number, unit = _split_token(tok)
         units.update((unit, r) for r in _runs(number))
@@ -609,19 +621,28 @@ def _paren_groups(body: str) -> list[tuple[int, int]]:
 
 
 def _cite_parenthetical(
-    groups: list[tuple[int, int]], spans: list[_Span], start: int, end: int
+    groups: list[tuple[int, int]],
+    spans: list[_Span],
+    start: int,
+    end: int,
+    segment: Callable[[int], int],
 ) -> tuple[int, int, int] | None:
     """``(open, close, span index)`` of the innermost parenthetical holding
-    ``[start, end)`` that opens within :data:`_CLUSTER_GAP_CHARS` of a
-    citation's end — that citation's gloss. ``None`` when the number is in
-    no such group."""
+    ``[start, end)`` whose opening bracket has a citation before it in the
+    same sentence (within :data:`_WINDOW_CHARS`) — the parenthetical
+    glosses that citation. ``None`` when the number is in no such group."""
     enclosing = sorted(
         ((o, c) for o, c in groups if o < start and end <= c), reverse=True
     )
     for o, c in enclosing:
-        for i, sp in enumerate(spans):
-            if 0 <= o - sp.end <= _CLUSTER_GAP_CHARS:
-                return o, c, i
+        seg = segment(o)
+        before = [
+            (o - sp.end, i)
+            for i, sp in enumerate(spans)
+            if 0 <= o - sp.end <= _WINDOW_CHARS and segment(sp.start) == seg
+        ]
+        if before:
+            return o, c, min(before)[1]
     return None
 
 
@@ -676,15 +697,15 @@ def ungrounded_cited_numbers(
     def _dist(sp: _Span, s: int, e: int) -> int:
         return sp.start - e if sp.start >= e else s - sp.end
 
-    # Attribute each number to its citation: inside a gloss, the citation the
-    # gloss belongs to unless a citation inside the gloss is nearer; else the
-    # nearest in-window citation in the same sentence.
+    # Attribute each number to its citation: inside a parenthetical, the
+    # citation before its opener unless a citation inside is nearer; else
+    # the nearest in-window citation in the same sentence.
     picks: list[tuple[str, int, int]] = []  # (token, number start, span index)
     for tok, s, e in numbers:
         if _exempt(body, s, e):
             continue
         cands: list[tuple[int, int]] = []
-        scope = _cite_parenthetical(groups, spans, s, e)
+        scope = _cite_parenthetical(groups, spans, s, e, _segment)
         if scope is not None:
             o, c, opener = scope
             cands.append((s - o, opener))
