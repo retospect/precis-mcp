@@ -108,45 +108,10 @@ up:
    draws envelopes at every rung; recommended keeping the dash column). The chips are small at the
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
-2. **gr462703** — a progress bar from request to the atoms drawn (Reto).
-   Design note `reviews/se-3d-viewer.md` §1–1c, verdicts beside it. Server
-   phase SHIPPED: vectorised smoothing (1.0 s → 0.04 s), payload and gzip
-   body cached per structure revision with an ETag (f9a8735a, 985cd41b).
-   First visit on the drum 3.6 s → 1.55 s (local). The bar SHIPPED in
-   round 2: scene → render → server (stripe + seconds, stall text at 30 s,
-   2D fallback at 2 min) → download (running MB) → building N atoms
-   (chunked per 1000), checked nightly by `strain`'s `progress_*` checks.
-   Its 30 s / 2 min paths are unexercised (they need a slow server), and
-   `progress_build_repaints` needs a fixture over 1000 atoms (the small
-   drum has 1304). Instanced atom and bond meshes SHIPPED in round 2: one
-   InstancedMesh per block per kind; on the 6123-atom drum the client build
-   went 0.78 s → 0.24 s, first visit 1.55 s → ~0.9 s, revisit 1.30 s →
-   ~0.7 s (local). Reto's prod reading (Safari, macOS, after the round-2
-   deploy; se-3d-viewer-4): atom payload done at 3.13 s =
-   - ~0.9 s before the request starts (html 0.29 s, then module load);
-   - 1.09 s server: a cold build. Local cold is 0.96 s, warm 0.03 s; the
-     cache is per process and empty after a deploy;
-   - 1.14 s download of 1.09 MB gzip (3.86 MB raw). Locally gzip is served
-     to Safari's Accept-Encoding; prod behind its proxy is unchecked.
-   Payload SHIPPED in round 3: the target surface moved to
-   `target3d.json`, fetched on the first tick of its checkbox; positions
-   are quantised to an absolute 0.001 Å step, not to significant digits,
-   because a nanometre structure can sit a metre from the origin.
-   On prod data the drum's `atomic3d.json` went from 1090 KB to 241 KB
-   gzip (3.86 MB → 0.73 MB raw).
-   The early fetch SHIPPED too: an inline script starts `scene3d` and
-   `atomic3d` before mermaid and the module bundle load
-   (`_takePrefetch`). On prod data the atom request now starts at 155 ms,
-   where it used to wait for the bundle (436–705 ms) and the scene fetch.
-   One three.js SHIPPED last: three-cad-viewer 5.0.6 rebuilt from source
-   with `three` external, so the viewer and the atom overlay share one copy
-   of three 0.184 through the page's import map
-   (`static/three-cad-viewer/README.md` has the rebuild recipe). The
-   "Multiple instances" warning is gone, and three.js costs 440 KB gzip
-   instead of 601 KB. Deployed in round 3 and verified on prod data
-   (headless). Left: Reto's own Safari reading of the `bt3d-*` marks, to
-   compare with his 3.1 s from before. Optional; ask only if he says it
-   is still slow.
+2. **Progress-bar test gaps** (bar shipped; design in `reviews/se-3d-viewer.md` §1–1c).
+   `strain`'s nightly `progress_*` checks never hit the 30 s stall text or
+   the 2 min 2D fallback (need a slow server), and `progress_build_repaints`
+   has no fixture over 1000 atoms (the small drum has 1304 — try it).
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
