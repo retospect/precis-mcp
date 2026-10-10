@@ -1,5 +1,6 @@
 ---
 id: precis-nanopub-help
+family: evidence
 title: precis — publishing claims as signed nanopubs (view='nanopub' + mint pipeline)
 summary: get(kind='finding', view='nanopub') renders a claim hub as TriG — a draft pre-mint, the exact signed bytes post-mint; view='mint-preflight' runs the real gates read-only; an agent may propose a hypothesis but the mint pipeline (approve → sign → OTS anchor) stays CLI/human-driven
 answers:

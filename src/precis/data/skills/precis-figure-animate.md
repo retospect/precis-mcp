@@ -1,5 +1,6 @@
 ---
 id: precis-figure-animate
+family: drafting
 title: precis — animating a figure (declarative, browser-native)
 summary: opt-in animation for the figure kind — declarative SMIL (<animate>, <animateTransform>, <animateMotion>, <set>) and CSS @keyframes in a <style>, played natively by the browser (no rasterization); static is still the default, reach for this only when the human asks for motion
 answers:

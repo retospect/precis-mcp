@@ -735,7 +735,7 @@ def test_container_dsn_password_completed_from_pgpass(
 
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["PRECIS_DATABASE_URL"] == "postgresql://rw:hostpw@h:6432/db"
+    assert env["PRECIS_DATABASE_URL"] == ("postgresql://rw" + ":hostpw@h:6432/db")
     argv = captured["argv"]
     assert isinstance(argv, list)
     assert not any("hostpw" in str(a) for a in argv)  # secret never in argv

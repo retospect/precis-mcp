@@ -1,5 +1,6 @@
 ---
 id: precis-todo-tree-help
+family: work
 title: precis — hierarchical todo tree (strategic / tactical / subtask)
 summary: the todo tree — strategic/tactical/subtask levels, doable rotation, halt/ask-user yielding
 answers:

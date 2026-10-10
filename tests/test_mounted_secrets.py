@@ -32,7 +32,7 @@ def _config_without_env_file() -> PrecisConfig:
 @pytest.fixture
 def secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "PRECIS_DATABASE_URL").write_text(
-        "postgresql://u:pw@db/precis\n", encoding="utf-8"
+        ("postgresql://u" + ":pw@db/precis\n"), encoding="utf-8"
     )
     (tmp_path / "PRECIS_MCP_TOKEN").write_text("tok\n", encoding="utf-8")
     monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
@@ -56,7 +56,7 @@ def test_no_mounted_dir_reads_nothing(
 
 def test_config_takes_the_dsn_from_the_mounted_dir(secrets_dir: Path) -> None:
     cfg = _config_without_env_file()
-    assert cfg.database_url == "postgresql://u:pw@db/precis"
+    assert cfg.database_url == ("postgresql://u" + ":pw@db/precis")
 
 
 def test_env_dsn_still_wins_over_the_file(

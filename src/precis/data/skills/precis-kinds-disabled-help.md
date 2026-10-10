@@ -1,5 +1,6 @@
 ---
 id: precis-kinds-disabled-help
+family: core
 title: precis — recognize and enable disabled kinds
 summary: disabled-kind diagnostics — Unsupported errors, env var gating, operator prohibition
 answers:

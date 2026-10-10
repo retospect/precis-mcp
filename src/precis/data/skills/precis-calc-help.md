@@ -1,5 +1,6 @@
 ---
 id: precis-calc-help
+family: tools
 title: precis — the calc kind (local SymPy CAS)
 summary: an exact, free, local computer-algebra system — arithmetic, calculus (integrals/derivatives/limits/sums/ODEs), equation solving, algebra, linear algebra, number theory; trig in degrees by default with a view='rad' switch; plus local unit conversion (3 ft to m; 1 ton to kg; 100 degC to degF) via pint
 answers:

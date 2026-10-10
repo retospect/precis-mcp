@@ -1,5 +1,6 @@
 ---
 id: precis-finding-help
+family: evidence
 title: precis — register a citation target so the worker can chase it
 summary: citation chasing — register a claim for the worker to source via Unpaywall/arXiv/S2/OPS
 answers:

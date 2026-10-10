@@ -1,5 +1,6 @@
 ---
 id: precis-bibliography-help
+family: evidence
 title: precis — read citations that cite a paper
 summary: read side of citations — list verified claims pointing at a paper with quotes and confidence
 answers:

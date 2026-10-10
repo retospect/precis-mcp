@@ -1,5 +1,6 @@
 ---
 id: precis-inner-life-help
+family: memory
 title: precis — inner-life tag conventions for asa
 summary: inner-life tag protocol — internal-state, internal-thought, dreams, interests, identity scoping
 answers:

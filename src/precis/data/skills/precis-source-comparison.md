@@ -1,5 +1,6 @@
 ---
 id: precis-source-comparison
+family: drafting
 title: precis — compare corpus sources into an agreement matrix
 summary: source-comparison runbook — cross-kind gather, agreement/disagreement/confidence matrix, disputes links, one draft
 answers:

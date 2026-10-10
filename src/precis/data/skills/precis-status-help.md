@@ -1,5 +1,6 @@
 ---
 id: precis-status-help
+family: core
 title: precis — what version am I, what DB, what build?
 summary: runtime introspection — build version, container, DB connection, migration state, dependencies
 answers:

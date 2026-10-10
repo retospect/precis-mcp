@@ -1,5 +1,6 @@
 ---
 id: sci-abstract
+family: drafting
 title: precis — research-paper abstract (section style)
 summary: write the abstract — one ≤250-word self-contained paragraph (problem / approach / key result / significance), no citations
 answers:

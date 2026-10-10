@@ -1,5 +1,6 @@
 ---
 id: precis-firstline-help
+family: memory
 title: precis — first-line discipline for numeric-ref kinds
 summary: the first line of a memory/todo/gripe is its entire scannable surface — lead with the conclusion, per-shape patterns inside
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-patent-power
+family: patent
 title: precis — raw CQL for patent search (power-user)
 summary: raw CQL patent search — Boolean queries, field-scoped lookups, date windows, citation-graph filters
 answers:

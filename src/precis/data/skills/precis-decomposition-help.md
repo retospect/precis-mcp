@@ -1,5 +1,6 @@
 ---
 id: precis-decomposition-help
+family: work
 title: precis — when to split a todo and how to size siblings
 summary: when to split vs do it yourself, how to size siblings, depth-at-leaves principle
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid
+family: mermaid
 title: precis — authoring mermaid for the mermaid kind
 summary: how to write good, bindable mermaid for a diagram you draw with the model — one diagram per source, a type on the first line, short stable node ids, structure-not-coordinates, and how to bind nodes to the chunks they depict
 answers:

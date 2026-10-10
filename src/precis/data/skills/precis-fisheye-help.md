@@ -1,5 +1,6 @@
 ---
 id: precis-fisheye-help
+family: core
 title: precis — the fisheye neighborhood render (focus + context) on every kind
 summary: get(kind=<any>, id=…, extent='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall]) — one node plus its surroundings, scaled by distance; the extent ladder, the spatial neighborhood (draft/plan sections), the cluster map (papers), the link neighborhood grouped by ring (memory, quest, taxon, concept, component, todo, finding, …). Every kind renders or says in one sentence why not.
 answers:

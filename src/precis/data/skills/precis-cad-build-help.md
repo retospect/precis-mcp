@@ -1,5 +1,6 @@
 ---
 id: precis-cad-build-help
+family: science
 title: precis — plan and weigh a CAD build (make-tree, dimensions, mass, BOM)
 summary: plan a design's build order, catch dimension contradictions before geometry exists, weigh it from sourced material densities, roll up a BOM against catalog parts, and pick a print orientation
 answers:

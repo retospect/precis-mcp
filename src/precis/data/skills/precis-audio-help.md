@@ -1,5 +1,6 @@
 ---
 id: precis-audio-help
+family: drafting
 title: precis — voice drafts (narrate a draft to audio) + the pronunciation lexicon
 summary: audio is a cross-cutting EXPORT LAYER over any draft (not a kind); per-chunk meta.voice/lang = a voice score; two-level pronunciation lexicon (personal + per-draft); publishes to the private podcast feed
 answers:

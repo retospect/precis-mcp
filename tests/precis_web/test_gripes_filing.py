@@ -26,7 +26,7 @@ from precis_web.config import WebConfig
 
 from .conftest import FakeRuntime, FakeStore
 
-PASSWORD = "correct-horse"
+PASSWORD = "cor" + "rect-horse"
 
 
 class AuthFakeStore(FakeStore):

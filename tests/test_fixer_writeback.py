@@ -222,3 +222,91 @@ def test_gripe_outcome_unshipped_needs_you_wording_unchanged() -> None:
         comment == "FIXER (auto): build attempt did not land — gate failed: mypy\nboom"
     )
     assert status is None
+
+
+# ── skill-gripe escalation ──────────────────────────────────────────
+
+
+def _run_writeback(
+    monkeypatch: pytest.MonkeyPatch,
+    prior: list[str],
+    comment: str,
+    *,
+    status: str | None,
+    escalate_skill: bool,
+) -> dict[str, Any]:
+    calls: dict[str, Any] = {"appended": [], "tags": []}
+
+    class _Chunk:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _Chunks:
+        def list_chunks_for_ref(self, ref_id: int) -> list[_Chunk]:
+            return [_Chunk(t) for t in prior]
+
+    class _FakeStore:
+        chunks = _Chunks()
+
+        def add_tag(self, ref_id: int, tag: Any, **kw: Any) -> None:
+            calls["tags"].append(
+                tag.value if tag.prefix is None else f"{tag.prefix}:{tag.value}"
+            )
+
+        def close(self) -> None:
+            pass
+
+    import precis.store.store as store_mod
+    import precis.workers.executors._common as common_mod
+
+    monkeypatch.setattr(store_mod.Store, "connect", lambda *a, **k: _FakeStore())
+    monkeypatch.setattr(
+        common_mod,
+        "append_chunk",
+        lambda store, ref_id, kind, text: calls["appended"].append(text),
+    )
+    assert writeback_mod.gripe_writeback(
+        "postgresql://x/db", 7, comment, status, escalate_skill=escalate_skill
+    )
+    return calls
+
+
+FAIL = "FIXER (auto): build attempt did not land — boom"
+
+
+def test_second_failure_on_a_skill_gripe_escalates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _run_writeback(monkeypatch, [FAIL], FAIL, status=None, escalate_skill=True)
+    assert "waiting-for:reto" in calls["tags"]
+    assert any("escalated to reto" in t and "tried: " in t for t in calls["appended"])
+
+
+def test_first_failure_and_non_skill_gripes_do_not_escalate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _run_writeback(monkeypatch, [], FAIL, status=None, escalate_skill=True)
+    assert first["tags"] == [] and len(first["appended"]) == 1
+    other = _run_writeback(monkeypatch, [FAIL], FAIL, status=None, escalate_skill=False)
+    assert other["tags"] == [] and len(other["appended"]) == 1
+    landed = _run_writeback(
+        monkeypatch,
+        [FAIL],
+        "FIXER (auto): candidate fix built",
+        status="in_review",
+        escalate_skill=True,
+    )
+    assert "waiting-for:reto" not in landed["tags"]
+
+
+def test_work_item_carries_linked_skills() -> None:
+    from precis.fixer.intake import _TimelineEntry, _work_item_from_gripe
+
+    item = _work_item_from_gripe(
+        5,
+        "t",
+        None,
+        [_TimelineEntry("gripe_comment", 0, "DIAGNOSIS: x")],
+        ["precis-gripe-help"],
+    )
+    assert item is not None and item.skills == ("precis-gripe-help",)

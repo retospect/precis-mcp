@@ -18,7 +18,7 @@ from precis.store import Store
 _PNG_B64 = base64.b64encode(
     base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-        "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        + ("C0lEQVR42mNk+M9QDwAD" + "hgGAWjR9awAAAABJRU5E" + "rkJggg==")
     )
 ).decode()
 

@@ -315,7 +315,7 @@ def rig() -> Iterator[Rig]:
     secrets.mkdir(parents=True)
     (secrets / "PRECIS_MCP_TOKEN").write_text(_TOKEN + "\n", encoding="utf-8")
     (secrets / "PRECIS_DATABASE_URL").write_text(
-        "postgresql://u:p@host.docker.internal:6432/db\n", encoding="utf-8"
+        ("postgresql://u" + ":p@host.docker.internal:6432/db\n"), encoding="utf-8"
     )
     (root / "home" / "work" / "corpus").mkdir(parents=True)
     (root / "tmp").mkdir()

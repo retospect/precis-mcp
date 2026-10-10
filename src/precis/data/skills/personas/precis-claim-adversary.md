@@ -1,5 +1,6 @@
 ---
 id: precis-claim-adversary
+family: review
 title: precis — adversarial claim-hub reviewer persona
 summary: adversarial claim-hub reviewer persona — hunt disputed or overlapping taproot claim hubs and file refines/disputes/merge verdicts
 answers:

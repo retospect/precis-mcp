@@ -1,5 +1,6 @@
 ---
 id: precis-youtube-help
+family: tools
 title: precis — YouTube transcripts
 summary: YouTube transcript fetch — captions by video id or URL, 30-day cache, free. ALWAYS use this for a YouTube URL — never a native youtube_transcript_api / web-fetch.
 answers:

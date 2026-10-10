@@ -291,6 +291,13 @@ class Handler(ABC):
     #: looked up.
     stamps_recall: ClassVar[bool] = False
 
+    #: The kind legitimately stores opaque / credential-shaped strings (source
+    #: code, SMILES, coordinates, third-party ingests, computed values) and is
+    #: skipped by the agent-write secret gate at the dispatch boundary
+    #: (:func:`precis.runtime.dispatch._refuse_agent_secrets`). Default False:
+    #: a new kind is gated until it argues otherwise.
+    stores_opaque_text: ClassVar[bool] = False
+
     #: The handler defines its own ``under=`` / ``depth=`` search arguments, so
     #: the dispatcher's generic part-of ``under`` facet leaves them alone.
     owns_under: ClassVar[bool] = False

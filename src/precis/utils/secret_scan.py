@@ -22,7 +22,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import overload
+from typing import Any, overload
 
 from precis.errors import BadInput
 
@@ -54,6 +54,18 @@ _SPECIFIC: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
     ("slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}")),
+    # Webhook URLs carry their secret in the path, which the generic rule
+    # skips (see ``_URL_PATH``), so they get their own patterns.
+    (
+        "slack webhook",
+        re.compile(r"hooks\.slack\.com/(?:services|workflows)/[A-Za-z0-9/_\-]{20,}"),
+    ),
+    (
+        "discord webhook",
+        re.compile(
+            r"discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_\-]{20,}",
+        ),
+    ),
     (
         "private key block",
         re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"),
@@ -73,6 +85,10 @@ _PW_ASSIGN = re.compile(
     r"(?i)\b(?:password|passwd)[\"']?\s*[=:]\s*[\"']?([^\s\"'`,;)}\]]+)"
 )
 _GENERIC = re.compile(r"[A-Za-z0-9+/_\-]{32,}")
+# scheme + host + path of a web URL, up to any query/fragment: ids in a path
+# (share links, design-file keys) are public addresses, not credentials;
+# query-string values stay scanned.
+_URL_PATH = re.compile(r"\bhttps?://[^\s?#<>\"'`)\]]+")
 
 _PLACEHOLDER_START = ("$", "<", "{", "*", "%", "~", "[", "(", "…", "/", ".", "@")
 _PLACEHOLDER_WORDS = re.compile(
@@ -95,11 +111,31 @@ def _is_placeholder(value: str) -> bool:
     return value.startswith(_PLACEHOLDER_START) or bool(_PLACEHOLDER_WORDS.match(value))
 
 
+_URL_USER = re.compile(r"://([^\s:/@]+):")
+#: ``password = _read_password(args`` / ``password = self.pw`` -- source code
+#: reading a password from somewhere, not a literal one.
+_CODE_VALUE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_.]*\(|^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)+$"
+)
+
+
+_TYPE_NAME = re.compile(r"^[A-Z][a-z]+(?:[A-Z][a-z]+)+$")
+
+
+def _same_as_user(m: re.Match[str]) -> bool:
+    """``scheme://app:app@host`` -- a dev default whose password is its
+    username is a placeholder, not a credential."""
+    u = _URL_USER.search(m.group(0))
+    return u is not None and u.group(1) == m.group(1)
+
+
 def _password_literal(value: str) -> bool:
     """A password-assignment value that reads as a real literal, not prose or a
     placeholder: 8+ chars and not a plain lowercase word."""
     value = value.rstrip(".")
-    if len(value) < 8 or _is_placeholder(value):
+    if len(value) < 8 or _is_placeholder(value) or _CODE_VALUE.match(value):
+        return False
+    if _TYPE_NAME.match(value):  # ``password: PasswordRecord`` annotation
         return False
     return not value.isalpha() or not value.islower()
 
@@ -135,14 +171,17 @@ def _scan_line(line: str) -> list[tuple[str, int, int]]:
         for m in pat.finditer(line):
             add(kind, m)
     for m in _URL_PW.finditer(line):
-        if not _is_placeholder(m.group(1)):
+        if not _is_placeholder(m.group(1)) and not _same_as_user(m):
             add("url with inline password", m)
     for m in _PW_ASSIGN.finditer(line):
         if _password_literal(m.group(1)):
             add("password literal", m)
+    url_paths = [u.span() for u in _URL_PATH.finditer(line)]
     for m in _GENERIC.finditer(line):
         s, e = m.span()
         if any(s < be and bs < e for _k, bs, be in out):
+            continue
+        if any(us <= s and e <= ue for us, ue in url_paths):
             continue
         if re.search(r"(?i)\b(?:SHA256|MD5):$", line[:s]):
             continue  # ssh key fingerprint (public)
@@ -164,11 +203,28 @@ def find_secrets(text: str) -> list[SecretHit]:
     ]
 
 
+#: Cheap superset of every shape :func:`find_secrets` can flag: a literal head
+#: of each specific pattern, a URL userinfo colon, ``passw``, or any 32-char
+#: token run. Lines that miss it cannot hold a finding, so hot paths (the log
+#: filter) skip the full scan for them. ``test_trigger_covers_every_pattern``
+#: pins the superset property against the positive fixtures.
+_TRIGGER = re.compile(
+    r"(?i:sk-|gh[pousr]_|github_pat_|aws|xox[abprs]-|private key|bearer|passw)"
+    r"|(?-i:AKIA|ASIA)|://[^\s:/@]+:|[A-Za-z0-9+/_\-]{32}"
+)
+
+
+def might_contain_secret(text: str) -> bool:
+    """``False`` only when ``text`` provably holds no :func:`find_secrets`
+    finding (a fast pre-check; ``True`` means "scan to find out")."""
+    return _TRIGGER.search(text) is not None
+
+
 @overload
-def mask_secrets(text: str) -> str: ...
+def mask_secrets(text: str, *, warn: bool = True) -> str: ...
 @overload
-def mask_secrets(text: None) -> None: ...
-def mask_secrets(text: str | None) -> str | None:
+def mask_secrets(text: None, *, warn: bool = True) -> None: ...
+def mask_secrets(text: str | None, *, warn: bool = True) -> str | None:
     """``text`` with every credential-shaped span replaced by
     ``<redacted:kind>``; ``None``/clean text come back unchanged.
 
@@ -176,6 +232,8 @@ def mask_secrets(text: str | None) -> str | None:
     cannot rephrase: a refusal there would silently lose the record, so the
     record is kept with the secret removed. Agent-facing verb calls refuse
     instead (:func:`refuse_secrets`, applied at the dispatch boundary).
+    ``warn=False`` skips the kind-only warning (the log filter, which must
+    not log from inside logging).
     """
     if not text:
         return text
@@ -190,13 +248,28 @@ def mask_secrets(text: str | None) -> str | None:
                 continue
             # Kind only, never the match: a false positive here alters the
             # stored text with no refusal to tell anyone, so leave a trace.
-            _log.warning("secret_scan: masked a %s in an automated write", kind)
+            if warn:
+                _log.warning("secret_scan: masked a %s in an automated write", kind)
             pieces.append(body[pos:st])
             pieces.append(f"<redacted:{kind}>")
             pos = en
         pieces.append(body[pos:])
         out.append("".join(pieces) + tail)
     return "".join(out)
+
+
+def mask_secrets_deep(value: Any) -> Any:
+    """:func:`mask_secrets` over every string in a JSON-shaped value (dict
+    keys are left alone). For captured output stored as ``meta`` -- job
+    transcripts, agentlog prompts/results, alert details. Containers are
+    rebuilt only when needed; a clean value comes back unchanged."""
+    if isinstance(value, str):
+        return mask_secrets(value)
+    if isinstance(value, dict):
+        return {k: mask_secrets_deep(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [mask_secrets_deep(v) for v in value]
+    return value
 
 
 def refuse_secrets(fields: Iterable[tuple[str, str | None]]) -> None:

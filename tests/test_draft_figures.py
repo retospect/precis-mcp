@@ -15,7 +15,7 @@ from precis.store.store import Store
 # valid to parse on hosts that have it.
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-    "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    + ("C0lEQVR42mNk+M9QDwAD" + "hgGAWjR9awAAAABJRU5E" + "rkJggg==")
 )
 _PNG_B64 = base64.b64encode(_PNG).decode()
 

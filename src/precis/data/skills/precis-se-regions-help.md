@@ -1,5 +1,6 @@
 ---
 id: precis-se-regions-help
+family: se
 title: precis — region properties on an se design (measurands, region selectors, pockets)
 summary: declare non-geometric properties on part of a block — "this side hydrophobic, that patch negative" — as ordinary se measures that name a taxonomy measurand (surface charge density, contact angle, net partial charge, dipole moment, H-bond donor/acceptor count, electric field magnitude, absorption maximum wavelength, hydrophobicity index) and a region selector (patch:/ring: on a face, sites:/atoms: on bound atoms); group regions into a named pocket with add_pocket and read them back with view='pockets'. Nothing computes these values yet — view='drc' flags each as measurand_unchecked
 answers:

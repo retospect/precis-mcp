@@ -1,5 +1,6 @@
 ---
 id: precis-component-help
+family: science
 title: precis — the component kind (general procurable-part store)
 summary: bolts/hoses/pipes/bearings/... with per-value sources — entity vs value writes, minting from the standards series registry, category + spec registries, the canonical-unit rule, made_of, and the range-filter search
 answers:

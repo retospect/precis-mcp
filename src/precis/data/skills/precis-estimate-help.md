@@ -1,5 +1,6 @@
 ---
 id: precis-estimate-help
+family: science
 title: precis — the estimate kind (ms chemistry workup)
 summary: millisecond semi-empirical chemistry workup — element-descriptor composition tier (electronegativity, covalent radius, magmom, d-electron count, Hammer-Norskov d-band center) plus pairwise alloying heuristics; structure-coupled tier (geometry lint, coordination/strain, symmetry, dedup, own-campaign BEP scaling) with a what-if mutation + a compare view; hypothesis-generating only, never a ruling
 answers:

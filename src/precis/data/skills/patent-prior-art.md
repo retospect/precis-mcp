@@ -1,5 +1,6 @@
 ---
 id: patent-prior-art
+family: patent
 title: precis — patent prior-art / IDS (section style)
 summary: the prior-art / IDS disclosures — list material references as [pc…] corpus chunks; the IDS is a view rendered over them
 answers:

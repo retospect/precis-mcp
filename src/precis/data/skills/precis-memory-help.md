@@ -1,5 +1,6 @@
 ---
 id: precis-memory-help
+family: memory
 title: precis — capture notes, decisions, ideas, questions
 summary: scratchpad for notes, decisions, ideas, questions — open tags, no enforced sub-kind
 answers:

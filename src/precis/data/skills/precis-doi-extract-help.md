@@ -1,5 +1,6 @@
 ---
 id: precis-doi-extract-help
+family: paper
 title: precis — extract DOIs from research output, queue paper stubs
 summary: LLM-extract DOIs and arXiv IDs from perplexity/search results, mint kind=paper stubs for the fetch_oa worker
 answers:

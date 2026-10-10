@@ -25,7 +25,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from precis.handlers._skill_common import extract_wikilinks, parse_frontmatter
+from precis.handlers._skill_common import (
+    extract_wikilinks,
+    parse_frontmatter,
+    skill_family,
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,8 @@ class SkillGraph:
     inbound: dict[str, tuple[str, ...]] = field(default_factory=dict)
     tags: dict[str, tuple[str, ...]] = field(default_factory=dict)
     kinds: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: subject family -> sorted slugs (declared ``family:`` or name-prefix stem)
+    families: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def linked(self, slug: str, *, cap: int | None = None) -> tuple[str, ...]:
         """Symmetrized neighbours of ``slug`` — outbound ∪ inbound,
@@ -69,6 +75,10 @@ class SkillGraph:
         """Slugs carrying ``tag``, sorted. ``()`` if the tag is unused."""
         return self.tags.get(tag, ())
 
+    def by_family(self, family: str) -> tuple[str, ...]:
+        """Slugs in ``family``, sorted. ``()`` if the family is unknown."""
+        return self.families.get(family, ())
+
     def by_kind(self, kind: str) -> tuple[str, ...]:
         """Slugs whose ``kinds:`` includes ``kind``, sorted. ``()`` if none."""
         return self.kinds.get(kind, ())
@@ -88,6 +98,7 @@ def build_skill_graph(files: dict[str, str]) -> SkillGraph:
     inbound_acc: dict[str, list[str]] = defaultdict(list)
     tags_acc: dict[str, list[str]] = defaultdict(list)
     kinds_acc: dict[str, list[str]] = defaultdict(list)
+    fam_acc: dict[str, list[str]] = defaultdict(list)
 
     for slug in sorted(files):
         text = files[slug]
@@ -100,10 +111,14 @@ def build_skill_graph(files: dict[str, str]) -> SkillGraph:
         fm = parse_frontmatter(text)
         for tag in fm.tags:
             tags_acc[tag].append(slug)
+        fam_acc[skill_family(slug, fm)].append(slug)
         for kind in fm.kinds or ():
             kinds_acc[kind].append(slug)
 
     inbound = {slug: tuple(srcs) for slug, srcs in inbound_acc.items()}
     tags = {tag: tuple(slugs) for tag, slugs in tags_acc.items()}
     kinds = {kind: tuple(slugs) for kind, slugs in kinds_acc.items()}
-    return SkillGraph(outbound=outbound, inbound=inbound, tags=tags, kinds=kinds)
+    families = {f: tuple(slugs) for f, slugs in fam_acc.items()}
+    return SkillGraph(
+        outbound=outbound, inbound=inbound, tags=tags, kinds=kinds, families=families
+    )

@@ -1,5 +1,6 @@
 ---
 id: precis-overview
+family: core
 title: precis — seven verbs, one address scheme
 summary: top-level orientation — seven verbs, address scheme, kinds table, skill index
 answers:
@@ -189,6 +190,10 @@ get(kind="skill")  # list every active skill
 ```
 
 `precis-toc` is the long-form alias for `id='toc'`.
+
+Too many hits? Narrow skill search/toc with `args={'family': 'se'}` or
+`args={'tag': 'workflow'}`; narrow memory search with `args={'under': 'me<hub>'}`
+(a hub's subtree) or `tags=['section:gotchas']`. Responses suggest these when they'd help.
 
 ## The todo tree — task substrate
 

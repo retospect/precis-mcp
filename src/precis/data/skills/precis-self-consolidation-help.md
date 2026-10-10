@@ -1,5 +1,6 @@
 ---
 id: precis-self-consolidation-help
+family: memory
 title: precis — consolidating asa's inner life over time
 summary: memory consolidation — episodic to semantic abstraction, cluster retirement, supersedes links
 answers:

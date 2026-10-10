@@ -1,5 +1,6 @@
 ---
 id: precis-pcb-route-help
+family: pcb
 title: precis — place and route a pcb design (op='place'/op='route')
 summary: run the in-house topological place+route engine over an existing pcb netlist — op='place'/op='route' enqueue worker jobs (never inline), congestion/planes read views, the rip-up loop, and which move classes are still inert. Covers autoplace, autoroute, sketch, topology, layer assignment, plane/pour assignment, congestion, rip-up.
 answers:

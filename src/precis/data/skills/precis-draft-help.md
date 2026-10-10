@@ -1,5 +1,6 @@
 ---
 id: precis-draft-help
+family: drafting
 title: precis — the editable document kind
 summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] links (any handle) and bare [pc…] paper-chunk citations
 answers:

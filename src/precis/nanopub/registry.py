@@ -22,6 +22,7 @@ agent-supplied, so this is not a `safe_fetch` surface.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+#: npx:hasPublicKey / npx:hasSignature lines of the signed trig (public values).
+_SIG_VALUE = re.compile(r"(?:npx:|/nanopub/x/)has(?:PublicKey|Signature)>?\s+\"")
 
 #: First entry of the `nanopub` reference library's registry list
 #: (`nanopub.definitions.NANOPUB_REGISTRY_URLS`) — kept as our own
@@ -115,6 +119,22 @@ def publish(
     if not live:
         return result
 
+    from precis.utils.secret_scan import refuse_secrets
+
+    # Last look before the point of no return (mint already gated the inputs).
+    # The signature graph's public key and signature values are public,
+    # high-entropy by design: blank them (keeping line numbers) before the scan.
+    trig = artifact.trig_bytes.decode("utf-8", errors="replace")
+    refuse_secrets(
+        [
+            (
+                "published trig",
+                "\n".join(
+                    "" if _SIG_VALUE.search(ln) else ln for ln in trig.splitlines()
+                ),
+            )
+        ]
+    )
     (post or _default_post)(registry_url, artifact.trig_bytes)
     if not store.nanopub_record_published(row.id, registry_url=registry_url):
         # The POST succeeded but the row moved mid-publish: the registry

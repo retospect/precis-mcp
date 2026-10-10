@@ -42,6 +42,8 @@ FOLD_NODE_ENV = "PRECIS_FOLD_NODE"
 
 
 class ProteinHandler(Handler):
+    #: amino-acid sequences / structure data: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="protein",
         plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for

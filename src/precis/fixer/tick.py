@@ -512,7 +512,16 @@ def run_tick(cfg: FixerConfig) -> TickResult:
             comment, status = _gripe_outcome(
                 result.report, cfg.autonomy, item, shipped=shipped
             )
-            gripe_writeback(cfg.gripe_db_url, item.ref_id, comment, status)
+            if item.skills:
+                gripe_writeback(
+                    cfg.gripe_db_url,
+                    item.ref_id,
+                    comment,
+                    status,
+                    escalate_skill=True,
+                )
+            else:
+                gripe_writeback(cfg.gripe_db_url, item.ref_id, comment, status)
 
 
 def _run_script_in_worktree(worktree: Path, script: str, msg: str) -> tuple[bool, str]:
@@ -553,6 +562,9 @@ def _acquire_lock(lock_path: Path) -> object | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from precis.utils.log_scrub import install_log_scrub
+
+    install_log_scrub()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(
         prog="precis.fixer.tick", description="one fixer tick"

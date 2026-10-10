@@ -1,5 +1,6 @@
 ---
 id: sci-results
+family: drafting
 title: precis — research-paper results (section style)
 summary: write results — findings tied to figures/tables by [dc…], numbers with units/uncertainty; report, don't interpret
 answers:

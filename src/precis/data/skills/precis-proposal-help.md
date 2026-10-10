@@ -1,5 +1,6 @@
 ---
 id: precis-proposal-help
+family: work
 title: precis — write a proposal against a call-for-proposal
 summary: ingest a call-for-proposal (kind='cfp'), seed a proposal project with the idea + personnel, link the cfp, and let the planner write the draft section-by-section, checking each section's word count against the cfp's limits
 answers:

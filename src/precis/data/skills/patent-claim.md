@@ -1,5 +1,6 @@
 ---
 id: patent-claim
+family: patent
 title: precis — patent claim (section style)
 summary: write one patent claim per chunk — preamble + comprising + elements, antecedent basis; dependent claims reference others by [dc…]
 answers:

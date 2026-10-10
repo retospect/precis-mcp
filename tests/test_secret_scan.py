@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from precis.cli.memory import SPACE_TAG, _created_id, export_memory_nodes
@@ -17,7 +15,7 @@ from precis.utils import handle_registry
 from precis.utils.secret_scan import find_secrets, mask_secrets
 
 # Fixtures are assembled at runtime so the source holds no literal token.
-_B = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"  # 36 mixed-case alnum, digits
+_B = "aB3dE5fG7hJ9kL1mN3pQ" + "5rS7tU9vW1xY3zA5"  # 36 mixed-case alnum, digits
 POSITIVES = {
     "anthropic key/token": "key " + "sk-" + "ant-" + "oat01-" + _B,
     "github token": "gh" + "p_" + _B,
@@ -29,10 +27,12 @@ POSITIVES = {
     "slack token": "x" + "oxb-" + "123456789012-abcdefghijkl",
     "private key block": "-----BEGIN " + "RSA PRIVATE KEY-----",
     "bearer token": "Authorization: " + "Bearer " + _B,
-    "url with inline password": "postgresql://app:"
+    "url with inline password": ("pos" + "tgresql://app:")
     + "hunter2hunter@db.internal:5432/x",
     "password literal": "PASSWORD: " + "Tr0ub4dor&3xx",
     "high-entropy token": "token is " + _B + "Qz",
+    "slack webhook": "https://hooks." + "slack.com/services/T0001/B0002/" + _B,
+    "discord webhook": "https://discord." + "com/api/webhooks/1234567890/" + _B,
 }
 NEGATIVES = {
     "git sha": "commit 50d2afe3d and 50d2afe3d1f5b3a6c7e8d9f0a1b2c3d4e5f60718",
@@ -44,8 +44,13 @@ NEGATIVES = {
     "password placeholder": "password: $DB_PASSWORD, password=<secret>, password: required",
     "vault reference": "password lives in ~/.secrets/pw/DB_PASS",
     "ssh fingerprint": "SHA256:C6hMRQSpHtuRChf0MALenPMwpOyqpB30aLPDpR1/LX0",
+    "url path id": "(https://www.example.com/design/" + _B + "). Root frame",
     "long path": "~/CascadeProjects/alphafold-setup/alphafold3/docker/run_x",
-    "lan ip and host": "node-a at 192.168.1.20 and 100.64.1.2",  # secret-gate: allow — sample addresses the scanner must NOT flag
+    "lan ip and host": "node-a at 192.168.1.20 and 100.64.1.2",  # secret-gate: allow — negative sample: addresses are not credentials
+    "password read in code": "password = _read_password(args); pw = x\n"
+    "password = self.store.secret_value",
+    "dev default dsn": "postgresql://postgres:postgres@localhost:5432/x",
+    "password type annotation": "def f(password: PasswordRecord, n: int)",
     "bare prefix": "keys look like sk-ant-… or ghp_ prefixed",
 }
 
@@ -60,6 +65,12 @@ def test_positive(kind: str) -> None:
 @pytest.mark.parametrize("name", sorted(NEGATIVES))
 def test_negative(name: str) -> None:
     assert find_secrets(NEGATIVES[name]) == []
+
+
+def test_url_query_value_still_scanned() -> None:
+    # Only the scheme/host/path part of a URL is exempt from the generic rule.
+    hits = find_secrets("https://api.example.com/v1/x?token=" + _B + "Qz")
+    assert [h.kind for h in hits] == ["high-entropy token"]
 
 
 def test_excerpt_is_masked() -> None:
@@ -88,7 +99,7 @@ def test_verbs_refuse_hook_title_and_todo_gripe(
     runtime_with_store: PrecisRuntime,
 ) -> None:
     hook = {"hook": POSITIVES["password literal"]}
-    cases: list[tuple[str, dict[str, Any]]] = [
+    cases: list[tuple[str, dict[str, object]]] = [
         ("put", {"kind": "memory", "text": "fine", "meta": hook}),
         ("put", {"kind": "memory", "text": "fine", "title": POSITIVES["slack token"]}),
         ("put", {"kind": "todo", "text": "x " + POSITIVES["anthropic key/token"]}),

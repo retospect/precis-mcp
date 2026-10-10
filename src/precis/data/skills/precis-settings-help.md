@@ -1,5 +1,6 @@
 ---
 id: precis-settings-help
+family: core
 title: precis — DB-resident settings (config that isn't a secret)
 summary: non-secret fleet config lives in the DB (DB row beats env var beats default); a kind gated on an unset key raises Unsupported naming the key — ask the operator to set it
 answers:

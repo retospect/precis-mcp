@@ -1,5 +1,6 @@
 ---
 id: precis-tags
+family: core
 title: precis — set, filter by, and discover tags
 summary: tag taxonomy — UPPERCASE axes, lowercase open axes, bare flags, filter and discover
 answers:

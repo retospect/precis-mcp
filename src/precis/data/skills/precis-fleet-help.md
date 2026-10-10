@@ -1,5 +1,6 @@
 ---
 id: precis-fleet-help
+family: work
 title: precis — the fleet kind (agent fleet state, coordinator view)
 summary: kind='fleet' — one live row per agent tree plus one per host; collectors push reports, the coordinator reads the fisheye and sets assigned/slice/note
 answers:

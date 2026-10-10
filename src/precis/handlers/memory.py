@@ -38,6 +38,8 @@ refuses the write instead. A lookup error fails open and changes no tag.
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 
@@ -70,7 +72,10 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
-from precis.utils.memory_hubs import link_hints
+from precis.utils.memory_hubs import (
+    link_hints,
+    narrowing_hints,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
 
@@ -1066,6 +1071,49 @@ class MemoryHandler(NumericRefHandler):
     # the hit *is* the session-start index bullet. ──────────────────────
 
     def search(
+        self,
+        *,
+        q: str | None = None,
+        tags: list[str] | None = None,
+        page_size: int = 10,
+        page: int = 1,
+        mode: str | None = None,
+        view: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Memory search. An unscoped query whose hits cluster in one hub or
+        ``section:<type>`` gets a one-line narrowing hint appended
+        (:func:`~precis.utils.memory_hubs.narrowing_hints`; ``under=`` itself
+        is the dispatcher's generic part-of scope). The parameters are spelled
+        out because dispatch routes by this signature."""
+        resp = self._search_inner(
+            q=q,
+            tags=tags,
+            page_size=page_size,
+            page=page,
+            mode=mode,
+            view=view,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+            **kw,
+        )
+        if not (q and q.strip()):
+            return resp
+        try:
+            ids = [
+                int(m)
+                for m in re.findall(r"(?:^## memory |\bme)(\d+)\b", resp.body, re.M)
+            ]
+            hints = narrowing_hints(self.store, ids, q)
+        except Exception:
+            return resp
+        if not hints:
+            return resp
+        return replace(resp, body=resp.body.rstrip() + "\n\n" + "\n".join(hints))
+
+    def _search_inner(
         self,
         *,
         q: str | None = None,

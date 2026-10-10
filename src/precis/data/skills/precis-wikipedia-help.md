@@ -1,5 +1,6 @@
 ---
 id: precis-wikipedia-help
+family: tools
 title: precis — on-demand Wikipedia lookup
 summary: Resolve a query to the best Wikipedia article and fetch its plain-text extract — cache-backed, fenced out of default search
 answers:

@@ -3073,9 +3073,10 @@ def export_draft(
     ``withheld_figures`` are ``dc`` handles of uncleared third-party figures
     waived under ``placeholder_figures``: each renders as a framed "withheld
     pending permission" box (caption kept), never its image."""
-    from precis.export import guard_exportable
+    from precis.export import guard_exportable, guard_no_secrets
 
     guard_exportable(ref)
+    guard_no_secrets(store, ref)
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 

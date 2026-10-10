@@ -520,9 +520,10 @@ def export_docx(
     section (otherwise the last section, after References)."""
     from docx import Document
 
-    from precis.export import guard_exportable
+    from precis.export import guard_exportable, guard_no_secrets
 
     guard_exportable(ref)
+    guard_no_secrets(store, ref)
     target_path = Path(target_path)
     if doc_type is None:
         ws = Workspace.from_meta(getattr(ref, "meta", None))

@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-gitgraph
+family: mermaid
 title: precis — git graph / git branching diagram / commit history / branch flow
 summary: a mermaid gitGraph — branches, commits, and merges of a git history
 answers:

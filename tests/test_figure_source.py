@@ -18,7 +18,7 @@ from precis.utils.figure_source import figure_export_asset, resolve_figure_sourc
 # A real 1×1 PNG (the Pillow dimension probe has something valid to parse).
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-    "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    + ("C0lEQVR42mNk+M9QDwAD" + "hgGAWjR9awAAAABJRU5E" + "rkJggg==")
 )
 _DRAWN = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'

@@ -1,5 +1,6 @@
 ---
 id: precis-draft-reviewer
+family: review
 title: precis — draft-section reviewer persona
 summary: draft-section reviewer persona — read-only pass that files anchored change-request todos carrying exact replacement text, never rewrites prose itself
 answers:

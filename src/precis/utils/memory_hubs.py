@@ -330,3 +330,49 @@ def _unlinked_gotchas(store: Store, thread_id: int, hub_ids: list[int]) -> list[
         for r, vals in sorted(store.ref_tags_bulk(cand).items())
         if "section:gotchas" in {v for _ns, v in vals}
     ]
+
+
+#: Share of hits one hub / type tag must hold before a narrowing hint is worth a line.
+_NARROW_SHARE = 0.6
+_NARROW_MIN_HITS = 3
+
+
+def narrowing_hints(store: Store, ref_ids: list[int], q: str) -> list[str]:
+    """One-line, ready-to-run narrowing calls for a memory search: when at least
+    :data:`_NARROW_SHARE` (but not all) of the hits sit under one hub, or share
+    one ``section:<type>`` tag. ``[]`` when nothing would narrow; fail-soft."""
+    ids = list(dict.fromkeys(ref_ids))
+    if len(ids) < _NARROW_MIN_HITS:
+        return []
+    out: list[str] = []
+    try:
+        need = _NARROW_SHARE * len(ids)
+        by_hub: dict[int, int] = {}
+        for hubs in hubs_of(store, ids).values():
+            by_hub[hubs[0]] = by_hub.get(hubs[0], 0) + 1
+        if by_hub:
+            hub, n = max(by_hub.items(), key=lambda kv: kv[1])
+            if need <= n < len(ids):
+                ref = store.get_ref(kind="memory", id=hub)
+                title = ((ref.title if ref else "") or "").strip().splitlines()
+                label = title[0][:60] if title else str(hub)
+                out.append(
+                    f"narrow to hub {label}: search(kind='memory', "
+                    f"q={q!r}, args={{'under': 'me{hub}'}})"
+                )
+        counts: dict[str, int] = {}
+        tags = store.ref_tags_bulk(ids)
+        for rid in ids:
+            for _ns, val in tags.get(rid, []):
+                if val.startswith("section:") and val != _HUB_TAG:
+                    counts[val] = counts.get(val, 0) + 1
+        if counts:
+            tag, n = max(counts.items(), key=lambda kv: kv[1])
+            if need <= n < len(ids):
+                out.append(
+                    f"narrow to {tag}: search(kind='memory', q={q!r}, tags=[{tag!r}])"
+                )
+    except Exception:
+        log.debug("memory narrowing hints skipped", exc_info=True)
+        return []
+    return out

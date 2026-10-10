@@ -1,5 +1,6 @@
 ---
 id: sci-survey-section
+family: drafting
 title: precis — review-paper thematic synthesis (section style)
 summary: write a review's thematic section — integrate sources [pc…], compare/contrast, surface consensus vs open contention (synthesis, not enumeration)
 answers:

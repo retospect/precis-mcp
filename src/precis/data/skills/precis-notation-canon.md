@@ -1,5 +1,6 @@
 ---
 id: precis-notation-canon
+family: drafting
 title: precis — notation canon for authored claim sentences
 summary: unit/exponent/dash/approximation spelling rules for a taproot claim sentence or nanopub title — notation is hashed into pub_id, so drift mints a duplicate hub
 answers:

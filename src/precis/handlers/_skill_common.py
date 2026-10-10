@@ -165,6 +165,11 @@ class SkillFrontmatter:
     #: (docs/backlog/skill-graph.md slice 1).
     kinds: tuple[str, ...] | None = None
 
+    #: Subject family (``family: se``) - the grouping axis behind
+    #: ``family=`` on skill search/toc. ``None`` = absent: the family
+    #: defaults to the slug's name-prefix stem (:func:`skill_family`).
+    family: str | None = None
+
     #: Any frontmatter keys we don't model explicitly. Preserved so a
     #: skill can carry experimental metadata without the parser
     #: rejecting it; the ingest pipeline can decide what to do with
@@ -200,8 +205,43 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "available_when",
         "tags",
         "kinds",
+        "family",
     }
 )
+
+
+#: The CLOSED set of skill subject families (``family:`` frontmatter). Small
+#: on purpose: a family of one is not a group. Every shipped skill is in one
+#: (tests/test_skill_refs.py pins membership and >= 3 members each).
+SKILL_FAMILIES: Final[tuple[str, ...]] = (
+    "core",  # verbs, addressing, orientation, status
+    "files",  # markdown/plaintext/tex/python/folder
+    "tools",  # web, wikipedia, youtube, calc, time ... external lookups
+    "memory",  # memory, anki, conv, self-consolidation
+    "work",  # todo, quest, jobs, gripes, fleet, alerts
+    "drafting",  # drafts, sci-* sections, figures, voice
+    "mermaid",
+    "paper",  # literature: papers, DOIs, research workflows
+    "evidence",  # citations, provenance, findings, taproot
+    "review",  # reviewer personas and review recipes
+    "patent",
+    "se",  # structural engineering / hexfold
+    "science",  # cad, structures, materials, reactions, lab
+    "pcb",
+)
+
+
+def default_family(slug: str) -> str:
+    """Family implied by the name-prefix stem (``precis-se-x-help`` -> ``se``)
+    when that stem is in :data:`SKILL_FAMILIES`; else ``other`` — the skill
+    must then declare ``family:`` (a test enforces it for shipped skills)."""
+    stem = slug.removeprefix("precis-").split("-", 1)[0]
+    return stem if stem in SKILL_FAMILIES else "other"
+
+
+def skill_family(slug: str, fm: SkillFrontmatter) -> str:
+    """Declared ``family:`` or, absent that, the name-prefix stem."""
+    return (fm.family or "").strip().lower() or default_family(slug)
 
 
 def parse_frontmatter(text: str) -> SkillFrontmatter:

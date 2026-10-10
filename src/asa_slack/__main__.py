@@ -11,6 +11,7 @@ import sys
 
 from asa_slack import bot
 from asa_slack.config import Config
+from precis.utils.log_scrub import install_log_scrub
 from precis.utils.utc_logging import force_utc_timestamps
 
 log = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ log = logging.getLogger(__name__)
 
 def main() -> None:
     force_utc_timestamps()
+    install_log_scrub()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

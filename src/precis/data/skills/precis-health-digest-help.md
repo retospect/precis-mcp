@@ -1,5 +1,6 @@
 ---
 id: precis-health-digest-help
+family: work
 title: precis — health_digest liveness-net worker pass
 summary: hourly outcome-based liveness digest — curated Layer-1 outcome checks + derived cadence-staleness + derived registry coherence, pushed daily/on-degradation as kind='alert' + a Discord digest; persistent findings route to auto-closing gripes
 answers:

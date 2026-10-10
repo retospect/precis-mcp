@@ -31,6 +31,10 @@ dated line in this file's `## Log` is >30 days old (or absent). Inside the
 window it's quiet. Run the pass when DUE, then append a dated line — that resets
 the clock.
 
+Cold-skill audit: `get(kind='skill', view='usage')` lists every skill with its
+last read (`GREATEST(last_recalled_at, last_viewed_at)` on its lazily minted
+anchor ref), family and open-concern count, coldest first.
+
 ## Why there's no query log to grep
 
 The `tool_calls` ledger (migration 0133, `src/precis/tool_ledger.py`) now

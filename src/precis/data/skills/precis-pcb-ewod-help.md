@@ -1,5 +1,6 @@
 ---
 id: precis-pcb-ewod-help
+family: pcb
 title: precis — generate an EWOD electrode-array board (ewod_pad_array)
 summary: generate a whole EWOD/digital-microfluidics electrode field — pads, neck stubs, via plazas, and a machine-readable capability map — from a few params via a generators block on put(kind='pcb'), instead of hand-authoring polygon pads one at a time. Covers grid/pads, variant, derived pitch/gap/via/hv_separation sizing, reserve slots, pad_sizes merges, tenting, and view='capability'.
 answers:

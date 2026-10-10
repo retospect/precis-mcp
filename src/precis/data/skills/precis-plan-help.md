@@ -1,5 +1,6 @@
 ---
 id: precis-plan-help
+family: work
 title: precis — the plan kind (a thread's reasoning outline)
 summary: a hierarchical todo-list + notes on the draft chunk-tree; create vs. add-node, whole-tree render, status/belief markers, the ▸ cursor, pe<id> node addressing
 answers:

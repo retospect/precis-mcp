@@ -1,5 +1,6 @@
 ---
 id: precis-adversarial-reviewer
+family: review
 title: precis — adversarial paper reviewer persona
 summary: adversarial reviewer persona — audit a paper for unsupported claims, missing controls, overgeneralisation, and statistical sloppiness
 answers:

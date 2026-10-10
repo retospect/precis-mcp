@@ -1,5 +1,6 @@
 ---
 id: precis-cad-help
+family: science
 title: precis — the CAD kind (analytic solid design you can read)
 summary: author a parametric solid as a text node-list, then probe it analytically (point/ray/arc/section/volume) — no meshing, no pixels; STL/3MF/STEP/SCAD are downstream exports; assembly (ports/mates/joints) and build planning (make-tree/mass/BOM) are sibling skills
 answers:

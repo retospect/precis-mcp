@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-help
+family: mermaid
 title: precis — the mermaid diagram kind
 summary: mermaid diagrams you draw with the model — put/get/edit/delete/link, the three model-owned docs, node→chunk bindings, the /mermaid web editor, and the pure-Python mermaidx render/validate/export
 answers:

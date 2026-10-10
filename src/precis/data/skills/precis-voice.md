@@ -1,5 +1,6 @@
 ---
 id: precis-voice
+family: drafting
 title: precis — authoring drafts for the ear (audio narration)
 summary: how to write a draft that narrates well as spoken audio — describe relationships not formulas, avoid slashes and backslashes, keep numerals but round them (the narrator spells them out), keep prose clean and lexicon the hard words; plus the morning-brief and evening-meditation (nidra) voice profiles
 answers:

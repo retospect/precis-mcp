@@ -1,5 +1,6 @@
 ---
 id: precis-preflight
+family: evidence
 title: precis — manuscript preflight (retraction + citation audit)
 summary: manuscript preflight — retraction checks, citation audit, severity reporting before submission
 answers:

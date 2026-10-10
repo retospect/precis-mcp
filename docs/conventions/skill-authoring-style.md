@@ -430,6 +430,14 @@ docs/backlog/skill-graph.md slice 2):
   ```yaml
   kinds: [paper, web]
   ```
+- **`family:`** — the subject family used by `family=` on skill search/toc
+  and `by=family` grouping. Optional: absent, it defaults to the skill id's
+  name-prefix stem (`precis-se-overview-help` -> `se`, `sci-methods` ->
+  `sci`). Set it only where the prefix is wrong (e.g. `precis-doi-resolution`
+  -> `family: paper`).
+  ```yaml
+  family: paper
+  ```
 - **`[[slug]]`** — a lateral cross-reference in the body (the `## See
   also` list above, or inline). Resolves against every file stem in
   the corpus plus the synthesised meta-skills; a dangling target is a

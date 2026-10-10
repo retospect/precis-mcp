@@ -1,5 +1,6 @@
 ---
 id: precis-math-help
+family: tools
 title: precis — facts and world data via Wolfram Alpha
 summary: computational knowledge via Wolfram Alpha — facts, world data, unit conversion, math expressions
 answers:

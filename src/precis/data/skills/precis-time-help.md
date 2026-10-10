@@ -1,5 +1,6 @@
 ---
 id: precis-time-help
+family: tools
 title: precis — the time kind (clock, parse, convert, format)
 summary: a stateless, local, free clock — now in UTC and the server's local zone with epoch seconds; parse an ISO 8601 / RFC 2822 / epoch stamp or a small relative grammar (today, in 3 hours, 2 days ago, next monday); convert to any IANA zone with args={'to': ...}; render with args={'format': '<strftime>'}
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-ml-recipe
+family: paper
 title: precis — extract ranked training recipes from the corpus
 summary: recipe-extraction runbook — one entry per claimed result (dataset/method/hyperparameters/compute/code path), verified/unverified/blocked/inferred labels, ranked brief
 answers:

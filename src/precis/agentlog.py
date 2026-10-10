@@ -45,6 +45,7 @@ from typing import Any
 
 from precis.store import Store
 from precis.store.types import Tag
+from precis.utils.secret_scan import mask_secrets_deep
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ def open_log(
         meta["job_ref_id"] = int(job_ref_id)
     if meta_extra:
         meta.update(meta_extra)
+    meta = mask_secrets_deep(meta)  # the prompt / extras are captured output
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="agentlog", slug=None, title=title, meta=meta, conn=conn
@@ -174,7 +176,7 @@ def _patch_meta(store: Store, log_id: int, patch: dict[str, Any]) -> None:
         conn.execute(
             "UPDATE refs SET meta = meta || %s::jsonb, updated_at = now() "
             "WHERE ref_id = %s AND kind = 'agentlog'",
-            (json.dumps(patch), int(log_id)),
+            (json.dumps(mask_secrets_deep(patch)), int(log_id)),
         )
 
 

@@ -1,5 +1,6 @@
 ---
 id: precis-taproot-hub-edit-help
+family: evidence
 title: precis — attach evidence, reword, sharpen, or merge an existing Taproot claim hub
 summary: attach evidence to an existing claim hub, reword it in place, sharpen it with a refines link, or merge duplicate hubs — for minting a new hub from a sourced claim see precis-taproot-mint-help
 answers:

@@ -224,6 +224,9 @@ class CacheBackedHandler(Handler):
     Everything else is provided.
     """
 
+    #: fetch caches hold third-party content: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     provider: ClassVar[str]
     ttl_seconds: ClassVar[int | None]
     attribution: ClassVar[str]

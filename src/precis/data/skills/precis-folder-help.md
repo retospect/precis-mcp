@@ -1,5 +1,6 @@
 ---
 id: precis-folder-help
+family: files
 title: precis — the folder kind (placement for authored artifacts)
 summary: kind='folder' — single-parent containers for what you MAKE (draft, structure, cad, todo roots); place via link(rel='parent'); search(folder=...) scopes to a subtree; papers/memories stay out
 answers:

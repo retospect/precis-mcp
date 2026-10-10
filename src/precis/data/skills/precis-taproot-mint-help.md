@@ -1,5 +1,6 @@
 ---
 id: precis-taproot-mint-help
+family: evidence
 title: precis — author and mint Taproot claim hubs from a sourced claim
 summary: mint a claim hub from a sourced claim, pass the admissibility test before tagging, and search before minting to avoid duplicates
 answers:

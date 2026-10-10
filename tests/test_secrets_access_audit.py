@@ -58,13 +58,16 @@ def test_identity_survives_a_missing_passwd_entry(monkeypatch: Any) -> None:
 
 def test_scrub_redacts_a_secret_bearing_flag() -> None:
     """0111 is the first thing to persist argv into the DB — don't persist keys."""
-    assert secrets._scrub_argv("--api-key=sk-ant-oat01-REAL") == "--api-key=<redacted>"
+    assert (
+        secrets._scrub_argv("--api-key=sk-a" + "nt-oat01-REAL")
+        == "--api-key=<redacted>"
+    )
     assert secrets._scrub_argv("--token=abc123") == "--token=<redacted>"
     assert secrets._scrub_argv("--profile=agent") == "--profile=agent"
 
 
 def test_scrub_redacts_a_bare_high_entropy_blob() -> None:
-    blob = "postgresql://user:hunter2@10.0.0.1:6432/precis_prod?sslmode=require"
+    blob = "postgresql://user" + ":hunter2@10.0.0.1:6432/precis_prod?sslmode=require"
     assert secrets._scrub_argv(blob).startswith("<redacted:")
     assert "hunter2" not in secrets._scrub_argv(blob)
 

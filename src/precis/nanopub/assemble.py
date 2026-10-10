@@ -147,8 +147,44 @@ class MintInput:
     software: dict[str, Any] = field(default_factory=dict)
 
 
+def _scannable_fields(inp: MintInput) -> list[tuple[str, str | None]]:
+    """Every free-text field that ends up in the published graphs."""
+    out: list[tuple[str, str | None]] = [
+        ("assertion sentence", inp.sentence),
+        ("motivation", inp.motivation),
+        ("testable_by", inp.testable_by),
+    ]
+    out += [(f"fields[{k}]", v) for k, v in inp.fields.items() if isinstance(v, str)]
+    for i, g in enumerate(inp.grounding, start=1):
+        out += [
+            (f"provenance passage {i} quote", g.quote),
+            (f"provenance passage {i} snip", g.snip),
+            (f"provenance passage {i} source_title", g.source_title),
+            (f"provenance passage {i} context_sentence", g.context_sentence),
+            (f"provenance passage {i} source_url", g.source_url),
+        ]
+    out += [
+        (f"pubinfo software {k}", v)
+        for k, v in inp.software.items()
+        if isinstance(v, str)
+    ]
+    out += [
+        ("pubinfo software llm_model", str(m))
+        for m in inp.software.get("llm_models", [])
+    ]
+    return out
+
+
 def build_graphs(inp: MintInput, ns: Namespace) -> tuple[Graph, Graph, Graph]:
-    """The (assertion, provenance, pubinfo) graphs under ``ns``."""
+    """The (assertion, provenance, pubinfo) graphs under ``ns``.
+
+    The single choke point every draft, signature and timestamp goes
+    through: a credential in any published text field is refused here
+    (:class:`~precis.errors.BadInput`, field + masked excerpt) before
+    anything is signed -- a published nanopub cannot be retracted."""
+    from precis.utils.secret_scan import refuse_secrets
+
+    refuse_secrets(_scannable_fields(inp))
     return (
         _assertion(inp, ns),
         _provenance(inp, ns),

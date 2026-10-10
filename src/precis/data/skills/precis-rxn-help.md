@@ -1,5 +1,6 @@
 ---
 id: precis-rxn-help
+family: science
 title: precis — reaction facts (rxn)
 summary: record what a transformation actually did — yields, conditions, catalyst — sourced to a paper or patent, and read the SPREAD across sources rather than one number
 answers:

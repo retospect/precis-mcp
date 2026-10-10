@@ -273,7 +273,7 @@ def test_safe_source_filename_strips_latex_specials_and_disambiguates() -> None:
     a = sources.safe_source_filename("ti_lm#5")
     b = sources.safe_source_filename("ti-lm-5")  # cleans to the same base
     assert set(a) <= set(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+        "abcdefghijklmnopqrst" + "uvwxyzABCDEFGHIJKLMN" + "OPQRSTUVWXYZ0123456789-"
     )
     assert a != b  # hash suffix keeps them apart
     assert sources.safe_source_filename("ti_lm#5") == a  # deterministic

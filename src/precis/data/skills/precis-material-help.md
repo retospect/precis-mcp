@@ -1,5 +1,6 @@
 ---
 id: precis-material-help
+family: science
 title: precis — the material kind (CRC-handbook-style properties store)
 summary: engineering material properties with per-value sources — entity vs value writes, the canonical-unit rule, the property registry (core/proposed), and the range-filter search
 answers:

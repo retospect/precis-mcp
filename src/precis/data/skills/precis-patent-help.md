@@ -1,5 +1,6 @@
 ---
 id: precis-patent-help
+family: patent
 title: precis — find, read, cite patents
 summary: patent reading — DOCDB ids, EPO OPS fetch, biblio/claims/description/abstract views
 answers:

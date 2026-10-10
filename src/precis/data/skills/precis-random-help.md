@@ -1,5 +1,6 @@
 ---
 id: precis-random-help
+family: tools
 title: precis — random corpus pick
 summary: corpus serendipity — random block pick for discovery, warm-up, sanity checks
 answers:

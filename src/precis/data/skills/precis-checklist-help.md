@@ -1,5 +1,6 @@
 ---
 id: precis-checklist-help
+family: work
 title: precis — checklists: argued, invalidating check ledgers
 summary: checklist kind — run a checklist on a target, record argued verdicts that go stale on change, author a local checklist, gate a todo on it
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-sequence
+family: mermaid
 title: precis — sequence diagram / interaction diagram / message flow / call flow
 summary: a mermaid sequence diagram — actors exchanging messages over time
 answers:

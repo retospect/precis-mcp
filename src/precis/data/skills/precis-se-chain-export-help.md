@@ -1,5 +1,6 @@
 ---
 id: precis-se-chain-export-help
+family: se
 title: precis — exporting a nucleic-acid chain design from se (scadnano, caDNAno, oxDNA, PDB, order form)
 summary: view='export' writes a chain design one way (no import) as scadnano JSON, caDNAno legacy JSON, an oxDNA topology + configuration, a PDB of the realized regions, or the oligo order form (CSV Name,Sequence, one row per strand 5'→3', refusing unsequenced, N-holding or wrong-length strands by name)
 answers:

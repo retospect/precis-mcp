@@ -135,6 +135,8 @@ def _fmt_conditions(conditions: Any) -> str:
 
 
 class RxnHandler(Handler):
+    #: SMILES / structured reaction data: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="rxn",
         title="Reaction",

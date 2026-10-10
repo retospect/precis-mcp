@@ -1,5 +1,6 @@
 ---
 id: precis-citation-help
+family: evidence
 title: precis — cite a claim by its finding hub [fi<id>]
 summary: every cite in prose is a finding hub [fi<id>] — search hubs first, else find the grounding paper passages in the corpus and mint a hub on them, run an adversarial search for what disputes it, then cite; a paper chunk [pc<id>] grounds a hub's evidence edge, it is never the cite
 answers:

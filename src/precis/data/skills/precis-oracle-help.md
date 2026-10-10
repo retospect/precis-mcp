@@ -1,5 +1,6 @@
 ---
 id: precis-oracle-help
+family: tools
 title: precis — consult an oracle for a perspective shift
 summary: wisdom-tradition consultation — stoic, zen, iching collections; random or numbered entries
 answers:

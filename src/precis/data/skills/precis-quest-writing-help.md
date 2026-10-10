@@ -1,5 +1,6 @@
 ---
 id: precis-quest-writing-help
+family: work
 title: precis — writing a quest that stays a quest
 summary: judgment for authoring a striving — vision vs BHAG vs SMART, choosing the tick body (materials/weave/inquiry), one-sentence + plain-language + no-jargon checklist, why technique/paper content belongs in the dossier not the statement, and why quests must stay few
 answers:

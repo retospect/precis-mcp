@@ -155,6 +155,9 @@ class ProvenanceHandler(Handler):
     local store still works, returning an informational report.
     """
 
+    #: third-party retraction/amendment records: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="provenance",
         title="Provenance / health check",

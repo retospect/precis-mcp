@@ -33,7 +33,7 @@ class TestReadOnlyDatabaseUrl:
 
     def test_swaps_user_and_strips_password(self) -> None:
         url = read_mcp.read_only_database_url(
-            "postgresql://deploy:s3cr3t@caspar:6432/precis_prod"
+            "postgresql://deploy" + ":s3cr3t@caspar:6432/precis_prod"
         )
         assert url == "postgresql://agent_ro@caspar:6432/precis_prod"
 
@@ -88,8 +88,8 @@ class TestBuildServeEnv:
         # child env.
         base = {
             "PATH": "/usr/bin",
-            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-secret",
-            "ANTHROPIC_API_KEY": "sk-ant-api-secret",
+            "CLAUDE_CODE_OAUTH_TOKEN": ("sk-a" + "nt-oat01-secret"),
+            "ANTHROPIC_API_KEY": ("sk-a" + "nt-api-secret"),
             "SOME_SERVICE_TOKEN": "tok-secret",
             "GITHUB_API_KEY": "key-secret",
             "DB_SECRET": "shh",

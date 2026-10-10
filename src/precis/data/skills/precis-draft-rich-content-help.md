@@ -1,5 +1,6 @@
 ---
 id: precis-draft-rich-content-help
+family: drafting
 title: precis — figures, images, and data tables in a draft
 summary: figure chunks (blob/graph/canvas media, clearance gate by origin), and table chunks (structured data, four edit forms, LaTeX-recovered grids)
 answers:

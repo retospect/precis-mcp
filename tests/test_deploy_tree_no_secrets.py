@@ -34,6 +34,14 @@ shapes it blocks. Those carry the ``secret-gate: allow`` marker with a reason.
 Keep such uses vanishingly few: the marker is for naming a *range* or a
 *sample*, never a real host address.
 
+* **Credential shapes, tree-wide.** API keys, tokens, private-key blocks, URLs
+  with inline passwords and high-entropy strings, found by
+  :func:`precis.utils.secret_scan.find_secrets` -- the single pattern source,
+  shared with the agent-write gate. Findings are reported as ``path:line`` plus
+  kind only; the match is never printed. Generated / vendored data and the
+  explicit :data:`_CREDENTIAL_ALLOWLIST` (generated / template / constant files;
+  never tests -- fakes in tests are built from fragments) are exempt; a stale allowlist entry fails.
+
 An ``OSError`` during the walk or a read (ENFILE on a shared VM, 2026-09-29)
 surfaces as ``ScanIncomplete`` — never as a violation, never as a pass over a
 partial tree. See ``tests/_policy_scan.py``.
@@ -121,6 +129,33 @@ _BINARY_SUFFIXES = {
 }
 
 
+# ── Tree-wide: credential shapes (patterns live in utils/secret_scan). ───────
+# Path prefixes / suffixes of generated or vendored data where high-entropy
+# strings are content (base64 blobs, lockfile hashes, minified JS, svg paths).
+_CREDENTIAL_SKIP_PREFIXES = (
+    "src/precis_web/static/",
+    "src/precis/migrations/",
+    "src/precis/thermo/",
+    "tests/fixtures/",
+    "guide/assets/",
+)
+_CREDENTIAL_SKIP_SUFFIXES = (".svg", ".lock", ".min.js", ".mjs")
+
+#: Non-test files that legitimately hold credential-shaped strings. path -> why.
+#: No test file may be listed: a test's fake credential is assembled from
+#: fragments at runtime (``"gh" + "p_" + ...``), so a real token pasted into a
+#: test later is still caught. ``test_credential_allowlist_has_no_stale_entries``
+#: fails an entry that no longer hits.
+_TEMPLATE = "committed example template naming the shape a real value takes"
+_CREDENTIAL_ALLOWLIST: dict[str, str] = {
+    "deploy/inventory.example/group_vars/all/vault.yml.example": _TEMPLATE,
+    "paper-extraction-pilot/evaluate.py": "alphabet constant, not a secret",
+    "src/precis/handlers/draft.py": "base64 PNG icon constant",
+    "src/precis/utils/fractional.py": "base-62 digit alphabet",
+    "src/precis/utils/handles.py": "handle alphabet",
+}
+
+
 def _scannable_files(root: Path) -> list[Path]:
     """Every text file under ``root``, minus skipped dirs and binaries."""
     return [
@@ -153,6 +188,77 @@ def _scan(root: Path, patterns: list[tuple[str, re.Pattern[str]]]) -> list[str]:
                 if pat.search(line):
                     hits.append(f"{rel}:{lineno}: {label} → {line.strip()[:100]}")
     return hits
+
+
+def _credential_findings(root: Path) -> dict[str, list[str]]:
+    """``{relpath: ["line N: kind (xxxx…)", ...]}`` for every file with a
+    credential shape. Only the masked 4-char excerpt is ever recorded."""
+    from precis.utils.secret_scan import find_secrets
+
+    out: dict[str, list[str]] = {}
+    for path in _scannable_files(root):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(_CREDENTIAL_SKIP_PREFIXES) or rel.endswith(
+            _CREDENTIAL_SKIP_SUFFIXES
+        ):
+            continue
+        try:
+            text = read_text(path)
+        except UnicodeDecodeError:
+            continue
+        lines = text.splitlines()
+        for f in find_secrets(text):
+            here = lines[f.line - 1]
+            prev = lines[f.line - 2] if f.line >= 2 else ""
+            if _ALLOW_MARKER in here or _ALLOW_MARKER in prev:
+                continue
+            out.setdefault(rel, []).append(
+                f"line {f.line}: {f.kind} ({f.excerpt_masked})"
+            )
+    return out
+
+
+def test_repo_carries_no_credentials() -> None:
+    """No API key / token / private key / inline-password URL in the tree.
+
+    The patterns are :func:`precis.utils.secret_scan.find_secrets`'s. A fake
+    credential that a test must hold either gets its file listed in
+    :data:`_CREDENTIAL_ALLOWLIST` (with a reason) or is assembled at runtime
+    so the source carries no literal."""
+    found = _credential_findings(_REPO_ROOT)
+    bad = {rel: v for rel, v in found.items() if rel not in _CREDENTIAL_ALLOWLIST}
+    assert not bad, (
+        "credential-shaped string(s) in the public repo (matches not shown) -- "
+        "move the secret to the vault; for a deliberate fake, build it at "
+        "runtime or add the file to _CREDENTIAL_ALLOWLIST with a reason:\n"
+        + "\n".join(f"{rel}: {'; '.join(v[:3])}" for rel, v in sorted(bad.items()))
+    )
+
+
+def test_credential_allowlist_has_no_stale_entries() -> None:
+    found = _credential_findings(_REPO_ROOT)
+    stale = [
+        rel
+        for rel in _CREDENTIAL_ALLOWLIST
+        if rel not in found or not (_REPO_ROOT / rel).is_file()
+    ]
+    assert not stale, f"allowlisted files with no credential shape left: {stale}"
+
+
+def test_credential_gate_flags_a_planted_secret_without_echoing_it(
+    tmp_path: Path,
+) -> None:
+    secret = "gh" + "p_" + ("aB3dE5fG7hJ9kL1mN3pQ" + "5rS7tU9vW1xY3zA5")
+    (tmp_path / "notes.md").write_text(f"token {secret}\n", encoding="utf-8")
+    (tmp_path / "ok.md").write_text("nothing here\n", encoding="utf-8")
+    found = _credential_findings(tmp_path)
+    assert set(found) == {"notes.md"}
+    assert secret not in str(found)
+    # the marker convention exempts a line, as for the address checks
+    (tmp_path / "notes.md").write_text(
+        f"token {secret}  # {_ALLOW_MARKER} - fake\n", encoding="utf-8"
+    )
+    assert _credential_findings(tmp_path) == {}
 
 
 def test_repo_carries_no_cluster_addresses() -> None:

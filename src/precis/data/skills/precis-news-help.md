@@ -1,5 +1,6 @@
 ---
 id: precis-news-help
+family: tools
 title: precis — news kind (RSS ingestion + morning briefing)
 summary: multi-source news as first-class refs; news_poll feed ingestion, news_sources registry, subreddit/Mastodon sources via put, search/tag, and the scheduled morning briefing with delivery
 answers:

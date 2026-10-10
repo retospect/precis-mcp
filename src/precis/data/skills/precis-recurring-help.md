@@ -1,5 +1,6 @@
 ---
 id: precis-recurring-help
+family: work
 title: precis — scheduled work (recurring + one-shot + push delivery) via meta.schedule
 summary: recurring task patterns — Watches umbrella, cron/every/at schedule shapes, per-tick subtask spawning or push delivery (meta.deliver)
 answers:

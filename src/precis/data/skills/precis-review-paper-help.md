@@ -1,5 +1,6 @@
 ---
 id: precis-review-paper-help
+family: review
 title: precis — adversarial review of scientific writing
 summary: adversarial review — unsupported claims, missing counterarguments, methodological weak spots
 answers:

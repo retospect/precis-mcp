@@ -1,5 +1,6 @@
 ---
 id: precis-author-discovery-help
+family: paper
 title: precis — author-network discovery (BFS)
 summary: Grow the corpus by walking paper → author → paper — resolve senior authors via ORCID and enqueue their missing work
 answers:

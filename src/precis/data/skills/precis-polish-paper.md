@@ -1,5 +1,6 @@
 ---
 id: precis-polish-paper
+family: review
 title: precis — paper polish runbook
 summary: pre-submission paper review runbook — orchestrate adversarial/citation reviewer personas, severity ranking
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-datasheet-help
+family: pcb
 title: precis — reading datasheets for PCB design
 summary: read a component datasheet as searchable chunks to pull pinouts, supply ranges, decoupling guidance and application circuits, then turn that into net classes and measures. The electronics sibling of the paper kind; ingested by the same Marker→chunks pipeline.
 answers:

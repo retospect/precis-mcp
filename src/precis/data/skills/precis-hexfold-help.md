@@ -1,5 +1,6 @@
 ---
 id: precis-hexfold-help
+family: se
 title: precis — the hexfold generator (curved sp² carbon from a .hx spec)
 summary: generate atomic se blocks — sheets, tubes, cones, fullerenes, holes, fused joints, nanobuds — from a topology-only .hx spec text via generator='hexfold'; coordinates are derived, the spec is the regeneration input; fidelity='check' returns the check report without minting; generator='hexfold_scene' tiles an authored smooth surface (sheet + fillet/tube/lid/sphere features) tethered to it
 answers:

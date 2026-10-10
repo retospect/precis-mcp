@@ -1,5 +1,6 @@
 ---
 id: patent-abstract
+family: patent
 title: precis — patent abstract (section style)
 summary: write the patent abstract — one ≤150-word paragraph, broadest embodiment, no numerals or citations
 answers:

@@ -1,5 +1,6 @@
 ---
 id: patent-image-part
+family: patent
 title: precis — patent drawings registry (section style)
 summary: the patent drawings registry — describe figures (FIG. n) and register reference numerals (parts) referenced from the description by [dc…]
 answers:

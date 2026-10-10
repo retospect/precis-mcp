@@ -1,5 +1,6 @@
 ---
 id: sci-conclusion
+family: drafting
 title: precis — research-paper conclusion (section style)
 summary: write the conclusion — restate problem + contribution, name the principal limitation, one future direction; no new results/cites
 answers:

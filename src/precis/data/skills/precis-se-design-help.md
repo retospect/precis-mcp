@@ -1,5 +1,6 @@
 ---
 id: precis-se-design-help
+family: se
 title: precis — designing in se (the abstraction-ladder walk)
 summary: the workflow — set box + forces on a root block, interfaces before interiors, run the checking views at every rung, refine block-by-block under a frozen contract, accept proposed values, realize leaves, arbitrate tradeoffs via measures/notes/quest frontier
 answers:

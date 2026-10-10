@@ -1,5 +1,6 @@
 ---
 id: precis-addressing-help
+family: core
 title: precis — universal handles (the one address scheme)
 summary: the type-prefixed handle (2-char code + decimal id), the relative grammar, the 2-char type codes, address-vs-metadata
 answers:

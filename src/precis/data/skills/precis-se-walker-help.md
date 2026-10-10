@@ -1,5 +1,6 @@
 ---
 id: precis-se-walker-help
+family: se
 title: precis — DNA walkers in se (foothold-occupancy states, station settles, per-state poses)
 summary: a walker is a plain se block with tethered legs (declare_strand anchor=/tether_nt=) that step along a track through declared stations — states whose occupancy=[{'<strand>.<ord>': '<helix>@<offset>'|null}] says which foothold each leg's foot domain sits on (declare_states, or the declare_stations sugar op for the common hand-over-hand gait); relax_chain(state={walker: name}) settles the walker as one more rigid body and stores the result in that state's own pose slot, so a later get(args={'state': ...}) or view='sweep' reads the station with no re-solve
 answers:

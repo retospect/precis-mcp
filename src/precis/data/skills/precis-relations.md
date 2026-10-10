@@ -1,5 +1,6 @@
 ---
 id: precis-relations
+family: core
 title: precis — relation vocabulary for link(rel=)
 summary: closed relation vocabulary — cites, supports, disputes, contradicts, derived-from, blocks, retracts, corrects
 answers:

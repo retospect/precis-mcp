@@ -1,5 +1,6 @@
 ---
 id: precis-user-queue-help
+family: work
 title: precis — a person's action queue (waiting-for:<login> todos)
 summary: park a decision or chore on a named person's queue with a waiting-for:<login> todo — the factory never dispatches it, the same login string lists it
 answers:

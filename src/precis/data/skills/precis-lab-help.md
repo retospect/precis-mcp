@@ -1,5 +1,6 @@
 ---
 id: precis-lab-help
+family: science
 title: precis — the in-silico lab (agentic chem/bio research over the narrow verbs)
 summary: the ChemCrow-analog playbook (ADR 0056 slice 6) — compose retrosynthesis (route), folding (protein), structure, and the literature into a research loop; precis has no chemistry agent framework, the planner/agent just drives the seven verbs, so this is the recipe layer, not a new tool
 answers:

@@ -26,6 +26,7 @@ from precis.protocol import KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.utils import handle_registry
+from precis.utils.secret_scan import mask_secrets_deep
 
 
 def _parse_ts(text: Any) -> datetime | None:
@@ -62,6 +63,8 @@ def _who(meta: dict[str, Any]) -> str:
 
 
 class FleetHandler(NumericRefHandler):
+    #: machine-collected host reports, not agent prose: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="fleet",
         title="Agent fleet",
@@ -130,6 +133,8 @@ class FleetHandler(NumericRefHandler):
                 "mode='report' requires host= (or report.host)",
                 next="args={'host': '<host>', 'report': {...}}",
             )
+        # Pane screens / transcripts can show tokens: mask, don't refuse.
+        report = mask_secrets_deep(report)
         res = fleet.apply_report(self.store, host=host, report=report)
         return Response(body=res.summary(host))
 

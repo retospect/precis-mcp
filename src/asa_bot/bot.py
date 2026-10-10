@@ -47,6 +47,7 @@ from asa_bot.conv_slug import compute_slug
 from asa_bot.pg_listen import PgListener
 from asa_bot.precis_client import PrecisClient, health_loop
 from precis.utils.msgsplit import split_message
+from precis.utils.secret_scan import mask_secrets
 
 log = logging.getLogger(__name__)
 
@@ -253,13 +254,14 @@ class AsaBot(discord.Client):
             # separately later.
             if kind == "first_sentence":
                 try:
-                    await _reply_target(message).send(evt[1])
+                    await _reply_target(message).send(mask_secrets(evt[1]))
                 except discord.HTTPException:
                     pass
                 return
             label = _format_progress(evt)
             if label is None:
                 return
+            label = mask_secrets(label)  # tool args may echo a credential
             now = time.monotonic()
             if kind == "text_partial":
                 if now - state["last_text_edit_at"] < 5.0:
@@ -312,6 +314,8 @@ class AsaBot(discord.Client):
         body: str,
         result: Any,
     ) -> None:
+        # Discord posts are irreversible and cannot be rephrased here: mask.
+        body = mask_secrets(body)
         chunks = _split_for_discord(body, self._cfg.discord.max_message_chars)
         # If the body is large, upload as attachment so we don't spam.
         if len(body) >= self._cfg.discord.attachment_threshold_chars:
@@ -413,7 +417,7 @@ class AsaBot(discord.Client):
         if channel is None:
             log.warning("cron: no Discord channel resolved for slug %r", conv_slug)
             return
-        body = result.text.strip() or "(cron produced no response)"
+        body = mask_secrets(result.text.strip() or "(cron produced no response)")
         for c in _split_for_discord(body, self._cfg.discord.max_message_chars):
             await channel.send(content=c)
 
@@ -491,6 +495,7 @@ class AsaBot(discord.Client):
         if channel is None:
             log.warning("message %s: no channel for target %r", ref_id, target)
             return
+        text = mask_secrets(text)
         for c in _split_for_discord(text, self._cfg.discord.max_message_chars):
             await channel.send(content=c)
 

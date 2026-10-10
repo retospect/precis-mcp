@@ -1,5 +1,6 @@
 ---
 id: precis-toc-help
+family: core
 title: precis — table of contents for any TOC-capable kind
 summary: TOC views — drillable handles for long documents, keyword-labelled ranges, reading entry point
 answers:

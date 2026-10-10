@@ -1,5 +1,6 @@
 ---
 id: precis-job-help
+family: work
 title: precis — offline work, addressable
 summary: offline-work substrate — submit, poll, cancel; parent-todo contract, status, event timeline
 answers:

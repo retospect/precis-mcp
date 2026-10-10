@@ -302,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(
             f"child command must contain {FD_PLACEHOLDER} for the listening fd"
         )
+    # No install_log_scrub() here: the supervisor imports stdlib only (it
+    # outlives /app re-copies) and logs nothing but its own child lifecycle.
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )

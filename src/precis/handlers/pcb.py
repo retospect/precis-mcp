@@ -507,6 +507,8 @@ class PcbHandler(Handler):
         ),
     }
 
+    #: netlists, footprints and layout ops: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pcb",
         title="PCB",

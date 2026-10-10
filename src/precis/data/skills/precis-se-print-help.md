@@ -1,5 +1,6 @@
 ---
 id: precis-se-print-help
+family: se
 title: precis — turning a block into a printed part (realize, build orientation, process DRC, STL/3MF)
 summary: mint a block's first cad implementation (realize — the envelope seed, or strategy='simp' for an enqueued topology solve bound back as a field leaf), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, print a whole assembly as a fit-test model (a print group with intent='model' — one frame, one 3MF, bought parts as catalog stand-ins) or as the real print-in-place part (intent='manufacture' + realize(strategy='manufacture') — rigid members fused, DOF joints gapped, bought parts as cavities with a pause height, fasteners elided), and read view='fab' for the whole design's fabrication plan across every source
 answers:

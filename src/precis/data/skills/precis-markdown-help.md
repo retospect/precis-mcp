@@ -1,5 +1,6 @@
 ---
 id: precis-markdown-help
+family: files
 title: precis — read and edit markdown files
 summary: markdown files — chunk grammar, available views, slug stability, line and name selectors
 answers:

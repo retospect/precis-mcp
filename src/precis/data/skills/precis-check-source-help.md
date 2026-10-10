@@ -1,5 +1,6 @@
 ---
 id: precis-check-source-help
+family: evidence
 title: precis — find a passage, read its surrounds, check it supports the point
 summary: reader-side source-checking — locate the passage by chunk handle, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then ground a finding hub on it and cite the hub [fi<id>]
 answers:

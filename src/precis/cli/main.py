@@ -18,6 +18,7 @@ import sys
 from types import ModuleType
 
 from precis.cli.registry import JOB_COMMANDS, Command, commands
+from precis.utils.log_scrub import install_log_scrub
 from precis.utils.utc_logging import force_utc_timestamps
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ def main() -> None:
     args = _build_parser(_command_path(argv)).parse_args(argv)
 
     force_utc_timestamps()
+    install_log_scrub()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

@@ -1,5 +1,6 @@
 ---
 id: precis-se-flatpack-help
+family: se
 title: precis — flat-pack boxes with shelves from one sheet (finger joints from the sheet thickness, nesting, laser SVG and CNC DXF)
 summary: the flatpack generator turns W × H × D and a sheet material into panels with finger or butt joints and shelf tabs, nests them on a sheet with kerf and fit, and writes the laser SVG (LightBurn colours) or DXF R12 (Maslow) from one shared sheet job; which parameters exist, which figures are recorded per material, and how the first physical cut records fit and kerf
 answers:

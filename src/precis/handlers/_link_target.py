@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, NotFound
 from precis.hints import merged_redirect_hint
 from precis.utils import handle_registry
 
@@ -144,25 +144,6 @@ def parse_link_target(
             next="link='kind:identifier'",
         )
 
-    # ``skill`` lives in package data (markdown on disk), not the
-    # refs table. The skill body IS embedded (FileCorpusIndex carries
-    # the vectors for semantic search), but linking requires a
-    # ``refs.ref_id`` to populate ``links.src_ref_id`` / ``dst_ref_id``.
-    # Pre-broad-pass behaviour was a misleading
-    # NotFound("no live skill ref"); now Unsupported with the right
-    # reason so the agent stops retrying and routes to a kind that
-    # has rows. Broad-pass finding #6.
-    if kind == "skill":
-        raise Unsupported(
-            f"link target {target!r}: skill is not linkable — "
-            "served from package data, not the refs table",
-            next=(
-                "to anchor a thought to a skill, write a memory citing "
-                "the skill's id in text and link memory→<the linkable "
-                "target>"
-            ),
-        )
-
     # Validate kind against the live kinds table. We intentionally
     # do *not* gate on the registry (which only contains *active*
     # kinds in this build) — the schema may have a kind row that
@@ -256,9 +237,9 @@ def parse_link_target(
             # valid target to *remove* an edge to
             ref = store.get_ref(kind=kind, id=ref_id_or_slug, include_deleted=True)
         if ref is None:
-            if kind == "part":
+            if kind in ("part", "skill"):
                 next_hint = (
-                    f"link(kind=..., id=..., target={target!r}) mints the part "
+                    f"link(kind=..., id=..., target={target!r}) mints the {kind} "
                     "ref on its first link; then this target resolves"
                 )
             elif is_numeric:
@@ -267,7 +248,7 @@ def parse_link_target(
                 next_hint = f"check it exists: get(kind={kind!r}, id={identifier!r})"
             forms = (
                 ""
-                if is_numeric or kind == "part"
+                if is_numeric or kind in ("part", "skill")
                 else f" (a {kind} is '{kind}:<slug>' or '{kind}:<numeric ref id>')"
             )
             raise NotFound(
@@ -326,7 +307,7 @@ def parse_link_target(
 
 
 def mint_lazy_link_target(target: str, *, store: Store) -> None:
-    """Mint the lazy ref a ``part:<C-no>`` target names, if it has none.
+    """Mint the lazy ref a ``part:<C-no>`` / ``skill:<id>`` target names, if none.
 
     Add-mode link doors only (``apply_link_ops``, ``NumericRefHandler.link``),
     called before :func:`parse_link_target`, which never mints: it also
@@ -336,9 +317,24 @@ def mint_lazy_link_target(target: str, *, store: Store) -> None:
     if not isinstance(target, str):
         return
     kind, sep, rest = target.strip().partition(":")
-    if not sep or kind.strip() != "part":
+    kind = kind.strip()
+    if not sep or kind not in ("part", "skill"):
         return
     identifier = rest.partition("~")[0].strip()
+    if kind == "skill":
+        # Skills are package-data files; the row is only an anchor, minted
+        # on first link. An id absent from the skill index never mints.
+        from precis.handlers.skill import skill_exists
+
+        if not identifier:
+            return
+        if not skill_exists(identifier):
+            raise NotFound(
+                f"link target {target!r}: no skill {identifier!r}",
+                next="get(kind='skill', id='toc') lists the skill ids",
+            )
+        store.ensure_skill_ref(identifier)
+        return
     if identifier and handle_registry.parse(identifier) is None:
         store.ensure_part_ref(identifier)
 

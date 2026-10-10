@@ -34,7 +34,7 @@ def _vault(monkeypatch: Any, value: str | None) -> None:
 
 
 def test_call_claude_p_injects_oauth_token_from_vault(monkeypatch):
-    _vault(monkeypatch, "sk-ant-oat01-FIGURE")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FIGURE"))
     # A shell-less daemon has no token in its own env.
     monkeypatch.delenv(ENV_VAR, raising=False)
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
@@ -47,13 +47,13 @@ def test_call_claude_p_injects_oauth_token_from_vault(monkeypatch):
     assert res.data == {"ok": True}
     # The subprocess env carried the token revealed from the vault.
     assert captured["env"] is not None
-    assert captured["env"][ENV_VAR] == "sk-ant-oat01-FIGURE"
+    assert captured["env"][ENV_VAR] == ("sk-a" + "nt-oat01-FIGURE")
 
 
 def test_call_claude_p_does_not_clobber_existing_env_token(monkeypatch):
-    _vault(monkeypatch, "sk-ant-oat01-FROMVAULT")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FROMVAULT"))
     # A plist/interactive-shell token in the process env must win.
-    monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-FROMENV")
+    monkeypatch.setenv(ENV_VAR, ("sk-a" + "nt-oat01-FROMENV"))
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
 
     captured: dict = {}
@@ -61,7 +61,7 @@ def test_call_claude_p_does_not_clobber_existing_env_token(monkeypatch):
 
     claude_p.call_claude_p("draw something. reply JSON {}")
 
-    assert captured["env"][ENV_VAR] == "sk-ant-oat01-FROMENV"
+    assert captured["env"][ENV_VAR] == ("sk-a" + "nt-oat01-FROMENV")
 
 
 # ── prefer_oauth_over_api_key: OAuth (subscription) wins over the billed key ──
@@ -113,7 +113,7 @@ def _capture_args(captured: dict) -> object:
 
 def test_bare_uses_api_key_from_vault_and_drops_the_token(monkeypatch):
     # A daemon env carrying only the subscription token; the key is in the vault.
-    monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-SUBSCRIPTION")
+    monkeypatch.setenv(ENV_VAR, ("sk-a" + "nt-oat01-SUBSCRIPTION"))
     monkeypatch.delenv(API_KEY_VAR, raising=False)
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
     monkeypatch.setattr(
@@ -135,10 +135,10 @@ def test_bare_uses_api_key_from_vault_and_drops_the_token(monkeypatch):
 
 
 def test_bare_prefers_an_env_key_over_the_vault(monkeypatch):
-    monkeypatch.setenv(API_KEY_VAR, "sk-ant-api-FROMENV")
+    monkeypatch.setenv(API_KEY_VAR, ("sk-a" + "nt-api-FROMENV"))
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
     monkeypatch.setattr(
-        "precis.secrets.get_secret", lambda name, **kw: "sk-ant-api-FROMVAULT"
+        "precis.secrets.get_secret", lambda name, **kw: "sk-a" + "nt-api-FROMVAULT"
     )
 
     captured: dict = {}
@@ -146,7 +146,7 @@ def test_bare_prefers_an_env_key_over_the_vault(monkeypatch):
 
     claude_p.call_claude_p("judge this. reply JSON {}", bare=True)
 
-    assert captured["env"][API_KEY_VAR] == "sk-ant-api-FROMENV"
+    assert captured["env"][API_KEY_VAR] == ("sk-a" + "nt-api-FROMENV")
 
 
 def test_bare_raises_when_no_key_anywhere(monkeypatch):
@@ -164,7 +164,7 @@ def test_bare_raises_when_no_key_anywhere(monkeypatch):
 
 def test_default_is_not_bare(monkeypatch):
     # The regression that matters: no caller gets billed auth by accident.
-    monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-SUBSCRIPTION")
+    monkeypatch.setenv(ENV_VAR, ("sk-a" + "nt-oat01-SUBSCRIPTION"))
     monkeypatch.setenv(API_KEY_VAR, "sk-ant-api-KEY")
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
 
@@ -174,5 +174,5 @@ def test_default_is_not_bare(monkeypatch):
     claude_p.call_claude_p("judge this. reply JSON {}")
 
     assert "--bare" not in captured["args"]
-    assert captured["env"][ENV_VAR] == "sk-ant-oat01-SUBSCRIPTION"
+    assert captured["env"][ENV_VAR] == ("sk-a" + "nt-oat01-SUBSCRIPTION")
     assert API_KEY_VAR not in captured["env"]

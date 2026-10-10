@@ -1,5 +1,6 @@
 ---
 id: precis-review-paragraph-flow
+family: review
 title: precis — one-pass paragraph-flow review
 summary: Every paragraph must have a topic sentence, a developed body, and a transition; check each one and record a flag on offenders
 answers:

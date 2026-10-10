@@ -1,5 +1,6 @@
 ---
 id: precis-get-help
+family: core
 title: precis — the get verb (read or compute)
 summary: the get verb — read existing refs by id, or compute fresh results via q=
 answers:

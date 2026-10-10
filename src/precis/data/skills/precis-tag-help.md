@@ -1,5 +1,6 @@
 ---
 id: precis-tag-help
+family: core
 title: precis — the tag verb (add and remove tags)
 summary: the tag verb mechanics — atomic add/remove, axis replacement, state transitions
 answers:

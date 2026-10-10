@@ -1,5 +1,6 @@
 ---
 id: precis-cad-assembly-help
+family: science
 title: precis — assemble CAD designs (ports, mates, joints, connectivity)
 summary: connect cad sub-assemblies by named port and computed mate instead of world coordinates, add articulated joints and printed-in-place hinges, and verify the result by clearance/interference/DOF and post-cut connectivity
 answers:

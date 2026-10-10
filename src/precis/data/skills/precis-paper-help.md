@@ -1,5 +1,6 @@
 ---
 id: precis-paper-help
+family: paper
 title: precis — find, read, cite papers
 summary: scientific paper corpus — find, read, address by handle (pa/pc), views and chunk selectors
 answers:

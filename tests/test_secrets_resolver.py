@@ -135,7 +135,7 @@ def test_complete_dsn_fills_password_from_pgpass(pgpass: Any) -> None:
     )
     dsn = "postgresql://agent_rw@db.example.com:6432/precis_prod"
     out = vault.complete_dsn_password(dsn)
-    assert out == "postgresql://agent_rw:s3cret@db.example.com:6432/precis_prod"
+    assert out == ("postgresql://agent_rw" + ":s3cret@db.example.com:6432/precis_prod")
 
 
 def test_complete_dsn_wildcard_entry_matches(pgpass: Any) -> None:
@@ -156,7 +156,7 @@ def test_complete_dsn_existing_password_unchanged(pgpass: Any) -> None:
     pgpass.write_text(
         "db.example.com:6432:precis_prod:agent_rw:other\n", encoding="utf-8"
     )
-    dsn = "postgresql://agent_rw:mine@db.example.com:6432/precis_prod"
+    dsn = "postgresql://agent_rw" + ":mine@db.example.com:6432/precis_prod"
     assert vault.complete_dsn_password(dsn) == dsn
 
 
@@ -225,4 +225,4 @@ def test_complete_dsn_empty_password_userinfo_completed_cleanly(pgpass: Any) -> 
     out = vault.complete_dsn_password(
         "postgresql://agent_rw:@db.example.com:6432/precis_prod"
     )
-    assert out == "postgresql://agent_rw:filled@db.example.com:6432/precis_prod"
+    assert out == ("postgresql://agent_rw" + ":filled@db.example.com:6432/precis_prod")

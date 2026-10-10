@@ -499,8 +499,9 @@ def _tick_disabled_hint(kind: str) -> str | None:
     return dict(ctx.disabled_kinds).get(kind)
 
 
-#: Text-writing args of the gated kinds' put/edit/supersede calls.
-_SECRET_GATED_KINDS = frozenset({"memory", "todo", "gripe"})
+#: Agent-authored text args of put/edit/supersede, across every kind's verbs
+#: (collected from the handlers' signatures). ``meta`` / ``params`` / ``items``
+#: are dict/list containers whose string values are scanned recursively.
 _SECRET_GATED_ARGS = (
     "text",
     "body",
@@ -510,32 +511,64 @@ _SECRET_GATED_ARGS = (
     "rule",
     "warrant",
     "reason",
+    "note",
+    "comment",
+    "caption",
+    "motivation",
+    "testable_by",
+    "belief",
+    "evidence",
+    "source_quote",
+    "verifier_caveats",
+    "unacquirable_note",
+    "description",
+    "abstract",
 )
+_SECRET_GATED_CONTAINERS = ("meta", "params", "items")
 
 
-def _refuse_agent_secrets(verb: str, args: dict[str, Any]) -> None:
-    """Refuse a credential in an agent's memory/todo/gripe write.
+def _string_leaves(label: str, value: Any, out: list[tuple[str, str]]) -> None:
+    if isinstance(value, str):
+        out.append((label, value))
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _string_leaves(f"{label}[{k}]", v, out)
+    elif isinstance(value, list | tuple):
+        for i, v in enumerate(value):
+            _string_leaves(f"{label}[{i}]", v, out)
+
+
+def _refuse_agent_secrets(verb: str, args: dict[str, Any], hub: Any = None) -> None:
+    """Refuse a credential in an agent's put/edit/supersede text, for every
+    kind whose handler does not set ``stores_opaque_text``.
 
     The MCP/CLI verb boundary is where an agent can still rephrase, so it is
     refused here (:func:`precis.utils.secret_scan.refuse_secrets`). The
-    handlers themselves *mask* (``mask_secrets``) instead, for the automated
-    writers (alert / forensics workers, importers, web UI) that call them
-    directly and would otherwise lose the record.
+    memory/todo/gripe handlers themselves *mask* (``mask_secrets``) instead,
+    for the automated writers (alert / forensics workers, importers, web UI)
+    that call them directly and would otherwise lose the record. A kind with
+    no resolvable handler is gated (default-on).
     """
-    if verb not in ("put", "edit", "supersede") or args.get("kind") not in (
-        _SECRET_GATED_KINDS
-    ):
+    if verb not in ("put", "edit", "supersede"):
         return
+    kind = args.get("kind")
+    if isinstance(kind, str) and hub is not None:
+        handler = hub.handler_for(kind)
+        if handler is not None and getattr(handler, "stores_opaque_text", False):
+            return
     from precis.utils.secret_scan import refuse_secrets
 
-    fields: list[tuple[str, Any]] = [
-        (k, args[k]) for k in _SECRET_GATED_ARGS if isinstance(args.get(k), str)
-    ]
-    meta = args.get("meta")
-    if not isinstance(meta, dict):
-        meta = (args.get("__extras__") or {}).get("meta")
-    if isinstance(meta, dict) and isinstance(meta.get("hook"), str):
-        fields.append(("meta['hook']", meta["hook"]))
+    extras = args.get("__extras__") or {}
+    fields: list[tuple[str, str]] = []
+    for k in _SECRET_GATED_ARGS:
+        v = args.get(k, extras.get(k) if isinstance(extras, dict) else None)
+        if isinstance(v, str):
+            fields.append((k, v))
+    for k in _SECRET_GATED_CONTAINERS:
+        v = args.get(k)
+        if v is None and isinstance(extras, dict):
+            v = extras.get(k)
+        _string_leaves(k, v, fields)
     refuse_secrets(fields)
 
 
@@ -571,7 +604,7 @@ class DispatchMixin(RuntimeShape):
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
-                _refuse_agent_secrets(verb, args)
+                _refuse_agent_secrets(verb, args, self.hub)
                 response = self._dispatch_inner(verb, dict(args))
                 # Chunk over-large bodies so they don't blow the
                 # MCP stdio frame. On a long-lived runtime (MCP

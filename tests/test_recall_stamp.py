@@ -131,7 +131,7 @@ def test_repeat_get_within_the_hour_issues_no_db_statement(
     assert calls == []  # absorbed by the in-process TTL cache
 
 
-def test_file_and_computed_kinds_are_never_looked_up(
+def test_file_kinds_are_never_looked_up(
     runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -140,7 +140,6 @@ def test_file_and_computed_kinds_are_never_looked_up(
         "touch_recalled_for",
         lambda self, kind, ident: calls.append((kind, ident)),
     )
-    runtime.dispatch("get", {"kind": "skill", "id": "precis-overview"})
     runtime.dispatch("get", {"kind": "markdown", "id": "notes/x.md"})
     assert calls == []
 

@@ -1,5 +1,6 @@
 ---
 id: components
+family: pcb
 title: precis — components / BOM registry (section style)
 summary: the manufacturing components registry — register each part as a term leaf (short name, description, MPN, manufacturer, datasheet link) referenced from prose by name/number/[dc…]
 answers:

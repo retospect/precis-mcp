@@ -1,5 +1,6 @@
 ---
 id: precis-plaintext-help
+family: files
 title: precis — read and edit plaintext files
 summary: plaintext files — txt/log paragraphs and lines, content-slug selectors, raw views
 answers:

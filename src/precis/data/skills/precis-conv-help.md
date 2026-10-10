@@ -1,5 +1,6 @@
 ---
 id: precis-conv-help
+family: memory
 title: precis — find, read, tag past conversations
 summary: captured chat transcripts — address by slug, read turns, browse recent conversations
 answers:

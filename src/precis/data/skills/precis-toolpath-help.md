@@ -1,5 +1,6 @@
 ---
 id: precis-toolpath-help
+family: core
 title: precis — canonical call sequences per scenario
 summary: toolpaths — the canonical get/search/put/edit/tag/link sequence for each common goal, with the skill to read for depth
 answers:

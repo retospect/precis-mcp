@@ -124,6 +124,10 @@ class _PerplexityBase(CacheBackedHandler):
     #: attribution bundle for that tier.
     TIER: ClassVar[_SonarTier]
 
+    #: Unlike the other fetch caches, the agent-authored query here is sent to
+    #: a third party: keep the secret gate on.
+    stores_opaque_text: ClassVar[bool] = False
+
     # ── inherited from CacheBackedHandler (subclasses override) ──────
     provider: ClassVar[str] = "perplexity"
     corpus_slug: ClassVar[str] = "default"

@@ -1,5 +1,6 @@
 ---
 id: precis-auto-todo-help
+family: work
 title: precis — wait-for-condition todos via meta.auto_check
 summary: wait-for-condition todos — SQL-checkable evaluators, parking leaves, auto-resolve, timeouts
 answers:

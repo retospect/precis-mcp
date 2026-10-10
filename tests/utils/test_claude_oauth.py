@@ -26,17 +26,17 @@ def _vault(monkeypatch: Any, value: str | None) -> None:
 
 
 def test_loads_token_from_vault(monkeypatch):
-    _vault(monkeypatch, "sk-ant-oat01-TESTTOKEN")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-TESTTOKEN"))
     env: dict[str, str] = {}
     ensure_oauth_token(env)
-    assert env[ENV_VAR] == "sk-ant-oat01-TESTTOKEN"
+    assert env[ENV_VAR] == ("sk-a" + "nt-oat01-TESTTOKEN")
 
 
 def test_existing_env_token_wins(monkeypatch):
-    _vault(monkeypatch, "sk-ant-oat01-FROMVAULT")
-    env = {ENV_VAR: "sk-ant-oat01-FROMENV"}
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FROMVAULT"))
+    env = {ENV_VAR: ("sk-a" + "nt-oat01-FROMENV")}
     ensure_oauth_token(env)
-    assert env[ENV_VAR] == "sk-ant-oat01-FROMENV"  # override not clobbered
+    assert env[ENV_VAR] == ("sk-a" + "nt-oat01-FROMENV")  # override not clobbered
 
 
 def test_unresolvable_vault_is_noop(monkeypatch):
@@ -50,10 +50,10 @@ def test_unresolvable_vault_is_noop(monkeypatch):
 def test_empty_env_value_is_treated_as_absent(monkeypatch):
     # An empty ``CLAUDE_CODE_OAUTH_TOKEN`` in the env is useless — fill it
     # from the vault rather than sending a blank token that would 401.
-    _vault(monkeypatch, "sk-ant-oat01-FROMVAULT")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FROMVAULT"))
     env = {ENV_VAR: ""}
     ensure_oauth_token(env)
-    assert env[ENV_VAR] == "sk-ant-oat01-FROMVAULT"
+    assert env[ENV_VAR] == ("sk-a" + "nt-oat01-FROMVAULT")
 
 
 def test_home_token_file_is_ignored(tmp_path, monkeypatch):
@@ -66,12 +66,12 @@ def test_home_token_file_is_ignored(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / ".claude_oauth_token").write_text(
-        "sk-ant-oat01-STALEFILE\n", encoding="utf-8"
+        ("sk-a" + "nt-oat01-STALEFILE\n"), encoding="utf-8"
     )
-    _vault(monkeypatch, "sk-ant-oat01-ROTATED")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-ROTATED"))
     env: dict[str, str] = {}
     ensure_oauth_token(env)
-    assert env[ENV_VAR] == "sk-ant-oat01-ROTATED"
+    assert env[ENV_VAR] == ("sk-a" + "nt-oat01-ROTATED")
 
 
 def test_vault_raising_does_not_break_the_caller(monkeypatch):

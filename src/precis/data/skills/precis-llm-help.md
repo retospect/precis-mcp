@@ -1,5 +1,6 @@
 ---
 id: precis-llm-help
+family: work
 title: precis — the model catalog (choose the right LLM)
 summary: model choice as a queryable resource — read a model's facts + capability, express a requirement, let the policy pick
 answers:

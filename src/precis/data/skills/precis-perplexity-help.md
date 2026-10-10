@@ -1,5 +1,6 @@
 ---
 id: precis-perplexity-help
+family: tools
 title: precis — Perplexity (websearch / perplexity-reasoning / perplexity-research)
 summary: Perplexity Sonar tiers — websearch, perplexity-reasoning, perplexity-research; latency/cost trade-offs, import mode
 answers:

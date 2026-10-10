@@ -1,5 +1,6 @@
 ---
 id: precis-paper-code-audit
+family: paper
 title: precis — audit a paper's claims against its public code
 summary: claims-vs-code audit runbook — compare methods/defaults/metrics against the fetched repo, file a finding per mismatch, one consolidated draft
 answers:

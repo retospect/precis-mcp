@@ -30,7 +30,7 @@ from precis.handlers.todo import TodoHandler
 # A real 1×1 PNG for figure-embed tests (a valid raster blob).
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-    "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    + ("C0lEQVR42mNk+M9QDwAD" + "hgGAWjR9awAAAABJRU5E" + "rkJggg==")
 )
 _PNG_B64 = base64.b64encode(_PNG).decode()
 

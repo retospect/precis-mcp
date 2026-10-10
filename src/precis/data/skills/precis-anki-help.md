@@ -1,5 +1,6 @@
 ---
 id: precis-anki-help
+family: memory
 title: precis — Anki cloze cards
 summary: author spaced-repetition cloze cards ({{c1::…}}) that live in the corpus and sync to AnkiWeb
 answers:

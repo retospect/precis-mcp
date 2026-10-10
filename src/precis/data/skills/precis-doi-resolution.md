@@ -1,5 +1,6 @@
 ---
 id: precis-doi-resolution
+family: paper
 title: precis — resolve a DOI to a paper at the agent boundary
 summary: DOI handling — bare DOIs as paper identifiers, slug fallback, view-kwarg discipline
 answers:

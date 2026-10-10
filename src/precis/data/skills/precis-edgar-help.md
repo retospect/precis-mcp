@@ -1,5 +1,6 @@
 ---
 id: precis-edgar-help
+family: tools
 title: precis — find, read, compare SEC filings
 summary: SEC EDGAR filings — accession ids, fetch-as-ingest, biblio/body/toc/diff views, quarter-to-quarter comparison
 answers:

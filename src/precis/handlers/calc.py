@@ -27,6 +27,8 @@ from precis.response import Response
 
 
 class CalcHandler(Handler):
+    #: computes expressions; stores nothing: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="calc",
         title="Calculator",

@@ -78,6 +78,9 @@ def fmt_conditions(conditions: Any) -> str:
 class ValueEntityHandler(Handler):
     """Value-write path shared by ``MaterialHandler`` / ``ComponentHandler``."""
 
+    #: structured value-entity records (units, conditions, sources), not prose: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     store: Store
 
     _VE_KIND: ClassVar[str]

@@ -1,5 +1,6 @@
 ---
 id: precis-md-help
+family: files
 title: precis — search workspace markdown (docs, backlog, skills prose)
 summary: DB-free hybrid search + navigation over repo markdown — root/file/heading addressing, scope=, read-only
 answers:

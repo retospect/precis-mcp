@@ -1,5 +1,6 @@
 ---
 id: precis-startup-skills-help
+family: core
 title: precis — pin skills into the cold-start banner
 summary: operator skill pinning — surface chosen skills on cold-start banner via env var
 answers:
@@ -88,6 +89,9 @@ Zero banner bytes are paid when the config is valid.
 ```python
 get(kind="skill", id="toc")  # browse every skill, one-line synopsis
 search(kind="skill", q="patent search prior art")  # fuzzy lookup for a workflow
+search(kind="skill", q="schema", args={"family": "se"})  # one subject family (combines with tag)
+get(kind="skill", id="toc", args={"by": "family"})  # toc grouped by family
+get(kind="skill", view="usage")  # maintenance: coldest skills first, last read + open concerns
 ```
 
 Pin the skills agents in this deployment will hit first and most

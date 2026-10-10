@@ -1,5 +1,6 @@
 ---
 id: precis-automations
+family: work
 title: precis — find and edit standing automations (recurring agent behaviours)
 summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos under the Watches umbrella; find them with search(kind='todo', view='roots') — the `automation` tag is opt-in, not reliable for discovery — edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-unsupported
+family: mermaid
 title: precis — sankey / block diagram (not yet renderable)
 summary: mermaid diagram types the in-process engine cannot render yet — and what to use instead
 answers:

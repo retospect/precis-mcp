@@ -36,7 +36,7 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from precis.utils.text import slugify
 
@@ -68,6 +68,7 @@ class WorkItem:
     blocked_by: str | None = None  # front-matter "blocked-by:" predecessor slug
     prio: str = "normal"  # front-matter "prio:" bucket — high | normal | low
     ref_id: int | None = None  # gripe refs.id (unset for proposals) — writeback key
+    skills: tuple[str, ...] = ()  # skill ids the gripe links (escalation scope)
 
 
 def parse_front_matter(text: str) -> dict[str, str]:
@@ -229,14 +230,40 @@ def _is_diagnosed(entries: Iterable[_TimelineEntry]) -> bool:
     )
 
 
-def _render_gripe_spec(title: str, entries: Iterable[_TimelineEntry]) -> str:
+def _skill_brief(skills: Iterable[str], entries: Iterable[_TimelineEntry]) -> list[str]:
+    """Lead block for a gripe that raises a concern about skill(s): name the
+    file(s) to fix and quote the gripe notes up front. The skill markdown is
+    the source of truth; the gripe says what misled the reader."""
+    names = list(skills)
+    if not names:
+        return []
+    files = ", ".join(f"`src/precis/data/skills/{n}.md`" for n in names)
+    out = [
+        f"This gripe raises a concern about a skill. Fix the skill file: {files} "
+        "(the file is the source of truth; verify the claim against the code "
+        "before editing).",
+        "",
+        "Gripe notes:",
+    ]
+    for e in entries:
+        if e.chunk_kind in (_GRIPE_BODY_KIND, _GRIPE_COMMENT_KIND):
+            out.extend(f"> {ln}" for ln in e.text.splitlines() or [""])
+    out.append("")
+    return out
+
+
+def _render_gripe_spec(
+    title: str, entries: Iterable[_TimelineEntry], skills: Iterable[str] = ()
+) -> str:
     """Title + timeline (body, then comments in pos order) as one spec.
 
     Fed to the builder as ``WorkItem.spec_text`` — the diagnosis comment
     is just another entry in pos order, so it flows in verbatim without
-    special-casing.
+    special-casing. ``skills`` (ids of skills the gripe links) prepends the
+    skill-file brief.
     """
-    lines = [f"# {title}", ""]
+    entries = list(entries)
+    lines = [f"# {title}", "", *_skill_brief(skills, entries)]
     for e in entries:
         if e.chunk_kind == _GRIPE_BODY_KIND:
             lines.append(e.text)
@@ -251,7 +278,11 @@ def _render_gripe_spec(title: str, entries: Iterable[_TimelineEntry]) -> str:
 
 
 def _work_item_from_gripe(
-    ref_id: int, title: str, prio: int | None, entries: list[_TimelineEntry]
+    ref_id: int,
+    title: str,
+    prio: int | None,
+    entries: list[_TimelineEntry],
+    skills: Iterable[str] = (),
 ) -> WorkItem | None:
     """Normalize one promoted gripe into a :class:`WorkItem`, or ``None``.
 
@@ -266,11 +297,31 @@ def _work_item_from_gripe(
         slug=f"gr{ref_id}",
         title=title,
         branch=f"fix/gr{ref_id}",
-        spec_text=_render_gripe_spec(title, entries),
+        spec_text=_render_gripe_spec(title, entries, skills),
         model=None,
         prio=_gripe_prio_bucket(prio),
         ref_id=ref_id,
+        skills=tuple(skills),
     )
+
+
+def _linked_skills(store: Any, ref_id: int) -> list[str]:
+    """Ids of the skills a gripe links (``skill:<id>`` anchors); ``[]`` on
+    any failure — the brief just loses its skill-file header."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ri.id_value FROM links l "
+                "JOIN refs s ON s.ref_id = l.dst_ref_id AND s.kind = 'skill' "
+                "JOIN ref_identifiers ri ON ri.ref_id = s.ref_id "
+                " AND ri.id_kind = 'cite_key' "
+                "WHERE l.src_ref_id = %s ORDER BY 1",
+                (ref_id,),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+    except Exception:
+        log.debug("gripe intake: skill-link lookup failed", exc_info=True)
+        return []
 
 
 def gripe_items(db_url: str) -> list[WorkItem]:
@@ -304,7 +355,9 @@ def gripe_items(db_url: str) -> list[WorkItem]:
         for ref in refs:
             blocks = store.chunks.list_chunks_for_ref(ref.id)
             entries = [_TimelineEntry(b.chunk_kind, b.ord, b.text) for b in blocks]
-            item = _work_item_from_gripe(ref.id, ref.title, ref.prio, entries)
+            item = _work_item_from_gripe(
+                ref.id, ref.title, ref.prio, entries, _linked_skills(store, ref.id)
+            )
             if item is not None:
                 items.append(item)
         return items

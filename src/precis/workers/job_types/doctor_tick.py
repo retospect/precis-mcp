@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.utils.llm.router import Tier
+from precis.utils.secret_scan import mask_secrets
 from precis.workers.review import _REVIEWER_DISALLOWED_TOOLS
 
 log = logging.getLogger(__name__)
@@ -271,6 +272,7 @@ def run(
             report_ref_id=None,
         )
 
+    body = mask_secrets(body)  # the report is filed, mirrored and todo-ised
     ref, _created = doctor_report.find_or_create_report(store, date_tag)
     # Turn each "## Needs a human" bullet into (or bump) a
     # waiting-for:reto todo, rewriting the section into `- td<id>: ...`

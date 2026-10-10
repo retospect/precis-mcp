@@ -1,5 +1,6 @@
 ---
 id: precis-cite-paper-help
+family: evidence
 title: precis — how do I cite a paper?
 summary: the cite-a-paper router — a cite is always a finding hub `[fi<id>]`; hub exists → cite it; paper in corpus → ground a hub on its passages and cite that; paper not held → stub, wait, then ground; empirical claim with no primary held → chase finding `[fi<id>]`
 answers:

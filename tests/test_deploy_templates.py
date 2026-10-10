@@ -60,8 +60,8 @@ def test_rendered_precis_env_has_a_compensating_auth_channel() -> None:
 
     dsn = env.get("PRECIS_DATABASE_URL", "")
     assert dsn, "PRECIS_DATABASE_URL must render to a non-empty DSN"
-    # ``scheme://user[:password]@host[:port]/db`` — the password lives in the
-    # userinfo segment (before the first ``@``), so a colon there means an
+    # ``scheme://<userinfo>@host[:port]/db`` — the password lives in the
+    # userinfo segment (before the first ``@``, as ``user:password``), so a colon there means an
     # inline password; no ``@`` at all means no userinfo, hence no password.
     userinfo = dsn.split("://", 1)[-1].split("@", 1)[0] if "@" in dsn else ""
     dsn_has_inline_password = ":" in userinfo

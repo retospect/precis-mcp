@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-class
+family: mermaid
 title: precis — class diagram / UML / object model / type hierarchy / inheritance
 summary: a mermaid class diagram — UML classes, fields, methods, and inheritance
 answers:

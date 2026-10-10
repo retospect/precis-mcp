@@ -1,5 +1,6 @@
 ---
 id: precis-roadmap-help
+family: work
 title: precis — the roadmap quest body (rungs, capabilities, pathways)
 summary: roadmap tick body — pathway/capability/rung vocabulary, the rung meta contract, the three roles (demand/supply/bridge), no-number-no-rung, root-only ticking, the capability ledger
 answers:

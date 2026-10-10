@@ -1,5 +1,6 @@
 ---
 id: precis-stubs-help
+family: paper
 title: precis — papers we still need to get
 summary: paper acquisition backlog — stub list, fetch state, reason each is waiting
 answers:

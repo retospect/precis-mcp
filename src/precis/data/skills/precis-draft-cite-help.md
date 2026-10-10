@@ -1,5 +1,6 @@
 ---
 id: precis-draft-cite-help
+family: evidence
 title: precis — citing and cross-referencing inside a draft (handles route by what they name)
 summary: in draft prose a [fi<id>] finding hub is a citation and every other handle ([dc<id>], [me<id>]) is a link; cite the hub, never its paper or chunk; never fabricate or type a bare DOI/arXiv id; a paper not held is requested and the citing work parked behind the ingest, never faked
 answers:

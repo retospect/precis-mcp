@@ -1,5 +1,6 @@
 ---
 id: precis-cache
+family: tools
 title: precis — paid tools cache automatically
 summary: cache mechanics for paid tools — TTLs, freshness, force-refresh, cost control
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-part-select-help
+family: pcb
 title: precis — selecting JLCPCB parts for a PCB
 summary: pick real, manufacturable components for a pcb design from the LCSC/JLCPCB catalog — fit first, then Basic + high-turnover (not the last reel), consolidating on one family and one package size (0402 default); read one part by C-number and let the footprint auto-stamp onto your component. Covers LCSC, JLCPCB assembly, Basic vs Extended, stock, popularity, BOM consolidation, cost.
 answers:

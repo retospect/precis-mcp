@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-flowchart
+family: mermaid
 title: precis — flowchart / flow chart / process diagram / decision tree / org chart / workflow
 summary: a mermaid flowchart — boxes and arrows for a process, decision tree, org chart, or workflow
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-taxon-help
+family: science
 title: precis — taxon (term taxonomy nodes)
 summary: put and read a taxon — a named term with a definition, an earned status and an optional dimension
 answers:

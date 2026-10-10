@@ -1,5 +1,6 @@
 ---
 id: precis-cloze
+family: memory
 title: precis — authoring excellent Anki cloze cards
 summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering, specific uniquely-recoverable answers, hint types, ruthlessly terse, contextual Back Extra; with language/math worked examples
 answers:

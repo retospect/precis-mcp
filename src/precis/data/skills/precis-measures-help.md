@@ -1,5 +1,6 @@
 ---
 id: precis-measures-help
+family: pcb
 title: precis — PCB measures (the measuring tapes)
 summary: state placement & layout intent as measures the autoplacer optimises and the eyes evaluate — keep the regulator away from the antenna, the bypass cap AT the pin, this part under 3mm tall. Covers separation, proximity, align, height, role-based selection, hard/soft/gauge strength.
 answers:

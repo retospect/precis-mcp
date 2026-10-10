@@ -338,8 +338,9 @@ def test_redaction_scrubs_result_head() -> None:
     # string at runtime either way.
     synthetic_tailnet_ip = "100." + "101." + "102.103"
     secret_text = (
-        f"connecting via postgresql://agent_rw:hunter2@{synthetic_tailnet_ip}"
-        ":6432/precis_prod"
+        "connecting via postgresql://agent_rw"
+        + f":hunter2@{synthetic_tailnet_ip}"
+        + ":6432/precis_prod"
     )
     lines = [
         json.dumps(

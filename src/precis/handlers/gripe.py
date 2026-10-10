@@ -317,13 +317,18 @@ class GripeHandler(NumericRefHandler):
             guard_taxon_hierarchy,
             validate_relation,
         )
-        from precis.handlers._link_target import parse_link_target
+        from precis.handlers._link_target import (
+            mint_lazy_link_target,
+            parse_link_target,
+        )
 
         if text is None or not text.strip():
             raise BadInput(
                 f"creating a {self._sense()} requires text=",
                 next=f"put(kind={self.kind!r}, text='your content')",
             )
+        if link is not None:
+            mint_lazy_link_target(link, store=self.store)
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
         if target is not None:

@@ -1,5 +1,6 @@
 ---
 id: precis-toon
+family: core
 title: precis — TOON tabular output format
 summary: tabular output format — header in braces, tab-separated rows, used across search and TOC views
 answers:

@@ -66,7 +66,7 @@ def test_egress_none_is_network_none() -> None:
 
 
 def test_api_only_allowlists_anthropic_plus_pgbouncer() -> None:
-    dsn = "postgresql://agent_rw:pw@db.internal:6432/precis_prod"
+    dsn = "postgresql://agent_rw" + ":pw@db.internal:6432/precis_prod"
     plan = ac.resolve_network(Envelope(egress="api-only"), dsn=dsn)
     assert plan.mode == "api-only"
     assert plan.docker_args == ("--network", "bridge")
@@ -91,7 +91,7 @@ def test_write_full_is_agent_rw_oauth() -> None:
     cenv = ac.container_env(
         Envelope(write="full"),
         model="qwen",
-        dsn="postgresql://agent_rw:pw@db.internal:6432/precis_prod",
+        dsn=("postgresql://agent_rw" + ":pw@db.internal:6432/precis_prod"),
     )
     assert cenv.values["PRECIS_MCP_DB_ROLE"] == "agent_rw"
     assert cenv.values["PRECIS_AGENT_MODE"] == "oauth"

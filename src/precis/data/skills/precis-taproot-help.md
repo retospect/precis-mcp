@@ -1,5 +1,6 @@
 ---
 id: precis-taproot-help
+family: evidence
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s) — find a hub, read its evidence, cite it
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-orcid-help
+family: paper
 title: precis — ORCID author identity nodes
 summary: Resolve a researcher's ORCID iD into a durable author node (dossier), link the works you hold, and LLM-gate fetching the rest
 answers:

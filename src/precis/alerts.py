@@ -68,6 +68,7 @@ from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
 from precis.utils.db_retry import retry_locked
+from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +153,11 @@ def raise_alert(
         )
     if not fingerprint:
         raise ValueError(f"alert fingerprint for source {source!r} must be non-empty")
+    # Alert bodies are detector/forensics output that can echo a command line
+    # or an env dump; nobody can rephrase them, so mask rather than refuse.
+    title = mask_secrets(title)
+    detail = mask_secrets(detail)
+    extra_meta = mask_secrets_deep(extra_meta)
     severity = _norm_severity(severity)
     throttle = timedelta(seconds=_throttle_seconds())
     rule_id = alert_ids.rule_id(source, fingerprint)

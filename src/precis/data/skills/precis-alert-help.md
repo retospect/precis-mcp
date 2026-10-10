@@ -1,5 +1,6 @@
 ---
 id: precis-alert-help
+family: work
 title: precis — the alert kind (machine-detected ops/health conditions)
 summary: kind='alert' — background passes raise deduped, auto-resolving alerts for spin loops, stale claims, stalled recurrings; surfaced by the /alerts web tab
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-structure-help
+family: science
 title: precis — the structure kind (atomistic cells you can read as a graph)
 summary: build a periodic cell + bond graph as typed ops, then probe it analytically (neighbours/coordination/line/plane/sphere/path/rings/fragments/diff/pov), relax it on a fidelity ladder (clean→ml→dft), and export POSCAR/extXYZ/CIF — no pixels; the graph + numbers are the interface
 answers:

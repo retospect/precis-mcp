@@ -30,6 +30,7 @@ from asa_bot.config import Config
 from asa_bot.conv_slug import compute_slug
 from asa_bot.precis_client import PrecisClient
 from precis.utils.llm.router import PLANNER_TIER_BY_ALIAS, resolve_model
+from precis.utils.secret_scan import mask_secrets
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class SlashContext:
         self, content: str = "", *, file: discord.File | None = None
     ) -> None:
         """Send a reply to wherever the slash command came from."""
+        content = mask_secrets(content)  # slash output can echo tool results
         try:
             if file is not None:
                 await self.reply_target(self.message).send(content=content, file=file)

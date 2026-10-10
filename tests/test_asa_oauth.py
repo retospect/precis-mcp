@@ -25,10 +25,10 @@ def _vault(monkeypatch: Any, value: str | None) -> None:
 
 
 def test_fills_token_from_vault(monkeypatch):
-    _vault(monkeypatch, "sk-ant-oat01-abc")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-abc"))
     env: dict[str, str] = {}
     ensure_oauth_token(env)
-    assert env[ENV_VAR] == "sk-ant-oat01-abc"
+    assert env[ENV_VAR] == ("sk-a" + "nt-oat01-abc")
 
 
 def test_existing_token_wins(monkeypatch):

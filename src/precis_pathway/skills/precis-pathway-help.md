@@ -1,5 +1,6 @@
 ---
 id: precis-pathway-help
+family: science
 title: precis — reaction pathways (autocatpath)
 summary: explore a catalyst reaction network — intermediates, barriers, honest uncertainty — and argue with it as data, not a diagram
 answers:

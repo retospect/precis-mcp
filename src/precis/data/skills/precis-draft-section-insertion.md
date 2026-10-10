@@ -1,5 +1,6 @@
 ---
 id: precis-draft-section-insertion
+family: drafting
 title: precis — inserting a new section into a living draft
 summary: before creating a section — read the toc, prefer expanding an existing section, insert at the lowest outline level that fits, propose a new top-level section in the logbook first
 answers:

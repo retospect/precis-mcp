@@ -1,5 +1,6 @@
 ---
 id: precis-protein-help
+family: science
 title: precis — the protein kind (fold a sequence, read the structure you get)
 summary: predict a protein structure from its amino-acid sequence with a swappable engine (stub/alphafold3) on the compute lane, content-addressed so a repeat is a zero-compute cache hit; read the fold as a confidence summary (mean pLDDT / pTM) or the raw mmCIF (view='cif') — never a synchronous GPU call
 answers:

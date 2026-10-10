@@ -1,5 +1,6 @@
 ---
 id: precis-edit-help
+family: files
 title: precis — anchored region edits across file kinds
 summary: anchored region edits — find-replace grammar, before/after anchors, per-kind validation
 answers:

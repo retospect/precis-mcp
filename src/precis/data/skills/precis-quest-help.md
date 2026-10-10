@@ -1,5 +1,6 @@
 ---
 id: precis-quest-help
+family: work
 title: precis — the striving above the work
 summary: quests — perpetual unachievable strivings that pull work + knowledge into their service; logbook, serves-graph, tree rollup
 answers:

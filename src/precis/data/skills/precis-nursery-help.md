@@ -1,5 +1,6 @@
 ---
 id: precis-nursery-help
+family: work
 title: precis — nursery detector of todo-tree incoherence
 summary: per-minute tree-incoherence detectors — stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts (orphans are detected but not alerted)
 answers:

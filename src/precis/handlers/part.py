@@ -98,6 +98,8 @@ def _datasheet_line(state: dict[str, Any]) -> str:
 
 
 class PartHandler(Handler):
+    #: catalogue part numbers / vendor ids: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="part",
         title="Part",

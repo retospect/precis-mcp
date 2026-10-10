@@ -70,6 +70,8 @@ class RandomHandler(Handler):
         "get": frozenset({"len", "alphabet"}),
     }
 
+    #: generates values; stores nothing: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="random",
         title="Random",

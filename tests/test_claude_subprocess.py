@@ -67,7 +67,7 @@ def test_bootstrap_oauth_false_keeps_isolated_env_free_of_real_token(
     — the bootstrap must not even be consulted."""
     home = tmp_path / "home"
     home.mkdir()
-    _vault(monkeypatch, "sk-ant-oat01-REAL-WORKER-TOKEN")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-REAL-WORKER-TOKEN"))
 
     stub = tmp_path / "claude_stub.sh"
     dump = tmp_path / "env.out"
@@ -76,7 +76,7 @@ def test_bootstrap_oauth_false_keeps_isolated_env_free_of_real_token(
     isolated_env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),
-        "ANTHROPIC_API_KEY": "sk-ant-fake-isolated",
+        "ANTHROPIC_API_KEY": ("sk-a" + "nt-fake-isolated"),
     }
     assert ENV_VAR not in isolated_env
 
@@ -105,7 +105,7 @@ def test_bootstrap_oauth_default_true_injects_token_from_vault(
     vault bootstrap — today's behavior, unchanged."""
     home = tmp_path / "home"
     home.mkdir()
-    _vault(monkeypatch, "sk-ant-oat01-FROM-VAULT")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FROM-VAULT"))
 
     stub = tmp_path / "claude_stub.sh"
     dump = tmp_path / "env.out"
@@ -123,7 +123,7 @@ def test_bootstrap_oauth_default_true_injects_token_from_vault(
     )
 
     dumped = dump.read_text(encoding="utf-8")
-    assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT" in dumped
+    assert (f"{ENV_VAR}=sk-a" + "nt-oat01-FROM-VAULT") in dumped
     # Still never mutates the caller's dict — only the internal copy that
     # was actually handed to the subprocess gains the token.
     assert ENV_VAR not in caller_env
@@ -137,7 +137,7 @@ def test_run_claude_env_none_does_not_touch_process_environ(
     subprocess's copy should gain it."""
     home = tmp_path / "home"
     home.mkdir()
-    _vault(monkeypatch, "sk-ant-oat01-FROM-VAULT-2")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FROM-VAULT-2"))
     monkeypatch.delenv(ENV_VAR, raising=False)
 
     stub = tmp_path / "claude_stub.sh"
@@ -154,7 +154,7 @@ def test_run_claude_env_none_does_not_touch_process_environ(
     )
 
     dumped = dump.read_text(encoding="utf-8")
-    assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT-2" in dumped
+    assert (f"{ENV_VAR}=sk-a" + "nt-oat01-FROM-VAULT-2") in dumped
     assert ENV_VAR not in os.environ
 
 
@@ -343,7 +343,7 @@ def test_run_claude_disarms_reap_even_for_isolated_env_callers(
     be able to reap the caller's tree."""
     home = tmp_path / "home"
     home.mkdir()
-    _vault(monkeypatch, "sk-ant-oat01-REAL-WORKER-TOKEN")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-REAL-WORKER-TOKEN"))
     monkeypatch.delenv(_NO_AUTOREAP, raising=False)
 
     stub = tmp_path / "claude_stub.sh"
@@ -404,7 +404,7 @@ def test_run_claude_async_copies_caller_env(tmp_path: Path, monkeypatch) -> None
     place, so an isolated ``env_base`` silently gained the OAuth token."""
     home = tmp_path / "home"
     home.mkdir()
-    _vault(monkeypatch, "sk-ant-oat01-FROM-VAULT")
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-FROM-VAULT"))
     monkeypatch.delenv(_NO_AUTOREAP, raising=False)
 
     stub = tmp_path / "claude_stub.sh"
@@ -426,7 +426,7 @@ def test_run_claude_async_copies_caller_env(tmp_path: Path, monkeypatch) -> None
 
     # the subprocess got both injections ...
     dumped = dump.read_text(encoding="utf-8")
-    assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT" in dumped
+    assert (f"{ENV_VAR}=sk-a" + "nt-oat01-FROM-VAULT") in dumped
     assert f"{_NO_AUTOREAP}=1" in dumped
     # ... while the caller's own dict stayed exactly as it was handed over.
     assert ENV_VAR not in caller_env

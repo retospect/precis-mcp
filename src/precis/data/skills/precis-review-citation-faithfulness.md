@@ -1,5 +1,6 @@
 ---
 id: precis-review-citation-faithfulness
+family: review
 title: precis — one-pass citation-faithfulness review
 summary: For each claim in a draft, check it is cited (sufficiency), the cited source supports it judged against the paper's full text — linked passages are provenance and may combine — and does not contradict its direction or strength (a separate polarity check), and prefer the living [fi<hub>] form; a claim the source contradicts gets corrected when you may write, flagged with exact replacement text when you may not
 answers:

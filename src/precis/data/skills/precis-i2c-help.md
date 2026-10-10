@@ -1,5 +1,6 @@
 ---
 id: precis-i2c-help
+family: pcb
 title: precis — wiring an I²C bus on a PCB
 summary: wire an I²C bus on a pcb design — SCL/SDA as a shared two-wire net with one pair of pull-ups, multiple devices on the same two nets, addresses from datasheets. Covers I2C, SCL, SDA, pull-up resistors, bus topology.
 answers:

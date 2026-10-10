@@ -1,5 +1,6 @@
 ---
 id: precis-classify-help
+family: science
 title: precis — classify into the taxonomy (writer and reader rules)
 summary: how to attach a ref to taxon nodes, how to write a taxon so its siblings do not overlap, and how to walk a subtree
 answers:

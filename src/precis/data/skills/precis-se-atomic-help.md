@@ -1,5 +1,6 @@
 ---
 id: precis-se-atomic-help
+family: se
 title: precis — designing chemistry as a block tree (atomic mode)
 summary: atomic mode extends an se block tree down to real chemistry — declare_threading/declare_dof record intent, bind_structure maps ports to atoms in a structure design, generate mints canonical fragments (cnt/fullerene/cone/cyclodextrin/hexfold/hexfold_scene/tpms/smooth_drum) with no LLM, view=mechanics gives advisory continuum ceilings, view=literature runs a deterministic paper search, and view='validate' carries the chemistry-tier findings (port_capability, dangling_binding, binding_element_mismatch, envelope_fit, connect_cycle, bond_length_sanity, bond_vector_alignment, composite_part_stolen)
 answers:

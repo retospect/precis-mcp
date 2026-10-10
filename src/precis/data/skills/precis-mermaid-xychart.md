@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-xychart
+family: mermaid
 title: precis — xy chart / bar chart / line chart / plot / graph of values
 summary: a mermaid xychart — a bar and/or line chart over an x-axis
 answers:

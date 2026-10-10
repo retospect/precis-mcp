@@ -43,6 +43,8 @@ ROUTE_NODE_ENV = "PRECIS_CHEM_ROUTE_NODE"
 
 
 class RouteHandler(Handler):
+    #: SMILES / retrosynthesis route data: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="route",
         plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for

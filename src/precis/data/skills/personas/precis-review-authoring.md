@@ -1,5 +1,6 @@
 ---
 id: precis-review-authoring
+family: review
 title: precis — grounded authoring reviewer persona
 summary: grounded-authoring reviewer persona — corrects any claim a held source contradicts, fixes a gap when it can cite a real source, otherwise flags it as a change request
 answers:

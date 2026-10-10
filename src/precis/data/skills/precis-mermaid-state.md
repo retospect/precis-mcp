@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-state
+family: mermaid
 title: precis — state diagram / state machine / FSM / lifecycle / status flow
 summary: a mermaid state diagram — states and the transitions between them
 answers:

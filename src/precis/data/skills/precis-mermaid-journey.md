@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-journey
+family: mermaid
 title: precis — user journey map / customer journey / experience map
 summary: a mermaid user-journey diagram — steps of an experience scored by sentiment
 answers:

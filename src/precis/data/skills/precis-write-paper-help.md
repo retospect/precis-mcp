@@ -1,5 +1,6 @@
 ---
 id: precis-write-paper-help
+family: drafting
 title: precis — drafting scientific writing with claim-level evidence
 summary: drafting scientific writing — claim-level citation density, evidence threading, voice
 answers:

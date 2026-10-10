@@ -1,5 +1,6 @@
 ---
 id: precis-patent-search-help
+family: patent
 title: precis — search patents (local + EPO OPS)
 summary: patent discovery — merge local hits with EPO OPS, reach selection, deduped by DOCDB id
 answers:

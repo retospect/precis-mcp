@@ -46,3 +46,35 @@ def guard_exportable(ref: Any) -> None:
             "only a draft exports to LaTeX/PDF/Word",
             next="export the project's draft (kind='draft'), not its plan",
         )
+
+
+def guard_no_secrets(store: Any, ref: Any) -> None:
+    """Refuse an export whose draft text holds a credential.
+
+    An exported PDF/docx is handed to people outside the system and cannot be
+    recalled, so a pasted credential is refused before anything is rendered
+    or written. The message names the chunk handle (``dc`` handle) and a
+    masked excerpt, never the full match. Called next to
+    :func:`guard_exportable` by both exporters (LaTeX/PDF and docx)."""
+    from precis.errors import BadInput
+    from precis.utils.secret_scan import find_secrets
+
+    fields: list[tuple[str, str | None]] = [
+        ("draft title", getattr(ref, "title", None))
+    ]
+    for c in store.drafts.reading_order(ref.id):
+        fields.append((f"chunk {c.handle}", c.text))
+    hits: list[str] = []
+    total = 0
+    for label, text in fields:
+        for f in find_secrets(text or ""):
+            total += 1
+            if len(hits) < 3:
+                hits.append(f"{label} line {f.line}: {f.kind} ({f.excerpt_masked})")
+    if total:
+        more = f" (+{total - len(hits)} more)" if total > len(hits) else ""
+        raise BadInput(
+            "refusing to export: the draft contains what looks like a "
+            "credential -- " + "; ".join(hits) + more,
+            next="remove it from the draft (reference it by vault name), then re-export",
+        )

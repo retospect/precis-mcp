@@ -1,5 +1,6 @@
 ---
 id: precis-argument-help
+family: drafting
 title: precis — build a defensible argument as a reusable lemma/inference graph
 summary: the reasoning shadow beside a draft — state lemmas, chain inferences, keep it out of the published prose
 answers:

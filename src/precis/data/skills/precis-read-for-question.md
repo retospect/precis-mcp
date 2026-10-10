@@ -1,5 +1,6 @@
 ---
 id: precis-read-for-question
+family: paper
 title: precis — read the corpus for a question and leave claim hubs behind
 summary: the question-driven reading loop — hubs first, then papers the hubs do not already rest on, one reader per paper (toc → scoped search → ranges → proposals), root converges proposals onto hubs; returns fi ids labelled new/existing × answers/partial/side
 answers:

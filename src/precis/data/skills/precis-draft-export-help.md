@@ -1,5 +1,6 @@
 ---
 id: precis-draft-export-help
+family: drafting
 title: precis — exporting a draft to LaTeX, PDF, Word, or reMarkable
 summary: draft export resolves cross-refs/citations/abbreviations automatically; PDF runs as a job, Word is synchronous, reMarkable needs a per-user device credential and footnotes citations/claims inline
 answers:

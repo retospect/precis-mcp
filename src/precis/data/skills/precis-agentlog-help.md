@@ -1,5 +1,6 @@
 ---
 id: precis-agentlog-help
+family: work
 title: precis — the agentlog kind (run attribution + touch graph)
 summary: kind='agentlog' — one record per agentic run; carries the assembled prompt and `touched` links to every chunk it wrote; walk a suspicious chunk back to the run that produced it
 answers:

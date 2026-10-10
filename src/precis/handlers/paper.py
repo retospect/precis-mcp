@@ -261,6 +261,9 @@ class PaperHandler(Handler):
     ``refs.meta``.
     """
 
+    #: ingest of third-party papers (cfp/datasheet inherit): the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     stamps_recall = True
 
     #: Empty-corpus message for :meth:`_render_list_papers`. Subclasses

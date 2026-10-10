@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-er
+family: mermaid
 title: precis — ER diagram / entity-relationship / database schema / data model
 summary: a mermaid ER diagram — entities, attributes, and their relationships
 answers:

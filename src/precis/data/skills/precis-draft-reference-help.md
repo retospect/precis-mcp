@@ -1,5 +1,6 @@
 ---
 id: precis-draft-reference-help
+family: drafting
 title: precis — the draft kind's quick reference (verbs, views, edit params, move/table/authors grammar)
 summary: the lookup tables for kind='draft' — chunk addressing (dc<id>, windows), every get view, every edit param family, the move=/table=/authors= grammars and what put creates; the narrative and rulings stay in precis-draft-help
 answers:

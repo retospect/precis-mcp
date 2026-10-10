@@ -100,6 +100,9 @@ _KIND_CLASS = _load_kind_classes()
 def test_declared_args_key_not_rejected(
     runtime_with_store: PrecisRuntime, kind: str, verb: str, key: str
 ) -> None:
+    if runtime_with_store.hub.handler_for(kind) is None:
+        # Disabled kinds answer Unsupported, which would pass vacuously.
+        pytest.skip(f"kind {kind!r} disabled in this build")
     out = _call(runtime_with_store, kind, verb, {key: 1})
     assert f"not accepted by {kind}.{verb}" not in out, out
 

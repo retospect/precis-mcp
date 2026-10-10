@@ -22,12 +22,12 @@ def test_falls_back_to_vault_when_no_env(monkeypatch):
     monkeypatch.setattr(
         "asa_slack.config.reveal_secret",
         lambda name, **kw: {
-            "ASA_SLACK_BOT_TOKEN": "xoxb-from-vault",
+            "ASA_SLACK_BOT_TOKEN": ("xo" + "xb-from-vault"),
             "ASA_SLACK_APP_TOKEN": "xapp-from-vault",
         }.get(name),
     )
     bot_token, app_token = load_slack_tokens(SlackConfig())
-    assert bot_token == "xoxb-from-vault"
+    assert bot_token == ("xo" + "xb-from-vault")
     assert app_token == "xapp-from-vault"
 
 

@@ -1,5 +1,6 @@
 ---
 id: precis-net-class-help
+family: pcb
 title: precis — naming & classifying PCB nets
 summary: name every net for its meaning and give it a class so precis can size the trace, pour it as a plane, and pick measure defaults — power/gnd/i2c/spi/analog/diff/clock. Covers trace width from current, copper planes, ratsnest exclusion, signal integrity intent.
 answers:

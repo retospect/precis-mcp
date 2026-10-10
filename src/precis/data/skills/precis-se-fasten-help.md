@@ -1,5 +1,6 @@
 ---
 id: precis-se-fasten-help
+family: se
 title: precis — screwing a design together (fasteners, threaded holes, printed bosses)
 summary: pick a real ISO screw by head form and drive (hex socket or Torx), place it as a bound block so the stack-up is measured rather than declared, choose what the far end threads into (nut · nut trap · heat-set insert · thread-forming core hole · cut thread), and read view='fasten' for the holes it stamps, the tool that can reach it, and what is too thin, too short or too deep
 answers:

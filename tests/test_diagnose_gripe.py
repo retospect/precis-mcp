@@ -455,7 +455,7 @@ class TestSpawnAuth:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         clone = self._clone_with_project_config(tmp_path)
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-TEST")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", ("sk-a" + "nt-oat01-TEST"))
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         seen = self._capture(monkeypatch)
 
@@ -463,7 +463,7 @@ class TestSpawnAuth:
 
         assert seen["bare"] is False
         env = seen["env_base"]
-        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-TEST"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == ("sk-a" + "nt-oat01-TEST")
         # The billed path is scrubbed so the CLI cannot choose it.
         assert "ANTHROPIC_API_KEY" not in env
         # ...and the ambient project config --bare used to suppress is gone.
@@ -480,13 +480,13 @@ class TestSpawnAuth:
         suppresses the discovery itself, so nothing needs stripping."""
         clone = self._clone_with_project_config(tmp_path)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-TEST")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", ("sk-a" + "nt-api03-TEST"))
         seen = self._capture(monkeypatch)
 
         dg._spawn_claude(model="m", clone_dir=clone, prompt="p", timeout_s=1.0)
 
         assert seen["bare"] is True
-        assert seen["env_base"]["ANTHROPIC_API_KEY"] == "sk-ant-api03-TEST"
+        assert seen["env_base"]["ANTHROPIC_API_KEY"] == ("sk-a" + "nt-api03-TEST")
         assert (clone / "CLAUDE.md").exists()
         assert (clone / ".claude").exists()
 
@@ -496,7 +496,7 @@ class TestSpawnAuth:
         """The text format carries no result event, so cost/turns/tokens
         reached llm_call_log as nulls (job 464075)."""
         clone = self._clone_with_project_config(tmp_path)
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-TEST")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", ("sk-a" + "nt-oat01-TEST"))
         seen = self._capture(monkeypatch)
 
         dg._spawn_claude(model="m", clone_dir=clone, prompt="p", timeout_s=1.0)

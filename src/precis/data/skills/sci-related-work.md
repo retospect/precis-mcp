@@ -1,5 +1,6 @@
 ---
 id: sci-related-work
+family: drafting
 title: precis — research-paper related work (section style)
 summary: write related work — thematic (not a serial list), cite precise [pc…] chunks, position the work against the gap
 answers:

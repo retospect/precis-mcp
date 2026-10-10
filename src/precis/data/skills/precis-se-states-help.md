@@ -1,5 +1,6 @@
 ---
 id: precis-se-states-help
+family: se
 title: precis — discrete block states, transitions and the swing they derive (se kind)
 summary: a block that can be in more than one shape (bistable, photoswitch, conformer, assembly step) declares its states and stimulus-labelled transitions — declare_states/declare_transitions/set_current_state, args={'state':...} to pose one read transiently, view='kinematics' for the axis/angle/arm/tip a transition derives from two port frames plus revolute/prismatic joint sweeps, view='sweep' to check every declared state at once
 answers:

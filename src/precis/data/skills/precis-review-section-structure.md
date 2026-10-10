@@ -1,5 +1,6 @@
 ---
 id: precis-review-section-structure
+family: review
 title: precis — one-pass section-structure review
 summary: Does the intro frame the contribution? Do sections deliver what the intro promises? Does the conclusion follow from the sections?
 answers:

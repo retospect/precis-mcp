@@ -1,5 +1,6 @@
 ---
 id: precis-files-help
+family: files
 title: precis — read and edit files (markdown, plaintext, tex, python)
 summary: shared file-kind conventions — roots, workspace tag scoping, two-track addressing, write modes
 answers:

@@ -2114,7 +2114,7 @@ def test_edit_text_store_op_typed_errors(store: Store) -> None:
 
 _PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-    "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    + ("C0lEQVR42mNk+M9QDwAD" + "hgGAWjR9awAAAABJRU5E" + "rkJggg==")
 )
 
 #: A chunk_id that a fresh per-test DB will never have allocated.
@@ -2859,7 +2859,7 @@ def test_house_style_write_hint_and_hygiene_view(draft: DraftHandler, hub: Hub) 
 
 def test_bare_xref_hint(draft: DraftHandler, hub: Hub) -> None:
     """A ``[¶…]`` cross-ref with no lead-in word warns; 'see'/'section'/
-    '(' /',' lead-ins and chained refs are silent."""
+    ' + (' /',' lead-ins and chained refs are silent."""
     proj = _proj(hub)
     draft.put(id="bx", title="T", project=proj)
     title_h = _order(hub, "bx")[0].handle

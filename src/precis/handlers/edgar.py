@@ -76,6 +76,9 @@ _DEFAULT_REMOTE_PAGE = 20
 class EdgarHandler(Handler):
     """Slug-addressed (accession), read-only SEC filing handler."""
 
+    #: ingest of third-party SEC filings: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="edgar",
         title="SEC Filing",

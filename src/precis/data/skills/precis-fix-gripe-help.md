@@ -1,5 +1,6 @@
 ---
 id: precis-fix-gripe-help
+family: work
 title: precis — drive a gripe to a fix landed on main
 summary: fix_gripe job recipe (lane OFF since 2026-10-02, hand-submit only) — gripe to job to a squash commit on main, iteration, review
 answers:

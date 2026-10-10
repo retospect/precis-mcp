@@ -1,5 +1,6 @@
 ---
 id: precis-differentiation-help
+family: science
 title: precis — how to get the derivative before you run gradient descent
 summary: choosing the differentiation route for a design objective — adjoint/reverse-mode for many variables, forward/complex-step for few, finite differences for checking only; smooth surrogates for min/max/abs; implicit differentiation instead of unrolled iterations; the verification tests a gradient must pass.
 answers:

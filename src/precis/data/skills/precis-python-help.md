@@ -1,5 +1,6 @@
 ---
 id: precis-python-help
+family: files
 title: precis — navigate and edit Python codebases
 summary: Python code navigation and edits — qualname or file/line addressing, ruff-gated writes
 answers:

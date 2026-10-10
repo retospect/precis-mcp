@@ -1,5 +1,6 @@
 ---
 id: precis-session-context-help
+family: core
 title: precis — session context (pinned skills, disabled kinds, default tags)
 summary: per-session configuration — pinned skills, disabled kinds, default tags via env vars
 answers:

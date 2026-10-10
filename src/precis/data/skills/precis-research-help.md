@@ -1,5 +1,6 @@
 ---
 id: precis-research-help
+family: paper
 title: precis — corpus-grounded research with primary-source discipline
 summary: corpus searches, primary-source rule, contradiction flagging, quantification targets
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-taproot-backfill-help
+family: evidence
 title: precis-taproot-backfill-help — convert a draft's [pc]/[pa] cites into hub cites
 summary: batch-convert a draft's legacy [pc<id>]/[pa<id>] cites into hub [fi<id>] cites via the taproot_backfill job — scope, chunk-grounding, and the whole-paper [pa] re-ground arm
 answers:

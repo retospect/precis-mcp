@@ -1,5 +1,6 @@
 ---
 id: precis-se-chain-help
+family: se
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
 summary: pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, fill staple sequences from the scaffold (fill_complement), then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + twenty chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' (scadnano/caDNAno/oxDNA/PDB, and the oligo order form) is precis-se-chain-export-help; walker states: see precis-se-walker-help
 answers:

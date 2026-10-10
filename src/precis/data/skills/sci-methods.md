@@ -1,5 +1,6 @@
 ---
 id: sci-methods
+family: drafting
 title: precis — research-paper methods (section style)
 summary: write methods — reproducible detail, notation defined, $…$ math, past tense; no results or interpretation
 answers:

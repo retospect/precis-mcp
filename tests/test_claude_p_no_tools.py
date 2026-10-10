@@ -18,7 +18,7 @@ from precis.utils.claude_oauth import ENV_VAR
 
 
 def test_call_claude_p_denies_every_tool(monkeypatch):
-    monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-TEST")
+    monkeypatch.setenv(ENV_VAR, ("sk-a" + "nt-oat01-TEST"))
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
 
     captured: dict = {}

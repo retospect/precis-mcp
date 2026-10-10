@@ -1,5 +1,6 @@
 ---
 id: precis-message-help
+family: work
 title: precis — proactive outbound messages (Discord posts)
 summary: proactive outbound messaging — unprompted channel posts, stored for introspection
 answers:

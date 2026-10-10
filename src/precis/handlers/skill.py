@@ -60,6 +60,7 @@ from precis.handlers._skill_common import (
     SkillFrontmatter,
     kind_label,
     parse_frontmatter,
+    skill_family,
 )
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
@@ -525,6 +526,11 @@ class SkillHandler(Handler):
         placement="system",
     )
 
+    #: A skill's own view (body, ``~N`` section, ``/toc``) stamps the lazily
+    #: minted anchor ref's ``last_recalled_at`` (``Store._touch_skill_recalled``).
+    #: Search hits never stamp.
+    stamps_recall: ClassVar[bool] = True
+
     #: Special slugs synthesised at runtime rather than served from a
     #: markdown file.  Maps slug → one-line description used in the
     #: index view.  The actual rendering dispatches via ``_render_<slug
@@ -594,6 +600,8 @@ class SkillHandler(Handler):
         full: bool = False,
         tag: str | None = None,
         kinds: str | None = None,
+        family: str | None = None,
+        by: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Round-2 picky 2026-05-30: ``get(kind='skill', q='reading a
@@ -601,10 +609,12 @@ class SkillHandler(Handler):
         # index — agents searching by topic via ``get`` got a flat
         # category list when they wanted ranked matches. Delegate to
         # ``search`` so the verbs converge on the obvious intent.
+        if view == "usage":
+            return self._render_usage(family=family)
         if id is None and q is not None and q.strip():
             return self.search(q=q)
         if id is None or (isinstance(id, str) and id.startswith("/")):
-            return self._render_index(tag=tag, kinds=kinds)
+            return self._render_index(tag=tag, kinds=kinds, family=family)
 
         raw_id = str(id).strip()
         # Parse the id for skill-chunk selector syntax: ``slug~N``,
@@ -665,7 +675,9 @@ class SkillHandler(Handler):
             # tag=/kinds= catalogue filter — the others (precis-help,
             # precis-status) render fixed content with no axis to filter.
             if target == "precis-toc":
-                return Response(body=renderer(tag=tag, kinds=kinds))
+                return Response(
+                    body=renderer(tag=tag, kinds=kinds, family=family, by=by)
+                )
             return Response(body=renderer())
 
         text = _load_skill(slug)
@@ -730,6 +742,12 @@ class SkillHandler(Handler):
         # whole-skill serve (docs/backlog/skill-graph.md slice 1;
         # documented in precis-addressing-help).
         text = _expand_wikilinks(text)
+        header = _family_header(slug)
+        if header:
+            text = header + "\n\n" + text
+        banner = self._concern_banner(slug)
+        if banner:
+            text = banner + "\n\n" + text
         # Append a live-registry footer so cross-cutting skills
         # (precis-overview, precis-files-help) that mention kinds in
         # tables can't drift against the active build. Each skill
@@ -742,6 +760,7 @@ class SkillHandler(Handler):
         graph_footer = self._graph_footer(slug)
         if graph_footer:
             text = text.rstrip() + "\n\n" + graph_footer
+        text = text.rstrip() + "\n\n" + _MISLED_LINE.format(slug=slug)
         return Response(body=text, pagination_alt_hint=_pagination_alt_hint(slug))
 
     def _render_serve_stub(self, slug: str, text: str) -> Response:
@@ -860,6 +879,7 @@ class SkillHandler(Handler):
         page_size: int = 10,
         tag: str | None = None,
         kinds: str | None = None,
+        family: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
@@ -869,7 +889,7 @@ class SkillHandler(Handler):
         # the agent a runnable second-step option that mirrors
         # ``get(kind='skill')``'s index.
         if q is None or not q.strip():
-            return self.get(tag=tag, kinds=kinds)
+            return self.get(tag=tag, kinds=kinds, family=family)
 
         # Two-stream search: cosine over chunk embeddings (best at
         # natural phrasing) merged with substring matches (best at
@@ -1029,6 +1049,7 @@ class SkillHandler(Handler):
                     f"{tip}"
                     + render_next_section(
                         [
+                            *_family_rows_for_query(q, family),
                             (
                                 "get(kind='skill')",
                                 "browse the grouped catalogue",
@@ -1042,12 +1063,24 @@ class SkillHandler(Handler):
                 )
             )
 
-        all_rows = sorted(merged.values(), key=lambda r: r.score, reverse=True)
+        # Recent use is only a tie-break among near-equal scores (relevance
+        # stays primary): scores bucket to 3 decimals, then most recently read.
+        usage = self._usage_map() or {}
+
+        def _recency(slug: str) -> float:
+            last = usage.get(slug, (None, 0))[0]
+            return last.timestamp() if last is not None else 0.0
+
+        all_rows = sorted(
+            merged.values(),
+            key=lambda r: (round(r.score, 3), _recency(r.slug)),
+            reverse=True,
+        )
 
         # tag=/kinds= axis filter (docs/backlog/skill-graph.md slice 1)
         # — applied before the availability partition below so a
         # narrowed search is actually narrowed, not just annotated.
-        wanted = _axis_filter_set(tag=tag, kinds=kinds)
+        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
         if wanted is not None:
             all_rows = [row for row in all_rows if row.slug in wanted]
 
@@ -1140,6 +1173,18 @@ class SkillHandler(Handler):
         # ``<slug-from-above>`` placeholder — nothing on an empty
         # results page to substitute it with anyway.
         nav: list[tuple[str, str]] = []
+        fam_counts = Counter(_skill_family_of(r.slug) for r in visible)
+        if family is None and len(fam_counts) >= 2:
+            ranked = fam_counts.most_common()
+            body += "\n\nfamilies in these hits: " + " · ".join(
+                f"{f} {n}" for f, n in ranked
+            )
+            nav.append(
+                (
+                    f"search(kind='skill', q={q!r}, args={{'family': {ranked[0][0]!r}}})",
+                    "narrow to a family",
+                )
+            )
         if visible:
             nav.append(
                 (
@@ -1276,7 +1321,82 @@ class SkillHandler(Handler):
         # use ``view='toc'`` today (and only when paired with a
         # specific slug); the bare-slug get returns the markdown
         # body, no view kwarg required.
-        return ["toc"]
+        return ["toc", "usage"]
+
+    # ── skill ref anchors: usage + open concerns (DB, fail-soft) ───
+
+    def _anchor_store(self) -> Any:
+        return getattr(self, "store", None) or getattr(self.hub, "store", None)
+
+    def _usage_map(self) -> dict[str, tuple[Any, int]] | None:
+        """``{skill id: (last read, open concerns)}`` from the anchor rows, or
+        ``None`` when there is no DB. Skills must stay readable without it."""
+        store = self._anchor_store()
+        if store is None:
+            return None
+        try:
+            return dict(store.skill_usage())
+        except Exception:
+            logging.getLogger(__name__).debug("skill usage unavailable", exc_info=True)
+            return None
+
+    def _concern_banner(self, slug: str) -> str:
+        store = self._anchor_store()
+        if store is None:
+            return ""
+        try:
+            count, rows = store.skill_open_concerns(slug, limit=_CONCERN_LIST_CAP)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "skill concerns unavailable", exc_info=True
+            )
+            return ""
+        if not count:
+            return ""
+        from precis.utils import handle_registry
+
+        listed = "; ".join(
+            f"{handle_registry.try_format('gripe', rid) or rid} — "
+            f"{(title.splitlines() or [''])[0][:80]}"
+            for rid, title in rows
+        )
+        more = f" (+{count - len(rows)} more)" if count > len(rows) else ""
+        return f"⚠ {count} open concern(s): {listed}{more}"
+
+    def _render_usage(self, *, family: str | None = None) -> Response:
+        """Maintenance view: every shipped skill, coldest first."""
+        usage = self._usage_map()
+        if usage is None:
+            return Response(
+                body="# skill usage\n\nusage needs the database (no store bound "
+                "or unreachable); skills themselves are served from package data."
+            )
+        epoch = datetime.min.replace(tzinfo=UTC)
+        rows = []
+        wanted = _axis_filter_set(tag=None, kinds=None, family=family)
+        for slug in _list_skills():
+            if wanted is not None and slug not in wanted:
+                continue
+            last, concerns = usage.get(slug, (None, 0))
+            rows.append((last or epoch, slug, last, concerns))
+        rows.sort(key=lambda r: (r[0], r[1]))
+        table = [
+            {
+                "slug": slug,
+                "family": _skill_family_of(slug),
+                "last_read": last.strftime("%Y-%m-%d") if last else "never",
+                "open_concerns": str(concerns),
+            }
+            for _k, slug, last, concerns in rows
+        ]
+        never = sum(1 for r in rows if r[2] is None)
+        return Response(
+            body=f"# skill usage — {len(rows)} skills, {never} never read "
+            "(coldest first)\n\n"
+            + render_agent_table(
+                table, schema=["slug", "family", "last_read", "open_concerns"]
+            )
+        )
 
     # ── smart-TOC + chunk rendering (Phase B integration) ─────────
 
@@ -1438,7 +1558,11 @@ class SkillHandler(Handler):
     # ── helpers ────────────────────────────────────────────────────
 
     def _render_index(
-        self, *, tag: str | None = None, kinds: str | None = None
+        self,
+        *,
+        tag: str | None = None,
+        kinds: str | None = None,
+        family: str | None = None,
     ) -> Response:
         # Build the candidate set: synth meta-skills + every file-
         # backed skill that's currently available (i.e. its subject
@@ -1449,7 +1573,7 @@ class SkillHandler(Handler):
         # tag=/kinds= toc filter (docs/backlog/skill-graph.md slice 1) —
         # synth skills carry no tags:/kinds: frontmatter, so a filtered
         # index shows only real, axis-matching skills.
-        wanted = _axis_filter_set(tag=tag, kinds=kinds)
+        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
@@ -1572,7 +1696,14 @@ class SkillHandler(Handler):
             return synth_desc
         return _skill_title(slug) or ""
 
-    def _render_toc(self, *, tag: str | None = None, kinds: str | None = None) -> str:
+    def _render_toc(
+        self,
+        *,
+        tag: str | None = None,
+        kinds: str | None = None,
+        family: str | None = None,
+        by: str | None = None,
+    ) -> str:
         """Render the synthesised ``precis-toc`` (alias: ``toc``) skill.
 
         Lists every available skill with its title and a one-line
@@ -1595,7 +1726,13 @@ class SkillHandler(Handler):
         # which slug to fetch in full.
         synth = list(self._SYNTHESIZED_SKILLS.keys())
         file_slugs = sorted(_list_skills())
-        wanted = _axis_filter_set(tag=tag, kinds=kinds)
+        if by is not None and by != "family":
+            raise BadInput(
+                f"unknown toc grouping by={by!r}",
+                options=["family"],
+                next="get(kind='skill', id='toc', args={'by': 'family'})",
+            )
+        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
@@ -1607,7 +1744,16 @@ class SkillHandler(Handler):
             else:
                 active.append(slug)
 
-        groups, uncategorised = _categorise_skills(active, tags_for=_skill_tags)
+        groups: list[tuple[str, list[str]]]
+        uncategorised: list[str]
+        if by == "family":
+            fam_map: dict[str, list[str]] = {}
+            for slug in active:
+                fam_map.setdefault(_skill_family_of(slug), []).append(slug)
+            groups = sorted(fam_map.items())
+            uncategorised = []
+        else:
+            groups, uncategorised = _categorise_skills(active, tags_for=_skill_tags)
         total_active = sum(len(members) for _, members in groups) + len(uncategorised)
 
         lines = [
@@ -1620,10 +1766,27 @@ class SkillHandler(Handler):
                 for p in (
                     f"tag={tag!r}" if tag else "",
                     f"kinds={kinds!r}" if kinds else "",
+                    f"family={family!r}" if family else "",
                 )
                 if p
             ]
             lines[-1] = f"_Filtered by {', '.join(parts)}._"
+            lines.append("")
+
+        usage = self._usage_map()
+        now = datetime.now(UTC)
+        toc_schema = ["slug", "title", "synopsis"] + (
+            ["read"] if usage is not None else []
+        )
+
+        fam_n = Counter(_skill_family_of(s) for s in active)
+        big = [f"{f} {n}" for f, n in fam_n.most_common() if n >= 2]
+        if big and by != "family":
+            lines.append(
+                "families: " + " · ".join(big) + " — narrow with "
+                "args={'family': '<f>'} / args={'tag': '<t>'}, or group with "
+                "args={'by': 'family'}"
+            )
             lines.append("")
 
         def _row_for(slug: str) -> dict[str, str]:
@@ -1634,11 +1797,18 @@ class SkillHandler(Handler):
             else:
                 title = _skill_title(slug) or slug
                 synopsis = _skill_synopsis(slug)
-            return {
+            row = {
                 "slug": _slug_with_aliases(slug),
                 "title": title,
                 "synopsis": synopsis,
             }
+            if usage is not None:
+                row["read"] = (
+                    ""
+                    if synth_desc is not None
+                    else _age_label(usage.get(slug, (None, 0))[0], now)
+                )
+            return row
 
         for category, slugs in groups:
             lines.append(f"## {category} ({len(slugs)})")
@@ -1646,7 +1816,7 @@ class SkillHandler(Handler):
             lines.append(
                 render_agent_table(
                     [_row_for(s) for s in slugs],
-                    schema=["slug", "title", "synopsis"],
+                    schema=toc_schema,
                 )
             )
             lines.append("")
@@ -1657,7 +1827,7 @@ class SkillHandler(Handler):
             lines.append(
                 render_agent_table(
                     [_row_for(s) for s in uncategorised],
-                    schema=["slug", "title", "synopsis"],
+                    schema=toc_schema,
                 )
             )
             lines.append("")
@@ -3082,6 +3252,29 @@ def _get_skill_graph() -> SkillGraph:
 _FOOTER_LINK_CAP = 6
 
 
+#: Open concerns listed in a skill's banner before "+N more".
+_CONCERN_LIST_CAP = 3
+
+#: Last line of every whole-skill render: the feedback loop into gripes.
+_MISLED_LINE = (
+    "misled by this skill? put(kind='gripe', text='<what misled you, what is "
+    "actually true, where you checked>', link='skill:{slug}', "
+    "rel='raises-concern-about')"
+)
+
+
+def _age_label(last: Any, now: datetime) -> str:
+    """Compact "last read" age for the toc: ``never`` / ``<1h`` / ``5h`` / ``12d``."""
+    if last is None:
+        return "never"
+    secs = max(0, int((now - last).total_seconds()))
+    if secs < 3600:
+        return "<1h"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
 def _annotate_read(slug: str) -> str:
     """``slug``, suffixed with "(read this session)" if the serve
     ledger already recorded it this session — see :mod:`precis.serve_ledger`."""
@@ -3113,7 +3306,53 @@ def _tree_siblings(slug: str) -> list[str]:
     return []
 
 
-def _axis_filter_set(*, tag: str | None, kinds: str | None) -> frozenset[str] | None:
+def _family_header(slug: str) -> str:
+    """``family: f · tags: a, b`` (+ a sibling-list call when the family has
+    other members) prepended to a whole-skill render."""
+    fm = parse_frontmatter(_load_skill(slug) or "")
+    if fm.flavor == "persona":  # personas stay out of toc/footer surfacing
+        return ""
+    fam = skill_family(slug, fm)
+    line = f"family: {fam}"
+    if fm.tags:
+        line += f" · tags: {', '.join(fm.tags)}"
+    if len(_get_skill_graph().by_family(fam)) > 1:
+        line += f"\nsiblings: get(kind='skill', id='toc', args={{'family': {fam!r}}})"
+    return line
+
+
+def _family_rows_for_query(q: str, family: str | None) -> list[tuple[str, str]]:
+    """Next: rows for an empty skill search: the families whose skill ids
+    share words with the query, else the toc grouped by family."""
+    if family is not None:
+        return []
+    qtokens = set(_content_tokens(q))
+    scores: Counter[str] = Counter()
+    for slug in _list_skills():
+        if qtokens & set(slug.split("-")):
+            scores[_skill_family_of(slug)] += 1
+    rows = [
+        (f"search(kind='skill', q={q!r}, args={{'family': {f!r}}})", "try this family")
+        for f, _n in scores.most_common(2)
+    ]
+    return rows or [
+        (
+            "get(kind='skill', id='toc', args={'by': 'family'})",
+            "browse skills grouped by family",
+        )
+    ]
+
+
+def _skill_family_of(slug: str) -> str:
+    """Subject family of ``slug`` (declared ``family:`` or name-prefix stem)."""
+    if slug in SkillHandler._SYNTHESIZED_SKILLS:
+        return "core"
+    return skill_family(slug, parse_frontmatter(_load_skill(slug) or ""))
+
+
+def _axis_filter_set(
+    *, tag: str | None, kinds: str | None, family: str | None = None
+) -> frozenset[str] | None:
     """Slugs matching the requested ``tag=``/``kinds=`` toc filter.
 
     ``None`` when neither filter is given — "no restriction", distinct
@@ -3121,7 +3360,7 @@ def _axis_filter_set(*, tag: str | None, kinds: str | None) -> frozenset[str] | 
     must carry both to match. docs/backlog/skill-graph.md slice 1:
     "``tag=``/``kind=`` filters on the toc — HONORED, never swallowed."
     """
-    if tag is None and kinds is None:
+    if tag is None and kinds is None and family is None:
         return None
     # Unknown filter values are rejected, not swallowed (gr338978): a
     # typo'd tag/kind returning "0 skills" reads as "nothing matches",
@@ -3147,7 +3386,15 @@ def _axis_filter_set(*, tag: str | None, kinds: str | None) -> frozenset[str] | 
             next=f"get(kind='skill', id='toc', kinds='{long_kind}')",
         )
     graph = _get_skill_graph()
+    if family is not None and family.strip().lower() not in graph.families:
+        raise BadInput(
+            f"unknown family {family!r}",
+            options=sorted(graph.families),
+            next="get(kind='skill', id='toc', args={'by': 'family'}) groups skills by family",
+        )
     sets: list[frozenset[str]] = []
+    if family is not None:
+        sets.append(frozenset(graph.by_family(family.strip().lower())))
     if tag is not None:
         sets.append(frozenset(graph.by_tag(tag)))
     if kinds is not None:

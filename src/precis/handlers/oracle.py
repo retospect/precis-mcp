@@ -80,6 +80,8 @@ _ORACLE_VIEWS: tuple[str, ...] = ("index",)
 
 
 class OracleHandler(Handler):
+    #: oracle snapshots of third-party data: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
     spec: ClassVar[KindSpec] = KindSpec(
         kind="oracle",
         title="Oracle",

@@ -1,5 +1,6 @@
 ---
 id: precis-paper-tag-axes
+family: paper
 title: precis — paper auto-tagging taxonomy
 summary: paper auto-tag taxonomy — domain, scale, dim, transport, studytype, material, property axes
 answers:

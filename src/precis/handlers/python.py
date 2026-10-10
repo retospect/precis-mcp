@@ -248,6 +248,9 @@ class PythonHandler(Handler):
     own a fresh `RepoCache`.
     """
 
+    #: edits source files on disk; fixtures may hold credential-like strings: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="python",
         title="Python code navigator",

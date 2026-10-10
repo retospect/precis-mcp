@@ -1,5 +1,6 @@
 ---
 id: precis-minter-help
+family: work
 title: precis — the minter worker (todo intent → kind='job' execution)
 summary: bridging intent to execution — meta.executor markers, minter worker, auto-injected resolution
 answers:

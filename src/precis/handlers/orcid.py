@@ -256,6 +256,9 @@ def _card_text(record: dict[str, Any]) -> str:
 class OrcidHandler(Handler):
     """Slug-addressed ORCID author node (resolve + store + link hub)."""
 
+    #: third-party ORCID records: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="orcid",
         title="ORCID author",

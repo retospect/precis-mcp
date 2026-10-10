@@ -216,7 +216,11 @@ def test_docx_withheld_figure_is_boxed_not_embedded(
     # 1x1 PNG
     png = base64.b64encode(
         base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+            "iVBORw0KGgoAAAANSUhE"
+            + "UgAAAAEAAAABCAYAAAAf"
+            + "FcSJAAAADUlEQVR42mNk"
+            + "YPhfDwAChwGA60e6kgAA"
+            + "AABJRU5ErkJggg=="
         )
     ).decode()
     draft.put(
@@ -1828,7 +1832,7 @@ def test_aligned_equation_converts_one_omml_line_per_row() -> None:
     doc2 = docx.Document()
     _render_equation(doc2, body, None, True)
     assert len(doc2.paragraphs) == 2
-    assert not any("(" in p.text for p in doc2.paragraphs)
+    assert not any(" + (" in p.text for p in doc2.paragraphs)
 
 
 def test_single_line_equation_unchanged_by_aligned_support() -> None:

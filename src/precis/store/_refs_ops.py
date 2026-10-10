@@ -2446,6 +2446,95 @@ class RefsMixin:
             (ref_id,),
         )
 
+    def ensure_skill_ref(self, slug: str) -> int:
+        """Find-or-mint the lazy anchor ``refs(kind='skill', slug=<skill id>)``.
+
+        The skill's markdown file stays the source of truth; the row is only
+        an anchor for links, ``last_recalled_at`` and open-concern lookups.
+        Chunkless, so the embed/summary cascade never sees it. The CALLER
+        validates ``slug`` against the skill index — an unknown id must never
+        mint. Race: two first uses both miss the probe and both insert; the
+        loser's ``cite_key`` claim no-ops, its savepoint rolls back and it
+        re-probes onto the winner (as :meth:`ensure_part_ref`)."""
+
+        class _Lost(Exception):
+            pass
+
+        with self.pool.connection() as conn:
+            hit = self.get_ref(kind="skill", id=slug)
+            if hit is not None:
+                return int(hit.id)
+            try:
+                with conn.transaction():
+                    ref = self.insert_ref(
+                        kind="skill",
+                        slug=slug,
+                        title=slug,
+                        meta={"set_by": "system"},
+                        conn=conn,
+                    )
+                    owner = conn.execute(
+                        "SELECT ref_id FROM ref_identifiers "
+                        "WHERE id_kind = 'cite_key' AND id_value = %s",
+                        (slug,),
+                    ).fetchone()
+                    if owner is None or int(owner[0]) != int(ref.id):
+                        raise _Lost
+                    return int(ref.id)
+            except _Lost:
+                won = self.get_ref(kind="skill", id=slug)
+                assert won is not None, f"skill {slug} claimed by no live ref"
+                return int(won.id)
+
+    def _open_gripe_sql(self) -> tuple[str, list[Any]]:
+        """WHERE fragment (alias ``g``) for a gripe that is not yet closed."""
+        frags: list[str] = []
+        params: list[Any] = []
+        for st in ("done", "wontfix"):
+            frag, prm = build_tag_filter([f"STATUS:{st}"], ref_alias="g")
+            frags.append(f"NOT ({frag})")
+            params.extend(prm)
+        return " AND ".join(frags), params
+
+    def skill_open_concerns(
+        self, slug: str, *, limit: int = 3
+    ) -> tuple[int, list[tuple[int, str]]]:
+        """``(count, [(gripe ref_id, title), ...])`` of open gripes linking the
+        skill's anchor ref, oldest first (``limit`` rows). ``(0, [])`` when the
+        skill has no anchor row yet."""
+        open_sql, open_params = self._open_gripe_sql()
+        sql = (
+            "SELECT g.ref_id, g.title FROM links l "
+            "JOIN refs g ON g.ref_id = l.src_ref_id AND g.kind = 'gripe' "
+            "AND g.retired_at IS NULL "
+            "WHERE l.dst_ref_id = (SELECT ref_id FROM ref_identifiers "
+            "  WHERE id_kind = 'cite_key' AND id_value = %s "
+            "  AND ref_id IN (SELECT ref_id FROM refs WHERE kind = 'skill')) "
+            f"AND {open_sql} GROUP BY g.ref_id, g.title ORDER BY g.ref_id"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, [slug, *open_params]).fetchall()
+        return len(rows), [(int(r[0]), str(r[1] or "")) for r in rows[:limit]]
+
+    def skill_usage(self) -> dict[str, tuple[Any, int]]:
+        """``{skill id: (last read, open concern count)}`` for every skill with
+        an anchor row. Last read is ``GREATEST(last_recalled_at,
+        last_viewed_at)`` (None when never read)."""
+        open_sql, open_params = self._open_gripe_sql()
+        sql = (
+            "SELECT ri.id_value, GREATEST(s.last_recalled_at, s.last_viewed_at), "
+            "  (SELECT count(DISTINCT g.ref_id) FROM links l "
+            "   JOIN refs g ON g.ref_id = l.src_ref_id AND g.kind = 'gripe' "
+            "   AND g.retired_at IS NULL "
+            f"   WHERE l.dst_ref_id = s.ref_id AND {open_sql}) "
+            "FROM refs s JOIN ref_identifiers ri ON ri.ref_id = s.ref_id "
+            "AND ri.id_kind = 'cite_key' "
+            "WHERE s.kind = 'skill' AND s.retired_at IS NULL"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, open_params).fetchall()
+        return {str(r[0]): (r[1], int(r[2])) for r in rows}
+
     def touch_recalled_for(self, kind: str, ident: str) -> None:
         """:meth:`touch_recalled` from a ``get`` id as the caller spelled it —
         an int, a ``kind:id`` target, a record handle (``me5``) or a slug —
@@ -2456,6 +2545,9 @@ class RefsMixin:
         s = ident.strip()
         if s.startswith(f"{kind}:"):
             s = s[len(kind) + 1 :].strip()
+        if kind == "skill":
+            self._touch_skill_recalled(s)
+            return
         if not s or "~" in s or ".." in s:
             return
         parsed = handle_registry.parse(s)
@@ -2477,6 +2569,29 @@ class RefsMixin:
             f"WHERE kind = %s AND ref_id = (SELECT ref_id FROM ref_identifiers "
             f"WHERE id_kind = 'cite_key' AND id_value = %s) {self._RECALL_THROTTLE}",
             (kind, s),
+        )
+
+    def _touch_skill_recalled(self, ident: str) -> None:
+        """Stamp the parent skill of a skill ``get`` id — ``slug``,
+        ``slug~N`` / ``slug~A..B`` and ``slug/toc`` all count as a read of
+        ``slug``. Mints the anchor row on the first read; unknown or synthesised
+        ids (``toc``, ``precis-help``, an alias) are skipped. Fail-soft: skills
+        must stay readable with the DB down."""
+        from precis.handlers.skill import skill_exists
+
+        slug = ident.split("~", 1)[0].split("/", 1)[0].strip()
+        try:
+            if not slug or not skill_exists(slug):
+                return
+            self.ensure_skill_ref(slug)
+        except Exception:
+            logging.getLogger(__name__).debug("skill mint failed", exc_info=True)
+            return
+        self._stamp_recalled_sql(
+            f"UPDATE refs SET last_recalled_at = now() "
+            f"WHERE kind = 'skill' AND ref_id = (SELECT ref_id FROM ref_identifiers "
+            f"WHERE id_kind = 'cite_key' AND id_value = %s) {self._RECALL_THROTTLE}",
+            (slug,),
         )
 
     def _stamp_recalled_sql(self, sql: str, params: tuple[Any, ...]) -> None:

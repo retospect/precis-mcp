@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-requirement
+family: mermaid
 title: precis — requirement diagram / requirements traceability / verification matrix
 summary: a mermaid requirement diagram — requirements and what satisfies/verifies them
 answers:

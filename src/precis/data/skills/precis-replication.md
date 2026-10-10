@@ -1,5 +1,6 @@
 ---
 id: precis-replication
+family: paper
 title: precis — plan a replication check for a paper's claim
 summary: replication-planning runbook — extract the exact setup behind a claimed result, choose plan-only vs dispatched execution, never call it replicated until the checks pass
 answers:

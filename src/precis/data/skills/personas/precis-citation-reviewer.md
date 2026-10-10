@@ -1,5 +1,6 @@
 ---
 id: precis-citation-reviewer
+family: review
 title: precis — citation-discipline reviewer persona
 summary: citation-discipline reviewer persona — audit a paper's bibliography for retractions, claim/source mismatches, and single-source dependency
 answers:

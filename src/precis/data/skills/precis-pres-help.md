@@ -1,5 +1,6 @@
 ---
 id: precis-pres-help
+family: drafting
 title: precis — store and search slide decks + unpublished writeups
 summary: internal artefacts — slide decks, unpublished writeups, course notes; subtype taxonomy
 answers:

@@ -1,5 +1,6 @@
 ---
 id: sci-discussion
+family: drafting
 title: precis — research-paper discussion (section style)
 summary: write discussion — interpret results, compare to prior work [pc…], state limitations honestly; no new results
 answers:

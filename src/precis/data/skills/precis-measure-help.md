@@ -1,5 +1,6 @@
 ---
 id: precis-measure-help
+family: science
 title: precis — measures (one sourced number per row, any subject)
 summary: the measure record — literal-first, one canonical unit per measurand, tiers, reference states, runs with their input conditions, flags, and append-only rows
 answers:

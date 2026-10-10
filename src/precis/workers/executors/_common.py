@@ -36,6 +36,7 @@ from precis.store._resource_slots_ops import (
 from precis.store._todo_sql import _doable_exclusion_clause
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
+from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 from precis.workers.executors import suspended_job_types
 from precis.workers.nursery import HOST_DARK_SILENCE_MIN
 from precis.workers.registry import SERVICES_BY_NAME
@@ -1119,7 +1120,13 @@ def append_chunk(
         next_pos = len(blocks)
     store.chunks.insert_chunks(
         ref_id,
-        [ChunkInsert(ord=next_pos, text=text, meta={"chunk_kind": chunk_kind})],
+        [
+            ChunkInsert(
+                ord=next_pos,
+                text=mask_secrets(text),
+                meta={"chunk_kind": chunk_kind},
+            )
+        ],
         conn=conn,
     )
 
@@ -1146,10 +1153,13 @@ def _finite_json(value: Any) -> Any:
 
 
 def set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
-    """Merge ``fields`` into ``refs.meta`` (non-finite floats → ``null``)."""
+    """Merge ``fields`` into ``refs.meta`` (non-finite floats → ``null``).
+
+    Job transcripts, results and errors are captured output that cannot be
+    rephrased, so credential-shaped spans are masked on the way in."""
     conn.execute(
         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
-        (Jsonb(_finite_json(fields)), ref_id),
+        (Jsonb(mask_secrets_deep(_finite_json(fields))), ref_id),
     )
 
 

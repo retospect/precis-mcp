@@ -1,5 +1,6 @@
 ---
 id: precis-se-fret-help
+family: se
 title: precis — FRET links as a comm channel between se blocks (optical domain)
 summary: model Förster resonance energy transfer between blocks — set_chromophore (the dye card on a template, dipole in the block frame), set_optical_link (the required min_efficiency on an existing connect), set_optics (medium index, pump wavelength) — then read view='fret'; the two traps are κ²=0 orientation and donors broadcasting to every acceptor in range
 answers:

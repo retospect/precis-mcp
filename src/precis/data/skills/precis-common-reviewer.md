@@ -1,5 +1,6 @@
 ---
 id: precis-common-reviewer
+family: review
 title: precis — shared conventions for reviewer personas
 summary: shared reviewer discipline — picky stance, findings table format, includable blocks
 answers:

@@ -1,5 +1,6 @@
 ---
 id: precis-web-help
+family: tools
 title: precis — fetch, bookmark, and search web pages
 summary: URL fetching and bookmarking — readable article extraction, cache-backed, link preservation
 answers:

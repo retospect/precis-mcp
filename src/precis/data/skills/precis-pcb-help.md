@@ -1,5 +1,6 @@
 ---
 id: precis-pcb-help
+family: pcb
 title: precis — the PCB kind (electronics design you read as a graph)
 summary: design a circuit board the LLM authors in batch and reads as a traversable netlist graph — components/pins/nets/placement, never pixels; pick JLCPCB-assemblable parts, place+route via enqueued worker jobs, then export BOM/CPL/DSN. Covers schematic capture, netlist, footprints, ratsnest, place/route, gerbers, EDA/CAD for circuits.
 answers:

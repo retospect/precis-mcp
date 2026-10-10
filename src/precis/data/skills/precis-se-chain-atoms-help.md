@@ -1,5 +1,6 @@
 ---
 id: precis-se-chain-atoms-help
+family: se
 title: precis — atoms for a nucleic-acid chain region in se (realize_chain, view='pick')
 summary: realize_chain mints Arnott B-DNA fibre atoms for one region of a laid-out helix as a bound structure design on the covering segment (loops optional, loop backbone relaxed by default, measured 5p/3p ports, sites= attachment ports); view='pick' resolves one atom of a realized region to its residue, base pair, strand domain, strand and blocks, one citable uid-keyed token per level, and reads any token back
 answers:

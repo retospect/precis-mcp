@@ -1,5 +1,6 @@
 ---
 id: precis-claim-fidelity-help
+family: evidence
 title: precis — how precisely must draft prose restate the claim hub it cites?
 summary: hub sentences are self-contained and heavily qualified by design; prose leans on its section and the cite popover — the floor is two prohibitions (scope stripping, modal inflation) plus verb strength matched to the hub's trust state, decided by the surprise test
 answers:

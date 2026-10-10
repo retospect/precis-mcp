@@ -1,5 +1,6 @@
 ---
 id: patent-description
+family: patent
 title: precis — patent descriptive section (section style)
 summary: write a patent Field/Background/Summary/Detailed Description — formal patent voice, parts by [dc…]+noun, [0001] paragraph numbering
 answers:

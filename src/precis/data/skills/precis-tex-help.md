@@ -1,5 +1,6 @@
 ---
 id: precis-tex-help
+family: files
 title: precis — read and edit LaTeX files
 summary: LaTeX files — section-aware blocks, recursive TOC, literal-source edits against LaTeX syntax
 answers:

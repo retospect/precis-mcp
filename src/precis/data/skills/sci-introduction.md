@@ -1,5 +1,6 @@
 ---
 id: sci-introduction
+family: drafting
 title: precis — research-paper introduction (section style)
 summary: write the introduction — motivate, narrow to the gap, enumerate contributions, end with a [dc…] roadmap
 answers:

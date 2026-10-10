@@ -1,5 +1,6 @@
 ---
 id: precis-search-help
+family: core
 title: precis — the search verb (mechanics, pagination, filters)
 summary: hybrid lexical and semantic search — pagination, tag filters, scope, exclude, cross-kind fan-out
 answers:
@@ -93,6 +94,11 @@ search(
     kind="paper", q="perovskite stability", mode="verbatim"
 )  # chunks keyworded BOTH terms
 ```
+
+`search(kind="skill", ...)` also takes `args={"family": "se"}` (subject family =
+the skill id's name-prefix stem unless its frontmatter says otherwise) and
+`args={"tag": "workflow"}`; both narrow the menu and combine. Memory search takes
+`args={"under": "me<hub>"}` to stay inside one hub's subtree.
 
 `mode=` works on a single kind and across the cross-kind fan-out.
 Scores are never comparable *across* modes — within one result list,

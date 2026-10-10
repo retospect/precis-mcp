@@ -1,5 +1,6 @@
 ---
 id: precis-gripe-help
+family: work
 title: precis — the project's bug tracker
 summary: bug tracking — file complaints, comment timeline, status workflow, resolution handoff
 answers:
@@ -39,6 +40,12 @@ don't write a title, don't articulate the fix. The system tags it
 `STATUS:open` automatically.
 
 The cost of a wrong gripe is one `delete` call. File freely.
+
+Misled by a skill? Every skill ends with a ready-made line: add
+`link='skill:<id>', rel='raises-concern-about'` to the gripe and say what
+misled you, what is actually true, and where you checked. The skill then shows
+an open-concern banner at the top until the gripe closes, and the fixer
+is briefed with the skill file (`src/precis/data/skills/<id>.md`) and your notes.
 
 ## Has anyone griped about this before?
 ## Find an existing complaint about X

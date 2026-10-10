@@ -1,5 +1,6 @@
 ---
 id: precis-mermaid-timeline
+family: mermaid
 title: precis — timeline / chronology / history / roadmap of events
 summary: a mermaid timeline — dated events in chronological order
 answers:

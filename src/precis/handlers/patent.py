@@ -100,6 +100,9 @@ class PatentHandler(Handler):
     be re-run without re-fetching.
     """
 
+    #: ingest of third-party patents: the agent-write secret gate (dispatch) skips this kind.
+    stores_opaque_text: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="patent",
         title="Patent",
