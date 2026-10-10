@@ -250,7 +250,10 @@ def test_legacy_target_matches_the_rendered_pinned_atomic_payload(
         store, ref_id=ref.id, tree=tree, card_text="Legacy test fixture"
     )
     page = blocktree_client.get("/se/selection_atomic")
-    assert 'data-validation-subject="hub.rim"' in page.text
+    frag, page_html = _inline_validate_panel(
+        blocktree_client, "selection_atomic", page.text
+    )
+    assert 'data-validation-subject="hub.rim"' in frag.text
     scene = blocktree_client.get("/se/selection_atomic/scene3d.json").json()
     atomic_payload = blocktree_client.get("/se/selection_atomic/atomic3d.json").json()
     atomic = atomic_payload["blocks"][0]
@@ -266,7 +269,7 @@ def test_legacy_target_matches_the_rendered_pinned_atomic_payload(
     assert target["point"] == pytest.approx(atomic["coords"][0], abs=1e-4)
     assert target["uid"] == atomic["uid"]
     (tmp_path / "atomic-validation-fixture.html").write_text(
-        page.text, encoding="utf-8"
+        page_html, encoding="utf-8"
     )
     (tmp_path / "atomic-validation-fixture.json").write_text(
         json.dumps(
@@ -280,17 +283,36 @@ def test_legacy_target_matches_the_rendered_pinned_atomic_payload(
     )
 
 
+def _inline_validate_panel(client, slug, page_html):
+    """The page now fetches its validate panel after first paint; the
+    standalone browser fixture has no server, so inline the fragment."""
+    frag = client.get(f"/se/{slug}/validate-panel")
+    assert frag.status_code == 200
+    identity = frag.headers["X-Validation-Identity"]
+    marker = (
+        '<summary class="cursor-pointer text-slate-500">validate: checking…</summary>'
+    )
+    assert marker in page_html
+    html = page_html.replace(marker, frag.text, 1).replace(
+        'id="bt3d-validate"', f'id="bt3d-validate" data-identity="{identity}"', 1
+    )
+    return frag, html
+
+
 def test_page_and_click_recheck_the_same_snapshot(
     blocktree_client, runtime_with_store, tmp_path, store
 ):
     seed_ports(runtime_with_store)
     page = blocktree_client.get("/se/validation_ports")
     assert page.status_code == 200
-    assert page.text.count('data-validation-subject="') == 4
-    assert "0 error(s), 4 warning(s)" in page.text
+    frag, page_html = _inline_validate_panel(
+        blocktree_client, "validation_ports", page.text
+    )
+    assert frag.text.count('data-validation-subject="') == 4
+    assert "0 error(s), 4 warning(s)" in frag.text
     scene = blocktree_client.get("/se/validation_ports/scene3d.json").json()
     identity = scene["validation_identity"]
-    assert identity in page.text
+    assert identity == frag.headers["X-Validation-Identity"]
     url = "/se/validation_ports/validation-targets"
     params = {"identity": identity, "subject": "ball12.s_rim"}
     target = blocktree_client.get(url, params=params)
@@ -310,7 +332,7 @@ def test_page_and_click_recheck_the_same_snapshot(
         ).json()
     # Actual rendered page and endpoint payloads for the standalone browser
     # proof. --basetemp in the slice preserves these fixture-only artifacts.
-    (tmp_path / "validation-fixture.html").write_text(page.text, encoding="utf-8")
+    (tmp_path / "validation-fixture.html").write_text(page_html, encoding="utf-8")
     (tmp_path / "validation-fixture.json").write_text(
         json.dumps({"scene": scene, "targets": fixture_targets}), encoding="utf-8"
     )
@@ -415,5 +437,6 @@ def test_page_and_scene_races_disable_identity(
     assert response.status_code == 200
     assert response.json()["validation_identity"] is None
     calls = 0
-    page = blocktree_client.get("/se/validation_ports")
-    assert "validationIdentity: null" in page.text
+    frag = blocktree_client.get("/se/validation_ports/validate-panel")
+    assert frag.status_code == 200
+    assert frag.headers["X-Validation-Identity"] == ""

@@ -1123,21 +1123,11 @@ async def _view3d_page(
         if kind == "se" and not axis.read_only
         else []
     )
-    # gr470909 — the same digest + findings table as the put/edit reply and
-    # view='validate' (one function), live design only. Degrade to no
-    # panel on a validator failure, never a 500'd page.
-    validate_panel: dict[str, Any] | None = None
-    validation_identity: str | None = None
-    if kind == "se" and not axis.read_only:
-        try:
-            validate_panel = await asyncio.to_thread(
-                _se_validate_panel, store, tree, ref.id
-            )
-            validation_identity = _validation_identity(tree, ref.id, axis.shown, store)
-            if _revision_axis(store, ref.id, rev).current != axis.current:
-                validation_identity = None
-        except Exception:
-            log.exception("validate panel failed for %s %s", kind, slug)
+    # gr470909 — the validate digest + findings table is NOT computed here
+    # (the validator can run for seconds): the shell carries an empty slot
+    # and the page fetches ``/se/<slug>/validate-panel`` after first paint
+    # (gr462703). Live design only.
+    show_validate = kind == "se" and not axis.read_only
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -1170,8 +1160,8 @@ async def _view3d_page(
             "revision": revision,
             "chat": chat,
             "print_files": printable,
-            "validate_panel": validate_panel,
-            "validation_identity": validation_identity,
+            "show_validate": show_validate,
+            "validate_panel_url": f"/se/{quote(str(ref.slug), safe='')}/validate-panel",
             "validation_url": f"/se/{quote(str(ref.slug), safe='')}/validation-targets",
         },
     )
@@ -2120,6 +2110,39 @@ async def se_detail(
     return await _view3d_page(
         request, "se", slug, level=level, isolate=isolate, overrides=overrides, rev=rev
     )
+
+
+@router.get("/se/{slug}/validate-panel")
+async def se_validate_panel(request: Request, slug: str) -> Response:
+    """The page's validate digest + findings table as an HTML fragment,
+    fetched after first paint (gr462703) so the validator never blocks the
+    shell. The snapshot identity rides in ``X-Validation-Identity``."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return PlainTextResponse("not found", status_code=404)
+
+    def _build() -> tuple[dict[str, Any], str | None]:
+        axis = _revision_axis(store, ref.id, None)
+        tree = _tree_at(store, "se", ref.id, axis)
+        panel = _se_validate_panel(store, tree, ref.id)
+        identity: str | None = _validation_identity(tree, ref.id, axis.shown, store)
+        if _revision_axis(store, ref.id, None).current != axis.current:
+            identity = None
+        return panel, identity
+
+    try:
+        panel, identity = await asyncio.to_thread(_build)
+    except Exception:
+        log.exception("validate panel failed for se %s", slug)
+        return PlainTextResponse("validate unavailable", status_code=500)
+    resp = templates.TemplateResponse(
+        request, "blocktree/_validate_panel.html.j2", {"validate_panel": panel}
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Validation-Identity"] = identity or ""
+    return resp
 
 
 @router.get("/se/{slug}/view3d")

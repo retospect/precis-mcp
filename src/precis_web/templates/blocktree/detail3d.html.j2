@@ -24,27 +24,9 @@
   <a href="{{ detail_2d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">Envelope projections →</a>
 </div>
 
-{% if validate_panel %}
-<details id="bt3d-validate" class="mb-4 text-sm">
-  <summary class="cursor-pointer {{ 'text-red-700' if validate_panel.rows else 'text-slate-600' }}">{{ validate_panel.digest }}</summary>
-  {% if validate_panel.rows %}
-  <table class="mt-2 text-xs border border-slate-200">
-    <thead><tr class="bg-slate-50 text-left"><th class="px-2 py-1">severity</th><th class="px-2 py-1">rule</th><th class="px-2 py-1">subject</th><th class="px-2 py-1">detail</th></tr></thead>
-    <tbody>
-    {% for r in validate_panel.rows %}
-      <tr class="border-t border-slate-200{% if r.targets %} cursor-pointer{% endif %}" data-validation-row><td class="px-2 py-1">{{ r.severity }}</td><td class="px-2 py-1">{{ r.rule }}</td><td class="px-2 py-1">{{ r.subject }}</td><td class="px-2 py-1">
-        {% if r.targets %}
-        <button type="button" data-validation-subject="{{ r.subject }}" aria-pressed="false"
-                class="text-left text-blue-700 underline rounded focus:outline focus:outline-2"
-                title="Select {{ r.subject }} in the shown design">{{ r.detail }}</button>
-        {% else %}{{ r.detail }} <span class="text-slate-500">{{ r.unavailable }}</span>{% endif %}
-      </td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  <p id="bt3d-validation-status" role="status" aria-live="polite" class="mt-1 text-xs text-slate-600"></p>
-  <a href="" class="text-xs text-blue-700 underline" data-validation-refresh hidden>Refresh shown design</a>
-  {% endif %}
+{% if show_validate %}
+<details id="bt3d-validate" class="mb-4 text-sm" data-url="{{ validate_panel_url }}">
+  <summary class="cursor-pointer text-slate-500">validate: checking…</summary>
 </details>
 {% endif %}
 
@@ -309,6 +291,24 @@
     };
   })();
 </script>
+{% if show_validate %}
+<script>
+  // After first paint: the validator can take seconds, so its panel is
+  // filled in from its own request, never from the page request.
+  (() => {
+    const el = document.getElementById("bt3d-validate");
+    if (!el || el.dataset.identity !== undefined) return;
+    fetch(el.dataset.url).then(async (r) => {
+      if (!r.ok) throw new Error(String(r.status));
+      el.dataset.identity = r.headers.get("X-Validation-Identity") || "";
+      el.innerHTML = await r.text();
+    }).catch(() => {
+      const s = el.querySelector("summary");
+      if (s) s.textContent = "validate: unavailable";
+    });
+  })();
+</script>
+{% endif %}
 <script src="/static/mermaid/mermaid.min.js"></script>
 <script type="module">
   import { blocktreeViewer3D } from "/static/blocktree-3d.js";
@@ -342,7 +342,6 @@
     exportName: {{ slug | tojson }},
     sceneUrl: {{ scene_url | tojson }},
     validationPanel: document.getElementById("bt3d-validate"),
-    validationIdentity: {{ validation_identity | tojson }},
     validationUrl: {{ validation_url | tojson }},
     {% if has_atomic %}
     atomsToggle: document.getElementById("bt3d-atoms"),

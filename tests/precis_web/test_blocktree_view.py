@@ -1227,4 +1227,33 @@ def test_se_view3d_page_shows_the_validate_digest(
     r = blocktree_client.get("/se/unicycle_web")
     assert r.status_code == 200
     assert 'id="bt3d-validate"' in r.text
-    assert "validate: " in r.text
+    # gr462703 — the digest arrives from its own request, after first paint.
+    frag = blocktree_client.get("/se/unicycle_web/validate-panel")
+    assert frag.status_code == 200
+    assert "validate: " in frag.text
+    assert frag.headers["X-Validation-Identity"]
+
+
+def test_se_view3d_page_does_not_compute_heavy_payloads(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    """gr462703 — the HTML shell returns without running the validator or
+    building the scene/atomic payloads; those come from their own fetches."""
+    _seed_se(runtime_with_store)
+    from precis_web.routes import blocktree_view as bv
+
+    def boom(*a, **k):
+        raise AssertionError("heavy payload computed during the page request")
+
+    for name in (
+        "_se_validate_panel",
+        "se_validate_findings",
+        "_build_scene3d",
+        "_build_atomic3d",
+    ):
+        if hasattr(bv, name):
+            monkeypatch.setattr(bv, name, boom)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    assert "scene3d.json" in r.text
+    assert "checking" in r.text

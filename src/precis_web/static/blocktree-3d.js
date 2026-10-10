@@ -1416,7 +1416,8 @@ export async function blocktreeViewer3D({
     selectedPath = null;
     repaint();
     const identity = data.validation_identity;
-    if (!identity || identity !== validationIdentity) {
+    const pageIdentity = (validationPanel && validationPanel.dataset.identity) || validationIdentity;
+    if (!identity || identity !== pageIdentity) {
       validationStatus("Selection unavailable: displayed design changed; refresh.", true);
       return;
     }
@@ -2052,7 +2053,14 @@ export async function blocktreeViewer3D({
   try {
     const display = new Display(viewerEl, displayOptions);
     viewer = new Viewer(display, viewerOptions, notify);
-    renderScene(data.shapes);
+    // An `isolate` carried in on the URL is folded into this first render
+    // (one render at load, not a full render then an isolate re-render).
+    const firstIsolate = currentIsolate();
+    const firstShapes = firstIsolate ? isolateSubtree(data.shapes, firstIsolate) : null;
+    if (firstIsolate && !firstShapes) {
+      console.error("blocktree-3d: no subtree named", firstIsolate);
+    }
+    renderScene(firstShapes || data.shapes);
   } catch (err) {
     if (progress) progress.hide();
     showViewerFallback(viewerEl, err);
@@ -2635,7 +2643,7 @@ export async function blocktreeViewer3D({
     });
   }
 
-  // An `isolate` carried in on the URL is applied client-side at load —
-  // the server no longer did it for us.
-  if (currentIsolate()) applyIsolate();
+  // An `isolate` carried in on the URL was folded into the first render
+  // above; only the URL needs its normalised form written back.
+  if (currentIsolate()) syncUrl();
 }
