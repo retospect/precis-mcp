@@ -29,5 +29,9 @@ log_connections = 0
 log_disconnections = 0
 stats_period = 60
 admin_users = {{ 'deploy' if os_family == 'darwin' else 'postgres' }}
+; td458386: read-only console (SHOW POOLS/STATS/CLIENTS; no PAUSE/KILL/RELOAD)
+; for roles that are already in userlist.txt — admin_users above has no
+; userlist entry, so it cannot log in over the network. scripts/pgb-pools.
+stats_users = agent_ro, prometheus_reader
 pidfile = /opt/homebrew/var/run/pgbouncer/pgbouncer.pid
 logfile = {{ shared_mount }}/logs/pgbouncer.log

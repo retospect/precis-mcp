@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# scripts/pgb-pools — read pgbouncer's live pool state on prod (td458386).
+#
+# `cl_waiting` > 0 in SHOW POOLS is the only direct evidence of pool
+# starvation: clients queued for a server connection. Without it a load test
+# cannot tell a starved pool from an idle server.
+#
+# Connects to pgbouncer's admin console (database `pgbouncer`) as agent_ro,
+# which pgbouncer.ini lists in stats_users: SHOW commands only, no
+# PAUSE/KILL/RELOAD. Same hop and overlay-resolved address as scripts/prod-psql
+# (the address must not live in this public repo — scripts/lib/pgb-host.sh).
+#
+# Usage:
+#   scripts/pgb-pools               # SHOW POOLS
+#   scripts/pgb-pools STATS         # any SHOW target: POOLS STATS CLIENTS SERVERS LISTS CONFIG ...
+#   scripts/pgb-pools POOLS -At     # extra psql flags after the target
+#
+# Overrides (env): PRECIS_PROD_SSH_HOST=melchior (default caspar)
+set -euo pipefail
+
+WHAT="${1:-POOLS}"
+shift || true
+# The target is interpolated into the remote command: allow one bare word.
+if [[ ! "$WHAT" =~ ^[A-Za-z_]+$ ]]; then
+    echo "pgb-pools: target must be a single SHOW keyword (POOLS, STATS, CLIENTS, ...)" >&2
+    exit 2
+fi
+for opt in "$@"; do
+    if [[ ! "$opt" =~ ^-[A-Za-z]+$ ]]; then
+        echo "pgb-pools: only short psql flags (e.g. -At, -x) are accepted after the target" >&2
+        exit 2
+    fi
+done
+
+HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
+. "$(dirname "$0")/lib/pgb-host.sh"
+PGB_HOST="$(resolve_pgb_host)"
+PGB_PORT=6432
+
+exec ssh -o IdentityAgent=none "$HOST" \
+    "psql -X -h ${PGB_HOST} -p ${PGB_PORT} -U agent_ro -d pgbouncer -P pager=off $* -c 'SHOW ${WHAT};'"
