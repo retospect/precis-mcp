@@ -1286,3 +1286,41 @@ def test_gc_drops_orphaned_leases(store: Any) -> None:
     assert short_id not in leases  # chunk filtered (< min chars) → lease GC'd
     assert quali_id in leases  # still-qualifying lease is never GC'd…
     assert quali_id in {c.chunk_id for c in claimed}  # …it is reclaimed instead
+
+
+def test_chunk_retired_mid_pass_is_skipped_not_failed(
+    store: Any, monkeypatch: Any, caplog: Any
+) -> None:
+    """A chunk DELETEd between claim and the summary INSERT (FK violation on
+    chunk_summaries.chunk_id) is skipped at DEBUG: no ERROR log, not counted
+    as failed, no summary row; the sibling still lands."""
+    import logging
+
+    from tests.workers._helpers import seed_chunks
+
+    _ref, (gone_id, kept_id) = seed_chunks(store, [_PROSE, _PROSE])
+
+    class _DeletingTransport(_FakeTransport):
+        def post_json(self, *a: Any, **kw: Any) -> Any:
+            with store.pool.connection() as conn:
+                conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (gone_id,))
+            return super().post_json(*a, **kw)
+
+    client = LlmClient(
+        LlmConfig(), transport=_DeletingTransport("BRIEF: g\nDETAIL: d.")
+    )
+    with caplog.at_level(logging.DEBUG, logger="precis.workers.llm_summarize"):
+        result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result["claimed"] == 2
+    assert result["ok"] == 1
+    assert result["failed"] == 0
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    with store.pool.connection() as conn:
+        ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM chunk_summaries WHERE summarizer = 'llm-v1'"
+            ).fetchall()
+        ]
+    assert ids == [kept_id]

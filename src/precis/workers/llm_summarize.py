@@ -56,6 +56,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
+import psycopg
+
 from precis.store.protocols import PoolStore
 from precis.utils.llm.openai_tools import HttpTransport as Transport
 from precis.utils.llm.openai_tools import _UrllibTransport
@@ -1554,7 +1556,8 @@ def run_llm_summarize_pass(
 
     def _record_summary(
         chunk_id: int, *, text: str, prompt_hash: str, token_count: int | None
-    ) -> bool:
+    ) -> bool | None:
+        """True = written, False = failed, None = chunk retired mid-pass."""
         try:
             with store.pool.connection() as wconn:
                 write_chunk_summary(
@@ -1566,6 +1569,14 @@ def run_llm_summarize_pass(
                     token_count=token_count,
                 )
             return True
+        except psycopg.errors.ForeignKeyViolation:
+            # Body chunks are DELETE+INSERT, so the claimed chunk can vanish
+            # between pickup and this insert. Nothing to summarize; not an error.
+            log.debug(
+                "llm_summarize: chunk_id=%s retired mid-pass; skipping summary",
+                chunk_id,
+            )
+            return None
         except Exception as exc:
             log.exception("llm_summarize: summary write failed chunk_id=%s", chunk_id)
             _record_failure(chunk_id, str(exc))
@@ -1579,7 +1590,7 @@ def run_llm_summarize_pass(
             token_count=None,
         )
         ok += 1 if wrote else 0
-        failed += 0 if wrote else 1
+        failed += 1 if wrote is False else 0
     empty = 0
     busy = 0
     for o in outcomes:
@@ -1594,15 +1605,17 @@ def run_llm_summarize_pass(
                 empty += 1
             elif is_busy:
                 busy += 1
-        elif _record_summary(
-            o.claim.chunk_id,
-            text=o.summary,
-            prompt_hash=o.prompt_hash,
-            token_count=o.token_count,
-        ):
-            ok += 1
         else:
-            failed += 1
+            wrote = _record_summary(
+                o.claim.chunk_id,
+                text=o.summary,
+                prompt_hash=o.prompt_hash,
+                token_count=o.token_count,
+            )
+            if wrote:
+                ok += 1
+            elif wrote is False:
+                failed += 1
     if empty:
         # One aggregated line per batch instead of a per-chunk ERROR traceback
         # (the free local model misses on a sizable fraction; ~7k/day of ERROR
