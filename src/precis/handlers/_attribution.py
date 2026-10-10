@@ -19,8 +19,10 @@ chunks off is a reading aid, not a mis-sourced number. A chunk range
 (``~18..28``) is checked against every chunk in it. Evidence text is read
 generously: "0.44 and 0.26 eV" grounds both numbers, and a markdown table
 whose header names the unit (``Pore aperture [Å]``) grounds its cells. Two
-tokenizer artefacts are not claims: the exponent in ``10^7 cm/s`` and a
-patent reference numeral (``216A-N``). A bare digit run never grounds a unit-bearing claim:
+tokenizer artefacts are not claims: the exponent in ``10^7 cm/s``, a
+patent reference numeral (``216A-N``) and a thousands count (``130K
+molecules``). A semicolon ends a clause: "… at 9nm; paper:y shows …" keeps
+9 nm with the citation before the semicolon. A bare digit run never grounds a unit-bearing claim:
 a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
 "10 nm" (the first dogfood write slipped through on exactly that, 2026-10-09).
 Evidence that is empty is nothing to check against (no flag). A miss is an
@@ -90,7 +92,7 @@ _SENTENCE_BREAK_RE = re.compile(
     r"(?<=[.!?])"
     r"(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\bFig\.)(?<!\bFigs\.)(?<!\bEq\.)"
     r"(?<!\bet al\.)(?<!\bvs\.)(?<!\bcf\.)(?<!\bca\.)(?<!\bapprox\.)"
-    r"\s+(?=[A-Z(\[\"~≈<>\-\d]|[a-z]+:\w)|\n\s*"
+    r"\s+(?=[A-Z(\[\"~≈<>\-\d]|[a-z]+:\w)|\n\s*|;\s+"
 )
 
 #: Citation spans closer than this (same sentence) form one cluster whose
@@ -123,6 +125,15 @@ _DECADE_RE = re.compile(r"(?:1[89]|20)\d\ds")
 #: single capital letter followed by ``-`` and another capital.
 _REF_NUMERAL_RE = re.compile(r"\d+[A-Z]")
 _REF_NUMERAL_TAIL_RE = re.compile(r"-[A-Z]")
+
+#: "130K molecules" is a count, not 130 kelvin: a glued ``K`` counts as a
+#: temperature only after a cue ("at 77K", "T = 4K", "below 20K", "~300K").
+_GLUED_K_RE = re.compile(r"\d+K")
+_TEMP_CUE_RE = re.compile(
+    r"(?:\bat|\bT\s*[=~≈<>]|\btemperature|\bbelow|\babove|\bto|\bfrom|[~≈<>])\s*$",
+    re.IGNORECASE,
+)
+_TEMP_CUE_CHARS = 20
 
 #: A list sharing one trailing unit, read backwards from the unit-bearing
 #: member: "0.44 and 0.26 eV", "1, 2 and 3 nm", "0.1, 0.2 mm".
@@ -232,11 +243,15 @@ def _quantities(text: str) -> list[tuple[str, int, int]]:
 
 def _artifact(text: str, tok: str, s: int, e: int) -> bool:
     """A digit run the tokenizer read as a quantity but which is none: the
-    exponent of ``10^7 cm/s`` ("7 cm") or a patent reference numeral
-    ``216A-N`` ("216 A")."""
+    exponent of ``10^7 cm/s`` ("7 cm"), a patent reference numeral
+    ``216A-N`` ("216 A") or a thousands count ``130K molecules``."""
     if s and text[s - 1] == "^":
         return True
     del tok  # normalised ("216 A"); the glued shape is only in the text
+    if _GLUED_K_RE.fullmatch(text, s, e) and not _TEMP_CUE_RE.search(
+        text, max(0, s - _TEMP_CUE_CHARS), s
+    ):
+        return True
     return bool(
         _REF_NUMERAL_RE.fullmatch(text, s, e) and _REF_NUMERAL_TAIL_RE.match(text, e)
     )

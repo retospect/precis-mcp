@@ -447,3 +447,23 @@ def test_evidence_thousands_separator_and_ppm(world):
     world[(12, None)] = "between 2,000 and 6,000 p.p.m. for CO2; a 1,200 nm film"
     assert _check("2000–6000 ppm CO2, 1200 nm and 1,200 nm films [pa12]") == []
     assert [m.token for m in _check("7000 ppm [pa12]")] == ["7000 ppm"]
+
+
+def test_semicolon_ends_the_clause(world):
+    """Prod sample 2026-10-10 (me38505): "… at 9nm; paper:y shows …" — the
+    9 nm belongs to the cite before the semicolon."""
+    world[(12, None)] = "6.6 kΩ per contact at a 9 nm channel"
+    world[(13, None)] = "nothing numeric"
+    body = "[pa12] flags 6.6 kΩ at 9nm; [pa13] shows a Ge film cuts resistance."
+    assert _check(body) == []
+    world[(12, None)] = "nothing numeric"
+    assert [(m.token, m.cite) for m in _check(body)] == [("9 nm", "pa12")]
+
+
+def test_glued_k_is_a_count_unless_a_temperature(world):
+    """Prod sample 2026-10-10 (me38802/me38803): "130K low-quality molecules"."""
+    world[(12, None)] = "nothing numeric"
+    assert _check("pre-training on 130K low-quality molecules [pa12]") == []
+    assert [m.token for m in _check("measured at 77K [pa12]")] == ["77 K"]
+    assert [m.token for m in _check("cooled to 4K [pa12]")] == ["4 K"]
+    assert [m.token for m in _check("held at 300 K [pa12]")] == ["300 K"]

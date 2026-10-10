@@ -8,14 +8,19 @@ model: sonnet
 
 # Memory attribution gate
 
-**State (2026-10-10, third dry run):** §1–§5 shipped in warn mode
+**State (2026-10-10, fourth dry run):** §1–§5 shipped in warn mode
 (b88ae940e). Deployed on the cluster (cf586b9dc): the DOI digit-run fix and
 the gloss / decade / chunk-fallback / micro-unit round (25abd28fd). Landed
 on main, not yet deployed: the chunk-range / evidence-list / table-header
-round (6c1326c9a) and this commit's round. Three prod dry runs (Reto, via
-the pgbouncer tunnel): 1,087 → 910 → 876 flagged of ~3,089 candidates
-(28%), 0 errors; by cite kind pa 538 · me 338 · paper-key 225 · pc 225 ·
-websearch 74 · paper 72. Every 40-row sample was read against the sources.
+round (6c1326c9a), the parenthetical / `kind:` break / thousands round
+(f4f0e82d0) and this commit's round. Four prod dry runs (Reto, via the
+pgbouncer tunnel): 1,087 → 910 → 876 → 829 flagged of ~3,089 candidates
+(27%), 0 errors; by cite kind pa 538 · me 308 · pc 228 · paper-key 221 ·
+paper 69 · websearch 57. Every 40-row sample was read against the sources
+(each new round's rows were checked against the paper text by a read-only
+prod query). `--apply` only adds the tag, never clears one — so the backfill
+is run on a sample that reads clean, and a later `--clear-stale` pass (not
+written) would be the way to lift tags the gate no longer raises.
 False-positive classes fixed so far: (a) gloss parenthetical pinned to the
 nearer following cite; (b) "2010s" as seconds; (c) chunk pinpoint a few
 chunks off; (d) micro units the `numerics` column cannot see; (e) the
@@ -25,8 +30,14 @@ in the header; (i) a parenthetical 50 chars after its cite pinned to the
 next cite (me35525 — now any parenthetical glosses the nearest cite before
 its opener, same sentence); (j) "… simulations. patent:x envisions" not a
 sentence break because the next word is lowercase (me36301); (k) evidence
-spelled "2,000 and 6,000 p.p.m." (me35789). Genuine flags confirmed against
-the sources: me34865 "0.3 eV" hwang25 (the paper says 0.14 eV); me34846
+spelled "2,000 and 6,000 p.p.m." (me35789); (l) "… at 9nm; paper:y shows"
+pinned 9 nm to the cite after the semicolon (me38505 — a semicolon now ends
+the clause); (m) "130K low-quality molecules" read as kelvin (me38802,
+me38803 — a glued `K` is a temperature only after a cue such as "at",
+"below", "T ="). Genuine flags confirmed against the sources: me34865 "0.3
+eV" hwang25 (the paper says 0.14 eV); me38567 "1.2 nm" bandhybridized25
+(the paper says 1 nm); me38731 "18.5 kJ" sauer19 (the paper's values are
+13.5, 16.5 and 21.0 kJ/mol); me34846
 "100 GHz" zhu12a; me35569 "0.65 V" lamagni20 (the paper's potentials are
 0.97 and 1.19 V — the number is hermawan23's); me35605 "80 °C"
 naghshnejad25 (no °C in the text); me35024 / me35027 (review findings
@@ -38,7 +49,9 @@ restated in an analogy sentence that cites the analogue (me35192 "1-10 nm"
 against evans24, me36499 "±10%" against benoist25); a range's zero endpoint
 ("0–0.3 eV"); a websearch cited by its quoted query (`websearch:'…'`, not a
 cite form, me35601); table-header units and list heads in document-level
-`numerics` (me25065 "0.15 nm"; needs `extract_numerics` at ingest).
+`numerics` (me25065 "0.15 nm"; needs `extract_numerics` at ingest);
+me38924 "10 Å" kocer24~7..10 is unverified (the chunks carry no Å value the
+tokenizer sees — possibly a PDF spelling of Å, possibly a real miss).
 Remaining, in order: (1) Reto re-runs the dry run on the fixed tree; (2) if
 the sample reads as real plus the residuals above, `--apply` the backfill
 in warn mode; the `reject` flip waits until the residual classes are rare
@@ -114,7 +127,9 @@ Algorithm:
    paper:y` pins 60 kPa to x), unless a citation inside the brackets is
    nearer; otherwise it goes to the nearest citation in the sentence. A
    sentence ends before a lowercase `kind:` cite too (`… simulations.
-   patent:x envisions`).
+   patent:x envisions`), and a semicolon ends a clause (`… at 9nm;
+   paper:y shows`). A glued `K` (`130K molecules`) is a count unless a
+   temperature cue precedes it (`at 77K`, `T = 4K`, `below 20K`).
    The exponent of `10^7 cm/s` and a patent reference numeral `216A-N` are
    tokenizer artefacts, not claims.
 4. **Evidence.** For a chunk-level cite: that chunk's text and its
@@ -207,7 +222,8 @@ attach it to the handle.* Already applied in this tree.
   `10^7 cm/s` and `216A-N` are not claims; evidence lists and table headers
   ground their members; `~a..b` parses to the whole range; a parenthetical
   50 chars after its cite still glosses it; a lowercase `kind:` cite starts
-  a sentence; thousands commas and `p.p.m.` in evidence.
+  a sentence; thousands commas and `p.p.m.` in evidence; a semicolon ends
+  the clause; `130K molecules` is a count, `at 77K` a temperature.
 - Handler (`tests/test_memory.py` additions, dev DB): create with a
   mis-sourced number → tag present + nudge line; `reject` mode → BadInput;
   a follow-up clean edit removes the tag; agent `tag(add=['AUDIT:ungrounded-number'])`
