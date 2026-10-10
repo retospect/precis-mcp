@@ -74,6 +74,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   footprint path), never chosen on price/stock/assemblability. Blocks
   anything in Do-next 2/3 that assumes part selection is a search. Recorded
   in gr458878.
+- **backlog/pcb-drc-view-filters.md** (gr477797, 2026-10-10). Errors-first
+  order and severity/rule filters on `view='drc'`. It is agent ergonomics,
+  cheap, and unblocks nothing, so it goes in any session already touching
+  `drc.py`.
 
 ## Parked
 

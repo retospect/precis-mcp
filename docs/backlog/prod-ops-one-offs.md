@@ -131,3 +131,28 @@ invisible. Worked around today with per-node `<node>-lan` ssh aliases that
 
 The proper fix, plus why the workaround is only a workaround, is in the runbook.
 It needs a **web admin-console approval**, so it cannot be fully scripted.
+
+## Cluster credential and service gripes (2026-10-10 triage)
+
+These are ops gripes, not code. Each needs a node or vault action, and some
+need Reto. Re-check each one before acting, because several are days old.
+
+- **gr474609:** the melchior Claude OAuth token is stale or revoked, and
+  the `claude_p`/`claude_inproc` rungs fail about 100% (al473448). Fix:
+  rotate the vault token, then `launchctl bootout`/`bootstrap`. Related:
+  gr260050, gr329258.
+- **gr462459:** the melchior checkout has no git push credential, so the
+  fix_gripe lane cancels every job (lane OFF by ruling). Fix per
+  `docs/runbooks/fix-gripe-ops.md`, only if the lane is re-armed.
+- **gr475412:** melchior's precis-mcp-http serves a clone that never
+  follows deploys. There is no precis-mcp-prod dir, so `follow_prod`
+  returns early. Fix: create the prod clone. Owner thread: gr460711.
+- **gr464379:** balthazar `com.openclaw.agents` exits with code 78. Its log
+  dir is root-owned and the job runs as `openclaw`. Fix: chown, then
+  re-check.
+- **gr273965:** cluster hosts fail the TLS handshake to Vercel-hosted
+  sites; the suspected cause is UniFi DPI/IPS. Needs Reto in the UniFi UI
+  (td345841).
+- **gr461596:** dropping the `llm_call_log` hash indexes is on hold. The
+  caller check says DO NOT DROP (the GC anti-join and FK use them).
+  Re-check `idx_scan` after 2026-10-13, then drop or close as won't-fix.

@@ -99,3 +99,13 @@ paper we could have OCR'd.
   unset (same pattern as the Elsevier/Wiley PDF legs).
 - The PDF is always kept as the printable; Marker is simply never
   invoked when markup succeeds.
+
+## Agent-readable lit/dark status (gr477799)
+
+Filed 2026-10-10 in the gripe triage. Skills say a service such as
+`conflict_search` or `inbound_chase` stays "dark until an operator sets a
+priority", but nothing in the MCP reports whether it is lit now, so an
+agent cannot tell "dark" from "broken". Add a read-only view, e.g.
+`get(kind='skill', id='precis-status')` or a `view='switches'`, that lists
+each dark switch and its current value. The gripe also notes that no skill
+covers router failure classes, quota stamping or `deferred_llm_call`.

@@ -148,7 +148,9 @@ checkout ⇒ no doc), i.e. `get(kind='schema', id='<table>')`.
 
 2. **Counts and facets.** A `view='count'` on any filtered `search`, plus
    facet counts by tag/state/kind. "How many claim hubs have no evidence
-   edge" needed SQL; it should be one call.
+   edge" needed SQL; it should be one call. gr472990 (2026-10-08): 133
+   `scripts/prod-psql` calls in 24 h fell back to SQL for count/group-by and
+   for kind-filtered neighbour walks (a `links` view filtered by kind).
 
 3. **Structural (graph-shape) filters.** Filter by `has_inbound_edges`,
    `edge_count < N`, `source_kind='paper'`, drift state. The single most

@@ -165,3 +165,7 @@ New `src/precis/viz3d/`. Touches `utils/figure_source.py`,
   needs atoms to read as distinct.
 - Decided (2026-09-14, build start): `envelope` view is a follow-on
   once stick ships.
+
+**Gripe:** gr461790 (2026-10-10 triage) is this item from the agent's side.
+An agent can mint a nanobud but has no way to put its picture in a draft
+figure. Close it when §2 ships.

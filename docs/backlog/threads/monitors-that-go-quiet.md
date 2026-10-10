@@ -56,7 +56,7 @@ gr346534, soft-deleted)
 
 ## Do next
 
-1. **Make the Prometheus alert rules fire and reach Reto** (approved
+1. **Make the Prometheus alert rules fire and reach Reto** (gr465126; approved
    2026-10-04; review items organizer-alerting-1 and -2, both in the review
    queue's `answered/`). Today nothing evaluates a rule: every rule in
    `deploy/roles/monitoring/templates/alert_rules.yml.j2` (PostgresDown, the
@@ -147,6 +147,11 @@ gr346534, soft-deleted)
    every run for 7 weeks into a log nobody reads. The fix is a
    `health_digest` check on the log, because the DB node has no tick of
    its own. It must be timeout-guarded against the NFS hang in item 2.
+6. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
+   gr472019, gr474610, gr475405 and gr476100). Alert sources outside
+   watchdog/nursery re-raise against dead trackers and are hand-filed as
+   "no live tracker" gripes. It ranks below 1–5 because the alerts still
+   fire; what is missing is the tracker binding, so nothing goes silent.
 
 ## Horizon
 
