@@ -1357,9 +1357,11 @@ def raise_junk_title_papers(
     (the enrich route owns them); papers younger than ``grace_days``.
 
     Idempotent: ``meta.source``/``meta.paper_ref_id`` identify the todo,
-    and a paper with *any* such todo, open or closed, is never re-filed:
-    a human who closed it without fixing chose to; re-filing daily would
-    only nag. Returns the paper ref_ids a todo was (or, dry-run, would be)
+    and a paper with an open todo, or one closed with any status other
+    than ``STATUS:done`` (``wontfix``: a human chose to leave it), is never
+    re-filed. When every prior todo is ``STATUS:done`` and the title is
+    still junk, the fix did not take, so one new todo is filed (and holds
+    until it is closed in turn). Returns the paper ref_ids a todo was (or, dry-run, would be)
     filed for.
     """
     from precis.config import load_config
@@ -1385,7 +1387,13 @@ def raise_junk_title_papers(
                      SELECT 1 FROM refs t
                       WHERE t.kind = 'todo'
                         AND t.meta->>'source' = %s
-                        AND t.meta->>'paper_ref_id' = r.ref_id::text)
+                        AND t.meta->>'paper_ref_id' = r.ref_id::text
+                        AND NOT EXISTS (
+                              SELECT 1 FROM ref_tags rt
+                                JOIN tags tg USING (tag_id)
+                               WHERE rt.ref_id = t.ref_id
+                                 AND tg.namespace = 'STATUS'
+                                 AND tg.value = 'done'))
              ORDER BY r.ref_id
             """,
             (grace_days, TITLE_FIX_SOURCE),

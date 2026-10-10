@@ -16,11 +16,24 @@ BACKUP_DIR="{{ shared_mount }}/backups/postgres"
 TEST_DB="precis_prod_restore_test"
 PG_USER="{{ pg_user }}"
 
-# Newest dump — matches both the nightly directory-format dumps
+# Newest COMPLETE dump — matches both the nightly directory-format dumps
 # (precis_prod_<TS>/) and the on-demand custom-format files
-# (precis_prod_manual_<TS>.dump). `ls -td` lists the entries themselves
-# (dirs not expanded) newest-first; pg_restore auto-detects either format.
-LATEST_DUMP=$(ls -td "${BACKUP_DIR}"/precis_prod_* 2>/dev/null | head -1)
+# (precis_prod_manual_<TS>.dump); pg_restore auto-detects either format.
+# Order by the timestamp in the name, not mtime: a partial dir left by a
+# SIGKILL/reboot has an mtime of "now" and would win (gripe 466216). A
+# directory dump is complete only once pg_dump has written toc.dat, so skip
+# any dir without it and fall back to the next-newest.
+LATEST_DUMP=""
+while IFS= read -r cand; do
+    if [ -d "${cand}" ] && [ ! -f "${cand}/toc.dat" ]; then
+        echo "[$(date -u)] Skipping incomplete dump dir: ${cand}"
+        continue
+    fi
+    LATEST_DUMP="${cand}"
+    break
+done < <(find "${BACKUP_DIR}" -maxdepth 1 -name 'precis_prod_*' ! -name '*.partial*' 2>/dev/null \
+    | awk -F/ '{n=$NF; sub(/^precis_prod_(manual_)?/,"",n); print n "\t" $0}' \
+    | sort -r | cut -f2-)
 
 if [ -z "${LATEST_DUMP}" ]; then
     echo "[$(date -u)] ERROR: No precis_prod dump found under ${BACKUP_DIR}"

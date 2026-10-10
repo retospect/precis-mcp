@@ -907,6 +907,43 @@ class TestLexicalNameAndDefinition:
         other = _mk(store, "exq other root")
         assert "exact:" not in h.search(q="exq quuxle", under=f"taxon:{other}").body
 
+    def test_no_name_match_says_so_and_caps_fallback_at_three(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr477801: a semantic-only answer is flagged and capped at 3.
+        from precis.handlers import _numeric_ref
+
+        h = _handler(store)
+        root = _mk(store, "nnm root")
+        rids = [_mk(store, f"nnm node{i}", under=root) for i in range(6)]
+        refs = [store.get_ref(kind="taxon", id=r) for r in rids]
+
+        def fake(_store: Any, _emb: Any, **kw: Any) -> list[Any]:
+            if kw.get("mode") == "lexical":  # nothing matches by name/definition
+                return []
+            return refs[: kw["limit"]]
+
+        monkeypatch.setattr(_numeric_ref, "fused_ref_hits", fake)
+        body = h.search(q="zzzsynonym", page_size=10).body
+        assert (
+            body.splitlines()[0] == "no taxon named 'zzzsynonym'; nearest by meaning:"
+        )
+        assert sum(f"tn{r}" in body for r in rids) == 3  # capped, hit present
+        # a real lexical match is unchanged: no header, full page
+        monkeypatch.setattr(
+            _numeric_ref, "fused_ref_hits", lambda _s, _e, **kw: refs[: kw["limit"]]
+        )
+        body = h.search(q="zzzsynonym", page_size=10).body
+        assert "no taxon named" not in body
+        assert sum(f"tn{r}" in body for r in rids) == 6
+
+    def test_name_match_has_no_fallback_header(self, store: Any) -> None:
+        h = _handler(store)
+        rid = _mk(store, "nnm2 quuxle")
+        body = h.search(q="nnm2 quuxle").body
+        assert "no taxon named" not in body
+        assert f"tn{rid}" in body
+
     def test_card_scan_is_taxon_only(self) -> None:
         from precis.handlers.concept import ConceptHandler
         from precis.handlers.memory import MemoryHandler

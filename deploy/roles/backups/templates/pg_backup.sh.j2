@@ -108,11 +108,22 @@ LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
 echo "[$(date -u)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
 
 echo "[$(date -u)] Archiving to NAS (tar+zstd)..."
-tar --use-compress-program='zstd -T0' -cf "${NAS_ARCHIVE}" \
+# Write to a temp name and only rename over NAS_ARCHIVE once it verifies. The
+# archive is named by DATE only, so a same-day re-run used to truncate the
+# earlier good archive in place; a tar failure then left a partial under the
+# final name (gripe 466216). `zstd -t` alone checks just the zstd stream, so
+# also list the tar to prove its structure reads end to end.
+NAS_TMP="${NAS_ARCHIVE}.partial.$$"
+rm -f "${NAS_BACKUP_DIR}"/precis_prod_*.tar.zst.partial.* 2>/dev/null || true
+trap 'rm -f "${NAS_TMP}" 2>/dev/null || true; on_exit' EXIT
+tar --use-compress-program='zstd -T0' -cf "${NAS_TMP}" \
   -C "${LOCAL_BACKUP_DIR}" "precis_prod_${TIMESTAMP}"
+zstd -tq "${NAS_TMP}"
+tar --use-compress-program='zstd -d' -tf "${NAS_TMP}" >/dev/null
+mv -f "${NAS_TMP}" "${NAS_ARCHIVE}"
 
 NAS_SIZE=$(du -h "${NAS_ARCHIVE}" | cut -f1)
-echo "[$(date -u)] NAS archive complete: ${NAS_ARCHIVE} (${NAS_SIZE})"
+echo "[$(date -u)] NAS archive complete and verified: ${NAS_ARCHIVE} (${NAS_SIZE})"
 
 # ── NAS retention sweep ── (local prune already ran up-front + on EXIT trap)
 echo "[$(date -u)] Pruning NAS archives older than ${NAS_RETENTION_DAYS} days..."

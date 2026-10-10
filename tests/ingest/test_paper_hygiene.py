@@ -1053,6 +1053,32 @@ class TestRaiseJunkTitlePapers:
         assert raise_junk_title_papers(store, dry_run=False) == []
         assert len(self._todos(store, rid)) == 1
 
+    def _close(self, store: Store, paper_id: int, status: str) -> None:
+        from precis.store.types import Tag
+
+        for todo_id, _ in self._todos(store, paper_id):
+            store.add_tag(
+                todo_id,
+                Tag.closed("STATUS", status),
+                set_by="system",
+                replace_prefix=True,
+            )
+
+    def test_refiled_once_when_closed_done_but_still_junk(self, store: Store) -> None:
+        rid = self._old(store, slug="anon24h", title="__")
+        raise_junk_title_papers(store, dry_run=False)
+        self._close(store, rid, "done")
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        assert raise_junk_title_papers(store, dry_run=False) == []
+        assert len(self._todos(store, rid)) == 2
+
+    def test_not_refiled_when_closed_wontfix(self, store: Store) -> None:
+        rid = self._old(store, slug="anon24i", title="__")
+        raise_junk_title_papers(store, dry_run=False)
+        self._close(store, rid, "wontfix")
+        assert raise_junk_title_papers(store, dry_run=False) == []
+        assert len(self._todos(store, rid)) == 1
+
     def test_dry_run_writes_nothing(self, store: Store) -> None:
         rid = self._old(store, slug="anon24g", title="...")
         assert raise_junk_title_papers(store, dry_run=True) == [rid]

@@ -168,7 +168,9 @@ path; no match lists near candidates. A leading `/` is a list view
 
 `search(kind="taxon", q=...)` matches the name and the definition, lexically
 and by meaning; a word that appears only in the definition finds the node
-even with the embedder down.
+even with the embedder down. When nothing matches by name, slug, alias or
+lexically, the first line reads `no taxon named '<q>'; nearest by meaning:` and
+at most 3 semantic hits follow (synonym queries still land).
 
 ```python
 search(kind="taxon", under="measurand/temperature", axis="method", depth=2)

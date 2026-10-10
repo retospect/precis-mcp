@@ -183,6 +183,10 @@ def _lede(definition: str) -> str:
     return _SENTENCE_END.split(d, maxsplit=1)[0] if d else ""
 
 
+#: Semantic-only fallback hits shown when ``q`` matches no taxon by name.
+_NEAREST_CAP = 3
+
+
 class TaxonHandler(NumericRefHandler):
     owns_under = True
 
@@ -620,6 +624,18 @@ class TaxonHandler(NumericRefHandler):
                     "axis=/depth= only apply with under=",
                     next="search(kind='taxon', under='taxon:42', axis='method', depth=2)",
                 )
+            if self._no_name_match(q, page, _kw):
+                # Nothing matched by name: the semantic padding is a guess,
+                # so cap it and say so (gr477801).
+                resp = super().search(
+                    q=q, page_size=min(int(page_size), _NEAREST_CAP), page=page, **_kw
+                )
+                if resp.body.startswith("no "):
+                    return resp
+                return Response(
+                    body=f"no taxon named {q!r}; nearest by meaning:\n{resp.body}",
+                    cost=resp.cost,
+                )
             resp = super().search(q=q, page_size=page_size, page=page, **_kw)
             return self._exact_first(resp, q, page, None)
         if axis is not None and (not isinstance(axis, str) or not axis.strip()):
@@ -677,6 +693,22 @@ class TaxonHandler(NumericRefHandler):
             lines[0] += f" (rows {start + 1}-{start + len(window)})"
         lines += [f"{self._hop_line(rid)}  [depth {d}]" for d, _n, rid in window]
         return Response(body="\n".join(lines))
+
+    def _no_name_match(self, q: str | None, page: int, kw: dict[str, Any]) -> bool:
+        """True when ``q`` hits no name/slug/alias term and the lexical leg
+        (title + definition card) finds nothing — i.e. any hit would be
+        semantic-only. Reuses ``mode='lexical'`` rather than a score cutoff."""
+        if not q or not q.strip() or int(page) != 1:
+            return False
+        if self._term_matches(q):
+            return False
+        lex = super().search(
+            q=q,
+            page_size=1,
+            **{k: v for k, v in kw.items() if k != "mode"},
+            mode="lexical",
+        )
+        return lex.body.startswith("no ")
 
     def _exact_first(
         self, resp: Response, q: str | None, page: int, scope: set[int] | None
