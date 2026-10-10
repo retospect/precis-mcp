@@ -30,10 +30,20 @@ a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
 Evidence that is empty is nothing to check against (no flag). A miss is an
 :class:`UngroundedNumber`.
 
-Spec and rationale: ``docs/backlog/memory-attribution-gate.md`` (the
-``DREAM:speculative`` tag licenses unsourced claims, not mis-sourced ones).
-The handler hook is :meth:`MemoryHandler._attribution_audit`; the retro-apply
-is ``scripts/memory-attribution-audit``.
+Rationale: the ``DREAM:speculative`` tag licenses unsourced claims, not
+mis-sourced ones. The handler hook is :meth:`MemoryHandler._attribution_audit`
+(warn mode by default; ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject`` refuses the
+write); the retro-apply is ``scripts/memory-attribution-audit`` (backfill
+applied 2026-10-10: 789 of 3,095 candidates tagged, every 40-row sample read
+against its sources). Classes it still raises, each read as a false positive
+in those samples: a number derived next to its source ("75% … the missing
+25%"); a scale restated in an analogy sentence that cites the analogue; a
+range's zero endpoint ("0–0.3 eV"); a websearch cited by its quoted query
+(not a cite form); a pinpoint many chunks off; the document-level
+``numerics`` gaps of gr478127 (list heads, thousands, p.p.m., PDF math,
+µ-units, table headers); a paper key that resolves to an unrelated paper
+(gr477964). The ``reject`` flip waits until those classes are rare in a
+fresh sample: gr478475.
 
 Seams for tests: :func:`_resolve_cite` and :func:`_fetch_evidence` are the
 only DB touchpoints.

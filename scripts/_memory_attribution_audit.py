@@ -13,8 +13,8 @@ body chunk: ``--apply`` only adds the closed tag (``set_by='system'``);
 ``--clear-stale`` (with ``--apply``) removes the system-set tag from every
 live memory the gate no longer flags — a tag an agent set by hand is left
 alone. A memory whose evaluation raises is counted in ``errors`` and
-skipped (and keeps its tag).
-See docs/backlog/memory-attribution-gate.md §4.
+skipped (and keeps its tag). The gate and its residual classes:
+``precis.handlers._attribution``.
 """
 
 from __future__ import annotations

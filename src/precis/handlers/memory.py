@@ -82,7 +82,7 @@ from precis.utils.secret_scan import mask_secrets
 log = logging.getLogger(__name__)
 
 #: Derived tag the attribution gate maintains (a number next to a citation
-#: that the cited text does not carry). Docs/backlog/memory-attribution-gate.md.
+#: that the cited text does not carry). See :mod:`precis.handlers._attribution`.
 _AUDIT_UNGROUNDED = Tag.closed("AUDIT", AUDIT_VALUE)
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
@@ -469,7 +469,7 @@ class MemoryHandler(NumericRefHandler):
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
         return self._with_attribution_advisory(ack, misses)
 
-    # ── attribution gate (docs/backlog/memory-attribution-gate.md) ──
+    # ── attribution gate (precis.handlers._attribution) ──
 
     def _attribution_misses(self, body: str) -> list[UngroundedNumber] | None:
         """Numbers in ``body`` pinned to a citation whose text lacks them.

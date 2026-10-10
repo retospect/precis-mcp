@@ -1534,7 +1534,7 @@ def test_mention_connection_loss_cannot_return_success(
 
 
 # ---------------------------------------------------------------------------
-# Attribution gate (docs/backlog/memory-attribution-gate.md)
+# Attribution gate (precis.handlers._attribution)
 # ---------------------------------------------------------------------------
 
 
