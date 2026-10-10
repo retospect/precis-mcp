@@ -183,10 +183,9 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
    graph "is" the dossier and a writer agent linearises it; settles the
    membership relation and the render trigger before any quest-document
    work. Same principle as Do-next 1 (graph is truth, text is a render).
-2. **backlog/source-code-ingest.md** → **backlog/retire-claude-context.md**
-   — sequenced: the second removes the index the first replaces. The
-   retire's agent-facing and repo halves shipped (2026-10-08/09); left are
-   the Mac Milvus teardown and the python-kind fuzzy-search question.
+2. **backlog/source-code-ingest.md** — the claude-context retire it was
+   sequenced with shipped 2026-10-10 (Milvus stack torn down; a
+   natural-language `search(kind='python')` returns hits).
 3. **backlog/capability-discovery-on-a-sprawling-surface.md**
 4. **backlog/docs-and-skills-redesign.md**
 5. **backlog/skill-eval-harness.md**

@@ -27,8 +27,8 @@ search/embeddings/discovery work over the codebase.
   changed defs.
 - **Kind question** — new `kind='code'` (or `repo`) vs an ingest variant on
   an existing ref shape; how a repo-ref relates to its file/def chunks.
-- **Overlap check** — repo-dev already has claude-context/Milvus code
-  search; this item is the *product* surface (cluster agents searching code
+- **Overlap check** — repo-dev already has code search via the python kind
+  (claude-context/Milvus retired 2026-10-10); this item is the *product* surface (cluster agents searching code
   like they search papers), not a dev aid. State what the product surface
   adds before building.
 
