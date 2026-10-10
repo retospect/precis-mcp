@@ -5746,6 +5746,40 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
     assert 'action="/asks/14634/answer"' in resp.text
 
 
+def test_needs_you_ask_title_with_refs_does_not_nest_anchors(
+    client, monkeypatch
+) -> None:
+    """An ask title naming handles/URLs (td462081 cites td459589 and a web
+    URL) is linkified; the title must not sit inside the row's own <a>, or
+    the parser splits it into extra flex items and the title column
+    collapses to one character wide."""
+    import re
+
+    from precis_web.routes import needs_you as needs_you_mod
+
+    monkeypatch.setattr(
+        needs_you_mod,
+        "_load_asks",
+        lambda store, **kw: [
+            {
+                "id": 462081,
+                "title": "Conference: submit an abstract from the catpath paper "
+                "(td459589, dr460293). Source: https://example.org/annual78/",
+                "created_at": None,
+                "questions": ["go?"],
+                "tags": ["ask-user:go?"],
+            }
+        ],
+    )
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    assert 'href="/r/todo/462081"' in resp.text
+    depth = 0
+    for tag in re.finditer(r"<(/?)a[\s>]", resp.text):
+        depth += -1 if tag.group(1) else 1
+        assert depth <= 1, "nested <a> in the needs-you page"
+
+
 def test_needs_you_ask_context_citations_are_clickable(client, monkeypatch) -> None:
     """gr415953: an ask's reading context — the draft passage quoted inline
     on /needs-you — cites resources by handle (``[pa456]``/``[jo123]``/

@@ -4,10 +4,14 @@
 {% set first_line = (a.title or '').split('\n', 1)[0] %}
 <li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
   <div class="flex items-baseline gap-2">
-    <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ a.id }}</span>
-    <a href="/r/todo/{{ a.id }}" class="min-w-0 flex-1 text-sm font-medium text-slate-800 hover:text-emerald-700 break-words">
+    <a href="/r/todo/{{ a.id }}" class="text-xs text-slate-400 hover:text-emerald-700 w-12 shrink-0 font-mono">#{{ a.id }}</a>
+    {# A div, not an <a>: linkify_refs emits anchors for handles and URLs in
+       the title, and a nested <a> makes the parser close the outer one, so
+       the rest of the title spills out as extra flex items and squeezes
+       this column to one character wide. #}
+    <div class="min-w-0 flex-1 text-sm font-medium text-slate-800 break-words">
       {{ first_line | linkify_refs }}
-    </a>
+    </div>
     {% if a.history %}
     <span class="shrink-0 rounded-full bg-amber-100 text-amber-800 text-[10px] font-semibold px-2 py-0.5"
           title="the planner processed your previous answer and came back with a follow-up">
