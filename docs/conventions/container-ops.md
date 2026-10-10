@@ -32,6 +32,27 @@ or a Python without the baked extras (torch-free host — see
 `docs/conventions/testing.md`). Going through the wrapper is what makes an
 op reproducible across machines and across sessions.
 
+### One compose project per worktree needs a wide Docker address pool
+
+Every worktree's `scripts/test`/`scripts/ship` brings up its own compose
+project (`precis-test-<tree>_default` network, see
+`scripts/lib/compose-project.sh`), so a 20–40-tree burst holds that many
+networks at once. OrbStack's stock engine config hands Docker only 30
+scattered `192.168.x.0/24` pools; past that every new gate dies with
+`all predefined address pools have been fully subnetted` and
+`scripts/reap-test-dbs` cannot help because the networks belong to live
+trees. Fix once per machine in `~/.orbstack/config/docker.json` (OrbStack's
+`daemon.json`), then `orb restart docker` — the restart stops every
+container, so do it between bursts:
+
+```json
+"default-address-pools": [{ "base": "172.20.0.0/14", "size": 24 }]
+```
+
+That is 1024 networks. Pick a `10.x/16` base instead if your LAN uses
+172.20–172.23. Existing networks keep their old subnets; only new ones draw
+from the pool. Applied on Reto's Mac 2026-10-10.
+
 ## Never `cd` into your own worktree
 
 The Bash shell already runs in the worktree root, and the harness
