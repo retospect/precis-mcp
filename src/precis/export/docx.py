@@ -73,6 +73,7 @@ from precis.export.latex import (
     _NAME_UNISPACE,
     _NAME_ZEROWIDTH,
     _PATENT_DOC_TYPE,
+    _back_matter_handles,
     _conjunct_cite_keys,
     _math_braces_balanced,
     _math_plausible,
@@ -356,33 +357,42 @@ def _xref_numbers(
     chunk depth picks ``\\section``/``\\subsection``/``\\subsubsection`` (the
     seeded title heading is skipped and, when the body is nested under it,
     every depth is lifted one level), the draft's own Glossary heading and
-    its terms are skipped, and every figure chunk steps the figure counter.
-    Returns ``({dc: (noun, number)}, {dc of headings that show a number})``."""
+    its terms are skipped, journal back matter (``\\section*``) is
+    unnumbered and a cross-ref to it prints its name (``\\nameref``), and
+    every figure chunk steps the figure counter. Like ``\\cref`` on a label
+    inside a section, a cross-ref to a plain paragraph/item/table resolves
+    to the enclosing numbered section.
+    Returns ``({dc: (noun, number)}, {dc of headings that show a number})``;
+    an empty noun means ``number`` is already the full label."""
     out: dict[str, tuple[str, str]] = {}
     shown: set[str] = set()
     counters = [0] * _NUMBERED_DEPTHS
     figs = 0
     title_dc = _title_heading_dc(chunks, title)
     shift = _depth_shift(chunks, title_dc)
+    back_matter = _back_matter_handles(chunks)
+    current = ""  # number of the enclosing numbered section
     for c in chunks:
         if c.chunk_kind == "figure":
             figs += 1
             out[c.dc] = ("fig.", str(figs))
-        elif (
-            c.chunk_kind == "heading"
-            and not _is_glossary_heading(c)
-            and c.dc != title_dc
-        ):
+        elif c.chunk_kind == "heading":
+            if _is_glossary_heading(c) or c.dc == title_dc:
+                continue
+            if c.dc in back_matter:
+                out[c.dc] = ("", " ".join((c.text or "").split()))
+                continue
             d = max(int(c.depth) - shift, 0)
             if d < _NUMBERED_DEPTHS:
                 counters[d] += 1
                 for i in range(d + 1, _NUMBERED_DEPTHS):
                     counters[i] = 0
                 shown.add(c.dc)
-                level = d + 1
-            else:  # run-in paragraph heading: refs resolve to the enclosing section
-                level = _NUMBERED_DEPTHS
-            out[c.dc] = ("section", ".".join(str(n) for n in counters[:level]))
+                current = ".".join(str(n) for n in counters[: d + 1])
+            # else: run-in paragraph heading — resolves to the enclosing section
+            out[c.dc] = ("section", current)
+        elif c.chunk_kind not in ("ulist", "olist") and current:
+            out[c.dc] = ("section", current)
     return out, shown
 
 
@@ -552,9 +562,20 @@ def export_docx(
     _kind_by_id = {c.chunk_id: c.chunk_kind for c in chunks}
     _parent_by_id = {c.chunk_id: c.parent_chunk_id for c in chunks}
 
-    # The first heading at depth 0 is the title — render it as the doc title.
+    # The seeded title chunk renders as the doc title (``\maketitle``); a
+    # draft that no longer opens with it (abstract moved above, chunk
+    # retired) prints the ref title up front so the first real section is
+    # not mistaken for it.
+    title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
+    shift = _depth_shift(chunks, title_dc)
     title_done = False
     abstract_pending = False  # next body paragraph opens the abstract
+    if title_dc is None:
+        doc.add_heading(getattr(ref, "title", None) or "", level=0)
+        _render_byline(doc, byline)
+        _render_date(doc)
+        title_done = True
+        abstract_pending = True
     for c in chunks:
         kind = c.chunk_kind
         if kind in ("ulist", "olist"):
@@ -586,14 +607,15 @@ def export_docx(
             # prose actually used.
             continue
         if kind == "heading":
-            if not title_done and c.depth == 0:
+            if not title_done and c.dc == title_dc:
                 doc.add_heading(c.text, level=0)
                 _render_byline(doc, byline)
                 _render_date(doc)
                 title_done = True
                 abstract_pending = True
                 continue
-            level = min(max(c.depth, 1), _MAX_HEADING_LEVEL)
+            # section / subsection / subsubsection, like LaTeX's depth map
+            level = min(max(int(c.depth) - shift, 0) + 1, _MAX_HEADING_LEVEL)
             number = ctx.xref[c.dc][1] if c.dc in ctx.numbered_headings else ""
             doc.add_heading(f"{number} {c.text}" if number else c.text, level=level)
             continue
@@ -1276,11 +1298,16 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
         label = ("Equation" if _at_sentence_start(paragraph) else "Eq.") + f" ({num})"
     elif dc in ctx.xref:
         noun, number = ctx.xref[dc]
-        if _at_sentence_start(paragraph):
-            noun = noun[0].upper() + noun[1:]
-        label = f"{noun} {number}"
+        if not number:
+            return  # before the first numbered section: nothing to print
+        if not noun:
+            label = number  # unnumbered back matter: its name, like \nameref
+        else:
+            if _at_sentence_start(paragraph):
+                noun = noun[0].upper() + noun[1:]
+            label = f"{noun} {number}"
     else:
-        return  # a plain paragraph/table: no number to print
+        return  # front matter / glossary: no number to print
     paragraph.add_run(label)
 
 

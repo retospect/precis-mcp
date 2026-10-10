@@ -1694,6 +1694,68 @@ def test_xref_numbers_follow_latex_section_counting() -> None:
     assert "dc9" not in xref and "dc11" not in shown and "dc7" in shown
 
 
+def test_xref_numbers_resolve_paragraphs_and_back_matter_like_latex() -> None:
+    """A cross-ref to a plain paragraph prints its enclosing section (what
+    ``\\cref`` does for a label inside a section); journal back matter is
+    unnumbered and a cross-ref to it prints its name (``\\nameref``)."""
+    from types import SimpleNamespace as NS
+
+    from precis.export.docx import _xref_numbers
+
+    def ch(dc, kind, depth, text=""):
+        return NS(dc=dc, chunk_kind=kind, depth=depth, text=text)
+
+    chunks = [
+        ch("abs", "paragraph", 0, "The abstract."),
+        ch("h1", "heading", 0, "Introduction"),
+        ch("p1", "paragraph", 1, "body"),
+        ch("h11", "heading", 1, "Scope"),
+        ch("p2", "paragraph", 2, "body"),
+        ch("h2", "heading", 0, "Results"),
+        ch("ul", "ulist", 1),
+        ch("it", "item", 2, "an item"),
+        ch("bm", "heading", 0, "Author Information"),
+        ch("bm1", "heading", 1, "Notes"),
+        ch("p3", "paragraph", 1, "thanks"),
+    ]
+    xref, shown = _xref_numbers(chunks, "Paper")
+    assert "abs" not in xref  # front matter: nothing to print
+    assert xref["p1"] == ("section", "1")
+    assert xref["p2"] == ("section", "1.1")
+    assert xref["it"] == ("section", "2") and "ul" not in xref
+    assert xref["bm"] == ("", "Author Information")
+    assert xref["bm1"] == ("", "Notes")
+    assert "bm" not in shown and "bm1" not in shown
+    assert xref["p3"] == ("section", "2")  # \section* does not step the counter
+
+
+def test_docx_without_seeded_title_chunk_prints_ref_title_first(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A draft whose reading order opens with the abstract (the seeded
+    title heading retired) still gets the title block up front, and its
+    first depth-0 section is numbered "1", not styled as the title."""
+    pid = _new_draft_project(hub)
+    draft.put(id="dnt", title="Nanobuds", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dnt")
+    assert ref is not None
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    draft.put(
+        id="dnt", chunk_kind="paragraph", text="The abstract.", at={"first": True}
+    )
+    draft.put(id="dnt", chunk_kind="heading", text="Introduction", at={"last": True})
+    draft.put(id="dnt", chunk_kind="paragraph", text="Body.", at={"last": True})
+    draft.delete(id=f"¶{title_h}")
+    out = tmp_path / "dnt.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    paras = docx.Document(str(out)).paragraphs
+    texts = [p.text for p in paras]
+    assert texts[0] == "Nanobuds" and paras[0].style.name == "Title"
+    assert texts.index("Abstract") < texts.index("The abstract.")
+    intro = next(p for p in paras if p.text.endswith("Introduction"))
+    assert intro.text == "1 Introduction" and intro.style.name == "Heading 1"
+
+
 def test_bare_dc_crossref_prints_section_and_figure_numbers() -> None:
     from precis.export import docx as dx
 
