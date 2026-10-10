@@ -5774,8 +5774,13 @@ def test_needs_you_ask_title_with_refs_does_not_nest_anchors(
     resp = client.get("/needs-you")
     assert resp.status_code == 200
     assert 'href="/r/todo/462081"' in resp.text
+    # Scope to the ask row: base.html.j2's inline scripts build anchor
+    # strings that a tag regex can't tell from markup.
+    start = resp.text.rindex("<li", 0, resp.text.index('href="/r/todo/462081"'))
+    row = resp.text[start : resp.text.index("</li>", start)]
+    assert "td459589" in row
     depth = 0
-    for tag in re.finditer(r"<(/?)a[\s>]", resp.text):
+    for tag in re.finditer(r"<(/?)a[\s>]", row):
         depth += -1 if tag.group(1) else 1
         assert depth <= 1, "nested <a> in the needs-you page"
 
