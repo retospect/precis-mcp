@@ -202,7 +202,9 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      dependency drift (the ship gate can't catch it — no code changed);
      investigate the named failing tests. **`DUE`** (last run >24h ago) →
      **delegate the refresh to a background `test-runner` agent** (haiku) running
-     `scripts/nightly` — the suite takes minutes, so it runs off the main loop
+     `scripts/nightly` — the suite takes ~25 min (30k tests, 1413 s on
+     2026-10-10; tell the agent so it does not call a quiet run hung — the
+     log prints nothing until the end), so it runs off the main loop
      and records green/red to `.nightly-status.md` for the next `--check`. Do
      **not** run the suite inline here (it would block the report). A fresh
      `✓ green`, or a `DUE` you've just delegated, needs nothing more.
