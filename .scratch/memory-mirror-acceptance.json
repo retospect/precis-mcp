@@ -4,12 +4,12 @@
   "reviewed_source_sha": "2755f8a1adf70ea3ad38ed9318b8fac8f9b6b2e4",
   "verified_git_blobs": {
     "src/precis/cli/memory_mirror.py": "88cfc19ba0051a0499a4fe9dbd2aba872069d7e2",
-    "src/precis/cli/memory.py": "03c60c46c366366c57155f561aee979fcfd786cf",
+    "src/precis/cli/memory.py": "1ecc7f0f8eddc30531c9b7eb88d81f8819e70028",
     "src/precis/utils/text.py": "ee025af69aae61fd32f7060c78abe178a797b995"
   },
-  "test_sha256": "e704cafb193325254ba7d82fe98a776b6ed3bd7d12632f852c4a6887313c7b44",
+  "test_sha256": "a5bc54e54e6d787f2217ef2ce8435f3ae25ffd140e61ea83d9000cd1417bcf1f",
   "source_provenance": "generated shape fixture; actual orchestrator source path not established; no real content read",
-  "database": "precis_test_37444fe59cac",
+  "database": "precis_test_b148a924847d",
   "address_warning": "ALL ids below are ephemeral TEST-DB addresses, NOT production handles",
   "topic_files": 120,
   "index_bytes": 15360,
@@ -25,24 +25,24 @@
   "final_nodes_two_namespaces": 242,
   "final_edges_two_namespaces": 720,
   "sample_test_refs": {
-    "MEMORY.md": 1,
-    "topic-000.md": 2,
-    "topic-001.md": 3
+    "MEMORY.md": 4,
+    "topic-000.md": 5,
+    "topic-001.md": 6
   },
   "sample_test_edges": [
     {
-      "src": 1,
-      "dst": 2,
+      "src": 4,
+      "dst": 5,
       "rel": "related-to"
     },
     {
-      "src": 1,
-      "dst": 3,
+      "src": 4,
+      "dst": 6,
       "rel": "related-to"
     },
     {
-      "src": 1,
-      "dst": 4,
+      "src": 4,
+      "dst": 7,
       "rel": "related-to"
     }
   ],
@@ -660,20 +660,20 @@
         "memory",
         "mirror",
         "import",
-        "/tmp/pytest-of-precis/pytest-0/popen-gw2/test_synthetic_orchestrator_ro0/synthetic-source",
+        "/tmp/pytest-of-precis/pytest-0/popen-gw1/test_synthetic_orchestrator_ro0/synthetic-source",
         "--namespace",
         "acceptance",
         "--database-url",
         "<verified throwaway test DSN>"
       ],
-      "receipt": "{\"created\": 121, \"exported_native\": [], \"missing\": [], \"refreshed\": [], \"refs\": {\"MEMORY.md\": 1, \"topic-000.md\": 2, \"topic-001.md\": 3, \"topic-002.md\": 4, \"topic-003.md\": 5, \"topic-004.md\": 6, \"topic-005.md\": 7, \"topic-006.md\": 8, \"topic-007.md\": 9, \"topic-008.md\": 10, \"topic-009.md\": 11, \"topic-010.md\": 12, \"topic-011.md\": 13, \"topic-012.md\": 14, \"topic-013.md\": 15, \"topic-014.md\": 16, \"topic-015.md\": 17, \"topic-016.md\": 18, \"topic-017.md\": 19, \"topic-018.md\": 20, \"topic-019.md\": 21, \"topic-020.md\": 22, \"topic-021.md\": 23, \"topic-022.md\": 24, \"topic-023.md\": 25, \"topic-024.md\": 26, \"topic-025.md\": 27, \"topic-026.md\": 28, \"topic-027.md\": 29, \"topic-028.md\": 30, \"topic-029.md\": 31, \"topic-030.md\": 32, \"topic-031.md\": 33, \"topic-032.md\": 34, \"topic-033.md\": 35, \"topic-034.md\": 36, \"topic-035.md\": 37, \"topic-036.md\": 38, \"topic-037.md\": 39, \"topic-038.md\": 40, \"topic-039.md\": 41, \"topic-040.md\": 42, \"topic-041.md\": 43, \"topic-042.md\": 44, \"topic-043.md\": 45, \"topic-044.md\": 46, \"topic-045.md\": 47, \"topic-046.md\": 48, \"topic-047.md\": 49, \"topic-048.md\": 50, \"topic-049.md\": 51, \"topic-050.md\": 52, \"topic-051.md\": 53, \"topic-052.md\": 54, \"topic-053.md\": 55, \"topic-054.md\": 56, \"topic-055.md\": 57, \"topic-056.md\": 58, \"topic-057.md\": 59, \"topic-058.md\": 60, \"topic-059.md\": 61, \"topic-060.md\": 62, \"topic-061.md\": 63, \"topic-062.md\": 64, \"topic-063.md\": 65, \"topic-064.md\": 66, \"topic-065.md\": 67, \"topic-066.md\": 68, \"topic-067.md\": 69, \"topic-068.md\": 70, \"topic-069.md\": 71, \"topic-070.md\": 72, \"topic-071.md\": 73, \"topic-072.md\": 74, \"topic-073.md\": 75, \"topic-074.md\": 76, \"topic-075.md\": 77, \"topic-076.md\": 78, \"topic-077.md\": 79, \"topic-078.md\": 80, \"topic-079.md\": 81, \"topic-080.md\": 82, \"topic-081.md\": 83, \"topic-082.md\": 84, \"topic-083.md\": 85, \"topic-084.md\": 86, \"topic-085.md\": 87, \"topic-086.md\": 88, \"topic-087.md\": 89, \"topic-088.md\": 90, \"topic-089.md\": 91, \"topic-090.md\": 92, \"topic-091.md\": 93, \"topic-092.md\": 94, \"topic-093.md\": 95, \"topic-094.md\": 96, \"topic-095.md\": 97, \"topic-096.md\": 98, \"topic-097.md\": 99, \"topic-098.md\": 100, \"topic-099.md\": 101, \"topic-100.md\": 102, \"topic-101.md\": 103, \"topic-102.md\": 104, \"topic-103.md\": 105, \"topic-104.md\": 106, \"topic-105.md\": 107, \"topic-106.md\": 108, \"topic-107.md\": 109, \"topic-108.md\": 110, \"topic-109.md\": 111, \"topic-110.md\": 112, \"topic-111.md\": 113, \"topic-112.md\": 114, \"topic-113.md\": 115, \"topic-114.md\": 116, \"topic-115.md\": 117, \"topic-116.md\": 118, \"topic-117.md\": 119, \"topic-118.md\": 120, \"topic-119.md\": 121}, \"retired\": [], \"retired_missing\": [], \"unchanged\": 0, \"unexported\": [], \"unresolved\": [], \"updated\": 0}"
+      "receipt": "{\"created\": 121, \"exported_native\": [], \"missing\": [], \"refreshed\": [], \"refs\": {\"MEMORY.md\": 4, \"topic-000.md\": 5, \"topic-001.md\": 6, \"topic-002.md\": 7, \"topic-003.md\": 8, \"topic-004.md\": 9, \"topic-005.md\": 10, \"topic-006.md\": 11, \"topic-007.md\": 12, \"topic-008.md\": 13, \"topic-009.md\": 14, \"topic-010.md\": 15, \"topic-011.md\": 16, \"topic-012.md\": 17, \"topic-013.md\": 18, \"topic-014.md\": 19, \"topic-015.md\": 20, \"topic-016.md\": 21, \"topic-017.md\": 22, \"topic-018.md\": 23, \"topic-019.md\": 24, \"topic-020.md\": 25, \"topic-021.md\": 26, \"topic-022.md\": 27, \"topic-023.md\": 28, \"topic-024.md\": 29, \"topic-025.md\": 30, \"topic-026.md\": 31, \"topic-027.md\": 32, \"topic-028.md\": 33, \"topic-029.md\": 34, \"topic-030.md\": 35, \"topic-031.md\": 36, \"topic-032.md\": 37, \"topic-033.md\": 38, \"topic-034.md\": 39, \"topic-035.md\": 40, \"topic-036.md\": 41, \"topic-037.md\": 42, \"topic-038.md\": 43, \"topic-039.md\": 44, \"topic-040.md\": 45, \"topic-041.md\": 46, \"topic-042.md\": 47, \"topic-043.md\": 48, \"topic-044.md\": 49, \"topic-045.md\": 50, \"topic-046.md\": 51, \"topic-047.md\": 52, \"topic-048.md\": 53, \"topic-049.md\": 54, \"topic-050.md\": 55, \"topic-051.md\": 56, \"topic-052.md\": 57, \"topic-053.md\": 58, \"topic-054.md\": 59, \"topic-055.md\": 60, \"topic-056.md\": 61, \"topic-057.md\": 62, \"topic-058.md\": 63, \"topic-059.md\": 64, \"topic-060.md\": 65, \"topic-061.md\": 66, \"topic-062.md\": 67, \"topic-063.md\": 68, \"topic-064.md\": 69, \"topic-065.md\": 70, \"topic-066.md\": 71, \"topic-067.md\": 72, \"topic-068.md\": 73, \"topic-069.md\": 74, \"topic-070.md\": 75, \"topic-071.md\": 76, \"topic-072.md\": 77, \"topic-073.md\": 78, \"topic-074.md\": 79, \"topic-075.md\": 80, \"topic-076.md\": 81, \"topic-077.md\": 82, \"topic-078.md\": 83, \"topic-079.md\": 84, \"topic-080.md\": 85, \"topic-081.md\": 86, \"topic-082.md\": 87, \"topic-083.md\": 88, \"topic-084.md\": 89, \"topic-085.md\": 90, \"topic-086.md\": 91, \"topic-087.md\": 92, \"topic-088.md\": 93, \"topic-089.md\": 94, \"topic-090.md\": 95, \"topic-091.md\": 96, \"topic-092.md\": 97, \"topic-093.md\": 98, \"topic-094.md\": 99, \"topic-095.md\": 100, \"topic-096.md\": 101, \"topic-097.md\": 102, \"topic-098.md\": 103, \"topic-099.md\": 104, \"topic-100.md\": 105, \"topic-101.md\": 106, \"topic-102.md\": 107, \"topic-103.md\": 108, \"topic-104.md\": 109, \"topic-105.md\": 110, \"topic-106.md\": 111, \"topic-107.md\": 112, \"topic-108.md\": 113, \"topic-109.md\": 114, \"topic-110.md\": 115, \"topic-111.md\": 116, \"topic-112.md\": 117, \"topic-113.md\": 118, \"topic-114.md\": 119, \"topic-115.md\": 120, \"topic-116.md\": 121, \"topic-117.md\": 122, \"topic-118.md\": 123, \"topic-119.md\": 124}, \"retired\": [], \"retired_missing\": [], \"unchanged\": 0, \"unexported\": [], \"unresolved\": [], \"updated\": 0}"
     },
     {
       "argv": [
         "memory",
         "mirror",
         "export",
-        "/tmp/pytest-of-precis/pytest-0/popen-gw2/test_synthetic_orchestrator_ro0/synthetic-export",
+        "/tmp/pytest-of-precis/pytest-0/popen-gw1/test_synthetic_orchestrator_ro0/synthetic-export",
         "--namespace",
         "acceptance",
         "--database-url",
@@ -686,33 +686,33 @@
         "memory",
         "mirror",
         "import",
-        "/tmp/pytest-of-precis/pytest-0/popen-gw2/test_synthetic_orchestrator_ro0/synthetic-source",
+        "/tmp/pytest-of-precis/pytest-0/popen-gw1/test_synthetic_orchestrator_ro0/synthetic-source",
         "--namespace",
         "acceptance",
         "--database-url",
         "<verified throwaway test DSN>"
       ],
-      "receipt": "{\"created\": 0, \"exported_native\": [], \"missing\": [], \"refreshed\": [], \"refs\": {\"MEMORY.md\": 1, \"topic-000.md\": 2, \"topic-001.md\": 3, \"topic-002.md\": 4, \"topic-003.md\": 5, \"topic-004.md\": 6, \"topic-005.md\": 7, \"topic-006.md\": 8, \"topic-007.md\": 9, \"topic-008.md\": 10, \"topic-009.md\": 11, \"topic-010.md\": 12, \"topic-011.md\": 13, \"topic-012.md\": 14, \"topic-013.md\": 15, \"topic-014.md\": 16, \"topic-015.md\": 17, \"topic-016.md\": 18, \"topic-017.md\": 19, \"topic-018.md\": 20, \"topic-019.md\": 21, \"topic-020.md\": 22, \"topic-021.md\": 23, \"topic-022.md\": 24, \"topic-023.md\": 25, \"topic-024.md\": 26, \"topic-025.md\": 27, \"topic-026.md\": 28, \"topic-027.md\": 29, \"topic-028.md\": 30, \"topic-029.md\": 31, \"topic-030.md\": 32, \"topic-031.md\": 33, \"topic-032.md\": 34, \"topic-033.md\": 35, \"topic-034.md\": 36, \"topic-035.md\": 37, \"topic-036.md\": 38, \"topic-037.md\": 39, \"topic-038.md\": 40, \"topic-039.md\": 41, \"topic-040.md\": 42, \"topic-041.md\": 43, \"topic-042.md\": 44, \"topic-043.md\": 45, \"topic-044.md\": 46, \"topic-045.md\": 47, \"topic-046.md\": 48, \"topic-047.md\": 49, \"topic-048.md\": 50, \"topic-049.md\": 51, \"topic-050.md\": 52, \"topic-051.md\": 53, \"topic-052.md\": 54, \"topic-053.md\": 55, \"topic-054.md\": 56, \"topic-055.md\": 57, \"topic-056.md\": 58, \"topic-057.md\": 59, \"topic-058.md\": 60, \"topic-059.md\": 61, \"topic-060.md\": 62, \"topic-061.md\": 63, \"topic-062.md\": 64, \"topic-063.md\": 65, \"topic-064.md\": 66, \"topic-065.md\": 67, \"topic-066.md\": 68, \"topic-067.md\": 69, \"topic-068.md\": 70, \"topic-069.md\": 71, \"topic-070.md\": 72, \"topic-071.md\": 73, \"topic-072.md\": 74, \"topic-073.md\": 75, \"topic-074.md\": 76, \"topic-075.md\": 77, \"topic-076.md\": 78, \"topic-077.md\": 79, \"topic-078.md\": 80, \"topic-079.md\": 81, \"topic-080.md\": 82, \"topic-081.md\": 83, \"topic-082.md\": 84, \"topic-083.md\": 85, \"topic-084.md\": 86, \"topic-085.md\": 87, \"topic-086.md\": 88, \"topic-087.md\": 89, \"topic-088.md\": 90, \"topic-089.md\": 91, \"topic-090.md\": 92, \"topic-091.md\": 93, \"topic-092.md\": 94, \"topic-093.md\": 95, \"topic-094.md\": 96, \"topic-095.md\": 97, \"topic-096.md\": 98, \"topic-097.md\": 99, \"topic-098.md\": 100, \"topic-099.md\": 101, \"topic-100.md\": 102, \"topic-101.md\": 103, \"topic-102.md\": 104, \"topic-103.md\": 105, \"topic-104.md\": 106, \"topic-105.md\": 107, \"topic-106.md\": 108, \"topic-107.md\": 109, \"topic-108.md\": 110, \"topic-109.md\": 111, \"topic-110.md\": 112, \"topic-111.md\": 113, \"topic-112.md\": 114, \"topic-113.md\": 115, \"topic-114.md\": 116, \"topic-115.md\": 117, \"topic-116.md\": 118, \"topic-117.md\": 119, \"topic-118.md\": 120, \"topic-119.md\": 121}, \"retired\": [], \"retired_missing\": [], \"unchanged\": 121, \"unexported\": [], \"unresolved\": [], \"updated\": 0}"
+      "receipt": "{\"created\": 0, \"exported_native\": [], \"missing\": [], \"refreshed\": [], \"refs\": {\"MEMORY.md\": 4, \"topic-000.md\": 5, \"topic-001.md\": 6, \"topic-002.md\": 7, \"topic-003.md\": 8, \"topic-004.md\": 9, \"topic-005.md\": 10, \"topic-006.md\": 11, \"topic-007.md\": 12, \"topic-008.md\": 13, \"topic-009.md\": 14, \"topic-010.md\": 15, \"topic-011.md\": 16, \"topic-012.md\": 17, \"topic-013.md\": 18, \"topic-014.md\": 19, \"topic-015.md\": 20, \"topic-016.md\": 21, \"topic-017.md\": 22, \"topic-018.md\": 23, \"topic-019.md\": 24, \"topic-020.md\": 25, \"topic-021.md\": 26, \"topic-022.md\": 27, \"topic-023.md\": 28, \"topic-024.md\": 29, \"topic-025.md\": 30, \"topic-026.md\": 31, \"topic-027.md\": 32, \"topic-028.md\": 33, \"topic-029.md\": 34, \"topic-030.md\": 35, \"topic-031.md\": 36, \"topic-032.md\": 37, \"topic-033.md\": 38, \"topic-034.md\": 39, \"topic-035.md\": 40, \"topic-036.md\": 41, \"topic-037.md\": 42, \"topic-038.md\": 43, \"topic-039.md\": 44, \"topic-040.md\": 45, \"topic-041.md\": 46, \"topic-042.md\": 47, \"topic-043.md\": 48, \"topic-044.md\": 49, \"topic-045.md\": 50, \"topic-046.md\": 51, \"topic-047.md\": 52, \"topic-048.md\": 53, \"topic-049.md\": 54, \"topic-050.md\": 55, \"topic-051.md\": 56, \"topic-052.md\": 57, \"topic-053.md\": 58, \"topic-054.md\": 59, \"topic-055.md\": 60, \"topic-056.md\": 61, \"topic-057.md\": 62, \"topic-058.md\": 63, \"topic-059.md\": 64, \"topic-060.md\": 65, \"topic-061.md\": 66, \"topic-062.md\": 67, \"topic-063.md\": 68, \"topic-064.md\": 69, \"topic-065.md\": 70, \"topic-066.md\": 71, \"topic-067.md\": 72, \"topic-068.md\": 73, \"topic-069.md\": 74, \"topic-070.md\": 75, \"topic-071.md\": 76, \"topic-072.md\": 77, \"topic-073.md\": 78, \"topic-074.md\": 79, \"topic-075.md\": 80, \"topic-076.md\": 81, \"topic-077.md\": 82, \"topic-078.md\": 83, \"topic-079.md\": 84, \"topic-080.md\": 85, \"topic-081.md\": 86, \"topic-082.md\": 87, \"topic-083.md\": 88, \"topic-084.md\": 89, \"topic-085.md\": 90, \"topic-086.md\": 91, \"topic-087.md\": 92, \"topic-088.md\": 93, \"topic-089.md\": 94, \"topic-090.md\": 95, \"topic-091.md\": 96, \"topic-092.md\": 97, \"topic-093.md\": 98, \"topic-094.md\": 99, \"topic-095.md\": 100, \"topic-096.md\": 101, \"topic-097.md\": 102, \"topic-098.md\": 103, \"topic-099.md\": 104, \"topic-100.md\": 105, \"topic-101.md\": 106, \"topic-102.md\": 107, \"topic-103.md\": 108, \"topic-104.md\": 109, \"topic-105.md\": 110, \"topic-106.md\": 111, \"topic-107.md\": 112, \"topic-108.md\": 113, \"topic-109.md\": 114, \"topic-110.md\": 115, \"topic-111.md\": 116, \"topic-112.md\": 117, \"topic-113.md\": 118, \"topic-114.md\": 119, \"topic-115.md\": 120, \"topic-116.md\": 121, \"topic-117.md\": 122, \"topic-118.md\": 123, \"topic-119.md\": 124}, \"retired\": [], \"retired_missing\": [], \"unchanged\": 121, \"unexported\": [], \"unresolved\": [], \"updated\": 0}"
     },
     {
       "argv": [
         "memory",
         "mirror",
         "import",
-        "/tmp/pytest-of-precis/pytest-0/popen-gw2/test_synthetic_orchestrator_ro0/synthetic-export",
+        "/tmp/pytest-of-precis/pytest-0/popen-gw1/test_synthetic_orchestrator_ro0/synthetic-export",
         "--namespace",
         "acceptance-copy",
         "--database-url",
         "<verified throwaway test DSN>"
       ],
-      "receipt": "{\"created\": 121, \"exported_native\": [], \"missing\": [], \"refreshed\": [], \"refs\": {\"MEMORY.md\": 122, \"topic-000.md\": 123, \"topic-001.md\": 124, \"topic-002.md\": 125, \"topic-003.md\": 126, \"topic-004.md\": 127, \"topic-005.md\": 128, \"topic-006.md\": 129, \"topic-007.md\": 130, \"topic-008.md\": 131, \"topic-009.md\": 132, \"topic-010.md\": 133, \"topic-011.md\": 134, \"topic-012.md\": 135, \"topic-013.md\": 136, \"topic-014.md\": 137, \"topic-015.md\": 138, \"topic-016.md\": 139, \"topic-017.md\": 140, \"topic-018.md\": 141, \"topic-019.md\": 142, \"topic-020.md\": 143, \"topic-021.md\": 144, \"topic-022.md\": 145, \"topic-023.md\": 146, \"topic-024.md\": 147, \"topic-025.md\": 148, \"topic-026.md\": 149, \"topic-027.md\": 150, \"topic-028.md\": 151, \"topic-029.md\": 152, \"topic-030.md\": 153, \"topic-031.md\": 154, \"topic-032.md\": 155, \"topic-033.md\": 156, \"topic-034.md\": 157, \"topic-035.md\": 158, \"topic-036.md\": 159, \"topic-037.md\": 160, \"topic-038.md\": 161, \"topic-039.md\": 162, \"topic-040.md\": 163, \"topic-041.md\": 164, \"topic-042.md\": 165, \"topic-043.md\": 166, \"topic-044.md\": 167, \"topic-045.md\": 168, \"topic-046.md\": 169, \"topic-047.md\": 170, \"topic-048.md\": 171, \"topic-049.md\": 172, \"topic-050.md\": 173, \"topic-051.md\": 174, \"topic-052.md\": 175, \"topic-053.md\": 176, \"topic-054.md\": 177, \"topic-055.md\": 178, \"topic-056.md\": 179, \"topic-057.md\": 180, \"topic-058.md\": 181, \"topic-059.md\": 182, \"topic-060.md\": 183, \"topic-061.md\": 184, \"topic-062.md\": 185, \"topic-063.md\": 186, \"topic-064.md\": 187, \"topic-065.md\": 188, \"topic-066.md\": 189, \"topic-067.md\": 190, \"topic-068.md\": 191, \"topic-069.md\": 192, \"topic-070.md\": 193, \"topic-071.md\": 194, \"topic-072.md\": 195, \"topic-073.md\": 196, \"topic-074.md\": 197, \"topic-075.md\": 198, \"topic-076.md\": 199, \"topic-077.md\": 200, \"topic-078.md\": 201, \"topic-079.md\": 202, \"topic-080.md\": 203, \"topic-081.md\": 204, \"topic-082.md\": 205, \"topic-083.md\": 206, \"topic-084.md\": 207, \"topic-085.md\": 208, \"topic-086.md\": 209, \"topic-087.md\": 210, \"topic-088.md\": 211, \"topic-089.md\": 212, \"topic-090.md\": 213, \"topic-091.md\": 214, \"topic-092.md\": 215, \"topic-093.md\": 216, \"topic-094.md\": 217, \"topic-095.md\": 218, \"topic-096.md\": 219, \"topic-097.md\": 220, \"topic-098.md\": 221, \"topic-099.md\": 222, \"topic-100.md\": 223, \"topic-101.md\": 224, \"topic-102.md\": 225, \"topic-103.md\": 226, \"topic-104.md\": 227, \"topic-105.md\": 228, \"topic-106.md\": 229, \"topic-107.md\": 230, \"topic-108.md\": 231, \"topic-109.md\": 232, \"topic-110.md\": 233, \"topic-111.md\": 234, \"topic-112.md\": 235, \"topic-113.md\": 236, \"topic-114.md\": 237, \"topic-115.md\": 238, \"topic-116.md\": 239, \"topic-117.md\": 240, \"topic-118.md\": 241, \"topic-119.md\": 242}, \"retired\": [], \"retired_missing\": [], \"unchanged\": 0, \"unexported\": [], \"unresolved\": [], \"updated\": 0}"
+      "receipt": "{\"created\": 121, \"exported_native\": [], \"missing\": [], \"refreshed\": [], \"refs\": {\"MEMORY.md\": 125, \"topic-000.md\": 126, \"topic-001.md\": 127, \"topic-002.md\": 128, \"topic-003.md\": 129, \"topic-004.md\": 130, \"topic-005.md\": 131, \"topic-006.md\": 132, \"topic-007.md\": 133, \"topic-008.md\": 134, \"topic-009.md\": 135, \"topic-010.md\": 136, \"topic-011.md\": 137, \"topic-012.md\": 138, \"topic-013.md\": 139, \"topic-014.md\": 140, \"topic-015.md\": 141, \"topic-016.md\": 142, \"topic-017.md\": 143, \"topic-018.md\": 144, \"topic-019.md\": 145, \"topic-020.md\": 146, \"topic-021.md\": 147, \"topic-022.md\": 148, \"topic-023.md\": 149, \"topic-024.md\": 150, \"topic-025.md\": 151, \"topic-026.md\": 152, \"topic-027.md\": 153, \"topic-028.md\": 154, \"topic-029.md\": 155, \"topic-030.md\": 156, \"topic-031.md\": 157, \"topic-032.md\": 158, \"topic-033.md\": 159, \"topic-034.md\": 160, \"topic-035.md\": 161, \"topic-036.md\": 162, \"topic-037.md\": 163, \"topic-038.md\": 164, \"topic-039.md\": 165, \"topic-040.md\": 166, \"topic-041.md\": 167, \"topic-042.md\": 168, \"topic-043.md\": 169, \"topic-044.md\": 170, \"topic-045.md\": 171, \"topic-046.md\": 172, \"topic-047.md\": 173, \"topic-048.md\": 174, \"topic-049.md\": 175, \"topic-050.md\": 176, \"topic-051.md\": 177, \"topic-052.md\": 178, \"topic-053.md\": 179, \"topic-054.md\": 180, \"topic-055.md\": 181, \"topic-056.md\": 182, \"topic-057.md\": 183, \"topic-058.md\": 184, \"topic-059.md\": 185, \"topic-060.md\": 186, \"topic-061.md\": 187, \"topic-062.md\": 188, \"topic-063.md\": 189, \"topic-064.md\": 190, \"topic-065.md\": 191, \"topic-066.md\": 192, \"topic-067.md\": 193, \"topic-068.md\": 194, \"topic-069.md\": 195, \"topic-070.md\": 196, \"topic-071.md\": 197, \"topic-072.md\": 198, \"topic-073.md\": 199, \"topic-074.md\": 200, \"topic-075.md\": 201, \"topic-076.md\": 202, \"topic-077.md\": 203, \"topic-078.md\": 204, \"topic-079.md\": 205, \"topic-080.md\": 206, \"topic-081.md\": 207, \"topic-082.md\": 208, \"topic-083.md\": 209, \"topic-084.md\": 210, \"topic-085.md\": 211, \"topic-086.md\": 212, \"topic-087.md\": 213, \"topic-088.md\": 214, \"topic-089.md\": 215, \"topic-090.md\": 216, \"topic-091.md\": 217, \"topic-092.md\": 218, \"topic-093.md\": 219, \"topic-094.md\": 220, \"topic-095.md\": 221, \"topic-096.md\": 222, \"topic-097.md\": 223, \"topic-098.md\": 224, \"topic-099.md\": 225, \"topic-100.md\": 226, \"topic-101.md\": 227, \"topic-102.md\": 228, \"topic-103.md\": 229, \"topic-104.md\": 230, \"topic-105.md\": 231, \"topic-106.md\": 232, \"topic-107.md\": 233, \"topic-108.md\": 234, \"topic-109.md\": 235, \"topic-110.md\": 236, \"topic-111.md\": 237, \"topic-112.md\": 238, \"topic-113.md\": 239, \"topic-114.md\": 240, \"topic-115.md\": 241, \"topic-116.md\": 242, \"topic-117.md\": 243, \"topic-118.md\": 244, \"topic-119.md\": 245}, \"retired\": [], \"retired_missing\": [], \"unchanged\": 0, \"unexported\": [], \"unresolved\": [], \"updated\": 0}"
     },
     {
       "argv": [
         "memory",
         "mirror",
         "export",
-        "/tmp/pytest-of-precis/pytest-0/popen-gw2/test_synthetic_orchestrator_ro0/synthetic-reexport",
+        "/tmp/pytest-of-precis/pytest-0/popen-gw1/test_synthetic_orchestrator_ro0/synthetic-reexport",
         "--namespace",
         "acceptance-copy",
         "--database-url",

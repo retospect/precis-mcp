@@ -80,8 +80,11 @@ def latest_main_run() -> tuple[dict | None, dict | None]:
         "check",
         "--event",
         "push",
+        # 30, not 8: a merge burst cancels each superseded run, and on
+        # 2026-10-10 the 8 newest were all cancelled or in progress, so the
+        # last real verdict (a failure) fell off the page and read "unavailable".
         "--limit",
-        "8",
+        "30",
         "--json",
         "databaseId,headSha,conclusion,status,createdAt",
     )
@@ -197,7 +200,8 @@ def main() -> int:
     if verdict is None:
         if not for_hook:
             print(
-                "main-ci-status: unavailable (gh offline/unauthenticated, or no completed run)"
+                "main-ci-status: unavailable (gh offline/unauthenticated, or no "
+                "non-cancelled completed run in the last 30)"
             )
         return 0
     sha = verdict["headSha"][:8]

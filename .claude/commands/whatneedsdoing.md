@@ -36,7 +36,7 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
 Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build ⋅ main on CI:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; scripts/main-ci-status 2>&1 || true`
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
 
 ## Procedure
 
@@ -52,9 +52,12 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    left-in "DONE" item is the same append-only rot the docs triage cured. (The
    lint excludes partially-open items that merely *mention* something shipped.)
    The dark-factory workstream is active.
-   **Thread files and the active set.** `docs/roadmap.md` names the active
-   threads; `scripts/inflight` shows which have a session. Flag both
-   mismatches (active with no session, dormant with one). Then, for every
+   **Thread files and the active set.** The active roster is
+   `.claude/fleet/threads.tsv` (`docs/roadmap.md` only links its generated
+   view); `scripts/inflight` shows which have a session. Inflight has no
+   thread column — match a tree to a thread by its purpose line and say the
+   match is inferred. Flag both mismatches (active with no session, dormant
+   with one). Then, for every
    `gr<id>` in `docs/backlog/threads/*.md`, check live status
    (`get(kind='gripe', id=N)`): a closed gripe still ranked is a stale
    pointer to delete in the owner's file (keep "soft-deleted, do not
@@ -240,6 +243,13 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    the ops digest pushes); if one exists and is fresh, its classification /
    diagnosis / needs-a-human sections ARE this step — fall back to the raw
    SQL below when the report is stale, absent, or you need to drill deeper.
+   Find it with `scripts/prod-psql "SELECT ref_id, created_at FROM refs WHERE
+   kind='draft' AND meta->>'author'='doctor' ORDER BY created_at DESC LIMIT
+   1"`, then `get(kind='draft', id='dr<ref_id>')` for the outline and
+   `get(kind='draft', id='dc<chunk>')` for a full section (the
+   `dr…~dc…` selector form returns NotFound, gr477862). The doctor
+   classifies only what it alerts on: still run the per-host histogram
+   below — it costs one query and catches a hot pass the report missed.
    Prod-hop and pull the per-host histogram:
    ```sql
    -- per-host err/warn in 24h (matches the /status footer)
@@ -262,7 +272,14 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    Then classify — this is the load-bearing judgement:
    - **Broken pass** — near-100% failure, *no* successes. Check the pass's
      success-write table over the same window (does it write *anything*?). This
-     is a P0 repo bug or a downed backend; file a gripe or fix.
+     is a P0 repo bug or a downed backend; file a gripe or fix. **Zero INFO
+     rows for the pass in `worker_logs` is not evidence of zero successes** —
+     many passes log only on failure. Count the output table (`llm_summarize`
+     → `chunk_summaries.created_at`, embeddings → `chunks.embedding IS NOT
+     NULL`, …). On 2026-10-10 a delegated digest called `llm_summarize`
+     "broken, 0 successes" from 0 INFO lines while it wrote 11,411
+     `chunk_summaries` rows; demand the table count from any agent you
+     delegate this to.
    - **Noisy-but-working** — failures *alongside* successes (e.g. `llm_summarize`
      wrote 5.7k `chunk_summaries` rows while logging 7k `empty summary` ERRORs —
      a ~50% parse-failure rate that floods the error surface and wastes ~half the
@@ -382,7 +399,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      analogue of the "spin-loop spike usually means redeploy, not new bug" rule.
 
    Only after both gates: file each distinct, *confirmed-live* root cause as a
-   `gripe` (`put(kind='gripe', ...)`) so it enters substrate 1, or fix it
+   `gripe` (`put(kind='gripe', ...)`; `PRIO:` is one of
+   low/normal/high/urgent) so it enters substrate 1, or fix it
    directly.
 7. **Group by substrate, then rank.** Keep the two substrates visually
    separate; within each, highest-impact first with a one-line next action.
