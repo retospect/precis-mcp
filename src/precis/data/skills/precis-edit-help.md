@@ -277,7 +277,8 @@ abbreviation hint) — all documented in `precis-draft-help`, not here.
 `hook` (see `precis-memory-help`), pres's BibTeX attribution fields
 (venue/date/authors/…, see `precis-pres-help`), or a draft registry `term`
 leaf's attribute bag (see `precis-draft-help`). For example,
-`edit(kind='memory', id=N, meta={'hook': 'Recall when choosing a retry policy'})`.
+`edit(kind='memory', id=N, mode='replace', args={'meta': {'hook': 'Recall when choosing a retry policy'}})`
+(top-level `meta=` still works but is deprecated).
 A kind whose edit handler doesn't declare it raises `BadInput` naming
 `meta` instead of silently swallowing the kwarg.
 

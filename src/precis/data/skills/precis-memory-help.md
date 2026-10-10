@@ -40,11 +40,16 @@ q='<topic>')` first, then use the integer id from the hit.
 replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
 `precis memory mirror import|export` is how harness `MEMORY.md` and its topic files
 become `SPACE:repo-dev` nodes (the one-shot `precis memory import` is the cutover
-tool, not a seeding path); `precis memory index` prints them back as the
-session-start index, one `- <Title> (me<id>) — <hook>` line per node.
+tool, not a seeding path); `precis memory index` prints only the live
+threads for session start: `section:threads` nodes edited in the last 14
+days (`--days N`), newest first, one `- me<id> <Title> — <Left: line>` each
+(first body line, else `meta.hook`), plus a count of older ones. Everything
+else is recalled by `search`; `--full` prints the old every-node list.
+A thread node's first line is `Left: …`; keep it true or `delete` the node.
 A `SPACE:repo-dev` memory's index text is `meta={'hook': 'one line'}`, on
 `put` or alone on `edit(kind='memory', id=N, mode='replace',
-meta={'hook': '…'})` (one line, non-empty; `hook` is the only writable key).
+args={'meta': {'hook': '…'}})` (one line, non-empty; `hook` is the only
+writable key; `edit`'s kind fields go in `args=`).
 Its `section:<slug>` tag places it under that `## Section` of the index;
 retag with `tag(add=['section:<slug>'], remove=['section:<old>'])`.
 
@@ -105,8 +110,8 @@ id=42, mode='find-replace', find='/old/path', text='/new/path')`, or
 kinds: `before=`/`after=` anchors, `match='unique'` (default; an ambiguous
 `find=` is refused with the candidate lines) `|'first'|'all'|'nth'` + `nth=`,
 `text=''` deletes the span, `dry_run=True` returns the diff and writes
-nothing. `meta=` rides along; `title=`/`rule=`/`warrant=` are
-`mode='replace'` only. An edit that would empty the body is refused. Always
+nothing. `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
+in `args=`) are `mode='replace'` only. An edit that would empty the body is refused. Always
 name `mode=`: `text=` with the default `find-replace` and no `find=` is
 refused, never taken as a whole-body overwrite.
 If another edit changes the body before the write, the edit is refused
@@ -164,7 +169,7 @@ search(kind="memory", tags=["SPACE:repo-dev"], q="<the task in a sentence>", vie
 get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # on the best hit
 ```
 
-`view='index'` prints each hit as the session-start bullet, one per line:
+`view='index'` prints each hit as an index bullet, one per line:
 `- <Title> (me4641, <filename>) — <hook>`. The filename appears when the
 memory mirrors a topic file; the hook is `meta.hook`, else the body's first
 line. `q=` is required. The second call opens the hit with its linked

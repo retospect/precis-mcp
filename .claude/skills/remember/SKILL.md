@@ -19,9 +19,14 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
 3. **New → put it.**
    `put(kind='memory', tags=['SPACE:repo-dev', 'section:<type>'],
    meta={'hook': '<one line: status + what you need to resume>'}, text=…)`.
-   Type: `threads` (in-flight, has a NEXT), `gotchas` (trap), `runbooks`
+   Type: `threads` (one campaign's resume state; see below), `gotchas` (trap), `runbooks`
    (how to do X), `workflow` (how agents/Reto work), `reference` (stable fact).
-   First body line is the title — keep it short.
+   First body line is the title — keep it short, except for a thread: its
+   first body line is `Left: <what remains>` (`Left: none` when finished).
+   The programme lives in the linked `docs/backlog/threads/<slug>.md`; the
+   node holds only where this campaign stopped. Update `Left:` in the same
+   session an item finishes or appears. AGENTS.md §"Repo-dev graph memory"
+   owns the rule.
 4. **Run the `Next:` lines the response prints**: the `part-of` link to the
    suggested hub (check it fits; the root lists all hubs), the `qualifies`
    links from relevant gotchas to a new thread, the type tag if missing.
@@ -32,7 +37,8 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
 6. **Cite durably.** Code as `path/file.py::Qual.name`
    (`docs/conventions/code-anchors.md`), commits as bare short shas, dates
    in UTC. A thread's landed history is not a fact — git has it.
-7. **Thread landed with nothing next → retire it**:
+7. **Thread at `Left: none` with no open linked due-item, or untouched 14
+   days once anything that matters has moved → retire it**:
    `delete(kind='memory', id='me…')` after moving any still-true gotcha or
    ruling into a live node.
 

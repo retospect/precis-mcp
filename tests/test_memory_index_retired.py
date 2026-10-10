@@ -90,34 +90,41 @@ def _fixture_bullets() -> list[str]:
 
 
 def _assert_matches_fixture(got: list[str]) -> None:
-    """``got`` = the header + bullet lines; each fixture bullet renders as
-    ``- Title (me<digits>) — hook`` under the same headers, in order."""
-    want = _fixture_index_lines()
-    assert len(got) == len(want)
-    for g, w in zip(got, want, strict=True):
-        if w.startswith("## "):
-            assert g == w
-            continue
-        m = re.fullmatch(r"- \[(?P<title>[^\]]+)\]\([^)]+\)(?: — (?P<hook>.*))?", w)
-        assert m is not None, w
-        pat = rf"- {re.escape(m['title'])} \(me\d+\)"
-        if m["hook"]:
-            pat += rf" — {re.escape(m['hook'])}"
-        assert re.fullmatch(pat, g), (g, pat)
+    """``got`` = the header + bullet lines of the live-thread render: every
+    fixture ``## Threads`` bullet shows as ``- me<digits> Title — hook``
+    (newly imported = within the 14-day window; the body's first line is not
+    ``Left:``, so the lead falls back to the hook)."""
+    assert got[0] == "## Live threads (edited ≤14 days)"
+    want = {
+        m["title"]: m["hook"]
+        for ln in _fixture_bullets()[:3]
+        if (m := re.fullmatch(r"- \[(?P<title>[^\]]+)\]\([^)]+\) — (?P<hook>.*)", ln))
+    }
+    assert len(got) == 1 + len(want)
+    seen = set()
+    for g in got[1:]:
+        m = re.fullmatch(r"- me\d+ (?P<title>.+?) — (?P<hook>.*)", g)
+        assert m is not None, g
+        lead = want[m["title"]]
+        if len(lead) > 160:
+            lead = lead[:159].rstrip() + "…"
+        assert m["hook"] == lead, g
+        seen.add(m["title"])
+    assert seen == set(want)
 
 
-def test_hook_output_equals_the_fixture_index(store: Store, tmp_path: Path) -> None:
+def test_hook_output_is_the_live_threads_block(store: Store, tmp_path: Path) -> None:
     import_memory_dir(store, FIXTURE)
     proc = _run_hook(tmp_path, _active_dsn())
     assert proc.returncode == 0, proc.stderr
     got = [ln for ln in proc.stdout.splitlines() if ln.startswith(("## ", "- "))]
     _assert_matches_fixture(got)
-    # the hook adds nothing but the index itself
-    assert proc.stdout.startswith("# Memory index\n")
-    assert "over budget" not in proc.stdout
+    # the hook adds nothing but the live-thread block (nothing older here)
+    assert proc.stdout.startswith("## Live threads")
+    assert "older thread nodes" not in proc.stdout
 
 
-def test_hook_over_budget_prints_cut_hooks_and_the_overage_line(
+def test_hook_over_budget_drops_threads_into_the_older_count(
     store: Store, tmp_path: Path
 ) -> None:
     import_memory_dir(store, FIXTURE)
@@ -125,10 +132,9 @@ def test_hook_over_budget_prints_cut_hooks_and_the_overage_line(
     proc = _run_hook(tmp_path, _active_dsn(), claude_md_bytes=32000)
     assert proc.returncode == 0, proc.stderr
     lines = proc.stdout.rstrip("\n").splitlines()
-    assert lines[-1].startswith("(memory index over budget:")
-    assert "budget 0 tok" in lines[-1]
-    alpha = next(ln for ln in lines if ln.startswith("- Alpha campaign (me"))
-    assert alpha.endswith("…") and len(alpha.split(" — ", 1)[1]) == 60
+    assert lines[0] == "## Live threads (edited ≤14 days)"
+    assert lines[1].startswith("(+3 older thread nodes: search(kind='memory'")
+    assert len(lines) == 2
 
 
 def test_hook_exports_the_node_bodies_next_to_the_cache(
@@ -140,9 +146,9 @@ def test_hook_exports_the_node_bodies_next_to_the_cache(
     files = sorted(_nodes(tmp_path).glob("me*.md"))
     assert len(files) == len(_fixture_bullets())  # one per topic node, no sections
     assert all(f.read_text(encoding="utf-8").startswith("# ") for f in files)
-    # every exported handle is one the printed index names
-    for f in files:
-        assert f"({f.stem})" in proc.stdout
+    # every printed thread handle has its exported body
+    printed = re.findall(r"^- (me\d+) ", proc.stdout, re.M)
+    assert len(printed) == 3 and {f.stem for f in files} >= set(printed)
 
     # a dead DB leaves the last good node set (and the index copy) untouched
     before = {f.name: f.read_text(encoding="utf-8") for f in files}

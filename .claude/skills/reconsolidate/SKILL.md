@@ -32,6 +32,8 @@ the `Next:` hint or the `remember` skill, not just the node.
 3. **Judgment findings — delegate, one Sonnet agent per hub:** `eye-truncated`
    (trim landed history, split the rest into `part-of` children), `landed
    thread` / `retire candidate` / `cold` (verify, move keepers, delete),
+   `stale thread` (14+ days untouched: retire, or move what matters to its
+   `docs/backlog/threads` file / a gotcha / a todo),
    `--currency` suspects (adjust, kill or promote-to-doc). Brief each agent
    with: never drop a still-true claim without moving it; check the repo
    before calling something history; report promote-to-doc candidates

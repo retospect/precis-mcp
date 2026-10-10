@@ -89,17 +89,11 @@ MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
 # Graph-mode node bodies, exported by scripts/hooks/session-start-memory.sh.
 NODEDIR="${PRECIS_MEMORY_NODES:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-nodes}"
-# Size is HYSTERETIC — don't fiddle at the margin. Let the index grow untouched
-# up to the high-water mark; only then reconsolidate, and cut it back DOWN to
-# ~low-water (not just under the mark) so it stays quiet for a long time after.
-HIGH_WATER=20000
-LOW_WATER=15000
 
 if [[ ! -d "$MEMDIR" ]]; then
     echo "memory-lint: no memory dir at $MEMDIR (nothing to lint)"; exit 0
 fi
 INDEX="$MEMDIR/MEMORY.md"
-IDX_LABEL="MEMORY.md"
 problems=0
 
 # Graph mode (docs/backlog/memory-native-authoring.md, cutover 2026-10-03).
@@ -107,15 +101,15 @@ problems=0
 # from SPACE:repo-dev memory nodes by scripts/hooks/session-start-memory.sh,
 # which saves its last good render to the same cache path computed here. The
 # topic files are a frozen snapshot of the import, so every check that reads
-# them would lint the snapshot, not the memory. Size and preamble run on the
-# cached render; checks 2, 3b, 5 and 6 run over the exported node bodies
+# them would lint the snapshot, not the memory. The
+# session-start render is only a small live-thread list, so there are no size
+# or preamble checks; checks 2, 3b, 5 and 6 run over the exported node bodies
 # (NODEDIR); 1a/1b have nothing to read and are skipped.
 GRAPH_MARKER='<!-- memory-index: graph -->'
 GRAPH=0
 if grep -qF "$GRAPH_MARKER" "$INDEX" 2>/dev/null; then
     GRAPH=1
     INDEX="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}"
-    IDX_LABEL="memory index"
     if [[ -s "$INDEX" ]]; then
         rendered=$(date -u -r "$INDEX" +%Y-%m-%dT%H:%MZ)
         echo "memory-lint: graph mode — index from the session-start render cached $rendered; checks 1a/1b skipped (the topic files are the cutover snapshot)"
@@ -280,17 +274,6 @@ while IFS= read -r b; do
     fi
 done <<< "$threads"
 
-# 3. index size — hysteresis: silent inside the band, flag only past high-water
-bytes=$(wc -c < "$INDEX" | tr -d ' ')
-if (( bytes > HIGH_WATER )); then
-    if (( GRAPH )); then
-        echo "  memory index past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B: move detail from hooks into bodies (edit(kind='memory', meta={'hook': …})), promote matured memories to permanent docs; retire only landed threads (delete(kind='memory'))."
-    else
-        echo "  MEMORY.md past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B: relocate detail into topic files + promote matured memories to permanent docs (make them permanent); delete only landed threads (git has them). NOT lossy word-trimming."
-    fi
-    problems=$((problems+1))
-fi
-
 if [[ -n "$SCAN_DIR" ]]; then
 # 3b. payload-smell — a topic file (graph mode: node body) carrying fenced code
 # blocks is holding a PAYLOAD (recipe body) where memory should hold a trigger
@@ -401,28 +384,28 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
         }' "$MANIFEST" "$MANIFEST")
 fi
 
-if (( problems == 0 )) && (( GRAPH )); then
-    echo "memory-lint: ✓ clean ($bytes B rendered index, within high-water)"
-elif (( problems == 0 )); then
-    echo "memory-lint: ✓ clean ($bytes B, links resolve, no landed threads lingering)"
-else
-    echo "memory-lint: $problems hygiene issue(s) above"
+# 9. stale thread (graph mode, manifest): a section:threads node not edited in
+# 14+ days is no longer "live" — the session-start render stops listing it
+# (precis memory index --days). Advisory: it lists, it never changes anything.
+if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
+    stale_now=$(date +%s)
+    while IFS=$'\t' read -r h _sec upd _rest; do
+        [[ -n "$upd" ]] || continue
+        upd_e=$(epoch_of "$upd" || true); [[ -n "$upd_e" ]] || continue
+        age_d=$(( (stale_now - upd_e) / 86400 ))
+        if (( age_d >= 14 )); then
+            echo "  stale thread → $(label_of "$h.md" "$SCAN_DIR/$h.md") (${age_d}d untouched): retire, or move what matters to its docs/backlog/threads file / a gotcha / a todo"
+            problems=$((problems+1))
+        fi
+    done < <(awk -F'\t' '$2 == "threads"' "$MANIFEST")
 fi
 
-# 3c. dev-session preamble budget — CLAUDE.md + MEMORY.md load into every
-# session; keep their combined weight visible (dev-context-diet). ~4 B/token.
-claude_b=$(wc -c < CLAUDE.md 2>/dev/null | tr -d ' ' || echo 0)
-pre_tok=$(( (bytes + claude_b) / 4 ))
-# Raised 6000 -> 8000 on 2026-09-29 (Reto's call), to buy room for the /qgo
-# workflow line without paying for it in a diet pass first. The budget is a
-# visibility tripwire, not a hard limit — what it protects is the fact that
-# every session pays this cost on every turn, so a raise is a deliberate
-# decision rather than a default. dev-context-diet.md still stands.
-PRE_BUDGET_TOK=8000
-if (( pre_tok > PRE_BUDGET_TOK )); then
-    echo "preamble OVER budget: CLAUDE.md+${IDX_LABEL} ≈ ${pre_tok} tok > ${PRE_BUDGET_TOK} — diet per docs/backlog/dev-context-diet.md"
+if (( problems == 0 )) && (( GRAPH )); then
+    echo "memory-lint: ✓ clean (graph mode, no hygiene findings)"
+elif (( problems == 0 )); then
+    echo "memory-lint: ✓ clean (links resolve, no landed threads lingering)"
 else
-    echo "preamble: CLAUDE.md+${IDX_LABEL} ≈ ${pre_tok} tok (budget ${PRE_BUDGET_TOK})"
+    echo "memory-lint: $problems hygiene issue(s) above"
 fi
 
 # 7. retire candidates — LIST ONLY: never modifies anything, never touches
@@ -625,7 +608,7 @@ elif [[ "$last" == "$today" ]]; then
 elif (( GRAPH )); then
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc) + delete(kind='memory') any landed thread flagged above. Procedure: the reconsolidate skill; record the pass as a dated entry at the top of the memory_consolidation_log node"
 else
-    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Compact for SIZE only if past the high-water mark. Append a dated line to memory_consolidation_log.md"
+    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Append a dated line to memory_consolidation_log.md"
 fi
 
 # 6. sibling-repo path currency — always evaluated, internally weekly-gated,

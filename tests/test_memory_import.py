@@ -242,7 +242,7 @@ def _structure(rendered: str) -> list[str]:
 
 def test_render_matches_the_fixture_index_in_order(store: Store, hub: Hub) -> None:
     import_memory_dir(store, FIXTURE)
-    rendered = render_memory_index(store)
+    rendered = render_memory_index(store, full=True)
     assert rendered.startswith("# Memory index\n")
     got = _structure(rendered)
     want = _fixture_index_lines()
@@ -264,7 +264,9 @@ def test_render_orders_by_meta_order_not_by_id(store: Store, hub: Hub) -> None:
     ids = _nodes(store)
     # Move the first bullet of Threads to the end of the order range.
     store.update_ref(ids["alpha-campaign"], meta_patch={"order": 99})
-    lines = [ln for ln in _structure(render_memory_index(store)) if ln[:2] == "- "]
+    lines = [
+        ln for ln in _structure(render_memory_index(store, full=True)) if ln[:2] == "- "
+    ]
     assert lines[:3][-1].startswith("- Alpha campaign (me")
 
 
@@ -285,7 +287,7 @@ def test_render_native_node_line_and_trailing_position(store: Store, hub: Hub) -
             tags=["SPACE:repo-dev", "section:runbooks"],
         ).body
     )
-    lines = _structure(render_memory_index(store))
+    lines = _structure(render_memory_index(store, full=True))
     h1 = handle_registry.format_handle("memory", first)
     h2 = handle_registry.format_handle("memory", second)
     ids = _nodes(store)
@@ -308,7 +310,7 @@ def test_render_unfiled_native_node(store: Store, hub: Hub) -> None:
         .put(text="loose", title="Loose", tags=["SPACE:repo-dev"])
         .body
     )
-    lines = _structure(render_memory_index(store))
+    lines = _structure(render_memory_index(store, full=True))
     handle = handle_registry.format_handle("memory", ref)
     assert lines[-2:] == ["## Unfiled", f"- Loose ({handle})"]
 
@@ -316,15 +318,15 @@ def test_render_unfiled_native_node(store: Store, hub: Hub) -> None:
 def test_render_ignores_research_space_memories(store: Store, hub: Hub) -> None:
     import_memory_dir(store, FIXTURE)
     MemoryHandler(hub=hub).put(text="a research note", title="Research note")
-    assert "Research note" not in render_memory_index(store)
+    assert "Research note" not in render_memory_index(store, full=True)
 
 
 def test_render_over_budget_cuts_hooks_and_names_the_overage(
     store: Store, hub: Hub
 ) -> None:
     import_memory_dir(store, FIXTURE)
-    full = render_memory_index(store)
-    out = render_memory_index(store, budget_tok=10)
+    full = render_memory_index(store, full=True)
+    out = render_memory_index(store, budget_tok=10, full=True)
     body, _, tail = out.rstrip("\n").rpartition("\n")
     assert tail.startswith("(memory index over budget:") and "budget 10 tok" in tail
     # the long Alpha hook is cut to 60 chars, ellipsis included
@@ -339,7 +341,9 @@ def test_render_over_budget_cuts_hooks_and_names_the_overage(
 
 def test_render_within_budget_is_unchanged(store: Store, hub: Hub) -> None:
     import_memory_dir(store, FIXTURE)
-    assert render_memory_index(store, budget_tok=8000) == render_memory_index(store)
+    assert render_memory_index(
+        store, budget_tok=8000, full=True
+    ) == render_memory_index(store, full=True)
 
 
 def test_render_native_node_with_a_hook(store: Store, hub: Hub) -> None:
@@ -351,9 +355,122 @@ def test_render_native_node_with_a_hook(store: Store, hub: Hub) -> None:
     )
     store.update_ref(ref, meta_patch={"hook": "now with a hook"})
     handle = handle_registry.format_handle("memory", ref)
-    assert _structure(render_memory_index(store))[-1] == (
+    assert _structure(render_memory_index(store, full=True))[-1] == (
         f"- Loose ({handle}) — now with a hook"
     )
+
+
+# ── live-thread session-start render ────────────────────────────────────
+
+
+def _put_thread(
+    hub: Hub,
+    store: Store,
+    title: str,
+    body: str,
+    *,
+    age_days: float,
+    hook: str | None = None,
+    tags: tuple[str, ...] = ("SPACE:repo-dev", "section:threads"),
+) -> int:
+    ref_id = id_of(
+        MemoryHandler(hub=hub).put(text=body, title=title, tags=list(tags)).body
+    )
+    if hook:
+        store.update_ref(ref_id, meta_patch={"hook": hook})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (str(age_days * 24), ref_id),
+        )
+    return ref_id
+
+
+def test_live_threads_cut_at_14_days_newest_first_with_older_count(
+    store: Store, hub: Hub
+) -> None:
+    new = _put_thread(hub, store, "Fresh", "Left: ship it\nmore", age_days=1)
+    mid = _put_thread(hub, store, "Mid", "Left: wait\n", age_days=13.5)
+    _put_thread(hub, store, "Old", "Left: nothing\n", age_days=15)
+    _put_thread(hub, store, "Older", "Left: nothing\n", age_days=40)
+    _put_thread(hub, store, "Gotcha", "Left: no\n", age_days=1, tags=(SPACE_TAG,))
+    _put_thread(
+        hub, store, "Elsewhere", "Left: no\n", age_days=1, tags=("section:threads",)
+    )
+    out = render_memory_index(store)
+    h_new = handle_registry.format_handle("memory", new)
+    h_mid = handle_registry.format_handle("memory", mid)
+    assert out.splitlines() == [
+        "## Live threads (edited ≤14 days)",
+        f"- {h_new} Fresh — Left: ship it",
+        f"- {h_mid} Mid — Left: wait",
+        "(+2 older thread nodes: search(kind='memory', "
+        "tags=['SPACE:repo-dev','section:threads']))",
+    ]
+    wide = render_memory_index(store, days=30)
+    assert "Old —" in wide and "(+1 older thread nodes" in wide
+
+
+def test_live_threads_exclude_part_of_children(store: Store, hub: Hub) -> None:
+    parent = _put_thread(hub, store, "Parent", "Left: a\n", age_days=1)
+    child = _put_thread(hub, store, "Child", "Left: b\n", age_days=1)
+    store.add_link(src_ref_id=child, dst_ref_id=parent, relation="part-of")
+    out = render_memory_index(store)
+    assert "Parent" in out and "Child" not in out
+    assert "older" not in out
+
+
+def test_live_threads_lead_falls_back_to_hook_then_first_line(
+    store: Store, hub: Hub
+) -> None:
+    hooked = _put_thread(
+        hub, store, "Hooked", "no marker here\nrest", age_days=1, hook="the hook"
+    )
+    bare = _put_thread(hub, store, "Bare", "\n\nfirst real line\nrest", age_days=2)
+    left = _put_thread(
+        hub, store, "Lefty", "Left: " + "x" * 300, age_days=3, hook="ignored hook"
+    )
+    lines = render_memory_index(store).splitlines()
+    by = {ln.split(" ")[1]: ln for ln in lines if ln.startswith("- me")}
+    assert by[handle_registry.format_handle("memory", hooked)].endswith("— the hook")
+    assert by[handle_registry.format_handle("memory", bare)].endswith(
+        "— first real line"
+    )
+    lead = by[handle_registry.format_handle("memory", left)].split(" — ", 1)[1]
+    assert lead.startswith("Left: x") and len(lead) == 160 and lead.endswith("…")
+    assert not any("older thread nodes" in ln for ln in lines)
+
+
+def test_live_threads_budget_drops_oldest_lines_into_the_older_count(
+    store: Store, hub: Hub
+) -> None:
+    for i in range(6):
+        _put_thread(hub, store, f"T{i}", f"Left: {'y' * 100}", age_days=i + 1)
+    out = render_memory_index(store, budget_tok=80)
+    assert len(out.encode("utf-8")) // 4 <= 80
+    assert "T0" in out and "T5" not in out
+    assert re.search(r"\(\+\d+ older thread nodes", out)
+    assert (
+        render_memory_index(store, budget_tok=0).splitlines()[0].startswith("## Live")
+    )
+
+
+def test_cli_index_days_option_and_full_flag(
+    store: Store,
+    hub: Hub,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    _put_thread(hub, store, "Mid", "Left: a\n", age_days=20)
+    assert _build_parser().parse_args(["memory", "index"]).days == 14
+    _run_index_cli(store, monkeypatch, "--days", "30")
+    assert "Mid — Left: a" in capsys.readouterr().out
+    _run_index_cli(store, monkeypatch)
+    assert "Mid — Left: a" not in capsys.readouterr().out
+    _run_index_cli(store, monkeypatch, "--full")
+    assert capsys.readouterr().out.startswith("# Memory index\n")
 
 
 # ── --sync ──────────────────────────────────────────────────────────────
@@ -505,7 +622,7 @@ def test_sync_updates_and_retires_section_nodes(
     assert ids["reference"] not in live
     assert ids["glossary-pointer"] not in live
     assert (report.retired, report.updated) == (2, 1)
-    assert "Reference" not in render_memory_index(store)
+    assert "Reference" not in render_memory_index(store, full=True)
 
 
 def test_plain_import_never_overwrites_even_when_files_changed(
@@ -914,7 +1031,7 @@ def test_without_q_the_cli_prints_the_plain_index(
     store: Store, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import_memory_dir(store, FIXTURE)
-    before = render_memory_index(store)
-    _run_index_cli(store, monkeypatch)
+    before = render_memory_index(store, full=True)
+    _run_index_cli(store, monkeypatch, "--full")
     assert capsys.readouterr().out == before
     assert re.search(r"\(me\d+, ", before) is None  # no filename suffix

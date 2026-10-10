@@ -57,9 +57,17 @@ For an existing fact, use a unique anchored `edit` and full readback;
 preserve unrelated body and history. Put new facts only when no matching
 node exists. Behavioral and workflow rules belong here, not in fact nodes.
 
+A `section:threads` node is one campaign's resume state, days not weeks. The
+programme lives in its `docs/backlog/threads/<slug>.md` (link it); the node
+keeps only where this campaign stopped. Its first line is `Left: …` (or
+`Left: none`) — the index shows it — and is updated in the same session an
+item finishes or appears. No untracked resume files. A follow-up that waits
+on time is a todo or gripe tagged `due:YYYY-MM-DD`, linked from the node.
+
 Retire (soft delete, recoverable at the SQL layer) so recall stays current:
-- A thread node whose work is on `main` with nothing next: retire it; git
-  and the thread file are the record.
+- A thread node at `Left: none` with no open linked due-item; or one
+  untouched for 14 days, after moving what still matters to its thread
+  file, a gotcha, or a todo.
 - A fact that changed but is the same subject: anchored `edit` in place, no
   second node. A wrong fact: `edit` with a `reason=`.
 - A node replaced by a different node: link the new one `supersedes` the

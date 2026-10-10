@@ -265,24 +265,8 @@ def test_graph_mode_lints_the_cached_render_not_the_topic_files(
     assert "unindexed" not in res.stdout, res.stdout
     assert "landed thread" not in res.stdout, res.stdout
     assert "no `## Threads` heading" not in res.stdout, res.stdout
-    size = len(cache.read_bytes())
-    assert f"memory-lint: ✓ clean ({size} B rendered index" in res.stdout, res.stdout
-    assert "preamble: CLAUDE.md+memory index" in res.stdout, res.stdout
-
-
-def test_graph_mode_flags_a_rendered_index_past_high_water(
-    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
-) -> None:
-    home, mem = home_and_mem
-    (mem / "MEMORY.md").write_text(_POINTER, encoding="utf-8")
-    cache = tmp_path / "memory-index.md"
-    cache.write_text("- Alpha (me1) — " + "x" * 20_100 + "\n", encoding="utf-8")
-
-    res = _run(lint_repo, home, cache=cache)
-
-    assert res.returncode == 0
-    assert "memory index past high-water" in res.stdout, res.stdout
-    assert "MEMORY.md past high-water" not in res.stdout, res.stdout
+    assert "memory-lint: ✓ clean (graph mode" in res.stdout, res.stdout
+    assert "preamble" not in res.stdout, res.stdout
 
 
 def test_graph_mode_without_a_cached_render_says_so(
@@ -643,6 +627,30 @@ def test_graph_mode_stale_reads_the_manifest_date_not_the_export_mtime(
 
     assert "retire candidate → me2 (Gotcha): stale >30d (40d)" in res.stdout, res.stdout
     assert "me3" not in res.stdout, res.stdout
+
+
+def test_graph_mode_flags_a_thread_node_untouched_14_days(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me2.md").write_text("# Old thread\n\nLeft: x\n", encoding="utf-8")
+    (nodes / "me3.md").write_text("# Live thread\n\nLeft: y\n", encoding="utf-8")
+    (nodes / "me4.md").write_text("# Old gotcha\n\ntrap\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        f"me2\tthreads\t{_days_ago(15)}\t8\t8\t1\t0\t0\n"
+        f"me3\tthreads\t{_days_ago(13)}\t8\t8\t1\t0\t0\n"
+        f"me4\tgotchas\t{_days_ago(15)}\t8\t8\t1\t0\t0\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert (
+        "stale thread → me2 (Old thread) (15d untouched): retire, or move what "
+        "matters to its docs/backlog/threads file / a gotcha / a todo" in res.stdout
+    ), res.stdout
+    assert "stale thread → me3" not in res.stdout, res.stdout
+    assert "stale thread → me4" not in res.stdout, res.stdout  # not a thread
 
 
 def test_graph_mode_unsectioned_manifest_is_a_finding_and_scans_every_node(

@@ -16,12 +16,15 @@ The write and load halves of ``docs/backlog/memory-native-authoring.md``:
   imported nodes is refused unless ``--allow-retire N`` covers it; a
   ``MEMORY.md`` carrying :data:`GRAPH_MARKER` (post-cutover pointer file)
   is always refused.
-- ``precis memory index [--budget-tok N] [--export-dir DIR]`` renders the
-  index back out, one ``- <Title> (<handle>) — <hook>`` bullet per node (the
-  handle is what ``get``/``edit`` take; the graph node is the truth, not a
-  file), for ``scripts/hooks/session-start-memory.sh``. ``--export-dir``
-  also writes each topic node's body to ``DIR/<handle>.md`` (same query,
-  swapped in whole) so ``scripts/memory-lint`` can lint node bodies.
+- ``precis memory index [--budget-tok N] [--days D] [--export-dir DIR]``
+  renders, for ``scripts/hooks/session-start-memory.sh``, only the *live
+  threads* (``section:threads`` nodes edited within ``D`` days, default 14,
+  newest first, one ``- <handle> <title> — <Left: line>`` each, plus a count of
+  the older ones); recall of everything else is ``search(kind='memory')``.
+  ``--full`` keeps the old whole-graph listing, one ``- <Title> (<handle>) —
+  <hook>`` bullet per node. ``--export-dir`` also writes each topic node's body
+  to ``DIR/<handle>.md`` (same query, swapped in whole) so
+  ``scripts/memory-lint`` can lint node bodies.
 
 The logic lives in :func:`import_memory_dir` and :func:`render_memory_index`
 (both take a :class:`~precis.store.Store`) so tests call them directly; the
@@ -41,7 +44,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +64,12 @@ SECTION_TAG_PREFIX = "section:"
 HOOK_CUT_CHARS = 60
 #: Title line the rendered index leads with (matches ``MEMORY.md``).
 INDEX_TITLE = "# Memory index"
+#: Tag naming the live-thread section the session-start render shows.
+THREADS_TAG = "section:threads"
+#: A thread node untouched this many days is a retire candidate, not "live".
+LIVE_THREAD_DAYS = 14
+#: Cut of a live-thread line's lead text.
+THREAD_LEAD_CHARS = 160
 #: Rough bytes-per-token used for the budget check (memory-lint's ratio).
 _BYTES_PER_TOKEN = 4
 
@@ -575,8 +584,17 @@ def render_memory_index(
     q: str | None = None,
     k: int = 5,
     embedder: Any = None,
+    full: bool = False,
+    days: int = LIVE_THREAD_DAYS,
+    now: datetime | None = None,
 ) -> str:
-    """Render the ``SPACE:repo-dev`` memory index, one bullet per node.
+    """Render the session-start memory view: the live threads (default).
+
+    Without ``full``/``q`` the render is :func:`_render_live_threads`: only
+    ``section:threads`` nodes edited within ``days`` days. ``full=True`` is the
+    whole-graph index below.
+
+    The full index is one bullet per ``SPACE:repo-dev`` node.
 
     Every node, imported or native, renders as ``- <Title> (<handle>) —
     <hook>`` (``- <Title> (<handle>)`` with no hook); the handle (``me…``) is
@@ -601,7 +619,97 @@ def render_memory_index(
         handler = MemoryHandler(hub=Hub(store=store, embedder=embedder))
         resp = handler.search(q=q, tags=[SPACE_TAG], page_size=k, view="index")
         return resp.body + "\n"
-    return _render_loaded(_load_nodes(store), budget_tok, store)
+    loaded = _load_nodes(store)
+    if full:
+        return _render_loaded(loaded, budget_tok, store)
+    return _render_live_threads(store, loaded, budget_tok, days=days, now=now)
+
+
+def _thread_lead(handler: Any, ref: Any) -> str:
+    """A thread node's one-line state: the ``Left:`` first line, else
+    ``meta.hook``, else the first non-empty body line; cut to
+    :data:`THREAD_LEAD_CHARS`."""
+    first = next(
+        (ln.strip() for ln in handler._body_text(ref).splitlines() if ln.strip()), ""
+    )
+    lead = (
+        first
+        if first.startswith("Left:")
+        else str((ref.meta or {}).get("hook") or first)
+    )
+    if len(lead) > THREAD_LEAD_CHARS:
+        lead = lead[: THREAD_LEAD_CHARS - 1].rstrip() + "…"
+    return lead
+
+
+def _render_live_threads(
+    store: Store,
+    loaded: tuple[list[Any], dict[int, Any]],
+    budget_tok: int | None,
+    *,
+    days: int,
+    now: datetime | None,
+) -> str:
+    """``## Live threads`` block: ``section:threads`` nodes edited in ``days`` days.
+
+    Only top-level threads: ones with no ``part-of`` parent or a hub parent.
+
+    ``refs.updated_at`` is the edit clock (body, title and meta writes all bump
+    it). Newest first. ``budget_tok`` caps the size (~4 bytes/token): the
+    oldest listed lines drop first and join the "older" count.
+    """
+    from precis.dispatch import Hub
+    from precis.handlers.memory import MemoryHandler
+    from precis.utils import handle_registry
+    from precis.utils.memory_hubs import parents_of
+
+    refs, tags = loaded
+    parent_of = parents_of(store, [r.id for r in refs])
+
+    def top_level(rid: int) -> bool:
+        # A thread under another thread (not a hub) is a child, listed there.
+        return not (parent_of.get(rid) or []) or any(
+            SECTION_INDEX_TAG in {v for _ns, v in tags.get(p, [])}
+            for p in parent_of[rid]
+        )
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
+    threads = [
+        r
+        for r in refs
+        if THREADS_TAG in {v for _ns, v in tags.get(r.id, [])}
+        and SECTION_INDEX_TAG not in {v for _ns, v in tags.get(r.id, [])}
+        and top_level(r.id)
+    ]
+    threads.sort(key=lambda r: (r.updated_at, r.id), reverse=True)
+    live = [r for r in threads if r.updated_at >= cutoff]
+    handler = MemoryHandler(hub=Hub(store=store))
+    lines = []
+    for r in live:
+        handle = handle_registry.try_format("memory", r.id) or str(r.id)
+        lead = _thread_lead(handler, r)
+        lines.append(f"- {handle} {r.title}" + (f" — {lead}" if lead else ""))
+
+    def render(n_shown: int) -> str:
+        out = [f"## Live threads (edited ≤{days} days)", *lines[:n_shown]]
+        older = len(threads) - n_shown
+        if older:
+            out.append(
+                f"(+{older} older thread nodes: search(kind='memory', "
+                f"tags=['{SPACE_TAG}','{THREADS_TAG}']))"
+            )
+        return "\n".join(out) + "\n"
+
+    shown = len(lines)
+    text = render(shown)
+    while (
+        budget_tok is not None
+        and shown > 0
+        and len(text.encode("utf-8")) // _BYTES_PER_TOKEN > budget_tok
+    ):
+        shown -= 1
+        text = render(shown)
+    return text
 
 
 def _load_nodes(store: Store) -> tuple[list[Any], dict[int, Any]]:
@@ -959,9 +1067,24 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Token budget for the rendered index (~4 bytes/token). Over it, "
-            f"hooks are cut to {HOOK_CUT_CHARS} chars and a trailing line "
-            "names the overage."
+            "the live-thread list drops its oldest lines (with --full: hooks "
+            f"are cut to {HOOK_CUT_CHARS} chars and a trailing line names "
+            "the overage)."
         ),
+    )
+    idx.add_argument(
+        "--days",
+        type=int,
+        default=LIVE_THREAD_DAYS,
+        help=(
+            "Live-thread window: section:threads nodes edited within this many "
+            f"days are listed (default {LIVE_THREAD_DAYS}); older ones are counted."
+        ),
+    )
+    idx.add_argument(
+        "--full",
+        action="store_true",
+        help="Print the old whole-graph index (every node, grouped by section).",
     )
     idx.add_argument(
         "--export-dir",
@@ -1093,7 +1216,13 @@ def run(args: argparse.Namespace) -> None:
             )
         else:
             loaded = _load_nodes(store)
-            print(_render_loaded(loaded, args.budget_tok, store), end="", flush=True)
+            if args.full:
+                rendered = _render_loaded(loaded, args.budget_tok, store)
+            else:
+                rendered = _render_live_threads(
+                    store, loaded, args.budget_tok, days=args.days, now=None
+                )
+            print(rendered, end="", flush=True)
             if args.export_dir:
                 try:
                     export_memory_nodes(store, args.export_dir, loaded=loaded)

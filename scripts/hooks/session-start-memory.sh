@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# SessionStart hook: print the harness memory index rendered from the graph
-# (`precis memory index`), the replacement for MEMORY.md's index role.
+# SessionStart hook: print the live memory threads from the graph
+# (`precis memory index`): section:threads nodes edited in the last 14 days,
+# one `- me<id> <title> — <Left: line>` each, plus a count of older ones.
+# The full node list is no longer printed (Claude Code cut ~24 KB hook output
+# to a 2 KB preview); recall everything else with search(kind='memory').
 # docs/backlog/memory-native-authoring.md.
 #
 # Wired as a SessionStart hook in .claude/settings.json. It prints only once
@@ -10,7 +13,8 @@
 # file counts as cut over.
 #
 # Budget: memory-lint's preamble budget (8000 tok, ~4 bytes/token, CLAUDE.md +
-# index together) minus CLAUDE.md's share, passed as --budget-tok.
+# index together) minus CLAUDE.md's share, passed as --budget-tok (a cap: the
+# oldest thread lines drop first).
 #
 # DSN: with PRECIS_DATABASE_URL set the CLI uses it; otherwise the index comes
 # through scripts/prod-precis (a shell hook cannot reach the session MCP).

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from threading import Barrier, Event
@@ -1638,3 +1639,88 @@ def test_attribution_clean_rewrite_keeps_hand_set_flag(
     handler.tag(id=mid, add=["AUDIT:ungrounded-number"])  # set_by agent
     handler.edit(id=mid, mode="replace", text="still plain, no figures")
     assert _audit_tags(store, mid) == ["AUDIT:ungrounded-number"]
+
+
+# ---------------------------------------------------------------------------
+# thread lead-line hint on edit
+# ---------------------------------------------------------------------------
+
+
+def _thread(handler: MemoryHandler, *tags: str) -> int:
+    return id_of(
+        handler.put(
+            text="Left: wire the hook\nmore detail",
+            title="a thread",
+            tags=["SPACE:repo-dev", *tags],
+        ).body
+    )
+
+
+def test_thread_edit_hint_echoes_an_unchanged_lead_line(
+    handler: MemoryHandler,
+) -> None:
+    edits: list[dict[str, Any]] = [
+        {"mode": "find-replace", "find": "more detail", "text": "x y"},
+        {"mode": "replace", "text": "Left: wire the hook\nnew body"},
+        {"mode": "insert", "find": "more detail", "text": "!", "where": "after"},
+    ]
+    for kw in edits:
+        mid = _thread(handler, "section:threads")
+        out = handler.edit(id=mid, **kw)
+        assert "hint: lead line still reads 'Left: wire the hook'" in out.body
+        assert (
+            f"edit(kind='memory', id={mid}, mode='find-replace', "
+            "find='Left: wire the hook', text='Left: …')"
+        ) in out.body
+        assert f"finished: delete(kind='memory', id={mid})" in out.body
+
+
+def test_thread_edit_hint_truncates_a_long_lead_line(
+    handler: MemoryHandler,
+) -> None:
+    long = "Left: " + "z" * 300
+    mid = id_of(
+        handler.put(
+            text=f"{long}\nb", title="t", tags=["SPACE:repo-dev", "section:threads"]
+        ).body
+    )
+    out = handler.edit(id=mid, mode="find-replace", find="\nb", text="\nc")
+    assert "hint: lead line still reads 'Left: zzz" in out.body
+    assert "z" * 300 not in out.body and "…'" in out.body
+
+
+def test_thread_edit_hint_find_is_a_body_substring_for_long_lead(
+    handler: MemoryHandler,
+) -> None:
+    long = "Left: " + "z" * 300
+    mid = id_of(
+        handler.put(
+            text=f"{long}\nb", title="t", tags=["SPACE:repo-dev", "section:threads"]
+        ).body
+    )
+    out = handler.edit(id=mid, mode="find-replace", find="\nb", text="\nc")
+    m = re.search(r"find='([^']*)', text='Left: …'", out.body)
+    assert m is not None
+    assert m.group(1) in long and len(m.group(1)) < 120
+
+
+def test_thread_edit_hint_absent_when_the_lead_line_changed(
+    handler: MemoryHandler,
+) -> None:
+    mid = _thread(handler, "section:threads")
+    out = handler.edit(
+        id=mid, mode="find-replace", find="wire the hook", text="hook wired"
+    )
+    assert "lead line" not in out.body
+    out = handler.edit(id=mid, mode="replace", text="Left: other\nmore detail")
+    assert "lead line" not in out.body
+
+
+def test_thread_edit_hint_absent_on_non_thread_nodes(
+    handler: MemoryHandler,
+) -> None:
+    mid = _thread(handler, "section:gotchas")
+    out = handler.edit(id=mid, mode="find-replace", find="more detail", text="x")
+    assert "lead line" not in out.body
+    out = handler.edit(id=mid, mode="replace", text="Left: wire the hook\nzzz")
+    assert "lead line" not in out.body

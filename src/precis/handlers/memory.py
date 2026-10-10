@@ -687,9 +687,9 @@ class MemoryHandler(NumericRefHandler):
                     "or edit(kind='memory', id=N, mode='find-replace', "
                     "find='old', text='new') "
                     "or edit(kind='memory', id=N, mode='replace', "
-                    "warrant='updated justification') "
+                    "args={'warrant': 'updated justification'}) "
                     "or edit(kind='memory', id=N, mode='replace', "
-                    "meta={'hook': 'one-line index text'})"
+                    "args={'meta': {'hook': 'one-line index text'}})"
                 ),
             )
         ref_id = self._coerce_id(id)
@@ -742,8 +742,48 @@ class MemoryHandler(NumericRefHandler):
         body += " view='log' for the full diff."
         if nudge:
             body += f"\n\nhint: {nudge}"
+        lead = self._thread_lead_hint(ref.id, old_body, text)
+        if lead:
+            body += f"\n\nhint: {lead}"
         body += render_next_section(link_hints(self, ref.id))
         return self._with_attribution_advisory(Response(body=body), misses)
+
+    def _thread_lead_hint(
+        self, ref_id: int, old_body: str | None, new_body: str
+    ) -> str | None:
+        """Reminder for a ``section:threads`` node whose lead line survived a body edit.
+
+        The first body line of a thread node is its ``Left: …`` state line
+        (what the session-start render shows); an edit that leaves it
+        untouched probably left it stale. ``None`` for non-thread nodes or a
+        changed first line.
+        """
+
+        def first(text: str | None) -> str:
+            return next(
+                (ln.strip() for ln in (text or "").splitlines() if ln.strip()), ""
+            )
+
+        lead = first(new_body)
+        if not lead or lead != first(old_body):
+            return None
+        tags = self.store.ref_tags_bulk([ref_id]).get(ref_id, [])
+        if "section:threads" not in {v for _ns, v in tags}:
+            return None
+        shown = lead if len(lead) <= 120 else lead[:119].rstrip() + "…"
+        anchor = lead if len(lead) <= 120 else lead[:60]
+        if new_body.count(anchor) == 1:
+            action = (
+                f"edit(kind='memory', id={ref_id}, mode='find-replace', "
+                f"find={anchor!r}, text='Left: …')"
+            )
+        else:
+            action = f"edit(kind='memory', id={ref_id}, mode='replace', text='…')"
+        return (
+            f"lead line still reads {shown!r} — still true? update: "
+            f"{action} · finished: "
+            f"delete(kind='memory', id={ref_id})"
+        )
 
     def _write_body(
         self,
@@ -940,18 +980,17 @@ class MemoryHandler(NumericRefHandler):
         )
         verb = "edited" if op_kind == "edit" else "inserted into"
         n_spans = len(result.edited_spans)
-        return self._with_attribution_advisory(
-            Response(
-                body=(
-                    f"{verb} body of {self._sense()} id={ref.id} "
-                    f"({len(old_body.split())} → {len(new_body.split())} words, "
-                    f"{n_spans} span{'s' if n_spans != 1 else ''}). "
-                    "view='log' for the full diff."
-                    + render_next_section(link_hints(self, ref.id))
-                )
-            ),
-            misses,
+        ack = (
+            f"{verb} body of {self._sense()} id={ref.id} "
+            f"({len(old_body.split())} → {len(new_body.split())} words, "
+            f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+            "view='log' for the full diff."
         )
+        lead = self._thread_lead_hint(ref.id, old_body, new_body)
+        if lead:
+            ack += f"\n\nhint: {lead}"
+        ack += render_next_section(link_hints(self, ref.id))
+        return self._with_attribution_advisory(Response(body=ack), misses)
 
     # ── tag: refuse author add/remove of the system-set STALE: axis ──
 

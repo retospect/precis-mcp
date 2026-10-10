@@ -13,6 +13,6 @@ echo "   • residual bugs / next steps → a docs/backlog/ item or a gripe/todo
 echo "   • a resume pointer for in-flight work (memory / docs/backlog/)"
 
 # Surface hygiene drift so it can be cleaned before context is lost (advisory).
-scripts/memory-lint 2>/dev/null | grep -iE 'issue|DUE|OVER' | sed 's/^/   • memory: /' || true
+scripts/memory-lint 2>/dev/null | grep -iE 'issue|DUE' | sed 's/^/   • memory: /' || true
 scripts/backlog-lint 2>/dev/null | grep -v '✓' | head -1 | sed 's/^/   • /' || true
 exit 0
