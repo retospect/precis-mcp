@@ -467,3 +467,27 @@ def test_glued_k_is_a_count_unless_a_temperature(world):
     assert [m.token for m in _check("measured at 77K [pa12]")] == ["77 K"]
     assert [m.token for m in _check("cooled to 4K [pa12]")] == ["4 K"]
     assert [m.token for m in _check("held at 300 K [pa12]")] == ["300 K"]
+
+
+@pytest.mark.parametrize(
+    ("body", "key"),
+    [
+        ("paper:brabson25 (chunks ~97–98: rigid bias)", "r:brabson25|~97..98"),
+        ("paper:naghshnejad25 (chunk ~15, the design axis)", "r:naghshnejad25|~15"),
+        ("paper:moharramnejad23 (~151, ~157) exploits", "r:moharramnejad23|~151"),
+        ("paper:x (a plain gloss, 5 nm)", "r:x|"),
+        ("paper:x~3 (chunks ~97–98)", "r:x|~3"),
+    ],
+)
+def test_prose_pinpoint_after_a_cite_scopes_it(body, key):
+    """Prod samples 2026-10-10 (me39410, me35605, me35525): dream prose writes
+    the chunk pinpoint in a parenthetical after the cite."""
+    assert attr._cite_spans(body)[0].key == key
+
+
+def test_evidence_math_dollars_and_plus_minus(world):
+    """Prod sample 2026-10-10 (me39603): the paper writes ``$1.78±0.11$ Å``."""
+    world[(12, None)] = "displaced by a distance of $1.78±0.11$ Å from the plane"
+    assert _check("displaces one atom 1.78 Å out of plane [pa12]") == []
+    assert _check("an uncertainty of 0.11 Å [pa12]") == []
+    assert [m.token for m in _check("displaces 1.9 Å [pa12]")] == ["1.9 Å"]

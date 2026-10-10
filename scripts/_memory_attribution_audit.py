@@ -4,13 +4,16 @@ Usage (via the ``memory-attribution-audit`` shell wrapper):
 
     memory-attribution-audit            # dry run: counts + 30-row sample
     memory-attribution-audit --apply    # add AUDIT:ungrounded-number to flagged rows
+    memory-attribution-audit --apply --clear-stale   # ... and lift it where it no longer fires
     memory-attribution-audit --sample 60
 
 Reads ``PRECIS_DATABASE_URL`` (dev DB by default; point it at prod through
 the gitignored cluster overlay, never a literal in the repo). Never edits a
-body chunk: ``--apply`` only adds the closed tag (``set_by='system'``) and
-never clears one. A memory whose evaluation raises is counted in ``errors``
-and skipped.
+body chunk: ``--apply`` only adds the closed tag (``set_by='system'``);
+``--clear-stale`` (with ``--apply``) removes the system-set tag from every
+live memory the gate no longer flags — a tag an agent set by hand is left
+alone. A memory whose evaluation raises is counted in ``errors`` and
+skipped (and keeps its tag).
 See docs/backlog/memory-attribution-gate.md §4.
 """
 
@@ -61,12 +64,31 @@ def cite_kind(cite: str) -> str:
     return letters if len(letters) <= 2 else "paper-key"
 
 
-def audit(store: Any, *, apply: bool = False, sample: int = 30) -> dict[str, Any]:
+def system_tagged(store: Any) -> list[int]:
+    """Live memories carrying the system-set ``AUDIT:ungrounded-number``."""
+    from precis.handlers._attribution import AUDIT_VALUE
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "JOIN refs r ON r.ref_id = rt.ref_id "
+            "WHERE t.namespace = 'AUDIT' AND t.value = %s AND rt.set_by = 'system' "
+            "AND r.kind = 'memory' AND r.retired_at IS NULL ORDER BY rt.ref_id",
+            (AUDIT_VALUE,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def audit(
+    store: Any, *, apply: bool = False, clear_stale: bool = False, sample: int = 30
+) -> dict[str, Any]:
     """Run the gate over every candidate memory.
 
     Returns ``{candidates, flagged, flagged_ids, by_cite_kind, sample,
-    applied, errors}``. One :class:`AttributionCache` spans the run, so each cited
-    paper/websearch is read once however many memories cite it.
+    applied, cleared, errors}``. One :class:`AttributionCache` spans the run,
+    so each cited paper/websearch is read once however many memories cite it.
+    ``clear_stale`` lifts the system-set tag from memories this run did not
+    flag (a memory skipped on error keeps it).
     """
     from precis.handlers._attribution import (
         AUDIT_VALUE,
@@ -82,6 +104,7 @@ def audit(store: Any, *, apply: bool = False, sample: int = 30) -> dict[str, Any
     candidates = 0
     errors = 0
     flagged: list[int] = []
+    errored: set[int] = set()
     by_kind: Counter[str] = Counter()
     samples: list[str] = []
     after = 0
@@ -100,6 +123,7 @@ def audit(store: Any, *, apply: bool = False, sample: int = 30) -> dict[str, Any
                 )
             except Exception:
                 errors += 1
+                errored.add(ref_id)
                 continue
             if not misses:
                 continue
@@ -109,10 +133,16 @@ def audit(store: Any, *, apply: bool = False, sample: int = 30) -> dict[str, Any
                 if len(samples) < sample:
                     samples.append(f'me{ref_id}  "{m.token}"  {m.cite}')
     applied = 0
+    cleared = 0
     if apply:
         for ref_id in flagged:
             store.add_tag(ref_id, tag, set_by="system")
             applied += 1
+        if clear_stale:
+            keep = set(flagged) | errored
+            for ref_id in system_tagged(store):
+                if ref_id not in keep and store.remove_tag(ref_id, tag):
+                    cleared += 1
     return {
         "candidates": candidates,
         "flagged": len(flagged),
@@ -120,6 +150,7 @@ def audit(store: Any, *, apply: bool = False, sample: int = 30) -> dict[str, Any
         "by_cite_kind": dict(by_kind.most_common()),
         "sample": samples,
         "applied": applied,
+        "cleared": cleared,
         "errors": errors,
     }
 
@@ -127,21 +158,37 @@ def audit(store: Any, *, apply: bool = False, sample: int = 30) -> dict[str, Any
 def main() -> None:
     p = argparse.ArgumentParser(
         description=(__doc__ or "").splitlines()[0],
-        epilog="--apply only ADDS AUDIT:ungrounded-number; it never clears a tag.",
+        epilog=(
+            "--apply ADDS AUDIT:ungrounded-number; --clear-stale (with --apply) "
+            "lifts the system-set tag where the gate no longer fires."
+        ),
     )
     p.add_argument(
         "--apply",
         action="store_true",
         help=(
             "Add AUDIT:ungrounded-number to every flagged memory (default: dry "
-            "run). Only adds tags; never clears them."
+            "run). Adds tags; clears none unless --clear-stale."
+        ),
+    )
+    p.add_argument(
+        "--clear-stale",
+        action="store_true",
+        help=(
+            "With --apply: remove the system-set AUDIT:ungrounded-number from "
+            "live memories this run did not flag."
         ),
     )
     p.add_argument("--sample", type=int, default=30, help="Sample rows to print.")
     args = p.parse_args()
     store, _cfg = open_store()
     try:
-        out = audit(store, apply=args.apply, sample=args.sample)
+        out = audit(
+            store,
+            apply=args.apply,
+            clear_stale=args.clear_stale,
+            sample=args.sample,
+        )
     finally:
         store.close()
     print(f"candidates (citation + unit-bearing number): {out['candidates']}")
@@ -154,6 +201,8 @@ def main() -> None:
         print(f"  {line}")
     if args.apply:
         print(f"applied AUDIT:ungrounded-number to {out['applied']} memories")
+        if args.clear_stale:
+            print(f"cleared the stale tag from {out['cleared']} memories")
     else:
         print("dry run: nothing changed (--apply to tag)")
 

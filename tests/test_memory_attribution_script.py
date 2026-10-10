@@ -78,3 +78,24 @@ def test_cite_kind_buckets() -> None:
     assert mod.cite_kind("pc995663") == "pc"
     assert mod.cite_kind("[pa12]") == "pa"
     assert mod.cite_kind("futrell25") == "paper-key"
+
+
+def test_clear_stale_lifts_only_the_system_tag_the_gate_no_longer_raises(
+    store: Store, seeded: dict[str, int]
+) -> None:
+    # A grounded memory tagged by an earlier gate round, and a citation-free
+    # memory an agent tagged by hand.
+    store.add_tag(seeded["good"], _TAG, set_by="system")
+    store.add_tag(seeded["plain"], _TAG, set_by="agent")
+    mod = _load()
+    out = mod.audit(store, apply=True, clear_stale=True)
+    assert seeded["bad"] in out["flagged_ids"]
+    assert out["cleared"] == 1
+    assert store.has_tag(seeded["bad"], "AUDIT", "ungrounded-number")
+    assert not store.has_tag(seeded["good"], "AUDIT", "ungrounded-number")
+    assert store.has_tag(seeded["plain"], "AUDIT", "ungrounded-number")
+    # Without --clear-stale nothing is lifted.
+    store.add_tag(seeded["good"], _TAG, set_by="system")
+    out = mod.audit(store, apply=True)
+    assert out["cleared"] == 0
+    assert store.has_tag(seeded["good"], "AUDIT", "ungrounded-number")

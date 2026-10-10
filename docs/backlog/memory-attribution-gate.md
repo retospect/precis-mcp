@@ -8,19 +8,25 @@ model: sonnet
 
 # Memory attribution gate
 
-**State (2026-10-10, fourth dry run):** §1–§5 shipped in warn mode
+**State (2026-10-10, fifth dry run):** §1–§5 shipped in warn mode
 (b88ae940e). Deployed on the cluster (cf586b9dc): the DOI digit-run fix and
 the gloss / decade / chunk-fallback / micro-unit round (25abd28fd). Landed
 on main, not yet deployed: the chunk-range / evidence-list / table-header
 round (6c1326c9a), the parenthetical / `kind:` break / thousands round
-(f4f0e82d0) and this commit's round. Four prod dry runs (Reto, via the
-pgbouncer tunnel): 1,087 → 910 → 876 → 829 flagged of ~3,089 candidates
-(27%), 0 errors; by cite kind pa 538 · me 308 · pc 228 · paper-key 221 ·
-paper 69 · websearch 57. Every 40-row sample was read against the sources
-(each new round's rows were checked against the paper text by a read-only
-prod query). `--apply` only adds the tag, never clears one — so the backfill
-is run on a sample that reads clean, and a later `--clear-stale` pass (not
-written) would be the way to lift tags the gate no longer raises.
+(f4f0e82d0), the semicolon / glued-K round (81aa9d32e) and this commit's
+round. Five prod dry runs (Reto, via the pgbouncer tunnel): 1,087 → 910 →
+876 → 829 → 795 flagged of ~3,090 candidates (26%), 0 errors; by cite kind
+pa 515 · me 294 · pc 223 · paper-key 207 · paper 65 · websearch 53. Every
+40-row sample was read against the sources (each new round's rows checked
+against the paper text by a read-only prod query). The fifth sample's six
+new rows: four genuine (me39255 "1 ps" lee26b, me39410 "50%" brabson25,
+me39504 "1.7 eV" martirez26, me39553 "30%" garridotorres17 — none in the
+paper), one spelling (me39603 "1.78 Å": razzaq25 writes `$1.78±0.11$ Å`,
+fixed for chunk-text evidence, document-level stays with gr478127), one
+pinpoint seven chunks off (me39478 "1 kHz" at wo2021081641a1~313, cited
+~306). `--apply` adds the tag; `--apply --clear-stale` (this commit) lifts
+the system-set tag where the gate no longer fires, so a tag a later gate
+round would not raise is not permanent.
 False-positive classes fixed so far: (a) gloss parenthetical pinned to the
 nearer following cite; (b) "2010s" as seconds; (c) chunk pinpoint a few
 chunks off; (d) micro units the `numerics` column cannot see; (e) the
@@ -51,7 +57,9 @@ against evans24, me36499 "±10%" against benoist25); a range's zero endpoint
 cite form, me35601); table-header units and list heads in document-level
 `numerics` (me25065 "0.15 nm"; needs `extract_numerics` at ingest);
 me38924 "10 Å" kocer24~7..10 is unverified (the chunks carry no Å value the
-tokenizer sees — possibly a PDF spelling of Å, possibly a real miss).
+tokenizer sees — possibly a PDF spelling of Å, possibly a real miss); a
+pinpoint many chunks off (me39478, ±1 and the document's `numerics` both
+miss it). The ingest-side `numerics` gaps are gr478127.
 Remaining, in order: (1) Reto re-runs the dry run on the fixed tree; (2) if
 the sample reads as real plus the residuals above, `--apply` the backfill
 in warn mode; the `reject` flip waits until the residual classes are rare
@@ -129,7 +137,10 @@ Algorithm:
    sentence ends before a lowercase `kind:` cite too (`… simulations.
    patent:x envisions`), and a semicolon ends a clause (`… at 9nm;
    paper:y shows`). A glued `K` (`130K molecules`) is a count unless a
-   temperature cue precedes it (`at 77K`, `T = 4K`, `below 20K`).
+   temperature cue precedes it (`at 77K`, `T = 4K`, `below 20K`). A
+   pinpoint the prose writes after a cite — `paper:x (chunks ~97–98: …)`,
+   `paper:x (chunk ~15, …)`, `paper:x (~151, ~157)` — scopes the evidence
+   like `paper:x~97..98` would.
    The exponent of `10^7 cm/s` and a patent reference numeral `216A-N` are
    tokenizer artefacts, not claims.
 4. **Evidence.** For a chunk-level cite: that chunk's text and its
@@ -150,7 +161,8 @@ Algorithm:
    checked against every chunk in it (capped at 40). Evidence text is read
    generously: list members share the trailing unit ("0.44 and 0.26 eV"),
    markdown table cells take the unit their header names (`[Å]`), and
-   "2,000 p.p.m." is read as "2000 ppm" alongside the raw spelling.
+   "2,000 p.p.m." is read as "2000 ppm" alongside the raw spelling, and
+   PDF math `$1.78±0.11$ Å` grounds both 1.78 Å and 0.11 Å.
 5. **Exemption phrase.** A number within 60 characters *after* which the
    text says `my estimate`, `my own estimate`, `(est.)`, `(estimate)` or
    `rough guess` is exempt. This is the escape hatch the nudge tells the
@@ -223,7 +235,9 @@ attach it to the handle.* Already applied in this tree.
   ground their members; `~a..b` parses to the whole range; a parenthetical
   50 chars after its cite still glosses it; a lowercase `kind:` cite starts
   a sentence; thousands commas and `p.p.m.` in evidence; a semicolon ends
-  the clause; `130K molecules` is a count, `at 77K` a temperature.
+  the clause; `130K molecules` is a count, `at 77K` a temperature; a prose
+  pinpoint after a cite becomes its chunk range; `$1.78±0.11$ Å` grounds
+  both numbers.
 - Handler (`tests/test_memory.py` additions, dev DB): create with a
   mis-sourced number → tag present + nudge line; `reject` mode → BadInput;
   a follow-up clean edit removes the tag; agent `tag(add=['AUDIT:ungrounded-number'])`

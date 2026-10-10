@@ -22,7 +22,9 @@ whose header names the unit (``Pore aperture [Å]``) grounds its cells. Two
 tokenizer artefacts are not claims: the exponent in ``10^7 cm/s``, a
 patent reference numeral (``216A-N``) and a thousands count (``130K
 molecules``). A semicolon ends a clause: "… at 9nm; paper:y shows …" keeps
-9 nm with the citation before the semicolon. A bare digit run never grounds a unit-bearing claim:
+9 nm with the citation before the semicolon. A pinpoint the prose writes
+after a cite, "paper:x (chunks ~97–98: …)", scopes the evidence like
+``paper:x~97..98`` would. A bare digit run never grounds a unit-bearing claim:
 a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
 "10 nm" (the first dogfood write slipped through on exactly that, 2026-10-09).
 Evidence that is empty is nothing to check against (no flag). A miss is an
@@ -146,6 +148,17 @@ _LIST_HEAD_CHARS = 40
 #: Both forms are read (the ``numerics`` column holds only the raw one).
 _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}\b)")
 _PPM_RE = re.compile(r"\bp\.p\.m\.?")
+#: PDF math: ``$1.78±0.11$ Å`` — drop the ``$`` and read the ``±`` as a
+#: two-member list so 1.78 takes the unit too.
+_MATH_DOLLAR_RE = re.compile(r"\$")
+_PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
+
+#: A pinpoint written in prose right after a cite: "paper:x (chunks ~97–98:
+#: …)", "paper:x (chunk ~15, …)", "paper:x (~151, ~157)" — read as the
+#: ``~97..98`` / ``~15`` / ``~151`` the cite itself could have carried.
+_PROSE_PINPOINT_RE = re.compile(
+    r"\s*\((?:chunks?\s+)?~(\d+)(?:\s*(?:[–—-]|\.\.)\s*~?(\d+))?"
+)
 
 #: ``~a..b`` chunk ranges are read whole, capped at this many chunks.
 _RANGE_MAX_CHUNKS = 40
@@ -331,6 +344,7 @@ def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
     units: set[tuple[str, str]] = set()
     tokens: list[str] = []
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
+    norm = _PLUS_MINUS_RE.sub(" and ", _MATH_DOLLAR_RE.sub("", norm))
     for variant in {text, norm}:
         spans = _quantities(variant)
         tokens += [tok for tok, _s, _e in spans]
@@ -481,7 +495,21 @@ def _cite_spans(body: str) -> list[_Span]:
             )
         )
     spans.sort(key=lambda s: s.start)
-    return spans
+    return [_with_prose_pinpoint(body, sp) for sp in spans]
+
+
+def _with_prose_pinpoint(body: str, span: _Span) -> _Span:
+    """A ``kind:id`` / paper-key cite with no ``~N`` of its own takes the
+    pinpoint the prose writes right after it (:data:`_PROSE_PINPOINT_RE`)."""
+    if not span.key.startswith("r:") or not span.key.endswith("|"):
+        return span
+    m = _PROSE_PINPOINT_RE.match(body, span.end)
+    if m is None:
+        return span
+    chunk = f"~{m.group(1)}" + (f"..{m.group(2)}" if m.group(2) else "")
+    return _Span(
+        span.start, span.end, span.cite, span.key + chunk, span.drop_if_unresolved
+    )
 
 
 def _resolve_cite(
