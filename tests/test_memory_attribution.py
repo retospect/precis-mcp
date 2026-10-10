@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -305,3 +306,54 @@ def test_evidence_cache_is_lru_bounded(monkeypatch):
 
 def test_reword_accessor_cached():
     assert attr._reword() is attr._reword()
+
+
+def test_gloss_pins_number_to_its_citation(world):
+    """Prod sample 2026-10-10 (me6240): 60 kPa sat in the first cite's gloss
+    but was nearer to the following cite, which does not carry it."""
+    world[(12, None)] = "nozzle at 60 kPa internal pressure, 20 nm line width"
+    world[(13, None)] = "bipartite graphs"
+    body = (
+        "I notice [pa12] (dead proboscides as nozzles — 20 nm line width, 60 kPa "
+        "internal pressure; lineage with necrobotics) and [pa13] (ribosomal graphs)."
+    )
+    assert _check(body) == []
+    world[(12, None)] = "nothing numeric"
+    assert [(m.token, m.cite) for m in _check(body)] == [
+        ("20 nm", "pa12"),
+        ("60 kPa", "pa12"),
+    ]
+
+
+def test_cite_inside_gloss_nearer_than_opener_wins(world):
+    world[(12, None)] = "nothing"
+    world[(13, None)] = "reports 40%"
+    assert (
+        _check("I notice [pa12] (a graph model; see [pa13] which reports 40%).") == []
+    )
+
+
+def test_decade_is_not_seconds(world):
+    world[(12, None)] = "nothing"
+    assert _check("any 2010s rotaxane-pump motif [pa12] re-expressed") == []
+    assert [m.token for m in _check("ran for 2010 s [pa12]")] == ["2010 s"]
+
+
+def test_chunk_cite_falls_back_to_the_document(world):
+    world[(995663, 4)] = "film thickness 7 nm"
+    world[(995663, None)] = "the abstract gives 8 nm"
+    assert _check("film is 8 nm thick (pc995663)") == []
+    assert [m.token for m in _check("film is 9 nm thick (pc995663)")] == ["9 nm"]
+
+
+def test_micro_units_unverifiable_against_numerics(world, monkeypatch):
+    """PDF text writes micro as ``$\\mu$ m``; a paper's numerics never hold it."""
+
+    def fetch(store, targets):
+        ev = attr.evidence_from_text("375 nm ; 29.7 GHz", has_text=True)
+        return {t: dataclasses.replace(ev, numerics_only=True) for t in targets}
+
+    monkeypatch.setattr(attr, "_fetch_evidence", fetch)
+    assert _check("mobility 10,000 at 2 µm channel [pa12]") == []
+    assert _check("mobility at 2 μm channel [pa12]") == []  # Greek mu
+    assert [m.token for m in _check("mobility at 3 nm channel [pa12]")] == ["3 nm"]

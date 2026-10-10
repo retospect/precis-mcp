@@ -6,7 +6,12 @@ claim deterministically (no LLM): every unit-bearing number
 (:func:`precis.utils.numerics.numeric_spans`) that sits in the same sentence
 as a citation, attributed to the *nearest* citation (a cluster of adjacent
 citations pools its evidence), must appear in that evidence as the same
-``(number, unit)`` pair. A bare digit run never grounds a unit-bearing claim:
+``(number, unit)`` pair. A parenthetical that opens right after a citation is
+that citation's gloss: "paper:x (… 60 kPa …) and paper:y" pins 60 kPa to x,
+whatever is nearer (the dream prose shape; the prod sample of 2026-10-10 had
+it mis-pinned to the following cite in 4 of 40 rows). A chunk cite is checked
+against its chunk and, failing that, the whole document: a pinpoint a few
+chunks off is a reading aid, not a mis-sourced number. A bare digit run never grounds a unit-bearing claim:
 a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
 "10 nm" (the first dogfood write slipped through on exactly that, 2026-10-09).
 Evidence that is empty is nothing to check against (no flag). A miss is an
@@ -93,6 +98,17 @@ _EVIDENCE_CACHE_MAX = 512
 #: documents). Every other kind is checked against its chunk text.
 _NUMERICS_ONLY_KINDS = frozenset({"paper", "patent"})
 
+#: Units the ``numerics`` column cannot see: PDF-derived text writes micro as
+#: ``$\mu$ m`` or the Greek letter, which :data:`precis.utils.numerics._UNITS`
+#: does not tokenise, so a paper's numerics never hold "2 µm" however often
+#: the paper says it. A claim in these units is unverifiable against
+#: numerics-only evidence, which is not the same as ungrounded: no flag.
+_NUMERICS_BLIND_UNITS = frozenset({"µm", "µA", "µM", "µg", "µs"})
+
+#: "2010s", "1980s": a decade, not seconds. ``numeric_spans`` reads the glued
+#: ``s`` as the unit; only the four-digit year shape is excluded.
+_DECADE_RE = re.compile(r"(?:1[89]|20)\d\ds")
+
 _NUMBER_PART_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
 #: "10-20 nm", "10–20 nm", "10 to 20 nm": a range sharing one trailing unit.
@@ -109,6 +125,11 @@ _UNIT_CANON = {
     "uM": "µM",
     "ug": "µg",
     "us": "µs",
+    "μm": "µm",  # Greek mu (U+03BC), not the micro sign (U+00B5)
+    "μA": "µA",
+    "μM": "µM",
+    "μg": "µg",
+    "μs": "µs",
     "cm−1": "cm-1",
     "Angstrom": "Å",
 }
@@ -132,6 +153,9 @@ class Evidence:
     units: frozenset[tuple[str, str]] = frozenset()
     runs: frozenset[str] = frozenset()
     has_text: bool = False
+    #: Some of this came from a ``numerics`` column (see
+    #: :data:`_NUMERICS_BLIND_UNITS`).
+    numerics_only: bool = False
 
     @property
     def usable(self) -> bool:
@@ -142,13 +166,18 @@ class Evidence:
             self.units | other.units,
             self.runs | other.runs,
             self.has_text or other.has_text,
+            self.numerics_only or other.numerics_only,
         )
 
 
 def _quantities(text: str) -> list[tuple[str, int, int]]:
     """``numeric_spans`` plus ranges: "10-20 nm" gives "10 nm" and "20 nm"
     (never "-20 nm"); the range replaces the spans it covers."""
-    spans = numeric_spans(text)
+    spans = [
+        (t, s, e)
+        for t, s, e in numeric_spans(text)
+        if not _DECADE_RE.fullmatch(text, s, e)
+    ]
     ranges = list(_RANGE_RE.finditer(text))
     if not ranges:
         return spans
@@ -364,7 +393,8 @@ def _fetch_evidence(
     """:class:`Evidence` for each ``(ref_id, chunk_ord|None)``.
 
     Batched: one query for ref kinds/titles, one per evidence shape. A
-    chunk cite reads that chunk and its ±1 neighbours; a ref cite reads the
+    chunk cite reads that chunk and its ±1 neighbours (the caller pools the
+    ``(ref_id, None)`` document evidence with it); a ref cite reads the
     ``numerics`` column (paper/patent; a ref with no numerics at all has
     nothing to check against) or chunk text, capped per ref (other kinds:
     websearch / perplexity / web / memory bodies).
@@ -414,6 +444,7 @@ def _fetch_evidence(
                     if not toks:
                         continue  # numerics = [] everywhere: nothing to check
                     ev = evidence_from_text(" ; ".join(toks), has_text=True)
+                    ev = Evidence(ev.units, ev.runs, True, numerics_only=True)
                     title = meta.get(rid, ("", ""))[1] or ""
                     out[(rid, None)] |= ev | evidence_from_text(title, has_text=False)
             if text_ids:
@@ -437,6 +468,35 @@ def _fetch_evidence(
 
 
 # --- the check --------------------------------------------------------------
+
+
+def _paren_groups(body: str) -> list[tuple[int, int]]:
+    """``(open, close)`` of every balanced round-bracket pair."""
+    stack: list[int] = []
+    out: list[tuple[int, int]] = []
+    for i, ch in enumerate(body):
+        if ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            out.append((stack.pop(), i))
+    return out
+
+
+def _cite_parenthetical(
+    groups: list[tuple[int, int]], spans: list[_Span], start: int, end: int
+) -> tuple[int, int, int] | None:
+    """``(open, close, span index)`` of the innermost parenthetical holding
+    ``[start, end)`` that opens within :data:`_CLUSTER_GAP_CHARS` of a
+    citation's end — that citation's gloss. ``None`` when the number is in
+    no such group."""
+    enclosing = sorted(
+        ((o, c) for o, c in groups if o < start and end <= c), reverse=True
+    )
+    for o, c in enclosing:
+        for i, sp in enumerate(spans):
+            if 0 <= o - sp.end <= _CLUSTER_GAP_CHARS:
+                return o, c, i
+    return None
 
 
 def _clusters(spans: list[_Span], seg_of_span: list[int]) -> list[int]:
@@ -485,24 +545,38 @@ def ungrounded_cited_numbers(
 
     seg_of_span = [_segment(sp.start) for sp in spans]
     cluster_of = _clusters(spans, seg_of_span)
+    groups = _paren_groups(body)
 
-    # Attribute each number to its nearest in-window citation.
+    def _dist(sp: _Span, s: int, e: int) -> int:
+        return sp.start - e if sp.start >= e else s - sp.end
+
+    # Attribute each number to its citation: inside a gloss, the citation the
+    # gloss belongs to unless a citation inside the gloss is nearer; else the
+    # nearest in-window citation in the same sentence.
     picks: list[tuple[str, int, int]] = []  # (token, number start, span index)
     for tok, s, e in numbers:
         if _exempt(body, s, e):
             continue
-        seg = _segment(s)
-        best: tuple[int, int] | None = None
-        for i, (sp, sp_seg) in enumerate(zip(spans, seg_of_span, strict=True)):
-            if sp_seg != seg:
-                continue
-            dist = sp.start - e if sp.start >= e else s - sp.end
-            if dist > _WINDOW_CHARS:
-                continue
-            if best is None or dist < best[0]:
-                best = (dist, i)
-        if best is not None:
-            picks.append((tok, s, best[1]))
+        cands: list[tuple[int, int]] = []
+        scope = _cite_parenthetical(groups, spans, s, e)
+        if scope is not None:
+            o, c, opener = scope
+            cands.append((s - o, opener))
+            for i, sp in enumerate(spans):
+                if i != opener and sp.start > o and sp.end <= c:
+                    dist = _dist(sp, s, e)
+                    if dist <= _WINDOW_CHARS:
+                        cands.append((dist, i))
+        else:
+            seg = _segment(s)
+            for i, (sp, sp_seg) in enumerate(zip(spans, seg_of_span, strict=True)):
+                if sp_seg != seg:
+                    continue
+                dist = _dist(sp, s, e)
+                if dist <= _WINDOW_CHARS:
+                    cands.append((dist, i))
+        if cands:
+            picks.append((tok, s, min(cands)[1]))
     if not picks:
         return []
 
@@ -513,11 +587,13 @@ def ungrounded_cited_numbers(
     resolved = {
         j: _resolve_cite(store, spans[j], cache) for js in members.values() for j in js
     }
-    need = {
-        (r, p)
-        for r, p in resolved.values()
-        if r is not None and cache.get_evidence((r, p)) is None
-    }
+    need: set[tuple[int, int | None]] = set()
+    for r, p in resolved.values():
+        if r is None:
+            continue
+        for key in {(r, p), (r, None)}:
+            if cache.get_evidence(key) is None:
+                need.add(key)
     if need:
         cache.put_evidence(_fetch_evidence(store, need))
 
@@ -537,12 +613,15 @@ def ungrounded_cited_numbers(
             out.append(UngroundedNumber(tok, sp.cite, None))
             continue
         ev = Evidence()
-        for key in live:
-            got = cache.get_evidence(key)
-            if got is not None:
-                ev = ev | got
+        for rid, pos in live:
+            for key in {(rid, pos), (rid, None)}:
+                got = cache.get_evidence(key)
+                if got is not None:
+                    ev = ev | got
         if not ev.usable or _grounded(tok, ev):
             continue  # nothing to check against, or the number is there
+        if ev.numerics_only and _split_token(tok)[1] in _NUMERICS_BLIND_UNITS:
+            continue  # the numerics column cannot see this unit: unverifiable
         if (tok, sp.cite) in seen:
             continue
         seen.add((tok, sp.cite))

@@ -254,7 +254,9 @@ ungrounded: "10 nm" near websearch:170350 — not in the cited text; drop the at
 Fix it by moving the handle off the figure, or mark the figure yours:
 `~10 nm (my estimate)`. Rewriting the body clears the tag when it is
 clean. If the deployment is set to reject mode, the write is refused
-instead of tagged. Citations that do not resolve are not checked.
+instead of tagged. Citations that do not resolve are not checked. A
+parenthetical that opens right after a citation is its gloss: the numbers
+in it are checked against that source, not the next citation in the line.
 
 ## Promote a research cache to a durable memory
 ## Distil a Sonar deep-research answer into a note
