@@ -374,6 +374,15 @@ def test_precis_status_build_section_reads_env(monkeypatch) -> None:
     # they must render as ``unknown`` without crashing.
     monkeypatch.delenv("PRECIS_BUILD_HOST", raising=False)
     monkeypatch.delenv("PRECIS_GIT_DESCRIBE", raising=False)
+    # The git-identity rows come from one lane, and a live checkout
+    # outranks the baked env (``_git_identity_lane``). CI runs from a
+    # real clone, so blank the checkout lanes: this test is about the
+    # image-build lane, which is what the env vars describe.
+    from precis.handlers import skill as skill_module
+
+    monkeypatch.setattr(skill_module, "_WATCHED_GIT_INFO", {})
+    monkeypatch.setattr(skill_module, "_SOURCE_GIT_INFO", {})
+    monkeypatch.setattr(skill_module, "_DIST_GIT_INFO", {})
 
     handler = SkillHandler(hub=Hub())
     body = handler._render_status()
