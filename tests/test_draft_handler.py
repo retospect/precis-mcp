@@ -241,6 +241,28 @@ def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
     assert intro_h not in [c.handle for c in _order(hub, "nt")]
 
 
+def test_get_accepts_draft_tilde_chunk_selector(draft: DraftHandler, hub: Hub) -> None:
+    """gr477862: ``<slug>~dc<N>`` / ``dr<ref>~dc<N>`` address the chunk."""
+    draft.put(id="selt", title="T", project=_proj(hub))
+    draft.put(
+        id="selt",
+        chunk_kind="heading",
+        text="Introduction",
+        at={"after": "¶" + _order(hub, "selt")[0].handle},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="selt")
+    assert ref is not None
+    dc = _order(hub, "selt")[1].dc
+    plain = draft.get(id=dc).body
+    assert "Introduction" in plain
+    assert draft.get(id=f"selt~{dc}").body == plain
+    assert draft.get(id=f"dr{ref.id}~{dc}").body == plain
+    with pytest.raises(BadInput):
+        draft.get(id="selt~nonsense")
+    with pytest.raises(NotFound):
+        draft.get(id="selt~dc999999999")
+
+
 def test_edit_introducing_dangling_ref_raises_before_write(
     draft: DraftHandler, hub: Hub
 ) -> None:

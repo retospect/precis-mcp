@@ -515,6 +515,29 @@ class DraftHandler(Handler):
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
+        if "~" in s:
+            # Canonical ``kind:identifier[~selector]`` form: ``<draft>~dc<N>``.
+            # The selector must be a chunk handle inside that draft; the
+            # chunk then renders exactly as ``id='dc<N>'`` does.
+            head, _, sel = s.partition("~")
+            sel = sel.strip()
+            if not head.strip() or not _is_draft_chunk_handle(sel):
+                raise BadInput(
+                    f"unknown draft selector {sel!r} in id={s!r}",
+                    next="selector must be a chunk handle: "
+                    "get(kind='draft', id='dc<N>')",
+                )
+            head = head.strip()
+            m = re.fullmatch(r"dr(\d+)", head)
+            owner = self.store.get_ref(kind="draft", id=int(m.group(1))) if m else None
+            if owner is None:
+                owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
+            chunk = self.store.drafts.get_draft_chunk(sel)
+            if chunk is None or int(chunk.ref_id) != int(owner.id):
+                raise NotFound(
+                    f"draft chunk {sel!r} not found in draft {head.strip()!r}"
+                )
+            s = sel
         if _is_draft_chunk_handle(s):
             # Turn-taking persona threads eye — render this node at a focus
             # extent (``extent=`` on the MCP door, a ladder label on

@@ -282,7 +282,9 @@ prose. Converted something you meant as prose?
 back to paragraphs.
 
 The outline shows a list as one row (`dc91 [ulist] 3 items: NO side · …`);
-`get(kind='draft', id='dc91')` renders its items in full.
+`get(kind='draft', id='dc91')` renders its items in full. The qualified form
+`id='<slug>~dc91'` (or `dr<ref>~dc91`) is equivalent; a chunk outside that
+draft is NotFound, a non-chunk selector is BadInput.
 
 ## Add a figure or a data table
 
