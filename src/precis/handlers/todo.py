@@ -72,6 +72,7 @@ from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
+from precis.utils.secret_scan import mask_secrets
 
 if TYPE_CHECKING:
     from precis.store.protocols import PoolStore
@@ -215,6 +216,7 @@ _validate_prio = validate_prio
 
 
 class TodoHandler(NumericRefHandler):
+    owns_under = True
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
@@ -418,6 +420,7 @@ class TodoHandler(NumericRefHandler):
         params: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        text, body = mask_secrets(text), mask_secrets(body)
         # ``put`` is create-only on this kind (mirrors the base
         # NumericRefHandler contract) — but unlike the base ``put``,
         # ``id`` isn't forwarded to ``super().put()`` below (it's
@@ -815,6 +818,7 @@ class TodoHandler(NumericRefHandler):
         tool-level contract every editable kind must honour (a silent
         write on ``dry_run`` is data loss).
         """
+        text, body = mask_secrets(text), mask_secrets(body)
         if id is None:
             raise BadInput(
                 "edit(kind='todo') requires id=",

@@ -688,6 +688,33 @@ class TestMemoryHandlerLink:
         memory_handler.link(id=new_id, target="paper:wang2020state", mode="remove")
         assert store.links_for(new_id, direction="out") == []
 
+    def test_unlink_removes_edge_to_retired_target(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        """mode='remove' resolves a retired target (a dead edge is fixable
+        via the verb); mode='add' still demands a live one."""
+        a = id_of(memory_handler.put(text="a").body)
+        b = id_of(memory_handler.put(text="b").body)
+        memory_handler.link(id=a, target=f"memory:{b}", rel="related-to")
+        store.retire_ref(b)
+
+        with pytest.raises(NotFound):
+            memory_handler.link(id=a, target=f"memory:{b}", rel="related-to")
+        out = memory_handler.link(id=a, target=f"memory:{b}", mode="remove")
+        assert "1 edge removed" in out.body
+        assert store.links_for(a, direction="out") == []
+
+    def test_unlink_retired_target_by_handle(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        a = id_of(memory_handler.put(text="a").body)
+        b = id_of(memory_handler.put(text="b").body)
+        memory_handler.link(id=a, target=f"memory:{b}", rel="related-to")
+        store.retire_ref(b)
+        h = handle_registry.format_handle("memory", b)
+        out = memory_handler.link(id=a, target=h, mode="remove")
+        assert "1 edge removed" in out.body
+
     def test_put_on_existing_id_rejected(
         self, memory_handler: MemoryHandler, store: Store
     ) -> None:
@@ -1071,3 +1098,27 @@ class TestNeighbourhood:
         future = datetime(2999, 1, 1, tzinfo=UTC)
         assert store.neighbourhood("memory", focus, since=future)["nodes"] == []
         assert len(store.neighbourhood("memory", focus, until=future)["nodes"]) == 1
+
+
+class TestUnlinkRetiredOrdering:
+    def test_superseded_target_follows_the_survivor(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        old = id_of(memory_handler.put(text="old").body)
+        new = id_of(memory_handler.put(text="new").body)
+        store.update_ref(old, meta_patch={"superseded_by": new})
+        store.retire_ref(old)
+        tgt = parse_link_target(f"memory:{old}", store=store, include_retired=True)
+        assert tgt.ref_id == new  # survivor first, not the retired row
+
+    def test_plain_retired_target_falls_back_to_its_own_row(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        b = id_of(memory_handler.put(text="b").body)
+        store.retire_ref(b)
+        assert (
+            parse_link_target(f"memory:{b}", store=store, include_retired=True).ref_id
+            == b
+        )
+        with pytest.raises(NotFound):
+            parse_link_target(f"memory:{b}", store=store)

@@ -435,7 +435,7 @@ def apply_link_ops(
             n_added = 1
 
     if unlink is not None:
-        target = parse_link_target(unlink, store=store)
+        target = parse_link_target(unlink, store=store, include_retired=True)
         # ``rel=`` on unlink is per-relation; absence means "any
         # link to this target at this position". Mirrors
         # ``NumericRefHandler._update``'s behaviour.

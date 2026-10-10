@@ -1119,6 +1119,7 @@ erDiagram
         text doi_status
         timestamp_with_time_zone doi_validated_at
         text owner_login FK
+        timestamp_with_time_zone last_recalled_at
     }
     relations {
         text slug PK

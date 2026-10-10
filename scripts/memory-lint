@@ -24,8 +24,9 @@
 #
 # The export's manifest (_sections.tsv: handle, section, updated, body chars,
 # chars the fisheye eye shows, live ring links, links hidden by the eye's
-# per-group cap, dead-end links — src/precis/cli/memory.py::SECTIONS_MANIFEST)
-# carries what the bodies cannot: check 2 scopes by section, check 7 ages by
+# per-group cap, dead-end links, part-of hub handle, live qualified-by count,
+# last access date (viewed/recalled) —
+# src/precis/cli/memory.py::SECTIONS_MANIFEST) carries what the bodies cannot: check 2 scopes by section, check 7 ages by
 # the node's real updated_at (the export rewrites every file, so mtimes are
 # all "today"), and check 8 lints the graph as recall walks it.
 #
@@ -57,8 +58,19 @@
 #   8. (graph mode) fisheye shape, per node, from the manifest: a body longer
 #      than the eye shows (recall reads `fisheye+1hop`, which cuts the body),
 #      an orphan (no live links: search is its only way in), neighbours the
-#      eye hides past its per-group cap (a flat hub — group under sections),
-#      dead-end links (to retired/missing refs).
+#      eye hides past its per-group cap (a flat hub — route through a hub; a
+#      section:index hub lists its members uncapped, so it is never flat),
+#      dead-end links (to retired/missing refs); with the hub columns: a node
+#      not part-of any section:index hub, a hub with >40 members (split into
+#      sub-hubs), a threads node whose hub has gotchas but no qualified-by
+#      edge on the thread, a non-hub node neither accessed nor updated in 60 days
+#      (cold — retire or fold). A hub column names the nearest section:index
+#      ancestor along part-of, so detail nodes under a summary node are
+#      hubbed; the member count is direct (parent column) members only. A 2-/8-column manifest skips the hub checks,
+#      a manifest without the access column skips cold; a node with an open
+#      review todo (tag memory-review, linked todo -> node; the manifest's
+#      review column) is listed as "under review", and as a problem once the
+#      todo is open > 7 days; a manifest without that column skips it.
 #   6. sibling-repo path currency (always runs; internally weekly-gated, self-
 #      stamping) — deliberately NOT part of check 5's in-repo path scan: that
 #      scan explicitly skips external `~/work/<name>` paths as "legitimately
@@ -303,28 +315,85 @@ fi  # SCAN_DIR (check 3b)
 # number of neighbours per relation, and hides dead ends. The caps live in
 # src/precis/utils/eye_render.py; the export applies them, this only compares.
 if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
-    while IFS=$'\t' read -r h _sec _upd chars eye live hidden dead; do
+    while IFS=$'\t' read -r h sec upd chars eye live hidden dead hubh qual hubgot members acc review; do
         [[ -n "$dead" ]] || continue          # pre-shape manifest: nothing to check
         tf="$SCAN_DIR/$h.md"
         if (( chars > eye )); then
-            echo "  eye-truncated → $(label_of "$h.md" "$tf"): fisheye shows $eye of $chars chars — split it (one node per thread/pass, linked) or move the payload to a doc, keeping the resume state first: edit(kind='memory', id='$h')"
+            echo "  eye-truncated → $(label_of "$h.md" "$tf"): fisheye shows $eye of $chars chars — split it (a summary node + part-of detail nodes, one per thread/pass; keep the resume state first): edit(kind='memory', id='$h')"
             problems=$((problems+1))
         fi
         if (( live == 0 )); then
-            echo "  orphan → $(label_of "$h.md" "$tf"): no live links, reachable by search only — link it to its section and neighbours: link(kind='memory', id='$h', target='memory:me…')"
+            echo "  orphan → $(label_of "$h.md" "$tf"): no live links, reachable by search only — link it to its hub and neighbours: link(kind='memory', id='$h', target='memory:me…')"
             problems=$((problems+1))
         fi
-        if (( hidden > 0 )); then
-            echo "  flat hub → $(label_of "$h.md" "$tf"): fisheye+1hop hides $hidden neighbour(s) past its per-relation cap — prune weak links or route them through section nodes"
+        if (( hidden > 0 )) && [[ "$sec" != index ]]; then   # hubs list members uncapped
+            echo "  flat hub → $(label_of "$h.md" "$tf"): fisheye+1hop hides $hidden neighbour(s) past its per-relation cap — prune weak links or route them through a hub node"
             problems=$((problems+1))
         fi
         if (( dead > 0 )); then
             echo "  dead links → $(label_of "$h.md" "$tf"): $dead link(s) to retired/missing refs — repoint or unlink: get(kind='memory', id='$h', view='links')"
             problems=$((problems+1))
         fi
-    # (tab is IFS whitespace, so `read` would merge an empty section column:
-    # awk fills it first)
-    done < <(awk -F'\t' -v OFS='\t' '{ if ($2 == "") $2 = "-"; print }' "$MANIFEST")
+        if [[ -n "${review:-}" && "$review" != "-" ]]; then
+            # open review todos (td<id>:<created>,…): informational while young,
+            # a hygiene problem once open > 7 days
+            IFS=, read -ra revs <<< "$review"
+            for rv in "${revs[@]}"; do
+                rid="${rv%%:*}"; rday="${rv#*:}"
+                rday_e=$(epoch_of "$rday" || true)
+                if [[ -n "$rday_e" ]] && (( ($(date +%s) - rday_e) / 86400 > 7 )); then
+                    echo "  stalled review → $(label_of "$h.md" "$tf"): $rid open since $rday — settle it or escalate (waiting-for:reto): get(kind='todo', id='$rid')"
+                    problems=$((problems+1))
+                else
+                    echo "  under review → $(label_of "$h.md" "$tf"): $rid (opened $rday)"
+                fi
+            done
+        fi
+        [[ "$hubh" != "?" ]] || continue      # pre-hub manifest: no hub checks
+        if [[ "$sec" == index ]]; then
+            if (( members > 40 )); then
+                echo "  big hub → $(label_of "$h.md" "$tf"): $members members — split into sub-hubs"
+                problems=$((problems+1))
+            fi
+            continue
+        fi
+        if [[ "$acc" != "?" ]]; then      # cold: no access and no update in 60 days
+            last="$upd"; [[ "$acc" != "-" && "$acc" > "$last" ]] && last="$acc"
+            last_e=$(epoch_of "$last" || true)
+            if [[ -n "$last_e" ]] && (( ($(date +%s) - last_e) / 86400 > 60 )); then
+                echo "  cold → $(label_of "$h.md" "$tf"): not recalled or updated since $last — retire or fold into a neighbour"
+                problems=$((problems+1))
+            fi
+        fi
+        if [[ "$hubh" == "-" ]]; then
+            echo "  no hub → $(label_of "$h.md" "$tf"): not part-of any section:index hub — link it: link(kind='memory', id='$h', target=<hub>, rel='part-of')"
+            problems=$((problems+1))
+        elif [[ "$sec" == threads ]] && [[ "$qual" != "?" ]] && (( qual == 0 && hubgot >= 1 )); then
+            echo "  unqualified thread → $(label_of "$h.md" "$tf"): hub $hubh has gotchas, none linked — link relevant ones with rel='qualifies'"
+            problems=$((problems+1))
+        fi
+    # (tab is IFS whitespace, so `read` would merge an empty column: awk fills
+    # section/hub with "-", marks absent hub/qualified columns "?", and adds
+    # per-hub counts — gotchas (cols 2+9) and members — as trailing columns)
+    done < <(awk -F'\t' -v OFS='\t' '
+        FNR == NR {
+            if (NF >= 9 && $9 != "" && $9 != "-") {
+                # direct members of a hub: the part-of parent column when present
+                direct = (NF >= 12) ? $12 : $9
+                if (direct != "") members[direct]++
+                if ($2 == "gotchas") gotchas[$9]++
+            }
+            next
+        }
+        NF < 8 { if ($2 == "") $2 = "-"; print; next }
+        {
+            sec = ($2 == "") ? "-" : $2
+            hub = (NF < 9) ? "?" : (($9 == "") ? "-" : $9)
+            qual = (NF < 10) ? "?" : $10
+            acc = (NF < 11) ? "?" : (($11 == "") ? "-" : $11)
+            rev = (NF < 13 || $13 == "") ? "-" : $13
+            print $1, sec, $3, $4, $5, $6, $7, $8, hub, qual, gotchas[hub] + 0, members[$1] + 0, acc, rev
+        }' "$MANIFEST" "$MANIFEST")
 fi
 
 if (( problems == 0 )) && (( GRAPH )); then
@@ -528,14 +597,23 @@ fi
 # learns the line means nothing and stops acting on it. Anchoring at line-start
 # (rather than accepting a date anywhere) is still what keeps a date quoted
 # mid-prose from counting as a pass.
+#
+# In graph mode the log is the exported node titled memory_consolidation_log;
+# the snapshot file in MEMDIR is frozen at the cutover, so reading it there
+# would be exactly the frozen clock above.
 today=$(date -u +%Y-%m-%d)
-last=$(grep -oE '^[-#*[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}' "$MEMDIR/memory_consolidation_log.md" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)
+log_file="$MEMDIR/memory_consolidation_log.md"
+if (( GRAPH )); then
+    log_node=$(grep -lx '# memory_consolidation_log' "$SCAN_DIR"/*.md 2>/dev/null | head -1 || true)
+    [[ -n "$log_node" ]] && log_file="$log_node"
+fi
+last=$(grep -oE '^[-#*[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}' "$log_file" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort | tail -1 || true)
 if [[ -z "$last" ]]; then
     echo "reconsolidation: DUE (no consolidation log yet)"
 elif [[ "$last" == "$today" ]]; then
     echo "reconsolidation: done today ($last) — skip the heavy pass"
 elif (( GRAPH )); then
-    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc) + delete(kind='memory') any landed thread flagged above. Compact for SIZE only if past the high-water mark. Append a dated line to memory_consolidation_log.md"
+    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc) + delete(kind='memory') any landed thread flagged above. Procedure: the reconsolidate skill; record the pass as a dated entry at the top of the memory_consolidation_log node"
 else
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Compact for SIZE only if past the high-water mark. Append a dated line to memory_consolidation_log.md"
 fi

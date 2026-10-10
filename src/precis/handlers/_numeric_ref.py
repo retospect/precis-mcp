@@ -188,6 +188,8 @@ def _tag_response_body(
 class NumericRefHandler(Handler):
     """Base class for numeric-id ref kinds (memory, todo, gripe, anki, …)."""
 
+    stamps_recall = True
+
     spec: ClassVar[KindSpec]
     kind: ClassVar[str]
     corpus_slug: ClassVar[str] = "default"
@@ -1526,7 +1528,9 @@ class NumericRefHandler(Handler):
             # Mint a lazy part ref only for an add that will go ahead.
             if mode == "add" and rel_err is None:
                 mint_lazy_link_target(target, store=self.store)
-            link_target = parse_link_target(target, store=self.store)
+            link_target = parse_link_target(
+                target, store=self.store, include_retired=mode == "remove"
+            )
         except (NotFound, BadInput) as exc:
             target_err = exc
         if target_err is not None and rel_err is not None:

@@ -693,12 +693,56 @@ def test_graph_mode_flags_the_fisheye_shape_from_the_manifest(
         out
     )
     assert "eye-truncated → me1 (section node): fisheye shows 4000 of 17000" in out, out
-    assert "flat hub → me1 (section node): fisheye+1hop hides 139 neighbour(s)" in out
+    # a section:index hub lists its members uncapped: never "flat"
+    assert "flat hub → me1" not in out, out
     assert "dead links → me1 (section node): 1 link(s)" in out, out
     assert "orphan → me7 (Note me7): no live links" in out, out
     assert "dead links → me8 (Note me8): 2 link(s)" in out, out
     assert "me9" not in out, out
-    assert "memory-lint: 6 hygiene issue(s) above" in out, out
+    assert "memory-lint: 5 hygiene issue(s) above" in out, out
+
+
+def test_graph_mode_hub_checks_from_the_hub_columns(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    for h in ("me11", "me12", "me13", "me14"):
+        (nodes / f"{h}.md").write_text(f"# Note {h}\n\nbody\n", encoding="utf-8")
+    today = _days_ago(0)
+    rows = [f"me1\tindex\t{today}\t10\t10\t45\t0\t0\t-\t0"]  # 45 members
+    # me11: hubless; me12: thread, hub has gotchas, none linked; me13: thread
+    # with a qualified-by edge; me14: the hub's gotcha
+    rows += [
+        f"me11\tgotchas\t{today}\t10\t10\t1\t0\t0\t\t0",
+        f"me12\tthreads\t{today}\t10\t10\t1\t0\t0\tme1\t0",
+        f"me13\tthreads\t{today}\t10\t10\t2\t0\t0\tme1\t1",
+        f"me14\tgotchas\t{today}\t10\t10\t2\t0\t0\tme1\t0",
+    ]
+    rows += [f"me{100 + i}\truns\t{today}\t10\t10\t1\t0\t0\tme1\t0" for i in range(42)]
+    (nodes / "_sections.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "big hub → me1 (section node): 45 members — split into sub-hubs" in out, out
+    assert "no hub → me11 (Note me11): not part-of any section:index hub" in out, out
+    assert "link(kind='memory', id='me11', target=<hub>, rel='part-of')" in out, out
+    assert "unqualified thread → me12 (Note me12): hub me1 has gotchas" in out, out
+    assert "unqualified thread → me13" not in out, out
+    assert "no hub → me14" not in out and "no hub → me12" not in out, out
+
+
+def test_graph_mode_skips_hub_checks_on_an_eight_column_manifest(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me6.md").write_text("# Note\n\nbody\n", encoding="utf-8")
+    today = _days_ago(0)
+    (nodes / "_sections.tsv").write_text(
+        f"me6\tthreads\t{today}\t10\t10\t1\t0\t0\n", encoding="utf-8"
+    )
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+    assert "no hub" not in out and "unqualified" not in out, out
+    assert "memory-lint: ✓ clean" in out, out
 
 
 def test_graph_mode_skips_the_shape_check_on_a_two_column_manifest(
@@ -712,3 +756,51 @@ def test_graph_mode_skips_the_shape_check_on_a_two_column_manifest(
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
     assert "memory-lint: ✓ clean" in res.stdout, res.stdout
+
+
+def test_graph_mode_flags_cold_nodes_from_the_access_column(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    for h in ("me21", "me22", "me23", "me24"):
+        (nodes / f"{h}.md").write_text(f"# Note {h}\n\nbody\n", encoding="utf-8")
+    old, today = _days_ago(90), _days_ago(0)
+    (nodes / "_sections.tsv").write_text(
+        f"me1\tindex\t{old}\t10\t10\t4\t0\t0\t-\t0\t\n"  # hubs are never cold
+        f"me21\treference\t{old}\t10\t10\t1\t0\t0\tme1\t0\t\n"  # cold
+        f"me22\treference\t{old}\t10\t10\t1\t0\t0\tme1\t0\t{today}\n"  # recalled
+        f"me23\treference\t{today}\t10\t10\t1\t0\t0\tme1\t0\t\n"  # updated
+        f"me24\treference\t{old}\t10\t10\t1\t0\t0\tme1\t0\t{old}\n",  # cold
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert f"cold → me21 (Note me21): not recalled or updated since {old}" in out, out
+    assert f"cold → me24 (Note me24): not recalled or updated since {old}" in out, out
+    assert "cold → me22" not in out and "cold → me23" not in out, out
+    assert "cold → me1 " not in out, out
+
+
+def test_graph_mode_reports_open_review_todos_from_the_review_column(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    for h in ("me31", "me32", "me33"):
+        (nodes / f"{h}.md").write_text(f"# Note {h}\n\nbody\n", encoding="utf-8")
+    today, old = _days_ago(0), _days_ago(10)
+    (nodes / "_sections.tsv").write_text(
+        f"me1\tindex\t{today}\t10\t10\t4\t0\t0\t-\t0\t\t\t\n"
+        f"me31\treference\t{today}\t10\t10\t1\t0\t0\tme1\t0\t\t\ttd7:{today}\n"
+        f"me32\treference\t{today}\t10\t10\t1\t0\t0\tme1\t0\t\t\ttd8:{old}\n"
+        f"me33\treference\t{today}\t10\t10\t1\t0\t0\tme1\t0\t\t\t\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+    out = res.stdout
+
+    assert f"under review → me31 (Note me31): td7 (opened {today})" in out, out
+    assert f"stalled review → me32 (Note me32): td8 open since {old}" in out, out
+    assert "review → me33" not in out, out
+    assert "memory-lint: 1 hygiene issue(s) above" in out, out  # only the stalled one

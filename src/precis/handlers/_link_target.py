@@ -61,12 +61,18 @@ class LinkTarget:
     redirected_from: str | None = None
 
 
-def parse_link_target(target: str, *, store: Store) -> LinkTarget:
+def parse_link_target(
+    target: str, *, store: Store, include_retired: bool = False
+) -> LinkTarget:
     """Resolve ``'kind:identifier[~selector]'`` to a :class:`LinkTarget`.
 
     A handle/slug that points at a merged/superseded ref transparently
     redirects to the live survivor (``meta.superseded_by``), emitting a
     "please use the new handle" hint via the store's wired hint bus.
+
+    ``include_retired=True`` (used by unlink) also resolves a retired target
+    to its own row, so a dead edge can be removed; add paths keep the live-only
+    default.
 
     Raises:
         BadInput: malformed string (no colon, empty kind/identifier,
@@ -89,8 +95,18 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
     # the canonical ``kind:slug`` form, whose ``:`` defeats the handle parse)
     # falls through to the legacy grammar below untouched.
     handle = target.strip()
-    if handle_registry.parse(handle) is not None:
+    parsed = handle_registry.parse(handle)
+    if parsed is not None:
         resolved = store.resolve_handle(handle)
+        if resolved is None and include_retired:
+            h_kind, h_chunk, h_pk = parsed
+            dead_ref = (
+                None
+                if h_chunk
+                else store.get_ref(kind=h_kind, id=h_pk, include_deleted=True)
+            )
+            if dead_ref is not None:
+                return LinkTarget(ref_id=dead_ref.id, pos=None, kind=h_kind, raw=target)
         if resolved is None:
             raise NotFound(
                 f"link target {handle!r} resolves to no live ref",
@@ -235,6 +251,10 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
             if survivor_id is not None
             else None
         )
+        if ref is None and include_retired:
+            # no live ref and no superseded survivor: a retired row is still a
+            # valid target to *remove* an edge to
+            ref = store.get_ref(kind=kind, id=ref_id_or_slug, include_deleted=True)
         if ref is None:
             if kind == "part":
                 next_hint = (

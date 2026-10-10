@@ -108,6 +108,8 @@ def _lede(definition: str) -> str:
 
 
 class TaxonHandler(NumericRefHandler):
+    owns_under = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="taxon",
         title="Taxon",

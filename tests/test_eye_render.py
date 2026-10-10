@@ -474,7 +474,7 @@ def test_second_hop_expands_one_group_with_q(hub: Hub) -> None:
     assert "— linked (1 hop) —" not in out, "an expansion shows the group only"
     with pytest.raises(ValueError, match="groups here: paper:cites"):
         render_eye(store, h, "fisheye+2hop", q="patent:cites")
-    with pytest.raises(ValueError, match="fisheye\\+2hop only"):
+    with pytest.raises(ValueError, match="second-hop group at fisheye\\+2hop"):
         render_eye(store, h, "fisheye+1hop", q="paper:cites")
 
 

@@ -61,6 +61,10 @@ A few more args, in brief: `args={'title': …}`/`args={'author': …}` run a by
 lookup on paper search (`precis-paper-help`). `args={'folder': …}` restricts hits
 to one folder's live subtree — id, `folder:N`, `fo<N>` handle, or name
 — and forces the cross-kind fan-out (`precis-folder-help`).
+`args={'under': 'me5'}` restricts hits to the descendants of a ref on the
+`part-of` tree (a memory hub or summary node); `'depth': 1` keeps direct
+members only. It combines with `q=`, `tags=` and `view='index'`; without
+`q=` memory hits list newest-touched first.
 `args={'angle': N, 'like': …}` run a salience-rotation search seeded from a ref
 handle (`precis-dreaming-help`). `view='dreamable'` / `'stubs'` /
 `'chase-queue'` swap in a different result shape and ignore `q=` — a

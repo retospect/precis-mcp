@@ -30,11 +30,15 @@ class SnapshotStore(SqlStore):
         super().__init__()
         self.data: dict[str, Any] | None = {"windows": windows} if windows else None
         self.writes = 0
+        # Snapshot age is measured against the real clock, and NOW is fixed
+        # at import: under xdist a test can run long after import, so stamp
+        # the snapshot when the store is built.
+        self.ts = datetime.now(UTC).replace(microsecond=0)
 
     def read_claude_quota(self, scope: str = "unified") -> object:
         if self.data is None:
             return None
-        return ClaudeQuotaRow(scope=scope, ts=NOW, data=dict(self.data))
+        return ClaudeQuotaRow(scope=scope, ts=self.ts, data=dict(self.data))
 
     def record_claude_quota(
         self, *, scope: str, data: dict[str, Any], conn=None

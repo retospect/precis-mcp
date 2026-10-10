@@ -293,6 +293,36 @@ tag(kind="memory", id=73, add=["confidence-certain"], remove=["confidence-modera
 Levels: `confidence-tentative` → `confidence-moderate` →
 `confidence-strong` → `confidence-certain`.
 
+## Hubs, part-of and qualifies
+
+A hub is a memory tagged `section:index`. Each other node in the space
+carries exactly one `part-of` edge to its subject hub and one type tag:
+`section:threads|runbooks|gotchas|workflow|reference`. A gotcha links to
+the thread it applies to with `qualifies` (the thread reads `qualified-by`).
+
+```python
+link(kind="memory", id="me12", target="me3", rel="part-of")      # me3 = hub
+tag(kind="memory", id="me12", add=["section:gotchas"])
+link(kind="memory", id="me12", target="me40", rel="qualifies")   # me40 = thread
+```
+
+A detail node is `part-of` its summary node, not the hub; it belongs to
+the nearest hub up the `part-of` chain.
+
+`get(kind="memory", id="me3", view="fisheye+1hop")` on a hub lists every
+member on one line (handle, title, hook) — no cap. Other relation groups
+show 8 neighbours. The fisheye shows only the first 4000 characters of a
+body: past that, write a summary node and put the detail in `part-of`
+nodes.
+
+Search inside one hub or summary node with
+`search(kind="memory", q="pump", args={"under": "me3"})`; add
+`"depth": 1` for direct members, `tags=["section:gotchas"]` to narrow by type.
+
+`put` and `edit` on a memory end with a `Next:` block of ready-to-run
+calls when a link, type tag or split is missing: the two nearest hubs, up to
+five unlinked gotchas for a thread. No lines means the node is in place.
+
 ## Sticky memories — show up every turn until you unpin them
 
 Some memories matter so much you want them in front of you on every
@@ -380,6 +410,48 @@ Every other closed axis (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`,
 | Boolean | `pinned`, `star`, `private`, `draft` |
 
 See `precis-tags` for the full axis vocabulary and per-kind matrix.
+
+## A memory I recalled turned out wrong
+## A recalled memory misled me
+## Fix or escalate a stale memory
+
+You already paid to learn the truth, so fix the node now, in this order:
+
+1. **Wrong** → anchored `edit(kind='memory', id=N, find='old', text='new',
+   reason='misled: <what was wrong, how you found out>')` in the same turn.
+   `reason=` lands first in the edit's log line (`view='log'`).
+2. **True only in some context** → add the context: a caveat line in the
+   body, or a gotcha node linked `rel='qualifies'`.
+3. **Obsolete** → `delete` it, after moving any still-true part into a live
+   node.
+4. **Only if you cannot establish the correct fact** (out of scope, no time,
+   unsure) → file a review todo; the planner takes it on a stronger model:
+
+   ```python
+   put(kind='todo', text='review memory me<N>: <the claim in doubt>',
+       body='Misled me: <what>. Found so far: <findings>. Looked at: <where>. '
+            'Brief: get(kind="skill", id="precis-memory-help"), section '
+            '"Working a memory-review todo".',
+       tags=['memory-review'], meta={'llm_tier': 'opus'},
+       link='memory:N', rel='raises-concern-about')
+   ```
+
+   `scripts/memory-lint` lists the node as "under review" while the todo is
+   open and as a "stalled review" after 7 days. Nothing changes ranking.
+
+## Working a memory-review todo
+
+You are the planner on a todo tagged `memory-review`; it links to the memory
+in doubt. Read the memory (`get(kind='memory', id=N, view='fisheye+1hop')`)
+and its log, then verify against the repo through the python kind
+(`get(kind='python', id='main::<qualname>')`, `search(kind='python',
+mode='pattern', q=…)`) and the other precis kinds. Settle it in the order
+above: wrong → anchored edit with `reason='misled: …'`; right only in some
+context → caveat line or a `qualifies` gotcha; obsolete → move any still-true
+part, then `delete`. Settled → add what you changed to the todo and mark it
+`STATUS:done`. Still unsettled → append your findings to the todo body, then
+`tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
+Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.
 
 ## See also
 

@@ -27,6 +27,7 @@ at runtime by MRO against the concrete ``Store``.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -1493,6 +1494,41 @@ class RefsMixin:
             ).fetchall()
         return {int(r[0]) for r in rows}
 
+    def part_of_descendants(
+        self, root_ref_id: int, *, depth: int | None = None
+    ) -> set[int]:
+        """Live ref_ids below ``root_ref_id`` on the ``part-of`` / ``contains``
+        tree (root excluded). ``part-of`` is stored child→parent, ``contains``
+        parent→child — one acyclic relation pair — so both orientations are
+        walked. ``depth=1`` is the direct members; ``None`` is unlimited (the
+        walk stops at 64 levels as a guard, far below any real tree). The
+        link-tree sibling of :meth:`folder_subtree_ids`, which walks
+        ``refs.parent_id``."""
+        limit = 64 if depth is None else min(int(depth), 64)
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE edges(child, parent) AS (
+                    SELECT src_ref_id, dst_ref_id FROM links
+                     WHERE relation = 'part-of'
+                    UNION ALL
+                    SELECT dst_ref_id, src_ref_id FROM links
+                     WHERE relation = 'contains'
+                ), sub(ref_id, d) AS (
+                    SELECT child, 1 FROM edges WHERE parent = %s
+                    UNION
+                    SELECT e.child, s.d + 1 FROM edges e
+                      JOIN sub s ON e.parent = s.ref_id
+                     WHERE s.d < %s
+                )
+                SELECT DISTINCT s.ref_id FROM sub s
+                  JOIN refs r ON r.ref_id = s.ref_id AND r.retired_at IS NULL
+                 WHERE s.ref_id <> %s
+                """,
+                (root_ref_id, limit, root_ref_id),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def folder_ref_ids_by_title(self, title: str) -> list[int]:
         """Live ``kind='folder'`` ref_ids whose title matches (case-insensitive).
 
@@ -2393,6 +2429,62 @@ class RefsMixin:
                 "UPDATE refs SET last_viewed_at = now() WHERE ref_id = %s",
                 (ref_id,),
             )
+
+    _RECALL_THROTTLE = (
+        "AND (last_recalled_at IS NULL OR last_recalled_at < now() - interval '1 hour')"
+    )
+
+    def touch_recalled(self, ref_id: int) -> None:
+        """Stamp ``refs.last_recalled_at = now()`` — an *agent* access record
+        (``get`` rendering a ref's own view, any ref-backed kind). One PK
+        UPDATE, throttled to once an hour in SQL; touches no other column
+        (``updated_at`` and the revision log stay put — a read is not an
+        edit). Failure-tolerant: a read never breaks on its own bookkeeping."""
+        self._stamp_recalled_sql(
+            f"UPDATE refs SET last_recalled_at = now() WHERE ref_id = %s "
+            f"{self._RECALL_THROTTLE}",
+            (ref_id,),
+        )
+
+    def touch_recalled_for(self, kind: str, ident: str) -> None:
+        """:meth:`touch_recalled` from a ``get`` id as the caller spelled it —
+        an int, a ``kind:id`` target, a record handle (``me5``) or a slug —
+        in ONE statement on one connection (no id lookup first). Chunk handles
+        and window selectors are not a read of the ref's own view: skipped."""
+        from precis.utils import handle_registry
+
+        s = ident.strip()
+        if s.startswith(f"{kind}:"):
+            s = s[len(kind) + 1 :].strip()
+        if not s or "~" in s or ".." in s:
+            return
+        parsed = handle_registry.parse(s)
+        if parsed is not None:
+            if parsed[0] != kind or parsed[1]:
+                return
+            ref_id: int | None = parsed[2]
+        else:
+            ref_id = int(s) if s.isdigit() else None
+        if ref_id is not None:
+            self._stamp_recalled_sql(
+                f"UPDATE refs SET last_recalled_at = now() "
+                f"WHERE ref_id = %s AND kind = %s {self._RECALL_THROTTLE}",
+                (ref_id, kind),
+            )
+            return
+        self._stamp_recalled_sql(
+            f"UPDATE refs SET last_recalled_at = now() "
+            f"WHERE kind = %s AND ref_id = (SELECT ref_id FROM ref_identifiers "
+            f"WHERE id_kind = 'cite_key' AND id_value = %s) {self._RECALL_THROTTLE}",
+            (kind, s),
+        )
+
+    def _stamp_recalled_sql(self, sql: str, params: tuple[Any, ...]) -> None:
+        try:
+            with self.pool.connection() as conn:
+                conn.execute(sql, params)
+        except Exception:
+            logging.getLogger(__name__).debug("recall stamp failed", exc_info=True)
 
     def list_refs(
         self,

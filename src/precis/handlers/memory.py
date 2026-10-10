@@ -38,6 +38,7 @@ refuses the write instead. A lookup error fails open and changes no tag.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 
 from psycopg import Connection
@@ -69,6 +70,9 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.memory_hubs import link_hints
+from precis.utils.next_block import render_next_section
+from precis.utils.secret_scan import mask_secrets
 
 log = logging.getLogger(__name__)
 
@@ -326,10 +330,16 @@ class MemoryHandler(NumericRefHandler):
         """
         # This fresh payload is passed down the stack, never staged on self.
         # Validate the public meta allowlist before adding internal fields.
+        # Automated writers cannot rephrase: mask here. Agent verb calls are
+        # refused at the dispatch boundary (runtime/dispatch.py) first.
+        text, title = mask_secrets(text), mask_secrets(title)
+        rule, warrant = mask_secrets(rule), mask_secrets(warrant)
         create_meta = _validate_meta(meta) if meta is not None else {}
         for key, value in (("title", title), ("rule", rule), ("warrant", warrant)):
             if isinstance(value, str) and value.strip():
                 create_meta[key] = value.strip()
+        if "hook" in create_meta:
+            create_meta["hook"] = mask_secrets(create_meta["hook"])
         return super().put(
             id=id,
             text=text,
@@ -520,6 +530,7 @@ class MemoryHandler(NumericRefHandler):
                 "get(kind='skill', id='precis-firstline-help')",
                 "title conventions (lead with the conclusion)",
             ),
+            *link_hints(self, ref_id),
             *super()._create_ack_next_hints(ref_id),
         ]
 
@@ -542,6 +553,7 @@ class MemoryHandler(NumericRefHandler):
         match: str = "unique",
         nth: int | None = None,
         dry_run: bool | str = False,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """In-place edit of a memory's body prose, and/or its argument-graph
@@ -584,6 +596,10 @@ class MemoryHandler(NumericRefHandler):
         warrant patch; ``text=`` alone is refused — it would otherwise
         silently overwrite the whole body — and points at ``mode='replace'``.
 
+        ``reason=`` is recorded first in the body edit's ``ref_events`` row, so
+        ``view='log'`` shows it beside the diff: a recall that found the memory
+        wrong writes ``reason='misled: <what was wrong, how found>'``.
+
         Distinct from ``supersede`` (the consolidate-into-new verb): edit
         keeps the same id and every inbound link — the "polish the wording"
         affordance.
@@ -594,12 +610,17 @@ class MemoryHandler(NumericRefHandler):
                 next="edit(kind='memory', id=N, mode='replace', text='new body')",
             )
         require_mode(spec=self.spec, verb="edit", mode=mode)
+        text, title = mask_secrets(text), mask_secrets(title)
+        rule, warrant = mask_secrets(rule), mask_secrets(warrant)
+        reason = mask_secrets(reason)
         has_text = text is not None and text.strip()
         rule_clean = rule.strip() if isinstance(rule, str) and rule.strip() else None
         warrant_clean = (
             warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
         )
         meta_clean = _validate_meta(meta) if meta is not None else {}
+        if "hook" in meta_clean:
+            meta_clean["hook"] = mask_secrets(meta_clean["hook"])
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         dry_mode = normalize_dry_run(dry_run)
         # Only the MCP default with neither body argument is a metadata
@@ -638,6 +659,7 @@ class MemoryHandler(NumericRefHandler):
                 nth=nth,
                 dry_mode=dry_mode,
                 meta_patch=meta_clean,
+                reason=reason,
             )
         if dry_mode is not None:
             raise BadInput(
@@ -691,7 +713,7 @@ class MemoryHandler(NumericRefHandler):
             out = f"updated {self._sense()} id={ref.id} meta: {changed}"
             if new_title is not None:
                 out += f". title now: {new_title!r}"
-            return Response(body=out)
+            return Response(body=out + render_next_section(link_hints(self, ref.id)))
 
         assert text is not None
         misses = self._attribution_misses(text)
@@ -701,6 +723,7 @@ class MemoryHandler(NumericRefHandler):
             new_title=new_title,
             meta_patch=meta_patch,
             misses=misses,
+            reason=reason,
         )
         nudge = self._first_line_nudge(new_title) if new_title is not None else None
         old_words = len((old_body or "").split())
@@ -714,6 +737,7 @@ class MemoryHandler(NumericRefHandler):
         body += " view='log' for the full diff."
         if nudge:
             body += f"\n\nhint: {nudge}"
+        body += render_next_section(link_hints(self, ref.id))
         return self._with_attribution_advisory(Response(body=body), misses)
 
     def _write_body(
@@ -725,6 +749,7 @@ class MemoryHandler(NumericRefHandler):
         meta_patch: dict[str, Any],
         expected_body: str | None = None,
         misses: list[UngroundedNumber] | None = None,
+        reason: str | None = None,
     ) -> str | None:
         """The one body-write path shared by every edit mode.
 
@@ -750,7 +775,12 @@ class MemoryHandler(NumericRefHandler):
             if row[1] is not None:
                 raise Gone(f"memory {ref_id} has been deleted")
             old_body = self.store.chunks.replace_body_chunk(
-                ref_id, new_text, chunk_kind=_BODY_KIND, source="agent", conn=conn
+                ref_id,
+                new_text,
+                chunk_kind=_BODY_KIND,
+                source="agent",
+                reason=reason.strip() if reason and reason.strip() else None,
+                conn=conn,
             )
             previous = old_body if old_body is not None else (row[0] or "")
             if expected_body is not None and previous != expected_body:
@@ -813,6 +843,7 @@ class MemoryHandler(NumericRefHandler):
         nth: int | None,
         dry_mode: str | None,
         meta_patch: dict[str, Any],
+        reason: str | None = None,
     ) -> Response:
         """``mode='find-replace'`` / ``'insert'`` on the body prose.
 
@@ -900,6 +931,7 @@ class MemoryHandler(NumericRefHandler):
             meta_patch=meta_patch,
             expected_body=old_body,
             misses=misses,
+            reason=reason,
         )
         verb = "edited" if op_kind == "edit" else "inserted into"
         n_spans = len(result.edited_spans)
@@ -910,6 +942,7 @@ class MemoryHandler(NumericRefHandler):
                     f"({len(old_body.split())} → {len(new_body.split())} words, "
                     f"{n_spans} span{'s' if n_spans != 1 else ''}). "
                     "view='log' for the full diff."
+                    + render_next_section(link_hints(self, ref.id))
                 )
             ),
             misses,
@@ -1001,7 +1034,6 @@ class MemoryHandler(NumericRefHandler):
         Body-word counts come from one batched query over the ``memory_body``
         chunks (no N+1) rather than the base class's first-line split.
         """
-        from datetime import UTC, datetime
 
         from precis.format import render_agent_table
         from precis.utils import handle_registry
@@ -1075,12 +1107,8 @@ class MemoryHandler(NumericRefHandler):
                 ),
             )
         if not (q and q.strip()):
-            raise BadInput(
-                "search(kind='memory', view='index') requires q=",
-                next=(
-                    "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
-                    "view='index')"
-                ),
+            return self._index_listing(
+                tags, page_size, page, exclude_ref_ids, include_ref_ids
             )
         from precis.cli.memory import bullet_line
 
@@ -1109,6 +1137,49 @@ class MemoryHandler(NumericRefHandler):
             lines.append(
                 bullet_line(ref, cut_hooks=False, filename=True, fallback_hook=first)
             )
+        return Response(body="\n".join(lines))
+
+    def _index_listing(
+        self,
+        tags: list[str] | None,
+        page_size: int,
+        page: int,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+    ) -> Response:
+        """``view='index'`` without ``q=``: the tag-filtered memories as index
+        bullets, most recently touched first (``GREATEST(last_viewed_at,
+        last_recalled_at, updated_at)``)."""
+
+        from precis.cli.memory import bullet_line
+        from precis.utils.memory_hubs import recency_stamps
+
+        normalized = Tag.normalize_filter(tags, kind=self.kind)
+        refs = self.store.list_refs(kind=self.kind, tags=normalized, limit=5000)
+        if include_ref_ids is not None:
+            keep = set(include_ref_ids)
+            refs = [r for r in refs if r.id in keep]
+        if exclude_ref_ids:
+            drop = set(exclude_ref_ids)
+            refs = [r for r in refs if r.id not in drop]
+        if not refs:
+            tag_suffix = f" tagged {normalized}" if normalized else ""
+            return Response(body=f"no {self._sense()} entries{tag_suffix}")
+        stamps = recency_stamps(self.store, [r.id for r in refs])
+        oldest = datetime.min.replace(tzinfo=UTC)
+        refs = sorted(refs, key=lambda r: stamps.get(r.id) or oldest, reverse=True)
+        start = (max(page, 1) - 1) * page_size
+        lines = []
+        for ref in refs[start : start + page_size]:
+            first = next(
+                (ln.strip() for ln in self._body_text(ref).splitlines() if ln.strip()),
+                "",
+            )
+            lines.append(
+                bullet_line(ref, cut_hooks=False, filename=True, fallback_hook=first)
+            )
+        if not lines:
+            return Response(body=f"no {self._sense()} entries on page {page}")
         return Response(body="\n".join(lines))
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
@@ -1174,6 +1245,8 @@ class MemoryHandler(NumericRefHandler):
                 "supersede requires new_text= (the consolidated memory)",
                 next="supersede(merge_ids=[...], new_text='the merged wording')",
             )
+
+        new_text, new_title = mask_secrets(new_text), mask_secrets(new_title)
 
         # Every id must resolve to a *live memory*. get_ref(kind='memory')
         # returns None for a wrong kind, a missing id, or a soft-deleted

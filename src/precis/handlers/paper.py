@@ -261,6 +261,8 @@ class PaperHandler(Handler):
     ``refs.meta``.
     """
 
+    stamps_recall = True
+
     #: Empty-corpus message for :meth:`_render_list_papers`. Subclasses
     #: (cfp, datasheet) that don't share paper's ingest pipeline invocation
     #: override this — without it they'd inherit "no papers ingested yet -

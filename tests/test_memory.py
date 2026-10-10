@@ -1430,14 +1430,12 @@ def test_search_view_index_renders_handle_filename_and_hook(
     assert all(ln.startswith("- ") for ln in lines)
 
 
-def test_search_view_index_is_refused_for_other_views_and_empty_q(
+def test_search_view_index_is_refused_for_other_views_only(
     handler: MemoryHandler,
 ) -> None:
     with pytest.raises(BadInput) as ei:
         handler.search(q="x", view="nope")
     assert "index" in str(ei.value) + str(getattr(ei.value, "options", ""))
-    with pytest.raises(BadInput):
-        handler.search(view="index", tags=["SPACE:repo-dev"])
 
 
 def test_search_default_view_is_unchanged(handler: MemoryHandler, store: Store) -> None:

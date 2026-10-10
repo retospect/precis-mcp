@@ -285,6 +285,16 @@ class Handler(ABC):
 
     spec: ClassVar[KindSpec]
 
+    #: ``get`` of one of this kind's ids stamps ``refs.last_recalled_at`` (the
+    #: agent-access record). True only for handlers whose public id names a
+    #: ``refs`` row; file / path / computed kinds leave it False and are never
+    #: looked up.
+    stamps_recall: ClassVar[bool] = False
+
+    #: The handler defines its own ``under=`` / ``depth=`` search arguments, so
+    #: the dispatcher's generic part-of ``under`` facet leaves them alone.
+    owns_under: ClassVar[bool] = False
+
     #: Populated by :meth:`_register_with` so handlers that need
     #: hub introspection (e.g. SkillHandler rendering
     #: ``precis-help``, or any handler that wants the embedder /

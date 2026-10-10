@@ -33,6 +33,7 @@ import os
 import re
 import textwrap
 import time
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, Internal, NotFound, PrecisError, Unsupported
@@ -103,6 +104,11 @@ _EDIT_MODE_WRAPPER_DEFAULT = "find-replace"
 #: calling the handler method and validates the keys against the
 #: method's accepted-kwargs whitelist.
 _EXTRAS_KEY = "__extras__"
+#: Recall stamps remembered in-process (kind, id) -> monotonic time: a ref read
+#: again inside the hour skips the database entirely. Bounded LRU; the SQL
+#: throttle in ``Store.touch_recalled_for`` stays the cross-process guard.
+_RECALL_TTL_S = 3600.0
+_RECALL_CACHE_MAX = 10_000
 
 #: Address sigils that self-identify a kind, so ``get(id='¶handle')``
 #: works without ``kind=`` (the draft skill documents exactly that).
@@ -493,6 +499,46 @@ def _tick_disabled_hint(kind: str) -> str | None:
     return dict(ctx.disabled_kinds).get(kind)
 
 
+#: Text-writing args of the gated kinds' put/edit/supersede calls.
+_SECRET_GATED_KINDS = frozenset({"memory", "todo", "gripe"})
+_SECRET_GATED_ARGS = (
+    "text",
+    "body",
+    "title",
+    "new_text",
+    "new_title",
+    "rule",
+    "warrant",
+    "reason",
+)
+
+
+def _refuse_agent_secrets(verb: str, args: dict[str, Any]) -> None:
+    """Refuse a credential in an agent's memory/todo/gripe write.
+
+    The MCP/CLI verb boundary is where an agent can still rephrase, so it is
+    refused here (:func:`precis.utils.secret_scan.refuse_secrets`). The
+    handlers themselves *mask* (``mask_secrets``) instead, for the automated
+    writers (alert / forensics workers, importers, web UI) that call them
+    directly and would otherwise lose the record.
+    """
+    if verb not in ("put", "edit", "supersede") or args.get("kind") not in (
+        _SECRET_GATED_KINDS
+    ):
+        return
+    from precis.utils.secret_scan import refuse_secrets
+
+    fields: list[tuple[str, Any]] = [
+        (k, args[k]) for k in _SECRET_GATED_ARGS if isinstance(args.get(k), str)
+    ]
+    meta = args.get("meta")
+    if not isinstance(meta, dict):
+        meta = (args.get("__extras__") or {}).get("meta")
+    if isinstance(meta, dict) and isinstance(meta.get("hook"), str):
+        fields.append(("meta['hook']", meta["hook"]))
+    refuse_secrets(fields)
+
+
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
 
@@ -525,6 +571,7 @@ class DispatchMixin(RuntimeShape):
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
+                _refuse_agent_secrets(verb, args)
                 response = self._dispatch_inner(verb, dict(args))
                 # Chunk over-large bodies so they don't blow the
                 # MCP stdio frame. On a long-lived runtime (MCP
@@ -913,19 +960,95 @@ class DispatchMixin(RuntimeShape):
         strand the filter signal on a page the caller never reads.
         """
         note: str | None = None
+        if verb == "search":
+            under_note = self._resolve_under(args)
+            if under_note is not None:
+                note = under_note
         if verb == "search" and (
             args.get("uncited") is not None
             or args.get("cited") is not None
             or args.get("hubbed") is not None
         ):
             self._reject_source_facet_unfiltered_shape(args)
-            note = self._resolve_source_facets(args)
+            facet_note = self._resolve_source_facets(args)
+            note = "\n".join(n for n in (note, facet_note) if n) or None
         response = self._dispatch_inner_core(verb, args)
         if note is not None:
             from dataclasses import replace as _replace
 
             response = _replace(response, body=f"{note}\n\n{response.body}")
         return response
+
+    def _resolve_under(self, args: dict[str, Any]) -> str | None:
+        """``search(args={'under': '<handle>', 'depth': N})``: restrict hits to
+        the descendants of ``<handle>`` on the ``part-of`` / ``contains`` tree
+        (``depth=1`` = direct members; default unlimited). Resolves into
+        ``args['include_ref_ids']`` — the channel every retrieval path reads —
+        by intersection with any earlier facet, exactly as ``cited=`` does. The
+        folder scope (``folder=``) walks ``refs.parent_id`` instead and is
+        untouched. Returns ``None`` when ``under`` is absent."""
+        kind = args.get("kind")
+        if not isinstance(kind, str) or not kind.strip() or kind.strip() == "*":
+            return None  # cross-kind: each handler's own under= (if any) stays put
+        if "," in kind:
+            return None
+        handler = self.hub.handler_for(kind.strip())
+        if handler is not None and handler.owns_under:
+            return None  # this kind defines its own under=/depth=
+        extras = args.get(_EXTRAS_KEY)
+        sources = [args, extras] if isinstance(extras, dict) else [args]
+        under = depth = None
+        for src in sources:
+            if src.get("under") is not None:
+                under = src.pop("under")
+            if src.get("depth") is not None:
+                depth = src.pop("depth")
+        if under is None:
+            if depth is not None:
+                raise BadInput(
+                    "depth= needs under=",
+                    next="search(kind='memory', q='…', args={'under': 'me5', 'depth': 1})",
+                )
+            return None
+        store = self.store
+        if store is None:
+            raise Unsupported("under= needs a store-backed deployment")
+        from precis.utils import handle_registry
+
+        n_depth: int | None = None
+        if depth is not None:
+            try:
+                n_depth = int(depth)
+            except (TypeError, ValueError):
+                n_depth = 0
+            if n_depth < 1:
+                raise BadInput(
+                    f"depth= must be a positive integer, got {depth!r}",
+                    next="depth=1 lists direct members; omit it for the whole subtree",
+                )
+        raw = str(under).strip()
+        resolved = store.resolve_handle(raw)
+        ref_id = int(resolved.ref_id) if resolved is not None else None
+        if ref_id is None:
+            try:
+                from precis.handlers._link_target import parse_link_target
+
+                ref_id = parse_link_target(raw, store=store).ref_id
+            except PrecisError:
+                ref_id = None
+        if ref_id is None:
+            raise NotFound(
+                f"under={raw!r} resolves to no live ref",
+                next="pass a handle like 'me5' (a hub or summary node), or 'kind:id'",
+            )
+        below = store.part_of_descendants(ref_id, depth=n_depth)
+        self._intersect_include_ref_ids(args, below)
+        name = handle_registry.try_format(
+            resolved.kind if resolved is not None else "memory", ref_id
+        )
+        n = len(below)
+        scope = "direct members" if n_depth == 1 else "descendants"
+        return f"_(under={name or raw}: restricted to {n} {scope} on part-of)_"
 
     def _reject_source_facet_unfiltered_shape(self, args: dict[str, Any]) -> None:
         """Refuse ``uncited=``/``cited=``/``hubbed=`` on the search shapes
@@ -1583,9 +1706,11 @@ class DispatchMixin(RuntimeShape):
             extent = _eye_extent(args)
             if extent is not None:
                 try:
-                    return handler.eye(
+                    response = handler.eye(
                         id=args.get("id"), extent=extent, q=args.get("q")
                     )
+                    self._stamp_recalled(kind, args.get("id"))
+                    return response
                 except PrecisError as exc:
                     if kind_was_defaulted:
                         exc.cause = f"(searched kind={kind!r}) {exc.cause}"
@@ -1729,11 +1854,45 @@ class DispatchMixin(RuntimeShape):
                 ) from exc
             raise
 
+        if verb == "get" and args.get("view") is None:
+            self._stamp_recalled(kind, args.get("id"))
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         if verb == "get" and self._is_id_empty(args.get("id")):
             response = self._maybe_append_kind_skill_footer(response, kind)
         return response
+
+    def _stamp_recalled(self, kind: str, ident: Any) -> None:
+        """Record an agent read of one ref's own view (``refs.last_recalled_at``).
+
+        Only a single concrete id of a ref-backed kind counts (``Handler.
+        stamps_recall``) — not a batch, a ``/path`` list view, a search hit or
+        a neighbour line. An in-process TTL cache absorbs repeat reads, and the
+        stamp itself is ONE throttled UPDATE (no id lookup). Best-effort: a
+        failed stamp never fails the read."""
+        try:
+            if ident is None or isinstance(ident, (list, tuple)):
+                return
+            if isinstance(ident, str) and ident.strip().startswith("/"):
+                return
+            store = self.store
+            handler = self.hub.handler_for(kind)
+            if store is None or handler is None or not handler.stamps_recall:
+                return
+            key = (kind, str(ident).strip())
+            cache = self.__dict__.setdefault("_recall_seen", OrderedDict())
+            now = time.monotonic()
+            seen = cache.get(key)
+            if seen is not None and now - seen < _RECALL_TTL_S:
+                cache.move_to_end(key)
+                return
+            store.touch_recalled_for(kind, key[1])
+            cache[key] = now
+            cache.move_to_end(key)
+            while len(cache) > _RECALL_CACHE_MAX:
+                cache.popitem(last=False)
+        except Exception:
+            log.debug("recall stamp skipped for %s %r", kind, ident, exc_info=True)
 
     @staticmethod
     def _validate_mode(

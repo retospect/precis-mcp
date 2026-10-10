@@ -41,6 +41,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ChunkInsert, ChunkRow, Ref
+from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
@@ -128,6 +129,9 @@ class GripeHandler(NumericRefHandler):
         prio: int | None = None,
         **_kw: Any,
     ) -> Response:
+        # automated writers cannot rephrase: mask here; agent verb calls are
+        # refused at the dispatch boundary (runtime/dispatch.py)
+        text = mask_secrets(text)
         # id-presence is what actually dispatches create-vs-comment; an
         # explicit mode= is accepted only as a redundant-but-unambiguous
         # confirmation of that ('create' <-> no id=, 'comment' <-> id=<n>)

@@ -58,6 +58,7 @@ worker-internal, not an agent-facing verb.
 
 from __future__ import annotations
 
+import logging
 import weakref
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +91,8 @@ _DOC_KINDS: frozenset[str] = frozenset(
 )
 
 _SUMMARY_CAP = 300
+log = logging.getLogger(__name__)
+
 _VERBATIM_CAP = 4000
 _NEIGHBOR_TITLE_CAP = 80
 #: Per-relation cap on the ``fisheye+1hop`` link neighborhood — a claim hub
@@ -134,10 +137,15 @@ def render_eye(
     ``extent`` is a ladder rung, optionally suffixed ``+recall``
     (``fisheye+1hop+recall``); a bare ``+recall`` is ``fisheye+1hop+recall``.
     ``q='<kind>:<label>'`` at ``fisheye+2hop`` expands one second-hop group
-    (:func:`_second_hop`)."""
+    (:func:`_second_hop`); ``q='<label>'`` (no colon) at ``fisheye+1hop`` or
+    above lists one first-hop group uncapped (:func:`_expand_first_hop`) — the
+    call a ``… +N more`` line carries."""
     ext, recall = parse_extent(extent)
-    if q is not None and ext < Extent.HOP2:
-        raise ValueError("eye: q='<kind>:<label>' expands a group of fisheye+2hop only")
+    if q is not None and (ext < Extent.HOP1 or (ext < Extent.HOP2 and ":" in q)):
+        raise ValueError(
+            "eye: q='<label>' lists one first-hop group at fisheye+1hop; "
+            "q='<kind>:<label>' expands a second-hop group at fisheye+2hop"
+        )
     if handle.startswith(_SKILL_HANDLE_PREFIX):
         return _render_skill_eye(handle, ext)
     parsed = handle_registry.parse(handle)
@@ -382,15 +390,24 @@ def _render_doc_eye(
 # ── link kinds: the note + its link graph (memory / finding / …) ──────
 
 
-def _ordered_body(store: Store, ref_id: int, *, cap: int) -> str:
-    """The ref's body — its ord≥0 chunks in order, capped."""
+def _ordered_body(store: Store, ref_id: int, *, cap: int) -> tuple[str, int]:
+    """``(the ref's body capped, its full length)`` — ord≥0 chunks in order."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 ORDER BY ord",
             (ref_id,),
         ).fetchall()
     body = "\n".join(str(r[0]) for r in rows if r[0]).strip()
-    return _cap(body, cap)
+    return _cap(body, cap), len(body)
+
+
+def _cut_marker(kind: str, handle: str, shown: int, total: int) -> str:
+    """The line closing a body the eye cut at ``_VERBATIM_CAP``: the call that
+    returns it whole, and for a memory the way to stop it recurring."""
+    line = f"… cut: {shown} of {total} chars — full body: get(kind={kind!r}, id={handle!r})"
+    if kind == "memory":
+        line += " · split it: a summary node + part-of children"
+    return line
 
 
 def _render_note_eye(
@@ -412,7 +429,12 @@ def _render_note_eye(
     if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind)}"
     cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
-    body = _ordered_body(store, int(ref.id), cap=cap)
+    body, total = _ordered_body(store, int(ref.id), cap=cap)
+    if cap == _VERBATIM_CAP and total > _VERBATIM_CAP:
+        marker = _cut_marker(
+            kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
+        )
+        body = f"{body}\n{marker}"
     block = f"{_head(ref, kind)}\n{body}" if body else _head(ref, kind)
     sections = _rings(store, int(ref.id), kind, ext, recall=recall, expand=expand)
     return "\n\n".join([block, *sections])
@@ -482,7 +504,201 @@ def _link_neighbors(store: Store, ref_id: int) -> str:
     a visible ``… +N more`` line (no silent cap); the count is against
     *rendered* (live, non-deleted) neighbours, not raw edges."""
     hop1, refs = _first_hop(store, ref_id)
-    return _render_first_hop(hop1, refs, audit=_audit_flagged(store, refs))
+    return _render_ring(store, ref_id, hop1, refs)
+
+
+def _render_ring(
+    store: Store,
+    ref_id: int,
+    hop1: dict[tuple[str, str], list[int]],
+    refs: dict[int, Any],
+) -> str:
+    """:func:`_render_first_hop` with the hub listing switched on for a
+    ``section:index`` memory (its ``contains`` members are not capped)."""
+    notes = _hub_member_notes(store, ref_id, hop1, refs)
+    return _render_first_hop(
+        hop1,
+        refs,
+        audit=_audit_flagged(store, refs),
+        hub_members=notes,
+        more_hint=_more_hint_factory(store, ref_id, hop1),
+        hub_handle=handle_registry.format_handle("memory", ref_id)
+        if notes is not None
+        else None,
+    )
+
+
+def _more_hint_factory(
+    store: Store, ref_id: int, hop1: dict[tuple[str, str], list[int]]
+) -> Any:
+    """``(label, member ids) -> ' · get(…) …'`` for a group's ``… +N more``
+    line, or ``None`` when no group overflows (no extra queries then).
+
+    The call re-reads the focus with ``q='<label>'``, which lists that whole
+    group (:func:`_expand_first_hop`). For a memory whose group members share
+    a ``section:<type>`` tag a scoped ``search`` is offered too."""
+    if not any(len(oids) > _NEIGHBOR_GROUP_CAP for oids in hop1.values()):
+        return None
+    focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    if focus is None:
+        return None
+    kind = str(getattr(focus, "kind", "") or "")
+    handle = handle_registry.format_handle(kind, ref_id)
+    space = None
+    if kind == "memory":
+        space = next(
+            (
+                f"SPACE:{v}"
+                for ns, v in store.ref_tags_bulk([ref_id]).get(ref_id, [])
+                if ns == "SPACE"
+            ),
+            None,
+        )
+
+    def hint(label: str, oids: list[int]) -> str:
+        out = (
+            f" · get(kind={kind!r}, id={handle!r}, extent='fisheye+1hop', q={label!r})"
+        )
+        if kind == "memory" and label == _HUB_MEMBER_LABEL:
+            # a summary node's part-of children: search the subtree itself
+            out += (
+                f" · or search(kind='memory', q='<terms>', "
+                f"args={{'under': {handle!r}}})"
+            )
+        elif kind == "memory" and space is not None:
+            tagged = store.ref_tags_bulk(oids)
+            shared = set.intersection(
+                *(
+                    {
+                        v
+                        for _ns, v in tagged.get(o, [])
+                        if v.startswith("section:") and v != _HUB_TAG
+                    }
+                    for o in oids
+                )
+            )
+            if shared:
+                tags = [space, sorted(shared)[0]]
+                out += f" · or search(kind='memory', tags={tags!r}, q='<terms>')"
+        return out
+
+    return hint
+
+
+#: The tag marking a memory as a subject hub, and the label its members read
+#: with from the hub's side (``part-of`` stored on the member, inverse here).
+_HUB_TAG = "section:index"
+_HUB_MEMBER_LABEL = "contains"
+#: Characters of a hub member's hook / first body line kept in its listing.
+_HUB_HOOK_CAP = 100
+#: Most members a hub's listing renders; the rest sit behind a ``+N more`` line.
+_HUB_LIST_CAP = 300
+
+
+def _is_hub(store: Store, ref_id: int) -> bool:
+    """True iff ``ref_id`` is a memory tagged ``section:index``."""
+    return ref_id in _hub_ids(store, [ref_id])
+
+
+def _hub_ids(store: Store, ref_ids: list[int]) -> set[int]:
+    """The ``section:index``-tagged memory refs among ``ref_ids`` (one query)."""
+    if not ref_ids:
+        return set()
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT rt.ref_id FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "JOIN refs r ON r.ref_id = rt.ref_id "
+                "WHERE rt.ref_id = ANY(%s) AND r.kind = 'memory' "
+                "AND t.value = %s",
+                (list(ref_ids), _HUB_TAG),
+            ).fetchall()
+    except Exception:
+        log.debug("hub tag read failed", exc_info=True)
+        return set()
+    return {int(r[0]) for r in rows}
+
+
+def _hub_member_notes(
+    store: Store,
+    ref_id: int,
+    hop1: dict[tuple[str, str], list[int]],
+    refs: dict[int, Any],
+) -> dict[int, str] | None:
+    """For a ``section:index`` memory: ``{member id: hook}`` for each live
+    ``contains`` neighbour (``meta.hook``, else the body's first line, cut to
+    :data:`_HUB_HOOK_CAP`); ``None`` for any other ref."""
+    if not any(label == _HUB_MEMBER_LABEL for _g, label in hop1):
+        return None
+    if not _is_hub(store, ref_id):
+        return None
+    members = [
+        oid
+        for (_g, label), oids in hop1.items()
+        if label == _HUB_MEMBER_LABEL
+        for oid in oids
+    ]
+    shown = _by_recency(store, members)[:_HUB_LIST_CAP]
+    firsts = _first_body_lines(
+        store,
+        [o for o in shown if not (getattr(refs[o], "meta", None) or {}).get("hook")],
+    )
+    notes: dict[int, str] = {}
+    for oid in shown:
+        hook = str(((getattr(refs[oid], "meta", None) or {}).get("hook")) or "")
+        hook = " ".join((hook or firsts.get(oid, "")).split())
+        if len(hook) > _HUB_HOOK_CAP:
+            hook = hook[: _HUB_HOOK_CAP - 1].rstrip() + "…"
+        notes[oid] = hook
+    return notes
+
+
+def _first_body_lines(store: Store, ids: list[int]) -> dict[int, str]:
+    """``{ref id: first non-blank line of its memory_body chunk}`` in ONE
+    query. A failure is logged and reads as no hook, never as a broken render."""
+    if not ids:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, text FROM chunks WHERE ref_id = ANY(%s) "
+                "AND chunk_kind = 'memory_body' AND ord >= 0 ORDER BY ord",
+                (list(ids),),
+            ).fetchall()
+    except Exception:
+        log.debug("hub member first-line read failed", exc_info=True)
+        return {}
+    out: dict[int, str] = {}
+    for rid, text in rows:
+        if int(rid) in out:
+            continue
+        out[int(rid)] = next(
+            (ln.strip() for ln in str(text or "").splitlines() if ln.strip()), ""
+        )
+    return out
+
+
+def _by_recency(store: Store, ids: list[int]) -> list[int]:
+    """``ids`` newest-first by ``GREATEST(last_viewed_at, last_recalled_at,
+    updated_at)`` (NULLs ignored); input order on a tie or a query failure."""
+    if len(ids) < 2:
+        return ids
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, GREATEST(last_viewed_at, last_recalled_at, "
+                "updated_at) FROM refs WHERE ref_id = ANY(%s)",
+                (list(ids),),
+            ).fetchall()
+    except Exception:
+        log.debug("recency read failed", exc_info=True)
+        return ids
+    stamp = {int(r[0]): r[1] for r in rows if r[1] is not None}
+    floor = min(stamp.values()) if stamp else None
+    if floor is None:
+        return ids
+    return sorted(ids, key=lambda i: stamp.get(i, floor), reverse=True)
 
 
 def _first_hop(
@@ -542,9 +758,12 @@ def first_hop_shape(
 
     The largest group is what :data:`_NEIGHBOR_GROUP_CAP` truncates; a dead
     end is a ring edge to a retired or missing ref, which the eye hides.
-    ``scripts/memory-lint`` reads these from the memory export manifest."""
+    ``scripts/memory-lint`` reads these from the memory export manifest.
+    A ``section:index`` hub lists its ``contains`` members uncapped, so they
+    never count toward the largest (truncated) group."""
     if not ref_ids:
         return {}
+    hubs = _hub_ids(store, list(ref_ids))
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT src_ref_id, dst_ref_id, relation FROM links "
@@ -562,12 +781,42 @@ def first_hop_shape(
     shape: dict[int, tuple[int, int, int]] = {}
     for r, by_label in buckets.items():
         live_groups = [
-            {o for o in oids if _live(refs, o)} for oids in by_label.values()
+            {o for o in oids if _live(refs, o)}
+            for (_g, label), oids in by_label.items()
+            if not (r in hubs and label == _HUB_MEMBER_LABEL)
         ]
+        live_all = [{o for o in oids if _live(refs, o)} for oids in by_label.values()]
         every = {o for oids in by_label.values() for o in oids}
-        live = set().union(*live_groups) if live_groups else set()
+        live = set().union(*live_all) if live_all else set()
         shape[r] = (len(live), max(map(len, live_groups), default=0), len(every - live))
     return shape
+
+
+#: Most neighbours an expanded first-hop group lists (``q='<label>'``).
+_FIRST_HOP_EXPAND_CAP = 500
+
+
+def _expand_first_hop(
+    store: Store,
+    hop1: dict[tuple[str, str], list[int]],
+    refs: dict[int, Any],
+    label: str,
+) -> str:
+    """One first-hop label's live neighbours, uncapped by the ring's per-group
+    cap (bounded by :data:`_FIRST_HOP_EXPAND_CAP`)."""
+    ids = [o for (_g, lab), oids in hop1.items() if lab == label for o in oids]
+    if not ids:
+        known = ", ".join(sorted({lab for _g, lab in hop1})) or "none"
+        raise ValueError(f"eye: no first-hop group {label!r}; groups here: {known}")
+    audit = _audit_flagged(store, refs)
+    lines = [f"— linked (1 hop) · {label}: {len(ids)} —"]
+    lines.extend(
+        f"  {label}: {_neighbor_label(refs[o], o, audit=o in audit)}"
+        for o in ids[:_FIRST_HOP_EXPAND_CAP]
+    )
+    if len(ids) > _FIRST_HOP_EXPAND_CAP:
+        lines.append(f"    … +{len(ids) - _FIRST_HOP_EXPAND_CAP} more")
+    return "\n".join(lines)
 
 
 def _audit_flagged(store: Store, ref_ids: Any) -> frozenset[int]:
@@ -595,6 +844,9 @@ def _render_first_hop(
     by_label: dict[tuple[str, str], list[int]],
     refs: dict[int, Any],
     audit: frozenset[int] = frozenset(),
+    hub_members: dict[int, str] | None = None,
+    more_hint: Any = None,
+    hub_handle: str | None = None,
 ) -> str:
     order = {group: i for i, group in enumerate(RING_GROUPS)}
     lines = ["— linked (1 hop) —"]
@@ -604,12 +856,33 @@ def _render_first_hop(
         if group != heading:
             lines.append(f"{group}:")
             heading = group
+        if hub_members is not None and label == _HUB_MEMBER_LABEL:
+            live = set(live_ids)
+            listed = [o for o in hub_members if o in live]
+            for oid in listed:
+                hook = hub_members.get(oid, "")
+                row = _neighbor_label(refs[oid], oid, audit=oid in audit)
+                lines.append(
+                    f"  {label}: {row} — {hook}" if hook else f"  {label}: {row}"
+                )
+            if len(live_ids) > len(listed):
+                lines.append(
+                    f"    … +{len(live_ids) - len(listed)} more · get(kind='memory', "
+                    f"id='{hub_handle}', extent='fisheye+1hop', q='{label}')"
+                )
+            continue
         for oid in live_ids[:_NEIGHBOR_GROUP_CAP]:
             lines.append(
                 f"  {label}: {_neighbor_label(refs[oid], oid, audit=oid in audit)}"
             )
         if len(live_ids) > _NEIGHBOR_GROUP_CAP:
-            lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more")
+            more = more_hint(label, live_ids) if more_hint is not None else ""
+            lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more{more}")
+    if hub_handle is not None and heading is not None:
+        lines.append(
+            f"search within: search(kind='memory', q='<terms>', "
+            f"args={{'under': '{hub_handle}'}})"
+        )
     return "\n".join(lines) if heading is not None else ""
 
 
@@ -811,11 +1084,12 @@ def _rings(
     sections: list[str] = []
     if ext >= Extent.HOP1:
         hop1, refs = _first_hop(store, ref_id)
-        if expand is None:
-            sections.append(
-                _render_first_hop(hop1, refs, audit=_audit_flagged(store, refs))
-            )
-        if ext >= Extent.HOP2:
+        first_hop_label = expand if expand is not None and ":" not in expand else None
+        if first_hop_label is not None:
+            sections.append(_expand_first_hop(store, hop1, refs, first_hop_label))
+        elif expand is None:
+            sections.append(_render_ring(store, ref_id, hop1, refs))
+        if ext >= Extent.HOP2 and first_hop_label is None:
             sections.append(_second_hop(store, ref_id, hop1, expand=expand))
     if recall:
         sections.append(_recall(store, ref_id, kind))

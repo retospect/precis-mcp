@@ -1788,9 +1788,13 @@ class ChunkStore:
         *,
         chunk_kind: str,
         source: str = "agent",
+        reason: str | None = None,
         conn: Connection | None = None,
     ) -> str | None:
         """Replace the single body chunk of ``chunk_kind`` for a ref.
+
+        ``reason`` (the edit verb's ``reason=``) lands first in the event
+        payload, so the ``view='log'`` one-liner shows it.
         Delete + re-insert, never an in-place UPDATE: a non-draft chunk's
         ``content_sha`` is NULL, so an UPDATE would leave old
         ``chunk_embeddings``/``chunk_summaries`` stale (the embed worker
@@ -1834,7 +1838,13 @@ class ChunkStore:
                     ref_id,
                     source,
                     "body_replaced",
-                    Jsonb({"old_text": old_text, "new_text": new_text}),
+                    Jsonb(
+                        {
+                            **({"reason": reason} if reason else {}),
+                            "old_text": old_text,
+                            "new_text": new_text,
+                        }
+                    ),
                 ),
             )
             return old_text

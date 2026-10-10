@@ -41,7 +41,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -541,17 +541,30 @@ def bullet_line(
     return f"{line} — {hook}" if hook else line
 
 
-def _bullet_line(ref: Any, *, cut_hooks: bool) -> str:
-    return bullet_line(ref, cut_hooks=cut_hooks)
+def _bullet_line(
+    ref: Any, *, cut_hooks: bool, prefix: str = "", indent: int = 0
+) -> str:
+    line = bullet_line(ref, cut_hooks=cut_hooks)
+    if prefix:
+        line = f"- {prefix} {line[2:]}"
+    return "  " * indent + line
 
 
-def _render(sections: list[tuple[str, list[Any]]], *, cut_hooks: bool) -> str:
+#: One rendered index line: the node, its ``[type]`` prefix, nesting depth.
+_Entry = tuple[Any, str, int]
+
+
+def _render(sections: list[tuple[str | None, list[_Entry]]], *, cut_hooks: bool) -> str:
     out = [INDEX_TITLE]
-    for title, nodes in sections:
+    for title, entries in sections:
         out.append("")
-        out.append(f"## {title}")
-        out.append("")
-        out.extend(_bullet_line(n, cut_hooks=cut_hooks) for n in nodes)
+        if title is not None:
+            out.append(f"## {title}")
+            out.append("")
+        out.extend(
+            _bullet_line(n, cut_hooks=cut_hooks, prefix=pre, indent=ind)
+            for n, pre, ind in entries
+        )
     return "\n".join(out) + "\n"
 
 
@@ -588,7 +601,7 @@ def render_memory_index(
         handler = MemoryHandler(hub=Hub(store=store, embedder=embedder))
         resp = handler.search(q=q, tags=[SPACE_TAG], page_size=k, view="index")
         return resp.body + "\n"
-    return _render_loaded(_load_nodes(store), budget_tok)
+    return _render_loaded(_load_nodes(store), budget_tok, store)
 
 
 def _load_nodes(store: Store) -> tuple[list[Any], dict[int, Any]]:
@@ -597,33 +610,133 @@ def _load_nodes(store: Store) -> tuple[list[Any], dict[int, Any]]:
     return refs, store.ref_tags_bulk([r.id for r in refs])
 
 
-def _render_loaded(
-    loaded: tuple[list[Any], dict[int, Any]], budget_tok: int | None
-) -> str:
-    refs, tags = loaded
-    sections: list[Any] = []
-    topics: dict[str, list[Any]] = {}
-    for ref in refs:
-        values = {v for _ns, v in tags.get(ref.id, [])}
-        if SECTION_INDEX_TAG in values:
-            sections.append(ref)
-            continue
-        for v in sorted(values):
-            if v.startswith(SECTION_TAG_PREFIX):
-                topics.setdefault(v[len(SECTION_TAG_PREFIX) :], []).append(ref)
-                break
-        else:
-            topics.setdefault("", []).append(ref)
+#: ``section:<type>`` tag -> the bracketed type prefix of an index line.
+_TYPE_PREFIX = {
+    "threads": "[thread]",
+    "runbooks": "[runbook]",
+    "gotchas": "[gotcha]",
+    "workflow": "[workflow]",
+    "reference": "[reference]",
+}
 
-    grouped: list[tuple[str, list[Any]]] = []
-    known: set[str] = set()
-    for sec in sorted(sections, key=_order_key):
-        slug = str((sec.meta or {}).get("section") or slugify(sec.title))
-        known.add(slug)
-        grouped.append((sec.title, sorted(topics.get(slug, []), key=_order_key)))
-    stray = [n for slug, nodes in topics.items() if slug not in known for n in nodes]
+
+def _type_prefix(values: set[str]) -> str:
+    for v in sorted(values):
+        if v.startswith(SECTION_TAG_PREFIX):
+            pre = _TYPE_PREFIX.get(v[len(SECTION_TAG_PREFIX) :])
+            if pre:
+                return pre
+    return ""
+
+
+def _hub_key(ref: Any) -> tuple[int, int, str, int]:
+    """Hubs by ``meta.order``, then title."""
+    k = _order_key(ref)
+    return (k[0], k[1], (ref.title or "").lower(), ref.id)
+
+
+def _render_loaded(
+    loaded: tuple[list[Any], dict[int, Any]],
+    budget_tok: int | None,
+    store: Store | None = None,
+) -> str:
+    """The session-start index. A hub (``section:index`` node) heads a block of
+    the nodes whose nearest hub ancestor along ``part-of`` it is, newest-touched
+    first, each line prefixed with its ``section:<type>``; a detail node nests
+    one level under its ``part-of`` parent. The root hub (no parent, has
+    part-of members) renders no header. Older graphs pair a hub with the topics
+    tagged ``section:<its slug>`` instead; nodes reaching no hub fall under
+    ``Unfiled``. ``store`` supplies the edges and recency; without it only the
+    slug pairing applies."""
+    from precis.utils.memory_hubs import hubs_of, parents_of, recency_stamps
+
+    refs, tags = loaded
+    values_of = {r.id: {v for _ns, v in tags.get(r.id, [])} for r in refs}
+    sections = [r for r in refs if SECTION_INDEX_TAG in values_of[r.id]]
+    hub_ids = {h.id for h in sections}
+    topic_refs = [r for r in refs if r.id not in hub_ids]
+
+    hub_of: dict[int, int] = {}
+    parent_of: dict[int, list[int]] = {}
+    stamps: dict[int, Any] = {}
+    hub_has_parent: set[int] = set()
+    hub_parents: set[int] = set()
+    if store is not None and hub_ids:
+        ancestry = hubs_of(store, [r.id for r in topic_refs])
+        hub_of = {n: hs[0] for n, hs in ancestry.items() if hs[0] in hub_ids}
+        parent_of = parents_of(store, [r.id for r in topic_refs])
+        hub_parent_map = parents_of(store, sorted(hub_ids))
+        hub_has_parent = set(hub_parent_map)
+        hub_parents = {p for ps in hub_parent_map.values() for p in ps}
+        stamps = recency_stamps(store, [r.id for r in topic_refs])
+
+    slug_of = {
+        h.id: str((h.meta or {}).get("section") or slugify(h.title)) for h in sections
+    }
+    by_slug = {slug: hid for hid, slug in slug_of.items()}
+    legacy: dict[int, list[Any]] = {}  # hub id -> slug-paired topics
+    stray: list[Any] = []
+    graph: dict[int, list[Any]] = {}  # hub id -> part-of members
+    for r in topic_refs:
+        if r.id in hub_of:
+            graph.setdefault(hub_of[r.id], []).append(r)
+            continue
+        slug = next(
+            (
+                v[len(SECTION_TAG_PREFIX) :]
+                for v in sorted(values_of[r.id])
+                if v.startswith(SECTION_TAG_PREFIX)
+            ),
+            "",
+        )
+        if slug in by_slug:
+            legacy.setdefault(by_slug[slug], []).append(r)
+        else:
+            stray.append(r)
+
+    def graph_entries(members: list[Any], hub_slug: str) -> list[_Entry]:
+        ids = {m.id for m in members}
+
+        def prefix(m: Any) -> str:
+            # a header already names the type when it is the hub's own slug
+            pre = _type_prefix(values_of[m.id])
+            return "" if pre == f"[{hub_slug.rstrip('s')}]" else pre
+
+        oldest = datetime.min.replace(tzinfo=UTC)
+        ordered = any(_order_key(m)[0] == 0 for m in members)
+        members = (
+            sorted(members, key=lambda m: stamps.get(m.id) or oldest, reverse=True)
+            if stamps and not ordered  # meta.order pins a hand-ordered section
+            else sorted(members, key=_order_key)
+        )
+        kids: dict[int, list[Any]] = {}
+        top: list[Any] = []
+        for m in members:
+            par = next((p for p in parent_of.get(m.id, []) if p in ids), None)
+            (kids.setdefault(par, []) if par is not None else top).append(m)
+        out: list[_Entry] = []
+        for m in top:
+            out.append((m, prefix(m), 0))
+            stack = list(reversed(kids.get(m.id, [])))
+            while stack:
+                c = stack.pop()
+                out.append((c, prefix(c), 1))
+                stack.extend(reversed(kids.get(c.id, [])))
+        return out
+
+    grouped: list[tuple[str | None, list[_Entry]]] = []
+    for sec in sorted(sections, key=_hub_key):
+        entries = graph_entries(graph.get(sec.id, []), slug_of[sec.id]) + [
+            (n, "", 0) for n in sorted(legacy.get(sec.id, []), key=_order_key)
+        ]
+        # the root: no parent, and other hubs hang off it
+        root = sec.id not in hub_has_parent and sec.id in hub_parents
+        if root:
+            grouped.insert(0, (None, entries))
+        else:
+            grouped.append((sec.title, entries))
     if stray:
-        grouped.append(("Unfiled", sorted(stray, key=_order_key)))
+        grouped.append(("Unfiled", [(n, "", 0) for n in sorted(stray, key=_order_key)]))
 
     full = _render(grouped, cut_hooks=False)
     if budget_tok is None:
@@ -640,10 +753,37 @@ def _render_loaded(
 
 
 #: Per-node manifest written beside the exported node files, one row per
-#: node (a section node's section is ``index``): handle, section slug, updated (UTC date), body chars, chars the
-#: fisheye eye shows, live ring neighbours, neighbours the eye's per-group cap
-#: hides, dead-end links. Column order is the contract with scripts/memory-lint.
+#: node (a section node's section is ``index``): handle, section slug, updated
+#: (UTC date), body chars, chars the fisheye eye shows, live ring neighbours,
+#: neighbours the eye's per-group cap hides (a ``section:index`` hub's
+#: ``contains`` members are listed uncapped, so never hidden), dead-end links,
+#: ``hub`` (handle of the node's ``part-of`` ``section:index`` hub; empty if
+#: none, ``-`` on a hub node), ``qualified`` (live ``qualified-by`` edges),
+#: ``accessed`` (UTC date of the last human view / agent recall; empty if never),
+#: ``parent`` (handle of the direct ``part-of`` parent; empty if none),
+#: ``review`` (comma-separated ``td<id>:<created date>`` of the open
+#: ``memory-review`` todos linked to the node; empty if none). ``hub``
+#: is the nearest ``section:index`` *ancestor* along the part-of chain, so a
+#: detail node under a summary node names the summary's hub.
+#: Column order is the contract with scripts/memory-lint.
 SECTIONS_MANIFEST = "_sections.tsv"
+
+
+def _handle_of(ids: list[int]) -> str:
+    """Handle of the first id (``part-of`` is one-per-node by convention),
+    ``''`` for none."""
+    from precis.utils import handle_registry
+
+    if not ids:
+        return ""
+    return handle_registry.try_format("memory", ids[0]) or str(ids[0])
+
+
+def _hub_column(section: str, hubs: list[int]) -> str:
+    """The manifest ``hub`` cell: ``-`` for a hub node, else the handle of the
+    nearest ``section:index`` ancestor along ``part-of`` (``''`` if the chain
+    never reaches one)."""
+    return "-" if section == "index" else _handle_of(hubs)
 
 
 def export_memory_nodes(
@@ -679,7 +819,21 @@ def export_memory_nodes(
 
     refs, tags = loaded if loaded is not None else _load_nodes(store)
     handler = MemoryHandler(hub=Hub(store=store))
-    shape = first_hop_shape(store, [r.id for r in refs])
+    from precis.utils.memory_hubs import (
+        accessed_dates,
+        hubs_of,
+        parents_of,
+        qualified_counts,
+        review_todos,
+    )
+
+    ids = [r.id for r in refs]
+    shape = first_hop_shape(store, ids)
+    hub_of = hubs_of(store, ids)
+    parent_of = parents_of(store, ids)
+    qualified = qualified_counts(store, ids)
+    accessed = accessed_dates(store, ids)
+    reviews = review_todos(store, ids)
     final = Path(dest)
     tmp = final.with_name(f"{final.name}.tmp.{os.getpid()}")
     old = final.with_name(f"{final.name}.old.{os.getpid()}")
@@ -720,6 +874,11 @@ def export_memory_nodes(
                 live,
                 max(0, largest - _NEIGHBOR_GROUP_CAP),
                 dead,
+                _hub_column(section, hub_of.get(ref.id, [])),
+                qualified.get(ref.id, 0),
+                accessed.get(ref.id, ""),
+                _handle_of(parent_of.get(ref.id, [])),
+                reviews.get(ref.id, ""),
             )
             manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")
@@ -932,7 +1091,7 @@ def run(args: argparse.Namespace) -> None:
             )
         else:
             loaded = _load_nodes(store)
-            print(_render_loaded(loaded, args.budget_tok), end="", flush=True)
+            print(_render_loaded(loaded, args.budget_tok, store), end="", flush=True)
             if args.export_dir:
                 try:
                     export_memory_nodes(store, args.export_dir, loaded=loaded)
