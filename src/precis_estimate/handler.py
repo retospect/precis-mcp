@@ -205,6 +205,12 @@ class EstimateHandler(CacheBackedHandler):
         placement="system",
     )
 
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with ``_get_structure``.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset({"ops", "quest", "against"}),
+    }
+
     provider: ClassVar[str] = "estimate"
     # Deterministic for a fixed composition — pin the cache, like `math`.
     ttl_seconds: ClassVar[int | None] = None

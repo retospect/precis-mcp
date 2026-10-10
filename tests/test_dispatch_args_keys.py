@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
+from importlib.metadata import entry_points
 
 import pytest
 
@@ -34,6 +35,12 @@ PASSTHROUGH = [
     ("structure", "get"),
     ("random", "get"),
     ("time", "get"),
+    # Plugin handlers (entry point group ``precis.handlers``).
+    ("estimate", "get"),
+    ("pathway", "get"),
+    ("se", "get"),
+    ("se", "put"),
+    ("se", "edit"),
 ]
 
 
@@ -75,6 +82,11 @@ def _load_kind_classes() -> dict[str, type[Handler]]:
             spec = cls.__dict__.get("spec")
             if issubclass(cls, Handler) and spec is not None:
                 out[spec.kind] = cls
+    # Plugin packages register through the ``precis.handlers`` entry point.
+    for ep in entry_points(group="precis.handlers"):
+        cls = ep.load()
+        if inspect.isclass(cls) and issubclass(cls, Handler):
+            out[cls.spec.kind] = cls
     return out
 
 
@@ -102,3 +114,16 @@ def test_every_args_passthrough_verb_declares_its_keys() -> None:
                 f"{cls.__name__}.{verb} declares args but ARGS_KEYS lacks it"
             )
     assert sorted(found) == sorted(PASSTHROUGH)
+
+
+def test_plugin_handlers_are_discovered() -> None:
+    """Guard: the entry-point scan must actually see the plugin kinds, or
+    the declaration check above passes vacuously for them."""
+    assert {"estimate", "pathway", "se"} <= set(_KIND_CLASS)
+
+
+def test_se_get_keys_are_union_of_view_args() -> None:
+    from precis_se.handler import _VIEW_ARGS, SeHandler
+
+    union: set[str] = set().union(*_VIEW_ARGS.values())
+    assert SeHandler.ARGS_KEYS["get"] == union

@@ -80,6 +80,12 @@ def _nf(x: Any) -> float:
 
 
 class PathwayHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with :func:`_potential_arg`.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset({"U"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pathway",
         plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for

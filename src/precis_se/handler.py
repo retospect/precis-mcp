@@ -243,6 +243,33 @@ def validate_digest(findings: list[Any]) -> tuple[str, str]:
 
 
 class SeHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. ``get`` is the union of ``_VIEW_ARGS`` (a test
+    #: pins that); ``put`` mirrors ``_PUT_PAYLOAD_KEYS``; ``edit`` reads only
+    #: ``ops`` from its payload.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset(
+            {
+                "state",
+                "name",
+                "block",
+                "target",
+                "z_offset_A",
+                "format",
+                "a",
+                "b",
+                "walker",
+                "cursor",
+                "atom",
+                "token",
+                "fmt",
+                "path",
+            }
+        ),
+        "put": frozenset({"description", "ops", "scenario"}),
+        "edit": frozenset({"ops"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="se",
         plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for
