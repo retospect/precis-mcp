@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from precis.cli._common import resolve_dsn
@@ -314,6 +315,77 @@ def add_parser(subparsers: Any) -> None:
         "stderr either way, so stdout stays pipeable).",
     )
     ve.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    from precis.taproot.canon import CLAIM_TYPES
+
+    cl = tsub.add_parser(
+        "classify",
+        help="Sort claim hubs into a claim_type (measurement / definition / "
+        "capability / mechanism / landscape; refs.meta.claim_type). Without "
+        "--set: the LLM backfill over hubs that have no type yet. DRY-RUN BY "
+        "DEFAULT: the LLM calls run (budget-metered) but nothing is written "
+        "unless --apply. The LLM path NEVER overwrites a human "
+        "classification, and a hub that already has a type is never re-asked.",
+        description="With --set TYPE (or `none` to clear): the HUMAN "
+        "reclassification door. Requires --hub and --apply (without --apply "
+        "it prints what it would do and exits 2). The MCP edit(kind='finding') "
+        "door refuses claim_type on purpose -- it cannot tell a human from an "
+        "agent -- so this command and the web form on /claim/<head> are the "
+        "only ways to set a human-final type.",
+    )
+    cl.add_argument(
+        "--hub",
+        default=None,
+        help="Restrict to one claim hub (fi<id> handle, pub_id, cite_key, "
+        "or bare ref_id). Required with --set.",
+    )
+    cl.add_argument(
+        "--set",
+        dest="set_type",
+        default=None,
+        metavar="TYPE",
+        choices=[*CLAIM_TYPES, "none"],
+        help="Human reclassification: set this hub's type (one of "
+        + ", ".join(CLAIM_TYPES)
+        + "; `none` clears it back to the classify pass). Needs --hub and "
+        "--apply.",
+    )
+    cl.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Classify at most this many unclassified hubs (ref_id order). "
+        "Default: 200.",
+    )
+    cl.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Issue the LLM calls from this many threads (a MEDIUM call is "
+        "~15 s; the prod backlog was 3.9k hubs). Writes stay sequential in "
+        "ref_id order. Default: 1.",
+    )
+    cl_mode = cl.add_mutually_exclusive_group()
+    cl_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default: classify + report, write nothing.",
+    )
+    cl_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist the types (claim_type_by='llm' for the backfill, "
+        "'human' for --set). Default (omitted) is a dry-run.",
+    )
+    cl.add_argument(
+        "--out",
+        default=None,
+        help="Write the JSONL rows (hub_ref_id, title, claim_type, applied) "
+        "here. Default: stdout (the summary goes to stderr either way).",
+    )
+    cl.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -1389,6 +1461,104 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _run_classify(args: argparse.Namespace) -> None:
+    """``precis taproot classify`` -- the claim_type backfill (LLM) and the
+    human reclassification door (``--set``); see
+    :mod:`precis.taproot.claim_type`. Dry-run by default in both modes."""
+    from precis.budget import meter
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot import claim_type as ct
+
+    apply = bool(args.apply)
+    set_type: str | None = args.set_type
+    if set_type is not None:
+        if not args.hub:
+            print("taproot classify: --set requires --hub", file=sys.stderr)
+            sys.exit(2)
+        if not apply:
+            print(
+                f"taproot classify: would set claim_type={set_type} "
+                f"(claim_type_by=human) on {args.hub} -- DRY-RUN, nothing "
+                "written; re-run with --apply",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    meter.bind_store(store)
+    try:
+        hub_ref_id: int | None = None
+        if args.hub:
+            from precis.taproot.authoring import resolve_hub_ref_id
+
+            token = args.hub.strip()
+            hub_ref_id = resolve_hub_ref_id(
+                store, int(token) if token.isdigit() else token
+            )
+        if set_type is not None:
+            assert hub_ref_id is not None
+            result = ct.set_claim_type(
+                store,
+                hub_ref_id,
+                None if set_type == "none" else set_type,
+                by="human",
+            )
+            print(json.dumps(result))
+            if "duplicate_of" in result:
+                print(
+                    f"taproot classify: warning: fi{hub_ref_id} duplicates "
+                    f"fi{result['duplicate_of']} (same sentence) -- merge "
+                    f"candidate: precis taproot merge --loser {hub_ref_id} "
+                    f"--winner {result['duplicate_of']}",
+                    file=sys.stderr,
+                )
+            return
+        # Rows stream out per batch (the run artifact survives a kill);
+        # the classifier is resolved at call time so a monkeypatch applies.
+        with (
+            open(args.out, "w", encoding="utf-8")
+            if args.out
+            else nullcontext(sys.stdout)
+        ) as sink:
+
+            def _emit(done: list[dict[str, Any]]) -> None:
+                for r in done:
+                    sink.write(json.dumps(r) + "\n")
+                sink.flush()
+
+            rows = ct.run_classify_pass(
+                store,
+                limit=args.limit,
+                workers=args.workers,
+                apply=apply,
+                classify_fn=ct.classify_sentence,
+                hub_ref_id=hub_ref_id,
+                on_batch=_emit,
+            )
+    except BadInput as exc:
+        print(f"taproot classify: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    counts: dict[str, int] = {}
+    for r in rows:
+        if r["claim_type"] is not None:
+            counts[r["claim_type"]] = counts.get(r["claim_type"], 0) + 1
+    n_skipped = sum(1 for r in rows if r["claim_type"] is None)
+    n_applied = sum(1 for r in rows if r["applied"])
+    n_dup = sum(1 for r in rows if "duplicate_of" in r)
+    suffix = "" if apply else "  [DRY-RUN -- nothing written]"
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+    print(
+        f"taproot classify: {len(rows)} hub(s) -- {breakdown}, "
+        f"applied={n_applied}, skipped={n_skipped}, "
+        f"duplicate_of={n_dup}{suffix}",
+        file=sys.stderr,
+    )
+
+
 def _run_reword_sweep(args: argparse.Namespace) -> None:
     """``precis taproot reword-sweep`` -- LLM batch reword of lint-blocked
     claim hub sentences through the retitle door (module docstring:
@@ -1950,6 +2120,8 @@ def run(args: argparse.Namespace) -> None:
         _run_repair_evidence(args)
     elif args.taproot_cmd == "verify-edges":
         _run_verify_edges(args)
+    elif args.taproot_cmd == "classify":
+        _run_classify(args)
     elif args.taproot_cmd == "reword-sweep":
         _run_reword_sweep(args)
     elif args.taproot_cmd == "direct-mint":

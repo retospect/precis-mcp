@@ -112,6 +112,28 @@ mint: it shows in the response, never blocks. `dry_run=True` previews old
 **Not this door for a materially sharper/narrower claim** — that's a new
 mint + `refines` link, below, not a retitle.
 
+## Claim type
+
+Every hub carries a sort, `measurement | definition | capability |
+mechanism | landscape`, set by the extractor at mint (or the backfill
+classifier) and shown on `get(kind='finding', view='evidence')` as
+`claim type: <type> (llm|human)`. `edit(kind="finding", meta={"claim_type":
+…})` is **refused**: this door cannot tell a human from an agent, so
+reclassifying is a human act — the type form on `/claim/<head>`, or
+`precis taproot classify --hub fi<N> --set <type> --apply`. A human
+choice is never overwritten by the LLM paths.
+
+`landscape` (a background sentence about a whole class of systems, the
+parent specific claims `refines` from) behaves differently:
+
+- Dedups on the sentence alone: a later mint of the same sentence under
+  another scope converges onto it instead of forking.
+- Never widened: no refine / inbound-ground / chase arms add evidence.
+- Never a `disputes` counterparty: it cannot contradict a specific result.
+- Verified by consensus, not per edge: the evidence view shows
+  `consensus (landscape): N independent sources, pass|fail` (floor 3).
+- Not publishable: `nanopub` approve refuses it. Cite it as `[fi<id>]`.
+
 ## Sharpen, refine, or merge a claim hub
 
 Three different operations on an existing hub:

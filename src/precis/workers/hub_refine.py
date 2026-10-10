@@ -266,6 +266,7 @@ from precis.taproot.canon import (
     claim_sha,
     not_hypothesis_predicate_sql,
 )
+from precis.taproot.claim_type import widenable_predicate_sql
 from precis.taproot.hub import (
     HUB_ROLES,
     META_REGROUND_SEEN,
@@ -321,6 +322,11 @@ _CLAIM_HUB_SQL = claim_hub_predicate_sql()
 #: supports a guess — a confirmation engine aimed at exactly the thing
 #: nothing supports yet (docs/backlog/nanopub-corpus-remediation.md).
 _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
+#: The "not a landscape sentence" clause (``taproot.claim_type`` policy
+#: ``widen=False``). A landscape hub states the common case for a whole
+#: class of systems, so it is an embedding attractor: fi449493 collected
+#: 14 far-field edges from this arm. Never widened.
+_WIDENABLE_SQL = widenable_predicate_sql()
 
 #: The evidence-edge role hub-refine always attaches with — never
 #: ``establishes`` (originator promotion is derived elsewhere, see the
@@ -735,6 +741,7 @@ def _claim_hubs_due_for_refine(
            AND r.retired_at IS NULL
            AND {_CLAIM_HUB_SQL}
            AND {_NOT_HYPOTHESIS_SQL}
+           AND {_WIDENABLE_SQL}
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from precis.handlers._finding_judgments import judging_summary
 from precis.store.types import Ref
 from precis.taproot import seniority
+from precis.taproot.claim_type import claim_type_of, consensus_line
 from precis.utils.authors import author_names
 
 if TYPE_CHECKING:
@@ -78,6 +79,10 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     all_edges = evidence.originators + evidence.corroborators + evidence.contradictors
 
     header = [f"# evidence for finding {ref.id}", "", ref.title]
+    hub_type = claim_type_of(ref.meta)
+    if hub_type:
+        by = (ref.meta or {}).get("claim_type_by") or "llm"
+        header += ["", f"claim type: {hub_type} ({by})"]
     if not all_edges:
         header.append("")
         if is_hypothesis:
@@ -146,6 +151,9 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         summary += f"; {excluded} non-supporting {noun} excluded"
     summary += ")"
     lines += ["", summary]
+    consensus = consensus_line(hub_type, independent)
+    if consensus:
+        lines.append(consensus)
     judging = judging_summary(ref.meta)
     if judging:
         lines.append(judging)

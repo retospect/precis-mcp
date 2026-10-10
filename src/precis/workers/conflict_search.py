@@ -119,6 +119,10 @@ from precis.taproot.canon import (
     claim_hub_predicate_sql,
     not_hypothesis_predicate_sql,
 )
+from precis.taproot.claim_type import (
+    disputes_counterparty_predicate_sql,
+    sweepable_predicate_sql,
+)
 from precis.taproot.hub import HUB_ROLES
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
@@ -234,12 +238,14 @@ def _verify_budget() -> int:
 
 # ── cohort + claim-and-lease ────────────────────────────────────────────
 
-#: A live claim hub, not a hypothesis — the population every door sweeps.
+#: A live claim hub, not a hypothesis, whose claim-type policy allows a
+#: conflict sweep (not ``landscape``) — the population every door sweeps.
 _LIVE_HUB_SQL = f"""\
     r.kind = 'finding'
        AND r.retired_at IS NULL
        AND {claim_hub_predicate_sql()}
        AND {not_hypothesis_predicate_sql()}
+       AND {sweepable_predicate_sql()}
 """
 
 #: The watermark rule: coverage missing, or from an older method version.
@@ -509,7 +515,8 @@ def _discover(
 #: rather than trusting the source pass's own claim-hub-ness (the same
 #: divergence bug ``claim_hub_predicate_sql``'s docstring warns about: "three
 #: readers once didn't [re-derive the predicate] and offered 280 chase
-#: findings as hubs").
+#: findings as hubs"). Also drops hubs whose claim-type policy forbids
+#: being a disputes counterparty (``landscape``).
 _FINDING_CANDIDATE_SQL = f"""\
     SELECT r.ref_id
       FROM refs r
@@ -518,6 +525,7 @@ _FINDING_CANDIDATE_SQL = f"""\
        AND r.retired_at IS NULL
        AND {claim_hub_predicate_sql()}
        AND {not_hypothesis_predicate_sql()}
+       AND {disputes_counterparty_predicate_sql()}
 """
 
 

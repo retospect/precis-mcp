@@ -160,6 +160,14 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 
 ## What makes a mintable claim — soft flags and claim sorts
 
+The extractor returns a `type` per claim (`measurement`, `definition`,
+`capability`, `mechanism`, `landscape`); mint persists it on the hub.
+`landscape` means the material is the class the sentence names, not the
+paper's subject: "Graphene-fullerene composites are typically made by
+mixing", not "we mixed C60 with graphene". Landscape hubs are
+consensus-verified, never widened and not publishable as nanopubs — see
+[[precis-taproot-hub-edit-help]] "Claim type".
+
 **Soft flags — mint, but expect review:**
 
 - **Specificity.** Carry the number / material / mechanism the passage

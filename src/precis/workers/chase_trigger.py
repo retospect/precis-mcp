@@ -88,6 +88,7 @@ from precis.taproot.canon import (
     claim_sha,
     not_hypothesis_predicate_sql,
 )
+from precis.taproot.claim_type import widenable_predicate_sql
 from precis.utils.embed_query import embed_query
 
 if TYPE_CHECKING:
@@ -107,6 +108,11 @@ _CLAIM_HUB_SQL = claim_hub_predicate_sql()
 #: supports a guess — a confirmation engine aimed at exactly the thing
 #: nothing supports yet (docs/backlog/nanopub-corpus-remediation.md).
 _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
+#: The "not a landscape sentence" clause (``taproot.claim_type`` policy
+#: ``widen=False``). A landscape hub states the common case for a whole
+#: class of systems, so it is an embedding attractor: fi449493 collected
+#: 14 far-field edges from this arm. Never widened.
+_WIDENABLE_SQL = widenable_predicate_sql()
 
 #: Bump to force a lazy re-sweep of the whole corpus (every chunk re-probed
 #: against the current claim-embedding index).
@@ -175,7 +181,9 @@ def _refresh_claim_embeddings(
     Excludes **composite** claim hubs (docs/backlog/taproot-atomic-claims.md
     -- see the module docstring's "Composite exclusion" note): a composite's
     ``claim_embeddings`` row is never refreshed, so it never becomes a probe
-    target for :func:`_near_claims` either.
+    target for :func:`_near_claims` either. Also excludes hubs whose
+    claim-type policy forbids widening (``landscape``;
+    :func:`~precis.taproot.claim_type.widenable_predicate_sql`).
     """
     rows = conn.execute(
         f"""
@@ -187,6 +195,7 @@ def _refresh_claim_embeddings(
            AND r.retired_at IS NULL
            AND {_CLAIM_HUB_SQL}
            AND {_NOT_HYPOTHESIS_SQL}
+           AND {_WIDENABLE_SQL}
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id
@@ -316,7 +325,7 @@ def _near_claims(
     it to pop the due-mark this function would otherwise write.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT ce.chunk_id, cl.hub_ref_id
           FROM chunk_embeddings ce
           JOIN claim_embeddings cl
@@ -333,6 +342,11 @@ def _near_claims(
                    AND l.relation = 'conjunct-of'
                    AND a.kind = 'finding'
                    AND a.retired_at IS NULL
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM refs r
+                  WHERE r.ref_id = cl.hub_ref_id
+                    AND NOT {_WIDENABLE_SQL}
                )
         """,
         {"floor": floor, "chunk_ids": chunk_ids, "embedder": embedder_model},

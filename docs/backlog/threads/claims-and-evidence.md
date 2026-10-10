@@ -113,8 +113,12 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    `nanopub-corpus-remediation` (step 5: `identity.py` hashes the sentence
    without `_normalize_number_text`). Publishing before identity and
    evidence settle publishes the defects.
-6. `taproot-claim-model-v2` — persisted `claim_type`; design-heavy, no
-   dependents yet.
+6. `taproot-claim-model-v2` — `claim_type` persisted + landscape policy
+   built 2026-10-10 (extractor field, sentence-only dedup, widen/conflict/
+   disputes exclusions, consensus line, approve refusal, human doors,
+   `precis taproot classify`). Open: run the classify backfill on prod
+   (`--apply`, ≈1.5k MEDIUM calls), reclassify fi192855 by hand, then the
+   modality axis and per-type lint exemptions still in the item.
 
 ## Horizon
 

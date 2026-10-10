@@ -198,6 +198,55 @@ class CanonicalClaim:
 
     sentence: str
     scope: dict[str, str]
+    #: The extractor's sort of the claim, a member of :data:`CLAIM_TYPES`
+    #: or ``None`` (unsorted — legacy payloads, out-of-set answers).
+    #: Persisted by :func:`~precis.taproot.hub.mint_hub` as
+    #: ``refs.meta.claim_type``; the per-type behaviour table lives in
+    #: :mod:`precis.taproot.claim_type`. Never part of the identity key.
+    claim_type: str | None = None
+
+
+#: The closed claim-sort set (``docs/backlog/taproot-claim-model-v2.md``).
+#: Defined here, not in :mod:`precis.taproot.claim_type`, because the
+#: extractor prompt below embeds the definitions and ``claim_type`` imports
+#: this module. The strings are stored verbatim in ``refs.meta.claim_type``.
+CLAIM_TYPES: tuple[str, ...] = (
+    "measurement",
+    "definition",
+    "capability",
+    "mechanism",
+    "landscape",
+)
+
+#: Definitions shared verbatim by :data:`_EXTRACT_PROMPT` (mint path) and
+#: ``claim_type._PROMPT_CLASSIFY`` (backfill), so both sort the same way.
+CLAIM_TYPE_DEFINITIONS = """\
+type = the sort of claim, exactly one of:
+  measurement — a stated quantity, trend, or observed result of one study
+    under its method/regime ("…tensile strength of ~130 GPa", "…reduces the
+    binding energy from 1.5 to 0.74 eV").
+  definition — what a term, structure, or class is: identity, composition,
+    classification ("A carbon nanobud is a fullerene covalently bonded to
+    the sidewall of a nanotube").
+  capability — what a method, material, or device can do, with its
+    conditions ("Graphene–fullerene composites can be formed by physical
+    mixing").
+  mechanism — why or how an effect arises; a causal explanation ("Charge
+    transfer from the fullerene cage depletes the tube's conduction band").
+  landscape — a background statement of the common case for a whole class
+    of systems, the kind a review states and no single experiment confirms
+    or refutes ("The properties of carbon nanomaterials are conventionally
+    tuned by doping"; "X is widely used to…"). Not tied to one study's
+    result."""
+
+
+def coerce_claim_type(raw: Any) -> str | None:
+    """A returned/stored value → a member of :data:`CLAIM_TYPES`, else
+    ``None``. Never raises: an unknown sort is "unsorted", not an error."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().lower()
+    return value if value in CLAIM_TYPES else None
 
 
 class NotClaim(TypedDict):
@@ -556,14 +605,22 @@ Examples:
   Never mint "The sites neutralize each other in homogeneous solution" as
   a fact — that flips the foil into a false indicative claim.
 
-For each claim you emit: give the normalized sentence plus any of
-material/method/quantity/regime it names (omit keys it doesn't name).
+For each claim you emit: give the normalized sentence, its type, plus any
+of material/method/quantity/regime it names (omit keys it doesn't name).
 material = the substance/compound the claim is about; method = the named
 technique, procedure, or instrument; quantity = a numeric measure with
 units ("130 GPa", "450 h⁻¹", "92% yield") — never a bare description or
 label; regime = the named condition the claim holds under ("RT", "under
 UV", "homogeneous solution"). If the passage asserts nothing groundable at
 all, "claims" is an empty list.
+
+"""
+    + CLAIM_TYPE_DEFINITIONS
+    + """
+A landscape claim's material is the CLASS the sentence names ("carbon
+nanomaterials"), never the narrower subject of the passage or paper it
+appears in — the passage's own subject belongs to the specific claims,
+not to the background sentence.
 
 Respond with EXACTLY ONE JSON object, nothing else:
 {{
@@ -573,6 +630,7 @@ Respond with EXACTLY ONE JSON object, nothing else:
   "claims": [
     {{
       "claim": "<one normalized, atomic sentence>",
+      "type": "<measurement|definition|capability|mechanism|landscape>",
       "material": "<optional>",
       "method": "<optional>",
       "quantity": "<optional>",
@@ -623,7 +681,8 @@ def _parse_claim_item(item: dict[str, Any]) -> CanonicalClaim | None:
     usable claim text.
 
     Scope values are validated per :func:`_valid_scope_value` (P1-9) — a
-    key with a bad value is dropped, never the whole claim."""
+    key with a bad value is dropped, never the whole claim. ``type`` is
+    coerced by :func:`coerce_claim_type` — out-of-set → ``None``."""
     claim = item.get("claim")
     if not isinstance(claim, str) or not claim.strip():
         return None
@@ -635,7 +694,11 @@ def _parse_claim_item(item: dict[str, Any]) -> CanonicalClaim | None:
         value = raw.strip()
         if _valid_scope_value(key, value):
             scope[key] = value
-    return CanonicalClaim(sentence=claim.strip(), scope=scope)
+    return CanonicalClaim(
+        sentence=claim.strip(),
+        scope=scope,
+        claim_type=coerce_claim_type(item.get("type")),
+    )
 
 
 def _parse_not_claim(item: dict[str, Any]) -> NotClaim | None:

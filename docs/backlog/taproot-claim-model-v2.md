@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 pillar: memory-graph
 ---
 
@@ -117,7 +117,8 @@ configures.**
 
 ## Landscape claims need their own class (motivating case, 2026-10-09)
 
-_Added 2026-10-09 from the review of fi449493; Reto agreed the direction._
+_Added 2026-10-09 from the review of fi449493; Reto agreed the direction.
+Design decided and building 2026-10-10 (worktree `fizzy-toasting-pond`)._
 
 A review draft (dc2445855, carbon nanobuds) minted fi449493, "The
 electrical and optical properties of carbon nanomaterials are
@@ -133,31 +134,78 @@ production, single-atom catalysts). The reviewer faced 17 edges, none
 about nanobuds, for a sentence no single quote can confirm or refute.
 Resolved by hand: cite repointed, far-field edges dropped, hubs merged.
 
-The extractor's `landscape` sort is exactly this class. Keeping such
-hubs is right: review papers are made of them, and they are the parent
-nodes specific claims hang off (`refines`). But they must behave
-differently once `claim_type` is persisted:
+Keeping such hubs is right: review papers are made of them, and they are
+the parent nodes specific claims hang off (`refines`). But they must
+behave differently, which needs the sort persisted.
 
-1. **Generic scope, sentence-only dedup.** A landscape hub's scope is
-   the class the sentence is about, never the citing draft's subject.
-   Conflict search for this type matches on sentence alone, so a
-   draft-specific mint folds into the existing parent instead of forking.
-2. **Consensus verifier, not per-edge sign-off.** The empirical
-   question ("does this chunk affirm or contradict") does not apply.
-   The check is: three or more independent sources across distinct
-   systems state it, and ideally one review states it in this form.
-   Pass or fail at hub level; no human judgement per edge.
-3. **No widen.** Landscape sentences are embedding attractors. The
-   method-gap and inbound-grounding arms skip this type, or route the
-   candidate chunk to a specific child hub.
-4. **Never a disputes counterparty.** `claims-and-evidence.md` already
-   logged a judge disputing a small-fullerene claim with a background
-   sentence about nanobuds in general. A landscape hub states the
-   common case and cannot contradict a specific result.
-5. **Probably no nanopub.** Signing a consensus sentence attributes
-   nothing; these hubs are citable inside the mesh and may not need the
-   publish path. Decide at design time rather than exempt silently.
+### Design (decided 2026-10-10)
 
-The design hazard above stands: the per-type verifier and widen table is
-static, and reclassification is a human door, so the model cannot relax
-its own gate by calling a claim `landscape`.
+**Finding of the code read:** no claim sort exists anywhere today. The
+extractor prompt (`canon._EXTRACT_PROMPT`) never asks for one, the
+`CanonicalClaim` dataclass has only `sentence` + `scope`, and nothing in
+`refs.meta`, tags or links carries it. `hub_refine.claim_depth_policy` is
+a regex stand-in (quantity/mechanism → body-required) recomputed per use.
+
+**Owner module:** `src/precis/taproot/claim_type.py` — the closed type
+set, the static per-type policy table, the SQL predicates derived from
+it, the identity helper, the one write door, the LLM classifier.
+
+1. **Field.** `refs.meta.claim_type` ∈ {measurement, definition,
+   capability, mechanism, landscape} or absent; `refs.meta.claim_type_by`
+   ∈ {llm, human}. Jsonb, no migration (same as `artifact_type`, `scope`,
+   `tagline`). **Never part of the `(sentence, scope)` pub_id key** — a
+   type in the key would fork the same sentence into two hubs.
+2. **Who writes it.** The extractor returns `type` per claim (parsed by
+   `canon._parse_claim_item`, unknown values dropped to absent);
+   `hub.mint_hub` persists it with `claim_type_by='llm'`. A backfill pass
+   (`precis taproot classify`, dry-run default, idempotent: skips hubs
+   that have a type) classifies existing hubs with a MEDIUM-tier call.
+   **Reclassification is a human door** following the tagline pattern:
+   the web form on `/claim/<head>` and `precis taproot classify --hub
+   fiN --set <type>` write `claim_type_by='human'`; the LLM paths never
+   overwrite a human value. The MCP `edit(kind='finding', meta=...)`
+   door rejects `claim_type` and names the two doors — it cannot tell a
+   human from an agent.
+3. **Policy table is static code**, keyed by type, read by every
+   consumer; the hazard above is answered by (1) the table being code and
+   (2) the write being gated. Only `landscape` deviates from the default:
+   - *dedup_sentence_only*: a landscape hub also registers
+     `ref_identifiers(id_kind='taproot_sentence', id_value=sha256(normalized
+     sentence))`. `mint_hub` looks that identifier up for **every** mint
+     after the pub_id miss, so any draft-specific mint of a sentence an
+     existing landscape parent already states converges onto the parent
+     instead of forking. Registering a sentence another live hub already
+     holds reports that hub as a merge candidate instead of failing.
+   - *widen=False*: excluded from `hub_refine`'s due-set, from
+     `inbound_ground._near_hubs`, and from `chase_trigger`'s embedding
+     refresh and `_near_claims` DUE-marking (a landscape sentence is an
+     embedding attractor; its 14 far-field edges came from exactly these
+     arms). Setting the type to landscape also pops a pending TAPROOT_DUE.
+   - *sweep_conflicts=False, disputes_counterparty=False*: not swept by
+     `conflict_search`, not a finding counterparty there, never the `src`
+     of a `disputes` edge (`hub.link_claims` refuses; the placement-time
+     hub↔hub disputes link is skipped when either side is landscape). A
+     landscape hub states the common case and cannot contradict a
+     specific result.
+   - *verifier='consensus'*: no per-edge sign-off. The hub-level check is
+     independent supporters ≥ 3 (the existing union-find over authors,
+     `_finding_evidence._independent_supporter_counts`), rendered as a
+     `consensus` line on the evidence view and the claim page. Pass/fail,
+     advisory, computed at read time.
+   - *publishable=False*: `nanopub.mint.approve` refuses a landscape hub
+     with a message naming the reclassification door. Decided, not
+     silently exempted: a signed consensus sentence attributes nothing;
+     these hubs are citable inside the mesh (`[fi<id>]`) and that is all
+     they need today.
+4. **Not in this build.** Per-type lint exemptions (the
+   `_ARTIFACT_LINT_EXEMPTIONS` axis stays keyed on artifact_type only);
+   `claim_depth_policy` keeps its regex until the type is populated
+   corpus-wide; modality (section above) is not asked for in the same
+   extractor pass yet — one new field per prompt change, measured first.
+
+**Slices.** (1) field + extractor + mint + sentence identity + human
+doors + classify CLI + edit-door refusal; (2) the policy consumers: widen
+exclusions, conflict/disputes exclusions, consensus line, approve
+refusal. Both ship together from the building worktree; the only prod
+follow-up is running `precis taproot classify --apply` once (≈1.5k
+MEDIUM-tier calls) and reclassifying fi192855 to landscape by hand.

@@ -1229,6 +1229,62 @@ def test_claim_tagline_multiline_400s(claim_client: TestClient, hub: Hub) -> Non
     assert r.status_code == 400
 
 
+# ── POST /claim/<head>/type — the human reclassification door ──
+
+
+def test_claim_type_set_writes_human_by(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/type",
+        data={"claim_type": "landscape"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/claim/{fi_handle}"
+    meta = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta
+    assert meta["claim_type"] == "landscape"
+    assert meta["claim_type_by"] == "human"
+    page = claim_client.get(f"/claim/{fi_handle}")
+    assert "consensus (landscape)" in page.text
+    assert "(human)" in page.text
+
+
+def test_claim_type_bad_value_400s(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/type",
+        data={"claim_type": "bogus"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    meta = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
+    assert "claim_type" not in meta
+
+
+def test_claim_type_empty_post_clears(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    hub.live_store.update_ref(
+        hub_ref_id,
+        meta_patch={"claim_type": "mechanism", "claim_type_by": "llm"},
+    )
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/type", data={"claim_type": ""}, follow_redirects=False
+    )
+
+    assert r.status_code == 303
+    meta = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
+    assert meta.get("claim_type") is None
+    assert meta.get("claim_type_by") is None
+
+
 def test_claim_tagline_non_hub_head_errors(claim_client: TestClient) -> None:
     r = claim_client.post(
         "/claim/aaaaaa/tagline",

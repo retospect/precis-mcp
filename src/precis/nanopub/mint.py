@@ -29,6 +29,7 @@ from precis.nanopub import assemble, evidence, freshness, gates
 from precis.nanopub.aida import aida_uri, canonical_sentence
 from precis.nanopub.keys import fingerprint, load_profile
 from precis.store._nanopub_ops import PublishRow
+from precis.taproot.claim_type import claim_type_of, policy_for
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -104,6 +105,19 @@ def approve(
     hub_ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
     if hub_ref is None:
         raise BadInput(f"no live ref {hub_ref_id}")
+    # Mesh-internal claim types (landscape) are never published; refuse
+    # before the publish-row lookup so no candidate row is ever created.
+    hub_type = claim_type_of(hub_ref.meta or {})
+    if not policy_for(hub_type).publishable:
+        raise BadInput(
+            f"fi{hub_ref_id} is a {hub_type} claim — mesh-internal, not "
+            "publishable as a nanopub "
+            "(docs/backlog/taproot-claim-model-v2.md)",
+            next=(
+                "cite it as [fi<id>] in drafts; reclassify on /claim/<head> "
+                "if the type is wrong"
+            ),
+        )
     # An empty/whitespace override is "no override" (the web form posts
     # ""), never a request to freeze a blank sentence.
     requested = title.strip() if title is not None else None

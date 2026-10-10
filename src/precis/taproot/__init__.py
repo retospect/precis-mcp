@@ -20,7 +20,12 @@ that same item, not built) and not itself fileable through
 a discriminating experiment instead, ``refs.meta.artifact_type``, minted via
 ``handlers/_finding_hypothesis.py``; the widening pass excludes hypotheses,
 :func:`.canon.not_hypothesis_predicate_sql`, so it never becomes a
-confirmation engine for its own guess). Design: ``docs/backlog/taproot.md``;
+confirmation engine for its own guess). Orthogonal to that artifact axis is
+the **claim type** (:mod:`.claim_type`, ``refs.meta.claim_type``: measurement
+/ definition / capability / mechanism / landscape) — a static per-type policy
+table; a *landscape* hub (the common case for a class, review material)
+dedups on sentence alone, is never widened or a ``disputes`` counterparty,
+is consensus-verified and not publishable. Design: ``docs/backlog/taproot.md``;
 governance: taproot evidence relations (+ the living citation pins).
 
 Unsigned claim title/scope and hypothesis-prose edits keep the hub identity

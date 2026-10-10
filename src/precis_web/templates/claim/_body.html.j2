@@ -31,6 +31,20 @@
   <a class="font-mono text-emerald-600 hover:underline" href="#review"
      title="publish state — jump to the review-and-sign section below">{{ np.state }}</a>
   {% endif %}
+  {# Claim type (precis.taproot.claim_type) + its human reclassification
+     door (POST /claim/<head>/type); the empty option clears. #}
+  · type <span class="font-mono">{{ claim_type or "unsorted" }}</span>{% if claim_type_by == 'human' %} <span class="text-slate-400">(human)</span>{% endif %}
+  <details class="inline">
+    <summary class="inline cursor-pointer hover:text-slate-600" title="reclassify this claim">reclassify</summary>
+    <form method="post" action="/claim/{{ head }}/type" class="mt-1 flex items-center gap-1">
+      <select name="claim_type" class="rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-700">
+        <option value=""{% if not claim_type %} selected{% endif %}>(unsorted)</option>
+        {% for t in claim_types %}<option value="{{ t }}"{% if t == claim_type %} selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-slate-600 hover:bg-slate-100">save</button>
+    </form>
+  </details>
   {# The human edit door (POST /claim/<head>/tagline) — tiny, unobtrusive,
      prefilled with the current tagline (empty for "not set yet"). Empty
      submit clears, handing the hub back to the hub_tagline pass. #}
@@ -44,6 +58,7 @@
     </form>
   </details>
 </p>
+{% if consensus %}<p class="text-[11px] text-slate-400">{{ consensus }}</p>{% endif %}
 
 {# Hypothesis falsification prose (docs/backlog/
    hypothesis-cites-render-not-stored.md): real fields, not the raw

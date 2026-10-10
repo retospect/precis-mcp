@@ -45,6 +45,14 @@ from precis.taproot.canon import (
     Placement,
     claim_sha,
 )
+from precis.taproot.claim_type import (
+    META_CLAIM_TYPE,
+    META_CLAIM_TYPE_BY,
+    claim_type_of,
+    find_hub_by_sentence,
+    policy_for,
+    register_sentence_id,
+)
 from precis.taproot.notation import lint_notation
 
 if TYPE_CHECKING:
@@ -285,6 +293,12 @@ def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
     return row is not None
 
 
+def _hub_claim_type(ref_id: int, *, conn: Any) -> str | None:
+    """The hub's persisted ``refs.meta.claim_type`` (``None`` if unsorted)."""
+    row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)).fetchone()
+    return claim_type_of(row[0] if row is not None else None)
+
+
 def _is_composite_hub(ref_id: int, *, conn: Any) -> bool:
     """True iff ``ref_id`` carries a live inbound ``conjunct-of`` edge from a
     live ``finding`` — i.e. it is a **composite** claim hub, not an atom or a
@@ -399,16 +413,26 @@ def mint_hub(
     """
     paper_id = make_taproot_hub_paper_id(claim.sentence, claim.scope)
     pub_id = make_pub_id(paper_id)
+    policy = policy_for(claim.claim_type)
 
     def _existing_hub(c: Any) -> int | None:
         row = c.execute(
             "SELECT ref_id FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
             ("pub_id", pub_id),
         ).fetchone()
-        return int(row[0]) if row is not None else None
+        if row is not None:
+            return int(row[0])
+        # Sentence-only identity (claim_type.py): a hub whose type dedups
+        # on the sentence alone (landscape) registered its sentence; ANY
+        # mint of that sentence — whatever scope the citing draft leaked
+        # into it (fi449493 vs fi192855) — converges onto that parent.
+        return find_hub_by_sentence(c, claim.sentence)
 
     def _mint(c: Any) -> int:
         meta: dict[str, Any] = {"scope": dict(claim.scope), "source": "taproot"}
+        if claim.claim_type is not None:
+            meta[META_CLAIM_TYPE] = claim.claim_type
+            meta[META_CLAIM_TYPE_BY] = "llm"
         if extra_meta:
             meta.update(extra_meta)
         intended_title = claim.sentence.strip()
@@ -442,6 +466,8 @@ def mint_hub(
             "VALUES (%s, %s, %s, %s)",
             ("pub_id", pub_id, ref.id, "taproot"),
         )
+        if policy.dedup_sentence_only:
+            register_sentence_id(c, int(ref.id), claim.sentence)
         # STATUS:canonical — a canonicalized claim node, not an in-flight
         # chase; its state is its derived evidence, not a chase lifecycle
         # (system-set — deliberately NOT STATUS:tracing like a put() finding,
@@ -671,6 +697,21 @@ def refine_claim_sentence(
             )
         # else: unchanged (or reverted-to-a-previous-wording) pub_id already
         # on this hub — no-op.
+
+        # (5) sentence-only identity (claim_type.py): a hub whose type dedups
+        # on the sentence alone registers its NEW wording too (the old
+        # sentence row stays, as the pub_id alias does). Another live hub
+        # already holding the new sentence is a merge candidate, logged
+        # by register_sentence_id — never a silent merge here either.
+        if policy_for(_hub_claim_type(hub_ref_id, conn=c)).dedup_sentence_only:
+            other = register_sentence_id(c, hub_ref_id, stripped)
+            if other is not None:
+                log.warning(
+                    "taproot: refined hub %s now states the sentence hub %s "
+                    "already holds — merge candidate",
+                    hub_ref_id,
+                    other,
+                )
 
         log.info(
             "taproot: refined hub ref_id=%s title=%r -> %r pub_id=%s",
@@ -1673,6 +1714,18 @@ def link_claims(
                         "claim as its own hub (precis taproot mint) first"
                     ),
                 )
+        if validated == "disputes":
+            src_type = _hub_claim_type(from_hub_ref_id, conn=c)
+            if not policy_for(src_type).disputes_counterparty:
+                raise BadInput(
+                    f"a {src_type} hub (fi{from_hub_ref_id}) cannot dispute "
+                    "another claim — it states the common case, which never "
+                    "contradicts a specific result",
+                    next=(
+                        "link the specific claim to it with relation='refines' "
+                        "instead; reclassify on /claim/<head> if the type is wrong"
+                    ),
+                )
         existing = c.execute(
             "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
             "AND relation = %s",
@@ -2251,14 +2304,29 @@ def _mint_for_placement(
             # `disputes` open question, never the adjudication-only
             # `contradicts` (docs/backlog/disputes-edge-nonblocking-
             # disagreement.md D3) — an unreviewed MEDIUM-tier LLM call is
-            # never itself the warrant for blocking publication.
-            store.add_link(
-                src_ref_id=claim_hub,
-                dst_ref_id=placement.contradicts_hub_ref_id,
-                relation=validate_relation("disputes", store=store),
-                set_by=set_by,
-                conn=c,
+            # never itself the warrant for blocking publication. Skipped
+            # when either side's type is not a disputes counterparty
+            # (claim_type.py: a landscape sentence states the common case
+            # and neither contradicts nor is contradicted by one result).
+            types = (
+                _hub_claim_type(claim_hub, conn=c),
+                _hub_claim_type(placement.contradicts_hub_ref_id, conn=c),
             )
+            if all(policy_for(t).disputes_counterparty for t in types):
+                store.add_link(
+                    src_ref_id=claim_hub,
+                    dst_ref_id=placement.contradicts_hub_ref_id,
+                    relation=validate_relation("disputes", store=store),
+                    set_by=set_by,
+                    conn=c,
+                )
+            else:
+                log.info(
+                    "taproot: placement disputes %s -> %s skipped (types %s)",
+                    claim_hub,
+                    placement.contradicts_hub_ref_id,
+                    types,
+                )
         return claim_hub
 
     if conn is not None:

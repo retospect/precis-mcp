@@ -21,6 +21,10 @@ override write door (:mod:`precis.taproot.trust`'s only softener) — the
 twin of, but semantically distinct from, ``POST /papers/<id>/unacquirable``
 (a pure acquirability fact about the paper that never softens a claim).
 
+``POST /claim/<head>/type`` is the human reclassification door for the hub's
+claim type (precis.taproot.claim_type); it writes ``claim_type_by='human'`` so
+the LLM paths never overwrite it, and an empty submit clears it.
+
 ``POST /claim/<head>/tagline`` is the human edit door for the hub's
 3-6 word tagline (precis.workers.hub_tagline) — presentation metadata on
 ``refs.meta``, never the claim string/URI/artifact bytes, so it's writable
@@ -37,6 +41,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from precis.taproot.claim_type import CLAIM_TYPES, set_claim_type
 from precis.utils import handle_registry
 from precis_web import ask
 from precis_web.claim_render import (
@@ -128,6 +133,7 @@ def claim_page_context(
     return {
         **data,
         "missing": False,
+        "claim_types": CLAIM_TYPES,
         "citers": claim_citers(store, hub_ref_id),
         "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
         "discussions": _followup_discussions(store, hub_ref_id),
@@ -322,3 +328,30 @@ async def claim_tagline(
         )
     store.update_ref(hub_ref_id, meta_patch={"tagline": t, "tagline_by": "human"})
     return RedirectResponse(url=redirect, status_code=303)
+
+
+@router.post("/claim/{head}/type", response_model=None)
+async def claim_set_type(
+    request: Request,
+    head: str,
+    claim_type: str = Form(""),
+) -> Response:
+    """Set / clear the hub's claim type (``precis.taproot.claim_type``) —
+    the human reclassification door. Empty clears (handing the hub back to
+    the classify pass); a value outside ``CLAIM_TYPES`` is a 400."""
+    store = get_store(request)
+    data = render_claim_evidence(store, head)
+    if data is None:
+        return _claim_error(
+            request, "Claim type error", f"no claim hub for {head!r}", 400
+        )
+    value = (claim_type or "").strip()
+    if value and value not in CLAIM_TYPES:
+        return _claim_error(
+            request,
+            "Claim type error",
+            f"unknown claim type {value!r}; one of {list(CLAIM_TYPES)}",
+            400,
+        )
+    set_claim_type(store, data["hub_ref_id"], value or None, by="human")
+    return RedirectResponse(url=f"/claim/{head}", status_code=303)

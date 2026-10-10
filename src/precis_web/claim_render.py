@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from markupsafe import Markup
 
 from precis.taproot.cite import resolve_hub_print
+from precis.taproot.claim_type import claim_type_of, consensus_line, policy_for
 from precis.taproot.seniority import (
     CiterEdge,
     ComputedEdge,
@@ -760,6 +761,16 @@ def _render_one(
     _grounding.sort(key=lambda t: t[0])
     grounding_rows = [(grow, label) for _, grow, label in _grounding]
     cite_keys = hub_print.cite_keys
+    hub_meta = getattr(hub_ref, "meta", None) or {}
+    claim_type = claim_type_of(hub_meta)
+    consensus = None
+    if policy_for(claim_type).verifier == "consensus":
+        from precis.handlers._finding_evidence import _independent_supporter_counts
+
+        independent, _papers, _excluded = _independent_supporter_counts(
+            evidence.originators + evidence.corroborators, refs_map
+        )
+        consensus = consensus_line(claim_type, independent)
     return {
         "head": head,
         "hub_ref_id": ref_id,
@@ -772,6 +783,14 @@ def _render_one(
         # adds no new query — the bulk==singular invariant
         # (test_render_claims_evidence_matches_singular_calls) stays intact.
         "tagline": (getattr(hub_ref, "meta", None) or {}).get("tagline"),
+        # Persisted claim sort (precis.taproot.claim_type) + who set it, off
+        # the same `hub_ref.meta` — no new query. `consensus` is the
+        # hub-level verdict line for a consensus-verified type (landscape),
+        # `None` otherwise; computed from `paper_refs`, which both callers
+        # batch over the same supporter id set.
+        "claim_type": claim_type,
+        "claim_type_by": hub_meta.get("claim_type_by") if claim_type else None,
+        "consensus": consensus,
         "status": status,
         # `trust_overridden` — True iff an author declared a claim-level
         # (Ⓐ/✍) softener HERE, on this hub. `trust_note` is always threaded

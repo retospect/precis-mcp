@@ -381,7 +381,9 @@ def edit(
 
 
 #: The only ``meta=`` key the finding edit handler accepts — the hub
-#: ``scope`` write door. Anything else is a BadInput naming this set.
+#: ``scope`` write door. Anything else is a BadInput naming this set;
+#: ``claim_type`` gets its own refusal pointing at the human doors
+#: (this door cannot tell a human from an agent).
 _META_KEYS = frozenset({"scope"})
 
 
@@ -389,6 +391,15 @@ def _scope_from_meta(meta: dict[str, Any]) -> dict[str, str]:
     """Validate ``meta=`` for ``edit(kind='finding')`` and return the
     ``scope`` dict. Only ``scope`` is accepted; it must be a dict of
     str -> str (``{}`` clears it)."""
+    if "claim_type" in meta:
+        raise BadInput(
+            "edit(kind='finding') does not set claim_type — reclassification "
+            "is a human door",
+            next=(
+                "web: the type form on /claim/<head>; CLI: precis taproot "
+                "classify --hub fi<N> --set <type> --apply"
+            ),
+        )
     extra = sorted(set(meta) - _META_KEYS)
     if extra or "scope" not in meta:
         raise BadInput(
