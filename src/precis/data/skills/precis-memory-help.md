@@ -257,6 +257,7 @@ clean. If the deployment is set to reject mode, the write is refused
 instead of tagged. Citations that do not resolve are not checked. A
 parenthetical that opens right after a citation is its gloss: the numbers
 in it are checked against that source, not the next citation in the line.
+A chunk-range cite (`~18..28`) is checked against every chunk in the range.
 
 ## Promote a research cache to a durable memory
 ## Distil a Sonar deep-research answer into a note

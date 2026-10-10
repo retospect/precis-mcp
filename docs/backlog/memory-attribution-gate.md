@@ -8,24 +8,34 @@ model: sonnet
 
 # Memory attribution gate
 
-**State (2026-10-10):** §1–§5 shipped in warn mode (b88ae940e); the DOI
-digit-run fix (b042138bc) is deployed as a5920f7d6 and re-dogfooded there.
-Prod dry run (Reto, 2026-10-10, via the pgbouncer tunnel): 3,087 candidates,
-1,087 flagged (35%), 0 errors; by cite kind pa 557 · pc 477 · me 457 ·
-paper-key 250 · paper 97 · websearch 76. Reading the 40-row sample against
-the sources found four false-positive classes: (a) a number in the gloss
-parenthetical after cite X pinned to the nearer cite Y (4 rows: me6240,
-me25065 ×3); (b) "2010s" read as 2010 seconds (3 rows); (c) a chunk
-pinpoint a few chunks off while the paper carries the number (me34656 ×3);
-(d) units the `numerics` column cannot see — PDF text writes `$\mu$ m`, and
-table cells carry the unit in the header (me34846, me25065 "0.15 nm").
-(a)–(c) and the micro-unit half of (d) are fixed in the follow-up commit
-(§1 steps 3–4); table-header units remain a residual. Genuine flags in the
-sample: me23148's `anon24d` resolves to an unrelated paper (slug collision,
-not a tokenizer issue). Remaining, in order: (1) Reto re-runs the dry run
-(same command, `--sample 40`) on the fixed tree; (2) if the remaining flags
-read as real, flip `PRECIS_MEMORY_ATTRIBUTION_GATE` default to `reject` and
-`--apply` the backfill. Delete this file in that commit.
+**State (2026-10-10, second dry run):** §1–§5 shipped in warn mode
+(b88ae940e); the DOI digit-run fix is deployed as a5920f7d6; the gloss /
+decade / chunk-fallback / micro-unit fixes landed as 25abd28fd (not yet
+deployed). Second prod dry run (Reto, on 25abd28fd): 3,089 candidates, 910
+flagged (29%, down from 1,087), 0 errors; by cite kind pa 544 · me 341 ·
+pc 267 · paper-key 229 · paper 81 · websearch 75. Reading the 40-row sample
+against the sources found four more false-positive classes, fixed in the
+follow-up commit (§1 steps 3–4): (e) the exponent of `10^7 cm/s` read as
+"7 cm" (me34846); (f) a patent reference numeral `216A-N` read as amperes
+(me34864); (g) a `~a..b` chunk range collapsed to a document cite, so the
+cited chunks' "0.44 and 0.26 eV" / "from 1.169 to 1.182 Å" grounded only
+their last member through the `numerics` column (me35150 ×3); (h) table
+cells whose unit sits in the header (me35246 ×2, wang20d Table 2) — fixed
+for chunk-text evidence, still residual for document-level `numerics`
+(me25065 "0.15 nm"). Genuine flags confirmed against the sources: me34865
+"0.3 eV" hwang25 (the paper says 0.14 eV); me34846 "100 GHz" zhu12a (not in
+the text); me35024 / me35027 (review findings quoting the mis-sourced
+numbers they report); slug collisions `anon24d` (me23148) and
+`zhang09-bilayer-gap` (me34846, resolves to a DNA paper). Residual classes,
+not fixed: a number derived next to its source ("75% … the missing 25%",
+"250–350 °C … ~100 °C earlier"); a scale restated in an analogy sentence
+that cites the analogue (me35192 "1-10 nm" against evans24); a range's zero
+endpoint ("0–0.3 eV"); list heads in document-level `numerics` (needs
+`extract_numerics` to expand lists at ingest). Remaining, in order: (1) Reto
+re-runs the dry run on the fixed tree; (2) if the sample reads as real plus
+the residuals above, `--apply` the backfill in warn mode; the `reject` flip
+waits until the residual classes are rare in a fresh sample. Delete this
+file in that commit.
 
 ## Motivation / why
 
@@ -95,6 +105,8 @@ Algorithm:
    opens right after a citation belongs to that citation (its gloss:
    `paper:x (… 60 kPa …) and paper:y`), unless a citation inside the gloss
    is nearer; otherwise it goes to the nearest citation in the sentence.
+   The exponent of `10^7 cm/s` and a patent reference numeral `216A-N` are
+   tokenizer artefacts, not claims.
 4. **Evidence.** For a chunk-level cite: that chunk's text and its
    neighbours ±1. For a ref-level cite: `SELECT unnest(numerics)` over
    the ref's chunks (cheap for a 400-page textbook) plus the ref title;
@@ -109,7 +121,10 @@ Algorithm:
    few chunks off is a reading aid, not a mis-sourced number). Micro units
    (`µm`, `µA`, `µM`, `µg`, `µs`) never flag against paper/patent evidence:
    `numerics` cannot tokenise the `$\mu$ m` PDF text writes, so the claim
-   is unverifiable, which is not ungrounded.
+   is unverifiable, which is not ungrounded. A `~a..b` range cite is
+   checked against every chunk in it (capped at 40). Evidence text is read
+   generously: list members share the trailing unit ("0.44 and 0.26 eV"),
+   markdown table cells take the unit their header names (`[Å]`).
 5. **Exemption phrase.** A number within 60 characters *after* which the
    text says `my estimate`, `my own estimate`, `(est.)`, `(estimate)` or
    `rough guess` is exempt. This is the escape hatch the nudge tells the
@@ -177,7 +192,9 @@ attach it to the handle.* Already applied in this tree.
   detected as cite spans; two cites in one sentence attribute the number
   to the nearest; a gloss parenthetical pins to its opener unless an inner
   cite is nearer; `2010s` never fires; a chunk cite falls back to the
-  document; micro units are unverifiable against numerics-only evidence.
+  document; micro units are unverifiable against numerics-only evidence;
+  `10^7 cm/s` and `216A-N` are not claims; evidence lists and table headers
+  ground their members; `~a..b` parses to the whole range.
 - Handler (`tests/test_memory.py` additions, dev DB): create with a
   mis-sourced number → tag present + nudge line; `reject` mode → BadInput;
   a follow-up clean edit removes the tag; agent `tag(add=['AUDIT:ungrounded-number'])`

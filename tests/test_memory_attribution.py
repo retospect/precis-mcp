@@ -44,7 +44,7 @@ def world(monkeypatch):
     def resolve(store, span, cache):
         return _TARGETS.get(span.cite, (None, None))
 
-    def fetch(store, targets):
+    def fetch(store, targets, ends=None):
         return {t: attr.evidence_from_text(evidence.get(t, "")) for t in targets}
 
     monkeypatch.setattr(attr, "_resolve_cite", resolve)
@@ -349,7 +349,7 @@ def test_chunk_cite_falls_back_to_the_document(world):
 def test_micro_units_unverifiable_against_numerics(world, monkeypatch):
     """PDF text writes micro as ``$\\mu$ m``; a paper's numerics never hold it."""
 
-    def fetch(store, targets):
+    def fetch(store, targets, ends=None):
         ev = attr.evidence_from_text("375 nm ; 29.7 GHz", has_text=True)
         return {t: dataclasses.replace(ev, numerics_only=True) for t in targets}
 
@@ -357,3 +357,59 @@ def test_micro_units_unverifiable_against_numerics(world, monkeypatch):
     assert _check("mobility 10,000 at 2 µm channel [pa12]") == []
     assert _check("mobility at 2 μm channel [pa12]") == []  # Greek mu
     assert [m.token for m in _check("mobility at 3 nm channel [pa12]")] == ["3 nm"]
+
+
+def test_exponent_digit_is_not_a_quantity(world):
+    """Prod sample 2026-10-10 (me34846): "1–5×10^7 cm/s" read as "7 cm"."""
+    world[(12, None)] = "nothing numeric"
+    assert _check("saturation velocity 1–5×10^7 cm/s [pa12]") == []
+    assert [m.token for m in _check("a 7 cm wide strip [pa12]")] == ["7 cm"]
+
+
+def test_patent_reference_numeral_is_not_amperes(world):
+    """Prod sample 2026-10-10 (me34864): "replica sequences 216A-N"."""
+    world[(12, None)] = "nothing numeric"
+    assert _check("replica sequences 216A-N provide redundancy [pa12]") == []
+    assert [m.token for m in _check("the coil draws 216 A [pa12]")] == ["216 A"]
+
+
+def test_evidence_list_members_share_the_unit(world):
+    """Prod sample 2026-10-10 (me35150): the paper writes "0.44 and 0.26 eV"
+    and "from 1.169 to 1.182 Å"; the claim quotes the first member."""
+    world[(12, None)] = (
+        "adsorption free energy was 0.44 and 0.26 eV; the bond lengthens from "
+        "1.169 to 1.182 Å; under field it decreases to -0.25 and -0.21 eV; "
+        "widths of 1, 2 and 3 nm"
+    )
+    assert _check("endergonic +0.44 eV, 1.169 Å, then −0.25 eV, 2 nm wide [pa12]") == []
+    assert [m.token for m in _check("endergonic 0.45 eV [pa12]")] == ["0.45 eV"]
+
+
+def test_table_header_unit_grounds_its_cells(world):
+    """Prod sample 2026-10-10 (me35246, wang20d Table 2): cells are bare,
+    the header carries the unit."""
+    world[(12, None)] = (
+        "**Table 2.** Representative MOFs.\n"
+        "| MOF | Pore aperture [Å] | Uptake [wt%] | T [K]/P [kPa] |\n"
+        "|---|---|---|---|\n"
+        "| Zn(ox)0.5(atrz) (F) | 2.6 | 5 | 303/85 |\n"
+        "| CD-MOF-1 | 9 | 17 | 318/N.R. |\n"
+    )
+    assert _check("apertures 2.6–9 Å at 303 K and 85 kPa [pa12]") == []
+    assert [m.token for m in _check("apertures of 3.4 Å [pa12]")] == ["3.4 Å"]
+
+
+@pytest.mark.parametrize(
+    ("chunk", "want"),
+    [
+        ("~18", (18, 18)),
+        ("~18..28", (18, 28)),
+        ("~1..999", (1, 1 + attr._RANGE_MAX_CHUNKS)),
+        ("~30..5", None),
+        ("~p2", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_chunk_range_parses(chunk, want):
+    assert attr._chunk_range(chunk) == want

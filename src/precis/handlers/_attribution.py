@@ -11,7 +11,12 @@ that citation's gloss: "paper:x (… 60 kPa …) and paper:y" pins 60 kPa to x,
 whatever is nearer (the dream prose shape; the prod sample of 2026-10-10 had
 it mis-pinned to the following cite in 4 of 40 rows). A chunk cite is checked
 against its chunk and, failing that, the whole document: a pinpoint a few
-chunks off is a reading aid, not a mis-sourced number. A bare digit run never grounds a unit-bearing claim:
+chunks off is a reading aid, not a mis-sourced number. A chunk range
+(``~18..28``) is checked against every chunk in it. Evidence text is read
+generously: "0.44 and 0.26 eV" grounds both numbers, and a markdown table
+whose header names the unit (``Pore aperture [Å]``) grounds its cells. Two
+tokenizer artefacts are not claims: the exponent in ``10^7 cm/s`` and a
+patent reference numeral (``216A-N``). A bare digit run never grounds a unit-bearing claim:
 a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
 "10 nm" (the first dogfood write slipped through on exactly that, 2026-10-09).
 Evidence that is empty is nothing to check against (no flag). A miss is an
@@ -43,13 +48,14 @@ from precis.utils.mentions import (
     LINKIFY_KINDS,
     LOW_SIGNAL_KINDS,
     REF_PATTERN,
-    chunk_to_pos,
     resolve_handle_ref,
     resolve_handle_target,
 )
 from precis.utils.numerics import _UNITS_RE_PART, numeric_spans
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from precis.store.store import Store
 
 #: Env switch: ``warn`` (default) tags + advises, ``reject`` raises BadInput.
@@ -108,6 +114,26 @@ _NUMERICS_BLIND_UNITS = frozenset({"µm", "µA", "µM", "µg", "µs"})
 #: "2010s", "1980s": a decade, not seconds. ``numeric_spans`` reads the glued
 #: ``s`` as the unit; only the four-digit year shape is excluded.
 _DECADE_RE = re.compile(r"(?:1[89]|20)\d\ds")
+
+#: "216A-N" (patent reference numerals A..N) is not 216 amperes: a glued
+#: single capital letter followed by ``-`` and another capital.
+_REF_NUMERAL_RE = re.compile(r"\d+[A-Z]")
+_REF_NUMERAL_TAIL_RE = re.compile(r"-[A-Z]")
+
+#: A list sharing one trailing unit, read backwards from the unit-bearing
+#: member: "0.44 and 0.26 eV", "1, 2 and 3 nm", "0.1, 0.2 mm".
+_LIST_HEAD_RE = re.compile(
+    r"(?<![\w.])(-?\d+(?:\.\d+)?)(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)$"
+)
+_LIST_HEAD_CHARS = 40
+
+#: ``~a..b`` chunk ranges are read whole, capped at this many chunks.
+_RANGE_MAX_CHUNKS = 40
+
+#: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
+#: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
+_HEADER_UNIT_RE = re.compile(rf"[\[(]\s*({_UNITS_RE_PART})\s*[\])]")
+_CELL_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 _NUMBER_PART_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
@@ -176,7 +202,7 @@ def _quantities(text: str) -> list[tuple[str, int, int]]:
     spans = [
         (t, s, e)
         for t, s, e in numeric_spans(text)
-        if not _DECADE_RE.fullmatch(text, s, e)
+        if not _DECADE_RE.fullmatch(text, s, e) and not _artifact(text, t, s, e)
     ]
     ranges = list(_RANGE_RE.finditer(text))
     if not ranges:
@@ -192,6 +218,65 @@ def _quantities(text: str) -> list[tuple[str, int, int]]:
         for num in (r.group(1), r.group(2)):
             out.append((f"{num}{sep}{unit}", r.start(), r.end()))
     out.sort(key=lambda t: (t[1], t[2]))
+    return out
+
+
+def _artifact(text: str, tok: str, s: int, e: int) -> bool:
+    """A digit run the tokenizer read as a quantity but which is none: the
+    exponent of ``10^7 cm/s`` ("7 cm") or a patent reference numeral
+    ``216A-N`` ("216 A")."""
+    if s and text[s - 1] == "^":
+        return True
+    del tok  # normalised ("216 A"); the glued shape is only in the text
+    return bool(
+        _REF_NUMERAL_RE.fullmatch(text, s, e) and _REF_NUMERAL_TAIL_RE.match(text, e)
+    )
+
+
+def _list_heads(text: str, spans: list[tuple[str, int, int]]) -> list[str]:
+    """Earlier members of a unit-sharing list, as "number unit" tokens:
+    "0.44 and 0.26 eV" yields "0.44 eV" for the span "0.26 eV"."""
+    out: list[str] = []
+    for tok, s, _e in spans:
+        _number, unit = _split_token(tok)
+        if not unit:
+            continue
+        sep = "" if unit == "%" else " "
+        at = s
+        while True:
+            m = _LIST_HEAD_RE.search(text, max(0, at - _LIST_HEAD_CHARS), at)
+            if m is None:
+                break
+            out.append(f"{m.group(1)}{sep}{unit}")
+            at = m.start(1)
+    return out
+
+
+def _table_quantities(text: str) -> list[str]:
+    """Cells of a markdown table paired with the unit their header names:
+    header ``Pore aperture [Å]`` over cell ``2.6`` yields "2.6 Å"; header
+    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa"."""
+    out: list[str] = []
+    header: list[list[str]] | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            header = None
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if header is None:
+            header = [_HEADER_UNIT_RE.findall(c) for c in cells]
+            continue
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+            continue
+        for units, cell in zip(header, cells, strict=False):
+            if not units:
+                continue
+            parts = cell.split("/") if len(units) > 1 else [cell]
+            for unit, part in zip(units, parts, strict=False):
+                if _CELL_NUMBER_RE.fullmatch(part.strip()):
+                    unit = _UNIT_CANON.get(unit, unit)
+                    out.append(f"{part.strip()}{'' if unit == '%' else ' '}{unit}")
     return out
 
 
@@ -214,9 +299,17 @@ def _canon_runs(text: str) -> set[str]:
 
 
 def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
-    """:class:`Evidence` of free text (or of numerics tokens joined by space)."""
+    """:class:`Evidence` of free text (or of numerics tokens joined by space).
+
+    Read generously (this is the side that grounds, never the side that
+    flags): list members share the trailing unit, table cells take their
+    header's unit."""
     units: set[tuple[str, str]] = set()
-    for tok, _s, _e in _quantities(text):
+    spans = _quantities(text)
+    tokens = [tok for tok, _s, _e in spans]
+    tokens += _list_heads(text, spans)
+    tokens += _table_quantities(text)
+    for tok in tokens:
         number, unit = _split_token(tok)
         units.update((unit, r) for r in _runs(number))
     return Evidence(
@@ -269,6 +362,8 @@ class AttributionCache:
     """
 
     resolved: dict[str, tuple[int | None, int | None]] = field(default_factory=dict)
+    #: Last chunk of a ``~a..b`` cite, keyed like its evidence ``(ref_id, a)``.
+    ends: dict[tuple[int, int], int] = field(default_factory=dict)
     evidence: OrderedDict[tuple[int, int | None], Evidence] = field(
         default_factory=OrderedDict
     )
@@ -379,22 +474,47 @@ def _resolve_cite(
         ident, _, chunk = span.key[2:].partition("|")
         ref = resolve_handle_ref(store, ident)
         if ref is not None and getattr(ref, "retired_at", None) is None:
-            ref_id, pos = int(ref.id), chunk_to_pos(chunk or None)
+            ref_id = int(ref.id)
+            rng = _chunk_range(chunk or None)
+            if rng is not None:
+                pos, end = rng
+                key = (ref_id, pos)
+                cache.ends[key] = max(cache.ends.get(key, pos), end)
     cache.resolved[span.key] = (ref_id, pos)
     return ref_id, pos
+
+
+def _chunk_range(chunk: str | None) -> tuple[int, int] | None:
+    """``~N`` → ``(N, N)``; ``~a..b`` → ``(a, b)`` capped at
+    :data:`_RANGE_MAX_CHUNKS` chunks; a page jump (``~p2``) or an inverted
+    range is a ref-level cite (``None``)."""
+    if not chunk:
+        return None
+    body = chunk[1:] if chunk.startswith("~") else chunk
+    a, _, b = body.partition("..")
+    if not a.isdigit() or (b and not b.isdigit()):
+        return None
+    lo = int(a)
+    hi = int(b) if b else lo
+    if hi < lo:
+        return None
+    return lo, min(hi, lo + _RANGE_MAX_CHUNKS)
 
 
 # --- evidence ---------------------------------------------------------------
 
 
 def _fetch_evidence(
-    store: Store, targets: set[tuple[int, int | None]]
+    store: Store,
+    targets: set[tuple[int, int | None]],
+    ends: Mapping[tuple[int, int], int] | None = None,
 ) -> dict[tuple[int, int | None], Evidence]:
     """:class:`Evidence` for each ``(ref_id, chunk_ord|None)``.
 
     Batched: one query for ref kinds/titles, one per evidence shape. A
-    chunk cite reads that chunk and its ±1 neighbours (the caller pools the
-    ``(ref_id, None)`` document evidence with it); a ref cite reads the
+    chunk cite reads that chunk and its ±1 neighbours — through the range's
+    last chunk when ``ends`` names one (the caller pools the ``(ref_id,
+    None)`` document evidence with it); a ref cite reads the
     ``numerics`` column (paper/patent; a ref with no numerics at all has
     nothing to check against) or chunk text, capped per ref (other kinds:
     websearch / perplexity / web / memory bodies).
@@ -405,11 +525,17 @@ def _fetch_evidence(
     ref_targets = sorted(r for r, p in targets if p is None)
     with store.pool.connection() as conn:
         if chunk_targets:
+            last = ends or {}
             rows = conn.execute(
-                "SELECT t.r, t.p, c.text FROM unnest(%s::bigint[], %s::int[]) "
-                "AS t(r, p) JOIN chunks c ON c.ref_id = t.r "
-                "AND c.ord BETWEEN t.p - 1 AND t.p + 1 AND c.retired_at IS NULL",
-                ([r for r, _ in chunk_targets], [p for _, p in chunk_targets]),
+                "SELECT t.r, t.p, c.text "
+                "FROM unnest(%s::bigint[], %s::int[], %s::int[]) AS t(r, p, hi) "
+                "JOIN chunks c ON c.ref_id = t.r "
+                "AND c.ord BETWEEN t.p - 1 AND t.hi + 1 AND c.retired_at IS NULL",
+                (
+                    [r for r, _ in chunk_targets],
+                    [p for _, p in chunk_targets],
+                    [last.get((r, p), p) for r, p in chunk_targets],
+                ),
             ).fetchall()
             for r, p, text in rows:
                 out[(int(r), int(p))] |= evidence_from_text(text or "")
@@ -595,7 +721,7 @@ def ungrounded_cited_numbers(
             if cache.get_evidence(key) is None:
                 need.add(key)
     if need:
-        cache.put_evidence(_fetch_evidence(store, need))
+        cache.put_evidence(_fetch_evidence(store, need, cache.ends))
 
     out: list[UngroundedNumber] = []
     seen: set[tuple[str, str]] = set()
