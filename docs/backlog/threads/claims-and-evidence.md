@@ -116,9 +116,10 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
 6. `taproot-claim-model-v2` — `claim_type` persisted + landscape policy
    built 2026-10-10 (extractor field, sentence-only dedup, widen/conflict/
    disputes exclusions, consensus line, approve refusal, human doors,
-   `precis taproot classify`). Open: run the classify backfill on prod
-   (`--apply`, ≈1.5k MEDIUM calls), reclassify fi192855 by hand, then the
-   modality axis and per-type lint exemptions still in the item.
+   `precis taproot classify`). Prod backfill done 2026-10-10 (every
+   canonical hub typed, ≈3.6k; one sentence-duplicate merged; fi192855
+   human-set landscape). Open: the modality axis and per-type lint
+   exemptions still in the item.
 
 ## Horizon
 

@@ -206,6 +206,8 @@ it, the identity helper, the one write door, the LLM classifier.
 **Slices.** (1) field + extractor + mint + sentence identity + human
 doors + classify CLI + edit-door refusal; (2) the policy consumers: widen
 exclusions, conflict/disputes exclusions, consensus line, approve
-refusal. Both ship together from the building worktree; the only prod
-follow-up is running `precis taproot classify --apply` once (≈1.5k
-MEDIUM-tier calls) and reclassifying fi192855 to landscape by hand.
+refusal. Both landed 2026-10-10 (8e069ddc0). The prod backfill ran the
+same day over every canonical hub (≈3.6k): measurement 2,123 ·
+capability 623 · mechanism 528 · landscape 247 (fi192855 human-set) ·
+definition 90. The sentence identity caught one duplicate pair,
+fi344004 merged into fi343979.
