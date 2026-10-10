@@ -145,14 +145,14 @@ axis taxon nodes' meta. The only new refusal is at `instance-of` link.
   amendment; rank as high as practical, slice 0 as an early authoring
   guide.
 - **[open]** Calibrate the shipped nearest-sibling cutoff
-  (`handlers/taxon.py::SIBLING_MAX_DISTANCE` 0.20 on embedding distance;
-  `SIBLING_MIN_OVERLAP` 0.7 lexical fallback, definitions only) together
-  with term-taxonomy's `DEDUP_MAX_DISTANCE` follow-up, against hand-judged
-  sibling pairs. As shipped the embedding leg never fires on its own: put
-  and edit run the all-taxa dedup (0.25) first, which catches any sibling
-  within 0.20, so a sibling paraphrase gets the generic "existing node"
-  refusal. Decide whether dedup skips siblings (leaving them to this leg)
-  or the embedding leg goes.
+  (`handlers/taxon.py::SIBLING_MAX_DISTANCE`, tied to `DEDUP_MAX_DISTANCE`
+  0.25 on embedding distance; `SIBLING_MIN_OVERLAP` 0.7 lexical fallback,
+  definitions only) together with term-taxonomy's `DEDUP_MAX_DISTANCE`
+  follow-up, against hand-judged sibling pairs. The sibling bar must stay
+  at or above the dedup bar (`TaxonHandler._mint_checks` order).
+- **[decided 2026-10-10, Reto]** Mint/edit refusal order: exact
+  name/alias match ("use the existing node"), then near sibling ("sharpen
+  the definition"), then embedding dedup for non-siblings.
 - **[open]** Whether slice 4's exclusive check refuses or warns on
   legacy links that already violate it.
 

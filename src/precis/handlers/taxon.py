@@ -80,11 +80,13 @@ DEDUP_MAX_DISTANCE = 0.25
 #: existing children. UNCALIBRATED — both cutoffs are first guesses pending the
 #: hand-judged sibling-pair calibration the item lists as an open question
 #: (together with ``DEDUP_MAX_DISTANCE``). ``SIBLING_MAX_DISTANCE`` is the
-#: cosine distance of the embedding leg (tighter than the same-term dedup bar:
-#: siblings are *meant* to be near each other, a paraphrase is nearer);
+#: cosine distance of the embedding leg. It runs before the embedding leg of
+#: dedup (see :meth:`TaxonHandler._mint_checks`), so it must be at least
+#: ``DEDUP_MAX_DISTANCE``: a near sibling then gets the sibling refusal
+#: (sharpen the definition), not "use the existing node".
 #: ``SIBLING_MIN_OVERLAP`` is the content-word Jaccard of the two definitions
 #: (names excluded), used only when no embedder answers.
-SIBLING_MAX_DISTANCE = 0.20
+SIBLING_MAX_DISTANCE = DEDUP_MAX_DISTANCE
 SIBLING_MIN_OVERLAP = 0.7
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -396,14 +398,45 @@ class TaxonHandler(NumericRefHandler):
         explicit parameters, lets it through. Unless ``dedup=False``, a likely duplicate (same
         name/alias/slug, or an embedding neighbour within
         ``DEDUP_MAX_DISTANCE`` when an embedder answers) is refused naming the
-        existing node; candidates whose dimension explicitly differs are never
-        offered (see :func:`_dimension_clash`)."""
+        existing node, and a near sibling under the ``link=`` parent is
+        refused as a definition that does not separate (order in
+        :meth:`_mint_checks`); candidates whose dimension explicitly differs
+        are never offered (see :func:`_dimension_clash`)."""
         if dedup is not False and _kw.get("id") is None and text and text.strip():
-            self._dedup_check(text, meta)
-            self._sibling_check(text, meta, _kw.get("link"), _kw.get("rel"))
+            self._mint_checks(text, meta, _kw.get("link"), _kw.get("rel"))
         return super().put(
             text=text, auto_refresh_days=auto_refresh_days, meta=meta, **_kw
         )
+
+    def _mint_checks(
+        self,
+        text: str,
+        put_meta: dict[str, Any] | None,
+        link: Any,
+        rel: Any,
+        *,
+        meta_override: dict[str, Any] | None = None,
+        exclude: int | None = None,
+        parent_ids: list[int] | None = None,
+    ) -> None:
+        """Refusals before a put or a definition/alias edit, most specific
+        first: an exact name/alias/slug match is a duplicate ("use the
+        existing node"); a near sibling is a definition that does not
+        separate ("sharpen it against the sibling"); a near non-sibling is
+        a duplicate again. Sibling before the embedding leg of dedup, or
+        dedup's all-taxa search would claim every near sibling first."""
+        self._dedup_check(
+            text, put_meta, meta_override=meta_override, exclude=exclude,
+            embedding=False,
+        )  # fmt: skip
+        self._sibling_check(
+            text, put_meta, link, rel,
+            meta_override=meta_override, exclude=exclude, parent_ids=parent_ids,
+        )  # fmt: skip
+        self._dedup_check(
+            text, put_meta, meta_override=meta_override, exclude=exclude,
+            names=False,
+        )  # fmt: skip
 
     def _dedup_check(
         self,
@@ -412,6 +445,8 @@ class TaxonHandler(NumericRefHandler):
         *,
         meta_override: dict[str, Any] | None = None,
         exclude: int | None = None,
+        names: bool = True,
+        embedding: bool = True,
     ) -> None:
         if meta_override is not None:
             meta = meta_override
@@ -420,14 +455,16 @@ class TaxonHandler(NumericRefHandler):
             if put_meta:
                 meta = self._merge_put_meta(text, meta, put_meta)
         reasons: dict[int, str] = {}
-        for term in [meta.get("name", ""), *(meta.get("aliases") or [])]:
+        terms = [meta.get("name", ""), *(meta.get("aliases") or [])] if names else []
+        for term in terms:
             if str(term).strip():
                 for rid in self._term_matches(str(term)):
                     reasons.setdefault(rid, f"same name/alias/slug as {term!r}")
         # Embedding leg: degrades to lexical-only on a missing or failing
         # embedder (query_vec_for) or a failing vector query.
         card = self._card_text_for(text, meta)
-        vec = query_vec_for(getattr(self.hub, "embedder", None), card, None)
+        embedder = getattr(self.hub, "embedder", None) if embedding else None
+        vec = query_vec_for(embedder, card, None)
         if vec is not None:
             try:
                 rows = self.store.chunks.search_chunks_semantic(
@@ -722,8 +759,7 @@ class TaxonHandler(NumericRefHandler):
         merged = {**merged, **patch}
         # aliases feed both the name dedup and the card, so they re-check too
         if ("definition" in patch or "aliases" in patch) and dedup is not False:
-            self._dedup_check("", None, meta_override=merged, exclude=ref.id)
-            self._sibling_check(
+            self._mint_checks(
                 "",
                 None,
                 None,

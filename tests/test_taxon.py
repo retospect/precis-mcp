@@ -1123,6 +1123,51 @@ class TestSiblingRefusal:
         assert scoped and scoped[0]["include_ref_ids"] == [afm]
         assert scoped[0]["max_distance"] == taxon_mod.SIBLING_MAX_DISTANCE
 
+    def test_near_sibling_gets_sibling_refusal_not_dedup(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # The all-taxa embedding dedup would also find the sibling; it runs
+        # after the sibling check, so the sibling refusal (sharpen the
+        # definition) wins. A near non-sibling still reads as a duplicate,
+        # and an exact name match is a duplicate even under the same parent.
+        from precis.dispatch import Hub
+        from precis.embedder import MockEmbedder
+        from precis.handlers import taxon as taxon_mod
+
+        root, afm = self._parent(store)
+        loner = _mk(store, "sibref loner elsewhere")
+        h = taxon_mod.TaxonHandler(
+            hub=Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+        )
+        near = {"id": afm}
+
+        def fake_semantic(**kw: Any) -> list[Any]:
+            ref = store.get_ref(kind="taxon", id=near["id"])
+            scope = kw.get("include_ref_ids")
+            return (
+                [] if scope is not None and ref.id not in scope else [(None, ref, 0.1)]
+            )
+
+        monkeypatch.setattr(store.chunks, "search_chunks_semantic", fake_semantic)
+        put: dict[str, Any] = {
+            "text": "sibref fresh words — nothing alike here whatsoever",
+            "link": f"taxon:{root}",
+            "rel": "specialises",
+        }
+        with pytest.raises(BadInput, match="reads like an existing sibling"):
+            h.put(**put)
+        near["id"] = loner
+        with pytest.raises(BadInput, match="looks like an existing node"):
+            h.put(**put)
+        afm_name = store.get_ref(kind="taxon", id=afm).meta["name"]
+        with pytest.raises(BadInput, match="same name/alias/slug"):
+            h.put(**{**put, "text": f"{afm_name} — reworded"})
+
+    def test_sibling_bar_is_not_tighter_than_dedup(self) -> None:
+        from precis.handlers import taxon as taxon_mod
+
+        assert taxon_mod.SIBLING_MAX_DISTANCE >= taxon_mod.DEDUP_MAX_DISTANCE
+
     def test_lexical_overlap_helper(self) -> None:
         from precis.handlers.taxon import lexical_overlap
 

@@ -59,7 +59,9 @@ with that parent's existing children, and refused when its definition reads
 like one of them: the refusal lists each sibling's handle, path and the reason
 (`embedding similarity, cosine distance 0.12`, or `word overlap 0.60` when the
 embedder is down). The create-time link carries no axis, so every child of the
-parent is compared. The cutoffs are uncalibrated first guesses. Use the
+parent is compared. A near sibling gets this refusal, not the duplicate one
+above; only an exact name/alias match under the same parent reads as a
+duplicate. The cutoffs are uncalibrated first guesses. Use the
 sibling, or sharpen your definition so it names the sibling it excludes
 (`Excludes: ...`), or `dedup=False` once you are sure they differ.
 
