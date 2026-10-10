@@ -33,7 +33,7 @@
 # session just refreshes its own lock instead of erroring on "already locked"
 # — UNLESS this invocation is itself a nested `claude -p` running underneath
 # the session that already holds the lock (gr256469): see the
-# lock_pid_for/is_ancestor guard below, right before the unlock/lock pair.
+# live-lock guard below, right before the unlock/lock pair.
 #
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (matches reap-worktrees /
 # session-end-reap.sh — no point locking for a liveness check nothing acts on).
@@ -57,7 +57,7 @@ case "$HERE" in
 esac
 
 # find_session_pid (the discriminator walk described above) plus
-# lock_pid_for/is_ancestor (gr256469's nested-session guard, right below) now
+# lock_pid_for (the live-lock guard, right below) now
 # live in scripts/lib/session-lock.sh, shared with session-end-reap.sh so the
 # two hooks' notion of "whose session is this" can't drift apart. Guarded
 # source, same pattern session-end-reap.sh already uses for
@@ -76,23 +76,25 @@ esac
 # the nested one-shot, which exits moments later and leaves a dead-lock a
 # sibling's reaper then deletes the (still-live!) tree out from under.
 #
-# If the tree is ALREADY locked to a pid that is (a) alive right now and (b)
-# an ancestor of this hook invocation, we ARE that nested case: leave the
-# existing lock alone and exit, rather than re-locking to ourselves.
-# Anything else — no lock, an unparseable reason, a dead pid, or a live pid
-# that ISN'T our ancestor (e.g. a stale lock from an unrelated session, or
-# this same session simply re-running its own SessionStart on resume) — falls
-# through unchanged to today's idempotent unlock-then-lock below.
-if command -v lock_pid_for >/dev/null 2>&1 && command -v is_ancestor >/dev/null 2>&1; then
-    EXISTING_LOCK_PID=$(lock_pid_for "$HERE") || EXISTING_LOCK_PID=""
-    if [ -n "$EXISTING_LOCK_PID" ] && kill -0 "$EXISTING_LOCK_PID" 2>/dev/null \
-        && is_ancestor "$EXISTING_LOCK_PID" "${PPID:-}"; then
-        exit 0
-    fi
-fi
-
+# gr474985 widened that guard: ANY live lock that isn't this session's own
+# pid is left alone, ancestor or not. The pre-fix fall-through handed the
+# lock to a second session started by hand in an already-held tree; when that
+# second session ended, the lock named it, so session-end-reap.sh removed the
+# tree under the still-live first session (2546 tracked files). A live pid is
+# never stolen — the same rule reassert_session_lock follows. A resumed or
+# /clear'd session either has the same pid (refresh is a no-op) or a new
+# process whose predecessor is dead (the dead lock is reclaimed below).
 SESSION_PID=$(find_session_pid "${PPID:-}") || exit 0
 [ -z "$SESSION_PID" ] && exit 0
+
+if command -v lock_pid_for >/dev/null 2>&1; then
+    EXISTING_LOCK_PID=$(lock_pid_for "$HERE") || EXISTING_LOCK_PID=""
+    if [ -n "$EXISTING_LOCK_PID" ] && [ "$EXISTING_LOCK_PID" != "$SESSION_PID" ]; then
+        # Live = exists, whoever owns it (EPERM on another user's pid).
+        _err="$(export LC_ALL=C; kill -0 "$EXISTING_LOCK_PID" 2>&1)" && exit 0
+        [[ "$_err" == *"not permitted"* ]] && exit 0
+    fi
+fi
 
 # The pid must actually be alive right now — belt-and-suspenders against the
 # (tiny) race between the ps snapshot above and locking below.

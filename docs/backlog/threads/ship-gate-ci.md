@@ -75,7 +75,8 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
    critique and Reto's two open decisions; design-bearing changes go to the
    orchestrator as a design note before they land.
 4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
-   live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
+   live sessions' trees; fixes 1–3, the grace/purpose guards and the
+   two-sessions-in-one-tree process-table check (gr474985) shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
    incident file closed 2026-10-03: the ownership guard (e3135337c) fixed
    the spurious-SessionEnd unlock and `scripts/inflight` now buckets a

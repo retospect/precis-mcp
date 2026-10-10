@@ -666,6 +666,132 @@ def test_session_end_reap_still_reaps_dead_lock(
     assert str(b) not in wt_list
 
 
+def _start_fake_session(
+    claude_bin: Path, scratch: Path, cwd: Path, name: str
+) -> subprocess.Popen:
+    """A durable comm==claude process standing in ``cwd`` that runs no hook —
+    a second session started by hand in an already-held tree."""
+    script = scratch / f"{name}.sh"
+    script.write_text("sleep 60\n", encoding="utf-8")
+    return subprocess.Popen(
+        [str(claude_bin), str(script)], cwd=str(cwd), env=_test_env()
+    )
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_session_start_lock_never_steals_a_live_unrelated_lock(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr474985: a second session started in a tree already locked to a live,
+    non-ancestor pid must leave that lock alone. The pre-fix hook took it, so
+    the second session's SessionEnd later reaped the tree under the first."""
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = b / "scripts" / "hooks" / "session-start-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    first = subprocess.Popen(["sleep", "60"], env=_test_env())
+    try:
+        _git(primary, "worktree", "lock", str(b), "--reason", f"pid {first.pid}")
+        inner = scratch / "second.sh"
+        inner.write_text(f'bash "{hook}"\n', encoding="utf-8")
+        second = subprocess.Popen(
+            [str(claude_bin), str(inner)], cwd=str(b), env=_test_env()
+        )
+        second.wait(timeout=15)
+        assert _lock_reason_for(primary, b) == f"pid {first.pid}"
+    finally:
+        _stop(first)
+    _git(primary, "worktree", "unlock", str(b))
+
+
+def test_session_end_reap_hands_the_lock_to_a_second_session_in_the_tree(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr474985: the ending session owns the lock and the tree is merged +
+    clean, but another live session stands in it. The hook must not remove
+    the tree; it relocks it to the survivor so siblings' reapers see it live."""
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    start_hook = b / "scripts" / "hooks" / "session-start-lock.sh"
+    end_hook = b / "scripts" / "hooks" / "session-end-reap.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    payload = scratch / "payload.json"
+    payload.write_text(
+        json.dumps({"reason": "logout", "cwd": str(b)}), encoding="utf-8"
+    )
+    ending_pid_file = scratch / "ending.pid"
+
+    survivor = _start_fake_session(claude_bin, scratch, b, "survivor")
+    try:
+        inner = scratch / "ending.sh"
+        inner.write_text(
+            f"""echo $$ > "{ending_pid_file}"
+bash "{start_hook}"
+cat "{payload}" | bash "{end_hook}"
+""",
+            encoding="utf-8",
+        )
+        ending = subprocess.Popen(
+            [str(claude_bin), str(inner)], cwd=str(b), env=_test_env()
+        )
+        ending.wait(timeout=30)
+
+        assert b.exists()
+        assert str(b) in _git(primary, "worktree", "list", "--porcelain").stdout
+        assert _lock_reason_for(primary, b) == f"pid {survivor.pid}"
+    finally:
+        _stop(survivor)
+    _git(primary, "worktree", "unlock", str(b))
+
+
+def test_reap_worktrees_skips_a_dead_locked_tree_with_a_live_session_in_it(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr474985 backstop: the lock-taking session crashed (dead lock), but a
+    second session that never got the lock is still in the tree. The sibling
+    reaper must skip it and relock to the survivor."""
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    reap = primary / "scripts" / "reap-worktrees"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    dead = subprocess.Popen(["true"], env=_test_env())
+    dead.wait(timeout=10)
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {dead.pid}")
+
+    survivor = _start_fake_session(claude_bin, scratch, b, "survivor")
+    try:
+        result = subprocess.run(
+            ["bash", str(reap)],
+            cwd=str(primary),
+            env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "gr474985" in result.stdout, result.stdout
+        assert b.exists()
+        assert _lock_reason_for(primary, b) == f"pid {survivor.pid}"
+    finally:
+        _stop(survivor)
+    _git(primary, "worktree", "unlock", str(b))
+
+
 def test_session_end_reap_holds_a_lock_owned_by_another_users_live_pid(
     repo_trio: dict[str, Path],
 ) -> None:

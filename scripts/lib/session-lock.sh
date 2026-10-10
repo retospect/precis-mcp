@@ -153,6 +153,62 @@ lock_pid_for() {
     printf '%s' "$pid"
 }
 
+# other_session_in <worktree-path> <own-session-pid>
+#
+# gr474985: the lock records ONE pid, but two sessions can sit in one tree
+# (a second `claude` started there by hand). Liveness read from the lock
+# alone then lets whichever session ends first reap the tree out from under
+# the other. This asks the process table instead: is any OTHER live session
+# process (same comm/argv discriminator as find_session_pid) standing in
+# <worktree-path> — its cwd equal to or under it?
+#
+# Prints the first such pid and returns 0. Descendants of <own-session-pid>
+# are skipped (a nested `claude -p` of the ending session is not a second
+# session), and only this user's processes are candidates — another user's
+# cwd is unreadable, and their session in our worktree is not a case worth
+# blocking every reap for. Returns 1 only when every candidate's cwd was read and none is in
+# the tree. A candidate whose cwd can't be read (no /proc and no lsof) prints
+# nothing and returns 0: can't prove the tree is free, so hold — same
+# fail-safe direction as the hooks' lock guards.
+other_session_in() {
+    local tree=$1 own=${2:-} real_tree pid comm base args cwd
+    real_tree=$(cd "$tree" 2>/dev/null && pwd -P) || real_tree=$tree
+    while read -r pid comm; do
+        [ -z "${pid:-}" ] && continue
+        base=${comm##*/}
+        if [ "$base" != "claude" ]; then
+            [ "$base" = "node" ] || continue
+            args=$(ps -o args= -p "$pid" 2>/dev/null)
+            case "$args" in
+                *"@anthropic-ai/claude-code"*) ;;
+                *) continue ;;
+            esac
+        fi
+        [ -n "$own" ] && is_ancestor "$own" "$pid" && continue
+        if [ -e "/proc/$pid/cwd" ]; then
+            cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || cwd=""
+        elif command -v lsof >/dev/null 2>&1; then
+            cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
+        else
+            return 0
+        fi
+        # Unreadable cwd of a live process: unknown, so hold. A process that
+        # exited between the ps snapshot and the read is not a holder.
+        if [ -z "$cwd" ]; then
+            kill -0 "$pid" 2>/dev/null || continue
+            return 0
+        fi
+        cwd=$(cd "$cwd" 2>/dev/null && pwd -P) || true
+        case "$cwd" in
+            "$real_tree" | "$real_tree"/*)
+                printf '%s' "$pid"
+                return 0
+                ;;
+        esac
+    done < <(ps -U "$(id -u)" -o pid=,comm= 2>/dev/null)
+    return 1
+}
+
 # reassert_session_lock <worktree-path> [starting-pid]
 #
 # Re-acquire <worktree-path>'s session lock if — and only if — nothing alive

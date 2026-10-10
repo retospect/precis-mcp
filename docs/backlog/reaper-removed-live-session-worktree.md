@@ -35,10 +35,20 @@ semantics for the parent session.
    deleted while ignored files survived) was never reproduced; 1–3 make it
    harmless, not understood.
 
-**Still true.** A lockless + clean + merged tree is removable by any
-sibling's SessionStart; the lock is a liveness proof with one point of
-failure. Reopen as a spec only if a third event lands from a window
-proposals 1–3 do not cover.
+5. Two sessions in one tree (third event, gr474985, 2026-10-08: 2,546
+   files) — SHIPPED. A second `claude` started by hand in a held tree took
+   the lock; its SessionEnd then reaped the tree under the first. Now
+   `session-start-lock.sh` never takes a live lock, and `session-end-reap.sh`
+   plus `scripts/reap-worktrees` ask the process table (`other_session_in`)
+   for another session whose cwd is in the tree, and relock to it instead
+   of removing.
+
+**Recovery** from a part-removed tree: `git restore --source=HEAD -- .`,
+then move the emptied `.venv` aside and `uv sync` (git cannot restore it).
+
+**Still true.** The lock records one pid; the process-table check covers
+sessions on this host only. Reopen as a spec if another event lands from a
+window proposals 1–5 do not cover.
 
 test: `scripts/test tests/test_worktree_lock_reap.py` stays green; a
 tree with a purpose file younger than 6 h is skipped by `scripts/reap-worktrees`.

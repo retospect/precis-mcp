@@ -139,6 +139,20 @@ elif ! command -v lock_pid_for >/dev/null 2>&1; then
     exit 0
 fi
 
+# gr474985: owning the lock does not mean this session is the tree's only
+# user — a second `claude` started by hand in the same tree is invisible to
+# the lock. If another live session of ours stands in the tree, hand it the
+# lock and stop; removing here deleted 2546 tracked files under a live
+# session. No helper (older primary) → can't tell → hold.
+command -v other_session_in >/dev/null 2>&1 || exit 0
+if OTHER_PID=$(other_session_in "$REPO_ROOT" "$OWN_PID"); then
+    if [ -n "$OTHER_PID" ]; then
+        git worktree unlock "$REPO_ROOT" >/dev/null 2>&1 || true
+        git worktree lock "$REPO_ROOT" --reason "pid $OTHER_PID" >/dev/null 2>&1 || true
+    fi
+    exit 0
+fi
+
 git worktree unlock "$REPO_ROOT" >/dev/null 2>&1 || true
 
 [ -x scripts/inflight ] || exit 0

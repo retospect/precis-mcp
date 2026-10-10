@@ -80,6 +80,9 @@ git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 # project down or the container/volume leaks. Guarded — an older checkout
 # without this helper simply skips the teardown below.
 [ -f scripts/lib/compose-project.sh ] && source scripts/lib/compose-project.sh
+# other_session_in (gr474985): guarded like the line above; absent → the
+# process-table check below is skipped and the lock-based buckets decide.
+[ -f scripts/lib/session-lock.sh ] && source scripts/lib/session-lock.sh
 
 # Defense in depth: never remove the PRIMARY working tree, whatever bucket it
 # lands in (inflight already buckets it `base`, but a destructive op earns its
@@ -283,6 +286,18 @@ else
         # task right in the window) — re-check, don't just trust the first pass.
         if fresh_purpose "$path"; then
             echo "reap-worktrees: $name grew a fresh .claude/purpose during the grace period — skipping (gr260192 proposal 2)"
+            continue
+        fi
+        # gr474985: a dead lock only proves the session that TOOK it is gone.
+        # A second session that started in the tree while it was held never
+        # got the lock, so ask the process table; relock to it if found.
+        if command -v other_session_in >/dev/null 2>&1 \
+            && holder=$(other_session_in "$path" ""); then
+            echo "reap-worktrees: $name has a live session in it (${holder:-cwd unreadable}) despite its lock — skipping (gr474985)"
+            if [ -n "$holder" ]; then
+                git worktree unlock "$path" >/dev/null 2>&1 || true
+                git worktree lock "$path" --reason "pid $holder" >/dev/null 2>&1 || true
+            fi
             continue
         fi
 
