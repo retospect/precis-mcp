@@ -202,6 +202,10 @@ def _credential_findings(root: Path) -> dict[str, list[str]]:
             _CREDENTIAL_SKIP_SUFFIXES
         ):
             continue
+        if rel.startswith(".scratch/") and rel.endswith(".sql"):
+            # migration copies the migration tests leave as evidence
+            # (test_secret_hint_migration); src/precis/migrations/ is skipped too.
+            continue
         try:
             text = read_text(path)
         except UnicodeDecodeError:
