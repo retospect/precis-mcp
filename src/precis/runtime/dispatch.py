@@ -49,6 +49,7 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime._shared import RuntimeShape
+from precis.runtime.under_facet import UNDER_NEXT
 from precis.store._salience import current_background_actor
 from precis.store.revision_context import current_revision_context, revision_context
 from precis.utils import handle_registry
@@ -993,10 +994,9 @@ class DispatchMixin(RuntimeShape):
         strand the filter signal on a page the caller never reads.
         """
         note: str | None = None
+        listing_kinds: tuple[list[str] | None] | None = None
         if verb == "search":
-            under_note = self._resolve_under(args)
-            if under_note is not None:
-                note = under_note
+            note, listing_kinds = self._resolve_under(args)
         if verb == "search" and (
             args.get("uncited") is not None
             or args.get("cited") is not None
@@ -1005,60 +1005,135 @@ class DispatchMixin(RuntimeShape):
             self._reject_source_facet_unfiltered_shape(args)
             facet_note = self._resolve_source_facets(args)
             note = "\n".join(n for n in (note, facet_note) if n) or None
-        response = self._dispatch_inner_core(verb, args)
+        if listing_kinds is not None:
+            response = self._under_listing(args, listing_kinds[0])
+        else:
+            response = self._dispatch_inner_core(verb, args)
         if note is not None:
             from dataclasses import replace as _replace
 
             response = _replace(response, body=f"{note}\n\n{response.body}")
         return response
 
-    def _resolve_under(self, args: dict[str, Any]) -> str | None:
-        """``search(args={'under': '<handle>', 'depth': N})``: restrict hits to
-        the descendants of ``<handle>`` on the ``part-of`` / ``contains`` tree
-        (``depth=1`` = direct members; default unlimited). Resolves into
-        ``args['include_ref_ids']`` — the channel every retrieval path reads —
-        by intersection with any earlier facet, exactly as ``cited=`` does. The
-        folder scope (``folder=``) walks ``refs.parent_id`` instead and is
-        untouched. Returns ``None`` when ``under`` is absent."""
+    def _resolve_under(
+        self, args: dict[str, Any]
+    ) -> tuple[str | None, tuple[list[str] | None] | None]:
+        """One ``under=`` on search; the target picks the tree.
+
+        * a taxon (``tn42``, ``taxon:42``, a path like ``technique/afm``,
+          or a list of them) → refs with an ``instance-of`` link into the
+          node's subtree (a list intersects; ``axis=``/``depth=`` shape the
+          walk; see :mod:`precis.runtime.under_facet`);
+        * any other handle (``me5``, ``kind:id``) → the descendants of that
+          ref on the ``part-of`` / ``contains`` tree (``depth=1`` = direct
+          members). The folder scope (``folder=``) walks ``refs.parent_id``
+          instead and is untouched.
+
+        Both resolve into ``args['include_ref_ids']`` — the channel every
+        retrieval path reads — by intersection with any earlier facet,
+        exactly as ``cited=`` does. A kind whose handler sets
+        ``owns_under`` (todo, taxon) keeps its own ``under=``; a cross-kind
+        search with a non-taxon target leaves ``under=`` alone.
+
+        Returns ``(note, listing)``: ``listing`` is ``(kinds,)`` when a
+        taxon ``under=`` has no ``q=`` and the caller should list the set
+        newest first (:meth:`_under_listing`), else ``None``."""
         kind = args.get("kind")
-        if not isinstance(kind, str) or not kind.strip() or kind.strip() == "*":
-            return None  # cross-kind: each handler's own under= (if any) stays put
-        if "," in kind:
-            return None
-        handler = self.hub.handler_for(kind.strip())
-        if handler is not None and handler.owns_under:
-            return None  # this kind defines its own under=/depth=
+        k = kind.strip() if isinstance(kind, str) else ""
+        cross = not k or k in ("*", "all") or "," in k
+        if not cross:
+            handler = self.hub.handler_for(self._expand_kind_code(k))
+            if handler is not None and handler.owns_under:
+                return None, None  # this kind defines its own under=/depth=
         extras = args.get(_EXTRAS_KEY)
         sources = [args, extras] if isinstance(extras, dict) else [args]
-        under = depth = None
-        for src in sources:
-            if src.get("under") is not None:
-                under = src.pop("under")
-            if src.get("depth") is not None:
-                depth = src.pop("depth")
-        if under is None:
-            if depth is not None:
+
+        def _peek(name: str) -> Any:
+            for src in sources:
+                if src.get(name) is not None:
+                    return src[name]
+            return None
+
+        under = _peek("under")
+        taxon = under is not None and self._under_is_taxon(under)
+        if cross and not taxon:
+            return None, None  # each handler's own under= (if any) stays put
+        if taxon and "," in k:
+            owners = [
+                x.strip()
+                for x in k.split(",")
+                if getattr(
+                    self.hub.handler_for(self._expand_kind_code(x.strip())),
+                    "owns_under",
+                    False,
+                )
+            ]
+            if owners:
                 raise BadInput(
-                    "depth= needs under=",
+                    f"kind={owners[0]!r} has its own under=; a taxon under= "
+                    "cannot share a kind list with it",
+                    next=f"search kind={owners[0]!r} on its own, or drop it from kind=",
+                )
+        for src in sources:
+            for key in ("under", "depth", "axis"):
+                if src.get(key) is not None:
+                    args[key] = src.pop(key)
+        under = args.pop("under", None)
+        depth = args.pop("depth", None)
+        axis = args.pop("axis", None)
+        if under is None:
+            if depth is not None or axis is not None:
+                raise BadInput(
+                    f"{'depth' if depth is not None else 'axis'}= needs under=",
                     next="search(kind='memory', q='…', args={'under': 'me5', 'depth': 1})",
                 )
-            return None
-        store = self.store
-        if store is None:
-            raise Unsupported("under= needs a store-backed deployment")
-        from precis.utils import handle_registry
-
+            return None, None
         n_depth: int | None = None
         if depth is not None:
             try:
                 n_depth = int(depth)
             except (TypeError, ValueError):
                 n_depth = 0
-            if n_depth < 1:
+            if isinstance(depth, bool) or n_depth < 1:
                 raise BadInput(
                     f"depth= must be a positive integer, got {depth!r}",
                     next="depth=1 lists direct members; omit it for the whole subtree",
                 )
+        view = str(args.get("view") or "").strip()
+        if (
+            view in ("dreamable", "stubs", "chase-queue")
+            or "angle" in args
+            or "like" in args
+        ):
+            raise Unsupported(
+                "under= is not supported with view=/angle=/like= — that search "
+                "shape picks its own seed and target set",
+                next="search(kind='finding', under='technique/afm', q='...')",
+            )
+        kinds = (
+            None
+            if k in ("", "*", "all")
+            else [self._expand_kind_code(x.strip()) for x in k.split(",")]
+        )
+        bad_kinds = sorted(set(kinds or ()) & _UNCITED_UNSUPPORTED_KINDS)
+        if bad_kinds:
+            raise Unsupported(
+                f"under= is not supported for kind={bad_kinds[0]!r} — its search "
+                "has no include-by-ref_id wiring",
+                next="drop that kind from kind=, or search a kind that has one",
+            )
+        store = self.store
+        if store is None:
+            raise Unsupported("under= needs a store-backed deployment")
+        if taxon:
+            return self._resolve_under_taxon(args, under, axis, n_depth, kinds)
+        if axis is not None:
+            raise BadInput(
+                f"axis= applies only when under= is a taxon, not {under!r}",
+                next="drop axis=, or under='tn42' to walk a taxon subtree",
+            )
+        from precis.utils import handle_registry
+
         raw = str(under).strip()
         resolved = store.resolve_handle(raw)
         ref_id = int(resolved.ref_id) if resolved is not None else None
@@ -1072,7 +1147,7 @@ class DispatchMixin(RuntimeShape):
         if ref_id is None:
             raise NotFound(
                 f"under={raw!r} resolves to no live ref",
-                next="pass a handle like 'me5' (a hub or summary node), or 'kind:id'",
+                next=UNDER_NEXT,
             )
         below = store.part_of_descendants(ref_id, depth=n_depth)
         self._intersect_include_ref_ids(args, below)
@@ -1081,7 +1156,96 @@ class DispatchMixin(RuntimeShape):
         )
         n = len(below)
         scope = "direct members" if n_depth == 1 else "descendants"
-        return f"_(under={name or raw}: restricted to {n} {scope} on part-of)_"
+        return f"_(under={name or raw}: restricted to {n} {scope} on part-of)_", None
+
+    def _under_is_taxon(self, under: Any) -> bool:
+        """Whether an ``under=`` target names a taxon node (→ instance-of
+        members) rather than another ref (→ part-of descendants). A list
+        is always taxa (it intersects; each entry is checked on resolve).
+        A bare string that is no handle is a taxon path."""
+        if isinstance(under, (list, tuple)):
+            return True
+        if self.hub.handler_for("taxon") is None:
+            return False
+        from precis.utils import handle_registry
+
+        raw = str(under).strip()
+        store = self.store
+        resolved = store.resolve_handle(raw) if store is not None else None
+        if resolved is not None:
+            return bool(resolved.kind == "taxon")
+        if ":" in raw:
+            return raw.split(":", 1)[0] == "taxon"
+        if raw.isdigit():
+            return store is not None and (
+                store.get_ref(kind="taxon", id=int(raw)) is not None
+            )
+        parsed = handle_registry.parse(raw)
+        if parsed is not None:
+            return bool(parsed[0] == "taxon")
+        return True
+
+    def _resolve_under_taxon(
+        self,
+        args: dict[str, Any],
+        under: Any,
+        axis: Any,
+        depth: int | None,
+        kinds: list[str] | None,
+    ) -> tuple[str, tuple[list[str] | None] | None]:
+        from precis.runtime.under_facet import resolve_under
+
+        q = args.get("q")
+        has_q = q is not None and bool(str(q).strip())
+        extras = args.get(_EXTRAS_KEY)
+        if not has_q:
+            # The newest-first listing honours only include/exclude_ref_ids;
+            # refuse the narrowing args it cannot apply rather than drop them.
+            for name in (
+                "since",
+                "until",
+                "sort",
+                "tag",
+                "tags",
+                "kinds",
+                "status",
+                "folder",
+                "scope",
+                "mode",
+                "view",
+            ):
+                if args.get(name) is not None or (
+                    isinstance(extras, dict) and extras.get(name) is not None
+                ):
+                    raise BadInput(
+                        f"{name}= is not applied to an under= listing without q=",
+                        next=f"add q= to use {name}=, or drop {name}=",
+                    )
+        note, ids = resolve_under(self.hub, under, axis=axis, depth=depth)
+        self._intersect_include_ref_ids(args, set(ids))
+        return note, (None if has_q else (kinds,))
+
+    def _under_listing(self, args: dict[str, Any], kinds: list[str] | None) -> Response:
+        """Newest-first page of a taxon ``under=`` set when no ``q=`` ranks it."""
+        from precis.utils import handle_registry
+
+        store = self.store
+        assert store is not None  # checked in _resolve_under
+        ids = set(args.get("include_ref_ids") or ())
+        exclude = args.get("exclude_ref_ids")
+        if exclude:
+            ids -= set(exclude)
+        page_size = int(args.get("page_size") or 10)
+        page = max(1, int(args.get("page") or 1))
+        rows, total = store.list_refs_newest(
+            sorted(ids), kinds=kinds, limit=page_size, offset=(page - 1) * page_size
+        )
+        lines = [f"{total} instance{'s' if total != 1 else ''}, newest first"]
+        if total > page_size:
+            lines[0] += f" (page {page}; page=N for more, or add q= to rank)"
+        for rid, kd, title in rows:
+            lines.append(f"{handle_registry.format_handle(kd, rid)} {title}".rstrip())
+        return Response(body="\n".join(lines))
 
     def _reject_source_facet_unfiltered_shape(self, args: dict[str, Any]) -> None:
         """Refuse ``uncited=``/``cited=``/``hubbed=`` on the search shapes

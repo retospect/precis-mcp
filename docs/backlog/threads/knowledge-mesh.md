@@ -74,7 +74,7 @@ graph-health-metrics, five parked gripes, and the seam with
    landed in source 2026-10-05 (04c13fd28, Opus-reviewed), deployed in R16 (prod 8.35.15).
    Exact-deploy skill readback and the cold-agent check (10 seeded AFM items)
    remain pending. Later slices are separate; local tests do not establish
-   their implementation or live acceptance.
+   their implementation or live acceptance. Slice 4 waits on term-taxonomy v1.5 (Horizon 2).
 2. **backlog/taxonomy-bootstrap.md §Resume** — waits on castor's local
    big model (Reto, knowledge-mesh-9: wait for castor; no date, Slice 0
    not run; local-compute pings on serving). Then: two
@@ -105,13 +105,7 @@ graph-health-metrics, five parked gripes, and the seam with
    monthly papers (qu459585) and nanopub cites read now. Reuse waits on
    stranded branch `gripe_180306` (bundle on Reto's Mac) reaching origin;
    `merge_hubs` on main covers the merge if it cannot.
-5. **backlog/taxon-facet-navigation.md slices 1–3** — nearest-sibling
-   refusal, `under=` on every kind, `view='facets'`. Above part refs,
-   fisheye and the measures gaps (Reto 2026-10-05, as high as practical):
-   it is the read path for everything the measures and taxonomy work
-   writes; below hub-duplicate-reconcile, which stops live evidence
-   splitting now. Slice 4 waits on term-taxonomy v1.5 (Horizon 2).
-6. **Part refs: live, but inert until the prod catalog fills.** Shipped
+5. **Part refs: live, but inert until the prod catalog fills.** Shipped
    2026-10-02 and deployed in round 2 (63301c5c); the design is in the
    `precis.handlers.part` docstring. Prod read 2026-10-03:
    - **The catalog is empty.** `parts` has 0 rows (pcb-platform thread,
@@ -127,25 +121,25 @@ graph-health-metrics, five parked gripes, and the seam with
    When pcb-platform fills the catalog: re-run the dry run, hand Reto
    the real run as a command, then read one board's part with
    `get(kind='part')`.
-7. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
+6. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); the ladder is live on draft, finding and
    quest; open is it on every other kind (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
-   the answer to "a viewer for the memory" once 10 lands.
-8. **backlog/measures-substrate.md: the qu202467 pilot gaps** (Reto
+   the answer to "a viewer for the memory" once 9 lands.
+7. **backlog/measures-substrate.md: the qu202467 pilot gaps** (Reto
    2026-10-03, knowledge-mesh-12, option 1). Builds A–D are live and the
    pilot data is written and reviewed (see Resume). Open: 0188 (A2) on its
    branch, then the six gaps in §"Found by the pilot write". qu202467
    stays held until Reto answers knowledge-mesh-13.
-9. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+8. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
-   the pillar review). Right after 8 because it builds on the same taxon
+   the pillar review). Right after 7 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-10. **backlog/memory-file-mirror.md** — R17 bounded memory consumer slice:
+9. **backlog/memory-file-mirror.md** — R17 bounded memory consumer slice:
    explicit namespace import/export preserving filenames, YAML and body;
    conflict detection, no automatic retirement. Synthetic files/test DB only;
    real source import/cutover held. Explicit export supersedes the earlier
@@ -155,9 +149,9 @@ graph-health-metrics, five parked gripes, and the seam with
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror first, ruled 2026-09-30; native authoring is judged
    after its recall AC. Readiness vet the same day: needs-work, four
-   blockers folded into the item, re-vet before build. Below 9 only
+   blockers folded into the item, re-vet before build. Below 8 only
    because its recall AC is cheap to run at any time.
-11. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+10. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
@@ -170,8 +164,8 @@ graph-health-metrics, five parked gripes, and the seam with
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
-   universal row) — waits on Do-next 8; its ladder item moved to Do-next 7.
-4. **backlog/experiment-loop.md** — waits on Do-next 8; hypothesis → todo
+   universal row) — waits on Do-next 7; its ladder item moved to Do-next 6.
+4. **backlog/experiment-loop.md** — waits on Do-next 7; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
 5. **backlog/graph-gardener.md** — waits on a populated mesh
@@ -189,15 +183,15 @@ graph-health-metrics, five parked gripes, and the seam with
    2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 10 gives the topic files a recall measurement, P2 ruled yes
+   Do-next 9 gives the topic files a recall measurement, P2 ruled yes
    2026-09-30 (one resident identity + style block).
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
-    Do-next 8; sourced numeric triples bound to list entries.
+    Do-next 7; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
 12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
-13. **backlog/first-party-experiment-records.md** — waits on Do-next 8;
+13. **backlog/first-party-experiment-records.md** — waits on Do-next 7;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
     open contradiction it records: `measures-substrate.md` §3 owns an
@@ -208,9 +202,9 @@ graph-health-metrics, five parked gripes, and the seam with
 15. **backlog/capability-landscape-steals.md** — five externally sourced
     ideas (a ChemBench eval slice, categorizer rule distillation, and
     three more) from the capability-landscape comparison; sequenced behind
-    the substrate (Do-next 1-9) by choice, not blocked.
+    the substrate (Do-next 1-8) by choice, not blocked.
 
-16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 8 (its part
+16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 7 (its part
     ref subject shipped); a pulled datasheet's ratings, specs, package and pin table as
     page-cited `measures` rows on the part ref (Reto, ewod-pcb-2 and
     knowledge-mesh-6); the pin table feeds gr458878's pad-map check.
@@ -236,11 +230,11 @@ items.
 
 - **gr445532** — experiment tracking needs multi-class context for
   qualitative terms ("low temperature" means opposite things in different
-  communities); unparks with Do-next 9, whose per-axis similarity spaces
+  communities); unparks with Do-next 8, whose per-axis similarity spaces
   are the natural home for a comparison class.
 - **gr449840** — precis-finding-help's admission criteria exclude the
   definitional/methodological claim classes a taxonomy or architecture
-  paper needs to cite; unparks with Do-next 9, which names a definitional
+  paper needs to cite; unparks with Do-next 8, which names a definitional
   claim class explicitly (membership yes/no/unknown).
 - **gr445531** — whether spectral graph theory buys anything on precis's
   graph structures; unparks when Horizon 3 gives it a populated graph

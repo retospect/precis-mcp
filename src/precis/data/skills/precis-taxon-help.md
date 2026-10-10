@@ -14,7 +14,11 @@ answers:
   - how do I list the narrower terms under a node, on one axis?
   - why is my put refused as a duplicate, and how do I mint anyway?
   - how do I address a taxon by name path like measurand/temperature?
-applies-to: get/search/put/delete/tag/link (kind='taxon')
+  - how do I search findings or papers classified under a taxon node?
+  - how do I see what an AFM node's instances split into (facet counts)?
+  - why is my put refused as too close to a sibling under the same parent?
+  - how do I sharpen the definition or excludes of an existing taxon?
+applies-to: get/search/put/edit/delete/tag/link (kind='taxon')
 status: active
 tags: [workflow]
 kinds: [taxon]
@@ -49,6 +53,15 @@ only when it is down). A candidate with a different dimension is never
 offered: both nodes carry `dimension_kind` and the kinds differ, or both are
 `si` with different `si_vector`. A node with no `dimension_kind` is never
 ruled out this way. To mint anyway: `put(..., dedup=False)`.
+
+A node put under a parent (`link=<parent>, rel='specialises'`) is also compared
+with that parent's existing children, and refused when its definition reads
+like one of them: the refusal lists each sibling's handle, path and the reason
+(`embedding similarity, cosine distance 0.12`, or `word overlap 0.60` when the
+embedder is down). The create-time link carries no axis, so every child of the
+parent is compared. The cutoffs are uncalibrated first guesses. Use the
+sibling, or sharpen your definition so it names the sibling it excludes
+(`Excludes: ...`), or `dedup=False` once you are sure they differ.
 
 ## meta keys
 
@@ -113,6 +126,31 @@ start node, or says none do. `get(kind="taxon", id="/unmapped")` lists the
 nodes seeded from the legacy registries whose dimension could not be mapped
 (`dimension_kind` empty), so a curator can set it.
 
+## Facet counts under a node
+
+```python
+get(kind="taxon", id="technique/afm", view="facets")
+get(kind="taxon", id="tn12", view="facets", args={"sort": "gap", "cross": ["method", "object"]})
+```
+
+Counts the instances (any kind) with an `instance-of` link into the node's
+subtree, per value on every OTHER axis they carry: other `instance-of` links
+to taxa outside the subtree, grouped by the axis label of the value's nearest
+labelled `specialises` edge (a value is the linked node itself, no roll-up),
+plus the machine-written categorizer facets (`DOMAIN`, `STUDYTYPE`, `SCALE`,
+`MATERIAL`, `PROPERTY`, `TRANSPORT` and `topic:`), each marked with its pass
+version and an `unclassified` row (`no value` = the pass ran and wrote none,
+`not processed` = it has not seen the item). Treat categorizer values as a
+filter hint, not curated truth. Every view states the instance total.
+
+`args={'sort': ...}`: `split` (default) orders axes by how evenly they split
+the set, values by count; `recent` keeps instances created in the last 90 days;
+`evidence` keeps only findings and measures; `name` is alphabetical; `gap`
+with `args={'cross': [axisA, axisB]}` lists the cells of two axes thinnest
+first, empty ones leading (values seen on each axis). At most 8 axes and 15
+values per axis are shown, the rest as `+N values (M items)`. Narrow with
+`search(kind=<any>, under=<value handle>)` instead of paging.
+
 ## Address a node
 
 In `get`, `search(under=)` and `link(kind='taxon', target='taxon:...')`:
@@ -139,8 +177,24 @@ search(kind="taxon", under="tn12", q="calorimetry")
 `axis=` keeps only edges whose axis equals it (every hop); `depth=N` means at
 most N hops (default unbounded). Without `q=` the set is listed by depth,
 then name, with each node's first definition sentence; with `q=` the ranked
-hits are cut to that set. `axis=`/`depth=` without `under=` are refused, and
-other kinds refuse all three.
+hits are cut to that set. `axis=`/`depth=` without `under=` are refused.
+
+On every other kind `under=` selects instances: `search(kind="finding",
+under="technique/afm", q="tip radius")` returns only findings with an
+`instance-of` link into the AFM subtree (the node itself included), ranked by
+`q=`, or newest first without it. A list intersects:
+`under=["technique/afm", "method/dft"]`. A non-taxon handle (`me5`) walks the
+`part-of` tree instead. See `precis-search-help`.
+
+## Sharpen an existing node
+
+```python
+edit(kind="taxon", id="tn12", meta={"definition": "...", "excludes": ["x (see tn7)"]})
+```
+
+`edit` changes only `definition`, `aliases`, `includes` and `excludes`, with the
+same validation as put, and re-cards the node so search and the embedding see
+the new wording. Name, status, dimension and contract are not editable.
 
 ## Status is earned
 

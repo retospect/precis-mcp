@@ -40,6 +40,12 @@ CALLER_KEYS: frozenset[str] = frozenset(
 #: Boundary-example keys: shown on ``get``, kept out of the embedded card so
 #: a near-miss naming a sibling does not pull that sibling's queries.
 BOUNDARY_KEYS: tuple[str, ...] = ("includes", "excludes")
+#: The descriptive keys ``edit(kind='taxon', meta=...)`` may change on an
+#: existing node (a writer sharpening a definition against its siblings);
+#: everything else on a node is set at mint or earned.
+EDITABLE_KEYS: frozenset[str] = frozenset(
+    {"definition", "aliases", "includes", "excludes"}
+)
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
 HANDLER_KEYS: frozenset[str] = frozenset({"name", "norm_name", "slug"})
 ALLOWED_KEYS: frozenset[str] = CALLER_KEYS | HANDLER_KEYS

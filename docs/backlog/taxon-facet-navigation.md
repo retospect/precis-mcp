@@ -1,6 +1,6 @@
 ---
 status: draft
-title: Taxon facet navigation — classify-authoring guide, sibling disjointness, instance search under a node, facet view
+title: Taxon facet navigation — classify-authoring guide acceptance, axis contract fields
 pillar: memory-graph
 prio: high
 model: opus
@@ -18,16 +18,14 @@ children should a node have, how do we query, how do we avoid overlap in
 meaning, and which skills and rules make it work. He asked for the
 authoring guide early, before the mesh fills.
 
-Today the taxon tree exists (`specialises` with `meta.axis`), any ref
-joins it by `instance-of` (migration 0173), and
-`search(kind='taxon', under=, axis=, depth=)` walks the concept tree. The
-gaps:
+The taxon tree (`specialises` with `meta.axis`), `instance-of` joins
+(migration 0173), `under=` on every kind, sibling refusal at mint and
+`get(kind='taxon', view='facets')` exist. The open gaps:
 
-- `under=` is refused on every kind except taxon (`precis-taxon-help`
-  §Search), so "every finding under AFM about xyz" cannot be asked.
 - The classification guide and boundary-example fields are in source;
   served-skill readback and the cold-agent classification trial remain pending.
-- Nothing stops two siblings meaning nearly the same thing.
+- Axes carry no contract (`exclusive`, question text, `other` child), so
+  sibling disjointness is not enforced on `instance-of` links (slice 4).
 
 ### The design, as argued in-session
 
@@ -78,7 +76,7 @@ browsing", CHI '03, 401–408, doi:10.1145/642611.642681, precis paper
 
 ## In scope
 
-Slices ship independently, in this order.
+Slice 0 acceptance and slice 4 remain.
 
 **Slice 0 — authoring guide and boundary examples (source implemented;
 acceptance pending).** `precis-classify-help` gives writer and reader rules
@@ -99,39 +97,10 @@ for definitions, aliases, `meta.axis` and `includes` / `excludes`:
   a near-miss naming a sibling does not pull that sibling's queries).
   Validated by `taxonomy/nodes.py`, rendered by `handlers/taxon.py`;
   no definition parsing is needed.
-- *Reader (browse protocol):* start at the node, read `view='facets'`
-  (slice 3; until then `search(kind='taxon', under=, depth=1)` per
-  axis), cut on the axis that splits the set most evenly, add `q=` only
+- *Reader (browse protocol):* start at the node, read `view='facets'`,
+  cut on the axis that splits the set most evenly, add `q=` only
   under about 50 items, cite the facet path used.
 - `precis-taxon-help` and `precis-fisheye-help` point at it.
-
-**Slice 1 — nearest-sibling refusal.** Extends the taxon dedup:
-same-parent, same-axis definition similarity above a calibrated cutoff
-refuses the mint and lists the candidates with handles.
-
-**Slice 2 — `under=` on every kind.** `search(kind=<any>, under=<taxon>,
-q=…)`: descendant closure, then the `instance-of` reverse edges, then
-ranking by `q=`. `under=` takes a list for intersection
-(`under=['technique/afm', 'method/dft']`).
-
-**Slice 3 — `get(kind='taxon', id=…, view='facets')`.** For the
-instances under the node, counts per value on every other axis.
-
-- Default `sort='split'`: axes by entropy of their split (most even
-  first), values by count; with `q=`, values by summed match score.
-- `sort=` `recent` (instances added in the last 90 days), `evidence`
-  (findings / verified measures, not raw papers), `gap` (two axes
-  crossed, empty and thin cells first), `name`.
-- About 8 axes and 15 values per axis, the rest summarised with counts;
-  the footer names the other sorts with one-line purpose and steers to
-  `under=<value>` instead of paging; `page=` for the full-list case.
-- About 2k tokens per view.
-- **Categorizer facets:** the closed ref-level tags from
-  `data/axes/*.yaml` and `data/topics/*.yaml` (`DOMAIN`, `STUDYTYPE`,
-  `SCALE`, `MATERIAL`, `PROPERTY`, `TRANSPORT`, `topic:`) appear as
-  facets, labelled machine-written with the pass version, each with an
-  `unclassified: N` row. Chunk-level `ROLE3:own` is a filter, not a
-  count.
 
 **Slice 4 — axis contract fields.** On the v1.5 axis taxon nodes:
 `exclusive` flag, question text, the `other` child; reuse slice 0's
@@ -144,31 +113,21 @@ structured `includes` / `excludes`. Blocked by `term-taxonomy.md` v1.5
   `graph-gardener.md` §"Sibling disjointness".
 - Defined classes and constraint hashes — `class-lattice-similarity-
   spaces-and-laws.md`; this item only routes combined concepts there.
-- A closure table. The recursive walk stays until slice 3's facet counts
+- A closure table. The recursive walk stays until the facet counts
   breach the knowledge-mesh revisit trigger.
 - Mapping categorizer axis values onto taxon nodes (one facet source) —
-  term-taxonomy v1.5; slice 3 reads both sources until then.
+  term-taxonomy v1.5; the facet view reads both sources until then.
 - Fisheye ring changes beyond pointing at the skill.
 
 ## Acceptance criteria
 
 Slice 0's exact-deploy skill readback and ten-item cold-agent trial below
 are pending; local validation/rendering tests do not establish live acceptance.
-Slices 1–4 remain planned.
+Only slice 4 remains planned.
 
 0. `get(kind='skill', id='precis-classify-help')` serves; a cold agent
    given only the skill classifies 10 seeded AFM items into axis nodes
    with no ancestor double-links and no combined-node mint.
-1. Minting a taxon whose definition paraphrases an existing sibling on
-   the same axis is refused and names that sibling; an unrelated sibling
-   mints.
-2. `search(kind='finding', under='<node>', q=…)` returns only findings
-   with an `instance-of` path into the subtree; a list `under=` returns
-   the intersection; `under=` with a non-taxon target is refused.
-3. `view='facets'` on a seeded node: axes ordered by split entropy,
-   totals and hidden counts stated, categorizer facets marked
-   machine-written with an `unclassified` row, `sort='gap'` lists an
-   empty seeded cell first, output under the token budget.
 4. An `exclusive` axis rejects a second `instance-of` from one item onto
    two of its siblings; a multi-label axis accepts it.
 
@@ -176,20 +135,24 @@ Slices 1–4 remain planned.
 
 Slice 0: `src/precis/data/skills/precis-classify-help.md`, pointers in
 `precis-taxon-help.md` and `precis-fisheye-help.md`, boundary-key validation
-in `taxonomy/nodes.py` and rendering in `handlers/taxon.py`. Slices 1–4:
-`handlers/taxon.py`, `store/_taxon_ops.py`, the search verb's `under=`
-gate, `_link_tag_ops.py::check_relation_constraints` (slice 4's
-exclusive check). Read-mostly; the only new refusals are at taxon mint
-and `instance-of` link.
+in `taxonomy/nodes.py` and rendering in `handlers/taxon.py`. Slice 4:
+`_link_tag_ops.py::check_relation_constraints` (exclusive check) and the
+axis taxon nodes' meta. The only new refusal is at `instance-of` link.
 
 ## Open questions / decisions log
 
 - **[decided 2026-10-05, Reto]** File as one item plus a gardener
   amendment; rank as high as practical, slice 0 as an early authoring
   guide.
-- **[open]** The nearest-sibling cutoff — calibrate together with
-  term-taxonomy's `DEDUP_MAX_DISTANCE` follow-up, against hand-judged
-  sibling pairs.
+- **[open]** Calibrate the shipped nearest-sibling cutoff
+  (`handlers/taxon.py::SIBLING_MAX_DISTANCE` 0.20 on embedding distance;
+  `SIBLING_MIN_OVERLAP` 0.7 lexical fallback, definitions only) together
+  with term-taxonomy's `DEDUP_MAX_DISTANCE` follow-up, against hand-judged
+  sibling pairs. As shipped the embedding leg never fires on its own: put
+  and edit run the all-taxa dedup (0.25) first, which catches any sibling
+  within 0.20, so a sibling paraphrase gets the generic "existing node"
+  refusal. Decide whether dedup skips siblings (leaving them to this leg)
+  or the embedding leg goes.
 - **[open]** Whether slice 4's exclusive check refuses or warns on
   legacy links that already violate it.
 

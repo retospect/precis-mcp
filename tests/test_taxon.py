@@ -256,6 +256,7 @@ def _mk(
     if under is not None:
         kw["link"] = f"taxon:{under}"
         kw["rel"] = rel
+        kw["dedup"] = False  # fixtures share boilerplate definitions
     return _created_id(
         _handler(store).put(text=f"{name} — {definition}", meta=meta, **kw)
     )
@@ -853,13 +854,13 @@ class TestSearchFacets:
         assert "error" not in out.lower(), out
         assert _names(out) == ["facet alpha", "facet alpha child"]
 
-    def test_other_kinds_refuse_the_facets(
+    def test_axis_depth_without_under_refused_on_other_kinds(
         self, store: Any, mounted_runtime: Any
     ) -> None:
         from precis.tools import core
 
         _created_memory(store, "facet refusal probe")
-        for kw in ({"under": "taxon:1"}, {"axis": "method"}, {"depth": 2}):
+        for kw in ({"axis": "method"}, {"depth": 2}):
             out = _verb_text(core.search(kind="memory", q="facet", **kw))
             name = next(iter(kw))
             assert "error" in out.lower() and name in out, (kw, out)
@@ -1018,6 +1019,172 @@ class TestDedup:
         assert not _dimension_clash(si, dict(si))
         assert _dimension_clash(si, {**si, "si_vector": "0,1,0,0,0,0,0"})
         assert _dimension_clash(si, {"dimension_kind": "count"})
+
+
+class TestSiblingRefusal:
+    """Slice 1 of taxon-facet-navigation: nearest-sibling refusal at mint."""
+
+    PARA = (
+        "an instrument that senses surface forces with a sharp tip on a flexible beam"
+    )
+
+    def _parent(self, store: Any) -> tuple[int, int]:
+        root = _mk(store, "sibref technique")
+        afm = _mk(
+            store,
+            "sibref probe microscope",
+            definition=self.PARA,
+            under=root,
+        )
+        return root, afm
+
+    def test_paraphrase_under_same_parent_refused_naming_sibling(
+        self, store: Any
+    ) -> None:
+        root, afm = self._parent(store)
+        with pytest.raises(BadInput) as ei:
+            _handler(store).put(
+                text="sibref scanning tip device — an instrument that senses "
+                "surface forces with a sharp tip on a flexible beam",
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        msg = str(ei.value)
+        assert f"tn{afm}" in msg and "sibref-technique/sibref-probe-microscope" in msg
+        assert "dedup=False" in (ei.value.next or "")
+
+    def test_unrelated_sibling_mints_and_dedup_false_overrides(
+        self, store: Any
+    ) -> None:
+        root, _afm = self._parent(store)
+        h = _handler(store)
+        ok = _created_id(
+            h.put(
+                text="sibref electron beam lithography — writes patterns by "
+                "scanning a focused electron beam over resist",
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        )
+        assert store.get_ref(kind="taxon", id=ok) is not None
+        forced = _created_id(
+            h.put(
+                text="sibref scanning tip device — an instrument that senses "
+                "surface forces with a sharp tip on a flexible beam",
+                link=f"taxon:{root}",
+                rel="specialises",
+                dedup=False,
+            )
+        )
+        assert store.get_ref(kind="taxon", id=forced) is not None
+
+    def test_other_parent_is_not_compared(self, store: Any) -> None:
+        _root, _afm = self._parent(store)
+        elsewhere = _mk(store, "sibref elsewhere")
+        _created_id(
+            _handler(store).put(
+                text="sibref scanning tip device — an instrument that senses "
+                "surface forces with a sharp tip on a flexible beam",
+                link=f"taxon:{elsewhere}",
+                rel="specialises",
+            )
+        )
+
+    def test_vector_leg_refuses_with_distance_and_scopes_to_children(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.dispatch import Hub
+        from precis.embedder import MockEmbedder
+        from precis.handlers import taxon as taxon_mod
+
+        root, afm = self._parent(store)
+        h = taxon_mod.TaxonHandler(
+            hub=Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+        )
+        afm_ref = store.get_ref(kind="taxon", id=afm)
+        calls: list[dict[str, Any]] = []
+
+        def fake_semantic(**kw: Any) -> list[Any]:
+            calls.append(kw)
+            # only the sibling leg (scoped by include_ref_ids) finds it
+            return [(None, afm_ref, 0.1)] if "include_ref_ids" in kw else []
+
+        monkeypatch.setattr(store.chunks, "search_chunks_semantic", fake_semantic)
+        with pytest.raises(
+            BadInput,
+            match=r"reads like an existing sibling[\s\S]*tn\d+[\s\S]*embedding similarity, cosine distance 0.10",
+        ):
+            h.put(
+                text="sibref unrelated words — nothing alike here whatsoever",
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        scoped = [c for c in calls if "include_ref_ids" in c]  # not the dedup call
+        assert scoped and scoped[0]["include_ref_ids"] == [afm]
+        assert scoped[0]["max_distance"] == taxon_mod.SIBLING_MAX_DISTANCE
+
+    def test_lexical_overlap_helper(self) -> None:
+        from precis.handlers.taxon import lexical_overlap
+
+        assert lexical_overlap("alpha beta gamma", "alpha beta gamma") == 1.0
+        assert lexical_overlap("alpha beta gamma", "delta epsilon zeta") == 0.0
+        assert lexical_overlap("", "alpha") == 0.0
+
+
+class TestTaxonEdit:
+    """Slice 1b: sharpen an existing node's descriptive keys."""
+
+    def test_edit_updates_meta_and_recards(self, store: Any) -> None:
+        h = _handler(store)
+        n = _mk(store, "edit target", definition="old words here")
+        resp = h.edit(
+            id=f"tn{n}",
+            meta={
+                "definition": "genus plus differentia naming the sibling",
+                "includes": ["a", "b"],
+                "excludes": ["c (see tn1)"],
+                "aliases": ["ET"],
+            },
+        )
+        assert f"tn{n}" in resp.body
+        ref = store.get_ref(kind="taxon", id=n)
+        assert ref.meta["definition"].startswith("genus plus")
+        assert ref.meta["excludes"] == ["c (see tn1)"]
+        assert ref.meta["name"] == "edit target"
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "select text from chunks where ref_id=%s and ord=-1", (n,)
+            ).fetchall()
+        assert len(rows) == 1
+        assert "genus plus" in rows[0][0] and "aka ET" in rows[0][0]
+        assert "- c (see tn1)" in h.get(id=n).body
+
+    def test_edit_alias_onto_another_nodes_name_is_refused(self, store: Any) -> None:
+        h = _handler(store)
+        _mk(store, "alias owner")
+        n = _mk(store, "alias taker")
+        with pytest.raises(BadInput, match="alias owner"):
+            h.edit(id=n, meta={"aliases": ["alias owner"]})
+
+    def test_edit_refuses_non_descriptive_keys_and_bad_values(self, store: Any) -> None:
+        h = _handler(store)
+        n = _mk(store, "edit refused")
+        with pytest.raises(BadInput, match="status"):
+            h.edit(id=n, meta={"status": "systematic"})
+        with pytest.raises(BadInput, match="includes"):
+            h.edit(id=n, meta={"includes": "not a list"})
+        with pytest.raises(BadInput, match="meta"):
+            h.edit(id=n)
+        with pytest.raises(BadInput, match="meta="):
+            h.edit(id=n, text="x")
+
+    def test_edit_through_the_verb(self, store: Any, mounted_runtime: Any) -> None:
+        from precis.tools import core
+
+        n = _mk(store, "edit verb node")
+        out = _verb_text(core.edit(kind="taxon", id=f"tn{n}", meta={"includes": ["z"]}))
+        assert "error" not in out.lower(), out
+        assert store.get_ref(kind="taxon", id=n).meta["includes"] == ["z"]
 
 
 class TestPathIds:
@@ -1407,3 +1574,423 @@ class TestSeed:
         body = h.search(q="zzseedword", mode="lexical").body  # definition-only word
         assert f"tn{rid}" in body, body
         assert f"tn{rid}" in h.search(q="zzseedword").body
+
+
+# ── slice 2: search(kind=<any>, under=<taxon>) ──────────────────────────────
+
+
+def _instance_of(store: Any, ref_id: int, taxon: int) -> None:
+    store.add_link(src_ref_id=ref_id, dst_ref_id=taxon, relation="instance-of")
+
+
+class TestUnderOnEveryKind:
+    def _world(self, store: Any) -> dict[str, int]:
+        afm = _mk(store, "uo afm")
+        tip = _mk(store, "uo afm tip")
+        dft = _mk(store, "uo dft")
+        other = _mk(store, "uo other")
+        _link(store, tip, afm, axis="object")
+        m_in = _created_memory(store, "uoquark cantilever resonance shift")
+        m_tip = _created_memory(store, "uoquark tip radius effect")
+        m_dft = _created_memory(store, "uoquark dft of tip")
+        m_out = _created_memory(store, "uoquark unrelated outsider")
+        _instance_of(store, m_in, afm)
+        _instance_of(store, m_tip, tip)  # only via the descendant
+        _instance_of(store, m_dft, tip)
+        _instance_of(store, m_dft, dft)
+        _instance_of(store, m_out, other)
+        return {
+            "afm": afm, "tip": tip, "dft": dft, "m_in": m_in,
+            "m_tip": m_tip, "m_dft": m_dft, "m_out": m_out,
+        }  # fmt: skip
+
+    def test_closure_includes_node_and_descendants_and_q_ranks(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        out = _verb_text(core.search(kind="memory", q="uoquark", under=f"tn{w['afm']}"))
+        assert "error" not in out.lower(), out
+        assert f"me{w['m_in']}" in out or str(w["m_in"]) in out
+        assert str(w["m_tip"]) in out and str(w["m_dft"]) in out
+        assert "unrelated outsider" not in out
+
+    def test_list_under_is_intersection(self, store: Any, mounted_runtime: Any) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        out = _verb_text(
+            core.search(
+                kind="memory",
+                q="uoquark",
+                under=[f"tn{w['afm']}", f"tn{w['dft']}"],
+            )
+        )
+        assert "dft of tip" in out
+        assert "cantilever resonance" not in out and "tip radius" not in out
+
+    def test_no_q_lists_newest_first_with_total(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        out = _verb_text(core.search(kind="memory", under=f"tn{w['afm']}"))
+        assert "3 instances, newest first" in out
+        # newest first: m_dft was linked/created after m_tip after m_in
+        body = [ln for ln in out.splitlines() if ln.startswith("me")]
+        assert [int(ln.split()[0][2:]) for ln in body] == [
+            w["m_dft"], w["m_tip"], w["m_in"],
+        ]  # fmt: skip
+
+    def test_axis_restricts_the_closure_walk(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        out = _verb_text(
+            core.search(
+                kind="memory", q="uoquark", under=f"tn{w['afm']}", axis="nosuchaxis"
+            )
+        )
+        assert "tip radius" not in out and "cantilever resonance" in out
+
+    def test_non_taxon_target_walks_part_of_instead(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        # One under=: the target picks the tree. A non-taxon handle walks
+        # part-of; only a taxon (or a list of them) selects instance-of
+        # members, and axis= is refused off the taxon tree.
+        from precis.tools import core
+
+        w = self._world(store)
+        for other in (f"me{w['m_in']}", f"memory:{w['m_in']}"):
+            out = _verb_text(core.search(kind="memory", q="uoquark", under=other))
+            assert "on part-of" in out and "error" not in out.lower(), (other, out)
+        out = _verb_text(core.search(kind="memory", q="x", under=w["m_in"]))
+        assert "resolves to no live ref" in out and "under= takes a taxon" in out
+        out = _verb_text(
+            core.search(kind="memory", q="x", under=[f"tn{w['afm']}", f"me{w['m_in']}"])
+        )
+        assert "not a taxon" in out, out
+        out = _verb_text(
+            core.search(kind="memory", q="x", under=f"me{w['m_in']}", axis="method")
+        )
+        assert "axis= applies only when under= is a taxon" in out, out
+
+    def test_unappliable_shapes_refused_on_both_trees(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        for target in (f"tn{w['afm']}", f"me{w['m_in']}"):
+            out = _verb_text(core.search(kind="memory", view="stubs", under=target))
+            assert "not supported with view=" in out, (target, out)
+        out = _verb_text(
+            core.search(kind="memory", under=f"tn{w['afm']}", args={"folder": "x"})
+        )
+        assert "folder= is not applied to an under= listing" in out, out
+        out = _verb_text(core.search(kind="memory,todo", under=f"tn{w['afm']}"))
+        assert "kind='todo' has its own under=" in out, out
+
+    def test_taxon_kind_keeps_its_own_under(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        out = _verb_text(core.search(kind="taxon", under=f"tn{w['afm']}"))
+        assert "uo afm tip" in out
+
+
+# ── slice 3: get(kind='taxon', view='facets') ───────────────────────────────
+
+
+def _closed_tag(store: Any, ref_id: int, ns: str, value: str) -> None:
+    with store.pool.connection() as conn:
+        tid = conn.execute(
+            "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
+            "ON CONFLICT (namespace, value) DO UPDATE SET value = EXCLUDED.value "
+            "RETURNING tag_id",
+            (ns, value),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO ref_tags (ref_id, tag_id, set_by) VALUES (%s, %s, 'system') "
+            "ON CONFLICT DO NOTHING",
+            (ref_id, tid),
+        )
+        conn.commit()
+
+
+class TestFacetsView:
+    def _world(self, store: Any) -> dict[str, Any]:
+        from tests.workers._helpers import seed_ref
+
+        afm = _mk(store, "fv afm")
+        tip = _mk(store, "fv afm tip")
+        _link(store, tip, afm, axis="object")
+        meth = _mk(store, "fv method")
+        dft = _mk(store, "fv dft")
+        md = _mk(store, "fv md")
+        _link(store, dft, meth, axis="method")
+        _link(store, md, meth, axis="method")
+        scl = _mk(store, "fv scale")
+        nano = _mk(store, "fv nano")
+        micro = _mk(store, "fv micro")
+        _link(store, nano, scl, axis="scale")
+        _link(store, micro, scl, axis="scale")
+        papers, findings = [], []
+        for i in range(6):
+            r = seed_ref(store, title=f"fv paper {i}", kind="paper")
+            papers.append(r)
+            _instance_of(store, r, afm if i % 2 else tip)
+            _instance_of(store, r, dft if i < 3 else md)
+            _instance_of(store, r, nano)
+        for i in range(2):
+            r = seed_ref(store, title=f"fv finding {i}", kind="finding")
+            findings.append(r)
+            _instance_of(store, r, tip)
+            _instance_of(store, r, md)
+            _instance_of(store, r, micro)
+        for i, r in enumerate(papers):
+            if i < 4:
+                _closed_tag(store, r, "DOMAIN", "physics" if i < 3 else "materials")
+            if i < 5:
+                _closed_tag(store, r, "DOMAINCASCADE", "1")
+        return {
+            "afm": afm, "papers": papers, "findings": findings,
+            "dft": dft, "micro": micro,
+        }  # fmt: skip
+
+    def _facets(self, store: Any, node: int, **kw: Any) -> str:
+        return _handler(store).get(id=f"tn{node}", view="facets", **kw).body
+
+    def test_split_order_totals_and_machine_labelling(self, store: Any) -> None:
+        w = self._world(store)
+        body = self._facets(store, w["afm"])
+        assert "instances: 8" in body and "sort=split" in body
+        # method splits 3/5 evenly, scale 6/2 unevenly: method first
+        assert body.index("- method") < body.index("- scale")
+        assert "fv dft 3" in body and "fv md 5" in body
+        # categorizer facet: machine-written, pass version, unclassified row
+        assert "machine-written categorizer facets" in body
+        assert "domain [pass v1]" in body
+        assert "physics 3" in body and "materials 1" in body
+        # 6 papers apply: 4 valued, 1 processed without value, 1 never processed
+        assert "unclassified 2 (no value 1, not processed 1)" in body
+        # footer: other sorts and the narrowing steer
+        for s in ("recent", "evidence", "gap", "name"):
+            assert f"  {s}:" in body
+        assert "search(kind=<any>, under=<value handle>)" in body
+
+    def test_evidence_sort_counts_findings_only(self, store: Any) -> None:
+        w = self._world(store)
+        body = self._facets(store, w["afm"], sort="evidence")
+        assert "instances: 2 of 8" in body
+        assert "fv micro 2" in body and "fv nano" not in body
+
+    def test_recent_sort_uses_last_90_days(self, store: Any) -> None:
+        w = self._world(store)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "update refs set created_at = now() - interval '200 days' "
+                "where ref_id = any(%s)",
+                (w["papers"][:4],),
+            )
+            conn.commit()
+        body = self._facets(store, w["afm"], sort="recent")
+        assert "instances: 4 of 8" in body
+
+    def test_gap_lists_empty_cell_first(self, store: Any) -> None:
+        w = self._world(store)
+        body = self._facets(store, w["afm"], sort="gap", cross=["method", "scale"])
+        cells = [ln.strip() for ln in body.splitlines() if re.search(r" x .*: ", ln)]
+        assert "1 empty" in cells[0]  # the header line
+        assert cells[1] == f"tn{w['dft']} fv dft x tn{w['micro']} fv micro: 0"
+        with pytest.raises(BadInput, match="cross"):
+            self._facets(store, w["afm"], sort="gap")
+        with pytest.raises(BadInput, match="nosuch"):
+            self._facets(store, w["afm"], sort="gap", cross=["method", "nosuch"])
+
+    def test_bad_sort_and_stray_cross_refused(self, store: Any) -> None:
+        w = self._world(store)
+        with pytest.raises(BadInput, match="sort"):
+            self._facets(store, w["afm"], sort="bogus")
+        with pytest.raises(BadInput, match="cross"):
+            self._facets(store, w["afm"], cross=["a", "b"])
+        with pytest.raises(BadInput, match="view='facets'"):
+            _handler(store).get(id=w["afm"], sort="name")
+
+    def test_name_sort_and_empty_node(self, store: Any) -> None:
+        w = self._world(store)
+        body = self._facets(store, w["afm"], sort="name")
+        assert body.index("- method") < body.index("- scale")
+        lonely = _mk(store, "fv lonely")
+        assert "no instances under this node" in self._facets(store, lonely)
+
+    def test_caps_hidden_axes_values_and_char_budget(self, store: Any) -> None:
+        from tests.workers._helpers import seed_ref
+
+        root = _mk(store, "cap root")
+        insts = [seed_ref(store, title=f"cap item {i}") for i in range(25)]
+        for r in insts:
+            _instance_of(store, r, root)
+        for a in range(10):  # ten axes, one value each
+            top = _mk(store, f"cap axis{a} top")
+            v = _mk(store, f"cap axis{a} value")
+            _link(store, v, top, axis=f"capaxis{a}")
+            for r in insts[: 5 + a]:
+                _instance_of(store, r, v)
+        big = _mk(store, "cap big top")
+        for i in range(20):  # one axis, twenty values, one item each
+            v = _mk(store, f"cap big value{i}")
+            _link(store, v, big, axis="capaaa")
+            _instance_of(store, insts[i], v)
+        body = self._facets(store, root)
+        assert "instances: 25" in body
+        assert re.search(r"\+\d+ axes not shown: ", body)
+        assert len(re.findall(r"^- ", body, flags=re.M)) <= 8
+        assert len(body) <= 8000  # ~2k tokens
+        named = self._facets(store, root, sort="name")  # capaaa sorts first
+        assert "+5 values (5 items)" in named and len(named) <= 8000
+
+    def test_through_the_verb_with_args(self, store: Any, mounted_runtime: Any) -> None:
+        from precis.tools import core
+
+        w = self._world(store)
+        out = _verb_text(
+            core.get(
+                kind="taxon",
+                id=f"tn{w['afm']}",
+                view="facets",
+                args={"sort": "gap", "cross": ["method", "scale"]},
+            )
+        )
+        assert "error" not in out.lower(), out
+        assert "fv dft x" in out and "fv micro: 0" in out
+
+
+class TestReviewFixes:
+    def test_sibling_lexical_leg_gated_on_embedder_down(self, store: Any) -> None:
+        from precis.dispatch import Hub
+        from precis.embedder import MockEmbedder
+        from precis.handlers.taxon import TaxonHandler
+
+        root = _mk(store, "rf root")
+        _mk(store, "rf alpha", definition="measures heat flow in a sample", under=root)
+        # embedder present, sibling not embedded: no vector hit, must mint
+        h = TaxonHandler(
+            hub=Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+        )
+        ok = _created_id(
+            h.put(
+                text="rf beta — measures heat flow in a sample holder",
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        )
+        assert store.get_ref(kind="taxon", id=ok) is not None
+        # embedder down: near-identical definitions are still refused
+        with pytest.raises(BadInput, match="word overlap"):
+            _handler(store).put(
+                text="rf gamma — measures heat flow in a sample",
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+
+    def test_edit_refuses_mode_and_unknown_kwargs(self, store: Any) -> None:
+        n = _mk(store, "rf edit kw")
+        h = _handler(store)
+        with pytest.raises(BadInput, match="mode"):
+            h.edit(id=n, meta={"includes": ["a"]}, mode="replace")
+        with pytest.raises(BadInput, match="bogus"):
+            h.edit(id=n, meta={"includes": ["a"]}, bogus=1)
+
+    def test_edit_cannot_make_a_duplicate_sibling(self, store: Any) -> None:
+        root = _mk(store, "rf dup root")
+        _mk(store, "rf dup a", definition="measures heat flow in a sample", under=root)
+        b = _mk(store, "rf dup b", definition="writes patterns with beams", under=root)
+        h = _handler(store)
+        with pytest.raises(BadInput, match="existing sibling"):
+            h.edit(id=b, meta={"definition": "measures heat flow in a sample"})
+        h.edit(id=b, meta={"definition": "measures heat flow in a sample"}, dedup=False)
+        assert "heat flow" in store.get_ref(kind="taxon", id=b).meta["definition"]
+        # editing a node against itself is not a duplicate
+        c = _mk(store, "rf dup c", definition="writes patterns with beams")
+        h.edit(id=c, meta={"definition": "writes patterns with electron beams"})
+
+    def test_under_listing_applies_or_refuses_narrowing(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        afm = _mk(store, "rf afm")
+        m1 = _created_memory(store, "rfq one")
+        m2 = _created_memory(store, "rfq two")
+        for m in (m1, m2):
+            _instance_of(store, m, afm)
+        out = _verb_text(core.search(under=f"tn{afm}"))  # kind=None
+        assert "2 instances" in out and f"me{m1}" in out
+        out = _verb_text(core.search(kind="memory,paper", under=f"tn{afm}"))
+        assert "2 instances" in out
+        out = _verb_text(
+            core.search(kind="memory", under=f"tn{afm}", since="2000-01-01")
+        )
+        assert "error" in out.lower() and "since" in out and "q=" in out
+        out = _verb_text(core.search(kind="memory", under=f"tn{afm}", tag="x"))
+        assert "error" in out.lower() and "tag" in out
+        out = _verb_text(
+            core.search(kind="memory", under=f"tn{afm}", uncited="nodraft")
+        )
+        assert "error" in out.lower()  # an unresolvable uncited is not dropped
+
+    def test_under_with_uncited_excludes(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.runtime import dispatch as dmod
+
+        afm = _mk(store, "rf unc afm")
+        m1 = _created_memory(store, "rfu one")
+        m2 = _created_memory(store, "rfu two")
+        for m in (m1, m2):
+            _instance_of(store, m, afm)
+        rt = mounted_runtime
+        args = {"kind": "memory", "under": f"tn{afm}", "exclude_ref_ids": [m1]}
+        resp = rt._dispatch_inner("search", args)
+        assert "1 instance," in resp.body and f"me{m2}" in resp.body
+        assert f"me{m1}" not in resp.body
+        assert dmod is not None
+
+    def test_under_refuses_kinds_without_include_wiring(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        afm = _mk(store, "rf unsup afm")
+        out = _verb_text(core.search(kind="patent", q="x", under=f"tn{afm}"))
+        assert "error" in out.lower() and "under=" in out and "cited" not in out
+
+    def test_retired_instances_excluded_from_under_and_facets(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        afm = _mk(store, "rf ret afm")
+        other = _mk(store, "rf ret other")
+        live = _created_memory(store, "rfr live")
+        dead = _created_memory(store, "rfr dead")
+        for m in (live, dead):
+            _instance_of(store, m, afm)
+            _instance_of(store, m, other)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "update refs set retired_at = now() where ref_id = %s", (dead,)
+            )
+            conn.commit()
+        out = _verb_text(core.search(kind="memory", under=f"tn{afm}"))
+        assert "1 instance," in out and f"me{dead}" not in out
+        body = _handler(store).get(id=f"tn{afm}", view="facets").body
+        assert "instances: 1" in body

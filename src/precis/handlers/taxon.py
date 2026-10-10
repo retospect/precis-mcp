@@ -55,6 +55,7 @@ from precis.reading.concepts import normalize_name, split_name_def
 from precis.response import Response
 from precis.taxonomy.nodes import (
     BOUNDARY_KEYS,
+    EDITABLE_KEYS,
     STATUS_PROPOSED,
     initial_taxon_meta,
     slugify,
@@ -73,6 +74,64 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 #: must mint, and ``dedup=False`` is one kwarg away. The general search floor
 #: is 0.65; this is a "same term, reworded" bar.
 DEDUP_MAX_DISTANCE = 0.25
+
+#: Nearest-sibling refusal at mint (slice 1 of docs/backlog/taxon-facet-
+#: navigation.md): a new node under a parent is compared with that parent's
+#: existing children. UNCALIBRATED — both cutoffs are first guesses pending the
+#: hand-judged sibling-pair calibration the item lists as an open question
+#: (together with ``DEDUP_MAX_DISTANCE``). ``SIBLING_MAX_DISTANCE`` is the
+#: cosine distance of the embedding leg (tighter than the same-term dedup bar:
+#: siblings are *meant* to be near each other, a paraphrase is nearer);
+#: ``SIBLING_MIN_OVERLAP`` is the content-word Jaccard of the two definitions
+#: (names excluded), used only when no embedder answers.
+SIBLING_MAX_DISTANCE = 0.20
+SIBLING_MIN_OVERLAP = 0.7
+
+_WORD = re.compile(r"[a-z0-9]+")
+_STOP = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "with",
+        "which",
+        "who",
+        "whose",
+        "this",
+        "these",
+        "those",
+        "than",
+        "then",
+        "such",
+        "per",
+        "each",
+        "any",
+        "not",
+        "no",
+        "aka",
+        "also",
+        "can",
+        "may",
+    ]
+)
 
 #: Dedup candidates named in a refusal (the rest are counted).
 _DEDUP_SHOW = 5
@@ -99,6 +158,21 @@ def _matches_term(meta: dict[str, Any], seg: str) -> bool:
     if meta.get("norm_name") == norm:
         return True
     return any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or []))
+
+
+def _content_words(text: str) -> frozenset[str]:
+    return frozenset(
+        w for w in _WORD.findall((text or "").lower()) if len(w) > 2 and w not in _STOP
+    )
+
+
+def lexical_overlap(a: str, b: str) -> float:
+    """Jaccard overlap of the content words of two card texts (0..1) — the
+    no-embedder fallback of the nearest-sibling check."""
+    wa, wb = _content_words(a), _content_words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
 
 
 def _lede(definition: str) -> str:
@@ -129,6 +203,7 @@ class TaxonHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        supports_edit=True,
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
@@ -325,14 +400,25 @@ class TaxonHandler(NumericRefHandler):
         offered (see :func:`_dimension_clash`)."""
         if dedup is not False and _kw.get("id") is None and text and text.strip():
             self._dedup_check(text, meta)
+            self._sibling_check(text, meta, _kw.get("link"), _kw.get("rel"))
         return super().put(
             text=text, auto_refresh_days=auto_refresh_days, meta=meta, **_kw
         )
 
-    def _dedup_check(self, text: str, put_meta: dict[str, Any] | None) -> None:
-        meta = self._initial_meta(text, [])
-        if put_meta:
-            meta = self._merge_put_meta(text, meta, put_meta)
+    def _dedup_check(
+        self,
+        text: str,
+        put_meta: dict[str, Any] | None,
+        *,
+        meta_override: dict[str, Any] | None = None,
+        exclude: int | None = None,
+    ) -> None:
+        if meta_override is not None:
+            meta = meta_override
+        else:
+            meta = self._initial_meta(text, [])
+            if put_meta:
+                meta = self._merge_put_meta(text, meta, put_meta)
         reasons: dict[int, str] = {}
         for term in [meta.get("name", ""), *(meta.get("aliases") or [])]:
             if str(term).strip():
@@ -360,6 +446,8 @@ class TaxonHandler(NumericRefHandler):
                 )
         keep: list[int] = []
         for rid in reasons:
+            if rid == exclude:
+                continue
             ref = self.store.get_ref(kind=self.kind, id=rid)
             if ref is not None and not _dimension_clash(meta, ref.meta or {}):
                 keep.append(rid)
@@ -376,13 +464,109 @@ class TaxonHandler(NumericRefHandler):
             ),
         )
 
+    def _sibling_check(
+        self,
+        text: str,
+        put_meta: dict[str, Any] | None,
+        link: Any,
+        rel: Any,
+        *,
+        meta_override: dict[str, Any] | None = None,
+        exclude: int | None = None,
+        parent_ids: list[int] | None = None,
+    ) -> None:
+        """Nearest-sibling refusal: a node minted with ``link=<parent>``,
+        ``rel='specialises'`` is compared with that parent's existing
+        children; one whose definition card is too similar is refused with
+        its handle + path. The create-time link carries no ``meta.axis``, so
+        every child of the parent is compared (an axis-blind superset of
+        "same axis"); ``dedup=False`` overrides. Embedding leg when an
+        embedder answers (siblings not yet embedded are simply not seen);
+        :func:`lexical_overlap` on definitions only when it is down."""
+        if parent_ids is not None:  # edit: the node's own parents
+            parents = parent_ids
+        elif rel == "specialises" and isinstance(link, str) and link.strip():
+            try:
+                parents = [self._resolve_spec(link)]
+            except (BadInput, NotFound):
+                return  # the create path reports a bad target itself
+        else:
+            return
+        if not parents:
+            return
+        parent = parents[0]
+        siblings = sorted(
+            {
+                c
+                for p in parents
+                for c, _ax in self.store.taxon_children(p)
+                if c != exclude
+            }
+        )
+        if not siblings:
+            return
+        if meta_override is not None:
+            meta = meta_override
+        else:
+            meta = self._initial_meta(text, [])
+            if put_meta:
+                meta = self._merge_put_meta(text, meta, put_meta)
+        card = self._card_text_for(text, meta)
+        reasons: dict[int, str] = {}
+        vec = query_vec_for(getattr(self.hub, "embedder", None), card, None)
+        if vec is not None:
+            try:
+                rows = self.store.chunks.search_chunks_semantic(
+                    query_vec=vec,
+                    kind=self.kind,
+                    limit=_DEDUP_SHOW * 2,
+                    max_distance=SIBLING_MAX_DISTANCE,
+                    include_ref_ids=siblings,
+                    card_kinds=("card_combined",),
+                )
+            except Exception:
+                log.warning("taxon sibling check: vector leg failed", exc_info=True)
+                rows = []
+            for _blk, hit, dist in rows:
+                reasons[hit.id] = f"embedding similarity, cosine distance {dist:.2f}"
+        refs = {sid: self.store.get_ref(kind=self.kind, id=sid) for sid in siblings}
+        if vec is None:  # embedder down: word overlap on definitions only
+            mine = str(meta.get("definition") or "")
+            for sid, ref in refs.items():
+                if ref is None:
+                    continue
+                score = lexical_overlap(
+                    mine, str((ref.meta or {}).get("definition") or "")
+                )
+                if score >= SIBLING_MIN_OVERLAP:
+                    reasons[sid] = f"word overlap {score:.2f}"
+        keep = [
+            r
+            for r in reasons
+            if (ref := refs.get(r)) is not None
+            and not _dimension_clash(meta, ref.meta or {})
+        ]
+        if not keep:
+            return
+        handle, name = self._node_label(parent)
+        lines = [f"{self._candidate_lines([r])}  <- {reasons[r]}" for r in keep]
+        raise BadInput(
+            f"taxon {meta.get('name')!r} reads like an existing sibling under "
+            f"{handle} {name}:\n" + "\n".join(lines[:_DEDUP_SHOW]),
+            next=(
+                "use the sibling (or add your wording as its alias); if it is "
+                "truly distinct, sharpen the definition to name the sibling it "
+                "excludes, or repeat the put with dedup=False"
+            ),
+        )
+
     # ── search: under= / axis= / depth= facets ──────────────────────
 
     def search(
         self,
         *,
         q: str | None = None,
-        under: str | int | None = None,
+        under: str | int | list[str] | None = None,
         axis: str | None = None,
         depth: int | None = None,
         page_size: int = 10,
@@ -412,6 +596,11 @@ class TaxonHandler(NumericRefHandler):
             raise BadInput(
                 f"depth must be a positive integer, got {depth!r}",
                 next="depth=2 (at most two hops below under=)",
+            )
+        if isinstance(under, list):
+            raise BadInput(
+                "kind='taxon' takes one under=, not a list",
+                next="a list under= intersects instances: search(kind='finding', under=[...])",
             )
         root = self._resolve_live_ref(self._resolve_spec(under))
         best: dict[int, int] = {}
@@ -467,6 +656,96 @@ class TaxonHandler(NumericRefHandler):
         )
         return Response(body=f"{lead}\n{resp.body}", cost=resp.cost)
 
+    # ── edit: sharpen the descriptive keys of an existing node ──────
+
+    def edit(
+        self,
+        *,
+        id: str | int | None = None,
+        meta: dict[str, Any] | None = None,
+        text: str | None = None,
+        mode: str | None = None,
+        dedup: bool | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """``edit(kind='taxon', id=, meta={...})`` changes the descriptive
+        keys (``definition``, ``aliases``, ``includes``, ``excludes``) of an
+        existing node, through the same validation as put, and re-cards it
+        (DELETE + INSERT of the ord -1 card, so the embedding re-runs). Name,
+        status, dimension and the contract are not editable here. A changed
+        definition is re-checked against other nodes and the node's siblings
+        (itself excluded); ``dedup=False`` overrides, as on put."""
+        if mode not in (None, "find-replace"):  # find-replace = the verb default
+            raise BadInput(
+                f"edit(kind='taxon') has no mode={mode!r}",
+                next="omit mode=: edit(kind='taxon', id=N, meta={...})",
+            )
+        _kw.pop("verdict", None)  # the edit verb sends its default on every call
+        if _kw:
+            raise BadInput(
+                f"edit(kind='taxon') does not accept {sorted(_kw)!r}",
+                next="accepted: id=, meta=, dedup=",
+            )
+        if id is None:
+            raise BadInput(
+                "edit(kind='taxon') requires id=",
+                next="edit(kind='taxon', id='tn42', meta={'excludes': ['x (see tn7)']})",
+            )
+        if text is not None:
+            raise BadInput(
+                "edit(kind='taxon') takes meta=, not text=",
+                next="edit(kind='taxon', id=N, meta={'definition': '<genus + differentia>'})",
+            )
+        if not meta or not isinstance(meta, dict):
+            raise BadInput(
+                "edit(kind='taxon') requires meta={...}",
+                next="meta keys: " + ", ".join(sorted(EDITABLE_KEYS)),
+            )
+        bad = sorted(set(meta) - EDITABLE_KEYS)
+        if bad:
+            raise BadInput(
+                f"taxon meta key {bad[0]!r} cannot be edited",
+                next="editable: " + ", ".join(sorted(EDITABLE_KEYS)),
+            )
+        ref = self._resolve_live_ref(self._resolve_spec(id))
+        if "definition" in meta and not (
+            isinstance(meta["definition"], str) and meta["definition"].strip()
+        ):
+            raise BadInput(
+                "definition must be a non-empty string",
+                next="meta={'definition': '<genus + differentia>'}",
+            )
+        merged = validate_taxon_meta({**(ref.meta or {}), **meta})
+        patch = {k: merged[k] for k in meta}
+        if "definition" in patch:
+            patch["definition"] = patch["definition"].strip()
+        merged = {**merged, **patch}
+        # aliases feed both the name dedup and the card, so they re-check too
+        if ("definition" in patch or "aliases" in patch) and dedup is not False:
+            self._dedup_check("", None, meta_override=merged, exclude=ref.id)
+            self._sibling_check(
+                "",
+                None,
+                None,
+                None,
+                meta_override=merged,
+                exclude=ref.id,
+                parent_ids=[p for p, _ax in self.store.taxon_parents(ref.id)],
+            )
+        with self.store.tx() as conn:
+            self.store.update_ref(ref.id, meta_patch=patch, conn=conn)
+            self.store.chunks.upsert_card_combined(
+                ref.id,
+                taxon_card_text(
+                    str(merged.get("name") or ref.title),
+                    str(merged.get("definition") or ""),
+                    merged.get("aliases"),
+                ),
+                conn=conn,
+            )
+        handle, name = self._node_label(ref.id)
+        return Response(body=f"edited {handle} {name}: {', '.join(sorted(patch))}")
+
     # ── link: meta= (edge axis) ─────────────────────────────────────
 
     def link(  # type: ignore[override]
@@ -510,19 +789,39 @@ class TaxonHandler(NumericRefHandler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        sort: str | None = None,
+        cross: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
+        """``view='path'`` / ``view='facets'`` (``args={'sort': …, 'cross':
+        […]}``) on a concrete node; otherwise the generic numeric-ref get."""
         if isinstance(id, str) and not id.startswith("/"):
             id = self._resolve_spec(id)
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if (sort is not None or cross is not None) and view != "facets":
+            raise BadInput(
+                "sort=/cross= only apply with view='facets'",
+                next="get(kind='taxon', id='tn12', view='facets', args={'sort': 'recent'})",
+            )
         if concrete and view == "path":
             return self._render_path_view(self._resolve_live_ref(self._coerce_id(id)))
+        if concrete and view == "facets":
+            from precis.taxonomy.facets import render_facets
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            handle, name = self._node_label(ref.id)
+            return Response(
+                body=render_facets(
+                    self.store, ref.id, f"{handle} {name}", sort=sort, cross=cross
+                )
+            )
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='taxon'",
-                options=["path", *_BASE_VIEWS],
+                options=["path", "facets", *_BASE_VIEWS],
                 next=(
                     "view='path' (chains up to the start nodes) "
+                    "· view='facets' (counts per axis of the instances beneath) "
                     "· links, log, raw (generic)"
                 ),
             )

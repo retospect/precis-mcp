@@ -134,8 +134,8 @@ def test_cross_kind_search_leaves_todo_and_taxon_own_under_alone(
     tree: _Tree,
 ) -> None:
     args = {"q": "zebra", "under": "td1", "depth": 2}
-    assert tree.rt._resolve_under(args) is None
+    assert tree.rt._resolve_under(args) == (None, None)
     assert args["under"] == "td1" and args["depth"] == 2
     for kind in ("todo", "taxon"):
         a = {"kind": kind, "under": "x", "depth": 1}
-        assert tree.rt._resolve_under(a) is None and a["under"] == "x"
+        assert tree.rt._resolve_under(a) == (None, None) and a["under"] == "x"

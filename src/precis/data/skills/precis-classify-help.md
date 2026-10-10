@@ -87,8 +87,11 @@ search(kind="taxon", q="adjusting a measurement for the probe's own resonance")
 
 Definition = genus + difference: what it is, and what separates it from
 its nearest sibling. Boundary examples go in `includes` / `excludes`
-(shown on `get`, not searched), never in the definition. They, and
-`aliases`, are set at put and cannot be added later:
+(shown on `get`, not searched), never in the definition. Set them at put, or
+sharpen a node later with `edit(kind="taxon", id="tn812",
+meta={"excludes": [...]})` (also `definition`, `aliases`, `includes`). A put
+under a parent is refused when its definition reads like an existing sibling;
+sharpen the difference or use the sibling:
 
 ```python
 put(kind="taxon",
@@ -130,9 +133,19 @@ search(kind="taxon", under="measurand", depth=1)                 # children
 search(kind="taxon", under="measurand", axis="quantity", depth=1)  # one axis
 get(kind="taxon", id="tn465823", view="path")                    # chain up to the root
 get(kind="taxon", id="tn465823", view="links")                   # refs attached to it
+get(kind="taxon", id="tn465823", view="facets")                  # what its instances split into
+search(kind="finding", under="tn465823", q="tip radius")         # instances, ranked
+search(kind="finding", under=["tn465823", "tn812"])              # intersection of two nodes
 ```
 
-- Narrow one axis at a time down to the most specific node, then read its
-  links.
+- Start at `view="facets"`: counts per other axis for everything under the
+  node, axes ordered by how evenly they split it. Cut on the axis that splits
+  the set most evenly, then narrow with `search(kind=<any>, under=<value
+  handle>)`. Add `q=` only once under about 50 items. Machine-written
+  categorizer facets are hints, not curated; `args={'sort': 'gap', 'cross':
+  [axisA, axisB]}` shows empty cells.
+- `search(under=<taxon>)` on any other kind returns refs with an
+  `instance-of` link into the node's subtree (the node included); a list
+  intersects.
 - Cite the path you narrowed by (`measurand` → `faradaic-efficiency`) so
   the next reader can repeat it.

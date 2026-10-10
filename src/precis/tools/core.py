@@ -675,9 +675,11 @@ def search(
     # under='taxon:42' | 'measurand/temperature', axis='method', depth=2)
     # returns the descendants of ``under`` (never ``under`` itself), edges
     # restricted to meta.axis == axis, at most ``depth`` hops. With q= the
-    # ranked hits are intersected with that set. Declared at the verb level
-    # so strict-schema clients don't strip them; other kinds refuse them.
-    under: str | int | None = None,
+    # ranked hits are intersected with that set. On every OTHER kind,
+    # under= restricts to refs with an instance-of link into the node's
+    # subtree (a list intersects); axis=/depth= shape that walk. Declared at
+    # the verb level so strict-schema clients don't strip them.
+    under: str | int | list[str] | None = None,
     axis: str | None = None,
     depth: int | None = None,
     # Typed extras, mirroring ``get``'s ``args=``: rides ``__extras__`` so a
@@ -1542,6 +1544,9 @@ def edit(
     # verdict= is free text (default 'approved').
     review: str | None = None,
     verdict: str = "approved",
+    # dedup=False skips the near-duplicate and nearest-sibling checks a
+    # taxon edit re-runs on a changed definition/aliases, as on put.
+    dedup: bool | None = None,
     # draft scaffold (paper-writing pipeline rung 4, see precis-draft-help):
     # scaffold='paper'|'patent'|'report'|'review'|'manufacturing'|'book'|
     # 'summary' lays down that genre's standard section skeleton on this
@@ -1674,6 +1679,7 @@ def edit(
         "cell": cell,
         "review": review,
         "verdict": verdict,
+        "dedup": dedup,
         "scaffold": scaffold,
         "vocab": vocab,
         "notes": notes,

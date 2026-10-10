@@ -239,6 +239,138 @@ class TaxonMixin:
             rows = conn.execute(sql, {"r": ref_id}).fetchall()
         return [(int(r[0]), r[1]) for r in rows]
 
+    def taxon_children(
+        self, ref_id: int, *, axis: str | None = None
+    ) -> list[tuple[int, str | None]]:
+        """Direct children of ``ref_id`` as ``(ref_id, axis)``, ordered.
+        ``axis=`` keeps only edges carrying that ``meta.axis``."""
+        sql = f"""
+        WITH {_EDGES}
+        SELECT child, axis FROM e
+         WHERE parent = %(r)s
+           AND (%(axis)s::text IS NULL OR axis = %(axis)s::text)
+         ORDER BY child, axis
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, {"r": ref_id, "axis": axis}).fetchall()
+        return [(int(r[0]), r[1]) for r in rows]
+
+    def taxon_instance_ids(self, taxon_ids: list[int]) -> set[int]:
+        """Live refs with an ``instance-of`` link into ``taxon_ids`` (either
+        stored form: ``instance-of`` src=instance, or ``has-instance``
+        src=taxon). Taxa themselves are not instances here."""
+        if not taxon_ids:
+            return set()
+        sql = """
+        SELECT DISTINCT x.inst FROM (
+          SELECT l.src_ref_id AS inst, l.dst_ref_id AS tx FROM links l
+           WHERE l.relation = 'instance-of'
+          UNION ALL
+          SELECT l.dst_ref_id, l.src_ref_id FROM links l
+           WHERE l.relation = 'has-instance'
+        ) x
+        JOIN refs r ON r.ref_id = x.inst AND r.retired_at IS NULL
+                   AND r.kind <> 'taxon'
+        WHERE x.tx = ANY(%(t)s::bigint[])
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, {"t": list(taxon_ids)}).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def taxon_instance_links(self, instance_ids: list[int]) -> list[tuple[int, int]]:
+        """Every ``(instance_ref_id, taxon_ref_id)`` ``instance-of`` pair for
+        the given instances (both stored forms; live taxa only)."""
+        if not instance_ids:
+            return []
+        sql = """
+        SELECT DISTINCT x.inst, x.tx FROM (
+          SELECT l.src_ref_id AS inst, l.dst_ref_id AS tx FROM links l
+           WHERE l.relation = 'instance-of'
+          UNION ALL
+          SELECT l.dst_ref_id, l.src_ref_id FROM links l
+           WHERE l.relation = 'has-instance'
+        ) x
+        JOIN refs t ON t.ref_id = x.tx AND t.kind = 'taxon'
+                   AND t.retired_at IS NULL
+        WHERE x.inst = ANY(%(i)s::bigint[])
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, {"i": list(instance_ids)}).fetchall()
+        return [(int(r[0]), int(r[1])) for r in rows]
+
+    def list_refs_newest(
+        self,
+        ref_ids: list[int],
+        *,
+        kinds: list[str] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[tuple[int, str, str]], int]:
+        """``((ref_id, kind, title) newest first, total)`` over a ref-id set,
+        optionally narrowed to ``kinds``. Live refs only."""
+        if not ref_ids:
+            return [], 0
+        where = (
+            "r.ref_id = ANY(%(ids)s::bigint[]) AND r.retired_at IS NULL "
+            "AND (%(kinds)s::text[] IS NULL OR r.kind = ANY(%(kinds)s::text[]))"
+        )
+        params: dict[str, Any] = {
+            "ids": list(ref_ids),
+            "kinds": kinds,
+            "lim": limit,
+            "off": offset,
+        }
+        with self.pool.connection() as conn:
+            total = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {where}", params
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT r.ref_id, r.kind, COALESCE(r.title, '') FROM refs r "
+                f"WHERE {where} ORDER BY r.created_at DESC, r.ref_id DESC "
+                "LIMIT %(lim)s OFFSET %(off)s",
+                params,
+            ).fetchall()
+        return [(int(r[0]), str(r[1]), str(r[2])) for r in rows], int(total[0])
+
+    def ref_tag_rows(
+        self,
+        ref_ids: list[int],
+        *,
+        namespaces: list[str],
+        open_prefix: str | None = None,
+    ) -> list[tuple[int, str, str]]:
+        """``(ref_id, namespace, value)`` ref-tag rows for ``ref_ids`` in the
+        closed ``namespaces`` (uppercase), plus — with ``open_prefix`` — the
+        open tags (namespace ``OPEN``) whose value starts with it. The
+        facet view reads categorizer values and their done-markers here."""
+        if not ref_ids:
+            return []
+        sql = """
+        SELECT rt.ref_id, t.namespace, t.value
+          FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE rt.ref_id = ANY(%(ids)s::bigint[])
+           AND (t.namespace = ANY(%(ns)s::text[])
+                OR (%(op)s::text IS NOT NULL AND t.namespace = 'OPEN'
+                    AND starts_with(t.value, %(op)s::text)))
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                sql, {"ids": list(ref_ids), "ns": list(namespaces), "op": open_prefix}
+            ).fetchall()
+        return [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+    def ref_kinds_created(self, ref_ids: list[int]) -> dict[int, tuple[str, Any]]:
+        """``{ref_id: (kind, created_at)}`` for live refs among ``ref_ids``."""
+        if not ref_ids:
+            return {}
+        sql = (
+            "SELECT ref_id, kind, created_at FROM refs "
+            "WHERE ref_id = ANY(%(ids)s::bigint[]) AND retired_at IS NULL"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, {"ids": list(ref_ids)}).fetchall()
+        return {int(r[0]): (str(r[1]), r[2]) for r in rows}
+
     def taxon_child_count(self, ref_id: int) -> int:
         """Number of distinct direct children of ``ref_id``."""
         sql = f"""

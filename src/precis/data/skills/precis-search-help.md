@@ -62,10 +62,13 @@ A few more args, in brief: `args={'title': …}`/`args={'author': …}` run a by
 lookup on paper search (`precis-paper-help`). `args={'folder': …}` restricts hits
 to one folder's live subtree — id, `folder:N`, `fo<N>` handle, or name
 — and forces the cross-kind fan-out (`precis-folder-help`).
-`args={'under': 'me5'}` restricts hits to the descendants of a ref on the
-`part-of` tree (a memory hub or summary node); `'depth': 1` keeps direct
-members only. It combines with `q=`, `tags=` and `view='index'`; without
-`q=` memory hits list newest-touched first.
+`under=` is one scope whose target picks the tree. A taxon (`tn42`,
+`technique/afm`, or a list) selects its `instance-of` members (next section).
+Any other handle (`args={'under': 'me5'}`) restricts hits to the descendants
+of that ref on the `part-of` tree (a memory hub or summary node); `'depth': 1`
+keeps direct members only. It combines with `q=`, `tags=` and `view='index'`;
+without `q=` memory hits list newest-touched first. Todo and taxon keep their
+own `under=` (todo subtree, concept descendants).
 `args={'angle': N, 'like': …}` run a salience-rotation search seeded from a ref
 handle (`precis-dreaming-help`). `view='dreamable'` / `'stubs'` /
 `'chase-queue'` swap in a different result shape and ignore `q=` — a
@@ -235,6 +238,28 @@ unscoped wildcard above, just narrowed to "is there a settled claim
 about this, or only raw passages?" `uncited`/`cited` (in `args=`) compose with it
 exactly as with any other cross-kind call; `hubbed` does not — it's a
 paper-ref-only restriction, so it still needs `kind='paper'` on its own.
+
+## Search only what is classified under a taxon node
+## Find all findings about X under the AFM node
+
+`under=<taxon>` restricts any kind to refs that carry an `instance-of` link
+into that node or any node beneath it (the node itself counts).
+
+```python
+search(kind="finding", under="technique/afm", q="tip radius")       # ranked
+search(kind="paper", under="tn12")                                   # newest first
+search(kind="finding", under=["technique/afm", "method/dft"], q="tip")  # intersection
+search(kind="finding", under="tn12", axis="object", depth=2)         # shape the walk
+```
+
+With `q=` the kind's normal ranking runs inside that set; without it the set is
+listed newest first with its total. A list intersects. `axis=`/`depth=` limit
+which `specialises` edges below the node are walked (as in
+`search(kind='taxon', under=)`) and need `under=`. A non-taxon handle walks
+the `part-of` tree instead (above); `axis=` is refused there, and a list
+entry that is not a taxon is refused naming what it is.
+`search(kind='taxon', under=)` keeps its own meaning: the concept
+descendants, one node only.
 
 ## See more results
 ## Page through search hits beyond the first page
