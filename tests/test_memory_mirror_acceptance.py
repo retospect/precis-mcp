@@ -28,7 +28,7 @@ REVIEWED_SHA = "2755f8a1adf70ea3ad38ed9318b8fac8f9b6b2e4"
 ROOT = Path(__file__).resolve().parents[1]
 MIRROR_BLOBS = {
     "src/precis/cli/memory_mirror.py": "88cfc19ba0051a0499a4fe9dbd2aba872069d7e2",
-    "src/precis/cli/memory.py": "541bc7434b3d17de3c9507cbdfbe26fe7f9d5490",
+    "src/precis/cli/memory.py": "4210319e6851445a8de0a1bb605385da16ca81a6",
     "src/precis/utils/text.py": "ee025af69aae61fd32f7060c78abe178a797b995",
 }
 
@@ -247,7 +247,7 @@ def _graph(dsn: str, namespace: str) -> dict[str, Any]:
 
 @pytest.mark.db
 def test_synthetic_orchestrator_roundtrip_acceptance(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], store: object
 ) -> None:
     if not _pg_available():
         pytest.skip("canonical test PostgreSQL unavailable")
