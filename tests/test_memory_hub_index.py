@@ -95,7 +95,7 @@ def test_index_groups_by_hub_with_type_prefix_nesting_and_recency(hub: Hub) -> N
             (old,),
         )
 
-    lines = render_memory_index(store).splitlines()
+    lines = render_memory_index(store, full=True).splitlines()
 
     assert "## Pumps" in lines
     assert not any(ln.startswith("## Root") for ln in lines)  # root: no header
