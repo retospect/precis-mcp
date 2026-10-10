@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """PreToolUse hook: DENY reads of files that hold cleartext credentials.
 
 Why a gate and not a nudge (unlike ``guard-prod-write.py``, which warns and

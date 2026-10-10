@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run python
 """Deterministic sampler for the context-quality audit.
 
 For each row in the catalog documented at ``docs/backlog/context-quality-eval.md``

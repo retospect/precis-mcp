@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """PreToolUse hook: block edits to a SEALED (already-shipped) migration.
 
 The footgun this closes: migrations are **forward-only** (ADR 0005). Editing a

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """PreToolUse hook (matcher: Grep) — nudge a symbol grep toward coderef.
 
 When the loop greps for a bare Python IDENTIFIER (a symbol lookup, not a

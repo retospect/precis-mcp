@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """PreToolUse hook: WARN (but allow) when a session-MCP WRITE mutates PROD.
 
 The context this surfaces: the precis MCP loaded in a dev session is the local

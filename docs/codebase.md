@@ -118,7 +118,7 @@ Subsystem architecture lives in each package's `__init__.py` module
 docstring (docs/README.md); the index — import path + the docstring's
 first line — is [`docs/codebase-map.md`](./codebase-map.md). Generated
 locally and gitignored; if the link target is missing or stale, run
-`python3 scripts/docs-index` (stdlib-only, regenerated automatically at
+`scripts/docs-index` (stdlib-only, regenerated automatically at
 session start).
 
 ## Seams — where changes concentrate

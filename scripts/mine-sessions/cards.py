@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Render `detect.py` candidates (and an unbiased random arm) to small,
 scrubbed evidence cards a `forensics` agent can read without ever touching a
 raw transcript.

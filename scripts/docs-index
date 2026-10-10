@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """scripts/docs-index — regenerate the gitignored doc indexes.
 
 Four standalone generated files, one script, run by the SessionStart

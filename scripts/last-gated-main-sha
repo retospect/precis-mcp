@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """scripts/last-gated-main-sha — newest main sha that actually got a 6-shard verdict.
 
 check.yml's `plan` job scopes a main push to its own delta

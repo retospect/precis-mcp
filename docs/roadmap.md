@@ -323,7 +323,7 @@ which active one it replaces, or Reto widens the set.
 
 Declared activity and next actions are in the [generated priority table](backlog/threads/PRIORITIES.md).
 The sole roster is `.claude/fleet/threads.tsv`; change it when the declared
-active set changes. Run `python3 scripts/docs-index` if the table is missing
+active set changes. Run `scripts/docs-index` if the table is missing
 or stale. Live session/worktree state is checked separately with `scripts/inflight`.
 
 ## Retirement

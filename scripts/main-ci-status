@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """scripts/main-ci-status — is main RED on its own post-merge CI run, and who owns it?
 
 `scripts/ship --remote` gates every merge on GitHub's check.yml, so a merge

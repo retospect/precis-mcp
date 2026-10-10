@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env -S uv run python
 """Run the full candidate×axis LLM eval matrix through the real router seam.
 
 DRY by construction: every candidate is exercised via

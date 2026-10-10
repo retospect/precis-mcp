@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """PreToolUse hook: auto-correct Edit/Write into the MAIN checkout from a worktree.
 
 The worktree edit-path trap: when a session runs inside a linked git worktree

@@ -62,7 +62,7 @@ package docstrings (present truth + rationale), or git history (past).
 `scripts/docs-index` (stdlib-only, bare `python3`) writes four standalone
 **gitignored** files; a SessionStart hook regenerates them per-worktree, so
 they are never committed, never churn, never conflict. Never hand-edit them —
-each tracked doc that links to one carries a "run `python3 scripts/docs-index`
+each tracked doc that links to one carries a "run `scripts/docs-index`
 if missing/stale" note for readers outside a hooked session.
 
 - `docs/backlog/INDEX.md` — slug, `status:`, first prose line.

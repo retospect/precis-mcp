@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Read-only fleet reporter: one row per agent session on THIS host.
 
 Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Friction detectors over the normalized event stream (`schema.Event`).
 
 Each detector is a pure function ``list[Event] -> list[Candidate]``,

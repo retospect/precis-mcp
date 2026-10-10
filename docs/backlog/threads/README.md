@@ -23,7 +23,7 @@ second backlog, which is the failure mode it exists to prevent.
 
 ## Resume entry point
 
-Start with [PRIORITIES.md](PRIORITIES.md); run `python3 scripts/docs-index`
+Start with [PRIORITIES.md](PRIORITIES.md); run `scripts/docs-index`
 if missing or stale. Declared activity lives only in
 `.claude/fleet/threads.tsv`; verify live work with `scripts/inflight`.
 

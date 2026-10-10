@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run python
 """Runs INSIDE the official Playwright container, driving one tour section's
 clean-page screenshots.
 

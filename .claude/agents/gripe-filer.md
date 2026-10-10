@@ -35,7 +35,7 @@ Stop and report back — do not file anything — if:
      decision, not a live duplicate) for one describing the same symptom.
    - Target `docs/backlog/`: scan the dir's filenames and `Read` the
      generated `docs/backlog/INDEX.md` index for the same topic (run
-     `python3 scripts/docs-index` if it's missing).
+     `scripts/docs-index` if it's missing).
    - If found, stop and report the match (handle/slug) instead of
      filing.
 3. **File in the target's standard shape**:

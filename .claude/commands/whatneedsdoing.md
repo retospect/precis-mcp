@@ -105,7 +105,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      candidates for the `docs-triage` skill: verify shipped, then delete.
      Generated indexes (`docs/backlog/INDEX.md`, `docs/runbooks/INDEX.md`,
      `docs/codebase-map.md`) are gitignored and regenerate via
-     `python3 scripts/docs-index` at session start — never stale-in-git.
+     `scripts/docs-index` at session start — never stale-in-git.
    - **Code anchors** (`scripts/coderef check docs`, drift-only) — each `✗` = a
      doc cites a `file.py::Qual.name` whose symbol no longer resolves (renamed/
      removed → fix the anchor, or if the code was deliberately removed leave it).

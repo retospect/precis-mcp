@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """scripts/qgo-guard — the one refusal `/qgo` cannot delegate to a later gate.
 
 `/qgo` deploys BEFORE it validates: squash-merge ungated, push to the fleet,

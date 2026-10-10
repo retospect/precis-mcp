@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Isolated Codex tmux workers; native queue delivery never types into a terminal.
 
 The roster owns names/indices; persisted pane IDs establish ownership, so a

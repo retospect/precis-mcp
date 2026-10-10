@@ -28,7 +28,7 @@ Each programme below serves one or more:
 
 [Generated priority table](PRIORITIES.md) — declared activity comes only from
 `.claude/fleet/threads.tsv`; it is not a live-session check. Run
-`python3 scripts/docs-index` if missing or stale. Read a thread's Resume
+`scripts/docs-index` if missing or stale. Read a thread's Resume
 first, then its current item; load other threads only for dependencies.
 
 ## pcb — design, route, fabricate, order

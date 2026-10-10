@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """PostToolUse hook: propose /compact as the session grows large.
 
 Hooks don't get a live token count, so this uses the transcript file SIZE as a

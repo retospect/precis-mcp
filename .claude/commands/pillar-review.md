@@ -20,7 +20,7 @@ Peers are down in the weeds — one short question each, never a task.
 - `docs/roadmap.md` — each pillar's end state, north-star items, threads,
   the active set, the retirement rules, the review log at the bottom.
 - `docs/backlog/threads/INDEX.md` §Pillars and generated `PRIORITIES.md`
-  (run `python3 scripts/docs-index` if missing or stale); activity comes
+  (run `scripts/docs-index` if missing or stale); activity comes
   only from `.claude/fleet/threads.tsv`.
 - `scripts/inflight` — which threads actually have a session today; a
   mismatch with the fleet roster’s declared active set is a finding, not a fix.
