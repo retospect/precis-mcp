@@ -3,10 +3,10 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Verify gr462129 handle/DOI redirects after the next deploy; then the print dialog when writer scale lands, otherwise fastener_insertion_path.
+- **Next:** The print dialog when writer scale lands, otherwise fastener_insertion_path.
 - **Blocked by:** [se-machine-design](se-machine-design.md#resume)’s writer scale for the print dialog.
 - **Unblocks:** A human inspection surface for machine designs.
-- **Acceptance:** Use [the latest handoff](#thread-context): all three /drive queries return 302 on prod; preserve the standing viewer rulings and use [ranked work](#do-next) for the next build.
+- **Acceptance:** Use [the latest handoff](#thread-context); preserve the standing viewer rulings and use [ranked work](#do-next) for the next build.
 - **Worktree:** `se-3d-viewer`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -53,13 +53,10 @@ drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 - **Done:** round 3 is deployed and dogfooded (below). gr462129 /drive
   redirect landed in 063421d9, not deployed yet.
 - **Next:**
-  - after the follow-up deploy, check `/drive?q=pa5303`, `?q=fi<id>` and
-    `?q=10.1021/acscatal.3c0196` each 302 on prod, then close gr462129;
   - Do-next 7, the print dialog, once se-machine-design confirms their
     writer scale has landed;
   - otherwise Do-next 5, fastener_insertion_path.
-- **Waits on:** the follow-up deploy (gr462129) and se-machine-design's
-  writer scale (the dialog).
+- **Waits on:** se-machine-design's writer scale (the dialog).
 
 **Prod dogfood, round 3 (deployed 929107f3, 2026-10-03) → pass.** Against
 prod data through guide-web (the viewer code is the same as the deploy;
@@ -68,8 +65,7 @@ deploy): all 48 nightly viewer checks pass. The drum's `atomic3d.json` is
 241 KB gzip in 0.85 s cold (it was 1.09 MB), the ETag 304 still works, and
 `target3d.json` is served separately (297 KB). Drum, dogfood-fold-3 and
 unicycle-c1 load one three.js (r184) with no warnings or errors, and the
-`bt3d-*` marks fire in order. Open: gr462129's prod 302 check after the
-follow-up deploy.
+`bt3d-*` marks fire in order.
 
 **Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Reto's look (td461212, 2026-10-03) passed; its follow-ups shipped in
 round 3 as he ruled them (se-3d-viewer-5): the atom hover is a field |
@@ -111,16 +107,6 @@ up:
    only because realized has no 3D drawing yet (answered: yes, the viewer
    draws envelopes at every rung; recommended keeping the dash column). The chips are small at the
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
-
-1. **gr462129** (Reto 2026-10-03, read comment 2) — the /drive search box
-   resolves identifiers before the chunk search. Any handle_registry handle
-   (pa, fi, qu, dr, gr, td, se, …) or a DOI, whole or as a unique prefix,
-   302s to the item's page. A retired ref follows its live slug. An
-   ambiguous prefix or no match falls through to today's search. Mirrors
-   `FusedBlockSearch.run` in `handlers/_paper_search.py`. Here because
-   ingest-and-fetch owns /drive but is held for the demo. One build.
-   Acceptance: `/drive?q=pa5303`, `?q=fi<id>` and
-   `?q=10.1021/acscatal.3c0196` each 302 on prod.
 
 2. **gr462703** — a progress bar from request to the atoms drawn (Reto).
    Design note `reviews/se-3d-viewer.md` §1–1c, verdicts beside it. Server

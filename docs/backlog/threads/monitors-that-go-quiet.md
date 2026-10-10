@@ -122,8 +122,8 @@ gr346534, soft-deleted)
    proves the gate. Still owed: items
    (1) and (2) of that analysis arrived cut off. Get them resent and fix
    them at source. The dedupe agent closes existing duplicates; this
-   thread does not. Of its two hand-offs, td455178 is now gr463592 and
-   td345821 is closed (caspar runs no daemons by design).
+   thread does not. Of its two hand-offs, td455178 and
+   td345821 are both closed (caspar runs no daemons by design).
 3. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
    share has hung on every client since 2026-09-30, and the only rule
    (`avail_bytes == 0`) cannot fire on a hang. Branch
