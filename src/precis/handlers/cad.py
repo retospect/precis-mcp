@@ -343,6 +343,40 @@ def _convert_state_value(name: str, kind: str, value: Any) -> Any:
 
 
 class CadHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset(
+            {
+                "a",
+                "b",
+                "axis",
+                "c",
+                "component",
+                "d",
+                "down",
+                "fixed",
+                "joint",
+                "max_overhang",
+                "max_bridge",
+                "layer_height",
+                "min_bed_contact",
+                "moving",
+                "n",
+                "o",
+                "of",
+                "p",
+                "path",
+                "pitch",
+                "r",
+                "state",
+                "sweep_deg",
+                "tol",
+                "z",
+            }
+        ),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="cad",
         title="CAD",

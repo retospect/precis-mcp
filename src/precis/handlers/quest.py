@@ -425,6 +425,12 @@ def _fit_bands(
 
 
 class QuestHandler(NumericRefHandler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset({"budget"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="quest",
         title="Quest",

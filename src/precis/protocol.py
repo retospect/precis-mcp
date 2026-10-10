@@ -293,6 +293,14 @@ class Handler(ABC):
     #: ``precis.dispatch.Hub`` in every handler module.
     hub: Any = None
 
+    #: ``verb -> args= keys`` for handlers whose verb method declares an
+    #: ``args: dict`` parameter (the dispatcher forwards the whole dict
+    #: instead of flattening it into kwargs). Lists every key the verb
+    #: reads out of ``args``; dispatch rejects anything else with a
+    #: ``BadInput`` naming these (gr475332). A verb absent here is not
+    #: validated.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {}
+
     def _register_with(self, hub: Hub) -> None:
         """Register every verb declared supported in ``self.spec``.
 

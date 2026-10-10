@@ -64,6 +64,12 @@ _SLUG_LEN_DEFAULT = 4
 
 
 class RandomHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset({"len", "alphabet"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="random",
         title="Random",

@@ -321,6 +321,12 @@ def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
 
 
 class DraftHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset({"limit"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="draft",
         title="Draft",

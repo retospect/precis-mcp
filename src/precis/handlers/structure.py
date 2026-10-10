@@ -691,6 +691,45 @@ def card_text(title: str, scene: Scene, description: str = "") -> str:
 
 
 class StructureHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "put": frozenset({"cell", "ops", "description"}),
+        "edit": frozenset({"ops"}),
+        "get": frozenset(
+            {
+                "source",
+                "q",
+                "config_id",
+                "surface_composition",
+                "facet",
+                "first",
+                "atom",
+                "center",
+                "run",
+                "radius",
+                "element",
+                "undercoordinated",
+                "origin",
+                "direction",
+                "dir",
+                "point",
+                "normal",
+                "n",
+                "thickness",
+                "a",
+                "b",
+                "from",
+                "to",
+                "max_size",
+                "other",
+                "vs",
+                "support",
+                "reach",
+            }
+        ),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="structure",
         title="Structure",

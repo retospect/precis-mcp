@@ -127,6 +127,13 @@ _VIEWS: tuple[str, ...] = (
 
 
 class ComponentHandler(ValueEntityHandler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "put": frozenset({"supplier_part_number"}),
+        "get": frozenset({"category_id", "parameters"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="component",
         title="Component",

@@ -1617,6 +1617,20 @@ class DispatchMixin(RuntimeShape):
             # the opt-in by signature membership and forward extras
             # via the ``args`` kwarg unchanged.
             if "args" in accepted:
+                # gr475332: the passthrough used to skip key validation
+                # entirely, so ``args={'bogus': 1}`` vanished. A handler
+                # that declares ``ARGS_KEYS[verb]`` has every key it reads
+                # out of ``args`` checked here; one with no declaration
+                # stays lenient (a test pins that none in-repo do).
+                declared = (getattr(type(handler), "ARGS_KEYS", None) or {}).get(verb)
+                if declared is not None:
+                    unknown = sorted(k for k in extras if k not in declared)
+                    if unknown:
+                        raise BadInput(
+                            f"keys {unknown!r} not accepted by {kind}.{verb}; "
+                            f"its args= keys are listed below",
+                            options=_typed_kwargs(type(handler), verb, declared),
+                        )
                 args["args"] = dict(extras)
             else:
                 unknown = self._unknown_extras(method, extras)

@@ -448,6 +448,65 @@ class JudgeReport:
 
 
 class PcbHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "put": frozenset(
+            {
+                "op",
+                "components",
+                "nets",
+                "connections",
+                "measures",
+                "features",
+                "footprints",
+                "generators",
+                "autoplace",
+                "meta",
+                "net_classes",
+                "iters",
+                "seed",
+                "warm_start",
+                "negotiate",
+                "moves",
+                "refdes",
+                "x",
+                "y",
+                "rot",
+                "fixed",
+                "net",
+                "a",
+                "b",
+                "side",
+                "layer",
+                "name",
+                "rules",
+                "layers",
+                "part",
+                "parts",
+                "footprint",
+                "force",
+            }
+        ),
+        "get": frozenset(
+            {
+                "a",
+                "b",
+                "net",
+                "dir",
+                "allow_synthesized",
+                "max_passes",
+                "iters",
+                "level",
+                "layers",
+                "include",
+                "name",
+                "format",
+                "pins",
+            }
+        ),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pcb",
         title="PCB",

@@ -46,6 +46,12 @@ _NEXT_CONVERT = "get(kind='time', q='now', args={'to': 'Asia/Tokyo'})"
 
 
 class TimeHandler(Handler):
+    #: args= keys each verb reads out of ``args`` (gr475332); dispatch
+    #: rejects any other key. Keep in step with the verb bodies.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "get": frozenset({"from", "to", "format"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="time",
         title="Time",
