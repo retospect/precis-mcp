@@ -131,6 +131,27 @@ MECHANISMS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: Standard bicycle spoke thread: 2.0 / 2.2 mm (14g / 15g) spokes and their
+#: nipples are 56 TPI, so the pitch is 25.4 / 56 = 0.4536 mm per turn. A
+#: joint's ``thread_pitch`` param (metres) overrides it for other threads.
+SPOKE_THREAD_PITCH_M: float = 0.0254 / 56
+
+
+def nipple_turns(params: dict[str, Any]) -> dict[str, float] | None:
+    """The assembly tensioning instruction for an axial joint's ``params``:
+    ``{'extension_m', 'pitch_m', 'turns'}`` where the member is stretched
+    ``preload / rate`` metres beyond its free length and one nipple turn
+    takes up one thread pitch (``turns = extension / pitch``). ``None``
+    when ``preload`` or ``rate`` is missing (no instruction to give)."""
+    preload = params.get("preload")
+    rate = params.get("rate")
+    if preload is None or rate is None or rate <= 0:
+        return None
+    pitch = params.get("thread_pitch", SPOKE_THREAD_PITCH_M)
+    extension = preload / rate
+    return {"extension_m": extension, "pitch_m": pitch, "turns": extension / pitch}
+
+
 _JOINT_KEYS = frozenset({"class", "axis", "mechanism", "params"})
 
 
@@ -378,6 +399,22 @@ def _vet_params(params: dict[str, Any], klass: str) -> dict[str, Any]:
                 f"tension-positive), got {preload!r}"
             )
         params["preload"] = preload_n
+    pitch = params.get("thread_pitch")
+    if pitch is not None:
+        try:
+            pitch_m = float(pitch)
+        except (TypeError, ValueError) as exc:
+            raise JointError(
+                f"joint param 'thread_pitch' must be a number > 0 (metres "
+                f"per turn), got {pitch!r}"
+            ) from exc
+        if not math.isfinite(pitch_m) or pitch_m <= 0.0:
+            raise JointError(
+                f"joint param 'thread_pitch' must be a number > 0 (metres "
+                f"per turn), got {pitch!r} — the default spoke thread "
+                "(56 TPI) is 0.0004536, i.e. 0.4536 mm per turn"
+            )
+        params["thread_pitch"] = pitch_m
     return params
 
 

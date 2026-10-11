@@ -411,8 +411,11 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 - Mechanism for a tensioned member: `cable` (BOM demand: "the cable /
   wire rope") or `tensioner` for a threaded rod tensioned by a
   nipple / turnbuckle (spoke, tie-rod; BOM demand names the rod and the
-  tensioning part). The nipple thread pitch / assembly-instruction slot
-  does not exist yet; put it in an `add_note`.
+  tensioning part). `thread_pitch` [m > 0, default 0.0004536 = the
+  56 TPI bicycle spoke thread of 2.0/2.2 mm spokes] sets the nipple's
+  pitch; with `preload` and `rate` declared, `view='bom'` ends with an
+  "Assembly — tensioning" line: tension to N = (preload / rate) /
+  thread_pitch nipple turns. The pitch is a setting, not derived.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 

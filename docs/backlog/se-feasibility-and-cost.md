@@ -270,14 +270,6 @@ positions were the explicitly deferred v1 item in
 Workaround today: 12 flange-hole blocks plus a truss.
 Who: agent-code.
 
-## Folded in: spoke assembly-instruction slot (gr334786, remainder)
-
-`tensioner` (threaded rod + nipple/turnbuckle BOM demand) shipped. Still
-open: an assembly-instruction slot tying preload ("tension to 600 N") to
-the tensioning part, and a home for the nipple thread pitch — connects to
-the free_length/rate/preload triple, gr334782.
-Who: agent-code.
-
 ## Open questions for Reto
 
 - ~~**Where does `fit_class` sit**~~ — **built 2026-09-05 as

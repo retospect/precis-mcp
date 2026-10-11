@@ -133,6 +133,7 @@ from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
 from precis_se import fret, persist, simp_bridge
+from precis_se import joints as se_joints
 from precis_se import kinematics as se_kinematics
 from precis_se import kinematics_drc as se_kinematics_drc
 from precis_se import library as se_library
@@ -1325,6 +1326,7 @@ class SeHandler(Handler):
                 "(nothing bought yet — add_bom hangs a component/part off a "
                 "block or a connect)"
             )
+            lines.extend(self._tensioner_instructions(tree))
             return "\n".join(lines)
 
         rows: list[dict[str, Any]] = []
@@ -1408,7 +1410,29 @@ class SeHandler(Handler):
                 f"⚠ target not in the tree: {', '.join(sorted(set(unresolved)))} "
                 "— quantity unknown, excluded from totals"
             )
+        lines.extend(self._tensioner_instructions(tree))
         return "\n".join(lines)
+
+    @staticmethod
+    def _tensioner_instructions(tree: SeTree) -> list[str]:
+        """Assembly lines tying each ``tensioner`` joint's preload to its
+        nipple: turns = (preload / rate) / thread pitch (gr334786)."""
+        out: list[str] = []
+        for c in tree.connects:
+            joint = c.joint or {}
+            if joint.get("mechanism") != "tensioner":
+                continue
+            params = joint.get("params") or {}
+            plan = se_joints.nipple_turns(params)
+            if plan is None:
+                continue
+            out.append(
+                f"- {c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}: tension to "
+                f"{params['preload']:g} N = {plan['turns']:.2f} nipple turns "
+                f"({plan['extension_m'] * 1000:.3f} mm stretch at "
+                f"{plan['pitch_m'] * 1000:.4g} mm thread pitch)"
+            )
+        return ["", "## Assembly — tensioning", *out] if out else []
 
     def _render_order(self, tree: SeTree, ref_id: int) -> str:
         """``view='order'`` — "what do I order": the instanced tree walked
