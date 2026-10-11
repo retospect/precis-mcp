@@ -31,8 +31,8 @@ Accepted input forms (broadly accepting):
 Ergonomic carve-outs: a bare `0` component is always legal (zero
 needs no unit); e-notation mantissas are fine in every form
 (`[3e-9, 0, 0] m` ≡ `[3, 0, 0] nm` — Reto 2026-09-12; the
-gr336344 awkward-mantissa warn may later nudge toward the neat
-prefix, warn-only, pending the gr336349 notation eval). Mixing form 1
+shipped awkward-mantissa advisory — `parse_quantity(warnings=[...])` —
+nudges toward the neat prefix, warn-only). Mixing form 1
 and form 2 in one vector (some components united, others bare-nonzero
 relying on a trailing unit) rejects.
 
@@ -106,8 +106,7 @@ machinery; sweep se/nm op docstrings + skills examples to the
 canonical form; fixture sweep for authored pose literals. Natural
 bundle: ship as one "interface explicitness" round together with
 gr336352 (MCP-wide angle explicitness — calc's deg/rad triple
-convention, pcb `rot` self-naming) and gr336344 (awkward-mantissa
-warn). SEQUENCE AFTER the prompt-surface audit fixes land (they touch
+convention, pcb `rot` self-naming). SEQUENCE AFTER the prompt-surface audit fixes land (they touch
 the same hint machinery/files).
 
 ## Angle units across every MCP surface (gr336352)
@@ -128,16 +127,5 @@ Who: agent-code; ships bundled with this item's vector ingest.
 Open question whether LLM design authors do better with the canonical
 trailing-unit form, e-notation, or per-component units. An A/B over
 `src/precis/llm_eval` (harness, tasks, scorers) would measure
-mis-scaled-quantity rates per notation. Gates the awkward-mantissa nudge
-below.
-Who: needs-Reto: wants data before committing the canonical form's
+mis-scaled-quantity rates per notation. Who: needs-Reto: wants data before committing the canonical form's
 strictness; agent-code builds the eval.
-
-## Awkward-mantissa advisory (gr336344)
-
-`3e-9 m` and `0.000003 mm` parse fine but invite zero-counting slips; an
-advisory warning ("write `3 nm`") should accompany them. Blocker:
-`src/precis/utils/units.py::parse_quantity` returns a bare float, with no
-warnings channel — add one (return/side-channel) without changing existing
-callers. Warn-only, never reject; sequence after gr336349's data.
-Who: agent-code.

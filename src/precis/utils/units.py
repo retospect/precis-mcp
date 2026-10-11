@@ -192,6 +192,7 @@ def parse_quantity(
     *,
     require_unit: bool = True,
     arg_name: str | None = None,
+    warnings: list[str] | None = None,
 ) -> float:
     """Ingest-any-unit boundary: parse one dimensioned quantity to SI.
 
@@ -208,6 +209,14 @@ def parse_quantity(
     established the value is in SI base units by some other means (e.g.
     re-parsing this module's own canonical output) — never for raw
     agent-supplied text.
+
+    ``warnings`` is an optional advisory accumulator (strict path only:
+    ignored when ``require_unit`` is False, so the permissive storage
+    parse stays silent forever). When the authored mantissa is far
+    outside the readable range for its chosen unit
+    (:func:`awkward_mantissa_advice`) an advisory string is appended;
+    the value is still returned — warn-only, never a denial. Callers
+    that pass nothing see no behaviour change.
     """
     if isinstance(text_or_number, bool):  # bool is an int subclass — reject early
         raise BadInput(f"{dimension} quantity cannot be a boolean: {text_or_number!r}")
@@ -269,7 +278,49 @@ def parse_quantity(
             next=f"use a {dimension} unit, e.g. {_HINT_UNITS[dimension][0]!r}",
         ) from e
 
+    if warnings is not None and require_unit:
+        advice = awkward_mantissa_advice(
+            float(parsed.magnitude), float(si.magnitude), dimension, arg_name=arg_name
+        )
+        if advice:
+            warnings.append(advice)
     return float(si.magnitude)
+
+
+#: Authored mantissas with magnitude outside [_AWKWARD_LO, _AWKWARD_HI)
+#: draw the advisory. The readable range is ~0.1-10000 (gr336344); the
+#: trigger sits one decade beyond each end so ordinary `0.05 mm` or
+#: `20000 mm` never nag — only genuine zero-run forms (`0.000000003 m`).
+_AWKWARD_LO: Final[float] = 0.01
+_AWKWARD_HI: Final[float] = 1e5
+
+
+def awkward_mantissa_advice(
+    authored: float,
+    si_value: float,
+    dimension: Dimension,
+    *,
+    arg_name: str | None = None,
+) -> str | None:
+    """Advisory for a unit-present but poorly-scaled authored quantity.
+
+    ``authored`` is the mantissa as written (in the author's unit),
+    ``si_value`` the same quantity in SI base. Returns e.g.
+    ``"arg: parsed as 3 nm — prefer writing it that way"`` when
+    ``|authored|`` is outside ``[0.01, 1e5)`` AND :func:`format_quantity`'s
+    neat form (no second prefix table) exists as a prefixed unit; else
+    ``None``. Zero, non-finite, angle (no prefix ladder) and values the
+    ladder can't place (e-notation fallback) never warn.
+    """
+    if dimension == "angle" or authored == 0 or not math.isfinite(authored):
+        return None
+    if _AWKWARD_LO <= abs(authored) < _AWKWARD_HI:
+        return None
+    neat = format_quantity(si_value, dimension)
+    if "e" in neat:
+        return None
+    who = f"{arg_name}: " if arg_name else ""
+    return f"{who}parsed as {neat} — prefer writing it that way"
 
 
 def format_dsl_number(x: float) -> str:

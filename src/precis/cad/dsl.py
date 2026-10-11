@@ -237,7 +237,12 @@ _ROUND_REFUSED: dict[str, str] = {
 }
 
 
-def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
+def parse(
+    config: str,
+    *,
+    require_units: bool = False,
+    warnings: list[str] | None = None,
+) -> ShapeSpec:
     """Parse a ``config`` string into a :class:`ShapeSpec`.
 
     ``require_units=False`` (default) — canonical/storage mode: every
@@ -249,6 +254,11 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
     :class:`~precis.utils.units.UnitRequiredError`. See the module
     docstring's two-mode contract — never flip this default; every
     existing storage caller depends on it staying permissive.
+
+    ``warnings`` (boundary mode only) collects advisory strings from
+    :func:`~precis.utils.units.parse_quantity` — e.g. an awkward-mantissa
+    ``w0.000000003m`` draws "parsed as 3 nm". Warn-only; parsing is
+    unchanged.
     """
     if not isinstance(config, str) or ":" not in config:
         raise DslError(
@@ -296,7 +306,10 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
                     float(angle_num), "angle", arg_name=f"{alias}:angle"
                 )
             size = parse_quantity(
-                f"{size_num}{unit}", "length", arg_name=f"{alias}:size"
+                f"{size_num}{unit}",
+                "length",
+                arg_name=f"{alias}:size",
+                warnings=warnings,
             )
             angle = parse_quantity(
                 f"{angle_num}{angle_unit}", "angle", arg_name=f"{alias}:angle"
@@ -331,7 +344,10 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
                 raise UnitRequiredError(float(num), "length", arg_name=f"{alias}:{key}")
             else:
                 value = parse_quantity(
-                    f"{num}{unit}", "length", arg_name=f"{alias}:{key}"
+                    f"{num}{unit}",
+                    "length",
+                    arg_name=f"{alias}:{key}",
+                    warnings=warnings,
                 )
         else:
             value = float(num)
