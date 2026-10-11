@@ -146,25 +146,24 @@ same change.** The regression test that enforces this is the `pa494`-shaped one:
 a document with a lying `ToUnicode` and zero control-char residue must still be
 flagged. A control-char-only patch fails it.
 
-## What remains: corpus backfill (gr228594)
+## What remains: run the corpus backfill (gr228594)
 
-The detector shipped (4889b7258, `src/precis/ingest/glyph_health.py`) and
-runs at write time, so new ingests are checked. It never ran over the
-existing corpus: on 2026-10-11 only 76 of 31,085 papers carry a
-`glyph_health` record, and `pa47024` (a confirmed mode-(b) scar) is still
-unflagged. Until the backfill runs, the ~5,000 older exposed papers are
-invisible to every consumer of the flag.
+The detector (`src/precis/ingest/glyph_health.py`) runs at write time, and
+the backfill entry point shipped: `precis backfill-glyph-health`
+(`src/precis/ingest/glyph_backfill.py`; font-level re-read of each held
+PDF, no re-extraction, no OCR; stamps `meta['glyph_health']` only when
+`suspected` fires; dry-run by default, `--apply` writes, `--after <ref_id>`
+resumes). Prod on 2026-10-11, before any run: 90 of 48,881 live papers carry a
+record (31,137 hold a PDF), so `pa47024` (a confirmed mode-(b) scar) is
+still unflagged and the older exposed papers stay invisible to every
+consumer of the flag.
 
-- Fix direction: a backfill that re-reads each held PDF's fonts through
-  `glyph_health` (font-level, no re-extraction, no OCR) and writes
-  `meta['glyph_health']` when `suspected` fires. Dry-run first; confirm it
-  flags `pa494` and `pa47024` and not the clean papers from the dr42995
-  audit.
-- Owner `src/precis/ingest/glyph_health.py` (reuse, do not fork the
-  detector); run on cluster infra where the PDFs are mounted.
-
-Who: ops (S) once a backfill entry point exists; the entry point is
-agent-code (S).
+- Ops (S): run it on a node that mounts the corpus, in batches
+  (`--limit`, resume with the printed `--after`). Dry-run first and confirm
+  it flags `pa494` and `pa47024` and not the clean papers from the dr42995
+  audit; no real-PDF fixture is in the test suite, so this check is manual.
+- Refs with a `pdf_pages` range (~24k) are judged on the whole PDF, not
+  their page range: a flag can over-cover if the PDF holds other papers.
 
 ## Fix order
 

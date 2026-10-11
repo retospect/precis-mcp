@@ -156,6 +156,11 @@ COMMANDS: tuple[Command, ...] = (
         "doi_backfill",
         "Recover a real DOI for DOI-less paper refs (S2 id / title match).",
     ),
+    _c(
+        "backfill-glyph-health",
+        "glyph_backfill",
+        "Flag old papers whose PDF fonts garble Greek/micro (gr228594).",
+    ),
     _c("podcast", "podcast", "Publish/list private audio-feed episodes."),
     _c("gripes", "gripe", "Dump all filed gripes for human triage."),
     _c(
