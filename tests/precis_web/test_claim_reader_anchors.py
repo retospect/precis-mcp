@@ -9,6 +9,8 @@ hub-cite resolution runs real SQL (``finding_cite_keys`` / ``derive_evidence``).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -21,6 +23,7 @@ from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
+from precis_web.linkify import _CLAIM_ANCHOR_CLS
 
 _CLAIM = CanonicalClaim(
     sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
@@ -70,3 +73,51 @@ def test_smartdraft_reader_renders_claim_anchor(
     assert r.status_code == 200
     assert "/claim/" in r.text
     assert _CLAIM.sentence in r.text  # the right-rail Claims panel
+
+
+def _flag_rail_only(hub: Hub, slug: str) -> None:
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    with hub.live_store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb)"
+            ' || \'{"cite_render": "rail"}\'::jsonb'
+            " WHERE ref_id = %s",
+            (ref.id,),
+        )
+
+
+def test_rail_only_draft_hides_inline_anchor_but_rail_and_editor_keep_cite(
+    reader_client: TestClient, hub: Hub
+) -> None:
+    from precis_web import smartdraft
+
+    slug = _draft_citing_a_hub(hub)
+    normal = reader_client.get(f"/smartdraft/{slug}").text
+    _flag_rail_only(hub, slug)
+    store = hub.live_store
+    ref = store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    nodes = [n for n in smartdraft.build_nodes(store, ref.id) if "Evidence" in n.text]
+    assert len(nodes) == 1
+    cite = re.search(r"\[fi\d+\]", nodes[0].text)
+    assert cite is not None
+    stored_cite = cite.group(0)
+
+    r = reader_client.get(f"/smartdraft/{slug}")
+    assert r.status_code == 200
+    # Claims rail still lists the evidence.
+    assert _CLAIM.sentence in r.text
+    # Exactly the one inline anchor is gone; the rail row's own head stays.
+    assert _CLAIM_ANCHOR_CLS in normal and _CLAIM_ANCHOR_CLS not in r.text
+    assert (
+        r.text.count('data-claim-head="fi') == normal.count('data-claim-head="fi') - 1
+    )
+    # Editor / raw text still carries the stored cite.
+    assert stored_cite in r.text
+
+    # blocks() hydration: display stripped, no anchor.
+    rb = reader_client.get(f"/smartdraft/{slug}/blocks", params={"dcs": nodes[0].dc})
+    assert rb.status_code == 200
+    assert "Evidence shows this reaction proceeds well." in rb.text
+    assert "data-claim-head" not in rb.text and "◆" not in rb.text

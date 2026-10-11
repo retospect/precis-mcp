@@ -53,9 +53,6 @@ brief. Owner `src/precis/draft/narrate.py`.
 
 Bundled in the 2026-10-11 gripe triage. The briefing cast's findings lane
 (`src/precis/reading/briefing_cast.py`) now hands the composer `[fi]` handles and writes per-paragraph `cites` edges
-(shipped); what remains is the render mode below.
-
-- Add a rail-only cite render mode: handles shown in the reader's rail but
-  not read aloud by the TTS.
+(shipped).
 
 Who: agent-code.

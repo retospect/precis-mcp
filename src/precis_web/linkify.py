@@ -31,6 +31,9 @@ Taproot hub-cite heads in the render window) renders a matching bracket
 cite as a filled violet ``◆`` claim anchor (:func:`_render_claim_hub`,
 click → ``/claim/<head>``, hover → ``/preview/claim/<head>``); ``None``
 outside smartdraft/paper readers, so other surfaces render unchanged.
+Rail-only drafts (``smartdraft.is_rail_only``, briefings) pre-strip resolved
+cites from display text via :func:`strip_claim_cites` — no inline anchor,
+the Claims rail still lists them.
 Three sibling maps, precedence-ordered (a head can appear in only one in
 practice, but ``refuted`` wins if it doesn't): ``pending_claims`` — head
 resolves to a finding, not yet a hub — hollow muted-violet ``◇`` to the
@@ -48,7 +51,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from html import escape
 
 from markupsafe import Markup
@@ -227,6 +230,35 @@ _CLAIM_CITE_PATTERN = re.compile(
     r"\[(?P<claimhead>(?:fi[0-9]+)|(?:[a-z2-7]{6}))"
     r"(?:(?P<claimop>[>+])(?P<claimpins>[a-z]{2}[0-9]+(?:,[a-z]{2}[0-9]+)*))?\]"
 )
+
+
+def strip_claim_cites(text: str, heads: Collection[str]) -> str:
+    """Rail-only cite render: drop every ``[head]`` claim cite whose head is
+    in ``heads`` (the resolved hub/pending/refuted/hypothesis heads) from
+    display ``text``, with the whitespace before it, so no sigil, brackets or
+    double space remain. The stored prose is untouched — the chunk-level
+    ``cites`` edges and the Claims rail stay keyed on it. A cite-shaped
+    bracket whose head isn't in ``heads`` is left for ordinary rendering."""
+    if not text or not heads:
+        return text
+    wanted = set(heads)
+    last = {"end": -1, "ls": False}  # previous removal: where it ended, line-start?
+
+    def _sub(m: re.Match[str]) -> str:
+        if m.group("claimhead") not in wanted:
+            return m.group(0)
+        at_line_start = (
+            m.start() == 0
+            or text[m.start() - 1] == "\n"
+            or (last["end"] == m.start() and last["ls"])
+        )
+        last["end"], last["ls"] = m.end(), at_line_start
+        # Mid-line: keep the space after the cite (the one before was eaten).
+        return "" if at_line_start else m.group("trail")
+
+    return re.sub(
+        r"[ \t]*" + _CLAIM_CITE_PATTERN.pattern + r"(?P<trail>[ \t]*)", _sub, text
+    )
 
 
 def _cite_style(key: str, local: frozenset[str] | None) -> tuple[str, str]:

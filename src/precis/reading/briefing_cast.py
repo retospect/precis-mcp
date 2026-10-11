@@ -1066,7 +1066,9 @@ def build_reading_briefing(
         log.warning("reading brief: model returned no script")
         return None
 
-    ref, _created = create_cast_draft(store, profile=profile, date_tag=date_tag)
+    ref, _created = create_cast_draft(
+        store, profile=profile, date_tag=date_tag, meta={"cite_render": "rail"}
+    )
     chunks = store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text=script, split=True
     )

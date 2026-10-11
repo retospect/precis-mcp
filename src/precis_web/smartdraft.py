@@ -99,6 +99,15 @@ _SEARCH_W: dict[str, float] = {"v": 1.0, "k": 1.0, "t": 2.0, "s": 1.0}
 _SEM_TOPN = 20
 
 
+def is_rail_only(ref: Any) -> bool:
+    """Whether a draft's ``[fi<id>]`` / hub cites render in the Claims rail
+    only (no inline ◆/◇ in the prose). Set by ``meta.cite_render == 'rail'``
+    (the briefing cast stamps it); reading-cast drafts that predate the flag
+    are recognised by ``meta.cast``."""
+    meta = getattr(ref, "meta", None) or {}
+    return meta.get("cite_render") == "rail" or meta.get("cast") == "reading"
+
+
 @dataclass(slots=True)
 class ChunkNode:
     """One draft chunk with everything the render needs, joined from

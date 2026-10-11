@@ -505,3 +505,54 @@ def test_cite_integrity_ok_paper_stub_still_fails(hub) -> None:
     )
     handle = handle_registry.format_handle("paper", ref.id)
     assert cite_integrity_ok(store, f"see [{handle}] here", {}) is False
+
+
+# ── rail-only cite render (briefing drafts, gr372773) ────────────────────────
+
+
+class _Ref:
+    def __init__(self, meta) -> None:
+        self.meta = meta
+
+
+def test_is_rail_only_flag_and_legacy_reading_cast() -> None:
+    from precis_web.smartdraft import is_rail_only
+
+    assert is_rail_only(_Ref({"cite_render": "rail"}))
+    assert is_rail_only(_Ref({"cast": "reading"}))  # briefings predating the flag
+    assert not is_rail_only(_Ref({"cast": "nidra"}))
+    assert not is_rail_only(_Ref(None))
+
+
+def test_rail_only_hides_sigil_but_rail_heads_survive() -> None:
+    from precis_web.claim_render import cite_heads_in
+    from precis_web.linkify import linkify_refs, strip_claim_cites
+
+    text = "Tau seeds spread [fi123] across regions [fi123][fi9]. [fi123] Done."
+    claims = frozenset({"fi123", "fi9"})
+
+    normal = str(linkify_refs(text, markdown=True, compact=True, claims=claims))
+    assert "◆" in normal and 'data-claim-head="fi123"' in normal
+
+    shown = strip_claim_cites(text, claims)
+    assert shown == "Tau seeds spread across regions. Done."
+    rail = str(linkify_refs(shown, markdown=True, compact=True, claims=claims))
+    assert "◆" not in rail and "data-claim-head" not in rail
+    assert "[fi" not in rail and "  " not in rail
+
+    # The rail is derived from the stored text, which is untouched.
+    assert cite_heads_in(text) == ["fi123", "fi9"]
+
+
+def test_strip_claim_cites_leaves_unresolved_heads() -> None:
+    from precis_web.linkify import strip_claim_cites
+
+    assert strip_claim_cites("a [fi1] b [fi2]", {"fi1"}) == "a b [fi2]"
+    assert strip_claim_cites("[fi1] lead", {"fi1"}) == "lead"
+
+
+def test_strip_claim_cites_later_line_start() -> None:
+    from precis_web.linkify import strip_claim_cites
+
+    assert strip_claim_cites("a\n[fi1] b", {"fi1"}) == "a\nb"
+    assert strip_claim_cites("a\n  [fi1] [fi2] b", {"fi1", "fi2"}) == "a\nb"

@@ -17,6 +17,7 @@ around the focus and lazily hydrates distant chunks on scroll.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
@@ -34,7 +35,7 @@ from precis_web.claim_render import (
 )
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.draft_links import chunk_links
-from precis_web.linkify import popover_chip
+from precis_web.linkify import popover_chip, strip_claim_cites
 from precis_web.routes.drafts import (
     _DOC_TYPES,
     RefChip,
@@ -213,6 +214,12 @@ async def reader(
             if h in claims and h not in ordered_heads:
                 ordered_heads.append(h)
     claims_evidence = render_claims_evidence(store, ordered_heads)
+    # Rail-only cites (briefing drafts): the Claims rail above is already
+    # computed from the stored prose; now drop the inline ◆/◇ from display.
+    if smartdraft.is_rail_only(ref):
+        shown = {*claims, *pending_claims, *refuted_claims, *hypothesis_claims}
+        for m in view.middle:
+            m.display = strip_claim_cites(m.display, shown)
 
     # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
     # ported from the classic reader. All reuse the classic /drafts/{ident}/…
@@ -357,11 +364,18 @@ async def blocks(
     # note) — a scrolled-to hydrated block must highlight defined terms
     # identically to a server-rendered one.
     abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
+    shown_nodes = sel
+    if smartdraft.is_rail_only(ref):
+        shown = {*claims, *pending_claims, *refuted_claims, *hypothesis_claims}
+        # Display-only copies: stored text (and so the rail) keeps the cites.
+        shown_nodes = [
+            replace(n, text=strip_claim_cites(n.text or "", shown)) for n in sel
+        ]
     return templates.TemplateResponse(
         request,
         "smartdraft/_blocks.html.j2",
         {
-            "nodes": sel,
+            "nodes": shown_nodes,
             "claims": claims,
             "pending_claims": pending_claims,
             "refuted_claims": refuted_claims,
