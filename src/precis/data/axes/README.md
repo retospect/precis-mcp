@@ -24,6 +24,8 @@ default_unknown: unknown        # value used when LLM is unsure
 applies_when:                   # ALL conditions must hold
   domain_in: [chemistry, physics, materials, eng]
 prereq: [domain]                # axes that must run first
+opt_in_kinds: [finding]         # ref-level only; extra kinds, default-OFF until the
+                                # `categorize_kind:<kind>` service is on (claim hubs)
 cost_tier: small                # small | medium
 prompt: |
   ...one-shot system prompt for the LLM...

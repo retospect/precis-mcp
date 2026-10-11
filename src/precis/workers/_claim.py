@@ -69,3 +69,53 @@ def claim_batch(
         binds["ref_ids"] = list(ref_ids)
     rows = conn.execute(sql, binds).fetchall()
     return [(int(r[0]), str(r[1] or "")) for r in rows]
+
+
+# ── opt-in finding / claim-hub kinds ────────────────────────────────────
+
+#: Ref kinds the categorizers (``classify_topics``, ref-level ``axis:*``) skip
+#: unless an operator opts in via a ``service_config`` row (see
+#: :func:`opt_in_service`). Taproot claim hubs are ``finding`` refs tagged
+#: ``TAPROOT:claim`` (~4k on prod); enabling them spends LLM credit, so they
+#: are default-OFF (gr182078).
+OPT_IN_KINDS = frozenset({"finding"})
+
+
+def opt_in_service(kind: str) -> str:
+    """``service_config`` service name that opts ``kind`` into the
+    categorizers (default-OFF; flip with ``service prio`` / ``/categorizers``)."""
+    return f"categorize_kind:{kind}"
+
+
+#: SQL predicate (alias ``r``): editorial review notes (``TAPROOT:review``)
+#: are findings but not claims, so they are never categorized.
+NOT_REVIEW_NOTE_SQL = """
+    NOT EXISTS (
+      SELECT 1 FROM ref_tags rvt JOIN tags rvg ON rvg.tag_id = rvt.tag_id
+      WHERE rvt.ref_id = r.ref_id AND rvg.namespace = 'TAPROOT'
+        AND rvg.value = 'review'
+    )
+"""
+
+
+def effective_kinds(
+    base: list[str], candidates: Any = OPT_IN_KINDS, enabled: Any = ()
+) -> list[str]:
+    """``base`` plus each opt-in kind that is both a ``candidates`` entry
+    (the pass/axis declares it applies) and in ``enabled`` (operator flipped
+    its ``categorize_kind:<kind>`` service on)."""
+    on = set(enabled or ())
+    extra = [k for k in sorted(set(candidates or ()) & OPT_IN_KINDS) if k in on]
+    return [*base, *(k for k in extra if k not in base)]
+
+
+def finding_text(title: str, meta: Any) -> str:
+    """Classifier text for a finding / claim hub: the claim sentence plus its
+    ``meta.scope`` (a finding has no abstract or body beyond the sentence)."""
+    scope = (meta or {}).get("scope") if isinstance(meta, dict) else None
+    parts = [str(title or "").strip()]
+    if isinstance(scope, dict):
+        bits = [f"{k}: {v}" for k, v in scope.items() if v not in (None, "", [], {})]
+        if bits:
+            parts.append("Scope: " + "; ".join(bits))
+    return "\n".join(p for p in parts if p)

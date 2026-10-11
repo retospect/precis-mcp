@@ -723,3 +723,62 @@ class TestPromptHardeningGr331492:
         assert "CHUNK>>>" in prompt
         between = prompt.split("<<<CHUNK\n", 1)[1].split("\nCHUNK>>>", 1)[0]
         assert between == poison_abstract
+
+
+# ── opt-in finding / claim-hub kinds (gr182078) ─────────────────────────
+
+
+def test_domain_skips_claim_hubs_unless_finding_opted_in(store: Any) -> None:
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="Pd/C catalyzes Suzuki coupling.", scope={"temp": "RT"}
+        ),
+    )
+    client = _FakeClient("chemistry")
+
+    off = run_axis_pass(
+        store, dispatch=client, axis_id="domain", batch_size=10, ref_ids=[hub]
+    )
+    assert off == {"claimed": 0, "ok": 0, "failed": 0}
+    assert client.calls == []
+
+    on = run_axis_pass(
+        store,
+        dispatch=client,
+        axis_id="domain",
+        batch_size=10,
+        ref_ids=[hub],
+        opt_in_kinds=["finding"],
+    )
+    assert on == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"chemistry": 1}}
+    assert _ref_tag(store, hub, "DOMAIN") == "chemistry"
+    # The user prompt carries the claim sentence + scope, labelled as a claim.
+    prompt = client.calls[0][1]["content"]
+    assert "Claim: Pd/C catalyzes Suzuki coupling." in prompt
+    assert "Scope: temp: RT" in prompt
+
+
+def test_opt_in_does_not_gate_taproot_axis_or_review_notes(store: Any) -> None:
+    # taproot lists finding in applies_to_kinds -> unaffected by the opt-in.
+    ref_id = seed_ref(store, title="An editorial note", kind="finding")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+    res = run_axis_pass(
+        store,
+        dispatch=_FakeClient("review"),
+        axis_id="taproot",
+        batch_size=10,
+        ref_ids=[ref_id],
+    )
+    assert res["claimed"] == 1
+
+    # It is now TAPROOT:review: an opted-in domain pass never claims it.
+    res = run_axis_pass(
+        store,
+        dispatch=_FakeClient("chemistry"),
+        axis_id="domain",
+        batch_size=10,
+        ref_ids=[ref_id],
+        opt_in_kinds=["finding"],
+    )
+    assert res["claimed"] == 0

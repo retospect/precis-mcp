@@ -1,5 +1,8 @@
 id: property
 version: 1
+# Taproot claim hubs (finding): default-OFF, enabled per `categorize_kind:finding`
+# service_config row (workers/_claim.py). Not in applies_to_kinds on purpose.
+opt_in_kinds: [finding]
 question: "What primary property does this paper investigate?"
 values: [electrical, mechanical, thermal, optical, chemical, magnetic, multi, unknown, n-a]
 default_unknown: unknown

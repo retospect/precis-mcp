@@ -62,7 +62,12 @@ import yaml
 from precis.store.types import Tag
 from precis.utils.llm.json_reply import extract_json_object
 from precis.workers import ref_lease
-from precis.workers._claim import claim_batch
+from precis.workers._claim import (
+    NOT_REVIEW_NOTE_SQL,
+    claim_batch,
+    effective_kinds,
+    finding_text,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -235,8 +240,10 @@ def _claim(
     limit: int,
     marker_values: list[str],
     ref_ids: list[int] | None = None,
+    opt_in_kinds: Iterable[str] = (),
 ) -> list[tuple[int, str]]:
-    """Papers or patents with body content lacking a current-marker tag.
+    """Papers or patents (plus opted-in ``finding`` claim hubs, never
+    ``TAPROOT:review`` notes; default-OFF, gr182078) with body content lacking a current-marker tag.
     A fresh ``TOPICCASCADE`` tag matching either the enabled-set marker or
     the current full-taxonomy marker means done. The latter covers every
     enabled subset because the full sweep has already classified against all
@@ -250,13 +257,14 @@ def _claim(
     (targeted backfill / tests)."""
     return claim_batch(
         conn,
-        kinds=["paper", "patent"],
-        not_done_sql="""
+        kinds=effective_kinds(["paper", "patent"], enabled=opt_in_kinds),
+        not_done_sql=f"""
             NOT EXISTS (
               SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
               WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s
                 AND t.value = ANY(%(marker_values)s)
             )
+            AND (r.kind <> 'finding' OR {NOT_REVIEW_NOTE_SQL})
         """,
         params={"ns": MARKER_NAMESPACE, "marker_values": marker_values},
         limit=limit,
@@ -269,7 +277,14 @@ def _context_text(conn: Any, ref_id: int) -> str:
     """Classification context: the abstract when it's substantial, else the
     abstract (if any) topped up with the first few body chunks — a thin or
     missing abstract otherwise starves tier-0/tier-1 of signal even though
-    the paper has a rich body (the claim SQL already requires body chunks)."""
+    the paper has a rich body (the claim SQL already requires body chunks).
+    A ``finding`` / claim hub has neither: its text is the claim sentence
+    plus ``meta.scope`` (:func:`finding_text`)."""
+    ref = conn.execute(
+        "SELECT kind, title, meta FROM refs WHERE ref_id = %s", (ref_id,)
+    ).fetchone()
+    if ref and ref[0] == "finding":
+        return finding_text(ref[1], ref[2])[:_CONTEXT_CHARS]
     row = conn.execute(
         "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_abstract' "
         "AND retired_at IS NULL LIMIT 1",
@@ -300,6 +315,7 @@ def run_classify_topics_pass(
     batch_size: int = 16,
     enabled_slugs: list[str] | None = None,
     ref_ids: list[int] | None = None,
+    opt_in_kinds: Iterable[str] = (),
 ) -> dict[str, Any]:
     """One claim → tier0 → tier1 → write cycle. Returns
     ``{claimed, ok, failed, dist}``. ``enabled_slugs`` restricts classification
@@ -307,7 +323,8 @@ def run_classify_topics_pass(
     against the full taxonomy (back-compat for CLI/tests); an empty list
     short-circuits to a no-op. ``ref_ids`` optionally restricts the sweep to
     specific papers (targeted backfill / tests); ``None`` sweeps the whole
-    corpus."""
+    corpus. ``opt_in_kinds`` (default none) adds opt-in ref kinds such as
+    ``finding`` (see :data:`precis.workers._claim.OPT_IN_KINDS`)."""
     topics = _load_topics()
     if enabled_slugs is None:
         effective = topics
@@ -325,7 +342,11 @@ def run_classify_topics_pass(
 
     with store.pool.connection() as conn:
         rows = _claim(
-            conn, limit=batch_size, marker_values=marker_values, ref_ids=ref_ids
+            conn,
+            limit=batch_size,
+            marker_values=marker_values,
+            ref_ids=ref_ids,
+            opt_in_kinds=opt_in_kinds,
         )
         conn.commit()
     if not rows:

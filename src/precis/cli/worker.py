@@ -1469,6 +1469,24 @@ def run(args: argparse.Namespace) -> None:
         # classify/paper_glossary. See workers/classify_topics.py +
         # docs/decisions/0060-topic-dossiers.md.
         _topics_env_set = env_csv_set("PRECIS_TOPICS_ENABLED")
+
+        # Opt-in ref kinds (finding / claim hubs, gr182078) for classify_topics
+        # and the ref-level axes: default-OFF, one `service_config` row per
+        # kind (`categorize_kind:<kind>`; PRECIS_CATEGORIZE_KINDS seeds it).
+        # Resolved per cycle so a live flip needs no restart.
+        _kinds_env_set = env_csv_set("PRECIS_CATEGORIZE_KINDS")
+
+        def _opt_in_kinds() -> list[str]:
+            from precis.workers._claim import OPT_IN_KINDS, opt_in_service
+
+            return [
+                k
+                for k in sorted(OPT_IN_KINDS)
+                if _svc_resolver.enabled(
+                    opt_in_service(k), default_on=k in _kinds_env_set
+                )
+            ]
+
         if _register("classify_topics"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
@@ -1500,6 +1518,7 @@ def run(args: argparse.Namespace) -> None:
                     client=_ct_client,
                     batch_size=min(batch_size, 16),
                     enabled_slugs=enabled,
+                    opt_in_kinds=_opt_in_kinds(),
                 )
                 return _CtBatchResult(
                     handler="classify_topics",
@@ -1564,6 +1583,7 @@ def run(args: argparse.Namespace) -> None:
                         dispatch=client,
                         axis_id=axis_id,
                         batch_size=min(batch_size, 16),
+                        opt_in_kinds=_opt_in_kinds(),
                     )
                     return _AxisBatchResult(
                         handler=f"axis:{axis_id}",
