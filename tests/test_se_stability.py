@@ -13,6 +13,7 @@ import json
 import math
 from typing import Any
 
+import numpy as np
 import pytest
 
 from precis.dispatch import Hub
@@ -923,3 +924,125 @@ def test_stability_view_shows_partial_banner() -> None:
     )
     text = _render_stability(tree)
     assert "PARTIAL" in text.split("verdict:")[0]
+
+
+# ── port moment arms: 6-DOF rigid-body nodes (gr334787) ──────────────────
+
+
+def _hub_wheel(tangential: float) -> SeTree:
+    """A hub block with 8 flange-hole ports (4 angles x two flanges at
+    z = ±0.02, radius 0.03) laced by axial spokes to 8 grounded rim
+    points at radius 1 (z = 0). ``tangential`` shifts each rim end that
+    many radians around from its hole's angle (alternating sign per
+    flange); 0 = radial lacing. The hub is grounded in translation only
+    (``fixed`` x/y/z), so its three rotations are the question."""
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "hub", "pose": [0.0, 0.0, 0.0]},
+        {"op": "set_load", "block": "hub", "fixed": True},
+    ]
+    k = 0
+    for flange, z in ((1.0, 0.02), (-1.0, -0.02)):
+        for i in range(4):
+            phi = i * math.pi / 2.0
+            ops.append(
+                {
+                    "op": "add_port",
+                    "block": "hub",
+                    "name": f"h{k}",
+                    "pose": [0.03 * math.cos(phi), 0.03 * math.sin(phi), z],
+                }
+            )
+            psi = phi + flange * tangential
+            ops += [
+                {
+                    "op": "add_block",
+                    "name": f"rim{k}",
+                    "pose": [math.cos(psi), math.sin(psi), 0.0],
+                },
+                {"op": "add_port", "block": f"rim{k}", "name": "pin"},
+                {"op": "set_load", "block": f"rim{k}", "fixed": True},
+                {
+                    "op": "connect",
+                    "a": f"hub.h{k}",
+                    "b": f"rim{k}.pin",
+                    "joint": {"class": "axial", "params": dict(_ROD)},
+                },
+            ]
+            k += 1
+    return apply_ops(SeTree(), ops)
+
+
+def _axle_moment_row(system: se_stability._System) -> int:
+    return int(system.start[system.index["hub"]]) + 5  # rot-z row
+
+
+def test_radial_spokes_carry_no_axle_moment_and_leave_the_hub_mobile() -> None:
+    tree = _hub_wheel(0.0)
+    system = se_stability._assemble(tree)
+    assert system.dof[system.index["hub"]] == 6
+    row = system.equilibrium[_axle_moment_row(system)]
+    assert float(np.max(np.abs(row))) < 1e-12
+    report = se_stability.classify(tree)
+    # first-order mechanism about the axle; the taut radial spokes only
+    # stiffen it at second order (geometric stiffness), never first order
+    assert report.m_internal == 1
+    assert not report.verdict.startswith("rigid")
+
+
+def test_tangential_spokes_stiffen_the_hub_about_the_axle() -> None:
+    tree = _hub_wheel(0.3)
+    system = se_stability._assemble(tree)
+    row = system.equilibrium[_axle_moment_row(system)]
+    assert float(np.max(np.abs(row))) > 1e-3  # non-zero axle moment arm
+    report = se_stability.classify(tree)
+    assert report.m == 0 and report.m_internal == 0
+    assert report.verdict.startswith("rigid")
+    assert (report.j, report.b, report.rank) == (9, 8, 3)
+
+
+def test_port_offset_follows_the_block_rotation() -> None:
+    tree = apply_ops(
+        SeTree(),
+        [
+            {
+                "op": "add_block",
+                "name": "a",
+                "pose": [1.0, 0.0, 0.0],
+                "rot": [0.0, 0.0, math.pi / 2],
+            },
+            {"op": "add_port", "block": "a", "name": "p", "pose": [1.0, 0.0, 0.0]},
+        ],
+    )
+    got = se_stability.port_world(tree, "a", "p")
+    assert got == pytest.approx([1.0, 1.0, 0.0], abs=1e-9)
+
+
+def test_origin_port_designs_keep_three_dof_nodes() -> None:
+    system = se_stability._assemble(_prism(fixed=_PRISM_FIXED))
+    assert set(system.dof.tolist()) == {3}
+    assert system.n == 3 * len(system.node_names)
+
+
+def test_single_offset_bar_leaves_two_rotation_mechanisms() -> None:
+    """One bar from a grounded point to a body's offset port: translations
+    held, three rotations free, one resisted."""
+    tree = apply_ops(
+        SeTree(),
+        [
+            {"op": "add_block", "name": "wall", "pose": [2.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "wall", "name": "pin"},
+            {"op": "set_load", "block": "wall", "fixed": True},
+            {"op": "add_block", "name": "body", "pose": [0.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "body", "name": "p", "pose": [0.0, 1.0, 0.0]},
+            {"op": "set_load", "block": "body", "fixed": True},
+            {
+                "op": "connect",
+                "a": "body.p",
+                "b": "wall.pin",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+        ],
+    )
+    report = se_stability.classify(tree)
+    assert report.m == 2
+    assert "mobile" in report.verdict

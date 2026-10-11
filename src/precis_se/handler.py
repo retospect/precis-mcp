@@ -5188,12 +5188,15 @@ def _render_stability(tree: SeTree) -> str:
     """``view='stability'`` — the Maxwell/Calladine report
     (:mod:`precis_se.stability`): counts, verdict, and the per-member
     self-stress state, under the model-assumption header (pin nodes at
-    block poses, axial subgraph only — the honesty the tripwire contract
+    port world positions, axial subgraph only — the honesty the tripwire contract
     demands)."""
     report = se_stability.classify(tree)
     lines = [
         "# stability — axial subgraph (Maxwell/Calladine)",
-        "model: one pin node per block at its pose; pin-ended axial "
+        "model: axial members attach at their PORT world positions "
+        "(block pose + port pose); a block whose members meet it at "
+        "different points is a 6-DOF rigid body, otherwise a pin node at "
+        "its pose; fixed grounds translations only; pin-ended axial "
         "members only — non-axial connects and envelope contact are NOT "
         "modelled",
         "",

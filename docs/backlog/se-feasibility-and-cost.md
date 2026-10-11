@@ -256,20 +256,6 @@ frame built from rigid blocks is checked and m−s counting stays meaningful
 without re-expressing it as a redundant axial truss. Fixture:
 `se:unicycle-c1` (20 blocks, 19 parented).
 
-## Folded in: connect ports vs stability node positions (gr334787)
-
-`connect` requires ports, then `src/precis_se/stability.py` discards them
-and pins every node at the block pose. On `unicycle-printed-v1` the flange
-node sits on the axle centreline, so every spoke's moment about the axle is
-identically zero (Mx=0 for all six angles): radial is the only
-representable lacing, and radial wheels transmit no torque (the classifier
-correctly says first-order mobile). Fix: use the port offsets (block pose
-plus port transform) as stability node positions. Port-offset node
-positions were the explicitly deferred v1 item in
-`structural-solution-space.md`; this is the datum that promotes them.
-Workaround today: 12 flange-hole blocks plus a truss.
-Who: agent-code.
-
 ## Open questions for Reto
 
 - ~~**Where does `fit_class` sit**~~ — **built 2026-09-05 as

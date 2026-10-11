@@ -460,9 +460,11 @@ the design serves, default `related-to` for a sibling variant,
 
 `view='stability'` (Maxwell/Calladine m−s on the axial subgraph):
 
-- Model honesty (stated in its header): one pin node per block **at the
-  block pose** (port offsets are discarded — cross-laced wheels are
-  inexpressible today), axial members only; `rigid`/`revolute` connects
+- Model honesty (stated in its header): axial members attach at their
+  **port world positions** (block pose + `add_port` pose); a block whose
+  members meet it at different points is a 6-DOF rigid body (so a hub's
+  spokes laced to rim-offset ports carry axle torque), else a pin node at
+  its pose. `fixed` grounds translations only. Axial members only; `rigid`/`revolute` connects
   are NOT in the equilibrium matrix, so rigid substructures must be
   modelled as axial trusses or accepted as unanalysed.
 - Verdicts: `rigid` · `prestress-stabilized` · `first-order mobile —

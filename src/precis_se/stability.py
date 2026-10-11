@@ -4,16 +4,24 @@ Maxwell/Calladine analysis backing ``view='stability'``
 rung 1's ``axial`` class so the counting and the unilateral member land
 as one piece; slice 1 of the same doc's build order).
 
-Model, stated once (the view header repeats it): one pin node per block
+Model, stated once (the view header repeats it): one node per block
 that terminates at least one ``axial`` connect, at the block's own pose;
-every axial member is a pin-ended two-force member along the
-block-to-block segment. Non-axial connects and envelope contact are NOT
+every axial member is a pin-ended two-force member along the segment
+between its two PORT world positions (block pose ∘ port pose; a port with
+no pose sits at the block origin). A block whose members meet it at
+different points is a rigid body with 6 DOF (3 translations + 3
+rotations) so a member force ``u`` at port point ``p`` loads it with the
+wrench ``(u, (p − pose) × u)`` — without that, a hub's spokes all act
+through one point and carry no moment about the axle (gr334787). A block
+all of whose members attach at its origin stays a 3-DOF pin node.
+``objectives.fixed`` grounds translations only; rotations stay free.
+Non-axial connects and envelope contact are NOT
 modelled — this is the axial subgraph's answer, honestly scoped, not a
 general mobility analysis of the whole design.
 
 The counting is Calladine's extension of Maxwell's rule: with ``j`` nodes,
 ``b`` members and ``c`` grounded translations (``objectives.fixed``),
-``m − s = 3j − c − b`` where ``m`` = independent inextensional mechanisms
+``m − s = n − c − b`` (``n`` = 3 per pin node + 6 per rigid body) where ``m`` = independent inextensional mechanisms
 and ``s`` = independent self-stress states — both read off one SVD of the
 equilibrium matrix. Whether a first-order mechanism is actually stabilized
 by an available self-stress is the second-order (product-force /
@@ -41,7 +49,8 @@ The warn-tier ``prestress_state`` DRC rule (:mod:`precis_se.drc`) is
 :func:`prestress_report`'s DRC face. The generator for this checker is
 :mod:`precis_se.formfind`; the DOF probe in the DRC reports ``axial`` as an
 honest skip, and capacity findings fold into ``view='drc'``. The checker's
-pin nodes sit at block poses and the honesty header says so.
+formfind still places its nodes at block poses (ports ignored; Reto
+2026-10-11) and says so in its own honesty note.
 """
 
 from __future__ import annotations
@@ -50,8 +59,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from precis.cad.vec import as_vec3 as cad_as_vec3
+from precis.cad.vec import pose as cad_pose
 from precis_se import joints as se_joints
-from precis_se.ops import ConnectSpec, SeTree
+from precis_se.ops import ConnectSpec, SeTree, effective_ports
 
 #: The verbatim tripwire line (see module docstring) — kept as one
 #: constant so the contract's wording cannot drift between emitters.
@@ -76,6 +87,10 @@ class MemberRow:
     params: dict[str, float]
     self_stress: float | None = None  # coefficient in the reported state
     skipped: str | None = None
+    #: World-frame attachment points (block pose ∘ port pose) of the a and
+    #: b ends; ``None`` while the member is skipped before they exist.
+    a_point: np.ndarray | None = None
+    b_point: np.ndarray | None = None
 
 
 @dataclass
@@ -140,6 +155,20 @@ def axial_connects(tree: SeTree) -> list[tuple[ConnectSpec, dict[str, float], st
     return out
 
 
+def port_world(tree: SeTree, block: str, port: str) -> np.ndarray:
+    """World position of ``block.port``: block pose ∘ port pose. A port
+    with no pose (the normal box-level case) or one that does not resolve
+    sits at the block origin — the pre-gr334787 behaviour, kept as the
+    honest fallback rather than inventing an offset."""
+    node = tree.blocks[block]
+    origin = np.asarray(node.pose, dtype=float)
+    spec = effective_ports(tree, node).get(port)
+    if spec is None or spec.pose is None:
+        return origin
+    xf = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
+    return np.asarray(xf.apply(cad_as_vec3(spec.pose)), dtype=float)
+
+
 def _axial_members(tree: SeTree) -> list[MemberRow]:
     """Every stored axial connect as a :class:`MemberRow` — degenerate
     geometry is kept, marked ``skipped``."""
@@ -159,16 +188,17 @@ def _axial_members(tree: SeTree) -> list[MemberRow]:
         elif conn.a_block not in tree.blocks or conn.b_block not in tree.blocks:
             row.skipped = "an endpoint block does not exist"
         else:
-            pa = np.asarray(tree.blocks[conn.a_block].pose, dtype=float)
-            pb = np.asarray(tree.blocks[conn.b_block].pose, dtype=float)
+            pa = port_world(tree, conn.a_block, conn.a_port)
+            pb = port_world(tree, conn.b_block, conn.b_port)
             length = float(np.linalg.norm(pb - pa))
             if length <= 0.0:
                 row.skipped = (
-                    "endpoint blocks share one pose — zero length, no "
-                    "line of action (set_pose)"
+                    "endpoint attachment points coincide — zero length, no "
+                    "line of action (set_pose / set_port_pose)"
                 )
             else:
                 row.length = length
+                row.a_point, row.b_point = pa, pb
         rows.append(row)
     return rows
 
@@ -187,22 +217,44 @@ def _rank(matrix: np.ndarray) -> int:
     return int(np.sum(svals > _RANK_RTOL * svals[0]))
 
 
+#: An attachment arm shorter than this (metres) is "at the block origin":
+#: the block stays a 3-DOF pin node.
+_ARM_EPS = 1e-12
+
+
 @dataclass
 class _System:
     """The assembled axial system every whole-structure analysis shares —
     one assembly, so :func:`classify`'s equilibrium matrix and
     :func:`prestress_report`'s can never disagree about the structure.
-    Empty (``live == []``) when there is nothing analysable."""
+    Empty (``live == []``) when there is nothing analysable.
+
+    DOF layout: node ``i`` owns ``dof[i]`` consecutive rows from
+    ``start[i]`` — 3 translations, then (rigid bodies only) 3 rotations.
+    Reusable by any rigid-body analysis (gr334788's rigid-connect groups)."""
 
     members: list[MemberRow]  # every stored axial connect, skipped included
     live: list[MemberRow]
     node_names: list[str]
     index: dict[str, int]
-    coords: np.ndarray  # (j, 3)
-    fixed_mask: np.ndarray  # (3j,) bool — objectives.fixed translations
-    equilibrium: np.ndarray  # (3j, b) — tension-positive unit columns
+    coords: np.ndarray  # (j, 3) block poses
+    dof: np.ndarray  # (j,) 3 or 6
+    start: np.ndarray  # (j,) first row of each node
+    fixed_mask: np.ndarray  # (n,) bool — objectives.fixed translations
+    equilibrium: np.ndarray  # (n, b) — tension-positive unit columns
     lengths: np.ndarray  # (b,)
+    arms: list[tuple[np.ndarray, np.ndarray]]  # per live member: (r_a, r_b)
     notes: list[str]
+
+    @property
+    def n(self) -> int:
+        return int(self.dof.sum())
+
+
+def _skew(v: np.ndarray) -> np.ndarray:
+    """``_skew(r) @ w == r × w``."""
+    x, y, z = (float(a) for a in v)
+    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
 
 
 def _assemble(tree: SeTree) -> _System:
@@ -227,32 +279,57 @@ def _assemble(tree: SeTree) -> _System:
         [tree.blocks[name].pose for name in node_names], dtype=float
     ).reshape(j, 3)
 
+    arms: list[tuple[np.ndarray, np.ndarray]] = []
+    rigid_body = np.zeros(j, dtype=bool)
+    for row in live:
+        assert row.a_point is not None and row.b_point is not None
+        ra = row.a_point - coords[index[row.a_block]]
+        rb = row.b_point - coords[index[row.b_block]]
+        arms.append((ra, rb))
+        if float(np.linalg.norm(ra)) > _ARM_EPS:
+            rigid_body[index[row.a_block]] = True
+        if float(np.linalg.norm(rb)) > _ARM_EPS:
+            rigid_body[index[row.b_block]] = True
+    dof = np.where(rigid_body, 6, 3).astype(int)
+    start = np.concatenate([[0], np.cumsum(dof)[:-1]]).astype(int)
+    n = int(dof.sum())
+
     axis_index = {"x": 0, "y": 1, "z": 2}
-    fixed_mask = np.zeros(3 * j, dtype=bool)
+    fixed_mask = np.zeros(n, dtype=bool)
     for name in node_names:
         for axis in _fixed_axes(tree, name):
-            fixed_mask[3 * index[name] + axis_index[axis]] = True
+            fixed_mask[start[index[name]] + axis_index[axis]] = True
 
     # Equilibrium matrix: column k is member k's unit direction, +u at
-    # its a-node and −u at its b-node (tension-positive).
-    equilibrium = np.zeros((3 * j, b))
+    # its a-end and −u at its b-end (tension-positive), with the moment
+    # arm r × (±u) in the rotation rows of a rigid-body node.
+    equilibrium = np.zeros((n, b))
     lengths = np.empty(b)
     for k, row in enumerate(live):
         ia, ib = index[row.a_block], index[row.b_block]
-        u = coords[ib] - coords[ia]
+        assert row.a_point is not None and row.b_point is not None
+        u = row.b_point - row.a_point
         lengths[k] = float(np.linalg.norm(u))
         u = u / lengths[k]
-        equilibrium[3 * ia : 3 * ia + 3, k] = u
-        equilibrium[3 * ib : 3 * ib + 3, k] = -u
+        ra, rb = arms[k]
+        equilibrium[start[ia] : start[ia] + 3, k] = u
+        equilibrium[start[ib] : start[ib] + 3, k] = -u
+        if dof[ia] == 6:
+            equilibrium[start[ia] + 3 : start[ia] + 6, k] = np.cross(ra, u)
+        if dof[ib] == 6:
+            equilibrium[start[ib] + 3 : start[ib] + 6, k] = np.cross(rb, -u)
     return _System(
         members=members,
         live=live,
         node_names=node_names,
         index=index,
         coords=coords,
+        dof=dof,
+        start=start,
         fixed_mask=fixed_mask,
         equilibrium=equilibrium,
         lengths=lengths,
+        arms=arms,
         notes=notes,
     )
 
@@ -347,7 +424,7 @@ def classify(tree: SeTree) -> StabilityReport:
             unmodelled_connects=rigid,
         )
 
-    index, coords, lengths = system.index, system.coords, system.lengths
+    coords = system.coords
     fixed_mask = system.fixed_mask
     c = int(fixed_mask.sum())
     free = ~fixed_mask
@@ -362,12 +439,16 @@ def classify(tree: SeTree) -> StabilityReport:
 
     # Rigid-body modes the supports leave free: the span of the six
     # generators (3 translations, 3 rotations about the centroid),
-    # restricted to motions that hold every fixed DOF at zero.
-    rigid_full = np.zeros((3 * j, 6))
+    # restricted to motions that hold every fixed DOF at zero. A
+    # rigid-body node also turns by the generator's rotation.
+    rigid_full = np.zeros((system.n, 6))
     centroid = coords.mean(axis=0)
     for i in range(j):
-        rigid_full[3 * i : 3 * i + 3, 0:3] = np.eye(3)
-        rigid_full[3 * i : 3 * i + 3, 3:6] = _cross_matrix(coords[i] - centroid)
+        r0 = int(system.start[i])
+        rigid_full[r0 : r0 + 3, 0:3] = np.eye(3)
+        rigid_full[r0 : r0 + 3, 3:6] = _cross_matrix(coords[i] - centroid)
+        if system.dof[i] == 6:
+            rigid_full[r0 + 3 : r0 + 6, 3:6] = np.eye(3)
     if c:
         gen_null = _null_space(rigid_full[fixed_mask, :])
         rigid_free = rigid_full[free, :] @ gen_null
@@ -384,10 +465,7 @@ def classify(tree: SeTree) -> StabilityReport:
 
     self_stress_basis = vt[rank:, :].T if s else np.empty((b, 0))
     verdict = _verdict(
-        live,
-        lengths,
-        index,
-        coords,
+        system,
         free,
         u_svd[:, rank:],
         rigid_free,
@@ -445,10 +523,7 @@ def _sign_feasible(live: list[MemberRow], state: np.ndarray) -> tuple[bool, list
 
 
 def _verdict(
-    live: list[MemberRow],
-    lengths: np.ndarray,
-    index: dict[str, int],
-    coords: np.ndarray,
+    system: _System,
     free: np.ndarray,
     mech_basis: np.ndarray,
     rigid_free: np.ndarray,
@@ -458,6 +533,7 @@ def _verdict(
     s: int,
     notes: list[str],
 ) -> str:
+    live = system.live
     if m_internal <= 0:
         if s > 0:
             return f"rigid (statically indeterminate — {s} self-stress state(s))"
@@ -503,9 +579,7 @@ def _verdict(
         )
 
     for state in candidates:
-        stress = _stress_matrix(live, lengths, index, coords.shape[0], state)[free, :][
-            :, free
-        ]
+        stress = _stress_matrix(system, state)[free, :][:, free]
         quad = internal.T @ stress @ internal
         eigvals = np.linalg.eigvalsh(quad)
         scale = float(np.max(np.abs(quad))) or 1.0
@@ -546,25 +620,35 @@ def _orth(matrix: np.ndarray) -> np.ndarray:
     return u_svd[:, :rank]
 
 
-def _stress_matrix(
-    live: list[MemberRow],
-    lengths: np.ndarray,
-    index: dict[str, int],
-    j: int,
-    state: np.ndarray,
-) -> np.ndarray:
-    """The geometric-stiffness (stress) matrix of ``state``: the
-    force-density Laplacian ``Ω`` (``q = t/L`` per member) Kronecker the
-    3×3 identity — the second-order test's quadratic form."""
-    omega = np.zeros((j, j))
-    for k, row in enumerate(live):
-        q = float(state[k]) / float(lengths[k])
-        ia, ib = index[row.a_block], index[row.b_block]
-        omega[ia, ia] += q
-        omega[ib, ib] += q
-        omega[ia, ib] -= q
-        omega[ib, ia] -= q
-    return np.kron(omega, np.eye(3))
+def _stress_matrix(system: _System, state: np.ndarray) -> np.ndarray:
+    """The geometric-stiffness (stress) matrix of ``state``: the quadratic
+    form of the second variation of ``Σ t·L``. Per member, ``q |Δδ|²``
+    (``q = t/L``, ``Δδ`` the relative first-order displacement of the two
+    attachment points — for pin nodes exactly the force-density
+    Laplacian Kronecker ``I₃``) plus, for a rotating end with arm ``r``,
+    the second-order arc term ``±t·((e rᵀ + r eᵀ)/2 − (e·r) I)`` on its
+    rotation block."""
+    n = system.n
+    out = np.zeros((n, n))
+    for k, row in enumerate(system.live):
+        t = float(state[k])
+        q = t / float(system.lengths[k])
+        ia, ib = system.index[row.a_block], system.index[row.b_block]
+        ra, rb = system.arms[k]
+        assert row.a_point is not None and row.b_point is not None
+        e = (row.b_point - row.a_point) / float(system.lengths[k])
+        d = np.zeros((3, n))
+        for node, arm, sign in ((ia, ra, -1.0), (ib, rb, 1.0)):
+            r0 = int(system.start[node])
+            d[:, r0 : r0 + 3] += sign * np.eye(3)
+            if system.dof[node] == 6:
+                d[:, r0 + 3 : r0 + 6] += sign * -_skew(arm)
+                m = 0.5 * (np.outer(e, arm) + np.outer(arm, e)) - float(
+                    e @ arm
+                ) * np.eye(3)
+                out[r0 + 3 : r0 + 6, r0 + 3 : r0 + 6] += sign * t * m
+        out += q * (d.T @ d)
+    return out
 
 
 # ── prestress: declared preloads vs the self-stress space ────────────────
@@ -731,7 +815,19 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
     tolerance = _PRESTRESS_RTOL * scale
     residual_field = system.equilibrium @ t
     residual_field[system.fixed_mask] = 0.0  # reactions carry fixed DOFs
-    per_node = np.linalg.norm(residual_field.reshape(-1, 3), axis=1)
+    # Per node: force out-of-balance (N); a rigid body's moment
+    # out-of-balance (N·m) joins as a force at the mean member length.
+    lref = float(np.mean(system.lengths))
+    per_node = np.empty(len(system.node_names))
+    for i in range(len(per_node)):
+        r0 = int(system.start[i])
+        f = float(np.linalg.norm(residual_field[r0 : r0 + 3]))
+        mom = (
+            float(np.linalg.norm(residual_field[r0 + 3 : r0 + 6])) / lref
+            if system.dof[i] == 6
+            else 0.0
+        )
+        per_node[i] = float(np.hypot(f, mom))
     worst = int(np.argmax(per_node))
     residual = float(per_node[worst])
     worst_node = system.node_names[worst]
@@ -869,9 +965,8 @@ def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
     instruction behind it — nothing says how the member gets from its
     free length to the installed one. When all three are declared, they
     are cross-checked against the installed length — the endpoint
-    block-pose distance stability already computes (node = block pose,
-    ports discarded, the same approximation the whole-structure model
-    uses)."""
+    port-to-port distance stability already computes (block pose ∘ port
+    pose; a pose-less port sits at the block origin)."""
     findings: list[tuple[str, str]] = []
     for row in _axial_members(tree):
         if row.skipped is not None:
@@ -910,7 +1005,7 @@ def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
                     f"declared preload {preload:g} N disagrees with rate × "
                     f"(installed − free length) = {rate:g} × "
                     f"({installed:g} − {free_length:g}) = {implied:g} N "
-                    "(node = block pose, ports discarded — approximate) — "
+                    "(attachment points = block pose ∘ port pose) — "
                     "reconcile the free_length/rate/preload triple",
                 )
             )
@@ -996,9 +1091,9 @@ def _axial_force_component(tree: SeTree, row: MemberRow) -> float | None:
     force = conn.objectives.get("force")
     if not isinstance(force, list) or len(force) != 3:
         return None
-    pa = np.asarray(tree.blocks[row.a_block].pose, dtype=float)
-    pb = np.asarray(tree.blocks[row.b_block].pose, dtype=float)
-    u = pb - pa
+    if row.a_point is None or row.b_point is None:
+        return None
+    u = row.b_point - row.a_point
     norm = float(np.linalg.norm(u))
     if norm <= 0.0:
         return None
