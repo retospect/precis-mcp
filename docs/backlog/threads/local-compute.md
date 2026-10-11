@@ -4,7 +4,7 @@
 
 - **Pillar:** local-compute
 - **Next:** Run the 40-task `chase:verify` compare, local `gpt-oss-120b` vs Haiku 4.5, each arm twice (`scripts/llm_eval/build_chase_verify_gold.py`, then `precis llm eval gpt-oss-120b --compare claude-haiku-4-5 --placement-a local --placement-b cloud --tier medium --gold <set>`), and bring Reto the numbers before touching `llm.chain.medium`. `chase:verify` is ~96% of medium-tier calls (7,191 / $70 in the 7 days to 2026-10-11). It is a claim-support judgment, and the 2026-10-03 tuned-models plan keeps judgment ops on Claude, so Reto decides with the numbers in hand.
-- **Blocked by:** The compare needs the eval code deployed (or Reto's OK to run it as reto on melchior). NAS role shares await Reto’s local-compute-12 answer.
+- **Blocked by:** The eval code is deployed (round 24, prod 7530b327a), but running it reads prod from melchior as reto, which the agent permission classifier refuses without Reto's explicit OK in that session. NAS role shares await Reto’s local-compute-12 answer.
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
 - **Worktree:** `local-compute`
