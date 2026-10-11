@@ -168,4 +168,6 @@ New `src/precis/viz3d/`. Touches `utils/figure_source.py`,
 
 **Gripe:** gr461790 (2026-10-10 triage) is this item from the agent's side.
 An agent can mint a nanobud but has no way to put its picture in a draft
-figure. Close it when §2 ships.
+figure. Close it when §2 ships. Wiring surface: `src/precis/utils/figure_source.py`
+(source resolution), `src/precis/handlers/draft.py` (the figure op),
+`src/precis_se/atomic/render.py` (the stick renderer). Who: agent-code.

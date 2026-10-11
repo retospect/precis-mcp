@@ -259,6 +259,43 @@ comment pointed here but this file did not carry it until 2026-09-25.
 design with parent edges and is the fixture this needs — the earlier
 laced design it was found on (`unicycle-printed-v1`) is retired.
 
+## Folded in: connect ports vs stability node positions (gr334787)
+
+`connect` requires ports, then `src/precis_se/stability.py` discards them
+and pins every node at the block pose. On `unicycle-printed-v1` the flange
+node sits on the axle centreline, so every spoke's moment about the axle is
+identically zero (Mx=0 for all six angles): radial is the only
+representable lacing, and radial wheels transmit no torque (the classifier
+correctly says first-order mobile). Fix: use the port offsets (block pose
+plus port transform) as stability node positions. Port-offset node
+positions were the explicitly deferred v1 item in
+`structural-solution-space.md`; this is the datum that promotes them.
+Workaround today: 12 flange-hole blocks plus a truss.
+Who: agent-code.
+
+## Folded in: a tensioned-spoke mechanism (gr334786)
+
+A spoke is a threaded rod tensioned by a nipple. `cable` (demands "the
+cable / wire rope", `src/precis_se/joints.py` mechanism table) is the only
+available mechanism and its BOM demand is wrong. There is no way to say
+"tension to 600 N at assembly", and nowhere for the nipple thread pitch —
+what actually creates the preload — to live. Add a tensioner /
+turnbuckle-family mechanism whose demands name the tensioning part, plus an
+assembly-instruction slot tying preload to it (connects to the
+free_length/rate/preload triple, gr334782).
+Who: agent-code.
+
+## Folded in: declared bore/OD never verified to mate (gr334784)
+
+`mechanism_demand` asks for undeclared bore/OD/press-fit relations, but
+when both sides of a `connect` declare their dimensions nothing checks they
+mate: a 17 mm bearing bore against a declared 17 mm axle is exactly the
+check the measures/relation machinery exists for, and it never runs across
+a connect (found on 6203 bearing seats). Add a mate check — bore vs OD
+within the declared `fit_class` — emitted as a finding in
+`src/precis_se/drc.py` / `measures.py`.
+Who: agent-code.
+
 ## Open questions for Reto
 
 - ~~**Where does `fit_class` sit**~~ — **built 2026-09-05 as

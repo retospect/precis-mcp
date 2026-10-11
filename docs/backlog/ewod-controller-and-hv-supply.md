@@ -32,10 +32,10 @@ campaign burned several rounds chasing numbers produced by stale code.
 
 ## Prerequisites (existing defects, not this item's work)
 
-- **gr347037** (30 of 57 fabric nets lose a congestion race) is the open
-  routing defect, but its measurement predates rulings 10/11 — the radial
-  breakout stubs are gr347037's own proposed remedy. **Re-measure on the
-  offline rebuild harness at HEAD before anyone writes a fix.**
+- **gr347037** is the open routing defect. Re-measured 2026-10-11 on
+  ewod-dogfood-6: 10 of 58 nets fail (7 `no_path`, 3 `congestion`), down
+  from the original 30 of 57. The radial breakout stubs are gr347037's own
+  proposed remedy; the fix plan lives in `pcb-lazy-netlist-and-checks.md`.
 - **gr346004** (2 `via_pad_keepout`: merged reservoir pad vs plaza ring
   vias) predates the 2.25 mm pitch change (ruling 10). Same rule:
   re-measure at HEAD first.

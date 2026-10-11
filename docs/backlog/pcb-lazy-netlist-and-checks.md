@@ -1,16 +1,16 @@
 ---
 status: ready
-title: pcb — lazy netlist (supply/client roles, matching solver), one check surface (DRC+ERC), and four fabric defects folded in as slices
+title: pcb — lazy netlist (supply/client roles, matching solver), one check surface (DRC+ERC), and fabric defects folded in as slices
 prio: high
 model: opus
 pillar: 3d-design
 ---
 
-# pcb — lazy netlist, one check surface, four fabric defects
+# pcb — lazy netlist, one check surface, fabric defects
 
 Design session Reto + agent, 2026-09-24, working `ewod-dogfood-2` through
 route/DRC cycles on the prod web view. Part 1 is the model; the slices
-follow from it. Gripes **gr449483, gr449579, gr346004** close against this
+follow from it. Gripes **gr449483, gr339236, gr346004** close against this
 file and **gr347037** stays parked on it — each slice below carries its
 measurement and repro, so this spec is the only record after closure.
 (Each of those gripes carries a 2026-09-24 comment "folded into
@@ -25,7 +25,7 @@ Cross-referenced, not duplicated: `ewod-controller-and-hv-supply.md`
 
 ## Motivation / why
 
-Three defects in one week on one board (gr346744, gr449483, gr449579) share
+Defects in one week on one board (gr346744, gr449483, gr449579 — the last since shipped) share
 a shape: geometry reasoned about at the wrong level of the pipeline, and a
 check surface that cannot say which complaints are new. Underneath them the
 netlist model is wrong for this board class: 53 electrodes must each reach
@@ -656,42 +656,6 @@ moved onto RESV's copper still errors (failure direction, criterion 4 of
 `pcb-ewod-multitile.md`); a 1×3 merge next to a plaza is clean; the
 dogfood DRC count drops by exactly 2 with the rest unchanged.
 
-### Slice 4 — side-aware ratsnest (gr449579, PRIO high)
-
-Reto, prod web view: "the wire from J_INSTR to U_TEMP to R_BLEED has 2
-vias, but only needs one."
-
-**Root cause, verified in code and against this design's placement:**
-`ratsnest.py::_mst_edges` is Prim's MST over placed member positions and
-`Airwire.length` is pure 2D Euclidean (`geom.dist`) — no term for which
-side a member sits on. Module docstring: "Per net we build a **minimum
-spanning tree** over its placed members."
-
-From the design TOC, all three are collinear on x = 20: `J_INSTR @20,5
-top`, `U_TEMP @20,0 bottom`, `R_BLEED @20,-6 top`. U_TEMP sits between the
-two top parts, so the Euclidean MST chains J_INSTR → U_TEMP → R_BLEED
-(5 + 6 = 11 mm), crossing top → bottom → top = 2 vias. The via-minimal
-tree is J_INSTR → R_BLEED direct (11 mm, all F.Cu, 0 vias) plus one spur to
-U_TEMP (1 via) — identical wire length, half the vias. The MST cannot tell
-them apart.
-
-Not `maze.VIA_COST_MM` (3.0): that prices a layer change within one
-segment's path, after the net is already decomposed into pin pairs. The
-decomposition is upstream and is where the cost is incurred.
-
-**Fix:** add a via-cost term to `_mst_edges`' weight when two members sit
-on opposite sides (reuse `realize._side_layer`). The weight is then **not a
-metric** — fine for Prim's, but say so in the docstring so nobody assumes
-the triangle inequality later. Scope is kind-wide: any net with ≥ 3 pins
-spanning both sides; worse with fanout. On this board GND (fanout 5) and
-HV_RAIL (fanout 3) are the other candidates; GND is plane-assigned
-(In1.Cu) and should dog-bone rather than route.
-
-*Accept:* a three-member fixture with the collinear top/bottom/top layout
-yields a tree with one side change; a same-side three-member net yields
-the unchanged Euclidean MST; `test_pcb_ratsnest` pinned lengths unchanged
-for single-side nets.
-
 ### Slice 5 — pin model + ERC rules on the shared check surface
 
 Build §1i's fields (vocabulary validation in `_pcb_apply`; `ir.py` carries
@@ -829,11 +793,13 @@ class, one default net) routes the default net at fab clearance and keeps
   every OTHER net's copper is cleared away, so this connection lost a race
   for it to a net that routed first") — but Slice 6 should make most of
   that demand go away first.
-- **gr347037 itself** stays parked. Its 30/57 congestion measurement
-  predates rulings 10/11; its own proposed remedy (radial breakout stubs)
-  has shipped; its 2026-09-24 re-measure flipped the dominant mode to
-  `no_path` (23) over `congestion` (7). Re-measure after Slice 1 restores
-  an honest `realized`, then after Slice 6. Do not fix before.
+- **gr347037 itself** stays parked. Current state (2026-10-11,
+  `ewod-dogfood-6` route-status): 10 of 58 nets failed — 7 `no_path`,
+  3 `congestion` — down from the original 30/57. The radial breakout
+  stubs (its own remedy) shipped. Remaining fix direction: route ordering
+  and rip-up budget, maybe per-net clearance. Re-characterise the 7
+  `no_path` after Slice 1 restores an honest `realized`, then after Slice 6.
+  Do not fix before.
 - **Multiplexed channels (min-cost flow)** — see §1e; perfect matching
   only.
 - **Role algebra / inheritance** — §1b: name + voltage (+ current), nothing

@@ -436,3 +436,23 @@ the 44.
    precis systemd units, out of every inventory service group, `inference`
    group emptied as the resurrection guard, no job leases since 08-29
    14:00). Record only — no action.
+
+
+## Seeds still die at the wall-clock deadline through 2026-10-05 (gr347577)
+
+`autocatpath_seed` children keep getting killed by `runner: killed at
+wall-clock deadline`; the gripe saw instances through 2026-10-05, after the
+10-03 evidence above. This is the verify-tier wall problem, not a new cause.
+Fix direction:
+
+- Raise or adapt the per-job wall budget by tier, as the verify-tier fix
+  above says (`quest/compute.py::_autocatpath_wall_seconds` and the caller
+  that stamps `resources.wall_seconds`). Measure one verify seed with the
+  larger wall first, using the elapsed-time stamp listed under "Not built yet".
+- Move `autocatpath_aggregate` off the blocking dispatch path in
+  `precis_pathway`'s runner and `job_ssh_node`, so a wall kill does not
+  silently strand an aggregate. See
+  [autocatpath-aggregate-ran-11h-on-a-33s-job.md](autocatpath-aggregate-ran-11h-on-a-33s-job.md).
+
+Files: `src/precis_pathway/runner.py`, `src/precis/workers/executors/ssh_node.py`
+(`job_ssh_node`). Who: agent-code, M.

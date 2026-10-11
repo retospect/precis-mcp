@@ -67,6 +67,21 @@ currently-unwired (test-only) deny-list assembly path that does not funnel
 through this guard — would need its own check if it's ever wired to a live
 executor.
 
+## Still open (gr254326)
+
+gr254326 is the live report: a `write:none` envelope does not stop an agent
+from writing. Only the stopgap 02c14616 shipped (the refusal in
+`claude_agent.py::_check_deny_list_profile_safety` above). Two things remain:
+
+- A profile-independent verb deny in `runtime/dispatch.py`: the envelope's
+  denied verbs are enforced where both profiles funnel, so `write:none` holds
+  whatever tool names the profile exposes. This is option (1).
+- Attribution for subagent writes: a write made by a subagent of a
+  `write:none` run should record the parent run, so a breach is traceable to
+  the envelope that should have blocked it.
+
+Who: agent-code, M.
+
 ## Scope note
 
 This is not dream-specific. Any pass setting `disallowed_tools` with

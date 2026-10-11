@@ -88,7 +88,8 @@ substrate for a nanobud library.
   gr461791 (2026-10-10): the deployed hexfold menus cannot express
   `[4+4]` or a bud bonded to two same-sublattice (next-nearest) host atoms.
   `menus.py` `expand()` also silently no-ops unknown names; it should
-  refuse them.
+  refuse them (`src/hexfold/menus.py::expand` falls through to `gen = []`
+  for any name other than the implemented ones). Who: agent-code.
 - Assertions **before geometry**: valence 3 everywhere, Euler
   bookkeeping (P5 − P7 = 12 closed; rim accounting open), loud
   `GeneratorError` otherwise.

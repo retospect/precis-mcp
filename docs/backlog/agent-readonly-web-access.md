@@ -21,7 +21,10 @@ through that path.
 
 ## Direction
 
-1. guide-web against prod connects as a role that cannot write. The
+1. guide-web against prod connects as a role that cannot write.
+   `scripts/guide-web` already rewrites the DSN user with
+   `sed 's#://agent_rw@#://agent_ro@#'`, which does nothing if the stored
+   DSN names another user or form, and nothing checks the result. The
    launcher verifies the effective role (`current_user`, a test write that
    fails) and refuses to start otherwise. The boot kind-upsert is skipped
    in read-only mode instead of being attempted.

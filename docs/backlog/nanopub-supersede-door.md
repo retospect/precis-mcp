@@ -89,3 +89,16 @@ server-owned pubinfo emission, same-key enforcement, discard/restage persistence
 and publication/supersession concurrency using a pool-safe lock. Actual successor
 approval/signing/publication remain normal human flow. Retraction and deployed
 native replay are separate follow-ups. No production writes in this work.
+
+## fi191121 needs a successor (gr345628)
+
+Bundled in the 2026-10-11 gripe triage. The unsupported-term lint shipped and
+fi191121 is anchored, so its signed sentence cannot be edited in place; the
+correction is a successor nanopub through the supersede door above.
+
+- needs-Reto: pick the successor hub and settle the "CNB100" wording.
+- Then agent-code builds the supersede door (successor→predecessor publish
+  row, `npx:supersedes` pubinfo, same key) per the ruling at the top; fi191121
+  is its first real consumer and the acceptance case.
+
+Who: needs-Reto (hub and wording), then agent-code.

@@ -19,3 +19,21 @@ Ops-gated resolve-metadata runs plus the standing-worker follow-up.
 - Watcher NFS race: recognize the wrapped file-vanished error in
   `src/precis/cli/watch.py` and skip silently; verify the 7 split orphans
   self-heal post-deploy.
+
+## Systemic: title auto-merge is unsafe and cannot be undone (gr264748)
+
+Bundled in the 2026-10-11 gripe triage. Title-similarity auto-merge fuses
+distinct papers and nothing can split them again.
+
+- Tighten the title auto-merge gate (`_TITLE_AUTO_SIM` in
+  `src/precis/ingest/dedup.py`) and require corroboration (year, first
+  author, or a shared identifier) before an auto-merge; a bare title match
+  goes to the review lane.
+- Build a paper unmerge primitive. None exists: a wrong merge is permanent
+  today. It must restore the absorbed ref's identifiers, chunks and links
+  from the merge record.
+- Data repair: fix pa2069 and pa42497 (wrongly merged), after the unmerge
+  primitive exists.
+
+Size: L. Who: agent-code (gate, corroboration, unmerge); the pa2069/pa42497
+repair is ops after unmerge lands.

@@ -137,13 +137,6 @@ It needs a **web admin-console approval**, so it cannot be fully scripted.
 These are ops gripes, not code. Each needs a node or vault action, and some
 need Reto. Re-check each one before acting, because several are days old.
 
-- **gr474609:** the melchior Claude OAuth token is stale or revoked, and
-  the `claude_p`/`claude_inproc` rungs fail about 100% (al473448). Fix:
-  rotate the vault token, then `launchctl bootout`/`bootstrap`. Related:
-  gr260050, gr329258.
-- **gr462459:** the melchior checkout has no git push credential, so the
-  fix_gripe lane cancels every job (lane OFF by ruling). Fix per
-  `docs/runbooks/fix-gripe-ops.md`, only if the lane is re-armed.
 - **gr475412:** melchior's precis-mcp-http serves a clone that never
   follows deploys. There is no precis-mcp-prod dir, so `follow_prod`
   returns early. Fix: create the prod clone. Owner thread: gr460711.
@@ -155,4 +148,13 @@ need Reto. Re-check each one before acting, because several are days old.
   (td345841).
 - **gr461596:** dropping the `llm_call_log` hash indexes is on hold. The
   caller check says DO NOT DROP (the GC anti-join and FK use them).
-  Re-check `idx_scan` after 2026-10-13, then drop or close as won't-fix.
+  Date-gated: re-check `idx_scan` after 2026-10-13, then either drop them
+  in a forward migration or close as won't-fix.
+- **gr332484:** melchior hits ENFILE (file-table exhaustion) storms. The
+  gripe's colima angle is moot because the host runs OrbStack, but the
+  sysctl step was never done: raise `kern.maxfiles` and `kern.maxfilesperproc`
+  on melchior and persist them across reboot (a LaunchDaemon that runs
+  `sysctl -w`). Approved by Reto 2026-10-11; he runs the sudo step
+  (`kern.maxfiles=983040`, `kern.maxfilesperproc=524288`), an agent writes
+  the persisting LaunchDaemon. Then re-measure open-file counts under load
+  and close the gripe if no storm recurs.

@@ -7,6 +7,19 @@ prio: normal
 
 # context_sentence reads the paper body (in-paper retrieval), not "the abstract or the first chunk"
 
+## Status and who (2026-10-11 gripe triage, gr346458)
+
+Asks a+b (the `usable_context` refusal and the per-ref decline log) are
+deployed. Ask c, this item, is not built:
+`src/precis/workers/context_sentence.py` still takes
+`COALESCE(card_abstract, first body chunk)` and so falls back to the masthead.
+Two parts:
+
+- Code (agent-code): retrieval over the body, as scoped below.
+- Ops: refs 498, 3234 and 42556 carry failed stamps from before the guard;
+  re-clear them (remove the failed-sentence stamp so the pass revisits them)
+  once the code lands, together with the no-abstract cohort.
+
 ## Motivation / why
 `precis.workers.context_sentence._claim` feeds the model
 `COALESCE(card_abstract chunk, first body chunk, '')` as the paper's

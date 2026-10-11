@@ -1,6 +1,7 @@
 ---
 status: idea
 pillar: memory-graph
+title: Elsevier entitlement-preview PDFs ground papers and findings as if complete
 ---
 
 # Elsevier preview-PDF remediation (~2,796 prod papers)
@@ -14,7 +15,42 @@ fix deployed, then scale via the runbook's reset SQL (known incomplete:
 ref_identifiers cleanup). Must run on cluster infra — the Elsevier key lives
 in the vault, which agent_rw can't read by design. Ops.
 
-**Also covers gr465468** (2026-10-10 triage): refs 464484 and 463425 chunk
-to 0 and 7 chunks from ~100 KB cached payloads. These are likely
-entitlement-preview PDFs from the same cohort. Inspect both payloads during
-the requeue.
+Bundled in the 2026-10-11 gripe triage: the three gripes below are the same
+cohort seen from three sides.
+
+## 1. Under-chunked refs 464484 and 463425 (gr465468)
+
+Both chunk to 0 and 7 chunks from ~100 KB cached payloads, so they are
+likely entitlement-preview PDFs from the same cohort. Still under-chunked
+on 2026-10-11. Fix direction: inspect both cached payloads during the
+requeue; if the payload is an entitlement preview, mark the ref incomplete
+rather than leaving it looking ingested.
+
+Who: ops (the requeue is cluster-side).
+
+## 2. pa167977 is a one-page preview and grounds two finding hubs (gr372863)
+
+pa167977 is still a one-page preview PDF, yet two finding hubs rest on it.
+Nothing on the read path or at evidence attach says the body is one page of
+an article.
+
+- Ops: re-fetch it through
+  `docs/runbooks/elsevier-preview-pdf-remediation.md`, then re-check the two
+  hubs' evidence against the full text.
+- Code: add a one-page coverage flag (from `refs.pdf_pages`) on the
+  `src/precis/handlers/paper.py` read path and at evidence attach in
+  `src/precis/taproot/hub.py`, so a preview-grounded edge is visible instead
+  of presented as full-paper support.
+
+Who: ops for the re-fetch; agent-code for the flag.
+
+## 3. Front-matter-only backfiller exists only for Elsevier (gr372785)
+
+The detector for PDFs whose body is just front matter / a truncated preview
+is Elsevier-specific. Other publishers produce the same thin bodies and
+nothing finds them. Fix direction: measure thin-body rates per publisher
+first (read-only corpus query), then add a validated publisher footer
+signature, Wiley first. Owner `src/precis/workers/fetch_oa.py`. Validate each
+signature against known-complete papers before it triggers a refetch.
+
+Who: agent-code (measure, then signature); ops runs the resulting requeue.

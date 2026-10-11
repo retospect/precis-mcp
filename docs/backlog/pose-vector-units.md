@@ -109,3 +109,35 @@ gr336352 (MCP-wide angle explicitness — calc's deg/rad triple
 convention, pcb `rot` self-naming) and gr336344 (awkward-mantissa
 warn). SEQUENCE AFTER the prompt-surface audit fixes land (they touch
 the same hint machinery/files).
+
+## Angle units across every MCP surface (gr336352)
+
+Any surface taking an angle must name its unit explicitly, not rely on a
+default. Today `src/precis/handlers/calc.py` evaluates trig in degrees by
+default, returns inverse functions in degrees, and needs `deg(...)` /
+`rad(...)` wrappers or `view='rad'` to switch — a triple convention an
+agent must memorise. The pcb instance `rot` is a bare number (degrees by
+convention, `rot_deg` internally). Fix: accept `deg`/`rad`-suffixed
+quantities on each angle argument, reject bare nonzero where the unit is
+ambiguous, and answer in the caller's own unit (respond-in-kind, the rule
+cited above). Sweep calc, pcb `rot`, se/nm `rot`.
+Who: agent-code; ships bundled with this item's vector ingest.
+
+## Notation robustness eval (gr336349)
+
+Open question whether LLM design authors do better with the canonical
+trailing-unit form, e-notation, or per-component units. An A/B over
+`src/precis/llm_eval` (harness, tasks, scorers) would measure
+mis-scaled-quantity rates per notation. Gates the awkward-mantissa nudge
+below.
+Who: needs-Reto: wants data before committing the canonical form's
+strictness; agent-code builds the eval.
+
+## Awkward-mantissa advisory (gr336344)
+
+`3e-9 m` and `0.000003 mm` parse fine but invite zero-counting slips; an
+advisory warning ("write `3 nm`") should accompany them. Blocker:
+`src/precis/utils/units.py::parse_quantity` returns a bare float, with no
+warnings channel — add one (return/side-channel) without changing existing
+callers. Warn-only, never reject; sequence after gr336349's data.
+Who: agent-code.

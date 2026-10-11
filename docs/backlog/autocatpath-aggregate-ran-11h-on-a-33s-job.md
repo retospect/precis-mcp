@@ -122,3 +122,20 @@ this is the aggregate. Same engine, different job type and different failure.
 449981 was cancelled, and it has no `parent_ref_id` and no `idem_key`, so the
 `no_to_nh3_pd` aggregate is **stranded** and needs a re-dispatch. Do that only
 after the bound above is deployed, or it reproduces.
+
+## Recurrence: pollux job_ssh_node pass-dead (gr336604)
+
+The `job_ssh_node` pass on pollux keeps going dead (heartbeat gone, claims
+unserved). The cache-leak fix eee5edf4a shipped and the pass looked healthy,
+then went dark again on 2026-09-27, so the leak was not the whole cause.
+Three actions:
+
+1. Ops: stop the legacy blocking `autocatpath_aggregate` job 449981 (the
+   cancel in "What happened" may not have stuck; check its state) so it cannot
+   be re-claimed after a bounce.
+2. Code: an outer timeout, or a submit/poll shape, for `job_ssh_node`'s
+   blocking dispatch (see "The structural gap behind it").
+3. Ops: confirm castor worker RSS stays flat over a day after both. Then
+   decide whether pollux needs its own watch (RSS and heartbeat age).
+
+Who: ops for 1 and 3, agent-code for 2 (M).

@@ -79,6 +79,29 @@ a params schema; an executor lane assignment; and a **prod
 never runs — that exact gap has bitten this project twice (disputes
 conflict-search, and the nm→se `se_propose_atomic` rename).
 
+## Left from gr335242 (se/nm viewer, rounds 1/2a shipped)
+
+Shipped: round 1 (reader, part isolation, hierarchy levels) and round 2a
+(three-cad-viewer 3D route, per-subtree level overrides). Still unbuilt,
+and shared with this item's mechanism (anchors, notes ledger, job):
+
+- **Argue-with-points** — click a point on the SVG/3D render, resolve it
+  to an exact anchor (block + surface point) via the cad kernel's analytic
+  ray probe (no mesh picking), take a natural-language argument, store it
+  as `add_note(kind='question', about=[anchor])`, optionally enqueue a
+  design-task job carrying anchor + prompt. New parts: the SVG→anchor
+  picker and the job type.
+- **Notes layer** — anchored notes shown in the viewer, level-aware
+  (notes today are level-specific by construction).
+- **Pre-solve artefact** — the stick-figure artefact an argument can
+  attach to before a solve exists.
+- Face-picking blocker: curved primitives tessellate into per-triangle
+  "faces"; a clean fix needs `precis.cad.tessellate` to return a
+  per-triangle analytic-facet id.
+
+Who: agent-code for the picker/job type; the pcb handle grammar
+(`src/precis/pcb/argue.py`) is the model to mirror for se/nm.
+
 **Non-goal, explicit (Reto):** no place or route button on the page.
 Actions stay in the MCP/job surface; the page is for arguing, not
 driving.

@@ -211,3 +211,24 @@ same day over every canonical hub (≈3.6k): measurement 2,123 ·
 capability 623 · mechanism 528 · landscape 247 (fi192855 human-set) ·
 definition 90. The sentence identity caught one duplicate pair,
 fi344004 merged into fi343979.
+
+## Mint-time conflict check misses a draft-scoped duplicate (gr477211)
+
+Bundled in the 2026-10-11 gripe triage. The mint-time claim-conflict check
+missed fi449493 against fi192855 (fi449493 has since been merged by hand)
+because the dedup key hashes a draft-specific scope: the draft's subject
+leaked into the scope of a sentence naming the generic class, so the pub_id
+differed. The `landscape` slice above converges sentences onto an existing
+landscape parent via the `taproot_sentence` identity, but only once the
+existing hub is classified landscape and the mint path looks the identity up.
+
+- Fix direction: the dedup key (and the conflict check's candidate lookup in
+  `src/precis/taproot/hub.py::mint_hub`) must ignore the draft-specific scope
+  when the sentence already matches a live hub; compare on the normalised
+  sentence first, scope second.
+- Do not widen landscape claims: no new evidence arms and no scope
+  broadening to catch the duplicate.
+- Acceptance: re-minting the fi449493 sentence with scope
+  `material=Carbon nanobuds` converges onto fi192855 instead of forking.
+
+Who: agent-code.

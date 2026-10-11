@@ -146,6 +146,26 @@ same change.** The regression test that enforces this is the `pa494`-shaped one:
 a document with a lying `ToUnicode` and zero control-char residue must still be
 flagged. A control-char-only patch fails it.
 
+## What remains: corpus backfill (gr228594)
+
+The detector shipped (4889b7258, `src/precis/ingest/glyph_health.py`) and
+runs at write time, so new ingests are checked. It never ran over the
+existing corpus: on 2026-10-11 only 76 of 31,085 papers carry a
+`glyph_health` record, and `pa47024` (a confirmed mode-(b) scar) is still
+unflagged. Until the backfill runs, the ~5,000 older exposed papers are
+invisible to every consumer of the flag.
+
+- Fix direction: a backfill that re-reads each held PDF's fonts through
+  `glyph_health` (font-level, no re-extraction, no OCR) and writes
+  `meta['glyph_health']` when `suspected` fires. Dry-run first; confirm it
+  flags `pa494` and `pa47024` and not the clean papers from the dr42995
+  audit.
+- Owner `src/precis/ingest/glyph_health.py` (reuse, do not fork the
+  detector); run on cluster infra where the PDFs are mounted.
+
+Who: ops (S) once a backfill entry point exists; the entry point is
+agent-code (S).
+
 ## Fix order
 
 > **Shipped 2026-09-28 (gr228652) — steps 1 & 2, together.**
@@ -261,8 +281,8 @@ repair runs at ingest or as a backfill, is an open architecture call. Either way
 body chunks are append-only (`ord >= 0`), so replacement is DELETE + INSERT
 through a registered synthesis pass with the embedding/summary cascade re-run.
 
-`gr228652` carries the root cause; `gr228594` the detector gap; `gr228699` the
-OCR falsification.
+`gr228652` carries the root cause; `gr228594` the unrun corpus backfill;
+`gr228699` the OCR falsification.
 
 ## Interim guard, worth having regardless
 
@@ -375,7 +395,7 @@ The earlier claim-level figure — *"325 of 922 hubs grounded in an exposed sour
 (a)/(b)/(c) combination on re-derivation, and its denominator (922) predates the
 seven merges. Re-derive from the 41-paper set before quoting a hub-level number.
 
-`gr228594` tracks the detector gap.
+`gr228594` tracks the backfill (§What remains).
 
 ---
 

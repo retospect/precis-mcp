@@ -6,13 +6,19 @@ prio: normal
 
 # Embed freshness
 
+gr244419 (2026-08) split into three parts. A is fixed (372238ce). B and C
+remain, both below: B is a fast embed lane for interactive writes
+(section "Fresh hubs are invisible to semantic dedup"; its rejected-priority
+note explains why the lane must create embed work sooner, not rank it
+higher), and C is the three-state embed-status hint.
+
 Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
 ## Scope-aware three-state embed-status hint
 
 _Grouped 2026-09-26; was `embed-status-hint-three-state`, status draft, prio normal._
 
-From gripe 244419's fix plan (item C). Separable — depends on nothing and
+From gr244419's fix plan (item C). Separable — depends on nothing and
 blocks nothing.
 
 ### Motivation / why
@@ -86,7 +92,9 @@ whichever verb surfaces the hint. Read-only — no write path changes.
 
 _Grouped 2026-09-26; was `fresh-hubs-invisible-to-semantic-dedup`, status draft._
 
-Found 2026-08-22, right after minting fi237847.
+Found 2026-08-22, right after minting fi237847. This is gr244419 item B:
+an interactive write (a hub mint, an edit a caller is about to search for)
+needs its chunks embedded within seconds, not at the next hourly batch.
 
 ### The gap
 

@@ -60,3 +60,19 @@ silently degrading metadata enrichment throughput/reliability.
 - `src/precis/workers/paper_meta_enrich.py:119` (mailto sourcing).
 - Any other reader of `PRECIS_CROSSREF_MAILTO` (grep — the retraction route is
   already fixed).
+
+## Venue still missing on ~2,700 papers (gr456181)
+
+Bundled in the 2026-10-11 gripe triage. The `s2_stub_meta` venue fix
+(a1985d96) is deployed and re-armed, but ~1,470 S2-venueless papers and
+~1,200 held papers still carry no venue.
+
+- Fix direction: add a Crossref venue fallback (`container-title`) for DOI
+  papers after the S2 pass misses, stamped like the abstract fallback above
+  so a miss is not retried. Owner `src/precis/ingest/semantic_scholar.py`.
+- The endnote exporter (`src/precis/export/endnote.py`) should read the
+  same 3-key venue precedence the enrichment writes, so a paper with a venue
+  under any of the keys exports with one.
+- Ops: after deploy, re-arm the venue pass over the held cohort and re-count.
+
+Who: agent-code (fallback + exporter); ops re-arm.

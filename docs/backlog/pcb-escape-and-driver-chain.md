@@ -284,7 +284,7 @@ and backed out. 3 must be MEASURED before it is built.
      rule or this ships copper the generator itself would refuse.
 
    **The (neck, via, breakout) triple is ATOMIC.** "108 stub tracks" is
-   not over-build: the B.Cu breakout closed gr347037, and the per-plaza
+   not over-build: the B.Cu breakout cut gr347037 from 30/57 to 10/58 failed nets (ewod-dogfood-6: 7 `no_path`, 3 `congestion`; still open), and the per-plaza
    via-claim ordering in `realize.py` is what fixed "walled in even when
    routed alone". Whole triples may be removed for a pin that gains
    another exit; a plaza's stubs may never be thinned. ("8 vias per

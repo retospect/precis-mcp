@@ -340,6 +340,30 @@ mains-adjacent or high-voltage board is ever attempted.
 - **Polarity and pin-1 orientation marks** on silk — assembly correctness
   (ties into the silkscreen work).
 
+## F. Generator-owned fabric invariants as measures (gr345859)
+
+The `measures` array (metric/operands/goal/strength/reason, evaluated by
+`view='measures'`) evaluates only separation/proximity/height; the five
+electrical metrics report `pending`. None of the EWOD fabric rules can be
+stated as a measure: one via per electrode, no via-in-pad, a merged pad
+may never cover a plaza, HV separation sets the pitch floor, matched stub
+lengths for uniform capacitive load. They live in prose and in
+`generators.py`, with nothing evaluating them.
+
+Second half: a `hard` measure steers, it does not gate — the placer prices
+it ~40× soft and proceeds, so a violated hard measure never reddens
+anything. Hard measures should gate (fail the check / block `ship`-style
+completion), not merely weight.
+
+Direction: a new metric class — generator-owned fabric invariants,
+evaluable by `view='measures'`, owned by the generator that emits the
+fabric so the rule and its check cannot drift. Owning files:
+`src/precis/pcb/generators.py`, the measures evaluator, `PcbHandler`
+measures view.
+
+Who: needs-Reto: spec round — metric vocabulary for the generator-owned
+class, and whether `hard` gates by default or via a new strength.
+
 ## Sequencing
 
 None of this blocks the current gap work (per-net width/clearance, via

@@ -74,9 +74,13 @@ guard protects. It is still not a ship gate: `/land`'s remote matrix, or
 
 ## Starvation, not only depth (2026-09-17)
 
-The slot grab polls every 3 s with no queue, so a `scripts/ship --remote`
-hybrid re-gate waited 80+ min while slot 0 cycled through four siblings, and
-the ship lock likewise passed through three sibling ships ahead of it (six
-`/land` attempts, three green CI runs, zero merges, because main moved every
-time). Under a burst, `/qland` each tree, then one `/go`, is the only path
-that lands. Tracked as gr343941.
+The slot grab used to poll every 3 s with no queue, so a
+`scripts/ship --remote` hybrid re-gate waited 80+ min while slot 0 cycled
+through four siblings, and the ship lock likewise passed through three
+sibling ships ahead of it (six `/land` attempts, three green CI runs, zero
+merges, because main moved every time). Gate waiters are now FIFO: each drops
+an arrival ticket and only races for a slot while among the oldest
+`PRECIS_GATE_SLOTS` tickets (`scripts/lib/gate-slot.sh`; commits 4eaa5ad63,
+a7dbf2e8b), so a slot-wait is bounded by queue position, not by luck. The ship
+lock is separate: under a burst, `/qland` each tree, then one `/go`, is still
+the path that lands. Slot starvation was gr343941.

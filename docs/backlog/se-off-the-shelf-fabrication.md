@@ -572,6 +572,28 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
 - **Assembly order and edge distance** (the rest of rung 3b) are
   untouched, including whether a nut trap is reachable to drop the nut in.
 
+## Profiles capability: T-slot extrusion series (gr415062)
+
+se needs a `profiles` capability pre-populated with the metric T-slot
+extrusion series (20/30/40/45, larger 60/80), so a part references
+series + section (`2020`, `4080`) instead of re-entering slot width,
+channel dims, centre bore and hardware each time. The number that governs
+joining is slot width, not series number: 30 and 40 share the 8 mm slot
+(nuts/brackets cross over); 45/60 move to 10 mm.
+
+| Series | Common sections | Slot | Channel W×D | Bore | Hardware |
+|---|---|---|---|---|---|
+| 20 | 2020, 2040, 2060 | 6.0 | 8.0 × 4.6 | ⌀4.2–5.0 | M4/M5 T-nuts, M5/M6 end tap |
+| 30 | 3030, 3060 | 8.0 | 11.0 × 6.2 | ⌀6.8 | M6 T-nuts, M8 end tap |
+| 40 | 4040, 4080, 8080 | 8.0 | 11.0 × 6.2 | ⌀6.8 | M6/M8 |
+| 45 | 4545, 4590 | 10.0 | 14.0 × 7.8 | ⌀8.5 | M8/M10 T-bolts |
+
+Fits the existing `profile` category and the `stock-cut/profile` tier
+above; the new part is the pre-populated series data and the
+section-reference lookup (verify nominal values against a datasheet
+before seeding).
+Who: agent-code.
+
 ## Deferred, named so they are not re-derived
 
 Thread *geometry* — still deferred, and rung 3 kept the deferral honest:

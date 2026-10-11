@@ -8,7 +8,10 @@ prio: normal
 # taproot numeral cross-check advisory (report-only)
 
 From gr250034. Spec drafted 2026-09-09; awaiting Reto's review before
-build. Base-rate caveat applies: per the td249939 sample, content-error
+build.
+
+Who: needs-Reto: review the spec (in particular the normalisation table
+and the open question below); then agent-code builds it. Base-rate caveat applies: per the td249939 sample, content-error
 rates cluster by source (6%–62% by paper cluster) — do not treat the 12%
 sample rate as uniform, and measure the audit's own false-positive rate on
 a real slice before acting on its output.
