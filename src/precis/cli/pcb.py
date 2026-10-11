@@ -41,7 +41,8 @@ Two sources, not equivalent:
 * ``--from-sqlite PATH`` — the community yaqwsx/jlcparts SQLite dump (that
   project's publish format, not ours) via staging + atomic swap
   (:func:`precis.pcb.catalog.bulk_refresh_parts_from_sqlite`) — the bulk
-  reload path for the whole ~300k-row catalog.
+  reload path for the whole catalog (v1 `components`, ~300k rows, or the
+  current `source-db-v2` `jlc_components`, ~2M rows; format auto-detected).
 
 With neither flag: try the API, and fall back to the dump (``--from-sqlite``
 or ``$PRECIS_JLCPARTS_DUMP_PATH``) when no credentials are configured.

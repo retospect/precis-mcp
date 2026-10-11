@@ -13,7 +13,7 @@ whatever the importer has loaded; the turnover ranking + lazy
 
 **A part in the mesh** (Reto 2026-10-02, knowledge-mesh-6: lazy part
 refs; items inside a design stay addressed through their design). The
-catalog is ~100–300k rows replaced daily, so a part becomes a ref only on
+catalog is ~300k (v1 dump) to ~2M (v2 dump) rows replaced daily, so a part becomes a ref only on
 first use:
 
 - Identity: ``refs(kind='part', slug=<C-no>)`` plus

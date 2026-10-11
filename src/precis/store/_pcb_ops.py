@@ -31,6 +31,7 @@ import contextvars
 import math
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from itertools import islice
 from typing import Any
 
 from psycopg import Connection
@@ -70,6 +71,9 @@ def _validate_pin_declarations(pins: list[dict[str, Any]], component: str) -> No
         by_name[name] = pad
         if pad is not None:
             by_pad[pad] = name
+
+
+_BULK_BATCH = 2000  # rows per round trip in parts_bulk_replace
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
@@ -3328,7 +3332,7 @@ class PcbMixin:
         Upsert (not the atomic swap) keeps the table live and the FK-free
         ``part_footprints`` / ``part_availability`` caches intact; the
         staging + atomic-swap (:meth:`parts_bulk_replace`) is the scale
-        lever for the full ~300k dump (the PCB netlist+placement IR —
+        lever for the full dump (v1 ~300k, v2 ~2M rows) (the PCB netlist+placement IR —
         "drop-index trick optional at our row count")."""
         counts = {"upserted": 0, "restocked": 0}
         with self._pcb_tx() as conn:
@@ -3422,35 +3426,39 @@ class PcbMixin:
         with self._pcb_tx() as conn:
             conn.execute(f"DROP TABLE IF EXISTS {staging}")
             conn.execute(f"CREATE TABLE {staging} (LIKE parts INCLUDING ALL)")
-            for r in rows:
-                lcsc = r["lcsc"]
-                new_stock = int(r.get("stock") or 0)
-                if self._parts_update_availability(conn, lcsc, new_stock):
-                    counts["restocked"] += 1
-                conn.execute(
-                    f"""
-                    INSERT INTO {staging}
-                        (lcsc, mfr, mfr_part, description, jlcpcb_assemblable,
-                         basic, stock, price, package, height_mm, params,
-                         datasheet_url)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        lcsc,
-                        r.get("mfr"),
-                        r.get("mfr_part"),
-                        r.get("description") or "",
-                        bool(r.get("jlcpcb_assemblable", True)),
-                        bool(r.get("basic", False)),
-                        new_stock,
-                        _jsonb_or_none(r.get("price")),
-                        r.get("package"),
-                        r.get("height_mm"),
-                        _jsonb_or_none(r.get("params")),
-                        r.get("datasheet_url"),
-                    ),
+            it = iter(rows)
+            while batch := list(islice(it, _BULK_BATCH)):
+                counts["restocked"] += self._parts_update_availability_many(
+                    conn, [(r["lcsc"], int(r.get("stock") or 0)) for r in batch]
                 )
-                counts["loaded"] += 1
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        f"""
+                        INSERT INTO {staging}
+                            (lcsc, mfr, mfr_part, description,
+                             jlcpcb_assemblable, basic, stock, price, package,
+                             height_mm, params, datasheet_url)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        [
+                            (
+                                r["lcsc"],
+                                r.get("mfr"),
+                                r.get("mfr_part"),
+                                r.get("description") or "",
+                                bool(r.get("jlcpcb_assemblable", True)),
+                                bool(r.get("basic", False)),
+                                int(r.get("stock") or 0),
+                                _jsonb_or_none(r.get("price")),
+                                r.get("package"),
+                                r.get("height_mm"),
+                                _jsonb_or_none(r.get("params")),
+                                r.get("datasheet_url"),
+                            )
+                            for r in batch
+                        ],
+                    )
+                counts["loaded"] += len(batch)
             # Shrink guard — see the docstring. A clean-but-empty load is
             # the dangerous case precisely because nothing raised.
             live = conn.execute("SELECT count(*) FROM parts").fetchone()
@@ -3493,6 +3501,60 @@ class PcbMixin:
                 "FK (the swap drops the table).'"
             )
         return counts
+
+    def _parts_update_availability_many(
+        self, conn: Connection, items: list[tuple[str, int]]
+    ) -> int:
+        """Batched :meth:`_parts_update_availability` (same turnover maths):
+        one SELECT + two ``executemany`` per batch instead of ~3 round trips
+        per part — what makes a ~2M-row reload tractable. A duplicate lcsc
+        inside one batch rolls forward sequentially. Returns restock count."""
+        prev = {
+            r[0]: (int(r[1] or 0), float(r[2] or 0.0))
+            for r in conn.execute(
+                "SELECT lcsc, stock_now, ewma_stock FROM part_availability "
+                "WHERE lcsc = ANY(%s)",
+                ([lcsc for lcsc, _ in items],),
+            ).fetchall()
+        }
+        inserts: dict[str, tuple[Any, ...]] = {}
+        updates: list[tuple[Any, ...]] = []
+        restocked = 0
+        for lcsc, new_stock in items:
+            if lcsc not in prev:
+                inserts[lcsc] = (lcsc, new_stock, new_stock, float(new_stock))
+                prev[lcsc] = (new_stock, float(new_stock))
+                continue
+            old_stock, old_ewma = prev[lcsc]
+            up = new_stock > old_stock
+            restocked += up
+            ewma = 0.7 * old_ewma + 0.3 * new_stock
+            if lcsc in inserts:  # first seen earlier in this same batch
+                inserts[lcsc] = (lcsc, new_stock, old_stock, ewma)
+            else:
+                updates.append(
+                    (new_stock, ewma, new_stock - old_stock, 1 if up else 0, up, lcsc)
+                )
+            prev[lcsc] = (new_stock, ewma)
+        with conn.cursor() as cur:
+            if inserts:
+                cur.executemany(
+                    "INSERT INTO part_availability "
+                    "(lcsc, stock_now, stock_prev, ewma_stock, restock_count, "
+                    "trend) VALUES (%s, %s, %s, %s, 0, 0)",
+                    list(inserts.values()),
+                )
+            if updates:
+                cur.executemany(
+                    "UPDATE part_availability SET stock_prev = stock_now, "
+                    "stock_now = %s, ewma_stock = %s, trend = %s, "
+                    "restock_count = restock_count + %s, "
+                    "last_restock_at = CASE WHEN %s THEN now() "
+                    "ELSE last_restock_at END, "
+                    "discontinued = false, updated_at = now() WHERE lcsc = %s",
+                    updates,
+                )
+        return restocked
 
     def _parts_update_availability(
         self, conn: Connection, lcsc: str, new_stock: int
