@@ -164,20 +164,20 @@
         <input id="drive-kind-search" type="search" x-model="kindQuery" @keydown.enter.prevent
                placeholder="e.g. finding, structure, paper" class="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm" />
         <div class="my-2 flex flex-wrap gap-2 text-xs">
-          <button type="button" @click="allKinds()" class="rounded border px-2 py-1">All</button>
-          <button type="button" @click="noKinds()" class="rounded border px-2 py-1">None</button>
-          <button type="button" @click="setScope('mine')" class="rounded border px-2 py-1">Mine</button>
-          <button type="button" @click="setScope('sources')" class="rounded border px-2 py-1">Sources</button>
-          <button type="button" @click="setScope('derived')" class="rounded border px-2 py-1">Derived</button>
-          <button type="button" @click="setScope('machine')" class="rounded border px-2 py-1">Machine</button>
+          <button type="button" @click="allKinds()" title="Select every kind." class="rounded border px-2 py-1">All</button>
+          <button type="button" @click="noKinds()" title="Clear the kind selection." class="rounded border px-2 py-1">None</button>
+          <button type="button" @click="setScope('mine')" title="{{ scope_help['mine'] }}" class="rounded border px-2 py-1">Mine</button>
+          <button type="button" @click="setScope('sources')" title="{{ scope_help['sources'] }}" class="rounded border px-2 py-1">Sources</button>
+          <button type="button" @click="setScope('derived')" title="{{ scope_help['derived'] }}" class="rounded border px-2 py-1">Derived</button>
+          <button type="button" @click="setScope('machine')" title="{{ scope_help['machine'] }}" class="rounded border px-2 py-1">Machine</button>
         </div>
         <div class="grid max-h-64 grid-cols-2 gap-1 overflow-auto" aria-label="Kinds">
           {% for bucket, bucket_kinds in kind_buckets.items() %}
           {% if bucket_kinds %}
-          <h3 class="col-span-2 mt-2 text-xs font-medium text-slate-500"
+          <h3 class="col-span-2 mt-2 text-xs font-medium text-slate-500" title="{{ bucket_help.get(bucket, '') }}"
               x-show="{{ bucket_kinds | tojson | forceescape }}.some(kk => matchesKind(kk))">{{ bucket | title }}</h3>
           {% for kk in bucket_kinds %}
-          <label x-show="matchesKind({{ kk | tojson | forceescape }})" class="inline-flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-slate-50">
+          <label x-show="matchesKind({{ kk | tojson | forceescape }})" title="{{ kind_help.get(kk, '') }}" class="inline-flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-slate-50">
             <input type="checkbox" name="k" value="{{ kk }}" x-model="kinds" {% if kk in selected_kinds %}checked{% endif %} data-kind-bucket="{{ bucket }}"
                    @change="$refs.scope.value = ''" class="rounded border-slate-300" />
             <span>{{ kk }}</span>
@@ -190,7 +190,7 @@
       </div>
       <div class="space-y-3">
         <div>
-          <label for="drive-tag-search" class="block text-xs font-medium text-slate-600">Find a tag or filter</label>
+          <label for="drive-tag-search" title="Narrow to items carrying every tag you add, e.g. DIM:2d or topic:noxrr. Type to get suggestions; Enter adds the typed tag." class="block text-xs font-medium text-slate-600">Find a tag or filter</label>
           <input id="drive-tag-search" type="search" x-model="tagQuery" @input.debounce.200ms="suggest()"
                  @keydown.escape="suggestions = []" @keydown.enter.prevent="addTag(tagQuery.trim())"
                  placeholder="e.g. DIM:2d, MATERIAL:nanobud, topic:noxrr" class="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm" />
@@ -202,22 +202,22 @@
           <p class="mt-1 text-xs text-slate-500">All selected tags must match. Paper classifications use DIM, MATERIAL and SCALE.</p>
         </div>
         <div class="flex flex-wrap gap-3 text-xs">
-          <label>Show
+          <label title="Which items the list shows: everything, only paper stubs still to fetch (PDF missing, has a DOI/arXiv/S2 id, not yet given up on), or soft-deleted items.">Show
             <select name="state" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
-              <option value="all" {% if state == 'all' %}selected{% endif %}>All</option>
-              <option value="stub" {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
-              <option value="deleted" {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
+              <option value="all" title="Live items of the selected kinds." {% if state == 'all' %}selected{% endif %}>All</option>
+              <option value="stub" title="Papers with no PDF yet that have a DOI, arXiv or Semantic Scholar id, so a download link can be offered. Papers every open-access source already refused are listed separately below as manual retrieval." {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
+              <option value="deleted" title="Soft-deleted items, shown for visibility only (no undelete)." {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
             </select>
           </label>
-          <label>Body availability
+          <label title="Whether an item's body text has been ingested into searchable chunks. Applies across all kinds, not just papers.">Body availability
             <select name="paper_chunks" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
-              <option value="both" {% if paper_chunks == 'both' %}selected{% endif %}>Any</option>
-              <option value="with" {% if paper_chunks == 'with' %}selected{% endif %}>With chunks</option>
-              <option value="without" {% if paper_chunks == 'without' %}selected{% endif %}>Without chunks</option>
+              <option value="both" title="Do not filter on body text." {% if paper_chunks == 'both' %}selected{% endif %}>Any</option>
+              <option value="with" title="Only items whose body has been ingested into chunks." {% if paper_chunks == 'with' %}selected{% endif %}>With chunks</option>
+              <option value="without" title="Only items with no ingested body yet (awaiting ingest or a PDF)." {% if paper_chunks == 'without' %}selected{% endif %}>Without chunks</option>
             </select>
           </label>
         </div>
-        <label class="block text-xs">Folder
+        <label class="block text-xs" title="Which folder to browse. Top level hides anything filed in a folder; Anywhere lists filed and unfiled items together.">Folder
           <select name="folder" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
             <option value="" {% if not folder %}selected{% endif %}>Top level</option>
             <option value="*" {% if folder == '*' %}selected{% endif %}>Anywhere</option>
@@ -225,8 +225,8 @@
           </select>
         </label>
         <div class="flex flex-wrap gap-3 text-xs">
-          <label>Created since <input type="date" name="since" value="{{ since }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
-          <label>Created until <input type="date" name="until" value="{{ until }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
+          <label title="Only items created on or after this date (applies to search).">Created since <input type="date" name="since" value="{{ since }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
+          <label title="Only items created on or before this date (applies to search).">Created until <input type="date" name="until" value="{{ until }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
         </div>
         <p class="text-xs text-slate-500">Dates apply to search. Folder, body availability, Show and citation scope apply to browsing.</p>
         <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency" class="text-xs text-sky-700 underline">Schedules</a>

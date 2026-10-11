@@ -780,6 +780,23 @@ def test_drive_paper_chunks_default_is_both(runtime, client) -> None:
     assert runtime.store.recent_has_chunks is None
 
 
+def test_drive_kinds_and_filters_have_tooltips(client) -> None:
+    """gr477859: every kind, scope button and filter option explains itself."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    html = resp.text
+    # kind checkbox labels carry the per-kind help line
+    assert 'title="Scientific papers:' in html
+    assert 'title="Printed-circuit-board designs.' in html
+    # quick-scope buttons and bucket headings
+    assert 'title="Material collected from outside:' in html
+    # filters: Show / Body availability options, folder, dates
+    assert 'title="Papers with no PDF yet' in html
+    assert 'title="Only items whose body has been ingested' in html
+    assert 'title="Which folder to browse.' in html
+    assert 'title="Only items created on or after' in html
+
+
 def test_drive_availability_and_websearch_picker_render(client) -> None:
     """Availability is separate from kind; grouped APIs remain selectable."""
     resp = client.get("/drive")

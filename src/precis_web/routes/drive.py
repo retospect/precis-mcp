@@ -139,6 +139,68 @@ _MACHINE_KINDS: tuple[str, ...] = (
     "message",
 )
 
+#: One-line hover text per kind in the "Kinds and filters" picker (gr477859).
+#: A kind missing here (a new plugin kind) falls back to a generic line, so
+#: adding a kind never breaks the page; add its line when convenient.
+_KIND_HELP: dict[str, str] = {
+    "paper": "Scientific papers: stubs awaiting a PDF and ingested ones with body text.",
+    "patent": "Patents, ingested with their text.",
+    "datasheet": "Vendor component datasheets.",
+    "cfp": "Calls for papers and funding calls.",
+    "pres": "Presentations (slide decks).",
+    "web": "Web pages fetched and stored.",
+    "wikipedia": "Wikipedia articles pulled in as sources.",
+    "news": "News items collected by the news feeds.",
+    "youtube": "YouTube videos with their transcripts.",
+    "perplexity-reasoning": "Saved Perplexity reasoning answers.",
+    "perplexity-research": "Saved Perplexity deep-research reports.",
+    "websearch": "Saved web-search result sets.",
+    "semanticscholar": "Saved Semantic Scholar lookups.",
+    "oracle": "Saved oracle (LLM consultation) answers.",
+    "math": "Saved math/computer-algebra results.",
+    "memory": "Memory notes agents and you wrote down.",
+    "conv": "Conversation transcripts.",
+    "finding": "Findings: short, sourced conclusions recorded from research.",
+    "tex": "LaTeX documents.",
+    "draft": "Documents being written (papers, reports, ...).",
+    "cad": "3D solid models.",
+    "figure": "SVG figures and canvases.",
+    "mermaid": "Mermaid diagrams.",
+    "structure": "DFT atomistic cells (crystal/molecule structures).",
+    "checklist": "Checklists.",
+    "pcb": "Printed-circuit-board designs.",
+    "component": "Electronic/mechanical components in the parts library.",
+    "material": "Materials and their properties.",
+    "se": "Systems-engineering design items.",
+    "quest": "Quests: multi-step research goals.",
+    "todo": "Todos and work items, including recurring schedules.",
+    "anki": "Generated Anki flashcards.",
+    "citation": "Generated citation records linking papers.",
+    "orcid": "ORCID author records (machine-made).",
+    "job": "Background worker jobs (machine-made).",
+    "agentlog": "Agent activity logs (machine-made).",
+    "alert": "System alerts (machine-made).",
+    "llm": "LLM call records (machine-made).",
+    "provenance": "Provenance records of how items were produced (machine-made).",
+    "message": "Messages sent between agents and people (machine-made).",
+}
+
+#: Hover text for the bucket headings and the quick-scope buttons.
+_BUCKET_HELP: dict[str, str] = {
+    "sources": "Material collected from outside: papers, patents, web, news, saved answers.",
+    "author": "Things you write: drafts, figures, findings and other documents.",
+    "design": "Engineering designs: PCBs, components, materials.",
+    "work": "Agenda items: quests and todos.",
+    "derived": "Content generated from other items: Anki cards, citations.",
+    "machine": "Machine bookkeeping (jobs, logs, alerts); rarely worth browsing.",
+    "other": "Kinds not in any other group.",
+}
+
+
+def _kind_help(kind: str) -> str:
+    return _KIND_HELP.get(kind, f"Items of kind '{kind}'.")
+
+
 _AUTHOR_KINDS: tuple[str, ...] = ("finding", "tex")
 _DERIVED_KINDS: tuple[str, ...] = ("anki", "citation")
 
@@ -962,6 +1024,12 @@ async def index(
             "machine_kind_defs": kind_buckets["machine"],
             "derived_kind_defs": kind_buckets["derived"],
             "kind_buckets": kind_buckets,
+            "kind_help": {kk: _kind_help(kk) for kk in all_kind_defs},
+            "bucket_help": _BUCKET_HELP,
+            "scope_help": {
+                **_BUCKET_HELP,
+                "mine": "Everything you author, design or track: the Author, Design and Work groups.",
+            },
             "other_kind_defs": other_kind_defs,
             "selected_kinds": selected_kinds,
             "tags": tags,
