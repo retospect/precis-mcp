@@ -928,3 +928,102 @@ def test_no_result_ignores_adjectival_and_gerund_forms() -> None:
 def test_no_result_ignores_noun_probes_and_studies() -> None:
     assert not _has_no_result("Fluorescent probes label the membrane.")
     assert not _has_no_result("Prior studies of the membrane label it.")
+
+
+# ── numeral-absent (advisory, gr250034) ──────────────────────────────────
+
+
+def _absent(sentence: str, source: str | None) -> list[str]:
+    return [
+        w
+        for w in lint_claim_sentence(sentence, source_text=source)
+        if w.startswith("numeral-absent")
+    ]
+
+
+def test_numeral_absent_fires_on_fabricated_efficiency_range() -> None:
+    # fi178176 shape: the source reports no quantum efficiency at all.
+    hits = _absent(
+        "Photoelectrochemical measurements on PCN-222 demonstrate photocurrent "
+        "quantum efficiencies of 1–5% under visible light.",
+        "PCN-222 films generate a photocurrent under visible illumination.",
+    )
+    assert len(hits) == 1
+    assert "'1'" in hits[0] and "'5 %'" in hits[0]
+    assert "Advisory only" in hits[0]
+
+
+def test_numeral_absent_fires_on_value_the_source_only_trends() -> None:
+    # fi176615 shape: the source states the trend, never the value.
+    hits = _absent(
+        "Molecular simulations show MOF thermal conductivity is approximately "
+        "0.3 W/m-K for dense frameworks with small pores.",
+        "Thermal conductivity decreases with increasing pore size.",
+    )
+    assert len(hits) == 1 and "'0.3 W'" in hits[0]
+
+
+def test_numeral_absent_is_silent_without_numbers_or_source() -> None:
+    assert not _absent("DFT shows the band gap narrows.", "Gap is 1.2 eV.")
+    assert not _absent("DFT shows a 1.2 eV band gap.", None)
+    assert not _absent("DFT shows a 1.2 eV band gap.", "")
+
+
+@pytest.mark.parametrize(
+    ("claim", "source"),
+    [
+        ("DFT gives 1.0 eV.", "The gap is 1 eV."),
+        ("DFT gives 1000 K.", "heated to 1,000 K"),
+        ("DFT gives 1786 µmol.", "a rate of 1 786 μmol"),
+        ("DFT gives −0.7 V.", "at -0.7 V vs RHE"),
+        ("DFT gives 0.3 V.", "at −0.3 V"),
+        ("Efficiency is 16%.", "an efficiency of 0.16"),
+        ("A force of 1.9 nN is needed.", "a force of 1900 pN"),
+        ("Cycling exceeds 10⁵ cycles.", "over $10^{5}$ cycles"),
+        ("Cycling exceeds 10^5 cycles.", "over 10⁵ cycles"),
+        ("On-off ratios reach 10⁶.", "on-off ratios of about 106"),
+        ("Mobility is 2.5×10⁻³ cm.", "mobility 2.5e-3 cm"),
+        ("Mobility is 2.5 x 10^-3 cm.", "mobility 2.5×10⁻³ cm"),
+        ("The film is 100 nm thick.", "a 0.1 µm film"),
+        ("Two layers form.", "2 layers"),
+        ("A 2 nm gap opens.", "a gap of two nanometres"),
+        ("Tunes 1–5% of sites.", "between 1% and 5%"),
+    ],
+)
+def test_numeral_absent_normalizes_equivalent_forms(claim: str, source: str) -> None:
+    assert not _absent(claim, source)
+
+
+def test_numeral_absent_ignores_notation_digits() -> None:
+    sentence = (
+        "DFT shows C60 on a (10,0) SWCNT, MoS₂ and Au(111) with UiO-66, "
+        "a 3D phase of 1,8-diaminonaphthalene in 2019."
+    )
+    assert not _absent(sentence, "unrelated text")
+
+
+def test_numeral_absent_boundary_before_superscript_run() -> None:
+    # td244964: ``10⁵`` must not read as ``105`` against a source ``105``.
+    assert _absent("Cycling exceeds 10⁵ cycles.", "after 7 cycles")
+    assert not _absent("Cycling exceeds 105 cycles.", "after 105 cycles")
+
+
+def test_numeral_absent_never_blocks_a_mint_code() -> None:
+    from precis.nanopub import gates
+
+    assert "numeral-absent" not in gates._BLOCKING_LINT_CODES
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["15e999999", "10^1000000", "1e9999999999", "2.5 x 10^" + "9" * 5000, "1e401"],
+)
+def test_numeral_absent_survives_absurd_exponents(text: str) -> None:
+    assert _absent(f"DFT gives {text} units.", "nothing numeric") == []
+    assert isinstance(lint_claim_sentence("x", source_text=text), list)
+    assert not _absent("DFT gives 3 units.", text + " and 3")
+
+
+def test_numeral_absent_locant_pattern_is_not_quadratic() -> None:
+    claim = "DFT gives " + ",".join(["1", "2"] * 20000) + " units."
+    assert len(_absent(claim, "nothing numeric")) == 1

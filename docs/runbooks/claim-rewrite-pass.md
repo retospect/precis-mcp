@@ -212,6 +212,8 @@ checks nothing against a source. Graduation means "safe to cite," not
 "correct" — approve, sign, and signoff stay human, and a gate-clean corpus can
 still carry a 10⁶ unit error (fi176705, live and lint-passing).
 
-The one deterministic content check worth adding: flag a claim whose numerals
-appear in **no** linked chunk. It is cheap, and catches both the fabricated
-quantity and the value that exists only as a trend in the source.
+The one deterministic content check: the advisory `numeral-absent` lint flags
+a claim whose numerals appear in **no** grounding chunk (approve page, beside
+`unsupported-term`; `taproot/numeral_audit.py`). It is cheap, and catches both
+the fabricated quantity and the value that exists only as a trend in the
+source. Derived values and figure-only numbers are accepted false positives.

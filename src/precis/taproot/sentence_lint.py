@@ -117,6 +117,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from precis.taproot.numeral_audit import absent_numerals
+
 __all__ = [
     "EPISTEMIC_MODE_TOKENS",
     "GENERIC_EPISTEMIC_HEADS",
@@ -1212,12 +1214,13 @@ def lint_claim_sentence(
     passage the sentence was extracted from, when a caller has it in hand
     (mint/approve time: :func:`~precis.nanopub.gates.advisory_lint`'s
     caller can pass ``bundle.grounding_chunks`` text). It powers
-    ``all-caps-artifact``'s second check and ``unsupported-term`` only --
+    ``all-caps-artifact``'s second check, ``unsupported-term`` and
+    ``numeral-absent`` (gr250034, advisory) only --
     every other rule in this function ignores it, and every existing
     caller that doesn't pass it keeps working unchanged. For
-    ``unsupported-term`` it must carry only chunks of real evidence kinds
-    (paper/patent): a sibling finding's prose is not a source, and letting
-    it in cleared ``C60`` for fi191121 out of *another finding's* text.
+    ``unsupported-term``/``numeral-absent`` it must carry only chunks of real
+    evidence kinds (paper/patent): a sibling finding's prose is not a source,
+    and letting it in cleared ``C60`` for fi191121 out of *another finding's* text.
 
     ``source_title`` (optional) is the evidence source's title; a term the
     title carries counts as supported for ``unsupported-term``. Ignored by
@@ -1381,6 +1384,17 @@ def lint_claim_sentence(
             "passage where it defines the term as additional grounding "
             "(precis-taproot-mint-help); if the claim deliberately "
             "generalizes past the quote's wording, leave it."
+        )
+
+    missing_numerals = absent_numerals(sentence, source_text) if source_text else []
+    if missing_numerals:
+        listed = ", ".join(repr(n) for n in missing_numerals)
+        warnings.append(
+            f"numeral-absent: {listed} found in no grounding passage -- "
+            "check the value against the source; a derived value, a unit "
+            "conversion beyond SI prefixes, or a number only in a figure "
+            "or table image is legitimate, a value the source never "
+            "states is not. Advisory only."
         )
 
     m = _AUTHOR_NAME_RE.search(sentence)
