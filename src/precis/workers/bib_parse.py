@@ -418,6 +418,7 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     """
     from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
+    from precis.utils.stall_capture import maybe_capture
 
     params: dict[str, Any] = {"query.bibliographic": raw_text, "rows": 2}
     if mailto:
@@ -431,6 +432,7 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
                 resp = safe_get(client, _CROSSREF_BASE, params=params)
             except Exception as exc:
                 log.warning("bib_parse: crossref request failed: %r", exc)
+                maybe_capture(exc, _CROSSREF_BASE)
                 if attempt + 1 < _CROSSREF_RETRY_MAX_ATTEMPTS:
                     if drain_sleep(_CROSSREF_RETRY_BASE_S * (2**attempt)):
                         return None

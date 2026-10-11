@@ -175,6 +175,10 @@ def retry_transient[T](
         try:
             return fn()
         except Exception as exc:
+            if _is_connect_failure(exc):
+                from precis.utils.stall_capture import maybe_capture
+
+                maybe_capture(exc, host)
             if attempt + 1 >= attempts or not _is_connect_failure(exc):
                 raise
             delay = backoff_s[min(attempt, len(backoff_s) - 1)] if backoff_s else 0.0

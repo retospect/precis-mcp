@@ -344,6 +344,9 @@ def _safe_fetch(
     try:
         resp = fetch(url)
     except Exception as exc:
+        from precis.utils.stall_capture import maybe_capture
+
+        maybe_capture(exc, url)
         result.misses.append(
             {"url": url, "source": source, "reason": f"error:{type(exc).__name__}"}
         )
