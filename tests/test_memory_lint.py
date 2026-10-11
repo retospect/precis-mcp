@@ -733,7 +733,7 @@ def test_graph_mode_hub_checks_from_the_hub_columns(
 
     assert "big hub → me1 (section node): 45 members — split into sub-hubs" in out, out
     assert "no hub → me11 (Note me11): not part-of any section:index hub" in out, out
-    assert "link(kind='memory', id='me11', target=<hub>, rel='part-of')" in out, out
+    assert "link(kind='memory', id='me11', target='memory:<hub numeric id" in out, out
     assert "unqualified thread → me12 (Note me12): hub me1 has gotchas" in out, out
     assert "unqualified thread → me13" not in out, out
     assert "no hub → me14" not in out and "no hub → me12" not in out, out
