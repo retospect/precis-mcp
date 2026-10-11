@@ -65,6 +65,9 @@ done
 # from letting a browsing session mutate it either. Mechanism differs per
 # mode (see header): prod = agent_ro role, test = PGOPTIONS.
 export PRECIS_WEB_AUTH=off
+# Tell dispatch boot to skip its kinds/providers upserts and reconcile
+# threads outright (gr461387) — cooperative, on top of the DB-side limits.
+export PRECIS_MCP_READ_ONLY=1
 
 case "$DB" in
     prod)

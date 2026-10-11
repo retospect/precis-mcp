@@ -440,7 +440,12 @@ def _read_only_env_override() -> bool:
 
 
 def _probe_read_only(store: Store) -> bool:
-    """One-shot ``SHOW transaction_read_only`` check against the pool.
+    """One-shot read-only check against the pool: ``SHOW
+    transaction_read_only`` OR the role lacking INSERT on ``kinds``.
+
+    The GUC alone misses a grants-based read-only role (``agent_ro``):
+    its sessions are not ``transaction_read_only``, so boot attempted
+    the upsert (gr461387). The privilege check catches it.
 
     Used at boot to decide whether the non-idempotent kinds-upsert /
     oracle_sync writes are safe to attempt. A probe that itself fails
@@ -452,9 +457,12 @@ def _probe_read_only(store: Store) -> bool:
     try:
         with store.pool.connection() as conn:
             row = conn.execute("SHOW transaction_read_only").fetchone()
-        if row is None:
-            return False
-        return str(row[0]).strip().lower() == "on"
+            if row is not None and str(row[0]).strip().lower() == "on":
+                return True
+            priv = conn.execute(
+                "SELECT has_table_privilege(current_user, 'kinds', 'INSERT')"
+            ).fetchone()
+        return priv is not None and priv[0] is False
     except Exception:
         log.debug(
             "precis dispatch boot: read-only probe failed; assuming writable",

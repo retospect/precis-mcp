@@ -63,10 +63,8 @@ residue, then batched ops and flip steps.
    writes, review notes under ~/.claude, plan_tick without a checkout.
    These stall agents but corrupt nothing, so they rank below the deploy
    work.
-10. **backlog/agent-readonly-web-access.md** — enforced read-only
-    guide-web and an agent web credential. Item 1 is a latent prod write
-    from a path documented as read-only; promote it if guide-web is run
-    against prod again.
+10. **backlog/agent-readonly-web-access.md** — an agent web credential
+    for the prod web UI (the `claude` web user, vaulted).
 
 ## Parked
 

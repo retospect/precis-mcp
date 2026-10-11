@@ -563,6 +563,66 @@ def test_probe_read_only_reads_show_transaction_read_only(store: Store) -> None:
     assert _probe_read_only(store) is False
 
 
+def _fake_probe_store(show: str, can_insert: bool) -> Any:
+    class _Res:
+        def __init__(self, row: tuple[Any, ...]) -> None:
+            self._row = row
+
+        def fetchone(self) -> tuple[Any, ...]:
+            return self._row
+
+    class _Conn:
+        def __enter__(self) -> _Conn:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+        def execute(self, sql: str) -> _Res:
+            if "SHOW" in sql:
+                return _Res((show,))
+            return _Res((can_insert,))
+
+    class _Pool:
+        def connection(self) -> _Conn:
+            return _Conn()
+
+    class _Store:
+        pool = _Pool()
+
+    return _Store()
+
+
+def test_probe_read_only_true_for_grants_only_role() -> None:
+    """gr461387: agent_ro sessions are not transaction_read_only but
+    lack INSERT on kinds — boot must treat that as read-only."""
+    from precis.dispatch import _probe_read_only
+
+    assert _probe_read_only(_fake_probe_store("off", can_insert=False)) is True
+
+
+def test_probe_read_only_false_for_writer_role() -> None:
+    from precis.dispatch import _probe_read_only
+
+    assert _probe_read_only(_fake_probe_store("off", can_insert=True)) is False
+
+
+def test_probe_read_only_true_for_guc_on() -> None:
+    from precis.dispatch import _probe_read_only
+
+    assert _probe_read_only(_fake_probe_store("on", can_insert=True)) is True
+
+
+def test_guide_web_launcher_exports_read_only_env() -> None:
+    """gr461387: the launcher must tell dispatch boot to skip writes."""
+    from pathlib import Path
+
+    text = (Path(__file__).parent.parent / "scripts" / "guide-web").read_text(
+        encoding="utf-8"
+    )
+    assert "export PRECIS_MCP_READ_ONLY=1" in text
+
+
 def test_probe_read_only_false_on_probe_failure() -> None:
     """A probe that itself blows up must not become a new boot failure
     mode — fall back to "assume writable" (today's behaviour).
