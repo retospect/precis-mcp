@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -830,3 +831,54 @@ def test_missing_retire_refuses_absent_index_root(store: Store, source: Path) ->
     assert _live(store, first.refs["MEMORY.md"])
     keep = import_mirror(store, source, namespace="fixture")
     assert keep.missing == ["MEMORY.md"]
+
+
+def _plant_slugged(hub: Hub, title: str, slug: str) -> int:
+    rid = _plant_legacy(hub, title)
+    assert hub.store is not None
+    hub.store.update_ref(rid, meta_patch={"slug": slug})
+    return rid
+
+
+def test_legacy_variant_titles_match_and_unmatched_are_reported(
+    store: Store, hub: Hub, source: Path
+) -> None:
+    variant = _plant_legacy(hub, "alpha")  # case variant of name: Alpha
+    by_slug = _plant_slugged(hub, "Index bullet wording for beta", "beta")
+    stray = _plant_legacy(hub, "Unrelated old note")
+    with pytest.raises(ImportRefused, match=rf"me{variant} 'alpha'.*me{by_slug}"):
+        import_mirror(store, source, namespace="fixture")
+    report = import_mirror(store, source, namespace="fixture", legacy="retire")
+    assert report.retired == [f"me{variant}", f"me{by_slug}"]
+    assert report.legacy_unmatched == [f"me{stray} 'Unrelated old note'"]
+    assert _live_title_ids(store, "Unrelated old note") == [stray]  # not retired
+    _unplant(store, stray)
+
+
+def test_ambiguous_match_is_not_retired(store: Store, hub: Hub, tmp_path: Path) -> None:
+    root = tmp_path / "amb"
+    root.mkdir()
+    (root / "one.md").write_bytes(_topic(name="Shared"))
+    (root / "two.md").write_bytes(_topic(name="shared"))
+    node = _plant_legacy(hub, "Shared")
+    report = import_mirror(store, root, namespace="amb", legacy="retire")
+    assert report.retired == [] and report.legacy_unmatched == [f"me{node} 'Shared'"]
+    _unplant(store, node)
+
+
+def test_export_no_stamp_leaves_graph_byte_identical(
+    store: Store, hub: Hub, source: Path, tmp_path: Path
+) -> None:
+    import_mirror(store, source, namespace="fixture")
+    native = _plant_legacy(hub, "Native note")
+    before = hashlib.sha256(repr(_snapshot(store)).encode()).hexdigest()
+    report = export_mirror(store, tmp_path / "bak", namespace="fixture", stamp=False)
+    after = hashlib.sha256(repr(_snapshot(store)).encode()).hexdigest()
+    assert before == after
+    assert report.exported_native == [f"me{native}"]
+    assert (tmp_path / "bak" / "native_note.md").exists()
+    # Still a legacy node for the retire selector (stamping would hide it).
+    assert _live_title_ids(store, "Native note") == [native]
+    export_mirror(store, tmp_path / "stamped", namespace="fixture")
+    assert _live_title_ids(store, "Native note") == []  # default mode adopts it
+    _unplant(store, native)
