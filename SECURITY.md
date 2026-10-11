@@ -23,14 +23,10 @@ If you discover a security vulnerability, please report it responsibly:
 
 ## Known / accepted open alerts
 
-Some Dependabot alerts are **real but not currently resolvable** because an
-upstream dependency caps the fixed version. These are tracked, risk-assessed,
-and rechecked on a schedule — they are **not** unnoticed. Do **not** attempt a
-lockfile-only bump; it will fail to resolve. The authoritative list is the
-snoozed items in [`docs/backlog/`](docs/backlog/README.md) (front-matter
-`snooze-until:` + an `Unblock-when` condition, e.g.
-[`pillow-marker-pin`](docs/backlog/pillow-marker-pin.md)).
-
-| Alert | Package | Blocked by | Why tolerable | Recheck |
-| ----- | ------- | ---------- | ------------- | ------- |
-| [#56–#67](https://github.com/retospect/precis-mcp/security/dependabot) (11, mostly high) | `pillow` <12.3.0 heap-OOB / DoS / decompression-bomb bypass | `marker-pdf` (≤2.0.0) hard-pins `pillow<11.0.0`; needed by the `[paper]` OCR/layout extra, so `>=12.3.0` is **unsatisfiable** until marker lifts the cap | precis only feeds Marker/Pillow trusted PDF ingestion behind the `[paper]` extra — none of the specific vectors (PSD/FITS/JPEG2000/TGA/mmap font-loading paths) are reachable from precis's own code | `2026-08-06` (see `docs/backlog/pillow-marker-pin.md`) |
+None currently. Upstream caps are worked around rather than accepted where
+the fix is safe: `marker-pdf` (≤2.0.0) caps `pillow<11`, so `pyproject.toml`'s
+`[tool.uv] override-dependencies` forces `pillow>=12.3.0` (Dependabot
+#56–#67) and every cluster install passes `--overrides
+/opt/precis/overrides.txt` (written by
+`deploy/playbooks/03-precis-constraints.yml`). Drop the override once
+marker-pdf lifts its cap.

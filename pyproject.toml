@@ -111,15 +111,9 @@ dependencies = [
     # image doesn't ship it, so the prior readline-based REPL silently
     # fell back to no-editing input()).
     "prompt-toolkit>=3.0",
-    # Transitive-dep security floor — DO NOT add Pillow>=12.2.0 here
-    # without first bumping marker-pdf upstream. As of 2026-07,
-    # marker-pdf 2.0.0 still hard-caps Pillow<11.0.0 (the markdownify
-    # cap it used to carry alongside is gone — markdownify now
-    # resolves freely); trying to pin Pillow>=12.2.0 here still makes
-    # precis-mcp[all] unresolvable. The pillow alerts (PSD, FITS, PDF —
-    # need >=12.3.0) aren't reachable from precis-mcp directly — paper
-    # ingestion sandboxes Marker behind the ``[paper]`` extra. Knowingly
-    # accepted/unreachable; tracked in dependabot.
+    # Pillow is NOT pinned here: marker-pdf 2.0.0 hard-caps Pillow<11, so a
+    # floor in this list makes precis-mcp[all] unresolvable. The security
+    # floor lives in [tool.uv] override-dependencies (pillow>=12.3.0) below.
     # LaTeX export determinism: unicode→LaTeX-command translation so
     # arbitrary scientific prose (≈, →, α, ™, …) never throws a
     # "missing character" on pdflatex. Pure-Python, tiny; also backs the
@@ -286,8 +280,10 @@ tts = ["kokoro-onnx>=0.4", "soundfile>=0.12"]
 # transitively via marker-pdf (its own LLM-assisted-OCR fallback path) —
 # precis never imports them directly (``router.dispatch`` talks to LLM
 # backends over raw ``httpx``/``urllib``), so their versions float freely
-# too. See SECURITY.md "Known / accepted open alerts" and OPEN-ITEMS.md
-# "Snoozed — blocked upstream" for the remaining (Pillow) entry.
+# too.
+#
+# Pillow: marker-pdf caps Pillow<11; we override it to >=12.3.0 via
+# [tool.uv] override-dependencies (see that table for why and when to drop).
 paper = [
     "marker-pdf>=1.0; sys_platform != 'win32'",
     "pymupdf>=1.24.10",     # ``fitz`` — page-level PDF text + metadata.
@@ -610,6 +606,20 @@ dev = [
 # git credential helper locally, gh_token BuildKit secret in the image build.
 # tool.uv.sources applies only to THIS project's lock/sync — cluster
 # `uv pip install precis-mcp[...]` never reads it (wheelhouse covers those).
+# Pillow security override (Reto 2026-10-11). marker-pdf 2.0.0 hard-caps
+# Pillow<11; the override replaces that requirement so the lock takes
+# pillow>=12.3.0, clearing Dependabot #56-67. The reachable ones: paste/crop
+# out-of-bounds write, JPEG2000 decode DoS, ImageCms out-of-bounds write —
+# paper ingest (Marker + pymupdf) decodes images from untrusted PDFs.
+# Overrides only bind THIS project's lock/sync; cluster `uv pip install`s
+# pass `--overrides /opt/precis/overrides.txt`, which
+# deploy/playbooks/03-precis-constraints.yml derives from the exported
+# lock's `pillow==` line. Marker's runtime path was smoke-tested on 12.3.0.
+# Drop this table (and the 03-precis-constraints overrides step, and every
+# `--overrides /opt/precis/overrides.txt`) once marker-pdf lifts its cap.
+[tool.uv]
+override-dependencies = ["pillow>=12.3.0"]
+
 [tool.uv.sources]
 autocatpath = { git = "https://github.com/retospect/catpath", rev = "025860ef039a87cbd83180fb324ca9a277078b2f" }  # v0.24.1
 

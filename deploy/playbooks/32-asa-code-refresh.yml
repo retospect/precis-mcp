@@ -96,6 +96,7 @@
         /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
           {{ '' if _asa_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
           --constraints /opt/precis/constraints.txt \
+          --overrides /opt/precis/overrides.txt \
           'precis-mcp[asa,asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ _asa_ref }}'
       register: asa_pip
       # uv prints "Installed/Updated N package(s)" to STDERR — check both streams.

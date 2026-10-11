@@ -52,6 +52,7 @@
     /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
+      --overrides /opt/precis/overrides.txt \
       'precis-mcp[asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
   become: true
   register: asa_slack_pip

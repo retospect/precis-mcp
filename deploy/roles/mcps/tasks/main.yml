@@ -108,7 +108,9 @@
 # cap that resolves fine in practice. An overrides file (unlike a constraint)
 # REPLACES rmscene's requirement on packaging, so the resolver takes the
 # lockfile's version. Derived from constraints.txt, not hardcoded, so a lock
-# bump never drifts this file.
+# bump never drifts this file. The install passes it alongside the shared
+# /opt/precis/overrides.txt (pillow, from 03-precis-constraints.yml); uv
+# merges repeated --overrides.
 - name: Derive packaging override from constraints (rmscene stale cap)
   when: node_role in ["gateway", "scheduler"]
   ansible.builtin.shell: |
@@ -145,6 +147,7 @@
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
+      --overrides /opt/precis/overrides.txt \
       --overrides /opt/mcps/etc/uv-overrides.txt \
       'precis-mcp[chain,pourbaix] @ git+https://github.com/retospect/precis-mcp@main' \
       acatome-meta \
