@@ -75,9 +75,6 @@ correct it.
   days on castor); infra, adjacent to this thread's fleet-serving scope
   but not owned by it. Unparks if it recurs on a serve host rather than a
   worker host.
-- **gr453339** — caspar has no `/opt/precis/venv` and `/mnt/cluster` is
-  still NFS-wedged post-reboot; deploy precondition, not this thread's to
-  fix. Unparks when a deploy targets caspar specifically.
 - **gr260050** — `claude -p` under an interactive ssh user on melchior
   cannot dispatch (OAuth state); blocks CLI-driven repair passes on that
   host. Adjacent to serving infra, not owned here.

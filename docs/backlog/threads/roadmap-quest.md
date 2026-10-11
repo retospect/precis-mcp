@@ -37,13 +37,11 @@ not yet deployed. Next, all of them waits:
   `quest/loop.py::reconcile_quest_loops`; it is the stall suspect.
 - After the round-4 deploy, check the cap in prod: one more escalated
   failure on `placement_error_nm` should log `supply_outside_failed`.
-- Close gr462891 and td462893 when job 463449's "ledger_ops applied" line
-  appears.
 - The first escalated query that reaches S2 needs a worker tick; worker
   ticks have the `[paper]` extra.
 - Do next 1 (role-choice skip) waits for the thread to reopen.
 Round 2 (63301c5c) is DEPLOYED since 13:49Z 10-03. It carries the verbatim-quote check
-(c12912cb5), the dry-tick escalation (38a575586) and gr462891's ledger fix
+(c12912cb5), the dry-tick escalation (38a575586) and the ledger fix
 (9ef609810). qu453863 (Bootstrap roadmap root) is NOT ticking hourly. Its
 last quest_tick, job 462364, ended dry at 21:26Z 10-02, its third dry
 rest in a row. By design (`quest/loop.py::_dry_rest_escalation_active`),
@@ -87,15 +85,15 @@ Dogfood 2026-10-03, two CLI ticks via `scripts/prod-precis quest tick
   is Do next 1.
 - **Still unverified:** an escalated query that reaches S2. The next
   unattended worker tick on this key should log the first `(escalated)`
-  line. gr462891's applied-count line also waits for the queued quest_tick
+  line. The ledger's applied-count line also waits for the queued quest_tick
   job 463449 on qu164903 (NO→NH3 selectivity), which is waiting for its
-  scheduled time. Close gr462891 when that line appears.
+  scheduled time.
 
-The gr462891 fix itself (design note §5, accepted): the ledger resolves a
+The ledger fix itself (design note §5, accepted): the ledger resolves a
 quoted prefix of at least 40 characters; an `add` with an unresolved parent
 is kept as a root with `parent_unresolved` and rendered as unplaced; each
 tick logs its applied counts; the dialectic prompt section only shows when
-a block exists. The replay is on the gripe, and the dialectic design is
+a block exists. The dialectic design is
 `quest-graph-as-dossier.md` open question 2.
 **Last reviewed:** 2026-10-03 (round 3 deployed and dogfooded; parked at TIER 3)
 **Worktree:** `roadmap-quest`

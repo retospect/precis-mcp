@@ -229,9 +229,6 @@ off that gap until it closes.
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
   the Horizon only, and lives inside `backlog/cross-scale-single-assembly.md`
   (Do-next 9) rather than as its own entry.
-- **gr451269** — se atomic tpms/schwarzite generator emits topologically
-  correct nets whose bond lengths are not carbon and nothing checks it;
-  same generator and dogfood as the family-alias and default fixes.
 - **backlog/method-transfer-stellar-signal-separation.md** — Graz notes;
   maybe useful for object manipulation (Reto, 2026-10-01). Unparks if an
   object-manipulation thread opens.

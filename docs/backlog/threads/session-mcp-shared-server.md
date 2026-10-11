@@ -174,9 +174,8 @@ check their state first.
    supervisor binds. It is consistent, not proven, since the 10-01 client
    logs were not read. The server-side fix is fewer and shorter refused
    windows, shipped as ONE ensure-script install (an edit is itself a
-   recreate). It is staged at
-   `~/.claude/projects/-Users-reto-precis-mcp/scratch/gr460711/ensure.sh`
-   on melchior:
+   recreate). It is installed on
+   melchior (below):
    - secret rotations SIGHUP the child instead of recreating;
    - the label hashes the container spec, not the script file;
    - recreate is create → `docker stop -t 45` (drains via the

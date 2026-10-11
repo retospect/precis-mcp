@@ -123,7 +123,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      cache that `memory index --export-dir` writes, and a stray-write check
      is added. The first graph reconsolidation ran on 2026-10-03 and is
      logged in `memory_consolidation_log.md`. The landed scan is now
-     scoped to thread nodes. Since 2026-10-09 (gr477164) the export
+     scoped to thread nodes. Since 2026-10-09 the export
      manifest also carries each node's updated date and its fisheye
      shape, and memory-lint checks the graph as recall reads it: bodies
      cut by the eye, orphans, hubs whose neighbours the eye hides, and

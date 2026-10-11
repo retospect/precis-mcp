@@ -255,7 +255,7 @@ item is nanobuds-paper-32. Edit-verb year=/journal= fix landed
    opens the interlock (round 3 est.); owned by claims-and-evidence (told,
    with `prune-edges.tsv` as the test case: prune 78, keep 21). Apply plan
    `nanobud-fidelity/fix-plan-21.md`, backups taken. **Applied 23:10Z**
-   after the read-only incident (gr462726): 11 split hubs minted
+   after the 2026-10-02 read-only incident: 11 split hubs minted
    (fi462728, fi462732–fi462741), 7 draft chunks re-cited (dc2445859/96,
    dc2445904, dc2445930, dc2445932/34, dc2445940; dc2445904 dropped
    "and bias fields", no source carries it), 95 edges removed

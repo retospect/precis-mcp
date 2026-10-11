@@ -71,8 +71,7 @@ Measure: wall per SCF iteration; one ionic step at 1 rank on the new image
 first, then 8 ranks (review note §5). Rank the items below by what that
 paper needs.
 
-1. **gr322060** (relax-infra tracker).
-   `backlog/qu164903-campaign.md` residuals are ops/Reto
+1. **backlog/qu164903-campaign.md** residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
 2. **qu202467 (NO from exhaust → fertilizer N) restart** — RULED

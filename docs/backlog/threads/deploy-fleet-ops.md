@@ -74,8 +74,7 @@ residue, then batched ops and flip steps.
 
 `session-mcp-shared-server` shares `scripts/deploy` and the ensure script
 (its Horizon 3, `backlog/mcps-venv-deploy-gaps.md`); that thread owns the
-MCP server's deploy shape, this one the script and fleet. `plugin-split`
-owns gr457894 on the same script. `ship-gate-ci` shares the live render tree
+MCP server's deploy shape, this one the script and fleet. `ship-gate-ci` shares the live render tree
 with its Do-next 3. `local-backup-pickup`, `catpath-wheel-version-reuse` and
 `april-corpus-nas-migration` were cut from this cluster (personal, chemistry,
 ingest-and-fetch).

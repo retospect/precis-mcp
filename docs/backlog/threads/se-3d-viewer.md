@@ -30,12 +30,11 @@ prod design can now be copied into a local DB over the read-only MCP and
 pixel-diffed there. That is a different question from td458066, which asks
 whether an agent drives a BROWSER against prod — a check against prod DATA
 no longer needs one. No live corruption. A suspected hexfold
-join corruption (a wrong picture) was refuted 2026-09-30. The real cause was gr458061: a
+join corruption (a wrong picture) was refuted 2026-09-30. The real cause was a
 session MCP process serving stale in-memory code for hours while every
 cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
-gr458061 is another thread's item.
 **Last reviewed:** 2026-10-02 (strain layers and the xyz/pdb export live
 since 567f207f; Reto approved both as they are, review item
 se-3d-viewer-1; level chips landed for round 2)
@@ -50,7 +49,7 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
 **Resume (2026-10-03, session closed to save usage).**
-- **Done:** round 3 is deployed and dogfooded (below). gr462129 /drive
+- **Done:** round 3 is deployed and dogfooded (below). The /drive
   redirect landed in 063421d9, not deployed yet.
 - **Next:**
   - Do-next 7, the print dialog, once se-machine-design confirms their
@@ -203,24 +202,15 @@ se-machine-design's `backlog/se-region-property-layer.md`.
    each guess what a container is. Waits on nothing; ranked here because
    the payoff shows only once viewer, validator and DRC all read
    containers (from 4 on).
-6. **gr458084** — the revision scrubber still full-page reloads; second
-   consumer of the live-scene seam, where losing the camera hurts most.
-   Convenience, not correctness.
-7. **backlog/se-view-figures.md** — waits on 1–2 to know what a figure
+6. **backlog/se-view-figures.md** — waits on 1–2 to know what a figure
    captures; publishable figures out of the same scene.
-8. **backlog/se-feasibility-and-cost.md** — the far end the arc serves;
+7. **backlog/se-feasibility-and-cost.md** — the far end the arc serves;
    waits on 3 and 4.
-9. **gr450675** — atomic↔smooth view slider with scaffold-deviation
+8. **gr450675** — atomic↔smooth view slider with scaffold-deviation
    coloring; a feature request, not blocking anything above.
-10. **gr341482** — retire the mermaid `graph LR` topology-panel fallback
+9. **gr341482** — retire the mermaid `graph LR` topology-panel fallback
     once the force-directed node cloud (already shipped) proves out in
     prod; cleanup, waits on production mileage rather than code.
-11. **gr451278** — pcb web viewer: a pad is unidentifiable on the
-    rendered board (no mouseover naming refdes/pin/net). Filed against
-    the pcb viewer, not this one, but ranked here for the shared
-    "identify what you're pointing at" affordance with
-    `backlog/se-pick-hierarchy.md` (Horizon 1) — worth checking whether
-    one mechanism serves both before building two.
 
 ## Parked
 

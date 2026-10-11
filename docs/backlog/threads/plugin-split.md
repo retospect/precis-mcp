@@ -86,8 +86,7 @@ to Do next, and the 11-gripe god-module cluster to Horizon)
    now unblocked by the step-8 ruling below. Step 6 closed as prep on
    2026-10-02: the `db` marker already splits store-free from store-backed
    tests, and the per-package shares are in the item. The import boundary
-   carries no grandfathered breach since 2026-10-09 (gr459054 fixed:
-   `roadmap_tick` takes the booted hub and `Hub.sibling()` resolves plugin
+   carries no grandfathered breach since 2026-10-09 (`roadmap_tick` takes the booted hub and `Hub.sibling()` resolves plugin
    kinds by entry point; `_GRANDFATHERED` is empty and
    `test_core_never_imports_precis_se` holds the line).
 2. **Step 8, ruled 2026-10-02 (Reto): publish to PyPI** from
@@ -96,8 +95,8 @@ to Do next, and the 11-gripe god-module cluster to Horizon)
    at 8.35.x). Step 7 (the deploy channel for member wheels) follows from
    this ruling.
 
-**gr457894 left Do next on 2026-10-01, and this is the correction that
-matters most in this file.** It sat at Do-next 1 for five rounds on the claim
+**The restart-precondition item left Do next on 2026-10-01, and this is the
+correction that matters most in this file.** It sat at Do-next 1 for five rounds on the claim
 that `scripts/deploy` restarts on a sha change but not on an installed-file-list
 change, so a module move would leave long-lived processes holding deleted
 modules — making the restart story a precondition for every extraction here.
@@ -108,9 +107,8 @@ false: step 0b sets `precis_deploy_changed` from the installed-vs-pinned sha
 failure, and `full` drains and bounces the **worker** units, not only web.
 This round supplied a matching data point: a `src/precis_pathway/`-only
 commit deployed at 00:30Z, and the 04:12Z dispatched run executed the new
-code. Fix option 1 is withdrawn in the gripe; what survives is dev-side
-staleness, owned by gr458061 (session MCP containers) and gate
-container metadata. Nothing in this thread waits on it.
+code. What survives is dev-side staleness (session MCP containers, gate
+container metadata). Nothing in this thread waits on it.
 
 ## Horizon
 
@@ -130,7 +128,7 @@ own item); they become items as each comes into reach.
    item records as only partly supported (59% of commits touch core).
 2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — waits on
    the 10-16 snooze only; the import-boundary gate it also wanted landed 2026-10-01, and
-   the restart precondition it used to carry (gr457894) turned out not to
+   the restart precondition it used to carry turned out not to
    exist. Proves the entry-point mechanics at zero API risk.
 3. **backlog/plugin-split-runtime-shell.md**, precis_surface out — waits on
    2; folds the marching-cubes tables into geom so the boundary is
@@ -174,7 +172,7 @@ own item); they become items as each comes into reach.
 ## No action needed
 
 - **td457903** — withdrawn: the pathway ImportError was the reporting
-  session's own stale dev MCP container (gr458061's shape), not prod. Do not
+  session's own stale dev MCP container, not prod. Do not
   re-file it as a prod restart. Dogfood redone 2026-09-30 on a fresh
   engine-capable process: `compare` and the U-lever both correct on prod
   records, so step 2 is confirmed behaviour-neutral and nothing here is

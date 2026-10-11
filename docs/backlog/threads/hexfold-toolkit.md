@@ -45,12 +45,10 @@ process did is now detected (`composite_part_stolen`). The execution
 environment is now trustworthy too (every session on the shared HTTP
 server since 09-29), so the order below is: make joins diagnosable, then
 make measured rows trustworthy.
-**Last reviewed:** 2026-10-01 (09-30 re-ranks: integrity check shipped and
-gr458061 moved to the `session-mcp-shared-server` thread; pillar review
+**Last reviewed:** 2026-10-01 (09-30 re-ranks: integrity check shipped; pillar review
 added the T-handle bearing, four gripes and the instrumentation leg. 10-01
-rounds: the cascade-vs-refuse ruling at 3; gr458061 removed as a
-met precondition — the transport move it waited on happened 09-29 — note
-at the bottom)
+rounds: the cascade-vs-refuse ruling at 3; the shared-server precondition
+removed as met — the transport move it waited on happened 09-29)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Detailed handoff
@@ -688,17 +686,6 @@ not tick, wake or re-scope them without his word. On prod they are tagged
 
 ## No action needed
 
-- **gr458061** — this thread's precondition, **met; removed from Do-next
-  2026-10-01.** It needed both a truthful served-sha surface (done) and an end to per-session stdio servers that could serve stale
-  modules. The second was td458385, and it turns out to have been done on
-  **2026-09-29 around 17:00** — every session's config has pointed at the
-  shared `http://127.0.0.1:8765/mcp` since then, and on 10-01 the shared
-  server became the only MCP container. So this file's claim that "this
-  tree is still on stdio, its dogfood provisional" was wrong when written:
-  I inferred the transport from the stale-process episode instead of
-  reading the config. Dogfood results from 09-30 onward ran against the
-  shared server and are not provisional on transport grounds. The
-  question about it I had queued for Reto was moot.
 - **ring-less nets and the stick pass** — FIXED 2026-10-01 in the same
   round. `tube(5,5,len=1)` with geometry on raised `IndexError` from
   `stick.py`'s `springs[:, 0]`, because `_angle_springs` returns `[]` for
