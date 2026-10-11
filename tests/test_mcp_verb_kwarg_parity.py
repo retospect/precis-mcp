@@ -208,6 +208,9 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("draft", "edit", "list_kind"),
         ("draft", "edit", "source"),
         ("draft", "edit", "style"),
+        # char_target= (33b29a545): args= by design, declared in
+        # DraftHandler.ARGS_KEYS; word_target= is the verb-level sibling.
+        ("draft", "edit", "char_target"),
         # -- edit: finding acquisition-mode's dead-end flip side ----------
         ("finding", "edit", "unacquirable_mode"),
         ("finding", "edit", "unacquirable_note"),
