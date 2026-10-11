@@ -154,7 +154,7 @@ from typing import Any
 import numpy as np
 
 from precis.format import toon
-from precis.pcb import pinswap
+from precis.pcb import pinswap, pose
 from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
@@ -861,6 +861,50 @@ def _hole_owned_by(ir: PcbIR, hole: MountingHole, inst: int) -> bool:
     return hole.part is not None and hole.part == str(ir.instance_refdes[inst])
 
 
+def _hole_owner_index(ir: PcbIR, hole: MountingHole) -> int | None:
+    """Instance index whose pose a footprint-derived hole follows, or None
+    for a fixed hole (board-level, or a legacy part-owned feature with no
+    footprint-local offset)."""
+    if hole.part is None or hole.local_x is None or hole.local_y is None:
+        return None
+    for i, refdes in enumerate(ir.instance_refdes):
+        if str(refdes) == hole.part:
+            return i
+    return None
+
+
+def _hole_world_xy(
+    ir: PcbIR,
+    hole: MountingHole,
+    owner: int | None,
+    pose_xyr: tuple[float, float, float] | None = None,
+) -> tuple[float, float]:
+    """World centre of ``hole``: for a footprint-derived hole, its local
+    offset placed at the owner's pose (``pose_xyr`` if given, else the IR's
+    CURRENT pose) through :mod:`precis.pcb.pose` -- the seam pads use; else
+    the stored ``x``/``y``. An unplaced (NaN) owner falls back to the stored
+    position."""
+    if owner is None or hole.local_x is None or hole.local_y is None:
+        return float(hole.x), float(hole.y)
+    if pose_xyr is None:
+        pose_xyr = (
+            float(ir.inst_x[owner]),
+            float(ir.inst_y[owner]),
+            float(ir.inst_rot[owner]),
+        )
+    x, y, rot = pose_xyr
+    if math.isnan(x) or math.isnan(y):
+        return float(hole.x), float(hole.y)
+    return pose.point_to_world(
+        hole.local_x,
+        hole.local_y,
+        x,
+        y,
+        0.0 if math.isnan(rot) else rot,
+        mirrored=bool(ir.inst_bottom[owner]),
+    )
+
+
 def _hole_blocking_slot(
     ir: PcbIR, x: float, y: float, r: float, inst: int | None = None
 ) -> float | None:
@@ -882,10 +926,11 @@ def _hole_blocking_slot(
         hole = ir.mounting_holes[hole_idx]
         if inst is not None and _hole_owned_by(ir, hole, inst):
             continue
+        hx, hy = _hole_world_xy(ir, hole, _hole_owner_index(ir, hole))
         sep = r + _hole_keepout_radius_mm(hole)
-        if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep * sep:
+        if (x - hx) ** 2 + (y - hy) ** 2 >= sep * sep:
             continue
-        edge = float(hole.x) + _hole_keepout_radius_mm(hole) + r
+        edge = hx + _hole_keepout_radius_mm(hole) + r
         if worst is None or edge > worst:
             worst = edge
     return worst
@@ -1514,6 +1559,8 @@ def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
             for hole in ir.mounting_holes:
                 if _hole_owned_by(ir, hole, i):
                     continue
+                if _hole_owner_index(ir, hole) is not None:
+                    continue  # rides the same uniform shift as its owner
                 sep = float(radii[i]) + _hole_keepout_radius_mm(hole)
                 if (nx - hole.x) ** 2 + (ny - hole.y) ** 2 < sep * sep:
                     return (0.0, 0.0)
@@ -1850,12 +1897,27 @@ class OptimizeEngine:
         #: anneal has a slope pushing a part off a hole even when the
         #: seed happened to park it there — see :func:`seed_placement`'s
         #: docstring for why the seed itself doesn't avoid holes.
+        #: A footprint-derived hole (``local_x``/``local_y`` set) is NOT
+        #: static: it rides its owner's pose, so :meth:`_hole_at` recomputes
+        #: its centre and polygon from the owner's current (or proposed)
+        #: pose; ``_hole_polys`` holds the build-pose polygon, used as-is
+        #: for the static ones only.
+        self._hole_owner: list[int | None] = [
+            _hole_owner_index(ir, h) for h in ir.mounting_holes
+        ]
         self._hole_polys: list[list[tuple[float, float]]] = [
             mounting_hole_keepout_polygon(h) for h in ir.mounting_holes
         ]
         self._hole_radius: list[float] = [
             _hole_keepout_radius_mm(h) for h in ir.mounting_holes
         ]
+        self._hole_pose_cache: dict[
+            int,
+            tuple[
+                tuple[float, float, float],
+                tuple[float, float, list[tuple[float, float]]],
+            ],
+        ] = {}
         #: Every AUTHORED via (:attr:`~precis.pcb.ir.PcbIR.fixed_vias`) as
         #: a static obstacle to a part's solder LANDS — not to its
         #: courtyard. A via under a part's body is harmless and, for a
@@ -2289,6 +2351,61 @@ class OptimizeEngine:
         for i in range(self.ir.n_instances):
             self._refresh_courtyard(i)
 
+    def _hole_at(
+        self,
+        hole_idx: int,
+        overrides: dict[int, tuple[float, float, float]] | None = None,
+    ) -> tuple[float, float, list[tuple[float, float]]]:
+        """``(x, y, keep-out polygon)`` of mounting hole ``hole_idx`` NOW:
+        a footprint-derived hole follows its owner's pose (``overrides``
+        maps an instance to a proposed ``(x, y, rot)``, else the IR's
+        current pose), a fixed hole is its stored position."""
+        hole = self.ir.mounting_holes[hole_idx]
+        owner = self._hole_owner[hole_idx]
+        if owner is None:
+            return float(hole.x), float(hole.y), self._hole_polys[hole_idx]
+        ir = self.ir
+        if overrides and owner in overrides:
+            key = overrides[owner]
+        else:
+            key = (
+                float(ir.inst_x[owner]),
+                float(ir.inst_y[owner]),
+                float(ir.inst_rot[owner]),
+            )
+        cached = self._hole_pose_cache.get(hole_idx)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        hx, hy = _hole_world_xy(ir, hole, owner, key)
+        value = (hx, hy, _hole_polygon(hx, hy, self._hole_radius[hole_idx]))
+        self._hole_pose_cache[hole_idx] = (key, value)
+        return value
+
+    def _refresh_hole_margin(self, inst: int, hole_idx: int) -> None:
+        """Set/clear ``inst``'s graded ``courtyard_overlap`` pressure
+        against mounting hole ``hole_idx`` at the hole's CURRENT position."""
+        ir, cfg = self.ir, self.config
+        hole_key = ("courtyard_overlap", _pair_key(inst, _HOLE_KEY_BASE + hole_idx))
+        if _hole_owned_by(ir, ir.mounting_holes[hole_idx], inst):
+            self._margin.pop(hole_key, None)
+            return
+        corridor_mm = cfg.cost.default_pitch_mm
+        separation_mm = convex_polygons_signed_separation(
+            self._world_courtyard(inst), self._hole_at(hole_idx)[2]
+        )
+        fraction = max(0.0, (corridor_mm - separation_mm) / corridor_mm)
+        if fraction <= 0.0:
+            self._margin.pop(hole_key, None)
+            return
+        self._margin[hole_key] = TermValue(
+            "courtyard_overlap",
+            Family.MARGIN,
+            f"{ir.instance_refdes[inst]}~hole{hole_idx}",
+            fraction,
+            _BY_NAME["courtyard_overlap"].justification,
+            is_bound=False,
+        )
+
     def _refresh_courtyard(self, inst: int) -> None:
         """The bounded per-move courtyard-overlap delta: discard ``inst``'s
         cached partnerships (O(old partner count)), relocate it in the
@@ -2343,26 +2460,15 @@ class OptimizeEngine:
         # mirroring instance-instance overlap rather than inventing a
         # second cost shape for "too close to an obstacle".
         for hole_idx in range(len(self._hole_polys)):
-            hole_key = ("courtyard_overlap", _pair_key(inst, _HOLE_KEY_BASE + hole_idx))
-            if _hole_owned_by(ir, ir.mounting_holes[hole_idx], inst):
-                self._margin.pop(hole_key, None)
+            self._refresh_hole_margin(inst, hole_idx)
+        # A footprint-derived hole rides ITS owner: when ``inst`` moved, every
+        # other part's pressure against ``inst``'s holes is stale.
+        for hole_idx, owner in enumerate(self._hole_owner):
+            if owner != inst:
                 continue
-            corridor_mm = cfg.cost.default_pitch_mm
-            separation_mm = convex_polygons_signed_separation(
-                self._world_courtyard(inst), self._hole_polys[hole_idx]
-            )
-            fraction = max(0.0, (corridor_mm - separation_mm) / corridor_mm)
-            if fraction <= 0.0:
-                self._margin.pop(hole_key, None)
-                continue
-            self._margin[hole_key] = TermValue(
-                "courtyard_overlap",
-                Family.MARGIN,
-                f"{ir.instance_refdes[inst]}~hole{hole_idx}",
-                fraction,
-                _BY_NAME["courtyard_overlap"].justification,
-                is_bound=False,
-            )
+            for other in range(ir.n_instances):
+                if other != inst and not math.isnan(float(ir.inst_x[other])):
+                    self._refresh_hole_margin(other, hole_idx)
 
         # Authored vias: one entry per instance, graded ONLY inside the
         # band legality already forbids (zero once every land clears every
@@ -2918,6 +3024,12 @@ class OptimizeEngine:
             inst: self._world_courtyard(inst, x, y, rotations.get(inst))
             for inst, x, y in proposals
         }
+        # Proposed poses, so a moving owner's holes are judged where they
+        # WOULD be (rotation unchanged unless the move names one).
+        proposed_pose = {
+            inst: (x, y, float(rotations.get(inst, ir.inst_rot[inst])))
+            for inst, x, y in proposals
+        }
         for i, (inst, x, y) in enumerate(proposals):
             x0, y0, x1, y1 = self.bounds_for(inst)
             if not (x0 <= x <= x1 and y0 <= y <= y1):
@@ -2938,12 +3050,13 @@ class OptimizeEngine:
                     proposed_poly[inst], self._world_courtyard(int(other))
                 ):
                     return False
-            for hole_idx, hole_poly in enumerate(self._hole_polys):
+            for hole_idx in range(len(self._hole_polys)):
                 hole = ir.mounting_holes[hole_idx]
                 if _hole_owned_by(ir, hole, inst):
                     continue
+                hx, hy, hole_poly = self._hole_at(hole_idx, proposed_pose)
                 sep_h = keepout[inst] + self._hole_radius[hole_idx]
-                if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep_h * sep_h:
+                if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                     continue
                 if convex_polygons_overlap(proposed_poly[inst], hole_poly):
                     return False
@@ -2987,15 +3100,16 @@ class OptimizeEngine:
                 conflicts.append(
                     ("courtyard_overlap", str(ir.instance_refdes[int(other)]))
                 )
-        for hole_idx, hole_poly in enumerate(self._hole_polys):
+        for hole_idx in range(len(self._hole_polys)):
             hole = ir.mounting_holes[hole_idx]
             if _hole_owned_by(ir, hole, inst):
                 continue
+            hx, hy, hole_poly = self._hole_at(hole_idx)
             sep_h = keepout[inst] + self._hole_radius[hole_idx]
-            if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep_h * sep_h:
+            if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                 continue
             if convex_polygons_overlap(poly, hole_poly):
-                conflicts.append(("courtyard_hole", f"hole @ ({hole.x:g}, {hole.y:g})"))
+                conflicts.append(("courtyard_hole", f"hole @ ({hx:g}, {hy:g})"))
         gap = self._fixed_via_gap(inst, x, y, rot)
         if gap < _FIXED_VIA_CLEARANCE_MM:
             conflicts.append(("via_pad_keepout", f"authored via, gap {gap:.3f}mm"))
@@ -3025,8 +3139,10 @@ class OptimizeEngine:
         mine = Polygon(poly)
         by_name = {str(r): i for i, r in enumerate(ir.instance_refdes)}
         holes = {
-            f"hole @ ({h.x:g}, {h.y:g})": self._hole_polys[i]
-            for i, h in enumerate(ir.mounting_holes)
+            f"hole @ ({hx:g}, {hy:g})": hpoly
+            for hx, hy, hpoly in (
+                self._hole_at(i) for i in range(len(ir.mounting_holes))
+            )
         }
         out: list[tuple[str, str, float]] = []
         for rule, other in self.pose_conflicts(inst, x, y, rot):
@@ -3506,8 +3622,7 @@ class OptimizeEngine:
                 # back into the hole it names instead of indexing `inst_x`
                 # with it (which would silently read SOME real instance's
                 # position, or raise, depending on board size).
-                hole = self.ir.mounting_holes[ib - _HOLE_KEY_BASE]
-                xb, yb = hole.x, hole.y
+                xb, yb, _ = self._hole_at(ib - _HOLE_KEY_BASE)
             else:
                 xb, yb = float(self.ir.inst_x[ib]), float(self.ir.inst_y[ib])
             return self._cell_label((xa + xb) / 2.0, (ya + yb) / 2.0)

@@ -281,9 +281,13 @@ def build_ir(
         )
         apply_real_pin_offsets(ir, by_refdes)
         ir.inst_land_rects = land_rects_by_instance(ir, by_refdes)
+        derived = footprint_holes(graph, by_refdes)
+        # The footprint wins: a legacy part-owned feature for a refdes whose
+        # footprint now carries holes would drill the same hole twice.
+        owners = {h.part for h in derived}
         ir.mounting_holes = (
-            *ir.mounting_holes,
-            *footprint_holes(graph, by_refdes),
+            *(h for h in ir.mounting_holes if h.part not in owners),
+            *derived,
         )
     return ir
 
@@ -307,7 +311,14 @@ def footprint_holes(
         for h in holes:
             x, y = pose.to_world(float(h["x"]), float(h["y"]), inst)
             out.append(
-                pcb_ir.MountingHole(x=x, y=y, drill_mm=float(h["dia_mm"]), part=refdes)
+                pcb_ir.MountingHole(
+                    x=x,
+                    y=y,
+                    drill_mm=float(h["dia_mm"]),
+                    part=refdes,
+                    local_x=float(h["x"]),
+                    local_y=float(h["y"]),
+                )
             )
     return tuple(out)
 

@@ -120,6 +120,13 @@ class MountingHole:
     #: own hole: the placer's legality check and DRC ``courtyard_hole``
     #: skip that pair, and still flag the hole against every other part.
     part: str | None = None
+    #: Footprint-local position of a part-owned hole derived from the
+    #: footprint's ``holes`` (None for board holes and legacy part-owned
+    #: features, whose ``x``/``y`` stay fixed). When set, ``x``/``y`` are the
+    #: world position at IR-build pose only; the placer recomputes it from
+    #: the owner's CURRENT pose through :mod:`precis.pcb.pose`.
+    local_x: float | None = None
+    local_y: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

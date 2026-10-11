@@ -383,7 +383,9 @@ A footprint dict takes `name`, `pads`, `pin_map`, `courtyard`, `centroid`,
 `note` and `holes`; any other key is refused. `holes` is a list of
 non-plated standoff/peg holes `{x, y, dia_mm}` in footprint-local mm (same
 frame as the pads): they move, rotate and flip with their part, and reach
-the drill file, DRC and the router at the part's current pose.
+the drill file, DRC and the router at the part's current pose. A
+`put footprints` entry replaces the whole footprint: omit `holes` (or the
+courtyard) and the stored ones are cleared, so re-send them with every edit.
 
 `view='footprints'` lists every catalog-part instance on the board
 (refdes, C-number, cached?, source, pad count) — the read-side counterpart,

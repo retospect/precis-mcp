@@ -340,3 +340,26 @@ def test_off_centre_peg_holes_import_onto_the_footprint_not_as_features(store):
     assert not [
         f for f in store.pcb_features_list(ref.id) if f["ftype"] == "mounting_hole"
     ]
+
+
+def test_footprint_holes_replace_legacy_part_owned_features_in_the_ir():
+    """A legacy absolute part-owned hole for a refdes whose footprint now
+    carries holes must not be drilled a second time; board holes and other
+    parts' legacy features stay."""
+    from precis.pcb.ir import MountingHole
+
+    graph = _graph(10.0, 20.0, 0.0, False)
+    graph["instances"][0]["footprint"] = "FP"
+    legacy = (
+        MountingHole(x=13.5, y=17.5, drill_mm=1.6, part="U1"),
+        MountingHole(x=1.0, y=1.0, drill_mm=3.2),
+        MountingHole(x=5.0, y=5.0, drill_mm=1.0, part="U9"),
+    )
+    ir = build_ir(
+        graph, mounting_holes=legacy, local_footprints_by_name={"FP": _footprint()}
+    )
+    assert [(h.part, h.local_x is not None) for h in ir.mounting_holes] == [
+        (None, False),
+        ("U9", False),
+        ("U1", True),
+    ]

@@ -484,7 +484,7 @@ def mechanical_profile(
                 {
                     "x": f.get("x"),
                     "y": f.get("y"),
-                    "diameter": geom.get("diameter") or geom.get("d"),
+                    "diameter": geom.get("diameter"),
                 }
             )
     if holes is None:

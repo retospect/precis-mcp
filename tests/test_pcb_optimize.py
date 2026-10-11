@@ -1794,6 +1794,54 @@ def test_a_part_on_its_own_footprint_hole_is_legal_but_a_neighbour_is_not():
     ]
 
 
+def test_footprint_hole_follows_its_owner_through_the_optimizer():
+    """A part-owned hole with a footprint-local offset is an obstacle at the
+    owner's CURRENT pose (move and rotate), not its IR-build pose: U1 is
+    repelled from the hole where CN1 now has it, not where it started."""
+    ir = from_graph(
+        {"instances": [{"refdes": "CN1"}, {"refdes": "U1"}], "nets": []},
+        stackup=DEFAULT_STACKUP,
+        mounting_holes=(
+            MountingHole(
+                x=22.0, y=10.0, drill_mm=3.0, part="CN1", local_x=12.0, local_y=0.0
+            ),
+        ),
+    )
+    ir.inst_x[0], ir.inst_y[0] = 10.0, 10.0
+    ir.inst_x[1], ir.inst_y[1] = 30.0, 30.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    # Roomy domain, so every legality verdict below is about holes (and CN1),
+    # not the seed-derived bounds.
+    engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
+
+    def at() -> tuple[float, float]:
+        return engine._hole_at(0)[:2]
+
+    assert at() == pytest.approx((22.0, 10.0))
+    # the build-pose spot blocks U1 ...
+    assert not engine._placement_is_legal(((1, 22.0, 10.0),))
+    assert [r for r, _ in engine.pose_conflicts(1, 22.0, 10.0)] == ["courtyard_hole"]
+
+    translate = Move(
+        MoveKind.TRANSLATE, (0,), ((10.0, 10.0, 0.0),), ((40.0, 20.0, 0.0),)
+    )
+    engine.apply_move(translate)
+    assert at() == pytest.approx((52.0, 20.0))
+    # ... and no longer does; the NEW location does.
+    assert engine._placement_is_legal(((1, 22.0, 10.0),))
+    assert not engine._placement_is_legal(((1, 52.0, 20.0),))
+    assert [r for r, _ in engine.pose_conflicts(1, 52.0, 20.0)] == ["courtyard_hole"]
+
+    # rotation: 90 deg clockwise takes local (+12, 0) to (0, -12)
+    rotate = Move(MoveKind.ROTATE, (0,), ((40.0, 20.0, 0.0),), ((40.0, 20.0, 90.0),))
+    engine.apply_move(rotate)
+    assert at() == pytest.approx((40.0, 8.0))
+    assert not engine._placement_is_legal(((1, 40.0, 8.0),))
+    assert engine._placement_is_legal(((1, 52.0, 20.0),))
+    engine.undo_move(rotate)
+    assert at() == pytest.approx((52.0, 20.0))
+
+
 def test_mounting_holes_from_features_carries_the_owning_part():
     from precis.pcb.session import mounting_holes_from_features
 
