@@ -304,6 +304,9 @@ class PaperHandler(Handler):
         # ``put`` mints stubs; its one other door is ``mode='fetch-si'``
         # (queue a supplementary-information fetch for an existing paper).
         modes=("fetch-si",),
+        # ``put(args={'pdf_url': ...})`` queues a ``paper_pull`` job that
+        # builds into this stub, so the paper parents it.
+        can_own_jobs=True,
         supports_edit=True,
         supports_tag=True,
         supports_link=True,
@@ -339,9 +342,15 @@ class PaperHandler(Handler):
         id: str | int | None = None,
         mode: str | None = None,
         citation: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Mint a paper **stub** — the agent-facing "I want this paper".
+
+        ``put(kind='paper', id=<stub>, args={'pdf_url': 'https://…'})`` is
+        the door for a known-legal PDF the OA fetcher cannot find: it queues
+        a ``paper_pull`` job that drops the PDF into the ingest inbox for
+        that body-less stub (:meth:`_queue_pdf_pull`).
 
         ``put(kind='paper', id=<slug>, mode='fetch-si')`` is the one other
         door: it queues a supplementary-information fetch for an existing
@@ -367,6 +376,9 @@ class PaperHandler(Handler):
         ``upsert_stub_paper`` → tag/link path (idempotent: a hit on an
         already-held or already-wanted paper is a no-op).
         """
+        pdf_url = (args or {}).get("pdf_url", _kw.get("pdf_url"))
+        if pdf_url is not None:
+            return self._queue_pdf_pull(id, pdf_url)
         if mode is not None:
             if mode != "fetch-si":
                 raise BadInput(
@@ -423,6 +435,54 @@ class PaperHandler(Handler):
             reason=reason,
             context_ref_id=context_ref_id,
             verify=verify,
+        )
+
+    def _queue_pdf_pull(self, id: str | int | None, pdf_url: Any) -> Response:
+        """Queue a ``paper_pull`` job feeding an agent-supplied PDF URL to a
+        body-less stub. Refuses a non-paper, a bodied stub and a reference-only
+        one up front; the job fetches (``safe_stream``) and drops PDF + sidecar
+        in the ingest inbox — the MCP server fetches nothing."""
+        from urllib.parse import urlsplit
+
+        from precis.workers.job_types import paper_pull
+
+        example = "put(kind='paper', id='<slug>', args={'pdf_url': 'https://…/x.pdf'})"
+        if id is None or (isinstance(id, str) and not id.strip()):
+            raise BadInput("pdf_url needs id=<paper slug>", next=example)
+        url = pdf_url.strip() if isinstance(pdf_url, str) else ""
+        if urlsplit(url).scheme not in ("http", "https") or not urlsplit(url).netloc:
+            raise BadInput(
+                f"pdf_url must be an http(s) URL, got {pdf_url!r}", next=example
+            )
+        if (bad := paper_pull.blocked_host(url)) is not None:
+            raise BadInput(
+                f"pdf_url host {bad} is a shadow library; not fetched",
+                next="use a publisher, repository or author-hosted open copy",
+            )
+        slug, ref_id = self._resolve_paper_slug(id)
+        problem = paper_pull.target_problem(self.store, ref_id)
+        if problem is not None:
+            raise BadInput(
+                f"{slug} {problem}",
+                next="pdf_url feeds a stub with no body and no PDF; "
+                "get(kind='paper', id=...) to check its state",
+            )
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        resp = hub.sibling("job").put(
+            job_type=paper_pull.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=ref_id,
+            params={"ref_id": ref_id, "url": url},
+            idem_key=paper_pull.idem_key(ref_id, url),
+        )
+        state = "already queued" if getattr(resp, "reused", False) else "queued"
+        return Response(
+            body=(
+                f"{state}: PDF pull for {slug} from {url} - a worker fetches it "
+                "(size-capped, %PDF-checked) and drops it in the ingest inbox "
+                "with a sidecar naming this stub; the watcher then attaches the "
+                "body. The outcome lands on the paper's meta.paper_pull."
+            )
         )
 
     def _queue_si_fetch(self, id: str | int | None) -> Response:

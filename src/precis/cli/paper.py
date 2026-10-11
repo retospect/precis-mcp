@@ -12,6 +12,10 @@ Subcommands:
   has a ``source='legacy'`` row, which re-derives ``middle`` and tidies
   the split. Idempotent — a fully-resplit row stays ``'legacy'``, so
   re-running is a no-op.
+* ``precis paper suspect-previews [--limit N]`` — read-only list of live
+  article papers whose extracted ``pdf_pages`` span is <= 2 (the signature in
+  ``docs/runbooks/elsevier-preview-pdf-remediation.md``): ref id, title,
+  pages, chunk count. Writes nothing.
 """
 
 from __future__ import annotations
@@ -54,10 +58,27 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Override PRECIS_DATABASE_URL.",
     )
 
+    sp = psub.add_parser(
+        "suspect-previews",
+        help="List article papers whose PDF spans <= 2 pages (read-only).",
+        description=(
+            "List live papers with an article (or unknown) entry_type whose "
+            "refs.pdf_pages range spans at most 2 pages - the publisher-preview "
+            "signature. Prints ref id, title, pages and chunk count; writes nothing."
+        ),
+    )
+    sp.add_argument("--limit", type=int, default=None, help="Cap rows listed.")
+    sp.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def run(args: argparse.Namespace) -> None:
     if args.paper_cmd == "authors-resplit":
         _run_authors_resplit(args)
+        return
+    if args.paper_cmd == "suspect-previews":
+        _run_suspect_previews(args)
         return
     print(f"paper: unknown subcommand {args.paper_cmd!r}", file=sys.stderr)
     sys.exit(2)
@@ -126,3 +147,42 @@ def resplit_legacy_authors(
         store.set_paper_authors(ref_id, ref.authors, source="legacy")
         n += 1
     return n
+
+
+def suspect_previews(
+    store: Store, *, limit: int | None = None
+) -> list[tuple[int, str, int, int]]:
+    """``(ref_id, title, pages, chunk_count)`` of live article papers whose
+    ``pdf_pages`` span is <= 2. Read-only; the query behind
+    ``precis paper suspect-previews``."""
+    from precis.workers.job_types.paper_pull import _NON_ARTICLE_TYPES
+
+    sql = """
+        SELECT r.ref_id, coalesce(r.title, ''),
+               upper(r.pdf_pages) - lower(r.pdf_pages) AS pages,
+               (SELECT count(*) FROM chunks c WHERE c.ref_id = r.ref_id)
+          FROM refs r
+         WHERE r.kind = 'paper' AND r.retired_at IS NULL
+           AND r.pdf_pages IS NOT NULL
+           AND upper(r.pdf_pages) - lower(r.pdf_pages) <= 2
+           AND NOT (lower(coalesce(r.meta->>'entry_type', '')) = ANY(%s))
+         ORDER BY r.ref_id
+    """
+    params: tuple[object, ...] = (sorted(_NON_ARTICLE_TYPES),)
+    if limit is not None:
+        sql += " LIMIT %s"
+        params += (limit,)
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [(int(r[0]), str(r[1]), int(r[2]), int(r[3])) for r in rows]
+
+
+def _run_suspect_previews(args: argparse.Namespace) -> None:
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        rows = suspect_previews(store, limit=args.limit)
+    finally:
+        store.close()
+    for ref_id, title, pages, chunks in rows:
+        print(f"{ref_id}\tpages={pages}\tchunks={chunks}\t{title[:100]}")
+    print(f"suspect-previews: {len(rows)} paper(s)")

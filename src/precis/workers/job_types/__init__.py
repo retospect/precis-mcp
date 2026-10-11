@@ -475,6 +475,15 @@ def _load_datasheet_pull() -> JobTypeSpec:
     return datasheet_pull.SPEC
 
 
+def _load_paper_pull() -> JobTypeSpec:
+    # Fetch an agent-supplied PDF URL into the watch inbox with a fetch
+    # sidecar for a paper stub — the enqueued half of
+    # put(kind='paper', args={'pdf_url': ...}). job_inproc plugin dispatch.
+    from precis.workers.job_types import paper_pull
+
+    return paper_pull.SPEC
+
+
 def _load_derived_drain() -> JobTypeSpec:
     # Bounded in-proc work order draining a SMALL-tier derived LLM queue
     # (summarize/classify) — melchior-pinned, router-capped, never cloud.
@@ -725,6 +734,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "datasheet_pull":
         _REGISTRY["datasheet_pull"] = _load_datasheet_pull()
         return _REGISTRY["datasheet_pull"]
+    if name == "paper_pull":
+        _REGISTRY["paper_pull"] = _load_paper_pull()
+        return _REGISTRY["paper_pull"]
     if name == "deferred_llm_call":
         # A synchronous surface's LLM call deferred past a quota/budget
         # window (web follow-up first). Plugin dispatch under coordinator.
@@ -779,6 +791,7 @@ def known_job_types() -> list[str]:
         "pcb_place",
         "pcb_route",
         "datasheet_pull",
+        "paper_pull",
         "deferred_llm_call",
     ]
     plugin_names = sorted(_get_plugin_specs())

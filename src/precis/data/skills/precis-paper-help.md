@@ -244,6 +244,29 @@ single-pair door either — call `merge_duplicate(survivor_ref_id=…,
 duplicate_ref_id=…, ...)` directly inside a transaction via the prod
 one-off CLI recipe; survivor = the ref that actually holds chunks/body.
 
+## I found a legal PDF for a body-less stub — how do I attach it?
+
+```python
+put(kind="paper", id="smith2023", args={"pdf_url": "https://host/paper.pdf"})
+```
+
+Queues a `paper_pull` job: a worker fetches the URL (SSRF-guarded, 50 MB cap,
+`%PDF` required) and drops it in the ingest inbox with a sidecar naming this
+stub (`source='agent_url'`, `url`), so the normal ingest attaches the body.
+Refused up front for a non-paper, a paper that already has a body, and a
+reference-only paper (PDF attached, no body: replacing a body is not
+supported). Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
+it after `fetch_oa` failed and you know a legal open copy (repository, author
+page, preprint); `fetch_oa` already covers OA via DOI. Shadow libraries
+(Sci-Hub, LibGen, Z-Library, Anna's Archive and kin) are refused at put time
+and again after redirects: `blocked_host`. Before anything is dropped the PDF
+must name the stub (its DOI, or >= 80% of its title words in the first three
+pages) and an article must exceed 2 pages: `identity_mismatch` means the URL
+is another paper (check the title it quotes), `preview_suspected` means a
+publisher preview (find the full text elsewhere); `identity_unchecked` on a
+`dropped` record means the stub had no usable title or DOI, so check the
+folded body yourself. The folded paper keeps the URL as `meta.source_url`.
+
 ## Get a paper's supplementary information (SI)
 ## The SI / supporting-information PDF is missing — how do I pull it?
 ## Does a search hit in SI text cite the SI or the paper?

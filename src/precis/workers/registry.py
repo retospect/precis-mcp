@@ -798,6 +798,17 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-pcb-route-help",
     ),
     ServiceSpec(
+        # Fetch an agent-supplied PDF URL into the watch inbox for a paper
+        # stub; minted by put(kind='paper', args={'pdf_url': ...}).
+        name="paper_pull",
+        label="Paper pull (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Fetch an agent-supplied PDF URL into the inbox for a "
+        "body-less paper stub - minted by put(kind='paper', args={'pdf_url'}).",
+        doc_skill="precis-paper-help",
+    ),
+    ServiceSpec(
         name="llm_summarize",
         label="LLM summarize (llm-v1)",
         category="discovery",

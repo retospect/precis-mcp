@@ -107,6 +107,9 @@ class FetchSidecar:
     #: Provenance for a supplement (``source``/``url``/``component_doi``);
     #: copied onto the minted ref's ``meta.si_parent``. Empty otherwise.
     si: dict[str, str] | None = None
+    #: Source URL of an agent-supplied download (``source='agent_url'``,
+    #: ``put(kind='paper', args={'pdf_url': ...})``); provenance only.
+    url: str | None = None
 
 
 def sidecar_path(pdf: Path) -> Path:
@@ -125,6 +128,7 @@ def write_sidecar(
     printable_only: bool = False,
     role: str | None = None,
     si: dict[str, str] | None = None,
+    url: str | None = None,
 ) -> None:
     """Atomically write the sidecar next to the trigger file ``pdf``.
 
@@ -160,6 +164,8 @@ def write_sidecar(
     }
     if role:
         payload["role"] = role
+    if url:
+        payload["url"] = url
     if si:
         payload["si"] = {k: v for k, v in si.items() if v}
     tmp = target.with_name(f".{target.name}.tmp")
@@ -217,6 +223,8 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
             if isinstance(si_raw, dict)
             else None
         )
+        url_raw = data.get("url")
+        url = str(url_raw) if url_raw else None
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("fetch_sidecar: ignoring malformed %s: %s", path.name, exc)
         return None
@@ -229,6 +237,7 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         printable_only=printable_only,
         role=role,
         si=si,
+        url=url,
     )
 
 

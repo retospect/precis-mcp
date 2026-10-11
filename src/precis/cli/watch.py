@@ -671,6 +671,21 @@ _ELSEVIER_TRUNCATION_MIN_CHUNKS = 15
 _ELSEVIER_TRUNCATION_MIN_PAYLOAD_BYTES = 100_000
 
 
+def _stamp_source_url(
+    sidecar: FetchSidecar | None, result: IngestResult, *, store: Store
+) -> None:
+    """Persist an agent-supplied download's URL as ``meta.source_url``
+    (gr478881: where the folded paper's body came from). Best-effort."""
+    if sidecar is None or not sidecar.url or sidecar.role == "supplement":
+        return
+    if result.kind != "paper" or sidecar.source != "agent_url":
+        return
+    try:
+        store.update_ref(result.ref_id, meta_patch={"source_url": sidecar.url})
+    except Exception:  # provenance only; never fail the ingest
+        log.warning("precis ingest: could not stamp source_url on %s", result.ref_id)
+
+
 def _check_elsevier_truncation(
     pdf: Path,
     sidecar: FetchSidecar | None,
@@ -1036,6 +1051,7 @@ def process_pdf(
         return None
 
     _check_elsevier_truncation(pdf, sidecar, result, store=store)
+    _stamp_source_url(sidecar, result, store=store)
 
     dest = _handle_success(
         pdf,
