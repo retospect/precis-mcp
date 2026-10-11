@@ -98,7 +98,12 @@ _FAKE_ANSIBLE_PLAYBOOK = """#!/usr/bin/env bash
   printf 'PWD=%s\n' "$PWD"
   printf 'STAMP=%s\n' "$(cat ./STAMP 2>/dev/null || echo MISSING)"
   printf 'LOCKED=%s\n' "$(git worktree list --porcelain 2>/dev/null | grep '^locked' | head -1)"
+  printf 'ARGS=%s\n' "$*"
 } >> "$RENDER_RECORD"
+if [ -n "${FAKE_PLAYBOOK_OUT:-}" ]; then
+  cat "$FAKE_PLAYBOOK_OUT"
+  exit "${FAKE_PLAYBOOK_RC:-0}"
+fi
 cat <<'RECAP'
 PLAY RECAP *********************************************************
 gateway                    : ok=10   changed=2    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0
@@ -157,6 +162,11 @@ def _stamped_commit(repo: Path, stamp: str) -> str:
 
 @pytest.fixture
 def fx(tmp_path: Path) -> Fixture:
+    return build_fixture(tmp_path)
+
+
+def build_fixture(tmp_path: Path) -> Fixture:
+    """Fake repo + fake ansible for scripts/deploy; shared with sibling test files."""
     repo = tmp_path / "repo"
     (repo / "scripts" / "lib").mkdir(parents=True)
     (repo / "deploy" / "inventory").mkdir(parents=True)
@@ -184,13 +194,18 @@ def fx(tmp_path: Path) -> Fixture:
 
 
 def _run_deploy(
-    fx: Fixture, fakebin: Path, record: Path, *args: str
+    fx: Fixture,
+    fakebin: Path,
+    record: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = _test_env(
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
         PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
         PRECIS_DEPLOY_NO_LOG="1",
         RENDER_RECORD=str(record),
+        **(extra_env or {}),
     )
     env["PATH"] = f"{fakebin}:{env['PATH']}"
     env.pop("PRECIS_CLUSTER_DIR", None)

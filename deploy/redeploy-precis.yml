@@ -275,7 +275,8 @@
         precis_deploy_changed: >-
           {{ precis_preflight.results
              | map(attribute='stdout') | map('trim')
-             | select('match', '^DIFF') | list | length > 0 }}
+             | select('match', '^DIFF') | list | length > 0
+             or (precis_overlay_changed | default(false) | bool) }}
 
     - name: Report the deploy-change decision
       ansible.builtin.debug:
@@ -394,7 +395,8 @@
     - name: Set the bounce-scope fact (defaults to 'full' — fail-safe if unset/uncomputed)
       ansible.builtin.set_fact:
         precis_bounce_scope: >-
-          {{ (precis_bounce_scope_raw.stdout_lines[0] | default('full') | trim)
+          {{ 'full' if (precis_overlay_changed | default(false) | bool) else
+             (precis_bounce_scope_raw.stdout_lines[0] | default('full') | trim)
              if (precis_deploy_changed | default(true) | bool)
                 and precis_bounce_scope_raw is not skipped
                 and (precis_bounce_scope_raw.rc | default(1)) == 0

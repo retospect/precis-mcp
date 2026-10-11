@@ -282,7 +282,7 @@ _write_deploy_state_marker() {
     sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
     [[ -n "$sha" ]] || return 0
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-    printf '%s %s %s\n' "$sha" "$(date +%s)" "success" > "$(deploy_state_path "$REPO_ROOT")"
+    printf '%s %s %s%s\n' "$sha" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
     _consume_ship_pin "$sha"
     _move_prod_pointer "$sha"
@@ -336,6 +336,59 @@ _say_if_render_tree_gone() {
     say "the render worktree ${_DEPLOY_TREE} is GONE — ansible lost its playbooks mid-run, so the missing-file error above is that, not a host fault. Something outside this deploy deleted it (a worktree reaper, or a run that judged this one dead). Hosts may be half-converged: re-run the same pinned sha."
 }
 
+# gr256065: name what failed, and say whether it can have split the fleet.
+# Reads the captured ansible-playbook output and classifies each `fatal:` by
+# whether the host had already finished the precis install (an
+# `Install precis-mcp[...]` task result of ok/changed):
+#   prereq  — the host never reached the install: still entirely on the old sha
+#   install — the install task itself failed: possibly half-updated (the real
+#             mixed-versions case)
+#   post    — the install had landed; a later task failed (code is deployed)
+# A `...ignoring` line after a fatal (ignore_errors) drops that failure.
+# FAIL_MIXED=1 only for an install failure.
+FAIL_MIXED=0
+FAIL_SUMMARY=""
+_analyze_failures() {
+    local play_out="$1" rows host cls play task
+    rows="$(awk '
+        /^PLAY \[/ { play = $0; sub(/^PLAY \[/, "", play); sub(/\] \**$/, "", play) }
+        /^TASK \[/ { task = $0; sub(/^TASK \[/, "", task); sub(/\] \**$/, "", task); inst = (task ~ /Install precis-mcp\[/) }
+        /^(ok|changed): \[/ && inst { h = $0; sub(/^[a-z]+: \[/, "", h); sub(/[] ].*$/, "", h); done[h] = 1 }
+        /^fatal: \[/ {
+            h = $0; sub(/^fatal: \[/, "", h); sub(/[] ].*$/, "", h)
+            if (h in seen) next
+            seen[h] = 1; n++; fh[n] = h; fp[n] = play; ft[n] = task; fi[n] = inst; fd[n] = (h in done)
+        }
+        /^\.\.\.ignoring/ { if (n > 0) { delete seen[fh[n]]; n-- } }
+        END { for (i = 1; i <= n; i++) printf "%s\t%s\t%s\t%s\n", fh[i], (fi[i] ? "install" : (fd[i] ? "post" : "prereq")), fp[i], ft[i] }
+    ' "$play_out" 2>/dev/null || true)"
+    FAIL_MIXED=0
+    FAIL_SUMMARY=""
+    [[ -n "$rows" ]] || return 0
+    say "failed hosts:"
+    while IFS=$'\t' read -r host cls play task; do
+        case "$cls" in
+            install) FAIL_MIXED=1; cls="precis install failed (possibly half-updated)" ;;
+            post)    cls="failed after the precis install landed (code deployed)" ;;
+            *)       cls="prerequisite failed before the precis install (still entirely on the old sha)" ;;
+        esac
+        printf '  %s — %s\n      play: %s\n      task: %s\n' "$host" "$cls" "$play" "$task"
+        FAIL_SUMMARY+="${FAIL_SUMMARY:+, }${host}"
+    done <<< "$rows"
+}
+
+# The die text for a red rollout: only an install failure may claim mixed
+# versions (gr256065).
+_redeploy_failure_msg() {
+    if [[ -z "$FAIL_SUMMARY" ]]; then
+        printf '%s' "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+    elif [[ "$FAIL_MIXED" == 1 ]]; then
+        printf '%s' "redeploy failed on ${FAIL_SUMMARY} — the precis install itself failed (nodes may be on mixed versions; re-run once fixed)."
+    else
+        printf '%s' "redeploy failed on ${FAIL_SUMMARY} — not a precis install failure (see the failed-host list above); this failure leaves no mixed versions. Re-run once fixed."
+    fi
+}
+
 # Run one redeploy-precis.yml invocation. Its combined output is ALSO tee'd
 # to $play_out (a scratch capture, separate from the whole-script tee already
 # flowing to console + the deploy log) purely so _rollout_converged can parse
@@ -357,6 +410,7 @@ _run_rollout_playbook() {
         rc=1
     fi
     [[ "$rc" -eq 0 ]] || _say_if_render_tree_gone
+    [[ "$rc" -eq 0 ]] || _analyze_failures "$play_out"
     if [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
         say "redeploy-precis.yml exited non-zero, but every rollout host (${ROLLOUT_HOSTS}) converged clean in its own PLAY RECAP line — recording the deploy-state marker before reporting the failure (gr332009)"
         _write_deploy_state_marker
@@ -636,6 +690,7 @@ fi
 #     worktree (/go ships+deploys from one) with the overlay stored in ONE place.
 # Legacy escape (pre-cutover private checkout): `PRECIS_DEPLOY_FROM_TREE=`.
 INV_ARGS=()
+OVERLAY_DIR=""
 PRECIS_DEPLOY_FROM_TREE="${PRECIS_DEPLOY_FROM_TREE-1}"
 if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
     if [[ -n "$_DEPLOY_TREE" ]]; then
@@ -645,6 +700,7 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
         CLUSTER_DIR="$(cd "${_script_dir}/.." && pwd)/deploy"
     fi
     if [[ -d "${CLUSTER_DIR}/inventory" ]]; then
+        OVERLAY_DIR="${CLUSTER_DIR}/inventory"
         say "install-from-tree: deploying from ${CLUSTER_DIR} (local overlay)"
     else
         _main="$(dirname "$(git -C "${CLUSTER_DIR}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
@@ -652,7 +708,53 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
         _vpass="$(dirname "${_overlay}")/.vault-pass"
         [[ -d "${_overlay}" && -f "${_vpass}" ]] || die "install-from-tree: no overlay — this checkout's ${CLUSTER_DIR}/inventory is empty and the canonical overlay (${_overlay}) is missing. Put your private inventory in the main checkout's deploy/inventory, or set PRECIS_OVERLAY_DIR (see deploy/README.md)."
         INV_ARGS=(-i "${_overlay}/hosts.yml" --vault-password-file "${_vpass}")
+        OVERLAY_DIR="${_overlay}"
         say "install-from-tree: deploying from ${CLUSTER_DIR} (canonical overlay: ${_overlay})"
+    fi
+fi
+
+# ── overlay change detection (gr239588) ─────────────────────────────────
+# deploy/inventory is the gitignored private overlay: an edit there moves no
+# sha and touches no tracked path, so the playbook's sha-move gate and its
+# git-diff bounce classifier both read "nothing changed" and render nothing.
+# Hash the tree here on the controller, compare with the hash recorded in the
+# deploy-state marker (4th field, `overlay=<hash>`), and pass
+# precis_overlay_changed=true when they differ: redeploy-precis.yml then
+# counts the deploy as changed with bounce scope `full`. Only the hash is
+# ever printed or stored — never file contents or a vault value. A marker with
+# no recorded hash (older than this) is not a change: the first deploy after
+# this lands records one without forcing a bounce.
+_sha256_stdin() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'
+    else shasum -a 256 | awk '{print $1}'; fi
+}
+_overlay_hash() {
+    local dir="$1" f
+    [[ -d "$dir" ]] || return 0
+    (
+        cd "$dir" || exit 0
+        LC_ALL=C find . \( -type f -o -type l \) ! -name .DS_Store ! -name '*.retry' ! -name '*.swp' ! -name '*~' ! -name '#*#' -print | LC_ALL=C sort \
+            | while IFS= read -r f; do
+                printf '%s ' "$f"
+                _sha256_stdin < "$f"
+            done | _sha256_stdin
+    ) 2>/dev/null || true
+}
+OVERLAY_HASH=""
+if [[ -n "$OVERLAY_DIR" ]]; then
+    OVERLAY_HASH="$(_overlay_hash "$OVERLAY_DIR")"
+fi
+if [[ -n "$OVERLAY_HASH" ]]; then
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+    _ov_marker="$(deploy_state_read_path "$REPO_ROOT")"
+    _ov_prev=""
+    if [[ -n "$_ov_marker" && -f "$_ov_marker" ]]; then
+        _ov_prev="$(awk '{for (i = 4; i <= NF; i++) if ($i ~ /^overlay=/) { sub(/^overlay=/, "", $i); print $i; exit }}' "$_ov_marker" 2>/dev/null || true)"
+    fi
+    if [[ -n "$_ov_prev" && "$_ov_prev" != "$OVERLAY_HASH" ]]; then
+        EXTRA_ARGS+=(-e precis_overlay_changed=true)
+        say "overlay changed since the last recorded deploy (hash ${_ov_prev:0:12} → ${OVERLAY_HASH:0:12}) — counting this deploy as changed, bounce scope full."
+        say "Roles outside redeploy-precis.yml (backups, monitoring, pgbouncer, ...) also read the overlay and are NOT re-rendered by this deploy: re-run their numbered playbooks in deploy/playbooks/ if the edit touches them."
     fi
 fi
 
@@ -889,13 +991,13 @@ if [[ -z "$CANARY" ]]; then
         say "deploying main to the cluster"
         _run_rollout_playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-            || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+            || die "$(_redeploy_failure_msg)"
     else
         say "deploying ref '${REF}' to the cluster"
         _run_rollout_playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
             -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-            || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+            || die "$(_redeploy_failure_msg)"
     fi
 
     say "deployed — cluster is running '${REF}'."
@@ -992,7 +1094,7 @@ fi
         # fact, and a per-worktree marker made every OTHER tree's ship
         # over-report the lag. See scripts/lib/deploy-state.sh.
         . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-        printf '%s %s %s\n' "$DEPLOYED_SHA" "$(date +%s)" "success" \
+        printf '%s %s %s%s\n' "$DEPLOYED_SHA" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}" \
             > "$(deploy_state_path "$REPO_ROOT")"
     fi
     # Success: clear the attempt stamp so ship stops reporting "uncertain"
