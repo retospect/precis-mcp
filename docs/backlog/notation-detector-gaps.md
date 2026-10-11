@@ -27,10 +27,3 @@ auto-rewrite), found at pre-ship review 2026-08-19.
    `AlxGa1-xAs`/`Cu2-xS` excluded because `x` follows a letter or hyphen,
    not a digit. Watch item for a corpus with different nomenclature habits
    (bio, geology); re-run the dry run before trusting it there.
-
-3. **`ascii-angstrom` fires on the word "A" (gr249075).** The rule in
-   `_ANGSTROM_RE` in `src/precis/taproot/notation.py` fires on the bare
-   capital word `A` as if it were an ångström. Measured base rate over the corpus: 0 of 104 hits real, and the
-   recommendation was to hold the rule. Who: needs-Reto: hold the rule
-   (leave it advisory and unshipped to rewrite) or close the gripe as
-   not worth fixing; if kept, tighten `_ANGSTROM_RE` to require a preceding number.

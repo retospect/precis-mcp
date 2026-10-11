@@ -615,9 +615,8 @@ Bundled in the 2026-10-11 gripe triage. The importer defect is fixed
 (0f583783), but the draft imported before the fix: 41 `\ref` targets still
 dangle because heading `meta.label` was not captured.
 
-- Repair: a one-off that rewrites each heading's `meta.label` from the
-  source `.tex` (match by heading text and order), then re-render and count
-  dangling `\ref` (target 0). Heading metadata edit, no body text change.
-- Prod write; run first against a copy or the dev DB, then prod.
+- Ruling (Reto, 2026-10-11): no `.tex`-based label recovery. The 41
+  dangling `\ref` are removed or fixed by hand; this is being done
+  2026-10-11. After it, re-render and count dangling `\ref` (target 0).
 
-Who: agent-code writes the one-off; needs-Reto: go-ahead for the prod write.
+Who: Reto and an agent, by hand.

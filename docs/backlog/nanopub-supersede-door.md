@@ -96,9 +96,14 @@ Bundled in the 2026-10-11 gripe triage. The unsupported-term lint shipped and
 fi191121 is anchored, so its signed sentence cannot be edited in place; the
 correction is a successor nanopub through the supersede door above.
 
-- needs-Reto: pick the successor hub and settle the "CNB100" wording.
-- Then agent-code builds the supersede door (successor→predecessor publish
-  row, `npx:supersedes` pubinfo, same key) per the ruling at the top; fi191121
-  is its first real consumer and the acceptance case.
+- Ruling (Reto, 2026-10-11): mint a successor hub for fi191121 now. Its
+  sentence carries "CNB100"; it takes all three passages, including the
+  pc35887 definition caption; it has a `refines` link to fi191121. An agent
+  is minting it 2026-10-11.
+- fi191121 must not be live-published until the supersede door exists.
+- The door itself remains open work: agent-code builds it (successor→
+  predecessor publish row, `npx:supersedes` pubinfo, same key) per the
+  ruling at the top; fi191121 is its first real consumer and the acceptance
+  case.
 
-Who: needs-Reto (hub and wording), then agent-code.
+Who: agent-code.

@@ -24,14 +24,6 @@ Bundled in the 2026-10-10 gripe triage. These are independent small
    the draft's own project todo, with a stale "succeeded" job status and no
    asks. Hide it or label it.
 
-5. **Console chips for tex/markdown read `[error:Unsupported]` (gr340058).**
-   precis-web has no `PRECIS_ROOT`, so the tex and markdown kinds are
-   unsupported there. The chip-hiding half landed in a67d9a3d. What remains is
-   a decision: either precis-web gets `PRECIS_ROOT` (a read-only mount in the
-   deploy config), or the chips stay hidden and the gripe closes. Files:
-   `src/precis_web/routes/console.py`, the precis-web deploy config.
-   Who: needs-Reto (mount the sandbox root into precis-web?), then ops.
-
 ## Acceptance
 
 Each numbered item is visible on dev with a browser check, and items 3–4

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: taproot numeral cross-check advisory (report-only)
 pillar: memory-graph
 prio: normal
@@ -7,11 +7,10 @@ prio: normal
 
 # taproot numeral cross-check advisory (report-only)
 
-From gr250034. Spec drafted 2026-09-09; awaiting Reto's review before
-build.
+From gr250034. Spec drafted 2026-09-09; Reto accepted the spec defaults
+2026-10-11.
 
-Who: needs-Reto: review the spec (in particular the normalisation table
-and the open question below); then agent-code builds it. Base-rate caveat applies: per the td249939 sample, content-error
+Who: agent-code. Base-rate caveat applies: per the td249939 sample, content-error
 rates cluster by source (6%–62% by paper cluster) — do not treat the 12%
 sample rate as uniform, and measure the audit's own false-positive rate on
 a real slice before acting on its output.
@@ -62,9 +61,9 @@ them against the linked chunks.
 New `taproot/numeral_audit.py` + CLI wiring; read-only against
 refs/chunks. No schema change, no worker.
 
-## Open questions / decisions log
+## Decisions log
 
-- Normalization table scope for slice 1 (proposal: %, ×10^n notation,
-  spelled-out one–ten, SI prefixes; everything else reported raw).
-- Should hub_refine ever consume this signal? (out of scope here; decide
-  after the false-positive measurement.)
+- Slice 1 normalises %, ×10^n notation, spelled-out one–ten and SI
+  prefixes; everything else is reported raw (Reto accepted, 2026-10-11).
+- Whether hub_refine ever consumes this signal is decided after the
+  false-positive measurement.

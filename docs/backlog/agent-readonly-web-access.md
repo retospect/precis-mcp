@@ -1,6 +1,6 @@
 ---
 status: idea
-title: Agents can read the prod web UI through an enforced read-only role and credential
+title: Agents can reach the prod web UI with the vaulted claude web user; guide-web --db prod boots read-only
 pillar: platform
 ---
 
@@ -10,8 +10,8 @@ Bundled in the 2026-10-10 gripe triage. Both gripes ask for the same thing:
 an agent can look at prod web pages, and the database cannot be written
 through that path.
 
-- **gr477803.** The prod web UI uses Basic auth against `web_users`, and no
-  read-only agent credential exists. Agents cannot dogfood `/graph`,
+- **gr477803.** The prod web UI uses Basic auth against `web_users`, and
+  agents have no credential they can fetch. Agents cannot dogfood `/graph`,
   `/eye`, `/rules`, `/builds`, NotFound→404 or the pcb argue box. Every web
   change is checked only on dev or by Reto.
 - **gr461387.** `scripts/guide-web --db prod` is documented as read-only
@@ -28,9 +28,15 @@ through that path.
    launcher verifies the effective role (`current_user`, a test write that
    fails) and refuses to start otherwise. The boot kind-upsert is skipped
    in read-only mode instead of being attempted.
-2. A `web_users` row (or token) for agents that maps to the read-only
-   path. Write routes refuse it. It is stored in the vault like the other
-   agent credentials.
+2. **Ruling (Reto, 2026-10-11): agents use the existing `claude` web user
+   (`web_users` id 4) as-is, with full access.** precis-web has no roles;
+   every `web_users` row is fully authorized (`src/precis_web/auth.py`
+   docstring). No read-only agent credential is built. What remains: the
+   plaintext is not stored (scrypt hash + vault pepper), so reset the
+   password with the `precis users` CLI, vault it under a key like
+   `PRECIS_WEB_PASSWORD:claude`, and document in the relevant runbook or
+   skill how an agent fetches it and runs `curl -u claude:<pw> <url>`.
+   Who: ops, S.
 
 Related: [web-basic-auth-users.md](web-basic-auth-users.md).
 
@@ -38,5 +44,5 @@ Related: [web-basic-auth-users.md](web-basic-auth-users.md).
 
 - `guide-web --db prod` boots with zero writes. A write attempt logs a
   refusal; it does not upsert.
-- An agent can fetch `/graph` on prod with its credential, and a POST to a
-  write route returns 403.
+- An agent follows the documented steps, fetches the vaulted password and
+  gets `/graph` on prod with `curl -u`.
