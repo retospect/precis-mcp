@@ -422,3 +422,69 @@ def test_pinning_backend_blocks_private_at_connect(
     with http_client(timeout=5.0) as client:
         with pytest.raises(SsrfBlocked, match="127.0.0.1"):
             safe_get(client, "http://rebind.evil/")
+
+
+# ── DNS resolution is wall-clock bounded ─────────────────────────────
+
+
+def test_dns_stall_raises_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    release = threading.Event()
+
+    def _stall(*_a: Any, **_k: Any) -> list[Any]:
+        release.wait(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _stall)
+    try:
+        with http_client(timeout=0.5, user_agent=None) as client:
+            t0 = time.monotonic()
+            with pytest.raises(httpx.ConnectTimeout, match="DNS resolution timed out"):
+                safe_get(client, "http://stall.test/")
+            assert time.monotonic() - t0 < 5.0
+        # standalone pre-check: plain TimeoutError subclass, not a refusal
+        monkeypatch.setattr(sf, "_DNS_TIMEOUT_DEFAULT", 0.3)
+        with pytest.raises(sf.DnsTimeout) as ei:
+            resolve_pinned_ip("http://stall.test/")
+        assert isinstance(ei.value, TimeoutError)
+        assert not isinstance(ei.value, SsrfBlocked)
+    finally:
+        release.set()
+
+
+def test_datasheet_download_classifies_dns_stall_as_transient(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from precis.workers.job_types import datasheet_pull as dp
+
+    release = threading.Event()
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *_a, **_k: release.wait(30) and []
+    )
+    monkeypatch.setattr(dp, "_FETCH_TIMEOUT_S", 0.3)
+    try:
+        with pytest.raises(dp._Failed) as ei:
+            dp._download("http://stall.test/x.pdf", tmp_path / "x.pdf")
+    finally:
+        release.set()
+    assert ei.value.reason == "fetch_timeout"
+
+
+def test_dns_normal_resolve_still_passes_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _fake_getaddrinfo({"ok.test": ["93.184.216.34"]})
+    )
+    assert sf._classify_and_pin_all("ok.test", 1.0) == ["93.184.216.34"]
+
+
+def test_dns_private_resolve_still_refused_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _fake_getaddrinfo({"priv.test": ["10.0.0.9"]})
+    )
+    with pytest.raises(SsrfBlocked, match="10.0.0.9"):
+        sf._classify_and_pin_all("priv.test", 1.0)

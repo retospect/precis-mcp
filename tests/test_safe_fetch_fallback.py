@@ -743,7 +743,9 @@ def test_c1_real_httpcore_cert_failure_does_not_fall_back(
     threading.Thread(target=serve, daemon=True).start()
 
     monkeypatch.setattr(
-        sf, "_classify_and_pin_all", lambda host: ["127.0.0.1", "127.0.0.1"]
+        sf,
+        "_classify_and_pin_all",
+        lambda host, timeout=None: ["127.0.0.1", "127.0.0.1"],
     )
     orig = httpcore.SyncBackend.connect_tcp
     dials: list[str] = []

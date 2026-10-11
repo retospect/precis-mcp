@@ -75,6 +75,8 @@ import ssl
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
@@ -93,6 +95,47 @@ logger = logging.getLogger(__name__)
 
 class SsrfBlocked(Exception):
     """Raised when a target URL resolves to a non-public address."""
+
+
+class DnsTimeout(TimeoutError):
+    """DNS resolution exceeded its wall-clock bound.
+
+    Deliberately NOT an :class:`SsrfBlocked`: a stall is transient, not a
+    refusal. On the send path the pinning backend converts it to
+    ``httpcore.ConnectTimeout`` (httpx surfaces ``httpx.ConnectTimeout``);
+    the standalone :func:`resolve_pinned_ip` / :func:`assert_public_http_url`
+    let it propagate as this ``TimeoutError``.
+    """
+
+
+# ``getaddrinfo`` has no timeout and httpx timeouts don't cover it, so a DNS
+# stall would hang the calling thread forever. Resolve on a small shared pool
+# and wait with a bound. The pool is bounded: a stalled resolver ties up one
+# worker until libc gives up, and further lookups queue (and time out) rather
+# than spawning unbounded threads.
+_DNS_TIMEOUT_DEFAULT = 10.0
+_DNS_POOL_WORKERS = 8
+_dns_pool = ThreadPoolExecutor(
+    max_workers=_DNS_POOL_WORKERS, thread_name_prefix="safe-fetch-dns"
+)
+
+
+def _resolve_bounded(host: str, timeout: float | None) -> list[Any]:
+    """``socket.getaddrinfo(host, None)`` bounded by ``timeout`` seconds.
+
+    ``timeout`` is the caller's connect timeout when known (``None`` or
+    non-positive falls back to :data:`_DNS_TIMEOUT_DEFAULT`). Raises
+    :class:`DnsTimeout` on expiry; ``OSError`` from the lookup propagates.
+    """
+    bound = timeout if timeout is not None and timeout > 0 else _DNS_TIMEOUT_DEFAULT
+    future = _dns_pool.submit(lambda: socket.getaddrinfo(host, None))
+    try:
+        return future.result(timeout=bound)
+    except FutureTimeout:
+        future.cancel()
+        raise DnsTimeout(
+            f"DNS resolution timed out for {host!r} after {bound:g}s"
+        ) from None
 
 
 # Networks we always refuse. ``ipaddress`` already classifies most of
@@ -142,7 +185,7 @@ def _ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return mapped is not None and any(mapped in net for net in _BLOCKED_V4)
 
 
-def _classify_and_pin_all(host: str) -> list[str] | None:
+def _classify_and_pin_all(host: str, timeout: float | None = None) -> list[str] | None:
     """Classify a bare host and return **every** validated IP to dial.
 
     Resolves ``host`` **exactly once**, dedupes the A/AAAA records in
@@ -152,7 +195,8 @@ def _classify_and_pin_all(host: str) -> list[str] | None:
     order). Returns ``None`` when ``host`` is an IP literal: there is
     nothing to re-resolve, so the caller dials it as-is.
 
-    ``host`` is a hostname or IP literal only (no scheme/port).
+    ``host`` is a hostname or IP literal only (no scheme/port). ``timeout``
+    bounds the DNS lookup (see :func:`_resolve_bounded`).
 
     Raises:
         SsrfBlocked: the host fails to resolve to any address, or any
@@ -171,7 +215,9 @@ def _classify_and_pin_all(host: str) -> list[str] | None:
         return None
 
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = _resolve_bounded(host, timeout)
+    except DnsTimeout:
+        raise  # a TimeoutError is an OSError, but a stall is not a refusal
     except OSError as exc:
         raise SsrfBlocked(f"refusing host {host!r}: DNS lookup failed ({exc})") from exc
 
@@ -242,6 +288,7 @@ def resolve_pinned_ip(url: str) -> str | None:
         SsrfBlocked: scheme is not http(s), the URL has no host, the
             host fails to resolve to any address, or any A/AAAA record
             falls in a blocked range.
+        DnsTimeout: the lookup exceeded its time bound (transient).
     """
     return _classify_and_pin_host(_url_host(url))
 
@@ -490,7 +537,10 @@ def _pinning_backend_class() -> type[httpcore.SyncBackend]:
             local_address: str | None = None,
             socket_options: Any = None,
         ) -> Any:
-            addrs = _classify_and_pin_all(host)
+            try:
+                addrs = _classify_and_pin_all(host, timeout)
+            except DnsTimeout as exc:
+                raise httpcore.ConnectTimeout(str(exc)) from exc
             if addrs is None:
                 return self._dial(host, port, timeout, local_address, socket_options)
             if len(addrs) == 1 or timeout is None:
@@ -562,6 +612,7 @@ def assert_public_http_url(url: str) -> None:
         SsrfBlocked: scheme is not http(s), the URL has no host, the
             host fails to resolve, or any A/AAAA record falls in a
             blocked range.
+        DnsTimeout: the lookup exceeded its time bound (transient).
     """
     resolve_pinned_ip(url)
 
@@ -688,6 +739,7 @@ def safe_stream(
 
 __all__ = [
     "MAX_REDIRECTS",
+    "DnsTimeout",
     "SsrfBlocked",
     "assert_public_http_url",
     "fallback_counts",
