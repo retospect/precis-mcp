@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -530,6 +531,65 @@ def _child_cmd(req_path: str, out_path: str) -> list[str]:
     import sys
 
     return [sys.executable, "-u", "-m", "precis_pathway.runner", req_path, out_path]
+
+
+_MEM_LIMIT_ENV = "PRECIS_AUTOCATPATH_MEM_LIMIT_GB"
+#: 32 GB = ~26% of the 121 GB compute node, so three concurrent children
+#: (the usual fan-out) still fit under physical RAM. Job 449981 grew ~10 GB/h
+#: to ~117 GB and swapped the node; 0 disables the cap.
+_DEFAULT_MEM_LIMIT_GB = 32.0
+
+
+def _mem_limit_bytes() -> int:
+    """Per-child memory cap in bytes from ``PRECIS_AUTOCATPATH_MEM_LIMIT_GB``
+    (``0`` = uncapped; unparseable -> the default)."""
+    raw = os.environ.get(_MEM_LIMIT_ENV, "").strip()
+    try:
+        gb = float(raw) if raw else _DEFAULT_MEM_LIMIT_GB
+    except ValueError:
+        gb = _DEFAULT_MEM_LIMIT_GB
+    return max(0, int(gb * 1024**3))
+
+
+def _apply_memory_cap() -> int:
+    """Cap this (child) process's heap; returns the bytes applied, 0 if none.
+
+    Runs at the top of :func:`_subprocess_main`, so every launch path (blocking
+    seed/coverage, detached seed, kinetics) is covered without a ``preexec_fn``.
+    Uses ``RLIMIT_DATA`` (Linux >= 4.7: private writable mappings + brk), not
+    ``RLIMIT_AS``: CUDA/torch reserve hundreds of GB of *virtual* address space
+    that is never resident, so an AS cap would kill every GPU seed. Over the
+    cap, allocations fail and Python raises ``MemoryError``, which the child
+    reports as a classified "memory limit exceeded" failure. A no-op (with a
+    log line) off Linux, where the limit is not enforced."""
+    limit = _mem_limit_bytes()
+    if limit <= 0:
+        return 0
+    if not sys.platform.startswith("linux"):
+        log.info(
+            "%s: RLIMIT_DATA not enforced on %s; no memory cap",
+            _MEM_LIMIT_ENV,
+            sys.platform,
+        )
+        return 0
+    import resource
+
+    try:
+        _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        resource.setrlimit(resource.RLIMIT_DATA, (limit, hard))
+    except (ValueError, OSError) as exc:
+        log.warning("could not set memory cap (%s); running uncapped", exc)
+        return 0
+    return limit
+
+
+def _mem_error_text(limit: int) -> str:
+    return (
+        f"memory limit exceeded (cap {limit / 1024**3:.0f} GB per child; "
+        f"{_MEM_LIMIT_ENV} raises it, 0 disables)"
+    )
 
 
 _CPUSET_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
@@ -1355,7 +1415,11 @@ def run_kinetics(config: dict[str, Any], artifact: PathwayArtifact) -> None:
         results_json["kinetics"] = result
     except Exception as exc:
         log.warning("autocatpath kinetics: solve failed", exc_info=True)
-        results_json["kinetics_error"] = str(exc)
+        results_json["kinetics_error"] = (
+            _mem_error_text(_mem_limit_bytes())
+            if isinstance(exc, MemoryError) and _mem_limit_bytes()
+            else str(exc)
+        )
 
 
 #: Wall-clock ceiling for the kinetics solve, in seconds. Measured cost on a
@@ -1482,7 +1546,7 @@ def run_kinetics_subprocess(
         )
 
 
-def _kinetics_child(req: dict[str, Any], out_path: str) -> int:
+def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int:
     """Child half of :func:`run_kinetics_subprocess`.
 
     Rebuilds the minimal artifact shape :func:`run_kinetics` reads, runs it,
@@ -1506,7 +1570,13 @@ def _kinetics_child(req: dict[str, Any], out_path: str) -> int:
             else {"kinetics_error": rj.get("kinetics_error", "no result")}
         )
     except Exception as exc:  # pragma: no cover - run_kinetics never raises
-        payload = {"kinetics_error": f"{type(exc).__name__}: {exc}"}
+        payload = {
+            "kinetics_error": (
+                _mem_error_text(mem_cap)
+                if isinstance(exc, MemoryError) and mem_cap
+                else f"{type(exc).__name__}: {exc}"
+            )
+        }
 
     tmp_path = f"{out_path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as fh:
@@ -1544,13 +1614,14 @@ def _subprocess_main(argv: list[str]) -> int:
     import os
 
     req_path, out_path = argv[1], argv[2]
+    mem_cap = _apply_memory_cap()
     with open(req_path, encoding="utf-8") as fh:
         req = json.load(fh)
     # `mode` defaults to "seed" so a request file written by an older build
     # — the detached protocol leaves them on disk to be polled later — still
     # parses after this key was introduced.
     if req.get("mode") == "kinetics":
-        return _kinetics_child(req, out_path)
+        return _kinetics_child(req, out_path, mem_cap)
     try:
         result: dict[str, Any]
         if req.get("mode") == "coverage":
@@ -1585,7 +1656,11 @@ def _subprocess_main(argv: list[str]) -> int:
 
         payload = {
             "ok": False,
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": (
+                _mem_error_text(mem_cap)
+                if isinstance(exc, MemoryError) and mem_cap
+                else f"{type(exc).__name__}: {exc}"
+            ),
             "traceback": traceback.format_exc(),
         }
     tmp_path = f"{out_path}.tmp"
