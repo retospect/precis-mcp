@@ -105,10 +105,13 @@ same spec with `fidelity="check"`.
 | menu | construction | citation |
 |---|---|---|
 | `[2+2]` | two authored bonds, C60 6-6 bond → host bond | Nasibulin 2007 (pa2069, doi:10.1038/nnano.2007.37) |
+| `[4+4]` | two bonds, para atoms of a C60 hexagon → para atoms of the host hexagon holding `site`'s neighbours `dir`, `dir+1`; DFT finds it unstable or marginal | Nasibulin 2007 (pa2069, doi:10.1038/nnano.2007.37) |
 | `9-6` | six bonds, C54 (C60 − hexagon) onto intact host; seam {9:3, 6:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
-| `8-7` | the other C3 registration; seam {8:3, 7:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
+| `8-7` | the other C3 registration onto the same six one-sublattice host atoms; seam {8:3, 7:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
 | `DA-neck` | C60 − pentagon → (5,0) neck ({7:5}) → host `path3` opening | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
 | `DB-neck` | C60 − 3 pentagons → (6,0) neck → hexagon hole + {7×3} collar (needs `k | gcd(n,m)`) | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
+
+Any other menu name is refused (`menu.unknown` ERROR).
 
 ## Check codes (hexfold spec §13, terse)
 

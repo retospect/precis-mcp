@@ -687,6 +687,7 @@ no ERROR. No `__bool__`.
 | `registry.closure` `[spec 0.2]` | WARN (STRICT: ERROR) | cycle residual in symmetry steps (`data.cycle`, `data.residual`) |
 | `seam.rings` `[spec 0.2]` | INFO | ring census along a seam (was `fuse.seam`); `data.rings`, `data.k` |
 | `op.dangling` `[spec 0.2]` | ERROR | an atom-addressed op names an atom that no longer exists after regeneration |
+| `menu.unknown` `[impl 0.2, 2026-10-11]` | ERROR | a menu line names no implemented menu (§16); it used to expand to nothing and leave the bud as a loose part |
 | `gen.stale` `[spec 0.2]` | WARN | generated section's hash ≠ hash of the authored sections |
 | `frag.unrealized` | INFO | fragment referenced but not built (no rdkit) |
 | `geom.summary` | INFO | rms/max bond-length and angle deviation, `bond_n_over`/`angle_n_over` (every bond/ring corner past tolerance, not just the ten listed), `clash_count`/`clash_min` (geometry tier) |
@@ -816,9 +817,9 @@ generated line inherits.
 | menu | expands to | cite | accessibility |
 |---|---|---|---|
 | `[2+2]` | 2 `bond` lines: the C60 6-6 bond with lex-min atom pair to the host bond from `site` along `dir` | [S13] | CVD-observed |
-| `[4+4]` | 4 `bond` lines | — | theoretical |
+| `[4+4]` | 2 `bond` lines: the 1,4 (para) atoms of the lex-min C60 hexagon, entered at its smallest site, to `site` and to the atom across the host hexagon that holds `site`'s neighbours `dir` and `dir+1` (one bond per host sublattice) | [S13] | DFT: unstable or marginal on (8,8) |
 | `9-6` | C54 = C60 `- hexagon`; six `bond` lines onto the **intact** host in the C3 registration whose seam is `{9:3, 6:3}` | [S14] | DFT |
-| `8-7` | same, in the registration whose seam is `{8:3, 7:3}` | [S14] | DFT |
+| `8-7` | same, in the registration whose seam is `{8:3, 7:3}`; registrations bonding all six host atoms on one sublattice rank first, as in [S14] (the 9-6 host atoms rebonded, ~6 μB on (10,10)) — 36 of the 60 `{8:3, 7:3}` registrations mix sublattices and match no published case `[impl 0.2, 2026-10-11]` | [S14] | DFT |
 | `DA-neck(len)` | C60 `- pentagon` → `tube(5,0,len)` → host `- path3` opening, neck fuse `k` fitted over 0..4 by smallest max seam ring | [S15] | TEM-consistent |
 | `DB-neck(len)` | C60 `- hexagon` → `tube(6,0,len)` → host `- hexagon`, both fuses `k=0` | [S15] | TEM-consistent |
 | `collar{r×k @fit}` | k defects of ring size r in a `C_k` orbit | — | — |

@@ -361,9 +361,9 @@ Decided 2026-09-18 (Reto):
   build at ~1 nm rotor radius (a few hundred carbons); the smooth mapper
   is for larger shells only.
 - **Q4 clearance — stub on `stick` atoms + van der Waals radii** until
-  `precis_surface` stage 3 lands. Gated on gr346966 (82–93° cap-seam
-  angles on stick atoms): the stub's numbers near the lid seams are not
-  trusted until that is fixed.
+  `precis_surface` stage 3 lands. The gr346966 gate (82–93° cap-seam
+  angles on stick atoms) is lifted: since fdf058da1 every cap seam
+  holds within 3.3° (`test_cap_seam_stick_angles_within_ten_degrees`).
 
 | # | question | severity |
 |---|---|---|

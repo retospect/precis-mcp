@@ -75,6 +75,35 @@ a.out --fuse k=0--> b.in
     assert dict(net.ports).keys() == {"a.in"}
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "a: tube(5,5,len=3)\nb: cap(5,5)\na.out --fuse k=0--> b.in\n",
+        "a: tube(6,0,len=3)\nb: cap(6,0)\na.out --fuse k=0--> b.in\n",
+        "a: tube(12,0,len=3)\nb: cap(12,0)\na.out --fuse k=0--> b.in\n",
+        "examples/capped_tube.hx",
+        "examples/lid_pillbox.hx",
+    ],
+)
+def test_cap_seam_stick_angles_within_ten_degrees(spec: str) -> None:
+    """gr346966: stick relaxed the angles next to every cap seam to
+    82-93 deg (ideal 108/120), and capped_tube.hx's C60-hemisphere seam
+    to 75-154 deg (27 angles past tolerance), because the cap seeded
+    mirror-registered against the tube end.  Since fdf058da1 reflects
+    such seeds, every cap seam stays within 10 deg of ideal (measured
+    max 1.5 / 2.6 / 3.2 / 1.5 / 3.3 deg)."""
+    if spec.startswith("examples/"):
+        text = (ROOT / spec).read_text(encoding="utf-8")
+    else:
+        text = "hexfold 0.2\norigin a\n" + spec
+    rep = check(text, geometry=True)
+    summary = [f for f in rep.findings if f.code == "geom.summary"]
+    assert summary
+    data = dict(summary[0].data)
+    assert data["angle_n_over"] == 0, summary[0].message
+    assert data["angle_max"] < 10.0, summary[0].message
+
+
 def test_cap90_rejected() -> None:
     # cap(9,0)'s hemisphere is not a cap: it leaves the end over-curved
     # (3 pentagons + a {5:3,7:6} seam -> euler.residual -6); 9 is not a

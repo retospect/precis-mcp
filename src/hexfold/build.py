@@ -1749,7 +1749,15 @@ def build(
     if has_domains:
         return _solve_domains(spec, profile, strict, snap_findings)
 
-    spec = menus.expand(spec)
+    try:
+        spec = menus.expand(spec)
+    except menus.MenuError as exc:
+        raise BuildError(
+            profile.apply_all(
+                snap_findings
+                + [Finding("menu.unknown", Severity.ERROR, str(exc), span=exc.span)]
+            )
+        ) from exc
 
     # len=fit (SPEC section 8): the smallest integer len for which the
     # whole spec builds with no ERROR findings.  len is in whole
@@ -2951,6 +2959,25 @@ def _atom_ref_ord(
         return None, None
 
 
+def _wrap_tube_ref(ref: str, patches: dict[str, Patch]) -> str:
+    """'inst/(u,v,s)' on a tube -> the same atom's canonical-cell address.
+
+    A menu derives host sites by lattice arithmetic (``[2+2]``'s neighbour,
+    ``[4+4]``'s para atom), which can leave the tube's fundamental domain;
+    the atom is the same one modulo C_h.  Applied to menu-generated bonds
+    only: an authored address is taken literally."""
+    inst, sep, site_s = ref.partition("/")
+    patch = patches.get(inst)
+    if not sep or patch is None or patch.tube_nm is None:
+        return ref
+    try:
+        site = Site.parse(site_s)
+    except ValueError:
+        return ref
+    w = wrap_tube(site, *patch.tube_nm, getattr(patch, "seam", 0.0))
+    return f"{inst}/{w}"
+
+
 def _frame(
     pos: np.ndarray,
     dang: tuple[int, ...],
@@ -3301,7 +3328,7 @@ def _fuse_transform_kabsch(
     1``).  Used only for the nanobud menu attach (root-caused 2026-09-28
     item 1), not the ordinary rim-to-rim :func:`_fuse_transform`: a menu
     registration's six host atoms are a mix of a hexagon's own ring
-    vertices and its second-neighbour shell (Wang & Li 2009's 9-6/8-7
+    vertices and its second-neighbour shell (Zhu & Su 2009's 9-6/8-7
     junction), at genuinely different distances from any single point, so
     no shared rim normal + one twist angle describes them.  Verified
     against nanobud_87.hx: the twist-only fit left three of the six seed
@@ -4240,7 +4267,7 @@ def _solve_bud_attach(
     span: tuple[int, int] | None,
 ) -> tuple[list[tuple[Vid, Vid]], list[tuple[int, ...]], dict[str, Any]] | None:
     """Solve the C3-symmetric six-bond attachment of a C54 hole rim onto the
-    atoms around one intact host hexagon (Wang & Li 2009 9-6 / 8-7).
+    atoms around one intact host hexagon (Zhu & Su 2009 [S14] 9-6 / 8-7).
 
     Enumerates the two C3 orbits of the bud's six dangling atoms against
     the C3 orbits of the host hexagon's vertex+first-neighbour shell;
@@ -4315,7 +4342,7 @@ def _solve_bud_attach(
 
     best: (
         tuple[
-            tuple[int, int, int, int, int, int],
+            tuple[int, int, int, int, int, int, int],
             list[tuple[Vid, Vid]],
             list[tuple[int, ...]],
         ]
@@ -4362,7 +4389,16 @@ def _solve_bud_attach(
                                 sizes[len(f)] = sizes.get(len(f), 0) + 1
                             if sizes != target:
                                 continue
-                            key = (oi, oj, r1, r2, s1, s2)
+                            # Zhu & Su [S14] (and Wang & Li 2011, pa3322,
+                            # Cases A/B) bond 9-6 and 8-7 onto the same six
+                            # host atoms, all on one sublattice (8-7 on
+                            # (10,10) ~6 uB); 36 of the 60 8-7
+                            # registrations mix sublattices, a junction
+                            # neither case describes -- rank them last
+                            mixed = int(
+                                len({getattr(mp[bv], "s", None) for bv in order}) > 1
+                            )
+                            key = (mixed, oi, oj, r1, r2, s1, s2)
                             bonds = [(bv, mp[bv]) for bv in order]
                             if best is None or key < best[0]:
                                 best = (key, bonds, faces)
@@ -4376,7 +4412,7 @@ def _solve_bud_attach(
             )
         )
         return None
-    return best[1], best[2], {"registration": list(best[0])}
+    return best[1], best[2], {"registration": list(best[0][1:])}
 
 
 def _record_k(spec: Spec, ci: int, k: int) -> Spec:
@@ -4560,7 +4596,7 @@ def _apply_connects(
             # six real bonds.  Flagged for _fuse_transform_kabsch, not
             # the ordinary rim-normal _fuse_transform: the six host atoms
             # mix a hexagon's ring vertices with its second-neighbour
-            # shell (Wang & Li 2009 9-6/8-7), with no single shared rim
+            # shell (Zhu & Su 2009 9-6/8-7), with no single shared rim
             # normal, and the twist-only fit left a bud/host clash after
             # stick() (see _fuse_transform_kabsch's docstring).
             n_vb = len(vbonds)
@@ -4880,8 +4916,15 @@ def _apply_connects(
     for c in spec.connects:
         if c.verb != "bond":
             continue
-        ai, af = _atom_ref_ord(c.src, path_to_ord, frag_names)
-        bi, bf = _atom_ref_ord(c.dst, path_to_ord, frag_names)
+        # menu-derived sites wrap onto the tube's cell; authored ones are
+        # taken literally (an out-of-cell address stays op.dangling)
+        rsrc, rdst = (
+            (_wrap_tube_ref(c.src, patches), _wrap_tube_ref(c.dst, patches))
+            if c.source
+            else (c.src, c.dst)
+        )
+        ai, af = _atom_ref_ord(rsrc, path_to_ord, frag_names)
+        bi, bf = _atom_ref_ord(rdst, path_to_ord, frag_names)
         for frag in (af, bf):
             if frag is not None:
                 findings.append(
