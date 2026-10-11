@@ -330,7 +330,16 @@ def expand_abbreviations(text: str, *, lang: str = "en") -> str:
     if expand:
         alts = "|".join(re.escape(k) for k in sorted(expand, key=len, reverse=True))
         pat = re.compile(rf"(?<![\w.])(?:{alts})(?!\w)")
-        text = pat.sub(lambda m: expand[m.group(0)], text)
+
+        def _exp(m: re.Match[str]) -> str:
+            out = expand[m.group(0)]
+            # "etc." often closes a sentence; keep that boundary audible.
+            tail = m.string[m.end() :]
+            if m.group(0) == "etc." and re.match(r"\s*$|\s*\n|\s+[A-Z]", tail):
+                out += "."
+            return out
+
+        text = pat.sub(_exp, text)
 
     def _caps(m: re.Match[str]) -> str:
         tok = m.group(0)

@@ -347,3 +347,13 @@ def test_possessive_untouched():
 def test_verbalize_text_pipeline_no_digits():
     out = verbalize_text("DFT today, 2 samples", episode_date=_SAT)
     assert out == "D F T on Sunday the eleventh of October, two samples"
+
+
+def test_etc_keeps_sentence_boundary():
+    assert expand_abbreviations("gold, silver, etc.") == "gold, silver, and so on."
+    assert expand_abbreviations("gold, etc.\nNext") == "gold, and so on.\nNext"
+    assert expand_abbreviations("gold, etc. Then we") == "gold, and so on. Then we"
+
+
+def test_etc_mid_sentence_has_no_period():
+    assert expand_abbreviations("gold, etc. and more") == "gold, and so on and more"
