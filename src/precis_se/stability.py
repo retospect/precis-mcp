@@ -91,6 +91,15 @@ class StabilityReport:
     verdict: str
     members: list[MemberRow] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: ``'a.port—b.port'`` of every valid ``rigid`` connect — NOT in the
+    #: equilibrium matrix (gr334788), so the counts below are silent about
+    #: whatever they hold together.
+    unmodelled_connects: list[str] = field(default_factory=list)
+
+    @property
+    def partial(self) -> bool:
+        """True when the design has rigid connects this analysis ignored."""
+        return bool(self.unmodelled_connects)
 
 
 def _member_role(params: dict[str, float]) -> str:
@@ -248,6 +257,22 @@ def _assemble(tree: SeTree) -> _System:
     )
 
 
+def _rigid_connects(tree: SeTree) -> list[str]:
+    """``'a.port—b.port'`` of every connect with a valid ``rigid`` joint
+    — the connects the axial-only equilibrium matrix cannot represent."""
+    out: list[str] = []
+    for conn in tree.connects:
+        if not conn.joint:
+            continue
+        try:
+            joint = se_joints.validate_joint(conn.joint)
+        except se_joints.JointError:
+            continue
+        if joint["class"] == "rigid":
+            out.append(f"{conn.a_block}.{conn.a_port}—{conn.b_block}.{conn.b_port}")
+    return out
+
+
 def _scope_honesty_notes(tree: SeTree, node_names: list[str]) -> list[str]:
     """Two scope-honesty checks over ``objectives.fixed``/``force``
     (gripe 334783), so the stability header never reads as "fine" when it
@@ -295,6 +320,15 @@ def classify(tree: SeTree) -> StabilityReport:
     members, live, notes = system.members, system.live, list(system.notes)
     node_names = system.node_names
     notes.extend(_scope_honesty_notes(tree, node_names))
+    rigid = _rigid_connects(tree)
+    if rigid:
+        notes.insert(
+            0,
+            f"PARTIAL: {len(rigid)} rigid connect(s) are not in the "
+            "equilibrium matrix (no moment DOFs; gr334788) — the counts and "
+            "verdict cover the axial subgraph only and say nothing about "
+            f"what these hold together: {', '.join(rigid)}",
+        )
     j, b = len(node_names), len(live)
     if b == 0:
         return StabilityReport(
@@ -306,9 +340,11 @@ def classify(tree: SeTree) -> StabilityReport:
             rb_dim=0,
             m_internal=0,
             s=0,
-            verdict="no axial members — stability analysis does not apply",
+            verdict="no axial members — stability analysis does not apply"
+            + (" (rigid connects are not modelled)" if rigid else ""),
             members=members,
             notes=notes,
+            unmodelled_connects=rigid,
         )
 
     index, coords, lengths = system.index, system.coords, system.lengths
@@ -373,6 +409,7 @@ def classify(tree: SeTree) -> StabilityReport:
         verdict=verdict,
         members=members,
         notes=notes,
+        unmodelled_connects=rigid,
     )
 
 

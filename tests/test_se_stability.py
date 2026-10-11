@@ -20,7 +20,7 @@ from precis.store import Store
 from precis_se import drc as se_drc
 from precis_se import joints as se_joints
 from precis_se import stability as se_stability
-from precis_se.handler import SeHandler
+from precis_se.handler import SeHandler, _render_stability
 from precis_se.ops import OpError, SeTree, apply_ops
 
 
@@ -862,3 +862,64 @@ def test_stability_view_in_unknown_view_roster(handler: SeHandler) -> None:
     with pytest.raises(BadInput) as exc_info:
         handler.get(id="empty1", view="nope")
     assert "view='stability'" in str(exc_info.value.next)
+
+
+# ── rigid connects are flagged, never silently dropped (gr334788) ────────
+
+
+def _with_rigid(tree: SeTree, a: str, b: str) -> SeTree:
+    return apply_ops(
+        tree,
+        [
+            {
+                "op": "connect",
+                "a": f"{a}.pin",
+                "b": f"{b}.pin",
+                "joint": {"class": "rigid"},
+            }
+        ],
+    )
+
+
+def test_rigid_connect_marks_the_analysis_partial() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0], "c": [0.5, _S32, 0.0]},
+        [("a", "b", dict(_ROD)), ("b", "c", dict(_ROD)), ("c", "a", dict(_ROD))],
+        fixed={"a": True, "b": ["y", "z"], "c": ["z"]},
+    )
+    tree = apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "rim", "pose": [2.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "rim", "name": "pin"},
+        ],
+    )
+    report = se_stability.classify(_with_rigid(tree, "b", "rim"))
+    assert report.partial
+    assert report.unmodelled_connects == ["b.pin—rim.pin"]
+    assert any("PARTIAL" in n and "rigid" in n for n in report.notes)
+
+
+def test_no_rigid_connect_is_not_partial() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]}, [("a", "b", dict(_ROD))]
+    )
+    report = se_stability.classify(tree)
+    assert not report.partial and report.unmodelled_connects == []
+
+
+def test_rigid_only_design_is_not_plain_not_applicable() -> None:
+    tree = _with_rigid(
+        _pin_structure({"a": [0.0, 0.0, 0.0], "r": [1.0, 0.0, 0.0]}, []), "a", "r"
+    )
+    report = se_stability.classify(tree)
+    assert report.partial
+    assert "rigid" in report.verdict
+
+
+def test_stability_view_shows_partial_banner() -> None:
+    tree = _with_rigid(
+        _pin_structure({"a": [0.0, 0.0, 0.0], "r": [1.0, 0.0, 0.0]}, []), "a", "r"
+    )
+    text = _render_stability(tree)
+    assert "PARTIAL" in text.split("verdict:")[0]

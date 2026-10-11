@@ -5178,8 +5178,14 @@ def _render_stability(tree: SeTree) -> str:
         f"m={report.m} mechanism(s) (rb={report.rb_dim} rigid-body, "
         f"internal={report.m_internal})  s={report.s} self-stress state(s)",
         "",
-        f"verdict: {report.verdict}",
     ]
+    if report.partial:
+        lines += [
+            f"PARTIAL ANALYSIS: {len(report.unmodelled_connects)} rigid "
+            "connect(s) are not modelled — read the verdict as axial-only",
+            "",
+        ]
+    lines.append(f"verdict: {report.verdict}")
     for note in report.notes:
         lines.append(f"note: {note}")
     if report.members:

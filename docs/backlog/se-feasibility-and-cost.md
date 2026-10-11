@@ -247,17 +247,14 @@ is shown insufficient on a real design).
 
 ## Folded in: rigid connects in the equilibrium matrix (gr334788)
 
-`view='stability'` counts the axial subgraph only; `rigid` connects are
-not in the equilibrium matrix. A rim ring or a frame built from rigid
-blocks therefore contributes nothing, and the only way to have it checked
-is to re-express it as a redundant axial truss, which distorts the b and s
-counts. Wanted: a rigid-group declaration that merges member blocks into
-one node set (master-slave / rigid-link reduction) so m−s counting stays
-meaningful on real designs. Triaged into this item 2026-09-24; the gripe's
-comment pointed here but this file did not carry it until 2026-09-25.
-`se:unicycle-c1` (2026-09-25, 20 blocks, 19 parented) is the first live
-design with parent edges and is the fixture this needs — the earlier
-laced design it was found on (`unicycle-printed-v1`) is retired.
+`view='stability'` counts the axial subgraph only. Shipped: a design with
+valid `rigid` connects is flagged `PARTIAL` (report banner, note listing
+the connects, `StabilityReport.partial`) instead of reading as a complete
+answer. Still open: a rigid-group declaration that merges member blocks
+into one node set (master-slave / rigid-link reduction), so a rim ring or
+frame built from rigid blocks is checked and m−s counting stays meaningful
+without re-expressing it as a redundant axial truss. Fixture:
+`se:unicycle-c1` (20 blocks, 19 parented).
 
 ## Folded in: connect ports vs stability node positions (gr334787)
 

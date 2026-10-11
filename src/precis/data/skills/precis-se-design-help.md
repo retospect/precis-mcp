@@ -119,5 +119,6 @@ spokes transmit no crank torque.
 
 Caveat while modelling that: `rigid` connects are not in the equilibrium
 matrix (gr334788), so a rim built as a ring of rigid blocks contributes
-nothing — express the ring itself as axial members if you want the view to
-see it.
+nothing. The view says so (`PARTIAL ANALYSIS` banner, the connects listed)
+— read its verdict as axial-only, or express the ring itself as axial
+members if you want the view to see it.
