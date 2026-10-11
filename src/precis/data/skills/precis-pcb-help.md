@@ -150,7 +150,19 @@ Field notes:
   mark repeated subcircuits (channel 0..k of identical driver stages): every
   instance is laid out **identically** (instance 0's internal layout is
   stamped onto the rest and each tile then moves rigidly), so repeats read
-  as clean tiles instead of four ad-hoc arrangements.
+  as clean tiles instead of four ad-hoc arrangements. **Edge-mating
+  connectors** (USB, card edge, barrel jack — anything cabled from the
+  side): `edge_mate: {face, require}`. `face` is the mating face in the
+  part's own frame (`N|E|S|W`, N = +y, or degrees clockwise from +y), so it
+  follows rotation; `require` is `required` (default) or `preferred`.
+  Autoplace rotates the part to face outward, sits it flush on the nearest
+  outline edge and locks it; `view='drc'` reports `edge_mating` (error /
+  warn for `preferred`) when it is interior or faces inward. Authored, not
+  inferred — EasyEDA footprints carry no mating side. A `fixed` or grouped
+  part is not moved, only checked.
+
+## Author a design — nets, connections, board
+
 - **net**: `name` is **required and meaningful** — the name *is* the intent
   (`I2C_SCL`, not `N$7`). `class` drives width / plane / measure defaults
   ([[precis-net-class-help]]); `current` (amps) sizes the trace; `width` (mm)

@@ -85,6 +85,7 @@ from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import cost as pcb_cost
 from precis.pcb import datasheets as pcb_datasheets
 from precis.pcb import drc as pcb_drc
+from precis.pcb import edge_mate as pcb_edge_mate
 from precis.pcb import epro_write as pcb_epro_write
 from precis.pcb import export as pcb_export
 from precis.pcb import (
@@ -3957,6 +3958,7 @@ class PcbHandler(Handler):
                 )
                 for h in ir.mounting_holes
             ],
+            edge_mates=pcb_edge_mate.records(ir),
         )
         # Parylene-coater size (gr414481): drc.py knows no components, so
         # the EWOD gate (an `ewod_pad_array` generator) is decided here.

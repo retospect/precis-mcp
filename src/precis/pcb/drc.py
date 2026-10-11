@@ -2366,6 +2366,61 @@ def check_outline_containment(
     return findings
 
 
+def check_edge_mating(
+    edge_mates: Sequence[Any] | None,
+    *,
+    outline: list[list[float]] | None,
+) -> list[DrcFinding]:
+    """A side-insertion connector must sit ON the outline, mating face out
+    (gr451356) — the opposite polarity of :func:`check_board_edge_clearance`
+    (copper stays AWAY from the edge) and :func:`check_outline_containment`
+    (parts stay INSIDE it), neither of which can say a USB receptacle 10mm
+    inside the board is unbuildable: the cable cannot reach it.
+
+    ``edge_mates`` is :func:`precis.pcb.edge_mate.records` — one placed
+    courtyard + outward direction per part that authored an ``edge_mate``;
+    ``None``/empty (every board without one) and no outline are silent.
+    ``require='required'`` is an ``error``, ``'preferred'`` a ``warn``.
+    ``margin_mm`` is the negative distance the face sits from the edge
+    (interior), or ``-EDGE_TOL`` for a part on the edge but facing in.
+    """
+    from precis.pcb import edge_mate as em
+
+    edges = em.outline_edges(outline)
+    if not edges or not edge_mates:
+        return []
+    findings: list[DrcFinding] = []
+    for rec in edge_mates:
+        v = em.evaluate(rec, edges)
+        if v.state == "ok":
+            continue
+        if v.state == "interior":
+            detail = (
+                f"{rec.refdes} mates by side insertion but its mating face "
+                f"is {v.distance_mm:.2f}mm from the nearest board edge "
+                f"(allowed {em.EDGE_TOL_MM:g}mm); a cable cannot reach it"
+            )
+            margin = -(v.distance_mm - em.EDGE_TOL_MM)
+        else:
+            detail = (
+                f"{rec.refdes} sits on the board edge but its mating face "
+                f"points {v.angle_deg:.0f} degrees off the outward normal "
+                f"(allowed {em.FACING_TOL_DEG:g}); it faces into the board"
+            )
+            margin = -em.EDGE_TOL_MM
+        findings.append(
+            DrcFinding(
+                rule="edge_mating",
+                severity="error" if rec.require == "required" else "warn",
+                where=f"part {rec.refdes}",
+                detail=detail,
+                objects=({"refdes": rec.refdes, "require": rec.require},),
+                margin_mm=margin,
+            )
+        )
+    return findings
+
+
 # ── silkscreen: a label/courtyard that never rendered is a DRC error ─────
 #
 # `precis.pcb.silk.build_silk` DROPS a refdes label, a courtyard outline or
@@ -2772,6 +2827,7 @@ def run_geometric_drc(
     unrouted: list[dict[str, Any]] | None = None,
     census: tuple[SilkPlacement, ...] | None = None,
     holes: Sequence[HoleKeepout] = (),
+    edge_mates: Sequence[Any] | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -2810,6 +2866,10 @@ def run_geometric_drc(
 
     ``holes`` (mounting-hole keep-out polygons) feeds
     :func:`check_courtyard_hole`; empty by default.
+
+    ``edge_mates`` (:func:`precis.pcb.edge_mate.records`) feeds
+    :func:`check_edge_mating`; ``None`` keeps a caller that does not pass it
+    silent on that axis.
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
@@ -2827,6 +2887,7 @@ def run_geometric_drc(
     findings += check_silk_edge_clearance(model, capability, outline=outline)
     findings += check_octilinear(model)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
     findings += check_unrouted(unrouted)
     if courtyards:
@@ -2911,6 +2972,7 @@ def run_placement_drc(
     courtyards: list[Courtyard] | None = None,
     courtyard_bottom: dict[str, bool] | None = None,
     net_rules: dict[str, NetRules] | None = None,
+    edge_mates: Sequence[Any] | None = None,
 ) -> list[DrcFinding]:
     """The PLACEMENT-only subset of :func:`run_geometric_drc` — every rule
     that can fire before a single trace is routed, over a model carrying
@@ -2956,6 +3018,7 @@ def run_placement_drc(
     findings += check_via_pad_keepout(model, capability)
     findings += check_via_via_keepout(model, capability)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    findings += check_edge_mating(edge_mates, outline=outline)
     if courtyards:
         findings += check_courtyard_overlap(
             courtyards, bottom_by_refdes=courtyard_bottom
@@ -2975,6 +3038,7 @@ __all__ = [
     "check_connectivity",
     "check_courtyard_hole",
     "check_courtyard_overlap",
+    "check_edge_mating",
     "check_npth_clearance",
     "check_octilinear",
     "check_outline_containment",

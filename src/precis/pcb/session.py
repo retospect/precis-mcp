@@ -830,6 +830,7 @@ def placement_drc_findings(
     # no realizer/cost logic lives here). Pulled in only when a caller
     # actually asks for the pre-route geometry check.
     from precis.pcb import drc as pcb_drc
+    from precis.pcb import edge_mate as pcb_edge_mate
     from precis.pcb import realize as pcb_realize
     from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM
     from precis.pcb.ir import COURTYARD_CLEARANCE_MM, instance_courtyard_polygons
@@ -873,6 +874,7 @@ def placement_drc_findings(
         courtyards=courtyards,
         courtyard_bottom=courtyard_bottom,
         net_rules=net_rules,
+        edge_mates=pcb_edge_mate.records(ir),
     )
 
 

@@ -1129,7 +1129,13 @@ class PcbMixin:
         # instance dict for `precis.pcb.ir.from_graph` to parse.
         meta = {
             k: c[k]
-            for k in ("group", "group_offset", "pattern", "pattern_instance")
+            for k in (
+                "group",
+                "group_offset",
+                "pattern",
+                "pattern_instance",
+                "edge_mate",
+            )
             if c.get(k) is not None
         }
         row = conn.execute(
@@ -1706,6 +1712,7 @@ class PcbMixin:
                             "group_offset",
                             "pattern",
                             "pattern_instance",
+                            "edge_mate",
                         )
                         if k in (r[12] or {})
                     },
