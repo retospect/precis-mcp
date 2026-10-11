@@ -310,6 +310,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     n_withheld = 0
     n_flagged = 0
     for hub_id in todo:
+        # One hub is ~4 min of LLM work and the scope runs for hours: renew
+        # the lease each hub so the scheduler doesn't reclaim a live job and
+        # start a duplicate run (gr369528). Lost lease = superseded: stop with
+        # no terminal status and no summary; the new claimant resumes from
+        # done_hub_ids.
+        if ctx.renew_lease is not None and not ctx.renew_lease():
+            ctx.append_chunk(
+                "job_event",
+                f"lease lost after {len(done_ids)} hub(s) — another worker "
+                "generation reclaimed this job; stopping without a terminal status",
+            )
+            return
         if ctx.is_cancel_requested():
             ctx.append_chunk("job_event", "cancel requested — stopping between hubs")
             break

@@ -101,16 +101,3 @@ watchdog in the runner that logs and abandons a pass past its budget instead
 of waiting forever. Files: the crossref/enrich passes under
 `src/precis/workers/`, the pass loop in `src/precis/workers/base.py`.
 Who: agent-code, M.
-
-## Long claude_inproc jobs lose their lease mid-run (gr369528)
-
-A job that runs longer than its lease is reclaimed while still running. The
-second claimant starts a duplicate run, and the first run's result is then
-recorded as a false `failed`. `src/precis/workers/job_types/reground_claim.py`
-has no lease heartbeat: it loops over hubs for as long as the scope takes and
-never renews.
-
-Fix direction: renew the lease between hubs (a heartbeat call on the job
-context; `executors/job_inproc.py::renew_own_lease` is the existing helper, used by `derived_drain` and `embed_batch`), and make the `job_event` append collision-safe, so a late write from
-a superseded run cannot clobber or double-record. Check other long
-job_types for the same missing heartbeat. Who: agent-code, M.

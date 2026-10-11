@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
+from psycopg.errors import UniqueViolation
 
 from precis.quest import review_guard
 from precis.workers.executors import EXECUTOR_PROVIDES
@@ -72,6 +73,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     record_failure as _record_failure,
+)
+from precis.workers.executors._common import (
+    renew_lease_if_mine as _renew_lease_if_mine,
 )
 from precis.workers.executors._common import (
     set_meta as _set_meta,
@@ -163,6 +167,20 @@ def _inproc_concurrency() -> int:
     return max(1, min(16, n))
 
 
+#: Lease a claimed job is stamped with (Stage 1 of the pass) and that a
+#: mid-run ``ctx.renew_lease()`` re-extends. See the comment at the claim
+#: site for why 90 minutes.
+_LEASE_S = 90 * 60
+
+#: Attempts for a ``ctx.append_chunk`` that hits an ``(ref_id, ord)`` race.
+_APPEND_RETRIES = 3
+
+#: ``ctx.meta`` key a lost ``ctx.renew_lease()`` stamps — the claim was
+#: reclaimed by another worker generation, so this run is superseded and must
+#: not write a terminal status. Same key ``job_inproc`` uses.
+_LEASE_LOST_META_KEY = "_lease_lost"
+
+
 def _run_job_safe(ctx: DispatchContext) -> bool:
     """Run one claimed job; record + swallow any failure. Returns ok.
 
@@ -176,6 +194,13 @@ def _run_job_safe(ctx: DispatchContext) -> bool:
         return True
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("claude_inproc: job %d raised: %s", ref_id, exc, exc_info=True)
+        if ctx.meta.get(_LEASE_LOST_META_KEY):
+            # Superseded run: the new claimant owns the job and its terminal
+            # status; marking it failed here would clobber a live run.
+            log.warning(
+                "claude_inproc: job %d lost its lease; not recording failure", ref_id
+            )
+            return False
         try:
             with store.pool.connection() as conn:
                 _append_chunk(
@@ -336,6 +361,15 @@ def _run_one(ctx: DispatchContext) -> None:
         # ``None`` and fall through to the in-tree switch below.
         if spec.dispatch is not None:
             spec.dispatch(ctx, spec)
+            if meta.get(_LEASE_LOST_META_KEY):
+                # Reclaimed mid-run: the new claimant drives the terminal
+                # transition; finalizing here would race it.
+                log.warning(
+                    "claude_inproc: job %d lost its lease mid-dispatch; "
+                    "leaving the terminal transition to the new owner",
+                    ref_id,
+                )
+                return
             # Plugin dispatchers signal *failure* explicitly
             # (``ctx.record_failure`` → ``STATUS:failed``) and *cancellation*
             # via ``ctx.set_status``, but they leave the happy-path transition
@@ -387,9 +421,29 @@ def _build_dispatch_context(
             conn.commit()
 
     def _ctx_append_chunk(kind: str, text: str) -> None:
+        # A superseded sibling run of the same job can take the next ord
+        # between our MAX(ord) read and the INSERT (gr369528); re-read on a
+        # fresh connection instead of failing the caller's per-item handler.
+        for attempt in range(_APPEND_RETRIES):
+            try:
+                with store.pool.connection() as conn:
+                    _append_chunk(store, ref_id, kind, text, conn=conn)
+                    conn.commit()
+                return
+            except UniqueViolation:
+                if attempt == _APPEND_RETRIES - 1:
+                    raise
+                log.warning(
+                    "claude_inproc: job %d chunk ord collision; retrying", ref_id
+                )
+
+    def _ctx_renew_lease() -> bool:
         with store.pool.connection() as conn:
-            _append_chunk(store, ref_id, kind, text, conn=conn)
+            renewed = _renew_lease_if_mine(conn, ref_id, meta, _LEASE_S)
             conn.commit()
+        if not renewed:
+            meta[_LEASE_LOST_META_KEY] = True
+        return renewed
 
     def _ctx_set_meta(**fields: Any) -> None:
         with store.pool.connection() as conn:
@@ -429,6 +483,7 @@ def _build_dispatch_context(
         set_meta=_ctx_set_meta,
         record_failure=_ctx_record_failure,
         is_cancel_requested=_ctx_is_cancel_requested,
+        renew_lease=_ctx_renew_lease,
     )
 
 

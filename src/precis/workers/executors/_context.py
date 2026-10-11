@@ -88,6 +88,13 @@ class DispatchContext:
     #: job was claimed. Plugins running multi-phase work should
     #: poll this between phases.
     is_cancel_requested: Callable[[], bool]
+    #: Lease keepalive for jobs that outlive the lease window. Returns
+    #: ``True`` when the lease was extended; ``False`` when another worker
+    #: generation has reclaimed the job — the caller must stop WITHOUT a
+    #: terminal status (the executor then skips its own finalize). Call
+    #: between work items, at least once per lease interval. ``None`` on
+    #: contexts built outside the executor (tests).
+    renew_lease: Callable[[], bool] | None = None
 
     def spawn_child(
         self,
