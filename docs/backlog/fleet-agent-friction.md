@@ -20,11 +20,22 @@ widen the read-only allow-list (pipelines and loops whose every stage is
 read-only), and measure session-start and per-call hook cost before and
 after. Files: `scripts/hooks/*`.
 
+Checked 2026-10-11: the "too complex to verify that it stays inside the
+worktree" refusal is not ours. No file in `scripts/`, `.claude/` or
+`~/.claude/hooks` contains that text. It comes from the Claude Code
+harness's own worktree isolation, and it fired four times in one session
+that day: a `for` loop over `git log`, a heredoc that mentioned git, and a
+`scripts/ship` call whose message had parentheses. A repo hook change
+cannot widen it. Agents should keep each `git`/`ship` call a plain single
+command. The repo-side work is our own pretool checkers and the per-call
+process cost.
+
 Who: agent-code, M.
 
 ## Acceptance
 
-- A read-only pipeline or `for` loop runs without a "too complex" refusal,
-  and a write inside one still does.
+- A read-only pipeline or `for` loop passes our own hooks (the harness's
+  worktree-isolation refusal is out of scope, see above), and a write
+  inside one is still caught.
 - One hook process serves each tool call. The measured per-call and
   session-start cost is recorded in the commit body.

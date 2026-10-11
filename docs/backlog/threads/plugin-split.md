@@ -151,6 +151,14 @@ own item); they become items as each comes into reach.
    decomposition debt the split retires; not individually actionable, and
    not worth ranking piece by piece when the split's module-by-module
    extraction addresses the whole cluster by construction.
+   Re-vetted 2026-10-11: each one still holds and the files have grown
+   (router.py 3582 lines, precis_se/handler.py 6538, handlers/pcb.py 4907).
+   gr343711/712/713/715/716/717/719 are closed as tracked here. The one
+   bounded try, moving the provider classes out of router.py, is blocked:
+   7 test files monkeypatch `precis.utils.llm.router.call_claude_agent`,
+   and the classes use ~15 router internals that `_PROVIDERS` needs at
+   import time. The order that works: leaf types into their own module,
+   then retarget the test patches, then move the providers.
 
 ## Parked
 
