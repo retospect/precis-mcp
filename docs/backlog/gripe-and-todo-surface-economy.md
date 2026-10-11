@@ -20,10 +20,12 @@ combination; fix both.
 
 ## 2. Web /gripes page (bugs, fix alongside)
 
-- gr477858: `/gripes` loads very slowly. Not profiled yet. Profile the route
-  in `src/precis_web/routes/gripes.py` first. Likely causes: it renders every
-  comment thread, and it has no pagination. Paginate threads, or render head
-  and tail only.
+- gr477858: `/gripes` loads very slowly. Profiled 2026-10-11: the route
+  renders no comments and runs one list query (18 ms on prod, plan clean);
+  the nav counts are 0.5–42 ms. The only waste found was fetching whole
+  titles (~1 MB) for a 100-char preview, now cut in SQL. If the page is
+  still slow, time it from the browser/proxy side (nav runs five
+  sequential queries per request on every page).
 - gr477992: the page header reads "144 open, 4 in review" while the nav
   chip reads 221. The header leaves out `triaged`. List every live status
   and a total.

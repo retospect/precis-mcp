@@ -83,3 +83,25 @@ def test_live_view_renders_each_status_as_a_collapsible_panel(
 
     triaged = client.get("/gripes?status=triaged").text
     assert '<details class="mb-3 group" data-status="triaged" open>' in triaged
+
+
+def test_list_preview_survives_sql_title_truncation(store: Any) -> None:
+    """gr477858: the list query cuts the title in SQL (the page shows one
+    line, the whole filed text was ~1 MB over the wire); leading blank
+    lines must not eat the preview, and a long first line still truncates."""
+    from precis_web.routes.gripes import _PREVIEW_FETCH_CHARS
+
+    assert _PREVIEW_FETCH_CHARS >= 100
+    titles = {
+        "blank": "\n  \nfirst line preview\n" + "x" * 8000,
+        "long": "y" * 8000,
+    }
+    ids = {}
+    for name, title in titles.items():
+        with store.tx() as conn:
+            ref = store.insert_ref(kind="gripe", slug=None, title=title, conn=conn)
+            store.add_tag(ref.id, Tag.closed("STATUS", "open"), conn=conn)
+        ids[name] = ref.id
+    by_id = {r["ref_id"]: r for r in _rows(store, status_filter="live")}
+    assert by_id[ids["blank"]]["title_preview"] == "first line preview"
+    assert by_id[ids["long"]]["title_preview"] == "y" * 99 + "…"

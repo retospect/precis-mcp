@@ -110,6 +110,13 @@ _BODY_KIND = "gripe_body"
 _COMMENT_KIND = "gripe_comment"
 
 
+#: Characters of ``ref.title`` the list query pulls per row. The title is
+#: the whole filed complaint (up to ~8 KB); the row shows the first line cut
+#: to 100 chars (``_title_preview``), so shipping the rest over the wire
+#: (~1 MB across all gripes, gr477858) is pure cost.
+_PREVIEW_FETCH_CHARS = 400
+
+
 def _status_badge(status: str) -> str:
     return _STATUS_BADGE.get(status, _STATUS_BADGE["open"])
 
@@ -197,7 +204,7 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
         clauses.append(f"COALESCE(t.value, 'open') NOT IN ({terminals})")
     sql = f"""
         SELECT r.ref_id,
-               r.title,
+               left(ltrim(r.title, E' \\t\\r\\n'), {_PREVIEW_FETCH_CHARS}),
                r.created_at,
                r.updated_at,
                COALESCE(t.value, 'open') AS status,
