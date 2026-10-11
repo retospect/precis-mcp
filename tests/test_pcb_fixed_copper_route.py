@@ -501,12 +501,41 @@ _DESIGN_ROUNDTRIP = {
         {"refdes": "U1", "label": "mcu", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
         {"refdes": "R1", "label": "r", "x": 5.0, "y": 0.0, "pins": [{"name": "1"}]},
     ],
-    "nets": [{"name": "N1", "class": "signal"}],
+    # SIDE carries the side track below and no pins: a fixed track on N1
+    # itself that touches neither pad would be a second piece of N1, which
+    # the route job rightly fails as `disconnected` (gr449483) -- see
+    # test_floating_fixed_copper_on_a_net_fails_it_as_disconnected.
+    "nets": [{"name": "N1", "class": "signal"}, {"name": "SIDE"}],
     "connections": [
         {"net": "N1", "refdes": "U1", "pin": "1"},
         {"net": "N1", "refdes": "R1", "pin": "1"},
     ],
 }
+
+
+def _put_side_track(store: Store, ref_id: int, board_id: int, net: str) -> None:
+    """One fixed F.Cu track at (8,8)-(9,8), well clear of N1's U1-R1
+    corridor and of both pads."""
+    store.pcb_fixed_copper_put(
+        ref_id,
+        board_id,
+        "SIDEGEN",
+        "fake_gen",
+        "1",
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net": net,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [8.0, 8.0], "end": [9.0, 8.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        ],
+    )
 
 
 def test_realize_twice_leaves_fixed_copper_untouched_and_never_leaks_into_derived(
@@ -522,27 +551,9 @@ def test_realize_twice_leaves_fixed_copper_untouched_and_never_leaks_into_derive
     # A fixed track well away from N1's own corridor -- present so this
     # design carries fixed copper at all, deliberately NOT bridging N1
     # (that is test (a)'s job), so the router still has real, un-short-
-    # circuited routing to do on every run.
-    store.pcb_fixed_copper_put(
-        ref_id,
-        board_id,
-        "SIDEGEN",
-        "fake_gen",
-        "1",
-        [
-            {
-                "ctype": "track",
-                "layer": "F.Cu",
-                "net": "N1",
-                "geom": {
-                    "segments": [
-                        {"shape": "line", "start": [8.0, 8.0], "end": [9.0, 8.0]}
-                    ],
-                    "width_mm": 0.2,
-                },
-            }
-        ],
-    )
+    # circuited routing to do on every run. On its own pinless net SIDE:
+    # on N1 it would be a floating second piece of N1 (see the fixture).
+    _put_side_track(store, ref_id, board_id, "SIDE")
     before = store.pcb_fixed_copper_list(board_id)
     assert len(before) == 1
 
@@ -550,6 +561,8 @@ def test_realize_twice_leaves_fixed_copper_untouched_and_never_leaks_into_derive
         ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": seed})
         pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
         assert not ctx.failures
+        status = {r["name"]: r["status"] for r in store.pcb_route_status(ref_id)}
+        assert status["N1"] == "realized", status
 
         after = store.pcb_fixed_copper_list(board_id)
         assert len(after) == len(before) == 1
@@ -570,6 +583,32 @@ def test_realize_twice_leaves_fixed_copper_untouched_and_never_leaks_into_derive
                 # this is that promise, checked against the real table.
                 assert seg.get("start") != [8.0, 8.0]
                 assert seg.get("end") != [9.0, 8.0]
+
+
+def test_floating_fixed_copper_on_a_net_fails_it_as_disconnected(
+    store: Store,
+) -> None:
+    """gr449483's contract seen from fixed copper: N1 routes U1-R1 cleanly,
+    but a fixed N1 track touching neither pad is a second piece of N1 —
+    ``view='drc'``'s ``connectivity`` rule reports it, so ``route-status``
+    must not read ``realized`` either. This is the fixture the realize-twice
+    test above used before that contract landed (it then failed the job)."""
+    ref_id = _seed(store, "fxroute-floating", _DESIGN_ROUNDTRIP)
+    board_id = store.pcb_ensure_board(ref_id)
+    _put_side_track(store, ref_id, board_id, "N1")
+
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
+    pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
+
+    row = {r["name"]: r for r in store.pcb_route_status(ref_id)}["N1"]
+    assert row["status"] == "failed"
+    assert row["note"] == "failed: disconnected"
+    (problem,) = store.pcb_routes_get(ref_id)["N1"]["fail"]["problems"]
+    assert problem["components"] == 2
+    assert "(8.000,8.000) on F.Cu" in problem["message"] or (
+        "(9.000,8.000) on F.Cu" in problem["message"]
+    )
+    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
 
 
 _DESIGN_VIA_ON_PAD = {

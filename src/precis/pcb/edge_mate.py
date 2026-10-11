@@ -244,7 +244,7 @@ def records(ir: PcbIR) -> list[EdgeMateRecord]:
 
 
 def _specs(ir: PcbIR) -> list[EdgeMateSpec | None]:
-    raw = getattr(ir, "inst_edge_mate", None)
+    raw = ir.inst_edge_mate
     if raw is None:
         return [None] * ir.n_instances
     return [raw[i] for i in range(ir.n_instances)]
