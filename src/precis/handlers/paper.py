@@ -70,6 +70,7 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store.types import ONE_PAGE_COVERAGE_NOTE
 from precis.utils import handle_registry
 from precis.utils.authors import (
     author_display,
@@ -3068,11 +3069,14 @@ def _retraction_banner(ref: Ref) -> str | None:
 def _paper_banner(ref: Ref) -> str | None:
     """Combined banner block for the top of a paper view: the retraction
     banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
-    line in the same ``> [!]`` style. ``None`` when neither applies."""
+    line in the same ``> [!]`` style, then a one-page-PDF coverage line
+    (gr372863). ``None`` when none applies."""
     lines = [_retraction_banner(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
         lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
+    if ref.is_one_page_pdf:
+        lines.append(f"> [!] **{ONE_PAGE_COVERAGE_NOTE}**")
     out = [ln for ln in lines if ln]
     return "\n".join(out) if out else None
 

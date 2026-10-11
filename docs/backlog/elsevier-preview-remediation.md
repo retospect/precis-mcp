@@ -31,18 +31,14 @@ Who: ops (the requeue is cluster-side).
 ## 2. pa167977 is a one-page preview and grounds two finding hubs (gr372863)
 
 pa167977 is still a one-page preview PDF, yet two finding hubs rest on it.
-Nothing on the read path or at evidence attach says the body is one page of
-an article.
 
 - Ops: re-fetch it through
   `docs/runbooks/elsevier-preview-pdf-remediation.md`, then re-check the two
-  hubs' evidence against the full text.
-- Code: add a one-page coverage flag (from `refs.pdf_pages`) on the
-  `src/precis/handlers/paper.py` read path and at evidence attach in
-  `src/precis/taproot/hub.py`, so a preview-grounded edge is visible instead
-  of presented as full-paper support.
+  hubs' evidence against the full text. (The read-path and evidence-attach
+  one-page flag shipped; existing edges are not back-stamped, so these two
+  hubs show it only on their next attach.)
 
-Who: ops for the re-fetch; agent-code for the flag.
+Who: ops for the re-fetch.
 
 ## 3. Front-matter-only backfiller exists only for Elsevier (gr372785)
 

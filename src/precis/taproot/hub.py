@@ -35,7 +35,7 @@ from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.ingest.provenance import check_ref_retraction
-from precis.store.types import ActorSlug, ChunkInsert, Tag
+from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
     STATUS_CANONICAL,
     STATUS_NAMESPACE,
@@ -1004,6 +1004,16 @@ def attach_evidence(
                 if caveat not in caveats:
                     caveats.append(caveat)
                 edge_meta["caveats"] = caveats
+        # One-page PDF source (gr372863): the edge says it rests on a
+        # preview, as a ``coverage`` key plus a caveat the existing evidence
+        # renderers already show.
+        if src.is_one_page_pdf:
+            edge_meta = dict(edge_meta or {})
+            edge_meta["coverage"] = "one_page"
+            caveats = list(edge_meta.get("caveats") or [])
+            if ONE_PAGE_COVERAGE_NOTE not in caveats:
+                caveats.append(ONE_PAGE_COVERAGE_NOTE)
+            edge_meta["caveats"] = caveats
         store.add_link(
             src_ref_id=paper_ref_id,
             src_pos=src_pos,
