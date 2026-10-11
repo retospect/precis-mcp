@@ -29,6 +29,7 @@ class _Ctx:
         self.set_meta_calls: list[dict[str, Any]] = []
         self.failure: str | None = None
         self.cancelled = False
+        self.renew_lease = None
 
     def append_chunk(self, kind: str, text: str) -> None:
         self.events.append((kind, text))
