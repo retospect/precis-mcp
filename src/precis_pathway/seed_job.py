@@ -308,6 +308,14 @@ def _poll(ctx: Any, handle: Any) -> bool:
     if state == "failed":
         tail = status.get("tail") or ""
         reason = f"autocatpath_seed: run failed: {status.get('error')}"
+        exit_bits = [
+            f"{k}={status[k]}" for k in ("exit_code", "exit_signal") if k in status
+        ]
+        if exit_bits:
+            reason = f"{reason} ({', '.join(exit_bits)})"
+        stderr_tail = status.get("stderr_tail") or ""
+        if stderr_tail:
+            reason = f"{reason}\n--- stderr (warnings removed) ---\n{stderr_tail}"
         if tail:
             reason = f"{reason}\n--- tail ---\n{tail}"
         # INFRA-class (parked-leaf-recovery, docs/backlog/

@@ -2844,3 +2844,136 @@ def test_bare_get_names_a_shared_title_once(pathway_store: Store) -> None:
     assert "slug | status | tier | span eV | updated" in body
     assert "same-b | ready | screening | 0.87 |" in body
     assert body.count("NO → NH3 on Pd") == 1
+
+
+_WARN_NOISE = (
+    "/venv/mace.py:226: UserWarning: weights_only forced\n"
+    "  torch.load(f=model_path)\n"
+    "/venv/ase.py:432: DeprecationWarning: shape deprecated\n"
+    "  a.shape = (-1,) + shape\n"
+)
+
+
+def _have_waitid() -> bool:
+    import os
+    import sys
+
+    return sys.platform != "win32" and hasattr(os, "waitid")
+
+
+_needs_waitid = pytest.mark.skipif(
+    not _have_waitid(), reason="spawns a real child and uses os.waitid (POSIX/Linux)"
+)
+
+
+def _poll_dead_child(tmp_path: Path, code: str, stderr_text: str) -> PollResult:
+    """Spawn a real child running ``code``, wait for it to die WITHOUT
+    reaping it (so the poll's own reap records the status), then poll the
+    envelope-less scratch dir."""
+    import os
+    import subprocess
+    import sys
+
+    (tmp_path / "stderr.log").write_text(stderr_text, encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-c", code])
+    # getattr: waitid is POSIX-Linux only (the test container); mypy on macOS
+    # doesn't know it.
+    getattr(os, "waitid")(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)  # noqa: B009
+    handle: DetachedHandle = {
+        "pid": proc.pid,
+        "pgid": proc.pid,
+        "dir": str(tmp_path),
+        "started_at": 0.0,
+    }
+    return runner.poll_seed_partial_detached(handle)
+
+
+@_needs_waitid
+def test_poll_no_envelope_records_signal_and_drops_warning_noise(
+    tmp_path: Path,
+) -> None:
+    res = _poll_dead_child(
+        tmp_path,
+        "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        _WARN_NOISE + "MemoryError: boom\n",
+    )
+    assert res["state"] == "failed" and res["infra"] is True
+    assert res["exit_signal"] == "SIGKILL" and res["exit_code"] == -9
+    assert res["stderr_tail"] == "MemoryError: boom"
+    assert "UserWarning" in res["tail"]  # existing key unchanged
+
+
+@_needs_waitid
+def test_poll_no_envelope_records_nonzero_exit(tmp_path: Path) -> None:
+    res = _poll_dead_child(tmp_path, "raise SystemExit(3)", "Traceback\nOops\n")
+    assert res["exit_code"] == 3
+    assert "exit_signal" not in res
+    assert res["stderr_tail"] == "Traceback\nOops"
+
+
+@_needs_waitid
+def test_poll_no_envelope_warnings_only_stderr_gives_empty_stderr_tail(
+    tmp_path: Path,
+) -> None:
+    res = _poll_dead_child(tmp_path, "raise SystemExit(1)", _WARN_NOISE)
+    assert res["stderr_tail"] == ""
+    assert res["exit_code"] == 1
+
+
+@_needs_waitid
+def test_poll_with_envelope_leaves_no_reaped_status(tmp_path: Path) -> None:
+    import json
+
+    runner._REAPED_STATUS.clear()
+    (tmp_path / "result.json").write_text(
+        json.dumps({"ok": False, "error": "x"}), encoding="utf-8"
+    )
+    res = _poll_dead_child(tmp_path, "raise SystemExit(0)", "")
+    assert res["state"] == "failed" and "exit_code" not in res
+    assert runner._REAPED_STATUS == {}
+
+
+def test_reaped_status_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    runner._REAPED_STATUS.clear()
+    monkeypatch.setattr(runner, "_REAPED_STATUS_CAP", 3)
+    pids = iter(range(1000, 1010))
+    monkeypatch.setattr(os, "waitpid", lambda p, f: (p, 0))
+    for _ in range(10):
+        runner._reap_zombie(next(pids))
+    assert list(runner._REAPED_STATUS) == [1007, 1008, 1009]
+    runner._REAPED_STATUS.clear()
+
+
+def test_stderr_tail_keeps_only_last_forty_lines(tmp_path: Path) -> None:
+    (tmp_path / "stderr.log").write_text(
+        "".join(f"line {i}\n" for i in range(100)), encoding="utf-8"
+    )
+    lines = runner._stderr_tail(str(tmp_path)).splitlines()
+    assert len(lines) == 40 and lines[-1] == "line 99"
+
+
+def test_seed_job_poll_failure_reason_carries_exit_and_stderr(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {
+            "state": "failed",
+            "error": "child process exited without writing result.json",
+            "tail": "",
+            "stderr_tail": "MemoryError: boom",
+            "exit_code": -9,
+            "exit_signal": "SIGKILL",
+            "infra": True,
+        },
+    )
+    ctx = _FakeCtx(store=pathway_store, params={"seed": 0, "model_index": 0})
+    assert seed_job._poll(ctx, {"pid": 1}) is True
+    assert ctx.failure is not None
+    assert "exit_code=-9, exit_signal=SIGKILL" in ctx.failure
+    assert "MemoryError: boom" in ctx.failure

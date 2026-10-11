@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -957,6 +958,66 @@ def _cleanup_detached(scratch_dir: str, *, failed: bool = False) -> None:
 _TERMINAL_REAP_WAIT_S = 1.0
 
 
+#: Raw ``waitpid`` status of children THIS process reaped, by pid — lets the
+#: no-envelope failure branch say how the child died (the detached ``Popen``
+#: is discarded at submit, so nothing else keeps the returncode). Absent for
+#: a child reaped by a prior worker generation or by init.
+_REAPED_STATUS: dict[int, int] = {}
+#: Insertion-ordered cap on :data:`_REAPED_STATUS` (oldest evicted); branches
+#: that don't need the status also pop it.
+_REAPED_STATUS_CAP = 256
+
+
+def _exit_info(pid: int) -> dict[str, Any]:
+    """``exit_code`` (negative = signal) and ``exit_signal`` (name, e.g.
+    ``SIGKILL``) for a child this process reaped; ``{}`` when the status is
+    unknown. Pops the entry."""
+    status = _REAPED_STATUS.pop(pid, None)
+    if status is None:
+        return {}
+    if os.WIFSIGNALED(status):
+        signum = os.WTERMSIG(status)
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = f"SIG{signum}"
+        return {"exit_code": -signum, "exit_signal": name}
+    if os.WIFEXITED(status):
+        return {"exit_code": os.WEXITSTATUS(status)}
+    return {}
+
+
+_WARNING_LINE_RE = re.compile(r"\b(Deprecation|User|Future)Warning\b")
+
+
+def _stderr_tail(scratch_dir: str, max_lines: int = 40) -> str:
+    """Last ``max_lines`` of ``stderr.log`` with warning noise removed.
+
+    Drops lines naming a Deprecation/User/FutureWarning plus the indented
+    source line python prints under each (``warnings.warn(`` and friends),
+    so a crash or kill is not buried: the 2026-10 seed failures' raw 2000-char
+    tail was warnings only. ``""`` when stderr is absent or all noise."""
+    try:
+        with open(
+            os.path.join(scratch_dir, "stderr.log"), encoding="utf-8", errors="replace"
+        ) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    kept: list[str] = []
+    skip_continuation = False
+    for line in lines:
+        if _WARNING_LINE_RE.search(line):
+            skip_continuation = True
+            continue
+        if skip_continuation and line.startswith((" ", "\t")):
+            continue
+        skip_continuation = False
+        if line.strip():
+            kept.append(line)
+    return "\n".join(kept[-max_lines:])
+
+
 def _reap_zombie(pid: int, *, wait_s: float = 0.0) -> bool:
     """``os.waitpid(pid, WNOHANG)`` reap, optionally spun up to ``wait_s``.
 
@@ -1006,6 +1067,10 @@ def _reap_zombie(pid: int, *, wait_s: float = 0.0) -> bool:
         except ChildProcessError:
             return False
         if reaped_pid == pid:
+            _REAPED_STATUS.pop(pid, None)  # pid reuse: never report a stale one
+            _REAPED_STATUS[pid] = _status
+            while len(_REAPED_STATUS) > _REAPED_STATUS_CAP:
+                del _REAPED_STATUS[next(iter(_REAPED_STATUS))]
             return True
         if time.monotonic() >= deadline:
             return False
@@ -1176,6 +1241,7 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
                 "error": f"result.json unreadable: {exc}",
                 "tail": _tail_logs(scratch),
             }
+            _REAPED_STATUS.pop(pid, None)
             _cleanup_detached(scratch, failed=True)
             return result
         # Envelope parsed cleanly -> the child is done one way or another;
@@ -1185,6 +1251,7 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
         # reaps it deterministically without risking an unbounded block on a
         # slow-teardown child in the poll loop (see _reap_zombie).
         _reap_zombie(pid, wait_s=_TERMINAL_REAP_WAIT_S)
+        _REAPED_STATUS.pop(pid, None)  # envelope branches don't use the status
         if payload.get("ok"):
             # Grab the tail BEFORE cleanup wipes the scratch dir — the
             # success path otherwise discards the child's stdout/stderr
@@ -1228,8 +1295,14 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
         "state": "failed",
         "error": "child process exited without writing result.json",
         "tail": _tail_logs(scratch),
+        "stderr_tail": _stderr_tail(scratch),
         "infra": True,
     }
+    info = _exit_info(pid)
+    if "exit_code" in info:
+        result["exit_code"] = info["exit_code"]
+    if "exit_signal" in info:
+        result["exit_signal"] = info["exit_signal"]
     _cleanup_detached(scratch, failed=True)
     return result
 

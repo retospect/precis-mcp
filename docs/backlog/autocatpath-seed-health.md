@@ -456,3 +456,14 @@ Fix direction:
 
 Files: `src/precis_pathway/runner.py`, `src/precis/workers/executors/ssh_node.py`
 (`job_ssh_node`). Who: agent-code, M.
+
+**Prod re-read 2026-10-11 (gr347577): the wall pin is no longer the story.**
+Seed jobs now carry `resources.wall_seconds=28800`, yet 23 of 91 seeds
+created 10-04..10-11 failed (10-04: 7, 10-08: 8, 10-10: 7, 10-11: 1; castor
+and pollux both). Only 6 are `runner: killed at wall-clock deadline`
+(`failure_class=timeout` on 6 of the 23); the rest die with `child process
+exited without writing result.json`, whose recorded stderr tail holds only
+torch/ase DeprecationWarnings, so the exit cause (signal, OOM, crash) is not
+captured. Next step before any more wall tuning: have the runner record the
+child's exit code/signal and the end of stderr past the warnings, then
+classify; also confirm whether the 8 h-wall kills are verify seeds.
