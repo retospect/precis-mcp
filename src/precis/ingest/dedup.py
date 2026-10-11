@@ -49,6 +49,75 @@ log = logging.getLogger(__name__)
 _MIGRATABLE_ID_KINDS = ("doi", "arxiv", "s2", "pubmed", "openalex", "mag", "dblp")
 
 
+def inherit_missing_identity(
+    store: Store,
+    *,
+    survivor_ref_id: int,
+    loser_ref_id: int,
+    source: str,
+    conn: Any,
+) -> list[str]:
+    """Copy the loser's title and authors onto the survivor where it has none.
+
+    Fill-only, never overwrite: a blank survivor title takes the loser's
+    non-blank title; a survivor with no ``paper_authors`` rows and an empty
+    ``refs.authors`` takes the loser's byline. DOIs and other external ids
+    already move with the identifier migration at both call sites. Call
+    before the loser is retired (gr353777: a fetched PDF superseding a stub
+    left the surviving ref titleless). Returns the field names filled.
+    """
+    s = conn.execute(
+        "SELECT title, authors FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+        (survivor_ref_id,),
+    ).fetchone()
+    lo = conn.execute(
+        "SELECT title, authors FROM refs WHERE ref_id = %s", (loser_ref_id,)
+    ).fetchone()
+    if s is None or lo is None:
+        return []
+    filled: list[str] = []
+    lo_title = (lo[0] or "").strip()
+    if not (s[0] or "").strip() and lo_title and not _title_is_junk(lo_title):
+        # A stub titled by its own cite_key (e.g. "krishnan97") is a
+        # placeholder, not a title.
+        keys = {
+            str(r[0]).strip().lower()
+            for r in conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key'",
+                (loser_ref_id,),
+            )
+        }
+        if lo_title.lower() not in keys:
+            store.chunks.set_ref_title(survivor_ref_id, lo[0], source=source, conn=conn)
+            filled.append("title")
+    if lo[1] and not s[1]:
+        has_rows = conn.execute(
+            "SELECT 1 FROM paper_authors WHERE ref_id = %s LIMIT 1",
+            (survivor_ref_id,),
+        ).fetchone()
+        if has_rows is None:
+            # Verbatim row copy (per-row source/orcid/verified_at); the
+            # jsonb projection is the loser's, which was derived from them.
+            copied = conn.execute(
+                "INSERT INTO paper_authors (ref_id, position, given, middle, "
+                "family, name_raw, orcid, openalex_author_id, person_ref_id, "
+                "source, verified_at) "
+                "SELECT %s, position, given, middle, family, name_raw, orcid, "
+                "openalex_author_id, person_ref_id, source, verified_at "
+                "FROM paper_authors WHERE ref_id = %s",
+                (survivor_ref_id, loser_ref_id),
+            ).rowcount
+            if copied:
+                conn.execute(
+                    "UPDATE refs SET authors = (SELECT authors FROM refs "
+                    "WHERE ref_id = %s), updated_at = now() WHERE ref_id = %s",
+                    (loser_ref_id, survivor_ref_id),
+                )
+                filled.append("authors")
+    return filled
+
+
 def merge_duplicate(
     store: Store,
     *,
@@ -98,6 +167,14 @@ def merge_duplicate(
     conn.execute(
         "UPDATE paper_bib_entries SET held_ref_id = %s WHERE held_ref_id = %s",
         (survivor_ref_id, duplicate_ref_id),
+    )
+    # (b3) Fill what the survivor lacks (title/authors) from the loser.
+    inherit_missing_identity(
+        store,
+        survivor_ref_id=survivor_ref_id,
+        loser_ref_id=duplicate_ref_id,
+        source=source,
+        conn=conn,
     )
     # (c) supersedes edge + provenance on the loser.
     store.add_link(

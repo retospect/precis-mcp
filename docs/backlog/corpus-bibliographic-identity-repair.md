@@ -27,14 +27,13 @@ lack a DOI); (c) flag substantive registry/local title mismatches for a human (c
 
 Who: agent-code.
 
-### 4. Supersede drops the stub's identity; multi-article PDFs (gr353777)
+### 4. Multi-article PDFs (gr353777)
 
-Superseding a stub with a fetched PDF does not carry the stub's
-title/doi/authors onto the surviving ref, and a PDF that bundles several
-articles is ingested whole under one title. pa207748 holds nine
-helium/superfluid chunks from a different article. Fix direction: the
-supersede path inherits title/doi/authors from the stub; detect
-multi-article PDFs when chunk-level title/topic clusters split.
+A PDF that bundles several articles is ingested whole under one title.
+pa207748 holds nine helium/superfluid chunks from a different article.
+Fix direction: detect multi-article PDFs when chunk-level title/topic
+clusters split. (The supersede path now fills a blank survivor's
+title/authors from the stub; DOIs already moved with the identifiers.)
 
 RULED (Reto 2026-10-11): multi-article scans are tagged `multi-article`
 rather than split or trimmed (body chunks are append-only). Tagged so far:

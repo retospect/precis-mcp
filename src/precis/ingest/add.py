@@ -39,6 +39,7 @@ from precis.ingest.db_writer import (
     register_aliases_and_maybe_upgrade,
     write_paper,
 )
+from precis.ingest.dedup import inherit_missing_identity
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
 from precis.ingest.pres import (
     PresWriteResult,
@@ -1085,6 +1086,13 @@ def _reconcile_orphan_stub(
         (survivor_ref_id, stub_id),
     )
 
+    inherit_missing_identity(
+        store,
+        survivor_ref_id=survivor_ref_id,
+        loser_ref_id=stub_id,
+        source="ingest:dedup",
+        conn=conn,
+    )
     store.migrate_links(stub_id, survivor_ref_id, conn=conn)
     store.add_link(
         src_ref_id=survivor_ref_id,
