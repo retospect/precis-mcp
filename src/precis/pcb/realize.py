@@ -860,7 +860,9 @@ class RealizeResult:
     #: than the pin's own pad — rather than the plain pad-to-pad corridor
     #: (pcb-pre-place-route-blocks, "island terminals"). Keyed by
     #: ``seg_id``, one short human-readable note per entry (e.g. "started
-    #: from fixed via at (12.500, 4.200) on B.Cu"). A segment absent here
+    #: from fixed via at (12.500, 4.200) on B.Cu"), or on one of the pin's
+    #: own non-primary pads ("same-pin pad", gr339236,
+    #: :func:`_sibling_pad_terminals_by_pin`). A segment absent here
     #: either routed pad-to-pad as always, or never routed at all — the
     #: honesty this module already applies to ``unrouted``/``unrouted_
     #: reasons`` extended to the OTHER surprising case: a route that
@@ -1609,9 +1611,15 @@ def _realize_maze(
     body_mask = _courtyard_body_mask(ir, spec)
     # Built ONCE, outside the retry loop, same reasoning as `ink_field`/
     # `body_mask` above: which pins sit in a fixed-copper island is
-    # placement- and fixed-copper-derived, not attempt-derived.
+    # placement- and fixed-copper-derived, not attempt-derived. A pin's
+    # other pads (gr339236) follow its fixed-copper terminals.
     island_terminals = _seg_island_terminals(
-        ir, route_ids, _island_terminals_by_pin(ir, footprints, fixed_copper)
+        ir,
+        route_ids,
+        _merge_terminals(
+            _island_terminals_by_pin(ir, footprints, fixed_copper),
+            _sibling_pad_terminals_by_pin(ir, footprints, signal_layers),
+        ),
     )
     Outcome = tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]
     best: Outcome | None = None
@@ -5835,6 +5843,67 @@ def _island_terminals_by_pin(
     return out
 
 
+def _sibling_pad_terminals_by_pin(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    signal_layers: list[int],
+) -> dict[tuple[str, str], _EndTerminals]:
+    """Every pin's NON-PRIMARY pads as extra route terminals, in
+    :func:`_island_terminals_by_pin`'s shape (gr339236).
+
+    The IR carries one position per pin (``pin_dx``/``pin_dy``, the
+    primary pad), so a segment's search started and ended there alone.
+    A pin's other pads (a connector's second tab numbered like the first,
+    a drilled land beside an SMD pad on the same pin) are already its
+    net's copper to every other consumer — emitted by :func:`pads_for_ir`,
+    claimed for the pin's net by :func:`_footprint_pad_claims`, unioned
+    with the primary by :mod:`precis.pcb.connectivity` (gr451276) — so
+    landing on any of them joins the pin. Offering them here lets a route
+    reach the pin where its primary pad is walled in, and lets a net-class
+    layer lock (:func:`_resolve_route_end`) start from a sibling drilled
+    pad's landing on an allowed layer instead of failing ``layer_lock``.
+
+    A drilled pad is a terminal on every signal layer, any other pad on
+    its instance's mount side only — the layers
+    :func:`_footprint_pad_claims` stamps it on. An unpinned pad is no
+    pin's terminal. Empty for a board with no multi-pad pin, so the
+    search is unchanged there."""
+    out: dict[tuple[str, str], list[tuple[pcb_connectivity.FixedTerminal, int]]] = {}
+    for pad, placed in _footprint_pad_rows(
+        ir, [str(entry.get("name") or "") for entry in ir.stackup], footprints
+    ):
+        if pad.pin == NO_PIN or not signal_layers:
+            continue
+        point = (float(placed["x"]), float(placed["y"]))
+        layer_idxs = (
+            signal_layers
+            if placed.get("drill")
+            else [_side_layer(ir, pad.instance, signal_layers)]
+        )
+        key = (str(ir.instance_refdes[pad.instance]), str(ir.pin_label[pad.pin]))
+        out.setdefault(key, []).extend(
+            (
+                pcb_connectivity.FixedTerminal(
+                    point=point, layer=str(ir.stackup[i].get("name")), kind="pad"
+                ),
+                i,
+            )
+            for i in layer_idxs
+        )
+    return {key: tuple(terms) for key, terms in out.items()}
+
+
+def _merge_terminals(
+    *by_pin: dict[tuple[str, str], _EndTerminals],
+) -> dict[tuple[str, str], _EndTerminals]:
+    """Concatenate per-pin terminal maps, earlier maps' terminals first."""
+    out: dict[tuple[str, str], _EndTerminals] = {}
+    for mapping in by_pin:
+        for key, terms in mapping.items():
+            out[key] = out.get(key, ()) + terms
+    return out
+
+
 def _seg_island_terminals(
     ir: PcbIR, ids: list[int], by_pin: dict[tuple[str, str], _EndTerminals]
 ) -> dict[int, tuple[_EndTerminals, _EndTerminals]]:
@@ -5859,6 +5928,12 @@ def _seg_island_terminals(
     return out
 
 
+def _terminal_noun(term: pcb_connectivity.FixedTerminal) -> str:
+    """``"fixed via"``/``"fixed track"`` for authored copper, ``"same-pin
+    pad"`` for :func:`_sibling_pad_terminals_by_pin`'s terminals."""
+    return "same-pin pad" if term.kind == "pad" else f"fixed {term.kind}"
+
+
 def _describe_used_terminal(
     path: maze.RoutePath, terms: tuple[_EndTerminals, _EndTerminals] | None
 ) -> str | None:
@@ -5877,7 +5952,7 @@ def _describe_used_terminal(
     for t, layer in terms[0]:
         if layer == head[2] and dist(t.point, (head[0], head[1])) < 1e-6:
             parts.append(
-                f"started from fixed {t.kind} at "
+                f"started from {_terminal_noun(t)} at "
                 f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
             )
             break
@@ -5885,7 +5960,7 @@ def _describe_used_terminal(
     for t, layer in terms[1]:
         if layer == tail[2] and dist(t.point, (tail[0], tail[1])) < 1e-6:
             parts.append(
-                f"ended at fixed {t.kind} at "
+                f"ended at {_terminal_noun(t)} at "
                 f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
             )
             break

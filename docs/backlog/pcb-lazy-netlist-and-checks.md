@@ -512,12 +512,20 @@ it lands:
 **Known nuances to carry:** courtyards grow (`ir.py::instance_courtyard_polygon`
 is the hull of pad outlines), so hand placements may need a look; the
 HV507 has 12 distinct non-channel names on 13 non-channel named pads
-(memory, verify at intake) and `session.py::_real_pin_offsets` is
-first-wins per name, so the second same-named pad stays invisible even
-after this fix — **decision needed** before this slice ships: key pins by
-`(name, pad)` in the IR (the multi-pad-per-pin story of gr339236), or
-declare the duplicate under `name#2` and record it in the
-`undeclared_pad` text. Do not silently accept either.
+(memory, verify at intake). The second same-named pad is no longer
+invisible: the IR's pad set (`ir.footprint_pad_set`, keyed by pad number,
+gr451276) emits it, claims it for its pin's net, DRC-checks it and
+unions it with the primary in connectivity, and the maze router offers it
+as an extra start/goal terminal (`realize._sibling_pad_terminals_by_pin`,
+gr339236), so a locked or walled-in primary can route from a sibling.
+`session.py::_real_pin_offsets` is still first-wins per name, which now
+decides only the pin's PRIMARY position. Consumers that still read the
+primary alone: placement wirelength (`cost.py`), pin-swap edges
+(`pinswap._instance_edges`), segment spans and route order, and
+`layer_lock.layer_locked_pins` (counts per pad, not per pin, and ignores
+a drilled sibling on an allowed layer, so `view='feasibility'` can call a
+pin stranded that the router now routes). Fold those in with this slice
+if they bite; the `name#2` alternative is no longer needed.
 
 *Accept:* on the ring-sink fixture (`tests/test_pcb_island_terminal_polygon.py`)
 `len(pads_for_ir(...))` for the sink == its footprint's pad count; two
