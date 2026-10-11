@@ -511,7 +511,7 @@ def test_retry_round_aggregate_collects_base_partials_and_replaces_the_step(
             "warnings": [],
         }
 
-    monkeypatch.setattr(runner, "aggregate_seed_partials", fake_aggregate)
+    monkeypatch.setattr(runner, "aggregate_seed_partials_subprocess", fake_aggregate)
     monkeypatch.setattr(runner, "run_kinetics_subprocess", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "root_state", lambda _cfg: "*")
 

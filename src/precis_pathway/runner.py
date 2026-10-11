@@ -740,6 +740,15 @@ def _run_request_subprocess(
 
         if proc.returncode != 0 or not os.path.exists(out_path):
             tail = (proc.stderr or proc.stdout or "<no output>")[-2000:]
+            if os.path.exists(out_path):
+                # The child's own envelope names the cause (e.g. the
+                # classified "memory limit exceeded"); prefer it over a
+                # possibly-empty stderr tail.
+                try:
+                    with open(out_path, encoding="utf-8") as fh:
+                        tail = str(json.load(fh).get("error") or tail)
+                except (OSError, ValueError):
+                    pass
             msg = (
                 f"{job_name} subprocess failed (rc={proc.returncode}, "
                 f"{unit}); last output: {tail!r}"
@@ -1348,6 +1357,35 @@ def aggregate_seed_partials(
     }
 
 
+def aggregate_seed_partials_subprocess(
+    config: dict[str, Any],
+    seed_results: Sequence[Mapping[str, Any]],
+    *,
+    force_backend: str | None = None,
+    timeout: int = _DEFAULT_SEED_TIMEOUT_S,
+) -> PathwayArtifact:
+    """:func:`aggregate_seed_partials` in a fresh child, so the per-child
+    memory cap (:func:`_apply_memory_cap`) and a wall-clock bound cover the
+    combine too (job 449981 grew a worker to ~117 GB and nobody proved it was
+    kinetics). Same inputs and returned artifact as the in-process function;
+    a cap hit raises ``RuntimeError("... memory limit exceeded ...")``."""
+    request = {
+        "mode": "aggregate",
+        "config": config,
+        "seed_results": list(seed_results),
+        "force_backend": force_backend,
+    }
+    result = _run_request_subprocess(
+        request,
+        timeout=timeout,
+        cpuset=None,
+        job_name="autocatpath_aggregate",
+        unit=f"{len(seed_results)} seed partial(s)",
+        prefix="autocatpath-aggregate-",
+    )
+    return cast("PathwayArtifact", result)
+
+
 def _import_kinetics() -> Any:
     """The ``autocatpath.kinetics`` module, or ``None`` when the deployed
     engine predates it (the module shipped in engine 0.15.0; the fleet's
@@ -1624,7 +1662,15 @@ def _subprocess_main(argv: list[str]) -> int:
         return _kinetics_child(req, out_path, mem_cap)
     try:
         result: dict[str, Any]
-        if req.get("mode") == "coverage":
+        if req.get("mode") == "aggregate":
+            result = dict(
+                aggregate_seed_partials(
+                    req["config"],
+                    req["seed_results"],
+                    force_backend=req.get("force_backend"),
+                )
+            )
+        elif req.get("mode") == "coverage":
             result = dict(
                 run_coverage_scan(
                     req["config"],
