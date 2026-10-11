@@ -23,8 +23,9 @@ Callers: ``workers/chase.py::_taproot_bridge`` (forward bridge),
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1914,6 +1915,53 @@ class MergeEdge:
 
 
 @dataclass(frozen=True)
+class MergeCiteRewrite:
+    """One live draft chunk whose prose cites the loser hub as
+    ``[fi<loser>]`` and what the merge rewrites it to."""
+
+    chunk_id: int
+    handle: str
+    draft_ref_id: int
+    old_text: str
+    new_text: str
+
+
+def rewrite_fi_cites(text: str, loser_ref_id: int, winner_ref_id: int) -> str:
+    """``[fi<loser>]`` -> ``[fi<winner>]`` in ``text``, collapsing a run of
+    identical winner cites (``[fiW][fiW]`` or ``[fiW, fiW]``) to one."""
+    w = f"fi{winner_ref_id}"
+    out = re.sub(rf"\[fi{loser_ref_id}\]", f"[{w}]", text)
+    out = re.sub(rf"\[{w}\](?:\s*\[{w}\])+", f"[{w}]", out)
+    return re.sub(rf"\[{w}(?:\s*,\s*{w})+\]", f"[{w}]", out)
+
+
+def _plan_cite_rewrites(
+    conn: Any, *, loser_ref_id: int, winner_ref_id: int
+) -> list[MergeCiteRewrite]:
+    """Every live draft chunk (no LIMIT) citing the loser. A chunk with no
+    ``handle`` (the edit primitive's address) is skipped, so ``retire_ref``'s
+    cited-finding guard still refuses it loudly."""
+    rows = conn.execute(
+        "SELECT c.chunk_id, c.handle, c.ref_id, c.text "
+        "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+        "WHERE c.retired_at IS NULL AND c.ord >= 0 AND r.retired_at IS NULL "
+        "AND r.kind = 'draft' AND c.handle IS NOT NULL AND c.text ~ %s "
+        "ORDER BY c.ref_id, c.chunk_id",
+        (rf"\[fi{loser_ref_id}\]",),
+    ).fetchall()
+    return [
+        MergeCiteRewrite(
+            chunk_id=int(cid),
+            handle=str(handle),
+            draft_ref_id=int(ref_id),
+            old_text=text,
+            new_text=rewrite_fi_cites(text, loser_ref_id, winner_ref_id),
+        )
+        for cid, handle, ref_id, text in rows
+    ]
+
+
+@dataclass(frozen=True)
 class MergePlan:
     """:func:`merge_hubs`'s full plan — the same object is returned for a
     dry run (nothing applied) and a real run (exactly what was applied),
@@ -1933,6 +1981,9 @@ class MergePlan:
     can_merge: bool
     block_reason: str | None
     edges: list[MergeEdge]
+    #: Live draft chunks whose ``[fi<loser>]`` cites the merge rewrites to
+    #: the winner (gr265228) -- reported on a dry run, applied on a real one.
+    cite_rewrites: list[MergeCiteRewrite] = field(default_factory=list)
 
 
 def _publish_states_past_candidate(conn: Any, ref_id: int) -> list[str]:
@@ -2023,14 +2074,12 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
                 f"{label} ref_id={ref_id} has nanopub_publish state(s) {states} "
                 "(past 'candidate')"
             )
-    # retire_ref refuses a loser still cited by live draft chunks; surface
-    # that here so a dry run reports it and a real run refuses before any
-    # write (gr478510).
-    from precis.store._refs_ops import finding_cited_error
-
-    cited = finding_cited_error(conn, loser_ref_id)
-    if cited is not None:
-        blocked.append(str(cited.cause))
+    # Live draft chunks citing the loser are re-pointed to the winner by
+    # the apply step (gr265228), so retire_ref's cited-finding guard finds
+    # nothing left to refuse.
+    cite_rewrites = _plan_cite_rewrites(
+        conn, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
+    )
     can_merge = not blocked
     block_reason = "; ".join(blocked) if blocked else None
 
@@ -2131,6 +2180,7 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
         can_merge=can_merge,
         block_reason=block_reason,
         edges=edges,
+        cite_rewrites=cite_rewrites,
     )
 
 
@@ -2159,6 +2209,21 @@ def _apply_merge_plan(
             )
         else:  # drop_redundant | drop_self_loop -- links has no retired_at
             conn.execute("DELETE FROM links WHERE link_id = %s", (edge.link_id,))
+
+    # Re-point live draft prose citing the loser BEFORE the retire below
+    # (whose cited-finding guard would otherwise refuse). Goes through the
+    # draft store's edit primitive on this transaction: sha bump, `edited`
+    # chunk_event, derived rows re-derive on the sha change.
+    for rw in plan.cite_rewrites:
+        store.drafts.edit_text_in_tx(
+            conn,
+            rw.handle,
+            rw.new_text,
+            source={
+                "tool": "taproot-merge",
+                "merged": f"fi{plan.loser_ref_id}->fi{plan.winner_ref_id}",
+            },
+        )
 
     # Record the collapse BEFORE retiring the loser: link_claims requires
     # both endpoints to be live TAPROOT:claim hubs, which the loser still
@@ -2215,6 +2280,10 @@ def merge_hubs(
     ``retired_at``, so every drop is a **hard** DELETE -- ``dry_run=True``
     runs the identical plan and returns it without ever opening a write.
 
+    Live draft chunks citing ``[fi<loser>]`` are rewritten to cite the
+    winner in the same transaction (:class:`MergeCiteRewrite`, listed in
+    ``plan.cite_rewrites``; gr265228).
+
     **Refusal**: either side past ``'candidate'`` in ``nanopub_publish``
     blocks the merge (visible in a dry run's ``plan.can_merge``; a real
     run raises :class:`BadInput`). **Idempotent**: an already-soft-deleted
@@ -2250,9 +2319,7 @@ def merge_hubs(
                 next=(
                     "a hub past 'candidate' in nanopub_publish has a frozen "
                     "identity -- merging it would retroactively re-identify "
-                    "a reviewed/signed/published artifact; a hub still cited "
-                    "by live draft chunks needs those [fi<id>] cites "
-                    "re-pointed first"
+                    "a reviewed/signed/published artifact"
                 ),
             )
         _apply_merge_plan(store, c, plan, set_by=set_by)

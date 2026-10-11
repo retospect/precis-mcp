@@ -841,6 +841,12 @@ def _print_merge_plan(plan: Any, *, dry_run: bool) -> None:
                 + (f"; meta={edge.meta}" if edge.meta else "")
             )
 
+    for rw in plan.cite_rewrites:
+        print(
+            f"{tag}rewrite cite in dc{rw.chunk_id} (draft ref {rw.draft_ref_id}): "
+            f"[fi{plan.loser_ref_id}] => [fi{plan.winner_ref_id}]"
+        )
+
     if plan.can_merge:
         print(f"{tag}publish-state check: OK (neither side past 'candidate')")
         print(

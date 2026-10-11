@@ -105,6 +105,12 @@ def _edge_sections(plan: MergePlan, lo: str, wi: str) -> list[str]:
         f"{wi} --{e.relation}--> {wi}"
         for e in loops
     )
+    out.append("")
+    out.append(f"## draft cites rewritten ({len(plan.cite_rewrites)})")
+    out.extend(
+        f"- dc{rw.chunk_id} (draft ref {rw.draft_ref_id}): [{lo}] => [{wi}]"
+        for rw in plan.cite_rewrites
+    )
     if plan.can_merge:
         out.append("")
         out.append(

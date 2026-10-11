@@ -1512,29 +1512,76 @@ def test_merge_hubs_refuses_when_either_side_is_past_candidate(store: Any) -> No
     assert "reviewed" in (plan.block_reason or "")
 
 
-def test_merge_hubs_stranded_cite_refused_in_dry_run_and_writes_nothing(
-    store: Any,
-) -> None:
-    """gr478510: a loser still cited by a live draft chunk is reported by
-    the dry run and refused by a real run with zero partial writes."""
+def _draft_chunk_text(store: Any, chunk_id: int) -> str:
+    with store.pool.connection() as conn:
+        return conn.execute(
+            "SELECT text FROM chunks WHERE chunk_id = %s", (chunk_id,)
+        ).fetchone()[0]
+
+
+def test_merge_hubs_repoints_loser_cites_in_draft_prose(store: Any) -> None:
+    """gr265228: live draft chunks citing the loser are rewritten to the
+    winner (collapsing a doubled winner cite) with an `edited` event; the
+    dry run reports them and writes nothing."""
     loser = mint_hub(store, _CLAIM)
     winner = mint_hub(store, _SHARPER_CLAIM)
-    draft = seed_ref(store, title="a draft", kind="draft")
-    seed_chunk(store, ref_id=draft, text=f"Claim [fi{loser}] stands.")
+    ref, _title = store.drafts.create_draft(name="citedraft", title="Cite draft")
+    plain = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text=f"Claim [fi{loser}] stands.",
+        at={"last": True},
+    )[0]
+    doubled = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text=f"Both [fi{loser}][fi{winner}] agree; see also [fi{winner}, fi{winner}].",
+        at={"last": True},
+    )[0]
+    untouched = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text=f"Other claim [fi{winner}] only.",
+        at={"last": True},
+    )[0]
 
-    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
-    assert plan.can_merge is False
-    assert f"fi{loser} is still cited by 1 live chunk" in (plan.block_reason or "")
+    dry = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+    assert dry.can_merge
+    assert sorted(r.chunk_id for r in dry.cite_rewrites) == sorted(
+        [plain.chunk_id, doubled.chunk_id]
+    )
+    assert _draft_chunk_text(store, plain.chunk_id) == f"Claim [fi{loser}] stands."
 
-    with pytest.raises(BadInput, match="still cited"):
-        merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
 
-    assert _edge(store, loser, winner) is None
+    assert len(plan.cite_rewrites) == 2
+    assert _draft_chunk_text(store, plain.chunk_id) == f"Claim [fi{winner}] stands."
+    assert _draft_chunk_text(store, doubled.chunk_id) == (
+        f"Both [fi{winner}] agree; see also [fi{winner}]."
+    )
+    assert _draft_chunk_text(store, untouched.chunk_id) == (
+        f"Other claim [fi{winner}] only."
+    )
     with store.pool.connection() as conn:
+        n_events = conn.execute(
+            "SELECT count(*) FROM chunk_events WHERE event_kind = 'edited' "
+            "AND source->>'tool' = 'taproot-merge' AND chunk_id = ANY(%s)",
+            ([plain.chunk_id, doubled.chunk_id],),
+        ).fetchone()[0]
         retired_at = conn.execute(
             "SELECT retired_at FROM refs WHERE ref_id = %s", (loser,)
         ).fetchone()[0]
-    assert retired_at is None
+    assert n_events == 2
+    assert retired_at is not None
+
+
+def test_rewrite_fi_cites_collapses_only_winner_runs() -> None:
+    from precis.taproot.hub import rewrite_fi_cites
+
+    assert rewrite_fi_cites("a [fi1] b [fi1]", 1, 2) == "a [fi2] b [fi2]"
+    assert rewrite_fi_cites("[fi1][fi2] [fi3]", 1, 2) == "[fi2] [fi3]"
+    assert rewrite_fi_cites("[fi2, fi2]", 1, 2) == "[fi2]"
+    assert rewrite_fi_cites("[fi10]", 1, 2) == "[fi10]"
 
 
 def test_merge_hubs_unknown_set_by_lists_valid_actors(store: Any) -> None:

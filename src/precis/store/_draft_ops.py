@@ -3406,57 +3406,80 @@ class DraftStore(_AbbrevMixin):
         the same statement — updates a ``table``'s canonical ``meta.table``
         alongside its re-derived markdown ``text`` atomically.
         """
-        sha = content_sha(text)
         with self.tx() as conn:
-            row = self._row(conn, handle)
-            if row is None:
-                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
-            if row[6] is not None:
-                raise Gone(
-                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
-                    "edit the current live chunk instead"
-                )
-            if base_sha is not None:
-                current = content_sha(row[5])
-                # Prefix match: the read path now shows a 12-char sha
-                # prefix, but a full 64-char digest (older callers) is
-                # still a valid prefix. Normalise case; reject a token too
-                # short to be a meaningful guard.
-                nb = base_sha.strip().lower()
-                if len(nb) < 8:
-                    raise BadInput(
-                        f"base_sha {base_sha!r} too short — need ≥8 hex chars "
-                        "(the sha prefix shown on read)",
-                        next=f"get(kind='draft', id='¶{_bare(handle)}') for the sha",
-                    )
-                if not current.startswith(nb):
-                    raise BadInput(
-                        f"¶{_bare(handle)} changed since you read it "
-                        f"(you read {nb[:8]}…, now {current[:8]}…) — "
-                        "re-read and retry so you don't clobber the newer edit",
-                        next=(
-                            f"get(kind='draft', id='¶{_bare(handle)}') for the "
-                            "current text + sha, then edit with the new base_sha="
-                        ),
-                    )
-            if meta_patch:
-                conn.execute(
-                    "UPDATE chunks SET text = %s, content_sha = %s, "
-                    "meta = meta || %s::jsonb WHERE chunk_id = %s",
-                    (text, sha, Jsonb(meta_patch), row[0]),
-                )
-            else:
-                conn.execute(
-                    "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
-                    (text, sha, row[0]),
-                )
-            conn.execute(
-                """INSERT INTO chunk_events
-                       (chunk_id, event_kind, content_sha, prev_text, source)
-                   VALUES (%s, 'edited', %s, %s, %s)""",
-                (row[0], sha, row[5], Jsonb(source or {})),
+            self.edit_text_in_tx(
+                conn,
+                handle,
+                text,
+                base_sha=base_sha,
+                source=source,
+                meta_patch=meta_patch,
             )
         return self.get_draft_chunk(handle, kind=kind)
+
+    def edit_text_in_tx(
+        self,
+        conn: psycopg.Connection,
+        handle: str,
+        text: str,
+        *,
+        base_sha: str | None = None,
+        source: dict[str, Any] | None = None,
+        meta_patch: dict[str, Any] | None = None,
+    ) -> None:
+        """The write half of :meth:`edit_text` on a caller-owned open
+        transaction ``conn`` (same checks, UPDATE and ``edited`` event) —
+        for callers that must edit draft prose atomically with other
+        writes, e.g. a hub merge re-pointing ``[fi<id>]`` cites."""
+        sha = content_sha(text)
+        row = self._row(conn, handle)
+        if row is None:
+            raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+        if row[6] is not None:
+            raise Gone(
+                f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                "edit the current live chunk instead"
+            )
+        if base_sha is not None:
+            current = content_sha(row[5])
+            # Prefix match: the read path now shows a 12-char sha
+            # prefix, but a full 64-char digest (older callers) is
+            # still a valid prefix. Normalise case; reject a token too
+            # short to be a meaningful guard.
+            nb = base_sha.strip().lower()
+            if len(nb) < 8:
+                raise BadInput(
+                    f"base_sha {base_sha!r} too short — need ≥8 hex chars "
+                    "(the sha prefix shown on read)",
+                    next=f"get(kind='draft', id='¶{_bare(handle)}') for the sha",
+                )
+            if not current.startswith(nb):
+                raise BadInput(
+                    f"¶{_bare(handle)} changed since you read it "
+                    f"(you read {nb[:8]}…, now {current[:8]}…) — "
+                    "re-read and retry so you don't clobber the newer edit",
+                    next=(
+                        f"get(kind='draft', id='¶{_bare(handle)}') for the "
+                        "current text + sha, then edit with the new base_sha="
+                    ),
+                )
+        if meta_patch:
+            conn.execute(
+                "UPDATE chunks SET text = %s, content_sha = %s, "
+                "meta = meta || %s::jsonb WHERE chunk_id = %s",
+                (text, sha, Jsonb(meta_patch), row[0]),
+            )
+        else:
+            conn.execute(
+                "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
+                (text, sha, row[0]),
+            )
+        conn.execute(
+            """INSERT INTO chunk_events
+                   (chunk_id, event_kind, content_sha, prev_text, source)
+               VALUES (%s, 'edited', %s, %s, %s)""",
+            (row[0], sha, row[5], Jsonb(source or {})),
+        )
 
     # -- review ledger (paper-writing pipeline rung 3) --------------------
     #
