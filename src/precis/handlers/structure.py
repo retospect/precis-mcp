@@ -78,6 +78,7 @@ from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
 from precis.structure.canonical import normalize_scene
 from precis.structure.cell import Cell
+from precis.structure.fragment_names import fragment_names
 from precis.structure.importers import catalysis_hub, get_adapter
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
@@ -684,9 +685,12 @@ def card_text(title: str, scene: Scene, description: str = "") -> str:
     pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
     elements = ", ".join(sorted(scene.composition()))
     intent = f" {description}" if description else ""
+    names = fragment_names(scene)
+    groups = f" Groups: {'; '.join(names)}." if names else ""
     return (
         f"{title} (atomistic structure).{intent} Composition: {t['formula']} "
         f"({elements}); {t['natoms']} atoms, {t['nbonds']} bonds; pbc[{pbc}]."
+        f"{groups}"
     )
 
 
