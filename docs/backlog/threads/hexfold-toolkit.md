@@ -367,6 +367,13 @@ removed as met — the transport move it waited on happened 09-29)
        between them), and the authored seam phase k=0 is not the best
        (k=17 seeds the flange edge at 2.17 Å). A `place_graph` / curved
        washer seed item; needs a design note of its own.
+       - **Next (Reto, 2026-10-11): probe the surface tiler first.** One
+         probe: can `precis_surface` (`plan_foot`/`plan_scene`, the
+         [ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md)
+         path) express a tube flaring into annular flanges at both ends,
+         plus the `_oh` variant? If yes, rebuild the example via the
+         tiler. If not, do the joint cycle solve that lets the washers
+         bend (Reto: acceptable).
      - **gr459812** `sheet_pill_bump`, `capped_tube`,
        `capped_tube_da_neck`: fixed by gr464358 (2026-10-11), the fuse
        path's mirror. Stick pairs under 1.8 Å 32 → 3 (min 0.90 → 1.65 Å),
