@@ -84,20 +84,38 @@ def render_figure_chunk(
     return RenderOutcome(ok=True, cached_key=key)
 
 
+def needs_render(store: Any, chunk: Any) -> bool:
+    """True when a draft graph figure must be (re)rendered before use: it is
+    still ``meta.figure.render_pending``, or its stamped ``meta.render.cached_key``
+    no longer matches the key of the recipe + plotted tables' current
+    ``content_sha`` (the plotted data changed since the last render). A graph
+    whose plotted tables are all gone keeps its last image."""
+    meta = getattr(chunk, "meta", None) or {}
+    if (meta.get("figure") or {}).get("render_pending"):
+        return True
+    if not isinstance(meta.get("render"), dict):
+        return False
+    bundle = store.drafts.figure_render_bundle(chunk.chunk_id)
+    if bundle is None or not bundle["tables"]:
+        return False
+    return meta["render"].get("cached_key") != invalidation_key(bundle["input_shas"])
+
+
 def ensure_rendered(store: Any, chunk: Any) -> str | None:
-    """Render a draft graph figure still flagged ``meta.figure.render_pending``.
+    """Render a draft graph figure that is pending or stale (see
+    :func:`needs_render`).
 
-    This is the consumer of that flag: ``DraftHandler._add_graph_figure``
-    writes a placeholder PNG and the real image is rendered here, lazily, at
-    the moment it is consumed (export, the reader's blob route). The result
-    is persisted — ``chunk_blobs`` is the regenerable render cache, so the
-    next consumer finds the real image and the flag cleared.
+    ``DraftHandler._add_graph_figure`` writes a placeholder PNG flagged
+    ``meta.figure.render_pending``; the real image is rendered here, lazily, at
+    the moment it is consumed (export, the reader's blob route). A figure whose
+    plotted data was edited after its last render is re-rendered the same way.
+    The result is persisted — ``chunk_blobs`` is the regenerable render cache,
+    so the next consumer finds the current image and the flag cleared.
 
-    Returns ``None`` when nothing was pending or the render succeeded, else a
-    human-readable failure the caller must surface (the flag stays set, so
-    the next consume retries)."""
-    fig = (getattr(chunk, "meta", None) or {}).get("figure") or {}
-    if not fig.get("render_pending"):
+    Returns ``None`` when nothing was needed or the render succeeded, else a
+    human-readable failure the caller must surface (the flag/stale key stays,
+    so the next consume retries)."""
+    if not needs_render(store, chunk):
         return None
     outcome = render_figure_chunk(store, chunk.chunk_id)
     if not outcome.ok:

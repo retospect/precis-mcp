@@ -75,9 +75,10 @@ export (docx/LaTeX) or reader view of the figure renders it, saves the PNG,
 and later exports reuse it. It receives `data={'tables': [...]}` and `out`
 (the PNG path). A render error shows up as an export warning (the figure
 falls back to caption-only) and is retried on the next export. The image is
-**deferred** — a placeholder until then, then refreshes
-whenever the plotted data changes (the `plots` edge is the one reactive
-recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
+**deferred** — a placeholder until then. Each export or view compares the
+plotted tables' current content to the key stamped at the last render and
+re-renders on mismatch, so editing a plotted table refreshes the graph (the
+`plots` edge is the one reactive recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
 caption, export all apply identically.
 
 ## Data / table chunks

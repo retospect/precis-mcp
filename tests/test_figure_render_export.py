@@ -165,3 +165,29 @@ def test_blob_route_failed_render_serves_placeholder_with_error(
     assert r.content == _PLACEHOLDER_PNG
     assert "render failed" in r.headers["x-render-error"]
     assert r.headers["cache-control"] == "no-store"
+
+
+def test_graph_rerenders_after_plotted_table_edit(hub: Hub, tmp_path: Path) -> None:
+    """Editing a plotted table after the first render makes the figure stale:
+    the next export re-renders (cached_key no longer matches)."""
+    ref, fig = _pending_figure(hub, _GOOD_SRC)
+    drafts = hub.live_store.drafts
+    export_docx(hub.live_store, ref, target_path=tmp_path / "a.docx")
+    key1 = drafts.draft_chunk_meta(fig.handle)["render"]["cached_key"]
+
+    # unchanged data: no re-render, key stable
+    export_docx(hub.live_store, ref, target_path=tmp_path / "b.docx")
+    assert drafts.draft_chunk_meta(fig.handle)["render"]["cached_key"] == key1
+
+    table = next(c for c in drafts.reading_order(ref.id) if c.chunk_kind == "table")
+    DraftHandler(hub=hub).edit(
+        id=table.dc, table={"header": ["x", "y"], "rows": [[1, 9], [3, 4]]}
+    )
+    from precis.render.figure import needs_render
+
+    fig2 = drafts.get_draft_chunk(fig.dc)
+    assert needs_render(hub.live_store, fig2)
+    export_docx(hub.live_store, ref, target_path=tmp_path / "c.docx")
+    key2 = drafts.draft_chunk_meta(fig.handle)["render"]["cached_key"]
+    assert key2 != key1
+    assert not needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))

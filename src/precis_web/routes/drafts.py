@@ -2067,11 +2067,11 @@ _RENDER_LOCKS_GUARD = threading.Lock()
 def _render_pending_blob(store: Store, handle: str) -> str | None:
     """Render a ``render_pending`` figure, single-flight per chunk: concurrent
     viewers queue on one lock and, once through, re-read the chunk — the
-    first render has cleared the flag, so they skip straight to the blob."""
-    from precis.render.figure import ensure_rendered
+    first render has refreshed the chunk, so they skip straight to the blob."""
+    from precis.render.figure import ensure_rendered, needs_render
 
     chunk = store.drafts.get_draft_chunk(handle)
-    if chunk is None or not (chunk.meta or {}).get("figure", {}).get("render_pending"):
+    if chunk is None or not needs_render(store, chunk):
         return None
     with _RENDER_LOCKS_GUARD:
         lock = _RENDER_LOCKS.setdefault(chunk.chunk_id, threading.Lock())
@@ -2089,7 +2089,7 @@ async def chunk_blob(request: Request, handle: str) -> Response:
     handle is globally unique, so no draft ident is needed."""
     store = get_store(request)
     headers = {"Cache-Control": "public, max-age=300"}
-    # A pending graph figure renders on first view (sandboxed — off the event
+    # A pending or stale graph figure renders on view (sandboxed — off the event
     # loop). A failure serves the placeholder uncached, flagged in a header,
     # so the next view retries.
     from starlette.concurrency import run_in_threadpool
