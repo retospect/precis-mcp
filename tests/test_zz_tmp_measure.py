@@ -1,7 +1,15 @@
-import pytest
 from collections import Counter
+
+import pytest
+
 from precis.pcb import realize
-from tests.test_pcb_escape_replay import _hydrate, _failed, _resolve_pin_swap_groups, _apply_pin_swap_warm_start
+from tests.test_pcb_escape_replay import (
+    _apply_pin_swap_warm_start,
+    _failed,
+    _hydrate,
+    _resolve_pin_swap_groups,
+)
+
 
 @pytest.mark.slow
 @pytest.mark.parametrize("method", ["distance", "radial", None])

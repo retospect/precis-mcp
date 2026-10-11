@@ -29,20 +29,24 @@ next sweep. Prod stamped three papers permanently failed on 2026-09-17
 during a rate-limit window before this distinction existed.
 
 **The input can be the wrong paper.** Few held papers have a
-``card_abstract``, so the usual input is the first body chunk — and in a
-scanned journal PDF that is often a NEIGHBOURING article's reference list
-or front matter, not this paper's prose. Prod's first run wrote
-"a review of literature regarding atmospheric chemistry and planetary
-science" onto *Solid C60: a new form of carbon*, because ord 0..2 of that
-ref are an ozone-chemistry bibliography. The model was not hallucinating;
-it described what it was handed. So the prompt makes the TITLE
-authoritative and gives the model :data:`NO_CONTEXT` to decline with when
-the text can't belong to a paper of that title — a decline is terminal
-(:func:`is_decline`), never retried, since a retry that invents a sentence
-is the exact failure the hatch exists to stop. A wrong context line is
-worse than none: it rides along with someone's literal quote as fact.
+``card_abstract`` and ord 0 of a scanned journal PDF is often a
+NEIGHBOURING article's reference list or front matter. Prod's first run
+wrote "a review of literature regarding atmospheric chemistry and
+planetary science" onto *Solid C60: a new form of carbon*, because ord
+0..2 of that ref are an ozone-chemistry bibliography. The model was not
+hallucinating; it described what it was handed. So :func:`_claim` no
+longer takes "the first body chunk": it prefers ``card_abstract``, then
+``refs.meta['abstract']``, then the first of the leading
+:data:`_FRONT_CHUNKS` chunks that is real prose and not end matter
+(:func:`pick_abstract_chunk`), else passes nothing. The prompt also makes
+the TITLE authoritative and gives the model :data:`NO_CONTEXT` to decline
+with when the text can't belong to a paper of that title — a decline is
+terminal (:func:`is_decline`), never retried, since a retry that invents a
+sentence is the exact failure the hatch exists to stop. A wrong context
+line is worse than none: it rides along with someone's literal quote as
+fact.
 
-**The input can also be no paper at all.** The same fallback usually
+**The input can also be no paper at all.** A first-chunk read usually
 yields the paper's MASTHEAD — title, byline, affiliations — which has no
 method content to characterize: on prod, 788 of the 841 grounding-source
 papers have no ``card_abstract`` chunk, and the mastheads score 0.08-0.23
@@ -101,6 +105,7 @@ __all__ = [
     "backfill_candidate_ref_ids",
     "is_decline",
     "lint_violation",
+    "pick_abstract_chunk",
     "propose_context_sentence",
     "run_context_sentence_pass",
     "usable_context",
@@ -259,6 +264,55 @@ def usable_context(title: str, abstract: str) -> bool:
         return False
     prose = sum(1 for w in words if w.islower() and len(w) >= 2)
     return prose / len(words) >= _MIN_PROSE_FRACTION
+
+
+#: How many leading body chunks are searched for the paper's real abstract.
+#: Scanned PDFs put the masthead in ord 0 and the abstract a chunk or two
+#: later (ref 42558: byline at ord 0, "We describe monocrystalline ..." at
+#: ord 1); past this window we are into the introduction/methods, which is
+#: not "the abstract" and not worth guessing at.
+_FRONT_CHUNKS = 4
+
+_REF_SECTION_RE = re.compile(
+    r"reference|bibliograph|acknowledg|literature cited|funding", re.IGNORECASE
+)
+_ABSTRACT_SECTION_RE = re.compile(r"abstract|summary", re.IGNORECASE)
+#: Citation-shaped fragments: ``1234, 56-78`` volume/page runs and ``1999)``
+#: year closers. A reference list has many per chunk, prose has ~none.
+_CITATION_RE = re.compile(
+    r"\b\d{1,4}\s*[,:]\s*\d{1,5}\s*[–-]\s*\d{1,5}\b|\b(?:19|20)\d{2}\)|\bet al\b"
+)
+
+
+def _looks_like_references(text: str, section_path: Any) -> bool:
+    """True for a bibliography / end-matter chunk (by heading or by its
+    density of citation fragments) — never a paper's own abstract."""
+    heading = " ".join(str(h) for h in (section_path or []))
+    if _REF_SECTION_RE.search(heading):
+        return True
+    return len(_CITATION_RE.findall(text)) >= 3
+
+
+def pick_abstract_chunk(title: str, chunks: list[tuple[str, Any]]) -> str:
+    """The text of the leading chunk that is a genuine abstract, else ``""``.
+
+    ``chunks`` is ``(text, section_path)`` in ord order. Picks the first
+    chunk under an Abstract/Summary heading, otherwise the first that
+    carries prose (:func:`usable_context`) and is not end matter. A
+    masthead at ord 0 is skipped, not returned — the old rule took
+    ``ord`` 0 unconditionally, which fed bylines and neighbouring
+    articles' reference lists to the model as "the abstract" (gr346458).
+    ``""`` when nothing trustworthy exists: callers pass no abstract
+    rather than garbage."""
+    ok = [
+        (t, sp)
+        for t, sp in chunks
+        if not _looks_like_references(t, sp) and usable_context(title, t)
+    ]
+    for t, sp in ok:
+        if _ABSTRACT_SECTION_RE.search(" ".join(str(h) for h in (sp or []))):
+            return t
+    return ok[0][0] if ok else ""
 
 
 # ── lint (belt over the LLM) ─────────────────────────────────────────────
@@ -447,16 +501,11 @@ def _claim(
     rows = conn.execute(
         """
         SELECT r.ref_id, r.title,
-               COALESCE(
-                   (SELECT text FROM chunks
-                     WHERE ref_id = r.ref_id AND chunk_kind = 'card_abstract'
-                       AND retired_at IS NULL
-                     ORDER BY ord LIMIT 1),
-                   (SELECT text FROM chunks
-                     WHERE ref_id = r.ref_id AND ord >= 0 AND retired_at IS NULL
-                     ORDER BY ord LIMIT 1),
-                   ''
-               ) AS abstract
+               (SELECT text FROM chunks
+                 WHERE ref_id = r.ref_id AND chunk_kind = 'card_abstract'
+                   AND retired_at IS NULL
+                 ORDER BY ord LIMIT 1),
+               r.meta->>'abstract'
           FROM refs r
          WHERE r.ref_id = ANY(%(ids)s)
            AND r.retired_at IS NULL
@@ -474,7 +523,24 @@ def _claim(
             "limit": limit,
         },
     ).fetchall()
-    return [(int(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
+    out: list[tuple[int, str, str]] = []
+    for ref_id, title, card, meta_abstract in rows:
+        title = str(title or "")
+        block = str(card or "")
+        if not block and meta_abstract and usable_context(title, str(meta_abstract)):
+            block = str(meta_abstract)
+        if not block:
+            head = conn.execute(
+                """
+                SELECT text, section_path FROM chunks
+                 WHERE ref_id = %s AND ord >= 0 AND ord < %s AND retired_at IS NULL
+                 ORDER BY ord
+                """,
+                (ref_id, _FRONT_CHUNKS),
+            ).fetchall()
+            block = pick_abstract_chunk(title, [(str(t or ""), sp) for t, sp in head])
+        out.append((int(ref_id), title, block))
+    return out
 
 
 def run_context_sentence_pass(

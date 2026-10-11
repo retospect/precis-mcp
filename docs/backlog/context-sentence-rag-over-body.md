@@ -10,10 +10,12 @@ prio: normal
 ## Status and who (2026-10-11 gripe triage, gr346458)
 
 Asks a+b (the `usable_context` refusal and the per-ref decline log) are
-deployed. Ask c, this item, is not built:
-`src/precis/workers/context_sentence.py` still takes
-`COALESCE(card_abstract, first body chunk)` and so falls back to the masthead.
-Two parts:
+deployed. The selector no longer takes ord 0 blindly: `_claim` prefers
+`card_abstract`, then `refs.meta['abstract']`, then the first of the leading
+four body chunks that is prose and not end matter
+(`pick_abstract_chunk`), else nothing (prod sample of 400 papers without an
+abstract: usable block 61 -> 87). Retrieval over the body, this item, is
+not built; it covers papers whose front matter holds no abstract. Two parts:
 
 - Code (agent-code): retrieval over the body, as scoped below.
 - Ops: refs 498, 3234 and 42556 carry failed stamps from before the guard;
