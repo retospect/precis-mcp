@@ -263,6 +263,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
     ),
     _watchdog(
         "condition",
+        "quest-tick-stalled:{quest_id}",
+        "A quest's live quest_tick loop is queued or past its at_time wake "
+        "beyond the stall budget with no slice run.",
+        budget="PRECIS_COND_QUEST_TICK_STALL_S",
+        service="health_digest",
+    ),
+    _watchdog(
+        "condition",
         "pass-wedged:{host}/{process}",
         "A live host's pass stopped completing cycles past the wedged budget.",
         budget="per probe",

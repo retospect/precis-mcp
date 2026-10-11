@@ -209,7 +209,7 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
 #: tighter budget than the per-host pass-dead row.
 _RESCUE_HANDLERS = ("sweeper", "nursery", "quest_loop_reconcile")
 
-_QUEST_RECONCILE_DEMAND_SQL = """
+_LATEST_QUEST_LOOP_CTE = """
 WITH active_quests AS (
     SELECT r.ref_id AS quest_id, rt.created_at AS active_since
       FROM refs r
@@ -221,7 +221,9 @@ WITH active_quests AS (
     SELECT DISTINCT ON (aq.quest_id)
            aq.quest_id, aq.active_since,
            j.ref_id AS job_id, j.meta->>'rest_reason' AS rest_reason,
-           jt.value AS job_status, jrt.created_at AS status_since
+           jt.value AS job_status, jrt.created_at AS status_since,
+           j.meta->'wake_when'->>'kind' AS wake_kind,
+           j.meta->'wake_when'->'payload'->>'ts' AS wake_ts
       FROM active_quests aq
       LEFT JOIN refs j
         ON j.kind = 'job' AND j.retired_at IS NULL
@@ -234,7 +236,11 @@ WITH active_quests AS (
      -- DISTINCT ON deterministically keep the row carrying the STATUS value.
      ORDER BY aq.quest_id, j.ref_id DESC, jt.value NULLS LAST
 )
-SELECT 1
+"""
+
+_QUEST_RECONCILE_DEMAND_SQL = (
+    _LATEST_QUEST_LOOP_CTE
+    + """SELECT 1
   FROM latest_loop
  WHERE (
          job_id IS NULL
@@ -247,6 +253,7 @@ SELECT 1
        )
  LIMIT 1
 """
+)
 
 
 def _quest_reconcile_demand(store: Store, budget_s: float) -> bool:
@@ -339,6 +346,63 @@ SELECT hb.host, act.key AS process,
    AND (act.value->>'since')::timestamptz
        < now() - make_interval(secs => %(budget_s)s)
 """
+
+
+_QUEST_TICK_STALLED_SQL = (
+    _LATEST_QUEST_LOOP_CTE
+    + """SELECT quest_id, job_id, job_status,
+       EXTRACT(EPOCH FROM (now() - CASE
+           WHEN job_status = 'queued' THEN status_since
+           ELSE to_timestamp(wake_ts::bigint)
+       END)) / 60.0 AS stalled_min
+  FROM latest_loop
+ WHERE (
+         job_status = 'queued'
+         AND status_since < now() - make_interval(secs => %(budget_s)s)
+       )
+    OR (
+         job_status = 'waiting_time' AND wake_kind = 'at_time'
+         AND wake_ts ~ '^[0-9]+$'
+         AND to_timestamp(wake_ts::bigint)
+             < now() - make_interval(secs => %(budget_s)s)
+       )
+ ORDER BY quest_id
+"""
+)
+
+
+def _probe_quest_tick_stalled(store: Store) -> list[ConditionFinding]:
+    """gr465967 — a quest's live ``quest_tick`` loop is due but nothing
+    picked it up. Two shapes, each held past budget (default 3h): the loop
+    sits ``STATUS:queued`` (the coordinator never claimed it), or sits
+    ``waiting_time`` with its ``at_time`` wake long past (``wake_runner``
+    never re-queued it). Neither is a deliberate rest — a dry rest is
+    ``succeeded`` and a quota/breaker pause parks the wake in the FUTURE —
+    so this never fires on a quest that is merely resting. The 2026-10-04
+    fleet-wide 6.5 h tick silence left no per-slice trail to root-cause;
+    this names the quest and loop job while it is happening."""
+    budget_s = _env_f("PRECIS_COND_QUEST_TICK_STALL_S", 3 * 3600.0)
+    with store.pool.connection() as conn:
+        alive = conn.execute(
+            "SELECT 1 FROM host_heartbeat "
+            " WHERE ts > now() - make_interval(mins => %s) LIMIT 1",
+            (_HOST_FRESH_MIN,),
+        ).fetchone()
+        if alive is None:
+            return []  # fleet dark — the dead-man's-switch class, not ours
+        rows = conn.execute(_QUEST_TICK_STALLED_SQL, {"budget_s": budget_s}).fetchall()
+    return [
+        ConditionFinding(
+            key=f"quest-tick-stalled:{qid}",
+            detail=(
+                f"quest qu{qid}: loop job {jid} is {status} and due "
+                f"{float(stalled_min):.0f} min ago with no slice run "
+                "(coordinator not claiming / wake_runner not waking it) — "
+                "ticks silent for this quest"
+            ),
+        )
+        for qid, jid, status, stalled_min in rows
+    ]
 
 
 def _probe_pass_wedged(store: Store) -> list[ConditionFinding]:
@@ -568,6 +632,7 @@ CONDITIONS: tuple[Condition, ...] = (
     Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
+    Condition("quest-tick-stalled", "warn", _probe_quest_tick_stalled),
     Condition("pass-wedged", "warn", _probe_pass_wedged),
     Condition("llm-degraded", "warn", _probe_llm_degraded),
     Condition("agent-ticks-toolless", "warn", _probe_toolless_agent_spend),

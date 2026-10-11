@@ -30,6 +30,7 @@ from precis.workers.conditions import (
     _probe_llm_degraded,
     _probe_pass_dead,
     _probe_pass_wedged,
+    _probe_quest_tick_stalled,
     _probe_rescue_cadence,
     _probe_settings_env_shadowed,
     run_condition_checks,
@@ -196,6 +197,92 @@ def test_pass_dead_respects_service_config_off(
                 (_HOST, handler),
             )
             conn.commit()
+
+
+# ── quest-tick-stalled (gr465967) ─────────────────────────────────────────
+
+
+def _set_wake(store: Store, job_id: int, ts_offset_s: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "'wake_when', jsonb_build_object('kind', 'at_time', "
+            "'payload', jsonb_build_object('ts', "
+            "extract(epoch from now())::bigint + %s))) WHERE ref_id = %s",
+            (ts_offset_s, job_id),
+        )
+        conn.commit()
+
+
+def _stalled_for(store: Store, quest_id: int) -> list[ConditionFinding]:
+    return [
+        f
+        for f in _probe_quest_tick_stalled(store)
+        if f.key == f"quest-tick-stalled:{quest_id}"
+    ]
+
+
+def test_quest_tick_stalled_fires_for_overdue_queued_loop(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_COND_QUEST_TICK_STALL_S", "60")
+    _seed_heartbeat(store)
+    q = _mk_quest(store, "a striving whose loop was never claimed")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "queued")
+    _age_status(store, job_id, "2 minutes")
+    found = _stalled_for(store, q)
+    assert len(found) == 1
+    assert f"loop job {job_id}" in found[0].detail
+
+
+def test_quest_tick_stalled_fires_for_overdue_waiting_time_wake(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_COND_QUEST_TICK_STALL_S", "60")
+    _seed_heartbeat(store)
+    q = _mk_quest(store, "a striving whose wake never fired")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "waiting_time")
+    _set_wake(store, job_id, -600)
+    assert len(_stalled_for(store, q)) == 1
+
+
+def test_quest_tick_stalled_quiet_for_future_wake_and_fresh_queue(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quota/breaker pause parks the wake in the future; a just-queued
+    loop has not waited the budget yet — neither is a stall."""
+    monkeypatch.setenv("PRECIS_COND_QUEST_TICK_STALL_S", "60")
+    _seed_heartbeat(store)
+    q1 = _mk_quest(store, "a striving parked until quota reset")
+    j1, _ = loop_mod.ensure_quest_loop(store, q1)
+    assert j1 is not None
+    _set_status(store, j1, "waiting_time")
+    _set_wake(store, j1, 3600)
+    q2 = _mk_quest(store, "a striving queued a moment ago")
+    j2, _ = loop_mod.ensure_quest_loop(store, q2)
+    assert j2 is not None
+    _set_status(store, j2, "queued")
+    assert _stalled_for(store, q1) == []
+    assert _stalled_for(store, q2) == []
+
+
+def test_quest_tick_stalled_quiet_when_fleet_dark(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_COND_QUEST_TICK_STALL_S", "60")
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM host_heartbeat")
+        conn.commit()
+    q = _mk_quest(store, "a striving on a dark fleet")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "queued")
+    _age_status(store, job_id, "2 minutes")
+    assert _stalled_for(store, q) == []
 
 
 # ── rescue-pass-cadence (gr204708 — demand-gated quest_loop_reconcile) ────
