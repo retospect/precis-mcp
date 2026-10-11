@@ -839,3 +839,23 @@ def test_unminted_detector_ignores_young_childful_and_plain_todos(
     plain = _id_of(handler.put(text="no executor").body)
     _age_todo(store, plain, 45)
     assert _attention_unminted(store) == []
+
+
+def test_unminted_detector_ignores_parent_waiting_on_live_child_todo(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Autocatpath aggregate shape: executor todo, no job, open seed todo."""
+    from precis.handlers._todo_views import _attention_unminted
+    from precis.store.types import Tag
+
+    parent = _id_of(handler.put(text="agg", meta=_EXECUTOR_META).body)
+    _age_todo(store, parent, 45)
+    seed = store.insert_ref(
+        kind="todo", slug=None, title="seed", meta={}, parent_id=parent
+    )
+    assert _attention_unminted(store) == []
+    # Once the seed resolves, the parent is a genuine stalled mint again.
+    store.add_tag(
+        seed.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert [h["id"] for h in _attention_unminted(store)] == [parent]

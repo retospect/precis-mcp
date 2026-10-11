@@ -1578,6 +1578,21 @@ def _attention_unminted(
                               'queued'
                             ) <> ALL(%s)
                    )
+               -- A parent waiting on live child todos is not a stalled mint:
+               -- dispatch withholds its job until they resolve (the
+               -- autocatpath aggregate waits on its seed todos this way).
+               AND NOT EXISTS (
+                     SELECT 1 FROM refs ct
+                      WHERE ct.parent_id = r.ref_id AND ct.kind = 'todo'
+                        AND ct.retired_at IS NULL
+                        AND COALESCE(
+                              (SELECT t4.value FROM ref_tags rt4
+                                 JOIN tags t4 ON t4.tag_id = rt4.tag_id
+                                WHERE rt4.ref_id = ct.ref_id
+                                  AND t4.namespace = 'STATUS' LIMIT 1),
+                              'open'
+                            ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                   )
              ORDER BY r.created_at
              LIMIT 50
             """,
