@@ -187,6 +187,24 @@ def test_malformed_geometry_never_becomes_a_pad_at_zero():
     )
 
 
+_HOLES = [{"x": -19.0, "y": 0.0, "dia_mm": 1.6}, {"x": 19.0, "y": 2.0, "dia_mm": 6.4}]
+
+
+def test_holes_rotated_bottom_instance():
+    fp = {**_footprint(), "holes": _HOLES}
+    pose = {"x": 30, "y": 40, "rot": 90, "layer": "bottom"}
+    holes = eyes.pinout(pose, fp, [], _LAYERS)["holes"]
+    # bottom mirrors local X, then CW 90: (lx, ly) -> (-lx, ly) -> (ly, lx)
+    assert [(h["board_x_mm"], h["board_y_mm"]) for h in holes] == pytest.approx(
+        [(30, 21), (32, 59)]
+    )
+    assert [(h["local_x_mm"], h["local_y_mm"]) for h in holes] == [(-19, 0), (19, 2)]
+    assert [h["dia_mm"] for h in holes] == [1.6, 6.4]
+    unplaced = eyes.pinout({}, fp, [], _LAYERS)["holes"]
+    assert [h["board_x_mm"] for h in unplaced] == [None, None]
+    assert eyes.pinout(pose, _footprint(), [], _LAYERS)["holes"] == []
+
+
 @pytest.fixture
 def board(store):
     pcb = PcbHandler(hub=Hub(store=store))
@@ -196,7 +214,14 @@ def board(store):
     pcb.put(
         id="pinout-test",
         args={
-            "footprints": [{"name": "ASYM", "pads": pads, "pin_map": fp["pin_map"]}],
+            "footprints": [
+                {
+                    "name": "ASYM",
+                    "pads": pads,
+                    "pin_map": fp["pin_map"],
+                    "holes": _HOLES,
+                }
+            ],
             "components": [
                 {
                     "refdes": refdes,
@@ -276,6 +301,9 @@ def test_native_handler_rows_and_database_read_only(board, store, monkeypatch):
     assert "explicit-pin-pad" in bottom and "J_BOTTOM_VCC" in bottom
     assert "unconnected" in front and "unclaimed" in front and "[6, 7]" in front
     assert "board coordinates: unavailable (unplaced/invalid pose)" in unplaced
+    assert "footprint holes (non-plated):" in front
+    assert "-19.0000" in front and "6.4000" in front
+    assert "30.0000" in bottom and "21.0000" in bottom and "59.0000" in bottom
     assert "geometry: unavailable" in missing and "precis-pcb-help" in missing
     assert before == _snapshot(store)
 

@@ -232,6 +232,9 @@ rotation, layers and stored pin/net mapping evidence. `explicit-pin-pad`,
 identity fallback is not an independently known signal. `unconnected`
 means a mapped pin without a net; `unclaimed` means no declared pin;
 `ambiguous` retains conflicting pins/nets rather than choosing one.
+A footprint with non-plated holes (pegs, standoffs) gets a second table,
+one row per hole: `local_x_mm`/`local_y_mm`, `board_x_mm`/`board_y_mm`
+(same transform as pads) and `dia_mm`; it is omitted when there are none.
 
 Local +X is right and +Y up; board coordinates are top-view, rotations CW.
 Bottom-side pads mirror local X before rotation and translation. Unplaced

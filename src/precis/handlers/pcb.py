@@ -4902,6 +4902,26 @@ class PcbHandler(Handler):
                 else []
             ),
         )
+        if result["holes"]:
+            body += "\nfootprint holes (non-plated):\n" + render_agent_table(
+                [
+                    {
+                        k: "unavailable" if v is None else f"{v:.4f}"
+                        for k, v in hole.items()
+                        if k != "hole_index"
+                    }
+                    | {"hole_index": hole["hole_index"]}
+                    for hole in result["holes"]
+                ],
+                schema=[
+                    "hole_index",
+                    "local_x_mm",
+                    "local_y_mm",
+                    "board_x_mm",
+                    "board_y_mm",
+                    "dia_mm",
+                ],
+            )
         if result["unmatched"]:
             body += "\nunmatched declared pins:\n" + render_agent_table(
                 result["unmatched"]
