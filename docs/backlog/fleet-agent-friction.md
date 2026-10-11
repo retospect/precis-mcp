@@ -1,28 +1,15 @@
 ---
 status: idea
-title: Fleet agents stall on prompts and lack a checkout — prod-psql approvals, plan_tick repo access
+title: Fleet agents stall on session-hook refusals and per-call hook cost
 pillar: platform
 ---
 
-# Fleet agent friction — prompts and missing repo access
+# Fleet agent friction — session hooks
 
 Bundled in the 2026-10-10 gripe triage. Each item stops fleet or lane
 agents on something a human already decided or never needed to decide.
 
-## 1. prod-psql hook asks on every write (gr462727, merged gr462731)
-
-`guard-prod-psql.py` asks for confirmation on every prod write, including
-writes Reto already approved. That contradicts
-`docs/conventions/thresholds.md`, so approved prod work stalls on a prompt
-in the pane.
-
-Ruling (Reto, 2026-10-11): the hook asks only on destructive writes
-(DELETE, DROP, TRUNCATE, ALTER … DROP, an UPDATE/DELETE without WHERE, or
-anything over the `thresholds.md` limits); every other write passes.
-
-Who: agent-code, S. Files: `scripts/hooks/guard-prod-psql.py`.
-
-## 2. Session hooks reject read-only commands and cost a process per call (gr343750)
+## 1. Session hooks reject read-only commands and cost a process per call (gr343750)
 
 Isolation and pretool hooks refuse many read-only shell commands as "too
 complex to verify" (pipelines, `for` loops, computed values), so agents
@@ -41,5 +28,3 @@ Who: agent-code, M.
   and a write inside one still does.
 - One hook process serves each tool call. The measured per-call and
   session-start cost is recorded in the commit body.
-- An approved non-destructive prod write runs without a prompt, and a
-  `DELETE` without a `WHERE` still asks.

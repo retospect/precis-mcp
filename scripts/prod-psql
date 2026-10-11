@@ -83,10 +83,18 @@ refuse_session_set() {
 
 # --ro wraps the input in one read-only transaction (belt to agent_ro's
 # braces). A COMMIT inside the input would end it early; that is the
-# caller's business, the role still refuses writes.
+# caller's business, the role still refuses writes. An unterminated user
+# statement would swallow the COMMIT ("syntax error at or near COMMIT"), so
+# a missing trailing `;` is appended on its own line (safe after a trailing
+# `-- comment`, and an empty statement is a no-op in psql).
 wrap_ro() {
     if [[ $RO -eq 1 ]]; then
-        printf 'BEGIN READ ONLY;\n%s\nCOMMIT;\n' "$1"
+        local body="$1" trimmed
+        trimmed="${body%"${body##*[![:space:]]}"}"
+        if [[ "$trimmed" != *\; ]]; then
+            body+=$'\n;'
+        fi
+        printf 'BEGIN READ ONLY;\n%s\nCOMMIT;\n' "$body"
     else
         printf '%s\n' "$1"
     fi
