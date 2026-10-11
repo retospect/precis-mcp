@@ -68,7 +68,8 @@ def _round(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env=_env(),
+        # `open` reads origin's refs through the root checkout.
+        env={**_env(), "PRECIS_ROUND_ROOT": str(cwd)},
     )
 
 
@@ -81,6 +82,10 @@ def trees(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     _git(primary, "add", "f")
     _git(primary, "commit", "-q", "-m", "c0")
     sha = _git(primary, "rev-parse", "HEAD")
+    # `open` reads origin's round refs (numbering is global), so it needs one.
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _git(primary, "remote", "add", "origin", str(origin))
     alpha = tmp_path / "alpha"
     beta = tmp_path / "beta"
     _git(primary, "worktree", "add", "-q", "-b", "alpha", str(alpha))

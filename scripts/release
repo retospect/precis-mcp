@@ -548,6 +548,9 @@ def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
     sys.stdout.flush()
     if cp.returncode:
         err = cp.stderr
+        if "is already tagged on origin" in err:
+            clear_owner()  # stale round number: nothing recorded by us
+            return die(1, err.rstrip())
         if "exists on origin" in err or "already records an open release" in err:
             clear_owner()  # lost the race: nothing recorded by us
             sys.stderr.write(err)

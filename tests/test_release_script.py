@@ -379,3 +379,14 @@ def test_reconciling_anothers_pending_cut_does_not_claim_ownership(
     if not claims:  # an owner whose marker pre-existed keeps it on reconcile
         mod.write_owner("release/r1", sha, "t")
         assert mod.cut_and_finish(args, sha) == 77
+
+
+def test_stale_round_number_cut_refusal_exits_one_and_clears_marker(rig: Rig) -> None:
+    assert rig.round("open").returncode == 0
+    _git(rig.root, "push", "-q", "origin", f"{rig.shas['c0']}:refs/tags/deployed/r1")
+    out = _release(rig, *FAST)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "deployed/r1 is already tagged on origin" in out.stderr
+    assert not _marker(rig).exists()
+    assert rig.origin_ref("release/r1") == ""
+    assert "release" not in _round_json(rig)

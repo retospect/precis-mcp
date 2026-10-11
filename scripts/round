@@ -78,6 +78,9 @@ process reloaded. Main gates retain local pins but defer global gated
 publication while the release owns it. No live health result is inferred
 from these tooling tests.
 
+Round numbers are global: `open` takes max(local n, highest deployed/r<N> tag
+or release/r<N> branch on origin) + 1, and `cut` refuses if deployed/r<N> exists.
+
 Exit codes: 0 ok; 3 rollout returned success, runtime confirmation pending;
 1 refused (no round open, unknown sha, bad usage). `pending`
 exits 0 with no output when everyone is in.
@@ -279,6 +282,28 @@ def _require_round(state: Path) -> dict[str, Any]:
     return cur
 
 
+def _origin_round_max(root: Path) -> int | None:
+    """Highest N among origin's deployed/r<N> tags and release/r<N> branches.
+
+    None = origin unreadable. Numbering is global on origin, not per checkout.
+    """
+    out = _rgit(
+        root,
+        "ls-remote",
+        "origin",
+        "refs/tags/deployed/r*",
+        "refs/heads/release/r*",
+    )
+    if out is None:
+        return None
+    nums = [
+        int(m.group(1))
+        for ln in out.splitlines()
+        if (m := re.search(r"\trefs/(?:tags/deployed|heads/release)/r(\d+)$", ln))
+    ]
+    return max(nums, default=0)
+
+
 def cmd_open(state: Path, args: argparse.Namespace) -> int:
     prev = _read_round(state)
     if prev.get("open") or prev.get("release"):
@@ -287,10 +312,18 @@ def cmd_open(state: Path, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    taken = _origin_round_max(_root())
+    if taken is None:
+        print(
+            "scripts/round: open refused — could not read origin's deployed/release"
+            " refs (git ls-remote failed); round numbers are global on origin",
+            file=sys.stderr,
+        )
+        return 1
     _archive_receipt(state, prev)
     base = args.base or _git("rev-parse", "origin/prod") or ""
     cur = {
-        "n": int(prev.get("n", 0)) + 1,
+        "n": max(int(prev.get("n", 0)), taken) + 1,
         "open": True,
         "opened": _now(),
         "by": _peer(),
@@ -1362,6 +1395,14 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             "this round already deployed — close and open the next round"
         )
     _fetch(root)
+    taken = _remote(root, f"refs/tags/deployed/r{n}")
+    if taken is None:
+        return _cut_refuse("could not read origin's tags (git ls-remote failed)")
+    if taken:
+        return _cut_refuse(
+            f"deployed/r{n} is already tagged on origin (another checkout used this"
+            " number) — `scripts/round close` then `scripts/round open` to renumber"
+        )
     existing = _release_branches(root)
     if existing is None:
         return _cut_refuse("could not read origin's branches (git ls-remote failed)")

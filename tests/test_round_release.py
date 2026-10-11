@@ -1138,3 +1138,39 @@ def test_killed_round_wrapper_keeps_lock_until_active_deploy_child_exits(
             except BlockingIOError:
                 assert time.monotonic() < deadline
                 time.sleep(0.05)
+
+
+def _foreign_tag(rig: Rig, n: int) -> None:
+    _git(rig.root, "push", "-q", "origin", f"{rig.shas['c0']}:refs/tags/deployed/r{n}")
+
+
+def test_open_numbers_past_foreign_deployed_tags(rig: Rig) -> None:
+    _foreign_tag(rig, 12)
+    out = rig.round("open")
+    assert out.returncode == 0, out.stderr
+    assert "round 13 open" in out.stdout
+    assert _round_json(rig)["n"] == 13
+
+
+def test_open_numbers_past_foreign_release_branch(rig: Rig) -> None:
+    _push_branch(rig, "release/r20", rig.shas["c0"])
+    assert "round 21 open" in rig.round("open").stdout
+
+
+def test_cut_refuses_when_deployed_tag_exists_for_open_round(rig: Rig) -> None:
+    _open_round(rig)
+    _foreign_tag(rig, 1)
+    out = rig.round("cut", **_fresh(rig))
+    assert out.returncode == 1
+    assert "deployed/r1 is already tagged on origin" in out.stderr
+    assert "scripts/round close" in out.stderr
+    assert "release" not in _round_json(rig)
+    assert rig.origin_ref("release/r1") == ""
+
+
+def test_open_refuses_when_origin_unreadable(rig: Rig) -> None:
+    _git(rig.root, "remote", "set-url", "origin", str(rig.root / "nonexistent.git"))
+    out = rig.round("open")
+    assert out.returncode == 1
+    assert "ls-remote failed" in out.stderr
+    assert not (rig.root / ".git/precis-round/round.json").exists()
