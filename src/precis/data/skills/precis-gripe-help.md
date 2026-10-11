@@ -36,7 +36,8 @@ put(kind="gripe", text="paper slug NotFound does not surface near-match options"
 ```
 
 Half-sentence is fine — articulation can wait. Don't pre-classify,
-don't write a title, don't articulate the fix. The system tags it
+don't articulate the fix. A title is optional: `title=` is accepted and
+becomes the first line of the body (the title is just the first line). The system tags it
 `STATUS:open` automatically.
 
 The cost of a wrong gripe is one `delete` call. File freely.

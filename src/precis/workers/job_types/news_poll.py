@@ -6,7 +6,7 @@ in-process work (no claude) registered with a plugin ``dispatch`` so
 ``claude_inproc`` runs it directly.
 
 The intended driver is a recurring (``meta.schedule`` set) todo
-(``meta.schedule={'every':'30m'}``, ``meta.executor='claude_inproc'``,
+(``meta.schedule={'cron':'0 5 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='news_poll'``): the schedule pass spawns a child each
 tick, the dispatch pass mints a job, and this dispatcher runs
 :func:`precis.workers.news_poll.run_news_pass`. No launchd role needed —

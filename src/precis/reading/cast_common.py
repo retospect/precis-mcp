@@ -1,6 +1,6 @@
 """cast_common — shared substrate for the audio *casts* (morning brief + nidra).
 
-A **cast** is a daily audio episode composed as a ``draft`` and narrated onto
+A **cast** is a weekly audio episode composed as a ``draft`` and narrated onto
 the shipped podcast feed (:mod:`precis.audio_feed` + ``precis_web.routes.
 podcast``; ``PRECIS_PODCAST_DIR`` is a shared NAS dir, so a producer on any
 node publishes and the gateway serves — no cross-host copy). Listeners
@@ -94,7 +94,7 @@ class CastProfile:
     voice: str  # kokoro voice for the whole cast (per-chunk meta.voice can override)
     wpm: int  # speaking rate — target_minutes → word budget
     target_minutes: int
-    cron: str  # daily schedule for the recurring watch
+    cron: str  # weekly schedule for the recurring watch
     job_type: str  # the compose job_type that produces this cast
     slug_prefix: str  # dated-draft slug + episode-id stem
     title: str  # episode/draft title (date appended)
@@ -120,7 +120,7 @@ CAST_PROFILES: dict[str, CastProfile] = {
         # 04:30 UTC compose so the (short) render lands the episode ~05:00 — the
         # cron is the *start*, and the schedule is UTC-anchored (no tz), so this
         # buys the compose+narrate pipeline a lead over the target land time.
-        cron="30 4 * * *",
+        cron="30 4 * * 1",
         job_type="reading_brief",
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅
@@ -137,7 +137,7 @@ CAST_PROFILES: dict[str, CastProfile] = {
         # long TTS render, so a 21:00 start landed it late-evening/after-midnight.
         # Starting two hours ahead lands the episode in the ~21:00–22:00 window
         # even when the render is slow. Schedule is UTC-anchored (no tz).
-        cron="0 19 * * *",
+        cron="0 19 * * 0",
         job_type="meditation",
         slug_prefix="cast-nidra",
         title="\U0001f319 Evening meditation",  # 🌙

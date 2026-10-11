@@ -1,4 +1,4 @@
-"""``precis cast`` — compose + schedule the daily audio *casts*.
+"""``precis cast`` — compose + schedule the weekly audio *casts*.
 
 Two standing casts ride the produce → narrate → publish spine (see
 docs/backlog/reading-prep-loop.md §Audio):
@@ -8,14 +8,14 @@ docs/backlog/reading-prep-loop.md §Audio):
 
     precis cast run reading            # compose today's morning-brief draft
     precis cast run nidra --publish    # compose + narrate + publish (on spark)
-    precis cast schedule --now         # install the daily watches + cast both now
+    precis cast schedule --now         # install the weekly watches + cast both now
 
 ``run`` is the writer organ (node-agnostic — store + LLM → a draft); ``--publish``
 additionally narrates it inline via the shipped audio path (needs Kokoro / the
 precis-tts image, i.e. spark). ``schedule`` idempotently installs the two
 recurring (``meta.schedule`` set) watches that drive the ``reading_brief`` /
-``meditation`` coordinator job_types on a daily cron; ``--now`` also composes both immediately so
-the first episodes don't wait for the next cron boundary (a never-fired daily cron
+``meditation`` coordinator job_types on a weekly cron; ``--now`` also composes both immediately so
+the first episodes don't wait for the next cron boundary (a never-fired weekly cron
 only fires at its next matching minute).
 """
 
@@ -33,7 +33,7 @@ _CASTS = ("reading", "nidra")
 
 
 def add_parser(subparsers: Any) -> None:
-    p = subparsers.add_parser("cast", help="Compose/schedule the daily audio casts.")
+    p = subparsers.add_parser("cast", help="Compose/schedule the weekly audio casts.")
     csub = p.add_subparsers(dest="cast_cmd", required=True)
 
     run_p = csub.add_parser("run", help="Compose one cast now (optionally publish).")
@@ -50,7 +50,7 @@ def add_parser(subparsers: Any) -> None:
     run_p.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     sch_p = csub.add_parser(
-        "schedule", help="Install the daily cast watches (idempotent)."
+        "schedule", help="Install the weekly cast watches (idempotent)."
     )
     sch_p.add_argument(
         "--now",
@@ -152,13 +152,13 @@ def _cmd_run(store: Store, args: argparse.Namespace) -> None:
         _publish(store, draft_id, speed=args.speed)
 
 
-#: The morning card pass fires before the 05:00 reading brief so today's new /
+#: The weekly card pass fires before the 05:00 reading brief so today's new /
 #: reworked cards exist when the brief's recall lane composes.
-_CARD_FORGE_CRON = "30 3 * * *"
+_CARD_FORGE_CRON = "30 3 * * 1"
 
 
 def install_cast_watches(store: Store) -> list[int]:
-    """Idempotently install the daily reading-loop watches under the Watches
+    """Idempotently install the weekly reading-loop watches under the Watches
     umbrella — the two casts plus the 03:30 ``card_forge`` morning card pass.
     Returns the ref ids (existing or freshly created).
 
@@ -210,7 +210,7 @@ def install_cast_watches(store: Store) -> list[int]:
             f"cast {cast}: scheduled @ '{profile.cron}' → job_type {profile.job_type}"
         )
 
-    # The morning card pass — not a cast (no draft, no narration), but part of
+    # The weekly card pass — not a cast (no draft, no narration), but part of
     # the same daily loop, so it installs alongside the cast watches.
     sched = validate_schedule({"cron": _CARD_FORGE_CRON})
     existing = _find_cast_watch(store, "card_forge")

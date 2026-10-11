@@ -127,6 +127,7 @@ class GripeHandler(NumericRefHandler):
         *,
         id: str | int | None = None,
         text: str | None = None,
+        title: str | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
         untags: list[str] | None = None,
@@ -136,6 +137,13 @@ class GripeHandler(NumericRefHandler):
         prio: int | None = None,
         **_kw: Any,
     ) -> Response:
+        # A gripe's title is the first line of its body, so ``title=`` is
+        # sugar for prepending it (skipped when text already leads with it).
+        if title is not None and id is None and title.strip():
+            title = title.strip()
+            body = (text or "").strip()
+            if not body.startswith(title):
+                text = f"{title}\n\n{body}" if body else title
         # automated writers cannot rephrase: mask here; agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py)
         text = mask_secrets(text)

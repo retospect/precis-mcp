@@ -91,7 +91,7 @@ put(
     kind="todo",
     text="news poll",
     meta={
-        "schedule": {"every": "30m"},
+        "schedule": {"cron": "0 5 * * *"},
         "executor": "claude_inproc",
         "job_type": "news_poll",  # or "briefing", schedule={"cron": "0 7 * * *"}
         "params": {},  # briefing: {"deliver_to": "conv:discord/<g>/<c>/<t>"}
