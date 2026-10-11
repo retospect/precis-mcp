@@ -48,7 +48,10 @@ checked against the footprint's pad map, which nothing checks today
 1. A pulled datasheet for one part yields measures rows whose values are
    in canonical units and whose anchors open the right page.
 2. The pin table for the part's package is stored and the gr458878 check
-   compares it with the footprint's pad map, reporting mismatches.
+   compares it with the footprint's pad map, reporting mismatches. The
+   failing case is loud: a declared `OUT0..63` against a part whose real
+   pads are `HVOUT1..64` reports the mismatch and synthesizes no pads.
+   The check stays advisory until a human confirms the extraction.
 3. The part's fisheye shows its datasheet, its specs and its boards.
 
 ## Target + blast radius
@@ -67,3 +70,10 @@ checked against the footprint's pad map, which nothing checks today
   electrical-characteristics tables (`docs/design/pcb-0042-
   implementation.md` §Slice 3). A bad read gives wrong pins, so the
   pad-map check doubles as the extraction's first test.
+- **[decided 2026-10-02, knowledge-mesh-4]** Pin provenance is the
+  page-anchored pin table on the part ref, not one finding per pin (that
+  floods the claim graph). This supersedes gr458878's proposed
+  pin → finding → chunk shape.
+- **[open]** Is a single-pin citation (`part:<C#>~<pin>` link selector)
+  still wanted once the pin table exists, and does it extend the
+  `pcb-argue-with-design.md` anchor grammar?
