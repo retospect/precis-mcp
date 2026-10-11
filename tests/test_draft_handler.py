@@ -2909,3 +2909,28 @@ def test_title_heading_dup_hint(draft: DraftHandler, hub: Hub) -> None:
         ("heading", "Carbon Nanobuds", first.chunk_id + 999),
     ):
         assert _draft_lint.title_heading_dup_hint(store, ref.id, cid, kind, text) == ""
+
+
+def test_char_target_wordcount_verdict_and_clear(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="Proposal", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    intro = _add_heading(draft, hub, title_dc, "Box")
+    _add_para(draft, intro, "one two three four five")  # 23 chars with spaces
+
+    draft.edit(id=intro, char_target={"max": 10})
+    assert _chunk_meta(hub, intro)["char_target"] == {"min": 0, "max": 10}
+    out = draft.get(id="nt", view="wordcount").body
+    assert "23 chars" in out
+    assert "off char target" in out
+    assert "over" in out
+
+    draft.edit(id=intro, char_target={"min": 1, "max": 30})
+    out = draft.get(id="nt", view="wordcount").body
+    assert "off char target" not in out
+
+    with pytest.raises(BadInput, match="char_target min=40 exceeds max"):
+        draft.edit(id=intro, char_target={"min": 40, "max": 30})
+
+    draft.edit(id=intro, char_target={})
+    assert "char_target" not in _chunk_meta(hub, intro)

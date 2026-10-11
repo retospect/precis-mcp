@@ -12,7 +12,9 @@ DB-free core of that check:
   citation-dense paragraph isn't inflated by its handles.
 * :func:`aggregate_word_counts` — bucket per-chunk counts under each
   enclosing heading (a section's count includes its subsections) and
-  render an over/under/ok verdict against each heading's word target.
+  render an over/under/ok verdict against each heading's word target
+  (``meta.word_target``) and, independently, character target
+  (``meta.char_target``, same shape; spaces count, as form boxes do).
 
 Kept independent of the store so it can be unit-tested on any object
 exposing ``chunk_id`` / ``parent_chunk_id`` / ``chunk_kind`` / ``text`` /
@@ -64,6 +66,22 @@ def count_words(text: str | None) -> int:
     return len(_WORD.findall(cleaned))
 
 
+def count_chars(text: str | None) -> int:
+    """Return the number of visible prose characters in ``text``.
+
+    Same cleaning as :func:`count_words` (markdown links keep their
+    visible text, bare bracketed handle refs are dropped, the gap a
+    dropped ref leaves is collapsed), then counts **every** remaining
+    character including spaces and punctuation -- how a form's character
+    box counts. Leading/trailing whitespace is not counted."""
+    if not text:
+        return 0
+    cleaned = _MD_LINK.sub(r"\1", text)
+    cleaned = _BRACKET_REF.sub("", cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return len(cleaned.strip())
+
+
 class _ChunkLike(Protocol):
     # Read-only properties, not plain attributes — frozen dataclasses
     # (DraftChunk) don't satisfy a mutable-attribute protocol.
@@ -79,14 +97,17 @@ class _ChunkLike(Protocol):
     def meta(self) -> dict[str, Any]: ...
 
 
-def _parse_target(meta: dict[str, Any] | None) -> tuple[int, int] | None:
-    """Read ``meta.word_target`` → ``(min, max)`` ints, or ``None``.
+def _parse_target(
+    meta: dict[str, Any] | None, key: str = "word_target"
+) -> tuple[int, int] | None:
+    """Read ``meta.<key>`` (``word_target`` / ``char_target``) →
+    ``(min, max)`` ints, or ``None``.
 
     Tolerant of a missing bound: ``{"max": 500}`` ⇒ ``(0, 500)``,
     ``{"min": 200}`` ⇒ ``(200, sys.maxsize-ish)`` via a large sentinel."""
     if not meta:
         return None
-    wt = meta.get("word_target")
+    wt = meta.get(key)
     if not isinstance(wt, dict):
         return None
     lo_raw = wt.get("min")
@@ -118,12 +139,16 @@ class SectionCount:
     words: int
     target: tuple[int, int] | None
     verdict: str  # 'under' | 'over' | 'ok' | 'none'
+    chars: int = 0
+    char_target: tuple[int, int] | None = None
+    char_verdict: str = "none"  # ``chars`` vs ``meta.char_target``
 
 
 @dataclass(frozen=True, slots=True)
 class WordCountReport:
     total: int
     sections: list[SectionCount] = field(default_factory=list)
+    total_chars: int = 0
 
 
 def aggregate_word_counts(chunks: Sequence[_ChunkLike]) -> WordCountReport:
@@ -141,12 +166,16 @@ def aggregate_word_counts(chunks: Sequence[_ChunkLike]) -> WordCountReport:
     heading_words: dict[int, int] = {
         c.chunk_id: 0 for c in chunks if c.chunk_kind == "heading"
     }
+    heading_chars: dict[int, int] = dict(heading_words)
     total = 0
+    total_chars = 0
     for c in chunks:
         if c.chunk_kind not in PROSE_CHUNK_KINDS:
             continue
         w = count_words(c.text)
         total += w
+        n_chars = count_chars(c.text)
+        total_chars += n_chars
         # Walk ancestors, crediting each enclosing heading.
         pid = c.parent_chunk_id
         seen: set[int] = set()
@@ -155,6 +184,7 @@ def aggregate_word_counts(chunks: Sequence[_ChunkLike]) -> WordCountReport:
             parent = by_id[pid]
             if parent.chunk_kind == "heading":
                 heading_words[pid] = heading_words.get(pid, 0) + w
+                heading_chars[pid] = heading_chars.get(pid, 0) + n_chars
             pid = parent.parent_chunk_id
 
     sections: list[SectionCount] = []
@@ -163,6 +193,8 @@ def aggregate_word_counts(chunks: Sequence[_ChunkLike]) -> WordCountReport:
             continue
         words = heading_words.get(c.chunk_id, 0)
         target = _parse_target(c.meta)
+        chars = heading_chars.get(c.chunk_id, 0)
+        char_target = _parse_target(c.meta, "char_target")
         sections.append(
             SectionCount(
                 chunk_id=c.chunk_id,
@@ -170,9 +202,12 @@ def aggregate_word_counts(chunks: Sequence[_ChunkLike]) -> WordCountReport:
                 words=words,
                 target=target,
                 verdict=_verdict(words, target),
+                chars=chars,
+                char_target=char_target,
+                char_verdict=_verdict(chars, char_target),
             )
         )
-    return WordCountReport(total=total, sections=sections)
+    return WordCountReport(total=total, sections=sections, total_chars=total_chars)
 
 
 __all__ = [
@@ -180,5 +215,6 @@ __all__ = [
     "SectionCount",
     "WordCountReport",
     "aggregate_word_counts",
+    "count_chars",
     "count_words",
 ]

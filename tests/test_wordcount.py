@@ -124,3 +124,27 @@ def test_list_items_count_as_prose_but_the_container_does_not() -> None:
     report = aggregate_word_counts(chunks)
     assert report.total == 5
     assert report.sections[0].words == 5
+
+
+def test_count_chars_counts_spaces_and_strips_refs() -> None:
+    from precis.utils.wordcount import count_chars
+
+    assert count_chars("ab cd") == 5
+    assert count_chars("see [dc42] now") == len("see now")
+    assert count_chars("a [link](¶x) b") == len("a link b")
+    assert count_chars(None) == 0
+
+
+def test_char_target_verdict_independent_of_word_target() -> None:
+    chunks = [
+        _C(1, None, "heading", "Box", {"char_target": {"max": 10}}),
+        _C(2, 1, "paragraph", "one two three"),  # 13 chars
+        _C(3, None, "heading", "Other", {"char_target": {"min": 100, "max": 200}}),
+        _C(4, 3, "paragraph", "short"),
+        _C(5, None, "heading", "Plain"),
+    ]
+    r = aggregate_word_counts(chunks)
+    assert [s.char_verdict for s in r.sections] == ["over", "under", "none"]
+    assert r.sections[0].chars == 13
+    assert r.sections[0].verdict == "none"  # no word target
+    assert r.total_chars == 18

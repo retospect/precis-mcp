@@ -292,10 +292,17 @@ def _coerce_authoring(v: bool | str) -> bool:
     )
 
 
-def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
-    """Validate an ``edit(word_target=…)`` payload → ``(min, max)`` or
-    ``None`` (clear). ``{}`` / both-bounds-absent clears; a present bound
-    must be a non-negative int and ``min <= max``."""
+def _coerce_word_target(
+    raw: dict[str, Any], what: str = "word_target"
+) -> tuple[int, int] | None:
+    """Validate an ``edit(word_target=…)`` (or ``char_target``) payload →
+    ``(min, max)`` or ``None`` (clear). ``{}`` / both-bounds-absent clears;
+    a present bound must be a non-negative int and ``min <= max``."""
+    if not isinstance(raw, dict):
+        raise BadInput(
+            f"{what} must be a dict like {{'min':200,'max':400}}",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
+        )
     if not raw:
         return None
     lo_raw = raw.get("min")
@@ -307,15 +314,15 @@ def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
         hi = int(hi_raw) if hi_raw is not None else 10**9
     except (TypeError, ValueError):
         raise BadInput(
-            "word_target min/max must be integers",
-            next="edit(id='dc<heading>', word_target={'min':200,'max':400})",
+            f"{what} min/max must be integers",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
         ) from None
     if lo < 0 or hi < 0:
-        raise BadInput("word_target min/max must be non-negative")
+        raise BadInput(f"{what} min/max must be non-negative")
     if lo > hi:
         raise BadInput(
-            f"word_target min={lo} exceeds max={hi}",
-            next="edit(id='dc<heading>', word_target={'min':200,'max':400})",
+            f"{what} min={lo} exceeds max={hi}",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
         )
     return (lo, hi)
 
@@ -325,6 +332,7 @@ class DraftHandler(Handler):
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
         "get": frozenset({"limit"}),
+        "edit": frozenset({"char_target"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -1527,6 +1535,7 @@ class DraftHandler(Handler):
         style: str | None = None,
         list_kind: str | None = None,
         word_target: dict[str, Any] | None = None,
+        char_target: dict[str, Any] | None = None,
         base_sha: str | None = None,
         authors: list[dict[str, Any]] | str | None = None,
         not_abbrev: list[str] | str | None = None,
@@ -1761,6 +1770,7 @@ class DraftHandler(Handler):
             or style is not None
             or list_kind is not None
             or word_target is not None
+            or char_target is not None
             or move is not None
             or voice is not None
             or lang is not None
@@ -1840,6 +1850,21 @@ class DraftHandler(Handler):
             _reject_dry_run("meta", _base)
             c = self.store.drafts.set_term_attrs(handle, meta)
             return Response(body=f"updated term attributes {c.dc}" if c else "updated")
+        if char_target is not None:
+            # Same shape as word_target, counted in characters (form boxes
+            # that cap characters, spaces included). Arrives via args=.
+            ctarget = _coerce_word_target(char_target, "char_target")
+            c = self.store.drafts.set_word_target(handle, ctarget, key="char_target")
+            dc = (c or _base).dc
+            if ctarget:
+                lo, hi = ctarget
+                return Response(
+                    body=(
+                        f"set char target on {dc} → {lo}–{hi} characters "
+                        f"(check with get(kind='draft', view='wordcount'))"
+                    )
+                )
+            return Response(body=f"cleared char target on {dc}")
         if word_target is not None:
             # Set/clear a heading section's word limit (proposal writing).
             # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.
@@ -3843,10 +3868,14 @@ class DraftHandler(Handler):
 
         report = aggregate_word_counts(chunks)
         if not report.sections:
-            body = f"{header}\n\ntotal: {report.total} words\n\n(no sections yet)"
+            body = (
+                f"{header}\n\ntotal: {report.total} words, "
+                f"{report.total_chars} chars\n\n(no sections yet)"
+            )
             return Response(body=body)
 
         rows = []
+        has_chars = any(s.char_target is not None for s in report.sections)
         for sc in report.sections:
             if sc.target is None:
                 target_s = "—"
@@ -3863,11 +3892,31 @@ class DraftHandler(Handler):
                     "verdict": sc.verdict,
                 }
             )
-        table = toon.dump(
-            rows, schema=["handle", "title", "words", "target", "verdict"]
-        )
+            if has_chars:
+                rows[-1].update(
+                    {
+                        "chars": sc.chars,
+                        "char_target": (
+                            "—"
+                            if sc.char_target is None
+                            else f"{sc.char_target[0]}–{sc.char_target[1]}"
+                        ),
+                        "char_verdict": sc.char_verdict,
+                    }
+                )
+        schema = ["handle", "title", "words", "target", "verdict"]
+        if has_chars:
+            schema += ["chars", "char_target", "char_verdict"]
+        table = toon.dump(rows, schema=schema)
         flagged = [s for s in report.sections if s.verdict in ("under", "over")]
-        trailer = f"\n\ntotal: {report.total} words"
+        trailer = f"\n\ntotal: {report.total} words, {report.total_chars} chars"
+        cflagged = [s for s in report.sections if s.char_verdict in ("under", "over")]
+        if cflagged:
+            names = ", ".join(
+                f"{s.title or '(untitled)'} ({s.char_verdict} {s.chars} chars)"
+                for s in cflagged[:6]
+            )
+            trailer += f"\n⚠ {len(cflagged)} section(s) off char target: {names}"
         if flagged:
             names = ", ".join(
                 f"{s.title or '(untitled)'} ({s.verdict})" for s in flagged[:6]

@@ -102,7 +102,10 @@ are stripped before counting, so a citation-dense paragraph is not
 inflated by its handles. A section's count includes its subsections.
 Set a target with `edit(id='dc<heading>', word_target={'min':200,'max':400})`;
 clear it with `word_target={}`. The web reader shows the same total and
-an amber badge when any section is off target.
+an amber badge when any section is off target. For character-capped
+boxes set `edit(id='dc<heading>', args={'char_target': {'max': 350}})`;
+`view='wordcount'` then shows chars and an over/under/ok verdict too
+(all characters count, spaces included; see precis-draft-help).
 
 ## Why a CFP is its own kind (not a paper)
 

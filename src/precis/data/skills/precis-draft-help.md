@@ -184,6 +184,16 @@ subsections) and the web reader badges off-target sections. `style=`
 tells review personas and scaffolded genres what the section should look
 like. Both are generic draft params, not proposal-specific.
 
+Forms that cap a box in **characters** (grant portals: "350 characters")
+use `char_target`, same shape, set through `args=`:
+`edit(id="dc<heading>", args={"char_target": {"max": 350}})` (`{}`
+clears). The count is the section's prose text with **every character
+counted, spaces and punctuation included**; inline `[dc…]`/`[¶…]` refs
+are stripped and markdown links count their visible text. `view='wordcount'`
+then adds `chars` / `char_target` / `char_verdict` columns (over/under/ok)
+and a `⚠ … off char target` line; the web smartdraft rollup lists the
+same sections. Word and char targets are independent and can both be set.
+
 ## Document metadata — rename & byline
 
 ```python

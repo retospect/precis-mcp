@@ -65,6 +65,7 @@ call)
 | `title=` | rename (both `refs.title` and the heading, atomically) |
 | `scaffold=` | append a document class's section skeleton |
 | `word_target=` | a heading's word budget `{'min':…,'max':…}`; `{}` clears |
+| `args={'char_target':…}` | same shape, counted in characters (spaces included) |
 | `style=` | stamp a heading with a section-style skill |
 | `not_abbrev=` | silence the undefined-abbreviation hint for given tokens |
 | `origin=` / `permission=` | a figure's provenance + clearance paper-trail |

@@ -3233,10 +3233,15 @@ class DraftStore(_AbbrevMixin):
         return None
 
     def set_word_target(
-        self, handle: str, target: tuple[int, int] | None
+        self,
+        handle: str,
+        target: tuple[int, int] | None,
+        *,
+        key: str = "word_target",
     ) -> DraftChunk | None:
         """Set (or clear) a heading section's word target (proposal
-        writing). Writes ``meta.word_target = {"min": lo, "max": hi}`` in
+        writing); ``key="char_target"`` sets the character target instead
+        (same shape, same storage). Writes ``meta.word_target = {"min": lo, "max": hi}`` in
         place — metadata-only, no re-embed. ``target`` falsy clears it.
         Logs an ``edited`` event. A *section* concern, rejected on a
         non-heading chunk. Read back by
@@ -3253,7 +3258,7 @@ class DraftStore(_AbbrevMixin):
             chunk_id, chunk_kind, meta, retired = row
             if chunk_kind != "heading":
                 raise BadInput(
-                    f"word_target applies to a heading section; {_bare(handle)} "
+                    f"{key} applies to a heading section; {_bare(handle)} "
                     f"is a {chunk_kind}"
                 )
             if retired is not None:
@@ -3264,9 +3269,9 @@ class DraftStore(_AbbrevMixin):
             meta = dict(meta or {})
             if target:
                 lo, hi = target
-                meta["word_target"] = {"min": int(lo), "max": int(hi)}
+                meta[key] = {"min": int(lo), "max": int(hi)}
             else:
-                meta.pop("word_target", None)
+                meta.pop(key, None)
             conn.execute(
                 "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
                 (Jsonb(meta), chunk_id),
@@ -3274,7 +3279,10 @@ class DraftStore(_AbbrevMixin):
             conn.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "set-word-target", "target": target})),
+                (
+                    chunk_id,
+                    Jsonb({"reason": f"set-{key.replace('_', '-')}", "target": target}),
+                ),
             )
         return self.get_draft_chunk(handle)
 
