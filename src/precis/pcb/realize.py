@@ -137,7 +137,7 @@ from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
 from precis.pcb import connectivity as pcb_connectivity
-from precis.pcb import geom, landpattern, maze, padplace
+from precis.pcb import geom, landpattern, maze, padplace, pose
 from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist, dist_point_to_segment
@@ -1315,17 +1315,18 @@ def oblique_pad_ring(
     return out
 
 
-def _pad_shape(geom: PadGeom, point: Point, inst_rot: float) -> maze.PadShape:
+def _pad_shape(
+    geom: PadGeom, point: Point, inst_rot: float, *, mirrored: bool = False
+) -> maze.PadShape:
     """One pin's TRUE footprint as a :class:`~precis.pcb.maze.PadShape`
     (gripe 346962) — the router's fine-pitch fix: an enclosing circle for
     every pad let a neighbour's claim steal a pad's own centre cell at
     0.8mm QFP pitch (``docs/backlog`` — HV507, C639448).
 
-    - ``shape == "polygon"``: the true ring, rotated by ``inst_rot`` about
-      ``point`` — the SAME transform :func:`pads_for_ir` applies to
-      ``geom.poly`` (no mirror — see that function's own comment; a
-      polygon pad's authored ring already carries any footprint-local
-      pose it needs, only the instance's own rotation is left to apply).
+    - ``shape == "polygon"``: the true ring, mirrored (bottom side) then
+      rotated by ``inst_rot`` about ``point`` through :mod:`precis.pcb.pose`
+      — the SAME transform :func:`pads_for_ir` and the fab path
+      (:func:`~precis.pcb.padplace.place_footprint_pads`) apply to the ring.
     - ``shape == "circle"``: a disc, radius ``max(w, h) / 2`` — orientation
       never matters for a round pad.
     - ``shape in ("rect", "obround")`` and axis-aligned in board space: an
@@ -1346,7 +1347,8 @@ def _pad_shape(geom: PadGeom, point: Point, inst_rot: float) -> maze.PadShape:
         poly = tuple(
             (point[0] + rvx, point[1] + rvy)
             for rvx, rvy in (
-                landpattern.rotate_offset(vx, vy, inst_rot) for vx, vy in geom.poly
+                pose.rel_to_world(vx, vy, inst_rot, mirrored=mirrored)
+                for vx, vy in geom.poly
             )
         )
         return maze.PadShape("poly", point[0], point[1], poly=poly)
@@ -1442,7 +1444,12 @@ def _realize_maze(
         if point is not None:
             geom = pad_geoms[pid]
             inst_rot = float(ir.inst_rot[int(ir.pin_instance[pid])])
-            shape = _pad_shape(geom, point, inst_rot)
+            shape = _pad_shape(
+                geom,
+                point,
+                inst_rot,
+                mirrored=bool(ir.inst_bottom[int(ir.pin_instance[pid])]),
+            )
             net = int(ir.pin_net[pid])
             if net == NO_NET:
                 # LATENT DEFECT, found while testing this change (not part
@@ -6766,17 +6773,23 @@ def pads_for_ir(
                 [round(point[0] + rx, 4), round(point[1] + ry, 4)] for rx, ry in ring
             ]
         elif geom.shape == "polygon" and geom.poly:
-            # `point` is already the rotated+translated pin CENTER
-            # (`pin_point`); the ring is stored relative to that same
-            # center (`PadGeom.poly`'s own docstring), so it only needs
-            # the SAME rotation (never a second translate) before adding
-            # `point` back on -- one placement rule, reused per vertex.
+            # `point` is already the placed pin CENTER (`pin_point`); the
+            # ring is stored relative to that same center, so it only needs
+            # the SAME mirror (bottom side) + rotation via `pose` (never a
+            # second translate) before adding `point` back on -- the rule
+            # `padplace.place_footprint_pads` applies on the fab path.
             inst_rot = float(ir.inst_rot[inst_id])
             inst_rot = 0.0 if math.isnan(inst_rot) else inst_rot
             pad["poly"] = [
                 [round(point[0] + rvx, 4), round(point[1] + rvy, 4)]
                 for rvx, rvy in (
-                    landpattern.rotate_offset(vx, vy, inst_rot) for vx, vy in geom.poly
+                    pose.rel_to_world(
+                        vx,
+                        vy,
+                        inst_rot,
+                        mirrored=bool(ir.inst_bottom[inst_id]),
+                    )
+                    for vx, vy in geom.poly
                 )
             ]
         # role/mask/paste/drill (gr341578) — the SAME optional keys

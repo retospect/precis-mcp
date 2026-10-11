@@ -996,8 +996,9 @@ def epro_files(
     ]
     if loose:
         warnings.append(
-            f"{len(loose)} drill(s) belong to no exported pad or via (mounting "
-            f"holes) and are not exported"
+            f"{len(loose)} drill(s) belong to no exported pad or via (board "
+            f"mounting holes and footprint holes, which the format code has "
+            f"no free-hole record for) and are not exported"
         )
     if model.get("mask_open_regions"):
         warnings.append(

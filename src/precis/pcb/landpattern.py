@@ -59,7 +59,7 @@ plausible guess," never "measured."
 
 from __future__ import annotations
 
-import math
+from precis.pcb import pose as _pose
 
 #: Default centre-to-centre pad pitch (mm) for a synthesized multi-pin
 #: package. 0.65mm is a common fine-pitch value (SOP/QFN family) and sits
@@ -312,12 +312,7 @@ def rotate_offset(
     north**, per ``precis-pcb-help``. That is not the mathematical
     convention, so the sign here is deliberate rather than a bug.
     """
-    if mirrored:
-        dx = -dx
-    theta = math.radians(rot_deg)
-    cos_t, sin_t = math.cos(theta), math.sin(theta)
-    # Clockwise rotation: [[cos, sin], [-sin, cos]].
-    return (dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
+    return _pose.rel_to_world(dx, dy, rot_deg, mirrored=mirrored)
 
 
 def place_points(

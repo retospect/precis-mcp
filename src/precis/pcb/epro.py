@@ -85,8 +85,6 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.pcb import padplace
-
 #: 1 mil = 0.0254 mm. The ``.epru`` document body's unit, everywhere
 #: except ``POURED.pourFill`` (see the module docstring).
 _MM_PER_MIL = 0.0254
@@ -1382,31 +1380,15 @@ def extract_mounting_holes(
     return out, warnings
 
 
-def footprint_hole_features(
+def placed_footprint_hole_count(
     components: list[dict[str, Any]], footprints: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """One ``mounting_hole`` feature per placed footprint hole, at board
-    position through the pads' own transform
-    (:func:`precis.pcb.padplace.place_pad_point`), so a bottom-side or
-    rotated part puts its hole where its pads say it is. ``geom.part``
-    names the part it came from."""
-    holes_by_fp = {f["name"]: f.get("holes") or [] for f in footprints}
-    out: list[dict[str, Any]] = []
-    for comp in components:
-        for hole in holes_by_fp.get(str(comp.get("footprint") or ""), []):
-            x, y = padplace.place_pad_point(hole, comp)
-            out.append(
-                {
-                    "ftype": "mounting_hole",
-                    "x": round(x, 4),
-                    "y": round(y, 4),
-                    "geom": {
-                        "diameter": round(hole["dia_mm"], 4),
-                        "part": comp["refdes"],
-                    },
-                }
-            )
-    return out
+) -> int:
+    """How many footprint holes the placed components carry in total. The
+    holes themselves stay on the footprint (footprint-local, mapped to the
+    board per instance through :mod:`precis.pcb.pose`), never baked into a
+    board-level feature at the part's import pose."""
+    holes_by_fp = {f["name"]: len(f.get("holes") or []) for f in footprints}
+    return sum(holes_by_fp.get(str(c.get("footprint") or ""), 0) for c in components)
 
 
 def build_design(
@@ -1471,17 +1453,9 @@ def build_design(
 
     holes, hole_warnings = extract_mounting_holes(board, frame)
     design.warnings += hole_warnings
-    part_holes = footprint_hole_features(components, footprints)
-    if part_holes:
-        design.warnings.append(
-            f"{len(part_holes)} footprint hole(s) imported as mounting holes "
-            f"at their part's position; a feature does not follow its part, "
-            f"so moving that part leaves the hole behind"
-        )
     design.features = [
         {"ftype": "outline", "geom": {"path": [[x, y] for x, y in outline]}},
         *holes,
-        *part_holes,
     ]
 
     rules = len(board.of_type("RULE")) + len(board.of_type("RULE_SELECTOR"))
@@ -1501,7 +1475,8 @@ def build_design(
         "footprints": len(design.footprints),
         "nets": len(design.nets),
         "connections": len(design.connections),
-        "mounting_holes": len(holes) + len(part_holes),
+        "mounting_holes": len(holes)
+        + placed_footprint_hole_count(components, footprints),
         "outline_vertices": len(outline),
     }
     return design, frame

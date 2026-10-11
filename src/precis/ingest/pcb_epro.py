@@ -125,10 +125,11 @@ def alignment_candidates(design: epro.Design) -> list[tuple[str, str]]:
     pcb-easyeda-round-trip-5): which parts really are aligned to something
     takes the author's knowledge. The author confirms one by locking it
     (``op='move'`` ``fixed=``) or with an ``align`` measure."""
+    holed_fp = {str(f["name"]) for f in design.footprints if f.get("holes")}
     holed = {
-        str(f["geom"]["part"])
-        for f in design.features
-        if f.get("ftype") == "mounting_hole" and (f.get("geom") or {}).get("part")
+        str(c["refdes"])
+        for c in design.components
+        if str(c.get("footprint") or "") in holed_fp
     }
     outline = next(
         (f["geom"]["path"] for f in design.features if f.get("ftype") == "outline"),
@@ -197,6 +198,10 @@ class UpdatePlan:
     #: Same name, different pad numbers or pin map: not applied, since the
     #: board's connections name pins of the stored version.
     footprints_differ: list[str] = field(default_factory=list)
+    #: Legacy part-owned ``mounting_hole`` features (``feature_id``) that
+    #: the part's footprint now carries as footprint holes: retired so the
+    #: hole is not doubled (and so it follows its part from now on).
+    legacy_hole_features: list[int] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = [
@@ -221,6 +226,12 @@ class UpdatePlan:
             f"(not applied; import to a fresh slug to take it)"
             for n in self.footprints_differ
         ]
+        if self.legacy_hole_features:
+            out.append(
+                f"  retired {len(self.legacy_hole_features)} part-owned "
+                f"mounting-hole feature(s): their footprints now carry the "
+                f"holes, which follow the part"
+            )
         if self.features_added or self.features_missing:
             out.append(
                 f"  features: {self.features_added} in the source but not on "
@@ -757,11 +768,41 @@ def _plan_footprints(
             plan.footprints_differ.append(name)
         elif any(
             _canon(old.get(k)) != _canon(fresh.get(k))
-            for k in ("pads", "courtyard", "centroid")
+            for k in ("pads", "courtyard", "centroid", "holes")
         ):
             plan.footprints_refreshed.append(name)
     plan.footprints_refreshed.sort()
     plan.footprints_differ.sort()
+
+
+def _legacy_hole_features(
+    plan: UpdatePlan,
+    graph: dict[str, Any],
+    features: list[dict[str, Any]],
+    stored: dict[str, dict[str, Any]],
+    design: epro.Design,
+) -> list[int]:
+    """Part-owned ``mounting_hole`` features of parts whose footprint carries
+    holes after this update (the fresh source geometry for a footprint that
+    is refreshed, the stored one otherwise)."""
+    fresh = {f["name"]: f.get("holes") or [] for f in design.footprints}
+    refreshed = set(plan.footprints_refreshed)
+    fp_of = {
+        str(i["refdes"]): str(i.get("footprint") or "") for i in graph["instances"]
+    }
+    out: list[int] = []
+    for f in features:
+        part = (f.get("geom") or {}).get("part")
+        if f.get("ftype") != "mounting_hole" or not part:
+            continue
+        name = fp_of.get(str(part), "")
+        if name in refreshed:
+            holes = fresh.get(name)
+        else:
+            holes = (stored.get(name) or {}).get("holes")
+        if holes:
+            out.append(int(f["feature_id"]))
+    return sorted(out)
 
 
 def _pad_numbers(footprint: dict[str, Any]) -> list[str]:
@@ -812,7 +853,8 @@ def _update(
         )
     ref_id = int(existing.id)
     graph = store.pcb_graph(ref_id)
-    plan = plan_update(graph, store.pcb_features_list(ref_id), design)
+    features = store.pcb_features_list(ref_id)
+    plan = plan_update(graph, features, design)
     stored = (graph.get("board") or {}).get("stackup") or []
     if _stackup_shape(stored) != _stackup_shape(stackup):
         warnings.append(
@@ -820,7 +862,12 @@ def _update(
             "board carries; --update does not change the stackup (import to "
             "a fresh slug to take the new one)"
         )
-    _plan_footprints(plan, store.pcb_local_footprints_for(ref_id), design)
+    stored_fps = store.pcb_local_footprints_for(ref_id)
+    _plan_footprints(plan, stored_fps, design)
+    plan.legacy_hole_features = _legacy_hole_features(
+        plan, graph, features, stored_fps, design
+    )
+    plan.features_missing -= len(plan.legacy_hole_features)
     result = ImportResult(
         slug=slug,
         ref_id=ref_id,
@@ -859,6 +906,7 @@ def _update(
                 meta=meta,
                 conn=conn,
             )
+            store.pcb_features_retire(ref_id, plan.legacy_hole_features, conn=conn)
             for refdes, _old, new, _fixed in plan.moved:
                 store.pcb_move_instance(
                     ref_id,

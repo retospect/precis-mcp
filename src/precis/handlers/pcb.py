@@ -2790,10 +2790,11 @@ class PcbHandler(Handler):
             str(ir.instance_refdes[i]): polys[i] for i in range(ir.n_instances)
         }
 
-    def _drc_drills(self, ref_id: int) -> list[dict[str, Any]]:
+    def _drc_drills(self, ir: pcb_ir.PcbIR) -> list[dict[str, Any]]:
         """``model['drills']`` for :func:`precis.pcb.drc.
-        check_npth_clearance` — ``mounting_hole`` features, the mechanical
-        holes that check exists to protect (a screw hole is never a
+        check_npth_clearance` — the IR's mounting holes (``mounting_hole``
+        features plus every instance's footprint holes at its current
+        pose), the mechanical holes that check exists to protect (a screw hole is never a
         soldered lead, so it is unplated by construction). Before this,
         ``_render_drc`` never populated ``drills`` at all, so
         ``check_npth_clearance`` — wired into ``run_geometric_drc`` and
@@ -2818,30 +2819,10 @@ class PcbHandler(Handler):
         pad-source split that comment already warns against — a distinct,
         deferred gap that belongs in ``realize.py``, not patched around
         here."""
-        out: list[dict[str, Any]] = []
-        for f in self.store.pcb_features_list(ref_id):
-            if str(f.get("ftype") or "") != "mounting_hole":
-                continue
-            geom = f.get("geom") or {}
-            dia = geom.get("diameter") or geom.get("d")
-            x, y = f.get("x"), f.get("y")
-            if dia is None or x is None or y is None:
-                continue
-            # ``plated`` now comes from the feature: a solder-on nut's
-            # hole is plated (its ring is pad copper — emitted by
-            # ``pads_for_ir`` off ``ir.mounting_holes`` — so clearance
-            # rules cover it), and ``check_npth_clearance`` correctly
-            # skips it; a bare screw hole stays the unplated default
-            # that check exists to protect.
-            out.append(
-                {
-                    "x": float(x),
-                    "y": float(y),
-                    "dia_mm": float(dia),
-                    "plated": bool(geom.get("plated")),
-                }
-            )
-        return out
+        return [
+            {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
+            for h in ir.mounting_holes
+        ]
 
     def _mask_open_regions(self, ref_id: int) -> list[dict[str, Any]]:
         """``ftype='mask_open'`` features -> :mod:`precis.pcb.gerber`'s
@@ -2908,7 +2889,14 @@ class PcbHandler(Handler):
                 "json",
                 lambda: json.dumps(
                     pcb_export.mechanical_profile(
-                        model, self.store.pcb_features_list(ref_id)
+                        model,
+                        self.store.pcb_features_list(ref_id),
+                        holes=[
+                            {"x": h.x, "y": h.y, "diameter": h.drill_mm}
+                            for h in self._build_ir(
+                                ref_id, self.store.pcb_graph(ref_id)
+                            ).mounting_holes
+                        ],
                     ),
                     indent=2,
                 ),
@@ -3893,7 +3881,7 @@ class PcbHandler(Handler):
             "layers": layer_names,
             "copper": copper,
             "pads": pads,
-            "drills": self._drc_drills(ref_id),
+            "drills": self._drc_drills(ir),
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }
@@ -3979,14 +3967,14 @@ class PcbHandler(Handler):
             else {**row, "derived": True}
             for row in self.store.pcb_copper_list(int(board["board_id"]))
         ]
+        ir = self._build_ir(ref_id, self.store.pcb_graph(ref_id))
         model = {
             "layers": layer_names,
             "copper": copper,
             "pads": pads,
-            "drills": self._drc_drills(ref_id),
+            "drills": self._drc_drills(ir),
         }
         outline = self._outline_from_features(ref_id)
-        ir = self._build_ir(ref_id, self.store.pcb_graph(ref_id))
         findings: list[pcb_drc.DrcFinding] = [
             *pcb_drc.check_clearance(
                 model, capability, net_rules=net_rules, net_voltages=net_voltages
@@ -4228,7 +4216,9 @@ class PcbHandler(Handler):
             # the board render simply omits every one of them — the figure
             # looks clean rather than incomplete, which is the worst way
             # for a render to be wrong.
-            "drills": self._drc_drills(ref_id),
+            "drills": self._drc_drills(
+                self._build_ir(ref_id, self.store.pcb_graph(ref_id))
+            ),
         }
         raw_layers = args.get("layers")
         raw_include = args.get("include")

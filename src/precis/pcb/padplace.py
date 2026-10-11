@@ -23,15 +23,9 @@ board is, in order:
    increasing = clockwise as seen from above). **:func:`_rotate_cw` is NOT
    the only place that matrix lives** — this docstring claimed it was until
    2026-08-29, which was both wrong and actively obstructive: a reader who
-   believed it stopped looking. :func:`precis.pcb.landpattern.rotate_offset`
-   spells out the identical ``[[cos, sin], [-sin, cos]]``, and is what
-   ``silk.py`` and ``stroke_font.py`` call — so TEXT and SILK rotate through
-   the footprint module while footprint pads rotate through this private
-   copy. The two agree today; the mirror-before-rotate policy is likewise
-   implemented twice and pinned by two separate test suites asserting the
-   same fact. Folding both into one affine transform is a tracked item
-   (``docs/backlog/pcb-engine-plan.md``, "one affine-transform path").
-   Every other module's rotation reasoning
+   believed it stopped looking. The matrix now lives once, in
+   :mod:`precis.pcb.pose`; this module's helpers and
+   :func:`precis.pcb.landpattern.rotate_offset` are thin wrappers. Every other module's rotation reasoning
    (``export.jlc_rotation``) is a re-expression of the SAME 0°-natural,
    CW-positive convention applied to this same transform, not a second
    invented one.
@@ -69,8 +63,9 @@ unaffected either way since they have no orientation).
 
 from __future__ import annotations
 
-import math
 from typing import Any
+
+from precis.pcb import pose as _pose
 
 #: EasyEDA's raw ``PAD~shape~...`` token (or an authored local footprint's
 #: own lowercase shape word, upper-cased the same way) -> the shape
@@ -97,9 +92,7 @@ def _rotate_cw(x: float, y: float, deg: float) -> tuple[float, float]:
     """Rotate ``(x, y)`` by ``deg`` degrees CLOCKWISE — our internal
     0°-natural, CW-positive rotation frame (see module docstring and
     :func:`precis.pcb.export.jlc_rotation`)."""
-    theta = math.radians(deg)
-    c, s = math.cos(theta), math.sin(theta)
-    return x * c + y * s, -x * s + y * c
+    return _pose.rotate_cw(x, y, deg)
 
 
 def pad_label(pad: dict[str, Any], pin_map: dict[str, Any] | None) -> str:
@@ -133,7 +126,7 @@ def is_bottom_instance(inst: dict[str, Any]) -> bool:
     parse of ``pcb_instances.layer``'s ``"top"``/``"bottom"`` string, not
     three — the exact "one rule, two call sites, drifted" defect this
     module's other docstrings already name for pad geometry and rotation."""
-    return str(inst.get("layer") or "top").lower() in ("bottom", "bot", "b")
+    return _pose.is_bottom(inst)
 
 
 def _swap_wh(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
@@ -186,9 +179,7 @@ def _transform_local_point(
     position afterwards gives the same answer as transforming the
     absolute vertex directly — one transform, reused per-point instead of
     re-derived for the polygon case."""
-    if is_bottom_instance(inst):
-        lx = -lx
-    return _rotate_cw(lx, ly, float(inst.get("rot") or 0.0))
+    return _pose.rel_to_world_inst(lx, ly, inst)
 
 
 def place_pad_point(pad: dict[str, Any], inst: dict[str, Any]) -> tuple[float, float]:
@@ -197,8 +188,7 @@ def place_pad_point(pad: dict[str, Any], inst: dict[str, Any]) -> tuple[float, f
     it is the load-bearing piece the round-trip/rotation tests pin
     directly, independent of shape/layer bookkeeping."""
     lx, ly = float(pad["x"]), float(pad["y"])
-    rx, ry = _transform_local_point(lx, ly, inst)
-    return float(inst["x"]) + rx, float(inst["y"]) + ry
+    return _pose.to_world(lx, ly, inst)
 
 
 def place_footprint_pads(

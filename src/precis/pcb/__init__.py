@@ -31,6 +31,11 @@ conflict trail, budget, proposals committed, whether its result was taken)
 and the route job prints that line — on the EWOD dogfood board's B.Cu lock
 it never converges (ewod-pcb thread, 2026-10-07).
 
+Footprint-owned geometry (pads, polygon vertices, holes, courtyard) is
+stored footprint-local and only mapped to world through :mod:`~precis.pcb.pose`
+(mirror-X for bottom, rotate clockwise, translate); never persist a part-owned
+absolute position, or the part moves and it stays behind.
+
 Map, in pipeline order (design doc:
 ``docs/backlog/pcb-guided-place-route.md``):
 

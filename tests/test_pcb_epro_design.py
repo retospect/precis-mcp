@@ -311,7 +311,7 @@ def test_the_outline_is_the_first_feature_and_is_real(design) -> None:
 
 
 def test_a_non_plated_free_pad_becomes_a_mounting_hole(design) -> None:
-    # The board's own free pad; R1's footprint hole is the other one.
+    # The board's own free pad; R1's footprint hole lives on its footprint.
     holes = [
         f
         for f in design.features

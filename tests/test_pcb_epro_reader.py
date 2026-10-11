@@ -21,11 +21,10 @@ import math
 import os
 import pathlib
 import zipfile
-from typing import Any
 
 import pytest
 
-from precis.pcb import epro, padplace
+from precis.pcb import epro
 
 _FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
 _MIL = 0.0254
@@ -584,10 +583,12 @@ def test_real_board_parses_without_surprises():
     assert sum(len(t["geom"]["segments"]) for t in ext.tracks) == src
 
 
-def test_a_multi_layer_fill_in_a_footprint_imports_as_a_hole_at_its_part(project):
+def test_a_multi_layer_fill_in_a_footprint_imports_as_a_footprint_hole(project):
     """heater-base-test: the CN1/CN2 standoff ring surrounded a Ø6.4 mm
     hole the reader dropped (a FILL circle on layer 12), so the ring read
-    as stray copper and the drill file had no hole."""
+    as stray copper and the drill file had no hole. The hole is footprint
+    geometry: it stays footprint-local on the footprint and is NOT baked
+    into a board-level feature at the part's import pose."""
     pcb = project.by_type("PCB")[0]
     fps, _names, _warnings = epro.extract_footprints(project, pcb)
     holes = {f["name"]: f["holes"] for f in fps}
@@ -596,44 +597,14 @@ def test_a_multi_layer_fill_in_a_footprint_imports_as_a_hole_at_its_part(project
     assert hole == pytest.approx({"x": 1.016, "y": -0.508, "dia_mm": 0.508})
 
     design, _frame = epro.build_design(project, pcb)
-    r1 = next(c for c in design.components if c["refdes"] == "R1")
-    placed = [
-        (f["x"], f["y"], f["geom"]["diameter"])
+    assert not [
+        f
         for f in design.features
-        if f["ftype"] == "mounting_hole" and f["geom"].get("part") == "R1"
+        if f["ftype"] == "mounting_hole" and (f["geom"] or {}).get("part")
     ]
-    # Through the same transform as R1's pads, not a re-derivation of it.
-    x, y = padplace.place_pad_point(hole, r1)
-    assert placed == [pytest.approx((x, y, 0.508))]
-    assert any("footprint hole(s) imported" in w for w in design.warnings)
-
-
-def test_a_footprint_hole_follows_rotation_and_the_bottom_mirror():
-    hole: dict[str, Any] = {"x": 1.0, "y": 0.0, "dia_mm": 0.5}
-    fps: list[dict[str, Any]] = [{"name": "F", "holes": [hole]}]
-    top90 = {
-        "refdes": "A",
-        "footprint": "F",
-        "x": 10.0,
-        "y": 10.0,
-        "rot": 90.0,
-        "layer": "top",
-    }
-    bottom = {
-        "refdes": "B",
-        "footprint": "F",
-        "x": 10.0,
-        "y": 10.0,
-        "rot": 0.0,
-        "layer": "bottom",
-    }
-    got = {
-        f["geom"]["part"]: (f["x"], f["y"])
-        for f in epro.footprint_hole_features([top90, bottom], fps)
-    }
-    assert got["A"] == pytest.approx(padplace.place_pad_point(hole, top90))
-    assert got["A"] != pytest.approx((11.0, 10.0))
-    assert got["B"] == pytest.approx((9.0, 10.0))
+    assert design.stats["mounting_holes"] == 2  # the free pad + R1's footprint hole
+    fp = next(f for f in design.footprints if f["name"] == "R0603")
+    assert fp["holes"] == holes["R0603"]
 
 
 def test_a_footprint_courtyard_comes_from_its_component_shape_layer(project):

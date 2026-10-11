@@ -461,15 +461,18 @@ def mechanical_profile(
     features: list[dict[str, Any]],
     *,
     thickness_mm: float = DEFAULT_THICKNESS_MM,
+    holes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Board outline + mounting holes + component height-blocks as a 2.5D
     profile a ``cad`` enclosure references (the 0041 bridge).
 
     Outline: an explicit ``outline`` feature's ``geom.path`` if present, else
     the placed-parts bounding box. Holes: ``mounting_hole`` features with a
-    ``geom.diameter``. Blocks: each placed instance's courtyard (best-effort)
+    ``geom.diameter`` — or, when ``holes`` is given (``{x, y, diameter}``
+    rows, e.g. the IR's mounting holes, which also carry every part's
+    footprint holes at its current pose), exactly those. Blocks: each placed instance's courtyard (best-effort)
     × ``height_mm`` — a coarse keep-out volume for the lid."""
-    holes = []
+    feature_holes = []
     outline_path: list[list[float]] | None = None
     for f in features:
         ft = str(f.get("ftype") or "")
@@ -477,13 +480,15 @@ def mechanical_profile(
         if ft == "outline" and isinstance(geom.get("path"), list):
             outline_path = [[float(p[0]), float(p[1])] for p in geom["path"]]
         elif ft == "mounting_hole":
-            holes.append(
+            feature_holes.append(
                 {
                     "x": f.get("x"),
                     "y": f.get("y"),
                     "diameter": geom.get("diameter") or geom.get("d"),
                 }
             )
+    if holes is None:
+        holes = feature_holes
     if outline_path is None:
         x0, y0, x1, y1 = board_bbox(model, margin_mm=2.0)
         outline_path = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]

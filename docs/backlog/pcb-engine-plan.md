@@ -1867,28 +1867,15 @@ that:
    decision-6 vocabulary migration** (`pad/hole/conductor/keepout/body/
    marking`), not a fourth taxonomy alongside it — inventing a competing
    vocabulary is precisely why the DRC keep-out matrix was killed.
-4. **One affine-transform path** for footprint placement, silk and text.
-   Defect prevention, not speed — a refdes is three glyphs, nobody waits on
-   that arithmetic. **Evidence gathered 2026-08-29, this is not speculative:**
-   - `padplace._rotate_cw` returns `x*c + y*s, -x*s + y*c`.
-   - `landpattern.rotate_offset` returns `dx*cos_t + dy*sin_t, -dx*sin_t +
-     dy*cos_t`. The identical `[[cos, sin], [-sin, cos]]`, written twice.
-   - Distribution is inverted: `rotate_offset` lives in the FOOTPRINT module
-     but its callers are `silk.py::_place` and `stroke_font.py`
-     (`layout_text`, `text_bbox_corners`) — text and silk rotate through the
-     footprint module while footprint pads use padplace's private copy.
-   - `padplace`'s docstring CLAIMED `_rotate_cw` was "the one place that
-     matrix lives" (corrected 2026-08-29). A false uniqueness claim is worse
-     than silence: a reader who checks it stops looking.
-   - Mirror-before-rotate is implemented twice and pinned by two separate
-     test suites asserting the same fact; `export.jlc_rotation` is an
-     acknowledged third re-expression.
-   - The composition (scale/mirror/rotate/translate/alignment) is duplicated
-     per call site, and that is where the real bugs have been: `mirror`
-     negating x about the ANCHOR not the board forced a `draw_h_align`
-     compensation flag in `build_title_block`, and the bottom-side S/N path
-     compounds two reflections. Composed matrices delete the ordering
-     question rather than documenting it.
+4. **Silk and text through the one affine path.** Footprint-local geometry
+   (pads, polygon vertices, holes, courtyard) already maps to world only
+   through `precis.pcb.pose`. What remains: silk and text still compose
+   scale/mirror/rotate/translate per call site (`silk.py::_place`,
+   `stroke_font.py`), `mirror` negates x about the ANCHOR not the board
+   (forcing the `draw_h_align` compensation flag in `build_title_block`, and
+   the bottom-side S/N path compounds two reflections), and
+   `export.jlc_rotation` re-expresses the mirror/rotate rule a third time.
+   Defect prevention, not speed.
 
 ### Rejected in the same thread — do not re-propose without new evidence
 

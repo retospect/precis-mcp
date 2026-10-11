@@ -40,6 +40,7 @@ import numpy as np
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
+from precis.pcb import pose
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -280,7 +281,35 @@ def build_ir(
         )
         apply_real_pin_offsets(ir, by_refdes)
         ir.inst_land_rects = land_rects_by_instance(ir, by_refdes)
+        ir.mounting_holes = (
+            *ir.mounting_holes,
+            *footprint_holes(graph, by_refdes),
+        )
     return ir
+
+
+def footprint_holes(
+    graph: dict[str, Any], by_refdes: dict[str, dict[str, Any]]
+) -> tuple[pcb_ir.MountingHole, ...]:
+    """Every placed instance's footprint holes (``footprint["holes"]``,
+    footprint-local ``{x, y, dia_mm}``) as :class:`~precis.pcb.ir.MountingHole`
+    at the instance's CURRENT pose (:func:`precis.pcb.pose.to_world`), with
+    ``part=<refdes>`` so the owning part's courtyard may cover its own hole.
+    Derived on every IR build rather than stored, so a moved part carries its
+    holes with it. An unplaced instance (no ``x``/``y``) has no world
+    position yet and yields none."""
+    out: list[pcb_ir.MountingHole] = []
+    for inst in graph.get("instances") or []:
+        refdes = str(inst["refdes"])
+        holes = (by_refdes.get(refdes) or {}).get("holes") or []
+        if not holes or inst.get("x") is None or inst.get("y") is None:
+            continue
+        for h in holes:
+            x, y = pose.to_world(float(h["x"]), float(h["y"]), inst)
+            out.append(
+                pcb_ir.MountingHole(x=x, y=y, drill_mm=float(h["dia_mm"]), part=refdes)
+            )
+    return tuple(out)
 
 
 def local_footprint_names_by_refdes(graph: dict[str, Any]) -> dict[str, str]:

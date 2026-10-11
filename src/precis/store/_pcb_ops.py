@@ -37,7 +37,7 @@ from psycopg import Connection
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.pcb import DEFAULT_STACKUP, route_summary_status
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
@@ -199,6 +199,53 @@ def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
     return pad
 
 
+#: The keys a ``footprints[]`` entry may carry. Anything else raises: a
+#: key outside this set used to be dropped without a word (an imported
+#: footprint's ``holes`` among them), which is how geometry went missing.
+_LOCAL_FOOTPRINT_KEYS = (
+    "name",
+    "pads",
+    "pin_map",
+    "courtyard",
+    "centroid",
+    "note",
+    "holes",
+)
+
+
+def _normalize_footprint_holes(name: str, raw: Any) -> list[dict[str, float]]:
+    """Footprint-local non-plated holes ``[{x, y, dia_mm}]``, validated
+    (numeric, finite, ``dia_mm > 0``) and rounded like the pads."""
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise BadInput(f"pcb footprint {name!r}: holes must be a list of objects")
+    out: list[dict[str, float]] = []
+    for i, h in enumerate(raw):
+        if not isinstance(h, dict):
+            raise BadInput(
+                f"pcb footprint {name!r}: holes[{i}] must be an object {{x, y, dia_mm}}"
+            )
+        extra = sorted(set(h) - {"x", "y", "dia_mm"})
+        if extra:
+            raise BadInput(
+                f"pcb footprint {name!r}: holes[{i}] has unknown key(s) "
+                f"{extra}; accepted: ['dia_mm', 'x', 'y']"
+            )
+        try:
+            x, y, dia = float(h["x"]), float(h["y"]), float(h["dia_mm"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BadInput(
+                f"pcb footprint {name!r}: holes[{i}] needs numeric x, y, dia_mm"
+            ) from exc
+        if not all(math.isfinite(v) for v in (x, y, dia)) or dia <= 0:
+            raise BadInput(
+                f"pcb footprint {name!r}: holes[{i}] needs finite x/y and dia_mm > 0"
+            )
+        out.append({"x": round(x, 4), "y": round(y, 4), "dia_mm": round(dia, 4)})
+    return out
+
+
 def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """One ``footprints[]`` batch entry -> ``(name, data)`` where ``data``
     is the same ``{pads, pin_map, courtyard, centroid}`` row shape
@@ -224,6 +271,12 @@ def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     name = str(f.get("name") or "").strip()
     if not name:
         raise ValueError("pcb footprint needs a name")
+    unknown = sorted(set(f) - set(_LOCAL_FOOTPRINT_KEYS))
+    if unknown:
+        raise BadInput(
+            f"pcb footprint {name!r}: unknown key(s) {unknown}; "
+            f"accepted: {sorted(_LOCAL_FOOTPRINT_KEYS)}"
+        )
     raw_pads = f.get("pads") or []
     if not raw_pads:
         raise ValueError(f"pcb footprint {name!r} needs at least one pad")
@@ -277,6 +330,7 @@ def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "courtyard": courtyard,
         "centroid": centroid,
         "note": f.get("note"),
+        "holes": _normalize_footprint_holes(name, f.get("holes")),
     }
     return name, data
 
@@ -2015,6 +2069,27 @@ class PcbMixin:
         with self._pcb_tx() as c:
             return c.execute(sql, params).rowcount > 0
 
+    def pcb_features_retire(
+        self,
+        ref_id: int,
+        feature_ids: Iterable[int],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Retire (never delete) the live features with these ids; returns
+        how many were live. Reuses ``conn`` inside an existing transaction."""
+        ids = [int(i) for i in feature_ids]
+        if not ids:
+            return 0
+        sql = (
+            "UPDATE pcb_features SET retired_at = now() "
+            "WHERE ref_id = %s AND feature_id = ANY(%s) AND retired_at IS NULL"
+        )
+        if conn is not None:
+            return conn.execute(sql, (ref_id, ids)).rowcount
+        with self._pcb_tx() as c:
+            return c.execute(sql, (ref_id, ids)).rowcount
+
     def pcb_move_group(
         self,
         ref_id: int,
@@ -2955,7 +3030,7 @@ class PcbMixin:
         pad geometry where present and falls back to centroid pins otherwise."""
         with self._pcb_conn() as conn:
             rows = conn.execute(
-                "SELECT f.lcsc, f.pads, f.pin_map, f.courtyard, f.centroid "
+                "SELECT f.lcsc, f.pads, f.pin_map, f.courtyard, f.centroid, f.holes "
                 "FROM part_footprints f "
                 "WHERE f.lcsc IN ("
                 "  SELECT DISTINCT c.part_lcsc FROM pcb_instances i "
@@ -2970,6 +3045,7 @@ class PcbMixin:
                 "pin_map": r[2],
                 "courtyard": r[3],
                 "centroid": r[4],
+                "holes": r[5] or [],
             }
             for r in rows
         }
@@ -2984,12 +3060,12 @@ class PcbMixin:
         conn.execute(
             """
             INSERT INTO pcb_local_footprints
-                (ref_id, name, pads, pin_map, courtyard, centroid, note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (ref_id, name, pads, pin_map, courtyard, centroid, note, holes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ref_id, name) DO UPDATE SET
                 pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
                 courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
-                note=EXCLUDED.note
+                note=EXCLUDED.note, holes=EXCLUDED.holes
             """,
             (
                 ref_id,
@@ -2999,6 +3075,7 @@ class PcbMixin:
                 _jsonb_or_none(data.get("courtyard")),
                 _jsonb_or_none(data.get("centroid")),
                 data.get("note"),
+                Jsonb(data.get("holes") or []),
             ),
         )
 
@@ -3046,7 +3123,7 @@ class PcbMixin:
         inspection."""
         with self._pcb_conn() as conn:
             rows = conn.execute(
-                "SELECT name, pads, pin_map, courtyard, centroid "
+                "SELECT name, pads, pin_map, courtyard, centroid, holes "
                 "FROM pcb_local_footprints WHERE ref_id = %s",
                 (ref_id,),
             ).fetchall()
@@ -3056,6 +3133,7 @@ class PcbMixin:
                 "pin_map": r[2],
                 "courtyard": r[3],
                 "centroid": r[4],
+                "holes": r[5] or [],
             }
             for r in rows
         }
@@ -3608,7 +3686,7 @@ class PcbMixin:
         table."""
         with self._pcb_conn() as conn:
             r = conn.execute(
-                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape "
+                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape, holes "
                 "FROM part_footprints WHERE lcsc = %s",
                 (lcsc,),
             ).fetchone()
@@ -3624,6 +3702,7 @@ class PcbMixin:
             "source": r[5],
             "raw": r[6],
             "escape": r[7],
+            "holes": r[8] or [],
         }
 
     def part_footprint_put(self, lcsc: str, data: dict[str, Any]) -> None:
@@ -3638,13 +3717,14 @@ class PcbMixin:
             conn.execute(
                 """
                 INSERT INTO part_footprints
-                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape, holes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (lcsc) DO UPDATE SET
                     pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
                     courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
                     kicad_mod=EXCLUDED.kicad_mod, source=EXCLUDED.source,
-                    raw=EXCLUDED.raw, escape=EXCLUDED.escape, fetched_at=now()
+                    raw=EXCLUDED.raw, escape=EXCLUDED.escape,
+                    holes=EXCLUDED.holes, fetched_at=now()
                 """,
                 (
                     lcsc,
@@ -3656,6 +3736,7 @@ class PcbMixin:
                     data.get("source"),
                     _jsonb_or_none(data.get("raw")),
                     _jsonb_or_none(data.get("escape")),
+                    Jsonb(data.get("holes") or []),
                 ),
             )
 

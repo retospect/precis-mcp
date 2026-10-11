@@ -79,12 +79,9 @@ def test_alignment_candidates_are_listed_not_locked() -> None:
                 "ftype": "outline",
                 "geom": {"path": [[0, 0], [100, 0], [100, 60], [0, 60]]},
             },
-            {
-                "ftype": "mounting_hole",
-                "x": 12.0,
-                "y": 47.0,
-                "geom": {"diameter": 6.4, "part": "CN1"},
-            },
+        ],
+        footprints=[
+            {"name": "STANDOFF", "holes": [{"x": 0.0, "y": 0.0, "dia_mm": 6.4}]},
         ],
     )
     got = dict(pcb_epro.alignment_candidates(design))
@@ -153,22 +150,26 @@ def test_imported_holes_reach_the_drill_and_drc_readers(pcb, store, imported) ->
     holes = session.mounting_holes_from_features(
         store.pcb_features_list(imported.ref_id)
     )
-    assert sorted(round(h.drill_mm, 3) for h in holes) == [0.508, 6.0]
-    assert len(pcb._drc_drills(imported.ref_id)) == 2
+    # Features carry only the board's own hole; R1's footprint hole is
+    # derived per instance by the IR, so the drill file/DRC still see both.
+    assert sorted(round(h.drill_mm, 3) for h in holes) == [6.0]
+    ir = pcb._build_ir(imported.ref_id, store.pcb_graph(imported.ref_id))
+    assert len(pcb._drc_drills(ir)) == 2
 
 
 def test_the_outline_and_the_mounting_hole_land_as_features(store, imported) -> None:
     features = store.pcb_features_list(imported.ref_id)
     ftypes = [f["ftype"] for f in features]
     assert ftypes.count("outline") == 1
-    # The board's free-pad hole and R1's footprint hole.
-    assert ftypes.count("mounting_hole") == 2
+    # Only the board's free-pad hole is a feature; R1's hole lives on its
+    # footprint (footprint-local), never as a part-owned absolute feature.
+    assert ftypes.count("mounting_hole") == 1
     assert {
         f["geom"].get("part") for f in features if f["ftype"] == "mounting_hole"
-    } == {
-        None,
-        "R1",
-    }
+    } == {None}
+    assert store.pcb_local_footprints_for(imported.ref_id)["R0603"]["holes"] == [
+        pytest.approx({"x": 1.016, "y": -0.508, "dia_mm": 0.508})
+    ]
 
     outline = next(f for f in features if f["ftype"] == "outline")
     xs = [p[0] for p in outline["geom"]["path"]]
@@ -1059,3 +1060,43 @@ def test_routed_intake_preserves_explicit_copper_only_net_names(store):
     copper = store.pcb_fixed_copper_list(board_id)
     assert any(r["net"] == "TEE" for r in copper)
     assert "TEE" in {n["name"] for n in store.pcb_graph(result.ref_id)["nets"]}
+
+
+def test_update_retires_legacy_part_owned_hole_features(store, imported) -> None:
+    """A board imported before holes lived on the footprint has R1's hole as
+    an absolute part-owned feature and no footprint holes. ``--update``
+    restores the footprint holes and retires that feature so the hole is not
+    doubled (and now follows R1)."""
+    ref_id = imported.ref_id
+    _set_stored_footprint(store, ref_id, "R0603", "holes", [])
+    store.pcb_apply(
+        slug=imported.slug,
+        title="Tiny",
+        components=[],
+        nets=[],
+        connections=[],
+        features=[
+            {
+                "ftype": "mounting_hole",
+                "x": 1.0,
+                "y": 2.0,
+                "geom": {"diameter": 0.508, "part": "R1"},
+            }
+        ],
+    )
+    assert any(
+        (f["geom"] or {}).get("part") == "R1" for f in store.pcb_features_list(ref_id)
+    )
+
+    result = pcb_epro.import_epro(store, _zip(), slug=imported.slug, update=True)
+
+    assert result.update is not None
+    assert len(result.update.legacy_hole_features) == 1
+    assert not [
+        f for f in store.pcb_features_list(ref_id) if (f["geom"] or {}).get("part")
+    ]
+    assert store.pcb_local_footprints_for(ref_id)["R0603"]["holes"] == [
+        pytest.approx({"x": 1.016, "y": -0.508, "dia_mm": 0.508})
+    ]
+    again = pcb_epro.import_epro(store, _zip(), slug=imported.slug, update=True)
+    assert again.update is not None and again.update.legacy_hole_features == []
