@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# scripts/take-agent — bring an isolated subagent's work into this branch.
+#
+#   scripts/take-agent <agent-tree>            rebase its branch onto ours, ff ours
+#   scripts/take-agent --discard <agent-tree>  remove the tree and branch unused
+#
+# <agent-tree> is a path or a name under .claude/worktrees/; its branch must be
+# a harness agent branch (worktree-agent-*). Taking records "branch sha" in this
+# worktree's git dir (taken-agents); after the land, scripts/ship removes every
+# recorded tree and branch. Never copy an agent's diff by hand — a copied
+# branch looks unmerged forever and nothing reaps it.
+# Rebase conflicts stop in the agent's tree: resolve there,
+# 'git add -A && git rebase --continue', then re-run.
+set -euo pipefail
+
+discard=0
+if [[ "${1:-}" == "--discard" ]]; then discard=1; shift; fi
+arg="${1:?usage: scripts/take-agent [--discard] <agent-tree>}"
+
+die() { echo "✖ $*" >&2; exit 1; }
+
+top="$(git rev-parse --show-toplevel)"
+common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+primary="$(dirname "$common")"
+if [[ -d "$arg" ]]; then tree="$(cd "$arg" && pwd)"; else tree="$primary/.claude/worktrees/$arg"; fi
+[[ -d "$tree" ]] || die "no worktree at $tree"
+[[ "$tree" != "$top" ]] || die "that is this tree"
+branch="$(git -C "$tree" symbolic-ref --short HEAD)"
+[[ "$branch" == worktree-agent-* ]] || die "$branch is not an agent branch (worktree-agent-*) — refusing to touch another session's tree"
+ours="$(git symbolic-ref --short HEAD)"
+[[ "$ours" != main ]] || die "refusing to take agent work onto main"
+[[ -z "$(git -C "$tree" status --porcelain)" ]] \
+    || die "$tree has uncommitted changes — commit them there (or discard them) first"
+
+if [[ "$discard" == 1 ]]; then
+    # Harness agent trees are locked with the parent session's pid (this
+    # session). Unlock only that, or a dead pid; a live stranger keeps it.
+    lock="$(git worktree list --porcelain | awk -v p="$tree" 'BEGIN{RS="";FS="\n"}
+        $1=="worktree " p {for(i=1;i<=NF;i++) if($i~/^locked/) print $i}')"
+    if [[ -n "$lock" ]]; then
+        pid="$(printf '%s' "$lock" | sed -n 's/.*pid \([0-9][0-9]*\).*/\1/p')"
+        own=""
+        if [[ -f "$top/scripts/lib/session-lock.sh" ]]; then
+            # shellcheck source=lib/session-lock.sh
+            . "$top/scripts/lib/session-lock.sh"
+            own="$(find_session_pid "$$" 2>/dev/null || true)"
+        fi
+        if [[ -n "$pid" && "$pid" != "$own" ]] && kill -0 "$pid" 2>/dev/null; then
+            die "$tree is locked by live pid $pid (not this session)"
+        fi
+        git worktree unlock "$tree"
+    fi
+    git worktree remove "$tree"
+    git branch -D "$branch" >/dev/null
+    echo "discarded $branch"
+    exit 0
+fi
+
+[[ -z "$(git status --porcelain)" ]] || die "this tree is dirty — commit first"
+git -C "$tree" rebase -q "$ours" \
+    || die "rebase conflict in $tree — resolve there, 'git add -A && git rebase --continue', re-run"
+before="$(git rev-parse HEAD)"
+git merge -q --ff-only "$branch"
+printf '%s %s\n' "$branch" "$(git rev-parse "$branch")" >> "$(git rev-parse --git-path taken-agents)"
+echo "took $branch ($(git rev-list --count "$before..HEAD") commit(s)); scripts/ship removes it after landing"

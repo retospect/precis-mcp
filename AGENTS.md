@@ -127,3 +127,9 @@ runs, tidying) goes to the small tier; a decided edit to a coder, test
 author or documenter; design, schema and domain judgment stay with the
 main loop. Subagent prompts must forbid `docker ... prune` and forbid
 writing scripts in the shared `/tmp`.
+
+An editing subagent either works in your tree (you stay off its files) or
+runs with `isolation: "worktree"` and ends in `scripts/take-agent <tree>`
+(fast-forward into your branch) or `scripts/take-agent --discard <tree>`.
+Never copy its diff: ship reaps only agent branches take-agent recorded
+(`docs/conventions/shipping.md` §Sync, and agent branches).

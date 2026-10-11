@@ -24,6 +24,23 @@ the squash carries a `Gate: forward-merged over N commits` trailer
 Squawk on new migration SQL stays host-side. `--remote --impacted` = opt-in
 local impacted pre-gate first; bare `--impacted` = legacy local-only gate.
 
+## Sync, and agent branches
+
+Every ship path except `--release` syncs Git Town style: squash the branch to
+one commit on its merge-base, then `git rebase origin/main`. A conflict stops
+mid-rebase: resolve, `git add -A && git rebase --continue`, re-run ship (ship
+refuses to start while a rebase is in progress). The in-lock forward merge
+above stays a merge; the squash and the branch reset absorb it.
+
+An editing subagent's work enters your branch only by fast-forward:
+`scripts/take-agent <agent-tree>` rebases the agent branch onto yours and
+`git merge --ff-only`s it, and records it in this worktree's git dir
+(`taken-agents`). After the land, ship removes every recorded worktree and
+branch (keeping a dirty, moved or live-locked one recorded for the next
+ship). Never copy an agent's diff by hand. A copied diff leaves the agent branch looking
+unmerged forever, which is how 28 stale agent trees piled up on 2026-10-11.
+Work you won't use: `scripts/take-agent --discard <agent-tree>`.
+
 ## /go — land, cut a release, gate it, deploy it
 
 `scripts/ship --quick` lands the tree on `main` (lint only), then
