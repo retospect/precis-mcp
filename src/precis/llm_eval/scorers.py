@@ -15,6 +15,9 @@ Two axes score **deterministically** and ship now:
 replays the summariser's own messages and grades the reply with the worker's
 own parse/reject functions plus an invented-number check (no judge model).
 
+``tool-structured`` also has ``verdict`` — the ``chase:verify`` replay: the
+reply's ``supports`` (parsed as production does) must equal the incumbent's.
+
 Heavy axes without a wired scorer (e.g. ``reasoning-convergence`` = prefer live
 telemetry) are declared but not wired here — the harness logs them skipped
 rather than silently dropping them (see :data:`SCORERS`).
@@ -257,6 +260,52 @@ def score_summary(
     return sum(1 for k in kps if _norm(k) and _norm(k) in hay) / len(kps)
 
 
+def parse_verdict_supports(
+    response_text: str, response_data: dict[str, Any] | None
+) -> str | None:
+    """The ``supports`` verdict of a ``chase:verify`` reply, or None if unparseable.
+
+    Production reads ``LlmResult.data``, which every transport fills with
+    :func:`precis.utils.claude_p._parse_last_json_block` over the reply text; a
+    dict already in ``response_data`` is used as-is, else the text is parsed with
+    that same function. Only ``yes`` / ``partial`` / ``no`` count as a verdict.
+    """
+    from precis.utils.claude_p import _parse_last_json_block
+
+    data = (
+        response_data
+        if isinstance(response_data, dict) and response_data
+        else _parse_last_json_block(response_text or "")
+    )
+    got = str((data or {}).get("supports") or "").strip().casefold()
+    return got if got in ("yes", "partial", "no") else None
+
+
+def score_verdict_detail(
+    response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
+) -> tuple[float, str]:
+    """:func:`score_verdict` plus a tag: ``match`` / ``mismatch`` / ``unparseable``."""
+    got = parse_verdict_supports(response_text, response_data)
+    if got is None:
+        return 0.0, "unparseable"
+    want = str(expect.get("supports") or "").strip().casefold()
+    return (1.0, "match") if got == want else (0.0, "mismatch")
+
+
+def score_verdict(
+    response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
+) -> float:
+    """chase:verify, production path: 1.0 iff the reply's ``supports`` equals the gold's.
+
+    ``expect = {"supports": "yes" | "partial" | "no"}`` (the incumbent's stored
+    verdict). The verdict is parsed as production does
+    (:func:`parse_verdict_supports`); an unparseable reply or one without a valid
+    ``supports`` scores 0, as does a mismatch. The harness records only the bare
+    score, so use :func:`score_verdict_detail` to tell the two zeros apart.
+    """
+    return score_verdict_detail(response_text, response_data, expect)[0]
+
+
 def _extract_code(text: str) -> str:
     """Pull the last fenced code block from a reply (whole reply if unfenced)."""
     blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL)
@@ -312,6 +361,7 @@ SCORERS: dict[str, Scorer] = {
     "keypoints": score_keypoints,
     "code": score_code,
     "summary": score_summary,
+    "verdict": score_verdict,
 }
 
 
@@ -336,5 +386,7 @@ __all__ = [
     "score_needle",
     "score_summary",
     "score_tool_json",
+    "score_verdict",
+    "score_verdict_detail",
     "summary_number_rule_zero",
 ]
