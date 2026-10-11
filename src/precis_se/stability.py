@@ -221,9 +221,11 @@ def _rank(matrix: np.ndarray) -> int:
     return int(np.sum(svals > _RANK_RTOL * svals[0]))
 
 
-#: An attachment arm shorter than this (metres) is "at the block origin":
-#: the block stays a 3-DOF pin node.
-_ARM_EPS = 1e-12
+#: An attachment arm shorter than this fraction of the structure's extent
+#: (bbox diagonal over poses and attachment points) is "at the block
+#: origin": the block stays a 3-DOF pin node. Relative, so a nanometre
+#: structure and a metre one draw the line at the same place.
+_ARM_RTOL = 1e-9
 
 
 @dataclass
@@ -332,16 +334,27 @@ def _assemble(tree: SeTree) -> _System:
     ).reshape(j, 3)
 
     arms: list[tuple[np.ndarray, np.ndarray]] = []
-    rigid_body = np.zeros(j, dtype=bool)
+    ends: list[tuple[int, int]] = []
+    extent_pts = [coords]
     for row in live:
         assert row.a_point is not None and row.b_point is not None
         ra = row.a_point - coords[index[row.a_block]]
         rb = row.b_point - coords[index[row.b_block]]
         arms.append((ra, rb))
-        if float(np.linalg.norm(ra)) > _ARM_EPS:
-            rigid_body[index[row.a_block]] = True
-        if float(np.linalg.norm(rb)) > _ARM_EPS:
-            rigid_body[index[row.b_block]] = True
+        ends.append((index[row.a_block], index[row.b_block]))
+        extent_pts.append(np.vstack([row.a_point, row.b_point]))
+    pts = np.vstack(extent_pts)
+    arm_eps = (
+        _ARM_RTOL * float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        if pts.size
+        else 0.0
+    )
+    rigid_body = np.zeros(j, dtype=bool)
+    for (ra, rb), (ia, ib) in zip(arms, ends, strict=True):
+        if float(np.linalg.norm(ra)) > arm_eps:
+            rigid_body[ia] = True
+        if float(np.linalg.norm(rb)) > arm_eps:
+            rigid_body[ib] = True
     dof = np.where(rigid_body, 6, 3).astype(int)
     start = np.concatenate([[0], np.cumsum(dof)[:-1]]).astype(int)
     n = int(dof.sum())
