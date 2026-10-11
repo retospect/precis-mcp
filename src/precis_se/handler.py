@@ -133,6 +133,7 @@ from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
 from precis_se import fret, persist, simp_bridge
+from precis_se import joints as se_joints
 from precis_se import kinematics as se_kinematics
 from precis_se import kinematics_drc as se_kinematics_drc
 from precis_se import library as se_library
@@ -1325,6 +1326,7 @@ class SeHandler(Handler):
                 "(nothing bought yet — add_bom hangs a component/part off a "
                 "block or a connect)"
             )
+            lines.extend(self._tensioner_instructions(tree))
             return "\n".join(lines)
 
         rows: list[dict[str, Any]] = []
@@ -1408,7 +1410,29 @@ class SeHandler(Handler):
                 f"⚠ target not in the tree: {', '.join(sorted(set(unresolved)))} "
                 "— quantity unknown, excluded from totals"
             )
+        lines.extend(self._tensioner_instructions(tree))
         return "\n".join(lines)
+
+    @staticmethod
+    def _tensioner_instructions(tree: SeTree) -> list[str]:
+        """Assembly lines tying each ``tensioner`` joint's preload to its
+        nipple: turns = (preload / rate) / thread pitch (gr334786)."""
+        out: list[str] = []
+        for c in tree.connects:
+            joint = c.joint or {}
+            if joint.get("mechanism") != "tensioner":
+                continue
+            params = joint.get("params") or {}
+            plan = se_joints.nipple_turns(params)
+            if plan is None:
+                continue
+            out.append(
+                f"- {c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}: tension to "
+                f"{params['preload']:g} N = {plan['turns']:.2f} nipple turns "
+                f"({plan['extension_m'] * 1000:.3f} mm stretch at "
+                f"{plan['pitch_m'] * 1000:.4g} mm thread pitch)"
+            )
+        return ["", "## Assembly — tensioning", *out] if out else []
 
     def _render_order(self, tree: SeTree, ref_id: int) -> str:
         """``view='order'`` — "what do I order": the instanced tree walked
@@ -2013,14 +2037,14 @@ class SeHandler(Handler):
         the ref graph). The reserved virtual ``rel='parent'`` is folder
         placement — a ``refs.parent_id`` write, never a stored link.
         ``view='links'`` renders the graph both directions."""
-        from precis.handlers._link_tag_ops import (
+        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
+        from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+        from precis.utils.link_tag_ops import (
             apply_link_ops,
             format_link_tag_ack,
             require_link_target,
             validate_link_mode,
         )
-        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
-        from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 
         if rel == RESERVED_PARENT_REL:
             ref = resolve_live_slug_ref(self.store, kind="se", id=str(id).strip())
@@ -5164,22 +5188,31 @@ def _render_stability(tree: SeTree) -> str:
     """``view='stability'`` — the Maxwell/Calladine report
     (:mod:`precis_se.stability`): counts, verdict, and the per-member
     self-stress state, under the model-assumption header (pin nodes at
-    block poses, axial subgraph only — the honesty the tripwire contract
+    port world positions, axial subgraph only — the honesty the tripwire contract
     demands)."""
     report = se_stability.classify(tree)
     lines = [
         "# stability — axial subgraph (Maxwell/Calladine)",
-        "model: one pin node per block at its pose; pin-ended axial "
-        "members only — non-axial connects and envelope contact are NOT "
-        "modelled",
+        "model: axial members attach at their PORT world positions "
+        "(block pose + port pose); a block whose members meet it at "
+        "different points is a 6-DOF rigid body, otherwise a pin node at "
+        "its pose; rigid connects merge their blocks into one rigid body; "
+        "fixed grounds translations only; pin-ended axial members only — "
+        "other non-axial connects and envelope contact are NOT modelled",
         "",
         f"j={report.j} node(s)  b={report.b} member(s)  c={report.c} "
         f"grounded translation(s)  rank={report.rank}",
         f"m={report.m} mechanism(s) (rb={report.rb_dim} rigid-body, "
         f"internal={report.m_internal})  s={report.s} self-stress state(s)",
         "",
-        f"verdict: {report.verdict}",
     ]
+    if report.partial:
+        lines += [
+            f"PARTIAL ANALYSIS: {len(report.unmodelled_connects)} rigid "
+            "connect(s) are not modelled — read the verdict as axial-only",
+            "",
+        ]
+    lines.append(f"verdict: {report.verdict}")
     for note in report.notes:
         lines.append(f"note: {note}")
     if report.members:

@@ -7,7 +7,7 @@ pillar: platform
 
 Two failure paths record a job `STATUS:failed` **without** an
 `INFRA_FAILURE_TAGS` open tag, so `_is_infra_failure`
-(`src/precis/handlers/_job_bubble.py`, tag-only — reads
+(`src/precis/utils/job_bubble.py`, tag-only — reads
 `INFRA_FAILURE_TAGS = {swept:claim-orphaned, infra:child-killed}`, never
 `meta.failure_class`) mis-classes them as *content-class* failures. A
 content-class failure latches `child-failed:<jobid>` on the parent todo

@@ -26,7 +26,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from precis.pcb import padplace
+from precis.pcb import padplace, pose
 from precis.pcb.geom import Point, dist
 from precis.utils.coerce import num_finite
 
@@ -163,7 +163,39 @@ def pinout(
         if str(p["pin"]) not in matched
         or (p.get("pad") is not None and str(p["pad"]) not in numbers)
     ]
-    return {"rows": rows, "unmatched": unmatched, "placed": placed}
+    return {
+        "rows": rows,
+        "unmatched": unmatched,
+        "placed": placed,
+        "holes": _pinout_holes(instance, footprint, placed=placed),
+    }
+
+
+def _pinout_holes(
+    instance: dict[str, Any], footprint: dict[str, Any], *, placed: bool
+) -> list[dict[str, Any]]:
+    """One row per footprint-owned non-plated hole, board position through
+    :mod:`precis.pcb.pose` (the same transform as the pads)."""
+    rows = []
+    for index, raw in enumerate(footprint.get("holes") or [], 1):
+        hole = raw if isinstance(raw, dict) else {}
+        lx, ly = _pinout_number(hole.get("x")), _pinout_number(hole.get("y"))
+        bx = by = None
+        if placed and lx is not None and ly is not None:
+            bx, by = pose.to_world(lx, ly, instance)
+            if not math.isfinite(bx) or not math.isfinite(by):
+                bx = by = None
+        rows.append(
+            {
+                "hole_index": index,
+                "local_x_mm": lx,
+                "local_y_mm": ly,
+                "board_x_mm": bx,
+                "board_y_mm": by,
+                "dia_mm": _pinout_number(hole.get("dia_mm")),
+            }
+        )
+    return rows
 
 
 def pinout_preview(

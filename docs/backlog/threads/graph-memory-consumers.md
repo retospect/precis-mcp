@@ -21,8 +21,9 @@ Reto's 2026-10-07T16:37:02Z ruling supersedes the historical cause gate:
 pointer's byte equality with its October 3 transcript Write and the
 surviving backup. The reported file-mode directory has a different
 checkout key; a directory switch is an inference, not a proved cause.
-gr472845 records the title-only retirement selector and export's metadata
-writes. Since that checkpoint, Reto supplied the 150-file copy and accepted
+gr472845 (title-only retirement selector, export's metadata stamps) is fixed:
+retire matches by normalized title/slug and lists unmatched legacy nodes in
+`legacy_unmatched`; take the pre-import backup with `export --no-stamp`. Since that checkpoint, Reto supplied the 150-file copy and accepted
 its provenance; scratch preparation filled 32 names (me472973), and the
 synthetic dev rehearsal passed (fi472896). No real-copy import has run.
 

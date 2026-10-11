@@ -170,15 +170,20 @@ class HubTreeNode:
     evidence: list[TreeEvidence]
 
 
-def hub_tree(store: Store) -> list[HubTreeNode]:
+def hub_tree(
+    store: Store, *, rows: list[HubOverviewRow] | None = None
+) -> list[HubTreeNode]:
     """Every live claim hub as a forest for the ``/nanopub`` browse
     view: a composite nests its conjunct atoms, a refined claim nests
     under what it refines, and each node carries its evidence sources as
     leaves. Roots = hubs that are nobody's atom/refinement; a hub linked
     into several parents appears under each (the links form a DAG); a
     cycle — advisory links, so possible — is cut rather than recursed.
-    Root order follows :func:`hub_rows` (disputed first)."""
-    rows = hub_rows(store)
+    Root order follows :func:`hub_rows` (disputed first). ``rows`` lets a
+    caller that already ran :func:`hub_rows` share it (the ~270 ms
+    aggregate on prod's ~4k hubs) instead of re-running it."""
+    if rows is None:
+        rows = hub_rows(store)
     by_id = {r.ref_id: r for r in rows}
     ids = list(by_id)
     if not ids:

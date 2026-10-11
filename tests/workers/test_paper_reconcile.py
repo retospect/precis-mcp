@@ -40,9 +40,17 @@ def _deleted(store: Store, ref_id: int) -> bool:
 
 
 def test_pass_merges_when_due_then_throttles(store: Store) -> None:
-    held = _held(store, n=1, slug="vaswani17", title="Attention Is All You Need")
+    held = _held(
+        store,
+        n=1,
+        slug="vaswani17",
+        title="Attention Mechanisms Replace Recurrence in Neural Sequence Transduction",
+    )
     stub = store.insert_ref(
-        kind="paper", slug="attention17", title="Attention Is All You Need", year=2017
+        kind="paper",
+        slug="attention17",
+        title="Attention Mechanisms Replace Recurrence in Neural Sequence Transduction",
+        year=2017,
     ).id
 
     # Force "due" regardless of any marker left by a prior test.

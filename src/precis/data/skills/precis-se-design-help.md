@@ -117,7 +117,6 @@ view informative — and what it then reports is non-obvious: a purely
 radially-laced wheel comes back **first-order mobile**, because radial
 spokes transmit no crank torque.
 
-Caveat while modelling that: `rigid` connects are not in the equilibrium
-matrix (gr334788), so a rim built as a ring of rigid blocks contributes
-nothing — express the ring itself as axial members if you want the view to
-see it.
+`rigid` connects merge their blocks into one rigid body in that view, so a
+rim built as a ring of rigid blocks is analysed as a body; only the axial
+members and rigid groups are modelled (`revolute` etc. are not).

@@ -31,6 +31,15 @@
 <div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
   {{ quota.pause_reason }}
 </div>
+{% elif quota and quota.taper_level %}
+<div class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700">
+  Quota taper: {{ quota.taper_reason }} &mdash; {% if quota.taper_level >= 2 %}MEDIUM, BIG and FRONTIER{% else %}BIG and FRONTIER{% endif %} not admitted.
+</div>
+{% endif %}
+{% if quota and quota.taper_no_signal %}
+<div class="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500">
+  taper: no signal &mdash; the quota snapshot reports no used percentage or warning status, so tiers are not being tapered (failing open).
+</div>
 {% endif %}
 
 {% if budget.get('windows') %}

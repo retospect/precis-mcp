@@ -204,8 +204,11 @@ guards against pulling in the *wrong* identity in the first place
 distinctive words with the paper's own chunk-0 text (e.g. an SI PDF that
 would otherwise take an unrelated paper's DOI), it withholds the write
 instead — tags the ref `paper-meta:title-mismatch`, records the withheld
-`doi`/`title` under `meta.registry_mismatch` on the Meta tab, and clears
-any stored DOI that caused the mismatch. Never touches a ref with
+`doi`/`title`/`reason` under `meta.registry_mismatch` on the Meta tab, and
+clears the stored DOI only for the zero-overlap case (edition mismatches —
+registry version/year newer than the body — and title formulas absent from
+the body park the same way but keep the DOI). Parked refs leave the triage
+sweep until the tag is removed by hand. Never touches a ref with
 `human_verified_at` set.
 
 ALL-CAPS titles (journals that print titles in capitals) are repaired by
@@ -242,7 +245,16 @@ soft-deletes the rest with a `supersedes` edge. If the pair shares no
 `pdf_sha256`/DOI-case/title-similarity signal, there's no targeted
 single-pair door either — call `merge_duplicate(survivor_ref_id=…,
 duplicate_ref_id=…, ...)` directly inside a transaction via the prod
-one-off CLI recipe; survivor = the ref that actually holds chunks/body.
+one-off CLI recipe. Pick the survivor you want to keep (usually the one
+whose handle/identifiers people use): a bodiless survivor now takes the
+duplicate's body, PDF (`pdf_sha256`) and content ids (`content_hash`, and
+`paper_id`/`pub_id` when it has none), so a wanted stub can survive a merge
+with a bodied twin. Chunks are re-inserted on the survivor and deleted from
+the duplicate; embeddings are re-filled by the worker. A survivor that
+already has a body keeps it and the duplicate's body stays behind. An inbox
+file named `pa<id>.pdf` follows the same rule: if its bytes match a
+different live twin, the twin merges into `pa<id>` (when titles corroborate),
+never the reverse.
 
 ## I found a legal PDF for a body-less stub — how do I attach it?
 
@@ -253,9 +265,8 @@ put(kind="paper", id="smith2023", args={"pdf_url": "https://host/paper.pdf"})
 Queues a `paper_pull` job: a worker fetches the URL (SSRF-guarded, 50 MB cap,
 `%PDF` required) and drops it in the ingest inbox with a sidecar naming this
 stub (`source='agent_url'`, `url`), so the normal ingest attaches the body.
-Refused up front for a non-paper, a paper that already has a body, and a
-reference-only paper (PDF attached, no body: replacing a body is not
-supported). Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
+Refused up front for a non-paper and a paper that already has a body; a
+bodiless paper holding a preview PDF is accepted. Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
 it after `fetch_oa` failed and you know a legal open copy (repository, author
 page, preprint); `fetch_oa` already covers OA via DOI. Shadow libraries
 (Sci-Hub, LibGen, Z-Library, Anna's Archive and kin) are refused at put time

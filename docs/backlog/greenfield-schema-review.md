@@ -128,7 +128,7 @@ closed axis or an existing column) and its writer + every
 | `alert-source:` | `alerts.py:152` | `ALERT-SRC:` axis / meta | alert dedup |
 | `level:` | `handlers/todo.py:518`, `workers/schedule/worker.py:414`, `workers/schedule/seed.py:81`, `draftimport/build.py:327` (constants `_todo_guards.py:63-70`) | `LEVEL:` closed axis (or `refs.level` column) | **heavy**: `_todo_views.py:170` `LIKE 'level:%'` + exact readers `schedule/worker.py:154`, `structural.py:70`, `deep_review.py:61`, `nursery.py:207,214,441`, `_todo_views.py:209,266,525,558,625,669,1000,1087` |
 | `halt:` | `workers/dispatch.py:103`, `workers/planner_guardrails.py:204` (`halt:tick-cap`/`halt:cost-cap`) | `HALT:` closed axis | `_todo_views.py:1411,1427` (`LIKE`); also agent-writable (`planner_prompt.py:261`) |
-| `child-failed:` | `handlers/_job_bubble.py:81`, `handlers/job.py:443` | `BUBBLE:` axis or job-meta | `LIKE`: `schedule/worker.py:345`, `_todo_views.py:1458`, `_draft_ops.py:742` |
+| `child-failed:` | `utils/job_bubble.py:81`, `handlers/job.py:443` | `BUBBLE:` axis or job-meta | `LIKE`: `schedule/worker.py:345`, `_todo_views.py:1458`, `_draft_ops.py:742` |
 | `project:` | derived `utils/workspace.py:165`; stamped `handlers/todo.py:483-496`, `workers/executors/claude_inproc.py:564` | keep semantics, move to `PROJECT:` axis | `LIKE`: `_todo_guards.py:599,603,624,628` |
 | `user:` | `workers/review.py:309` (`user:asa`); migration `0028` seeds `user:elmsfeuer` | `OWNER:` axis (already an identity concept) | owner filters |
 | `source:` | `workers/watch_poll.py:223`, `workers/news_poll.py:156` | `SRC:` **exists as a closed axis** (`types.py`) — fold in | verify value overlap |
@@ -139,8 +139,8 @@ closed axis or an existing column) and its writer + every
 | `swept:` | `workers/sweeper.py:262` (`swept:claim-orphaned`) | `SWEPT:` axis or job-meta | bubble cascade |
 | `agentlog-source:` | `agentlog.py:98` | `refs.meta` (agentlog is machine, not embedded) | agentlog reads |
 | `acquire:` | `handlers/paper.py:648` (`acquire:unverified`) | `ACQUIRE:` axis | acquire reads |
-| `kind:` (patent) | `handlers/_patent_ingest.py:419` (`kind:<docdb.kind_full>`) | `PATENT-KIND:` axis (avoid the `kind:id` handle collision) | patent reads |
-| `country:` | `handlers/_patent_ingest.py:418` | `COUNTRY:` axis | patent facets |
+| `kind:` (patent) | `patent/ingest.py:419` (`kind:<docdb.kind_full>`) | `PATENT-KIND:` axis (avoid the `kind:id` handle collision) | patent reads |
+| `country:` | `patent/ingest.py:418` | `COUNTRY:` axis | patent facets |
 | `workspace:` | `handlers/plaintext.py:703` | `refs.meta` field | workspace reads |
 | `topic:` (machine leg) | `cli/watch.py:929,936` (`topic:book`, folder-drop), ~~`routes/drafts.py` web seed~~ (writer gone — re-locate) | **stays `topic:` folksonomy** — but the machine legs should emit a curated axis value, see §topic | — |
 
@@ -243,7 +243,7 @@ not required if the exact-match rule holds).
 Once Pile A is migrated, tighten the write boundary so the folksonomy
 cannot regrow uncontrolled. The seam is `Tag.parse_strict`
 (`store/types.py:397+`, the fall-through before line 506) reached by
-every agent add via `apply_tag_ops` (`handlers/_link_tag_ops.py:220`).
+every agent add via `apply_tag_ops` (`utils/link_tag_ops.py:220`).
 Options, cheapest first:
 
 1. **Blessed-prefix whitelist.** Allow OPEN `prefix:value` only for a

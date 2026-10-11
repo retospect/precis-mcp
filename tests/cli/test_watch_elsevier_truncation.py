@@ -145,3 +145,49 @@ class TestCheckElsevierTruncation:
 
         alerts = list_open_alerts(store)
         assert not [a for a in alerts if a["subject_ref_id"] == ref.id]
+
+
+class TestPreviewClassification:
+    """gr465468: the alert says whether the thin payload is a preview."""
+
+    def _detail(self, store: Store, ref_id: int) -> str:
+        (alert,) = [a for a in list_open_alerts(store) if a["subject_ref_id"] == ref_id]
+        return str(alert.get("detail") or alert.get("body") or alert)
+
+    def test_one_page_pdf_classified_as_preview(
+        self, tmp_path: Path, store: Store, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("precis.cli.watch._pdf_page_count", lambda _p: 1)
+        pdf = tmp_path / "p.pdf"
+        _write(pdf, size=102_567)
+        ref = store.insert_ref(kind="paper", slug="pv", title="X", meta={})
+        _check_elsevier_truncation(
+            pdf, _sidecar(ref.id), _result(ref.id, chunks_written=7), store=store
+        )
+        assert "entitlement-limited preview" in self._detail(store, ref.id)
+
+    def test_multi_page_pdf_not_called_a_preview(
+        self, tmp_path: Path, store: Store, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("precis.cli.watch._pdf_page_count", lambda _p: 12)
+        pdf = tmp_path / "m.pdf"
+        _write(pdf, size=647_277)
+        ref = store.insert_ref(kind="paper", slug="mp", title="X", meta={})
+        _check_elsevier_truncation(
+            pdf, _sidecar(ref.id), _result(ref.id, chunks_written=4), store=store
+        )
+        detail = self._detail(store, ref.id)
+        assert "NOT a one-page preview" in detail
+        assert "entitlement-limited preview" not in detail
+
+    def test_real_pdf_page_count(self, tmp_path: Path) -> None:
+        import fitz
+
+        from precis.cli.watch import _pdf_page_count
+
+        doc = fitz.open()
+        doc.new_page()
+        path = tmp_path / "one.pdf"
+        doc.save(path)
+        assert _pdf_page_count(path) == 1
+        assert _pdf_page_count(tmp_path / "missing.pdf") is None

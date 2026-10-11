@@ -17,7 +17,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 
@@ -158,7 +158,8 @@ def probe(fixtures: Path, output: Path, browser_name: str = "chromium") -> None:
             )
             after = settle("keyboard-q-out")
             diff = ImageChops.difference(before, after)
-            changed = sum(1 for pixel in diff.getdata() if max(pixel) > 8)
+            pixels = cast("tuple[tuple[int, ...], ...]", diff.get_flattened_data())
+            changed = sum(1 for pixel in pixels if max(pixel) > 8)
             check(changed > 1000, "keyboard selection changes rendered picture")
             report["changed_pixels"] = changed
             check(

@@ -1,6 +1,6 @@
 ---
 status: idea
-title: cfp kind — mint from a URL over MCP, deadline/opens-on fields, a consumer for WATCH:* tags
+title: cfp kind — mint from a URL over MCP, deadline/opens-on fields (WATCH re-check shipped)
 pillar: memory-graph
 ---
 
@@ -15,18 +15,14 @@ gripe shipped in d6c4b47be. What is left:
    ingest path treats a URL as a paper.
 2. **Dates as fields.** The deadline and opens-on dates are not structured
    fields, so nothing can sort or alert on them.
-3. **WATCH:\* has no consumer.** cfp refs accept `WATCH:*` tags, but no
-   scheduled job reads them, so the tag does nothing.
 
-Owner `src/precis/handlers/cfp.py`; the `WATCH:*` consumer is a new scheduled
-worker (find the existing tag readers via `src/precis/store/types.py`).
+Owner `src/precis/handlers/cfp.py`. The `WATCH:*` re-check shipped
+(`workers/cfp_watch.py`); it reads `meta.source_url`, which item 1's intake
+must set on the cfp.
 
-Who: agent-code for all three; needs-Reto: for item 3, schedule re-checks or
-refuse the tag (the acceptance below allows either).
+Who: agent-code.
 
 ## Acceptance
 
 - `put(kind='cfp', url=…)` mints a cfp ref, not a paper.
 - `search(kind='cfp')` can sort by deadline.
-- A `WATCH:` tagged cfp triggers a scheduled re-check, or the tag is
-  refused.

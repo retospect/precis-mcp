@@ -24,7 +24,7 @@ re-pin silently dropped the coverage the hub's own grounding had.
   grounding's *papers*. It need not be a grounding passage.
 
 Where they surface: the draft write path appends them to the ``put``/``edit``
-response (:func:`precis.handlers._draft_lint.pin_hint`, same channel as the
+response (:func:`precis.draft.lint.pin_hint`, same channel as the
 other advisory hints) and the exporters add them to ``ExportResult.warnings``
 (:func:`export_warnings`). At **edit** only *changes* warn
 (:func:`edit_findings`): a newly added pin (G3 + G4), or an existing pin

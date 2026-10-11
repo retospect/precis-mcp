@@ -176,6 +176,7 @@ from precis.pcb.cost import (
     outline_bbox,
     routing_area_term,
 )
+from precis.pcb.edge_mate import snap_to_edges
 from precis.pcb.eyes import (
     align_residual,
     bind_feature_operands,
@@ -4182,6 +4183,10 @@ def optimize(
         pitch_mm=config.seed_pitch_mm,
         force=reseed,
     )
+    # Side-insertion connectors (gr451356) go flush on the outline and are
+    # locked BEFORE the engine reads the lock bits, so the anneal neither
+    # moves them nor counts them as movable.
+    snap_to_edges(ir)
     engine = OptimizeEngine(ir, config)
     legalized = engine.legalize_start()
     report_schedule = engine._report_schedule()

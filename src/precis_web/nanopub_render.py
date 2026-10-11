@@ -23,11 +23,13 @@ without a routes-module import cycle back the other way.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from precis.errors import Upstream
@@ -69,6 +71,7 @@ def hub_context(
     embedder: Any = None,
     nearest_fn: NearestFn = nearest_hubs,
     judge_fn: JudgeFn = dedup_judge,
+    lazy_nearest: bool = False,
 ) -> dict[str, Any] | None:
     """Assemble the review-and-sign context for claim hub ``hub_id``, or
     ``None`` when it isn't a live ``TAPROOT:claim`` hub. See the module
@@ -183,6 +186,7 @@ def hub_context(
     # once past candidate — the panel is hidden there anyway (frozen
     # identity, nothing to merge into), so there's no point spending the
     # judge calls.
+    nearest_lazy = bool(lazy_nearest and pre_approve)
     nearest, nearest_note = (
         _nearest_claims(
             store,
@@ -194,7 +198,7 @@ def hub_context(
             judge_fn=judge_fn,
             own_mergeable=pre_approve,
         )
-        if pre_approve
+        if pre_approve and not nearest_lazy
         else ([], None)
     )
     return {
@@ -227,7 +231,47 @@ def hub_context(
         "gates": _gate_report(state, preflight, dryrun=dryrun),
         "nearest": nearest,
         "nearest_note": nearest_note,
+        "nearest_lazy": nearest_lazy,
     }
+
+
+def nearest_fragment_context(
+    store: Any,
+    hub_id: int,
+    *,
+    embedder: Any = None,
+    nearest_fn: NearestFn = nearest_hubs,
+    judge_fn: JudgeFn = dedup_judge,
+) -> dict[str, Any]:
+    """Context for the lazy ``/claim/<head>/nearest`` fragment: just the
+    nearest-claims rows (``np.nearest``/``np.nearest_note``) for a hub.
+    Past ``candidate`` (or not a hub) the panel is hidden, so the list is
+    empty with no judge calls."""
+    from precis.errors import BadInput
+    from precis.nanopub import evidence
+
+    try:
+        bundle = evidence.load_bundle(store, hub_id)
+    except BadInput:
+        return {"hub_ref_id": hub_id, "np": {"nearest": [], "nearest_note": None}}
+    row = store.nanopub_publish_row(hub_id)
+    state = row.state if row else None
+    nearest: list[dict[str, Any]] = []
+    note: str | None = None
+    if state in (None, "candidate"):
+        hub_ref = store.fetch_refs_by_ids([hub_id]).get(hub_id)
+        meta = (hub_ref.meta or {}) if hub_ref is not None else {}
+        nearest, note = _nearest_claims(
+            store,
+            hub_id,
+            bundle.sentence,
+            meta.get("scope"),
+            embedder=embedder,
+            nearest_fn=nearest_fn,
+            judge_fn=judge_fn,
+            own_mergeable=True,
+        )
+    return {"hub_ref_id": hub_id, "np": {"nearest": nearest, "nearest_note": note}}
 
 
 def _nearest_claims(
@@ -271,17 +315,33 @@ def _nearest_claims(
     except Upstream:
         return [], "nearest claims unavailable (embedder unavailable; retry shortly)"
     others = [c for c in candidates if c.hub_ref_id != hub_ref_id][:k]
+    # Judge the neighbours concurrently: each verdict is one ~10 s cloud
+    # `claude -p` round trip, and k of them one after another made the
+    # claim pane (and, via the blocked event loop, the whole /nanopub
+    # page) take ~40-50 s (gr473425). Each task gets its own contextvars
+    # copy so the router keeps the session attribution, as in
+    # ``canon.judge_candidates``.
+    verdicts: list[Any] = []
+    if others:
+        with ThreadPoolExecutor(
+            max_workers=len(others), thread_name_prefix="nearest-judge"
+        ) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, judge_fn, sentence, c.claim)
+                for c in others
+            ]
+            verdicts = [f.result() for f in futures]
     rows = [
         {
             "hub_ref_id": c.hub_ref_id,
             "handle": handle_registry.format_handle("finding", c.hub_ref_id),
             "claim": c.claim,
             "distance": c.distance,
-            "verdict": (v := judge_fn(sentence, c.claim))["verdict"],
+            "verdict": v["verdict"],
             "confidence": v["confidence"],
             "can_merge": own_mergeable,
         }
-        for c in others
+        for c, v in zip(others, verdicts, strict=True)
     ]
     return rows, None
 

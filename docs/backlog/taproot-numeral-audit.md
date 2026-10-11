@@ -24,6 +24,17 @@ states only a trend). `gates.py::check_claim_sentence` audits sentence
 *form* only; nothing anywhere extracts numerals from a claim and checks
 them against the linked chunks.
 
+## Shipped (slice 1)
+
+`taproot/numeral_audit.py::absent_numerals` surfaces as the advisory
+`numeral-absent` code in `lint_claim_sentence` (needs `source_text`, so it
+appears on the approve/review page beside `unsupported-term`; never in
+`_BLOCKING_LINT_CODES`). Normalises thousands separators, unicode minus,
+`1.0`/`1`, `x10^n`/`e`-notation, bare `10^n` (incl. PDF-flattened `106`),
+ranges, `%`, SI prefixes, source-side spelled one-ten. Dry-run over 500 prod
+claim hubs: see the gripe comment. Left below: the corpus-wide report CLI
+and the recorded false-positive estimate.
+
 ## In scope
 
 - New module (`taproot/numeral_audit.py`) that per hub: (1) tokenizes
@@ -31,6 +42,7 @@ them against the linked chunks.
   (`establishes`/`corroborates`/`cites`), (2) normalizes obvious variants
   (percent vs fraction, spelled-out small numerals, unit prefixes),
   (3) reports any claim numeral absent from every linked chunk.
+- (CLI still open; tokenizer, normalisation and fixtures above shipped.)
 - CLI surface `precis taproot numeral-audit` alongside `taproot lint`,
   ranked per hub. Report-only — never blocking, and kept fully separate
   from `run_mint_gates` (that gate is "blocking or nothing" by design).

@@ -78,6 +78,7 @@ from precis.taproot.canon import (
     ClaimExtraction,
     ExtractionUnavailable,
     MergeCandidate,
+    MintCap,
     NotClaim,
     Placement,
     Verdict,
@@ -198,6 +199,9 @@ class GroupPlan:
     #: :class:`~precis.taproot.canon.ExtractionUnavailable`), so nothing was
     #: decided: no write, prose left as-is, retryable — unlike ``no-claim``,
     #: which is a final semantic verdict;
+    #: ``"mint-capped"`` — the primary grounding chunk already seeded the
+    #: per-run limit of new hubs (:class:`~precis.taproot.canon.MintCap`,
+    #: gr204874); no write, prose left as-is;
     #: ``"error"`` — a write failed for this group (isolated; batch continues);
     #: ``"partial"`` — the hub landed and the prose was rewritten to it, but a
     #: later supporter's evidence edge failed (a re-run attaches it);
@@ -716,7 +720,7 @@ def _plan_pa_group(
       whole-paper claims with no single grounding passage.
     """
     fetched = [
-        (h, rid) for (h, rid) in supporters if store.chunks.count_chunks(rid) > 0
+        (h, rid) for (h, rid) in supporters if store.chunks.count_usable_chunks(rid) > 0
     ]
     if len(fetched) < len(supporters):
         # All stubs, or a mixed run — either way skip with no write (a mixed
@@ -1025,6 +1029,7 @@ def apply_chunk(
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
     locate_fn: LocateFn = _default_locate,
+    mint_cap: MintCap | None = None,
 ) -> ChunkBackfill:
     """Apply the backfill: mint/converge each claim hub through the cascade,
     attach its supporter papers as evidence, then rewrite the chunk prose
@@ -1129,6 +1134,23 @@ def apply_chunk(
         if not plan.atom_plans and plan.composite_plan is None:
             # no-claim / unresolved / ungroundable / stub-fetch-first /
             # reground-nomatch — prose left untouched ([pc…] or [pa…]).
+            continue
+
+        # Per-chunk mint cap (gr204874): refuse a group whose NEW atom hubs
+        # would push its primary grounding chunk past the per-run limit.
+        # Pass one MintCap across apply_chunk calls to span a whole run;
+        # the default is fresh per call (this draft chunk's run).
+        if mint_cap is None:
+            mint_cap = MintCap()
+        n_new = sum(
+            1 for _c, pl in plan.atom_plans if pl.action in ("new", "new_contradicts")
+        )
+        if not mint_cap.admit(plan.supporters[0][0], n_new):
+            plan.action = "mint-capped"
+            plan.note = (
+                f"{plan.supporters[0][0]} already seeded {mint_cap.limit} new "
+                "hub(s) this run - group skipped, prose left as [pc…]"
+            )
             continue
 
         # Isolate each group's writes: a mid-loop failure (transient DB /

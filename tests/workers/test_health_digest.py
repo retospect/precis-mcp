@@ -2063,3 +2063,122 @@ def test_embedder_health_is_answered_by_throughput_not_process_presence(
     )
     assert "idle-unloads" in body  # the triage line warns off the ps-aux reflex
     assert "state: never" in body
+
+
+# ── generic tracker binding for non-watchdog sources (gr474610/gr475405) ──
+
+
+def _seed_tracked_alert(store, *, source: str, fingerprint: str, hours_old: float):
+    alert_id, _ = raise_alert(
+        store,
+        source=source,
+        fingerprint=fingerprint,
+        title=f"{source} {fingerprint}",
+        detail="d",
+        severity="warn",
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (hours_old, alert_id),
+        )
+        conn.commit()
+    return int(alert_id)
+
+
+def test_tracked_source_without_tracker_files_one_and_dedups(store) -> None:
+    _seed_tracked_alert(
+        store, source="quest_tick", fingerprint="quest:dry-rest/1", hours_old=10
+    )
+    routed = _route_findings(store)
+    assert ("quest_tick", "all") in routed
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    body = store.chunks.list_chunks_for_ref(gripes[0].id)[0].text
+    assert body.startswith("watchdog-condition: quest_tick/all")
+
+    # Repeat raise bumps the same alert; the router must not file again.
+    raise_alert(
+        store,
+        source="quest_tick",
+        fingerprint="quest:dry-rest/1",
+        title="t",
+        detail="d",
+        severity="warn",
+    )
+    _route_findings(store)
+    assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 1
+
+
+def test_tracked_source_rebinds_when_tracker_soft_deleted(store) -> None:
+    _seed_tracked_alert(
+        store, source="nanopub_ots", fingerprint="stuck-pending:7", hours_old=10
+    )
+    _route_findings(store)
+    (first,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    with store.tx() as conn:
+        store.retire_ref(first.id, conn=conn)
+
+    routed = _route_findings(store)
+    assert ("nanopub_ots", "stuck-pending:7") in routed
+    (second,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert second.id != first.id
+
+
+def test_tracked_source_cleared_alert_closes_tracker(store) -> None:
+    from precis.alerts import resolve_alert
+
+    alert_id = _seed_tracked_alert(
+        store, source="quest_tick", fingerprint="quest:dry-rest/2", hours_old=10
+    )
+    _route_findings(store)
+    (gripe,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    resolve_alert(store, alert_id)
+    _route_findings(store)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe.id,)
+        ).fetchone()
+    assert row[0] is not None
+
+
+def test_tracked_source_under_budget_files_nothing(store) -> None:
+    _seed_tracked_alert(
+        store, source="quest_tick", fingerprint="quest:dry-rest/3", hours_old=1
+    )
+    assert _route_findings(store) == frozenset()
+
+
+def test_tracked_aggregate_source_is_one_gripe_closing_when_all_clear(store) -> None:
+    from precis.alerts import resolve_alert
+
+    ids = [
+        _seed_tracked_alert(
+            store, source="quest_tick", fingerprint=f"quest:dry-rest/{q}", hours_old=10
+        )
+        for q in (11, 12, 13)
+    ]
+    routed = _route_findings(store)
+    assert ("quest_tick", "all") in routed
+    (gripe,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert gripe.title.startswith("[alert:quest_tick]")
+    body = store.chunks.list_chunks_for_ref(gripe.id)[0].text
+    assert all(f"quest:dry-rest/{q}" in body for q in (11, 12, 13))
+
+    def retired() -> bool:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe.id,)
+            ).fetchone()
+        return row[0] is not None
+
+    resolve_alert(store, ids[0])
+    resolve_alert(store, ids[1])
+    _route_findings(store)
+    assert not retired()
+    assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 1
+
+    resolve_alert(store, ids[2])
+    _route_findings(store)
+    assert retired()

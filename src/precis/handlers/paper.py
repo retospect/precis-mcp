@@ -34,14 +34,6 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    require_link_target,
-    require_tag_ops,
-    validate_link_mode,
-)
 from precis.handlers._paper_format import (
     _clean_inline_text,
     _format_authors,
@@ -70,6 +62,7 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store.types import ONE_PAGE_COVERAGE_NOTE
 from precis.utils import handle_registry
 from precis.utils.authors import (
     author_display,
@@ -81,6 +74,14 @@ from precis.utils.authors import (
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
@@ -263,6 +264,11 @@ class PaperHandler(Handler):
 
     #: ingest of third-party papers (cfp/datasheet inherit): the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "put": frozenset({"pdf_url"}),
+        # edit takes ``args`` only for subclass hooks (_edit_args); none here.
+        "edit": frozenset(),
+    }
 
     stamps_recall = True
 
@@ -439,8 +445,7 @@ class PaperHandler(Handler):
 
     def _queue_pdf_pull(self, id: str | int | None, pdf_url: Any) -> Response:
         """Queue a ``paper_pull`` job feeding an agent-supplied PDF URL to a
-        body-less stub. Refuses a non-paper, a bodied stub and a reference-only
-        one up front; the job fetches (``safe_stream``) and drops PDF + sidecar
+        body-less stub. Refuses a non-paper and a bodied stub up front; the job fetches (``safe_stream``) and drops PDF + sidecar
         in the ingest inbox — the MCP server fetches nothing."""
         from urllib.parse import urlsplit
 
@@ -1227,6 +1232,13 @@ class PaperHandler(Handler):
         _slug, ref_id = self._resolve_paper_slug(id)
         return ref_id
 
+    def _edit_args(
+        self, ref_id: int, args: dict[str, Any] | None, *, dry: bool
+    ) -> list[str]:
+        """Subclass hook: apply kind-specific ``edit(args=...)`` keys, return
+        the change labels. Papers take none."""
+        return []
+
     def edit(  # type: ignore[override]
         self,
         *,
@@ -1241,6 +1253,7 @@ class PaperHandler(Handler):
         entry_type: str | None = None,
         supplement_of: str | None = None,
         dry_run: bool | str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Repair a paper's bibliographic metadata.
@@ -1292,6 +1305,7 @@ class PaperHandler(Handler):
         """
         dry_mode = normalize_dry_run(dry_run)
         ref_id = self._resolve_paper_ref_id(id)
+        extra_changes = self._edit_args(ref_id, args, dry=bool(dry_mode))
         if supplement_of is not None and str(supplement_of).strip():
             if any(
                 v is not None
@@ -1344,6 +1358,11 @@ class PaperHandler(Handler):
             and not doi_clear
             and not arxiv_clear
         ):
+            if extra_changes:
+                return Response(
+                    body=f"updated {self.spec.kind} id={ref_id}: "
+                    f"{', '.join(extra_changes)}."
+                )
             raise BadInput(
                 f"edit(kind='{self.spec.kind}') needs at least one field to change",
                 next=(
@@ -1433,6 +1452,7 @@ class PaperHandler(Handler):
         if new_authors:
             changed.append(f"authors({len(new_authors)})")
         changed.extend(meta_patch.keys())
+        changed.extend(extra_changes)
         changed_str = ", ".join(changed) if changed else "no change"
         body = f"updated {self.spec.kind} id={ref_id}: {changed_str}."
         if doi_edit_check is not None:
@@ -3068,11 +3088,14 @@ def _retraction_banner(ref: Ref) -> str | None:
 def _paper_banner(ref: Ref) -> str | None:
     """Combined banner block for the top of a paper view: the retraction
     banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
-    line in the same ``> [!]`` style. ``None`` when neither applies."""
+    line in the same ``> [!]`` style, then a one-page-PDF coverage line
+    (gr372863). ``None`` when none applies."""
     lines = [_retraction_banner(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
         lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
+    if ref.is_one_page_pdf:
+        lines.append(f"> [!] **{ONE_PAGE_COVERAGE_NOTE}**")
     out = [ln for ln in lines if ln]
     return "\n".join(out) if out else None
 

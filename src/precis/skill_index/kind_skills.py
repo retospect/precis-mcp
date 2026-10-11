@@ -21,8 +21,8 @@ this as strictly additive).
 
 from __future__ import annotations
 
-from precis.handlers._skill_common import parse_frontmatter
 from precis.skill_index.graph import SkillGraph, build_skill_graph
+from precis.utils.skill_common import parse_frontmatter
 
 #: Cap on how many skills the one-line breadcrumb names before it stops
 #: — a hub kind with a dozen skills would otherwise blow past a "short

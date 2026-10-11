@@ -801,7 +801,20 @@ class TestAllCapsTitleRecase:
 
     def test_markup_registry_title_matches_after_normalisation(self) -> None:
         reg = "<i>DFT</i> Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
-        assert paper_meta_enrich.registry_recase(_CAPS, reg) == reg
+        assert paper_meta_enrich.registry_recase(_CAPS, reg) == (
+            "DFT Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
+        )
+
+    def test_escaped_registry_title_is_unescaped(self) -> None:
+        local = "STRESS, THE HPA AXIS & AYURVEDA: A REVIEW OF ADAPTOGENS"
+        reg = "Stress, the HPA Axis &amp; Ayurveda: A Review of Adaptogens"
+        assert paper_meta_enrich.registry_recase(local, reg) == (
+            "Stress, the HPA Axis & Ayurveda: A Review of Adaptogens"
+        )
+        esc = "&lt;i&gt;DFT&lt;/i&gt; Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
+        assert paper_meta_enrich.registry_recase(_CAPS, esc) == (
+            "DFT Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
+        )
 
     def _run(self, store: Store, *, verified: bool, registry: str) -> Any:
         rid = _paper(store, slug="caps1", title=_CAPS, doi="10.1234/x")

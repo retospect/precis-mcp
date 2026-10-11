@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from precis.errors import BadInput
-from precis.handlers._patent_slug import DocDbId, parse_docdb_id
+from precis.patent.slug import DocDbId, parse_docdb_id
 
 
 class TestNormalisation:

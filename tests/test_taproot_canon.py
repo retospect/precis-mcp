@@ -1296,3 +1296,66 @@ def test_extract_claim_strict_carries_the_router_failure_class(
     # The lenient extractor still degrades to empty — callers that want the
     # distinction use the strict variant (the backfill does).
     assert extract_claim("some passage").is_empty
+
+
+# ── proxy-grounded rejection + per-chunk mint cap (gr204874) ────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Smith et al. reported that doping tunes the bandgap.",
+        "Smith and Jones [4] showed that doping tunes the bandgap.",
+        "[12] showed that doping tunes the bandgap.",
+        "Doping tunes the bandgap, as reported in [10-15].",
+        "Lee et al. showed X. Kim et al. demonstrated Y.",
+        "Smith et al. [4] showed that doping tunes the bandgap.",
+    ],
+)
+def test_is_proxy_deferral_flags_attribution(text: str) -> None:
+    assert canon.is_proxy_deferral(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Pd/C catalyzes Suzuki coupling at room temperature.",
+        "Doping showed a clear effect on the bandgap in our samples.",
+        "We measured a 0.4 eV gap, as previously reported in [12].",
+        "Ribbon A has a 0.4 eV gap, as reported in [12].",
+        "Smith et al. reported X. Our DFT run gives a 0.4 eV gap for ribbon A.",
+        "",
+    ],
+)
+def test_is_proxy_deferral_passes_self_evidencing_text(text: str) -> None:
+    assert not canon.is_proxy_deferral(text)
+
+
+def test_extract_claim_rejects_proxy_passage_without_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(req):  # pragma: no cover - must not run
+        raise AssertionError("route called for a proxy passage")
+
+    monkeypatch.setattr(canon, "route", _boom)
+    assert extract_claim("Smith et al. reported that doping tunes the gap.").is_empty
+
+
+def test_mint_cap_refuses_the_nth_plus_one_and_is_per_chunk() -> None:
+    cap = canon.MintCap(limit=2)
+    assert cap.admit("pc1", 1)
+    assert cap.admit("pc1", 1)
+    assert not cap.admit("pc1", 1)  # third from the same chunk
+    assert cap.admit("pc2", 2)  # other chunk unaffected
+    assert not cap.admit("pc2", 1)
+    assert cap.admit("pc1", 0)  # attaches (0 new) are never refused
+
+
+def test_mint_cap_is_all_or_nothing() -> None:
+    cap = canon.MintCap(limit=2)
+    assert not cap.admit("pc1", 3)
+    assert cap.admit("pc1", 2)  # the refused request reserved nothing
+
+
+def test_mint_cap_default_limit_is_module_constant() -> None:
+    assert canon.MintCap().limit == canon.MAX_HUBS_PER_CHUNK_PER_RUN == 3

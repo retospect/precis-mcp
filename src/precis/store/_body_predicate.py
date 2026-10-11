@@ -33,4 +33,25 @@ def has_body_sql(alias: str = "r", *, sub_alias: str = "hb") -> str:
     )
 
 
-__all__ = ["has_body_sql"]
+#: Open tags that say "the text this ref holds is not a usable article body":
+#: ``body:partial`` (>= 90% references/SI after its one bounded re-fetch) and
+#: ``body:needs_ocr`` (extraction empty after its retry). Set by
+#: ``paper_hygiene``; read-for-question gates treat a tagged ref as bodiless.
+UNUSABLE_BODY_TAGS: tuple[str, ...] = ("body:partial", "body:needs_ocr")
+
+
+def unusable_body_tag_sql(alias: str = "r") -> str:
+    """``EXISTS (...)`` fragment: does ``<alias>`` carry an unusable-body tag?
+
+    Pair with :func:`has_body_sql` for "has *usable* text":
+    ``has_body AND NOT unusable_body_tag``. References ``<alias>.ref_id``.
+    """
+    tags = ", ".join(f"'{t}'" for t in UNUSABLE_BODY_TAGS)
+    return (
+        "EXISTS (SELECT 1 FROM ref_tags ubt JOIN tags ubtt "
+        f"ON ubtt.tag_id = ubt.tag_id WHERE ubt.ref_id = {alias}.ref_id "
+        f"AND ubtt.namespace = 'OPEN' AND ubtt.value IN ({tags}))"
+    )
+
+
+__all__ = ["UNUSABLE_BODY_TAGS", "has_body_sql", "unusable_body_tag_sql"]

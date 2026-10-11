@@ -6,7 +6,7 @@ no parametric generation (user decision 2026-08-27): footprints are pulled,
 never synthesized. Every JLCPCB-assemblable part has one by construction
 (JLC assembly places from it), so **no EasyEDA footprint means the part is
 not selectable** — there is no fallback generator to fall back to. We do NOT
-fetch all ~300k catalog parts — only the few a design actually selects — and
+fetch all catalog parts — only the few a design actually selects — and
 cache the result in ``part_footprints`` (keyed by C-number, FK-free so the
 Flow-A catalog swap never touches it).
 

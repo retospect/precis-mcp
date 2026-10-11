@@ -22,7 +22,7 @@ Static gates of ``docs/backlog/docs-and-skills-redesign.md``):
 Graph gates (docs/backlog/skill-graph.md slice 1) join the list above:
 
 - Every ``[[slug]]`` wikilink resolves to a real slug in the same scan
-  or a synthesised meta-skill (:data:`~precis.handlers._skill_common.
+  or a synthesised meta-skill (:data:`~precis.utils.skill_common.
   SYNTH_SKILL_SLUGS` — ``precis-help``/``precis-status``/``precis-toc``/
   ``toc``, not files) (no dangling link).
 - Every ``tags:`` entry is a known tag (:data:`VALID_TAGS`) and not a
@@ -49,7 +49,9 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from precis.handlers._skill_common import (
+from precis.ingest.skill_template import IncludeError, Includer
+from precis.skill_index.chunker import Chunk, chunk_by_h2
+from precis.utils.skill_common import (
     SYNTH_SKILL_SLUGS,
     FrontmatterError,
     SkillFrontmatter,
@@ -59,8 +61,6 @@ from precis.handlers._skill_common import (
     unknown_kinds,
     unknown_tags,
 )
-from precis.ingest.skill_template import IncludeError, Includer
-from precis.skill_index.chunker import Chunk, chunk_by_h2
 
 log = logging.getLogger(__name__)
 
@@ -353,7 +353,7 @@ def _validate_graph_gates(
         if bad_tags:
             findings.append(
                 f"unknown or kind-named tag(s): {bad_tags} "
-                "(see VALID_TAGS in handlers/_skill_common.py)"
+                "(see VALID_TAGS in utils/skill_common.py)"
             )
 
         kinds = plan.frontmatter.kinds

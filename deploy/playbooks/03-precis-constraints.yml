@@ -108,6 +108,24 @@
         mode: "0644"
       become: true
 
+    # pyproject's [tool.uv] override-dependencies forces pillow>=12.3.0 past
+    # marker-pdf's pillow<11 cap (Dependabot #56-67). Overrides only bind the
+    # project's own lock, so the exported `pillow==` constraint alone makes
+    # every cluster resolve that pulls marker-pdf UNSATISFIABLE. An overrides
+    # file REPLACES marker's pillow requirement; every install that passes
+    # --constraints /opt/precis/constraints.txt also passes --overrides
+    # /opt/precis/overrides.txt (tests/test_deploy_lockfile_constraints.py).
+    # Derived from the exported lock, not hardcoded, so a re-lock never drifts
+    # it; grep fails the play loudly if pillow ever leaves the lock.
+    - name: Derive the install-time overrides file from the constraints
+      ansible.builtin.shell: |
+        set -eu
+        grep -E '^pillow==' /opt/precis/constraints.txt > /opt/precis/overrides.txt.tmp
+        chmod 0644 /opt/precis/overrides.txt.tmp
+        mv /opt/precis/overrides.txt.tmp /opt/precis/overrides.txt
+      become: true
+      changed_when: false
+
     - name: Clean up the controller-local scratch file
       ansible.builtin.file:
         path: "{{ precis_constraints_tmp.path }}"

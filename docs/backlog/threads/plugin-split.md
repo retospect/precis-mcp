@@ -27,7 +27,7 @@ minimal releasable model package that is also fully useful inside precis,
 and deploys that don't take hours for a simple change. Pathway
 presentation work is the same thread by dependency.
 **Last reviewed:** 2026-09-30 (pillar review same day added two gripe items
-to Do next, and the 11-gripe god-module cluster to Horizon)
+to Do next, and the 10-gripe god-module cluster to Horizon)
 **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
 
 ## Detailed handoff here (2026-10-03)
@@ -145,12 +145,20 @@ own item); they become items as each comes into reach.
    model, private until paper; waits on 5, which answers where shared
    presentation logic lives. Needs a catpath version bump + wheel
    redeploy.
-7. **The 11-gripe god-module cluster** (**gr343710**, **gr343711**,
+7. **The 10-gripe god-module cluster** (**gr343710**, **gr343711**,
    **gr343712**, **gr343713**, **gr343714**, **gr343715**, **gr343716**,
-   **gr343717**, **gr343719**, **gr343720**, **gr343752**) — the
+   **gr343717**, **gr343719**, **gr343720**) — the
    decomposition debt the split retires; not individually actionable, and
    not worth ranking piece by piece when the split's module-by-module
    extraction addresses the whole cluster by construction.
+   Re-vetted 2026-10-11: each one still holds and the files have grown
+   (router.py 3582 lines, precis_se/handler.py 6538, handlers/pcb.py 4907).
+   gr343711/712/713/715/716/717/719 are closed as tracked here. The one
+   bounded try, moving the provider classes out of router.py, is blocked:
+   7 test files monkeypatch `precis.utils.llm.router.call_claude_agent`,
+   and the classes use ~15 router internals that `_PROVIDERS` needs at
+   import time. The order that works: leaf types into their own module,
+   then retarget the test patches, then move the providers.
 
 ## Parked
 

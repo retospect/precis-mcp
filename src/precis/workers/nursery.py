@@ -15,7 +15,7 @@ Todo-tree detectors (each one SQL query → finding rows):
 * **stuck doable** — a dispatch candidate (``dispatch.py::_candidate_parent_ids``'s
   signal: ``meta.executor``/``llm_tier``/``OPEN:executor:*``) with none of
   the doable-exclusion tags
-  (:func:`precis.handlers._todo_views._doable_exclusion_clause`) and
+  (:func:`precis.todo.views._doable_exclusion_clause`) and
   ``created_at`` older than ``STUCK_DOABLE_HOURS=24``. Skip the candidacy
   gate and every non-dispatchable leaf reads as stuck.
 * **stalled recurrings** — a recurring ref's (``meta.schedule``) latest
@@ -34,7 +34,7 @@ Todo-tree detectors (each one SQL query → finding rows):
   since — the zero-retry silent-outage case ``quest-loop-failing``/
   ``plan-tick-spin`` miss (both need a *repeated* re-mint to fire).
 * **child-failed parked** — an open ``child-failed:*`` tag
-  (:mod:`precis.handlers._job_bubble`) held > ``CHILD_FAILED_PARKED_HOURS=6``;
+  (:mod:`precis.utils.job_bubble`) held > ``CHILD_FAILED_PARKED_HOURS=6``;
   ``stuck-doable`` excludes tagged leaves, so this is the only surfacing
   path once auto-decompose has had its one shot. **Excludes**
   ``child-failed-final`` leaves (below).
@@ -680,7 +680,7 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
       two must move together if the candidacy signal's shape ever
       changes.
     * **Exclusion-registry gate** — reuses
-      :func:`precis.handlers._todo_views._doable_exclusion_clause`
+      :func:`precis.todo.views._doable_exclusion_clause`
       (the same "robot stay away" registry the doable view and the
       dispatch worker share) instead of a hand-copied tag list, so a
       self-halted leaf (``OPEN:halt`` / ``OPEN:halt:*``) or one
@@ -779,7 +779,7 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
     """Todos carrying an open ``child-failed:<job_id>`` tag longer than
     ``CHILD_FAILED_PARKED_HOURS``.
 
-    ``bubble_job_failure`` (:mod:`precis.handlers._job_bubble`) tags the
+    ``bubble_job_failure`` (:mod:`precis.utils.job_bubble`) tags the
     parent and pulls it out of dispatch/doable rotation on any job
     failure; nothing else automated ever clears it (except, since
     2026-08-10, the sweeper's bounded ``unpark`` phase — see
@@ -838,8 +838,8 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                 title=_first_line(r[1]),
                 detail=(
                     f"parked {hours:.0f}h behind {tag} — a hard failure, a "
-                    f"streak-exhaustion past its one auto-decompose attempt "
-                    f"(gripe 168886 tier 2), or a decompose tick still "
+                    f"streak-exhaustion past its one auto-decompose attempt, "
+                    f"or a decompose tick still "
                     f"queued/running behind a busy dispatch backlog; check "
                     f"the job's job_result / job_event chunks or "
                     f"view='attention' for the recovery options"
@@ -1157,7 +1157,7 @@ def _detect_orphaned_coordinator(store: Store) -> list[Symptom]:
       are excluded — those are already surfaced (``child-failed-parked``,
       ``halt:*`` on ``view='attention'``); this detector is for the case
       where *nothing* flagged it at all, e.g. an infra-class failure inside
-      the bounded-retry window (:mod:`precis.handlers._job_bubble`) whose
+      the bounded-retry window (:mod:`precis.utils.job_bubble`) whose
       retry never got a chance to run because dispatch itself is dark.
 
     Degrade-safe: the two-lineage query is more involved than the sibling
@@ -1280,7 +1280,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Symptom]:
                     f"lineage's newest job (#{job_id}) rested STATUS:failed "
                     f"{dark_h:.1f}h ago (> {ORPHANED_COORDINATOR_STALE_HOURS}h) "
                     "with no newer child minted and no child-failed/halt tag — "
-                    "likely an infra retry (handlers/_job_bubble.py) that "
+                    "likely an infra retry (utils/job_bubble.py) that "
                     "never got a dispatch pass to act on it; check whether "
                     "dispatch is running"
                 ),

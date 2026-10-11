@@ -2270,7 +2270,7 @@ class ChunkStore:
         caller *why* the handle failed to resolve — a typo naming nothing
         (``None``) versus a real chunk whose source has since been retired
         (a tombstone). The draft write-path gate
-        (``handlers/_draft_lint.newly_unresolvable_tokens``) uses exactly
+        (``draft/lint.newly_unresolvable_tokens``) uses exactly
         that split to hard-refuse the former while leaving the latter
         advisory."""
         with self.pool.connection() as conn:
@@ -2605,6 +2605,38 @@ class ChunkStore:
                 (list(ref_ids),),
             ).fetchall()
         return {int(r[0]) for r in rows}
+
+    def usable_body_ref_ids(self, ref_ids: list[int]) -> set[int]:
+        """Subset of ``ref_ids`` with a body chunk AND no unusable-body tag
+        (``body:partial`` / ``body:needs_ocr``). The read-for-question
+        gates' "fetched" test; :meth:`ref_ids_with_chunks` stays the raw
+        chunk presence check."""
+        from precis.store._body_predicate import unusable_body_tag_sql
+
+        if not ref_ids:
+            return set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT c.ref_id FROM chunks c "
+                "WHERE c.ref_id = ANY(%s) AND c.ord >= 0 "
+                f"AND NOT {unusable_body_tag_sql('c')}",
+                (list(ref_ids),),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def count_usable_chunks(self, ref_id: int) -> int:
+        """:meth:`count_chunks`, but 0 for a ref tagged ``body:partial`` /
+        ``body:needs_ocr`` (its held text is not the article body)."""
+        from precis.store._body_predicate import unusable_body_tag_sql
+
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM chunks c WHERE c.ref_id = %s AND c.ord >= 0 "
+                f"AND NOT {unusable_body_tag_sql('c')}",
+                (ref_id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
 
     def count_chunks(self, ref_id: int) -> int:
         """Total body chunks on a ref (ord>=0). Tiny indexed count."""

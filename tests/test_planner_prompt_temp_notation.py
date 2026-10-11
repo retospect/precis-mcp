@@ -1,12 +1,12 @@
 """The planner contract's temperature/unit notation teaching must agree with
-the draft write-path lint (``handlers/_draft_lint.py::temperature_form_hint``)
+the draft write-path lint (``draft/lint.py::temperature_form_hint``)
 — the same writing agent sees both, so a disagreement means it's taught one
 style and then immediately told to rewrite it (units-cutover prompt-surface
 audit, item 11)."""
 
 from __future__ import annotations
 
-from precis.handlers._draft_lint import temperature_form_hint
+from precis.draft.lint import temperature_form_hint
 from precis.workers.planner_prompt import _PLANNER_CONTRACT
 
 

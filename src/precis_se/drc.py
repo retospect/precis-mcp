@@ -136,8 +136,10 @@ class DrcReport:
 
 _BORE_NAMES = ("bore",)
 _SHAFT_NAMES = ("od", "shaft", "axle", "outer")
-#: nominal mate tolerance in metres (0.05 mm).
-_MATE_TOL_M = 5e-5
+#: nominal mate tolerance as a fraction of the bore diameter (0.05 mm on a
+#: 17 mm bore). Relative, not absolute: a fixed 0.05 mm would wave through
+#: every mismatch on a micro- or nanoscale design (units policy item 4).
+_MATE_TOL_REL = 3e-3
 
 
 def _declared_dims(tree: SeTree, block: str, tokens: tuple[str, ...]) -> list[Any]:
@@ -391,8 +393,8 @@ def drc(tree: SeTree) -> DrcReport:
     # declares a bore and the other an OD/shaft diameter, they must mate.
     # No repo fit data covers shaft/bore pairs (fit_classes is screw
     # clearance holes only), so this is nominal equality within
-    # _MATE_TOL_M for a `bearing`, and "shaft not smaller than bore" for a
-    # `press`. A relation between the two blocks owns the offset: skipped.
+    # _MATE_TOL_REL of the bore for a `bearing`, and "shaft not smaller
+    # than bore" for a `press`. A relation between the two blocks owns the offset: skipped.
     for c in tree.connects:
         mech = c.joint.get("mechanism") if c.joint else None
         if mech not in ("bearing", "press"):
@@ -405,11 +407,12 @@ def drc(tree: SeTree) -> DrcReport:
             for bore in _declared_dims(tree, bore_blk, _BORE_NAMES):
                 for shaft in _declared_dims(tree, shaft_blk, _SHAFT_NAMES):
                     delta = float(shaft.value) - float(bore.value)
+                    tol = _MATE_TOL_REL * abs(float(bore.value))
                     if mech == "bearing":
-                        bad = abs(delta) > _MATE_TOL_M
+                        bad = abs(delta) > tol
                         why = f"differ by {abs(delta):.6g} m"
                     else:
-                        bad = delta < -_MATE_TOL_M
+                        bad = delta < -tol
                         why = f"shaft is {-delta:.6g} m smaller than the bore"
                     if bad:
                         findings.append(
@@ -420,7 +423,7 @@ def drc(tree: SeTree) -> DrcReport:
                                     f"{bore.block}.{bore.name}={bore.value:g} vs "
                                     f"{shaft.block}.{shaft.name}={shaft.value:g} "
                                     f"({mech}): {why}; nominal check, tol "
-                                    f"{_MATE_TOL_M:g} m — fix a dimension or "
+                                    f"{tol:.3g} m — fix a dimension or "
                                     "declare a tolerance relation"
                                 ),
                                 severity="warn",

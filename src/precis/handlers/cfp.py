@@ -31,8 +31,10 @@ The inverse of the proposal-project ``has-requirement`` link
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar
 
+from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.protocol import KindSpec
 
@@ -96,6 +98,31 @@ class CfpHandler(PaperHandler):
     def accepted_views(self, *, id: Any = None) -> list[str]:
         # Spec docs expose the reading views only — no citation exports.
         return list(_CFP_VIEWS)
+
+    # ``source_url`` is the page the WATCH re-check fetches
+    # (workers/cfp_watch.py); it lives in ``refs.meta.source_url``.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "edit": frozenset({"source_url"}),
+    }
+
+    def _edit_args(
+        self, ref_id: int, args: dict[str, Any] | None, *, dry: bool
+    ) -> list[str]:
+        """``edit(args={'source_url': 'https://…'})`` — the page ``WATCH:*``
+        re-checks fetch (workers/cfp_watch.py), stored in ``meta.source_url``."""
+        url = (args or {}).get("source_url")
+        if url is None:
+            return []
+        url = str(url).strip()
+        if not re.match(r"https?://[^\s/]+", url):
+            raise BadInput(
+                "source_url must be an http(s) URL",
+                next="edit(kind='cfp', id=<slug|id>, "
+                "args={'source_url': 'https://example.org/call'})",
+            )
+        if not dry:
+            self.store.stamp_ref_meta(ref_id, {"source_url": url})
+        return [f"source_url={url}"]
 
 
 __all__ = ["CfpHandler"]

@@ -31,6 +31,7 @@ import contextvars
 import math
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from itertools import islice
 from typing import Any
 
 from psycopg import Connection
@@ -45,8 +46,17 @@ from precis.pcb.capabilities import capability_for
 from precis.store.types import ActorSlug
 
 
-def _validate_pin_declarations(pins: list[dict[str, Any]], component: str) -> None:
-    """Check canonical ownership without choosing a winner or rebinding."""
+def _validate_pin_declarations(
+    pins: list[dict[str, Any]],
+    component: str,
+    pin_map: dict[str, Any] | None = None,
+) -> None:
+    """Check canonical ownership without choosing a winner or rebinding.
+
+    ``pin_map`` is the component's footprint ``pin_map`` (pad number ->
+    ``{"name": ...}``), when known. An explicit pad the footprint already
+    maps to a different pin name is a conflict (gr467885), unless that
+    other pin is itself explicitly re-padded in ``pins``."""
     by_name: dict[str, str | None] = {}
     by_pad: dict[str, str] = {}
     for pin in pins:
@@ -70,6 +80,23 @@ def _validate_pin_declarations(pins: list[dict[str, Any]], component: str) -> No
         by_name[name] = pad
         if pad is not None:
             by_pad[pad] = name
+    for name, pad in by_name.items():
+        entry = (pin_map or {}).get(pad) if pad is not None else None
+        owner = entry.get("name") if isinstance(entry, dict) else None
+        if owner is None or str(owner) in (name, pad):
+            continue  # unmapped, same pin, or the normalizer's identity entry
+        owner = str(owner)
+        if by_name.get(owner) is not None and by_name[owner] != pad:
+            continue  # the footprint's pin is re-padded in this same put
+        raise ValueError(
+            f"component {component}: pin {name!r} declares pad {pad!r}, but the "
+            f"footprint maps pad {pad!r} to pin {owner!r}; use one canonical "
+            "name for this physical pad in pins and connections, or correct "
+            "the erroneous pad number"
+        )
+
+
+_BULK_BATCH = 2000  # rows per round trip in parts_bulk_replace
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
@@ -670,7 +697,13 @@ class PcbMixin:
             if not refdes:
                 raise ValueError("pcb component needs a refdes")
             declarations.setdefault(refdes, []).extend(c.get("pins") or [])
-            _validate_pin_declarations(declarations[refdes], refdes)
+            _validate_pin_declarations(
+                declarations[refdes],
+                refdes,
+                self._pcb_footprint_pin_map(conn, ref.id, c, inst_by_refdes.get(refdes))
+                if any(p.get("pad") is not None for p in declarations[refdes])
+                else None,
+            )
             if refdes in inst_by_refdes:
                 continue  # already placed; skip (re-runnable)
             comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
@@ -953,6 +986,46 @@ class PcbMixin:
         assert row is not None
         return int(row[0])
 
+    def _pcb_footprint_pin_map(
+        self,
+        conn: Connection,
+        ref_id: int,
+        c: dict[str, Any],
+        existing: tuple[int, int] | None,
+    ) -> dict[str, Any] | None:
+        """The ``pin_map`` of the footprint a component resolves to, by the
+        same precedence readers use (``session.footprints_by_refdes``):
+        the catalog part's cached footprint first, else the design-local
+        footprint named by ``footprint``. An already-stored component
+        contributes its stored part/footprint when the put omits them."""
+        part = c.get("part_lcsc") or c.get("part")
+        name = c.get("footprint")
+        if existing is not None and not (part and name):
+            row = conn.execute(
+                "SELECT part_lcsc, footprint FROM pcb_components "
+                "WHERE component_id = %s",
+                (existing[1],),
+            ).fetchone()
+            if row is not None:
+                part = part or row[0]
+                name = name or row[1]
+        if part:
+            row = conn.execute(
+                "SELECT pin_map FROM part_footprints WHERE lcsc = %s",
+                (str(part).strip().upper(),),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+        if name:
+            row = conn.execute(
+                "SELECT pin_map FROM pcb_local_footprints "
+                "WHERE ref_id = %s AND name = %s",
+                (ref_id, str(name)),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+        return None
+
     def _pcb_resolve_parts(
         self, conn: Connection, lcscs: list[str]
     ) -> dict[str, dict[str, Any]]:
@@ -1056,7 +1129,13 @@ class PcbMixin:
         # instance dict for `precis.pcb.ir.from_graph` to parse.
         meta = {
             k: c[k]
-            for k in ("group", "group_offset", "pattern", "pattern_instance")
+            for k in (
+                "group",
+                "group_offset",
+                "pattern",
+                "pattern_instance",
+                "edge_mate",
+            )
             if c.get(k) is not None
         }
         row = conn.execute(
@@ -1633,6 +1712,7 @@ class PcbMixin:
                             "group_offset",
                             "pattern",
                             "pattern_instance",
+                            "edge_mate",
                         )
                         if k in (r[12] or {})
                     },
@@ -3328,7 +3408,7 @@ class PcbMixin:
         Upsert (not the atomic swap) keeps the table live and the FK-free
         ``part_footprints`` / ``part_availability`` caches intact; the
         staging + atomic-swap (:meth:`parts_bulk_replace`) is the scale
-        lever for the full ~300k dump (the PCB netlist+placement IR —
+        lever for the full dump (v1 ~300k, v2 ~2M rows) (the PCB netlist+placement IR —
         "drop-index trick optional at our row count")."""
         counts = {"upserted": 0, "restocked": 0}
         with self._pcb_tx() as conn:
@@ -3422,35 +3502,39 @@ class PcbMixin:
         with self._pcb_tx() as conn:
             conn.execute(f"DROP TABLE IF EXISTS {staging}")
             conn.execute(f"CREATE TABLE {staging} (LIKE parts INCLUDING ALL)")
-            for r in rows:
-                lcsc = r["lcsc"]
-                new_stock = int(r.get("stock") or 0)
-                if self._parts_update_availability(conn, lcsc, new_stock):
-                    counts["restocked"] += 1
-                conn.execute(
-                    f"""
-                    INSERT INTO {staging}
-                        (lcsc, mfr, mfr_part, description, jlcpcb_assemblable,
-                         basic, stock, price, package, height_mm, params,
-                         datasheet_url)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        lcsc,
-                        r.get("mfr"),
-                        r.get("mfr_part"),
-                        r.get("description") or "",
-                        bool(r.get("jlcpcb_assemblable", True)),
-                        bool(r.get("basic", False)),
-                        new_stock,
-                        _jsonb_or_none(r.get("price")),
-                        r.get("package"),
-                        r.get("height_mm"),
-                        _jsonb_or_none(r.get("params")),
-                        r.get("datasheet_url"),
-                    ),
+            it = iter(rows)
+            while batch := list(islice(it, _BULK_BATCH)):
+                counts["restocked"] += self._parts_update_availability_many(
+                    conn, [(r["lcsc"], int(r.get("stock") or 0)) for r in batch]
                 )
-                counts["loaded"] += 1
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        f"""
+                        INSERT INTO {staging}
+                            (lcsc, mfr, mfr_part, description,
+                             jlcpcb_assemblable, basic, stock, price, package,
+                             height_mm, params, datasheet_url)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        [
+                            (
+                                r["lcsc"],
+                                r.get("mfr"),
+                                r.get("mfr_part"),
+                                r.get("description") or "",
+                                bool(r.get("jlcpcb_assemblable", True)),
+                                bool(r.get("basic", False)),
+                                int(r.get("stock") or 0),
+                                _jsonb_or_none(r.get("price")),
+                                r.get("package"),
+                                r.get("height_mm"),
+                                _jsonb_or_none(r.get("params")),
+                                r.get("datasheet_url"),
+                            )
+                            for r in batch
+                        ],
+                    )
+                counts["loaded"] += len(batch)
             # Shrink guard — see the docstring. A clean-but-empty load is
             # the dangerous case precisely because nothing raised.
             live = conn.execute("SELECT count(*) FROM parts").fetchone()
@@ -3493,6 +3577,60 @@ class PcbMixin:
                 "FK (the swap drops the table).'"
             )
         return counts
+
+    def _parts_update_availability_many(
+        self, conn: Connection, items: list[tuple[str, int]]
+    ) -> int:
+        """Batched :meth:`_parts_update_availability` (same turnover maths):
+        one SELECT + two ``executemany`` per batch instead of ~3 round trips
+        per part — what makes a ~2M-row reload tractable. A duplicate lcsc
+        inside one batch rolls forward sequentially. Returns restock count."""
+        prev = {
+            r[0]: (int(r[1] or 0), float(r[2] or 0.0))
+            for r in conn.execute(
+                "SELECT lcsc, stock_now, ewma_stock FROM part_availability "
+                "WHERE lcsc = ANY(%s)",
+                ([lcsc for lcsc, _ in items],),
+            ).fetchall()
+        }
+        inserts: dict[str, tuple[Any, ...]] = {}
+        updates: list[tuple[Any, ...]] = []
+        restocked = 0
+        for lcsc, new_stock in items:
+            if lcsc not in prev:
+                inserts[lcsc] = (lcsc, new_stock, new_stock, float(new_stock))
+                prev[lcsc] = (new_stock, float(new_stock))
+                continue
+            old_stock, old_ewma = prev[lcsc]
+            up = new_stock > old_stock
+            restocked += up
+            ewma = 0.7 * old_ewma + 0.3 * new_stock
+            if lcsc in inserts:  # first seen earlier in this same batch
+                inserts[lcsc] = (lcsc, new_stock, old_stock, ewma)
+            else:
+                updates.append(
+                    (new_stock, ewma, new_stock - old_stock, 1 if up else 0, up, lcsc)
+                )
+            prev[lcsc] = (new_stock, ewma)
+        with conn.cursor() as cur:
+            if inserts:
+                cur.executemany(
+                    "INSERT INTO part_availability "
+                    "(lcsc, stock_now, stock_prev, ewma_stock, restock_count, "
+                    "trend) VALUES (%s, %s, %s, %s, 0, 0)",
+                    list(inserts.values()),
+                )
+            if updates:
+                cur.executemany(
+                    "UPDATE part_availability SET stock_prev = stock_now, "
+                    "stock_now = %s, ewma_stock = %s, trend = %s, "
+                    "restock_count = restock_count + %s, "
+                    "last_restock_at = CASE WHEN %s THEN now() "
+                    "ELSE last_restock_at END, "
+                    "discontinued = false, updated_at = now() WHERE lcsc = %s",
+                    updates,
+                )
+        return restocked
 
     def _parts_update_availability(
         self, conn: Connection, lcsc: str, new_stock: int

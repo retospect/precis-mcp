@@ -40,14 +40,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, NotFound, Upstream
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    require_link_target,
-    require_tag_ops,
-    validate_link_mode,
-)
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler
 from precis.response import Response
@@ -57,6 +49,14 @@ from precis.utils import handle_registry
 from precis.utils.chunk_ingest import to_chunk_inserts
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.inject_scan import inject_meta, scan_tier0
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
+)
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.mentions import LINKIFY_KINDS
 from precis.utils.next_block import render_next_section

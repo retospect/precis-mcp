@@ -21,17 +21,17 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qsl
 
 from precis.errors import BadInput
-from precis.handlers import _todo_guards as todo_guards
-from precis.handlers._link_tag_ops import (
-    guard_taxon_hierarchy,
-    validate_relation,
-)
-from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import Ref
+from precis.todo import guards as todo_guards
+from precis.utils.link_tag_ops import (
+    guard_taxon_hierarchy,
+    validate_relation,
+)
+from precis.utils.link_target import parse_link_target
 from precis.utils.next_block import render_next_section
 from precis.utils.timeutil import as_utc
 from precis.workers.executors import (
@@ -249,7 +249,7 @@ class JobHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "logs", "builds")
+        return ("recent", "logs", "builds", "throughput")
 
     def get(
         self,
@@ -284,7 +284,118 @@ class JobHandler(NumericRefHandler):
         if view == "builds" or view.startswith("builds?"):
             _, _, query_string = view.partition("?")
             return self._render_builds_view(query_string)
+        if view == "throughput" or view.startswith("throughput?"):
+            _, _, query_string = view.partition("?")
+            return self._render_throughput_view(query_string)
         return super()._list_view(view)
+
+    def _render_throughput_view(self, query_string: str) -> Response:
+        """``id='/throughput?since=<hrs>'`` — is the fleet working or idle?
+
+        The nursery's detectors all answer "is work stuck?"; silence from
+        them reads the same for a flat-out fleet and one doing nothing
+        (gr458727). This view is the measurement, read-only, no alerting
+        (idle is often the correct state). One row per ``(host, process)``
+        from the lease stamps: ``claimed`` (first claim inside the window),
+        ``succeeded`` / ``failed`` (terminal and last touched inside the
+        window), ``running`` now. A trailer gives the current queue depth by
+        executor, so "idle" is read next to "and there was nothing to do".
+        Heartbeating hosts with no claim in the window are listed as
+        ``claimed=0``.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        since_hours = _parse_logs_int(
+            params.get("since"),
+            default=_BUILDS_DEFAULT_SINCE_HOURS,
+            field="since",
+            example="since=24 (default) — hours to look back, max 168",
+        )
+        if since_hours <= 0:
+            raise BadInput(
+                f"since={since_hours} must be a positive number of hours",
+                next="since=24 (default) — hours to look back, max 168",
+            )
+        since_hours = min(since_hours, _LOGS_MAX_SINCE_HOURS)
+        cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH j AS (
+                  SELECT COALESCE(r.meta->>'lease_host', '?')    AS host,
+                         COALESCE(r.meta->>'lease_process', '?') AS process,
+                         (r.meta->>'started_at')::timestamptz    AS started,
+                         r.updated_at                            AS touched,
+                         (SELECT t.value FROM ref_tags rt
+                            JOIN tags t ON t.tag_id = rt.tag_id
+                           WHERE rt.ref_id = r.ref_id
+                             AND t.namespace = 'STATUS' LIMIT 1)  AS status
+                    FROM refs r
+                   WHERE r.kind = 'job' AND r.meta ? 'lease_host'
+                )
+                SELECT host, process,
+                       count(*) FILTER (WHERE started >= %(cutoff)s),
+                       count(*) FILTER (WHERE status = 'succeeded'
+                                         AND touched >= %(cutoff)s),
+                       count(*) FILTER (WHERE status = 'failed'
+                                         AND touched >= %(cutoff)s),
+                       count(*) FILTER (WHERE status = 'running'),
+                       max(started)
+                  FROM j
+                 GROUP BY 1, 2
+                HAVING count(*) FILTER (WHERE started >= %(cutoff)s
+                                           OR touched >= %(cutoff)s
+                                           OR status = 'running') > 0
+                 ORDER BY 1, 2
+                """,
+                {"cutoff": cutoff},
+            ).fetchall()
+            queued = conn.execute(
+                """
+                SELECT COALESCE(r.meta->>'executor', '?'), count(*)
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'job' AND t.namespace = 'STATUS'
+                   AND t.value = 'queued'
+                 GROUP BY 1 ORDER BY 1
+                """
+            ).fetchall()
+            beating = conn.execute(
+                "SELECT host FROM host_heartbeat WHERE ts >= %s ORDER BY host",
+                (cutoff,),
+            ).fetchall()
+
+        lines = [
+            f"# fleet throughput — from job lease stamps, since={since_hours}h "
+            f"(cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})",
+            "# claimed = first claim in window; succeeded/failed = terminal and "
+            "last touched in window; running = now",
+            "",
+        ]
+        seen_hosts = {str(r[0]) for r in rows}
+        for host, process, claimed, ok, failed, running, last in rows:
+            last_s = as_utc(last)
+            lines.append(
+                f"{host} {process} claimed={claimed} succeeded={ok} "
+                f"failed={failed} running={running} last_claim="
+                + (last_s.strftime("%Y-%m-%dT%H:%M:%SZ") if last_s else "-")
+            )
+        silent = [str(h[0]) for h in beating if str(h[0]) not in seen_hosts]
+        for host in silent:
+            lines.append(f"{host} (heartbeating) claimed=0 — no job activity")
+        if not rows and not silent:
+            lines.append("no job activity and no heartbeating host in this window")
+        total = sum(int(r[2]) for r in rows)
+        lines.append("")
+        lines.append(f"{total} claim(s) across {len(rows)} host/process row(s).")
+        depth = ", ".join(f"{e}={n}" for e, n in queued) or "none"
+        lines.append(f"queued now by executor: {depth}")
+        lines.append(
+            "Idle beside an empty queue is healthy; idle beside queued work "
+            "is the fault. Measurement only: no alert reads this."
+        )
+        return Response(body="\n".join(lines))
 
     def _render_builds_view(
         self, query_string: str, *, sha: str | None = None
@@ -445,7 +556,9 @@ class JobHandler(NumericRefHandler):
         defaulting to WARNING so a bare ``id='/logs'`` reads as "what's
         currently wrong" rather than a full firehose. ``since=`` is
         hours, capped at a week so a stray huge value can't seq-scan the
-        whole table.
+        whole table. ``job=<id>`` (``jo123`` or ``123``) replaces the
+        ``since=`` cutoff with the job's run window ±5 min and, unless
+        ``host=`` is given, restricts to the host that claimed it.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
 
@@ -502,6 +615,17 @@ class JobHandler(NumericRefHandler):
             "cutoff": cutoff,
             "levels": allowed_levels,
         }
+        job_raw = (params.get("job") or "").strip() or None
+        window: tuple[int, datetime, datetime, str | None] | None = None
+        if job_raw:
+            window = self._job_log_window(job_raw)
+            _, win_start, win_end, job_host = window
+            where[0] = "ts BETWEEN %(win_start)s AND %(win_end)s"
+            del sql_params["cutoff"]
+            sql_params["win_start"] = win_start
+            sql_params["win_end"] = win_end
+            if host is None:
+                host = job_host
         if handler:
             where.append(
                 "(pass = %(handler)s OR logger = %(handler)s "
@@ -537,10 +661,19 @@ class JobHandler(NumericRefHandler):
                 {**sql_params, "limit": limit},
             ).fetchall()
 
-        filter_bits = [
-            f"since={since_hours}h (cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})",
-            f"level>={level}",
-        ]
+        if window is not None:
+            fmt = "%Y-%m-%dT%H:%M:%SZ"
+            filter_bits = [
+                f"job=jo{window[0]} window {window[1].strftime(fmt)}.."
+                f"{window[2].strftime(fmt)} (since= ignored)",
+                f"level>={level}",
+            ]
+        else:
+            filter_bits = [
+                f"since={since_hours}h "
+                f"(cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})",
+                f"level>={level}",
+            ]
         if handler:
             filter_bits.append(f"handler={handler!r}")
         if host:
@@ -587,6 +720,61 @@ class JobHandler(NumericRefHandler):
         lines.append("")
         lines.append(f"{len(rows)} rows shown of {total} matching")
         return Response(body="\n".join(lines))
+
+    def _job_log_window(self, raw: str) -> tuple[int, datetime, datetime, str | None]:
+        """Resolve ``job=`` to ``(job_id, start-5min, end+5min, lease_host)``.
+
+        Start is ``meta.started_at`` (first claim; ``created_at`` for a
+        claimed job that predates the stamp). End is the last attempt's start
+        (newest ``meta.reclaims`` entry, else start) + ``wall_seconds`` when
+        recorded, else ``updated_at`` for a terminal job, else now.
+        """
+        hint = "job=jo<N> — a job id from search(kind='job') (jo123 or 123)"
+        digits = raw[2:] if raw.lower().startswith("jo") else raw
+        try:
+            job_id = int(digits)
+        except ValueError as exc:
+            raise BadInput(f"job={raw!r} is not a job id", next=hint) from exc
+        ref = self.store.get_ref(kind=self.kind, id=job_id)
+        if ref is None:
+            raise BadInput(f"job={raw!r} not found", next=hint)
+        meta = ref.meta or {}
+        started: datetime | None = None
+        raw_started = meta.get("started_at")
+        if isinstance(raw_started, str):
+            started = as_utc(raw_started)
+        if started is None:
+            if not meta.get("lease_host"):
+                raise BadInput(
+                    f"job jo{job_id} was never claimed — no worker logs exist for it",
+                    next=f"get(kind='job', id={job_id}) to check its status",
+                )
+            started = as_utc(ref.created_at)
+        if started is None:
+            raise BadInput(f"job jo{job_id} has no usable start time", next=hint)
+        # A reclaimed job keeps its first started_at; the last attempt
+        # begins at the newest meta.reclaims[].at, so measure from there.
+        now = datetime.now(UTC)
+        last_start = started
+        for rec in meta.get("reclaims") or []:
+            at = as_utc(rec.get("at")) if isinstance(rec, dict) else None
+            if at is not None and at > last_start:
+                last_start = at
+        wall = meta.get("wall_seconds")
+        if isinstance(wall, int | float) and 0 < wall <= _LOGS_MAX_SINCE_HOURS * 3600:
+            end = last_start + timedelta(seconds=float(wall))
+        elif _status_of(self.store.tags_for(ref.id)) in _TERMINAL_STATUSES:
+            end = max(as_utc(ref.updated_at) or now, last_start)
+        else:
+            end = now
+        pad = timedelta(minutes=5)
+        lease_host = meta.get("lease_host")
+        return (
+            job_id,
+            started - pad,
+            end + pad,
+            str(lease_host) if lease_host else None,
+        )
 
     # ── put: validated submit ───────────────────────────────────────
 
@@ -935,14 +1123,14 @@ class JobHandler(NumericRefHandler):
         ``model`` (optional) swaps the parent's ``meta.llm_tier`` before
         clearing the bubble, so the re-minted tick runs on a different
         tier. Closed-vocab (``opus``/``sonnet``/``haiku``) — validated by
-        :func:`precis.handlers._todo_guards.check_llm_tier_meta`. Only
+        :func:`precis.todo.guards.check_llm_tier_meta`. Only
         valid on an LLM-planner todo (one that already has
         ``meta.llm_tier`` set); a code-path executor job has no model
         knob.
 
         ``select`` (optional) is the structured ``meta.llm_select`` sibling
          — placement/thinking/effort/temperature — validated by
-        :func:`~precis.handlers._todo_guards.check_llm_select_meta` and
+        :func:`~precis.todo.guards.check_llm_select_meta` and
         written onto the parent alongside ``llm_tier`` when a ``model``
         change also lands. When ``model`` is given but ``select`` isn't,
         the parent's existing ``meta.llm_select`` (if any) is left
@@ -965,7 +1153,7 @@ class JobHandler(NumericRefHandler):
                 next="wait for the job to reach a terminal state, or delete it",
             )
 
-        from precis.handlers._job_bubble import _lookup_parent
+        from precis.utils.job_bubble import _lookup_parent
 
         parent_id, parent_kind = _lookup_parent(self.store, job_id, conn=None)
         if parent_id is None or parent_kind != "todo":
@@ -1085,7 +1273,7 @@ class JobHandler(NumericRefHandler):
         """
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         if add and any(a == "STATUS:failed" for a in add):
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             job_id = self._coerce_id(id)
             bubble_job_failure(self.store, job_id)

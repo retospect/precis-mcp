@@ -7,7 +7,7 @@ EPO OPS returns variants of the WIPO ST.36 schema (with OPS-specific
   inventors, dates, classifications, DOCDB ``family_id``, and priority
   claims (patent-evidence-parity Phase 2 — the family
   identity + priority-claim set ``_patent_ingest.py`` reads to decide
-  simple-family stubbing; see :mod:`precis.handlers._patent_family` for
+  simple-family stubbing; see :mod:`precis.patent.family` for
   the read-side family-representative helper).
 * ``description`` — patent body, paragraphs in ``<p>`` elements
   inside ``<description>``.

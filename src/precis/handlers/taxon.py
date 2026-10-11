@@ -16,7 +16,7 @@ meta={'axis': ...})`` (child -> parent), ``get(view='path')`` and
 ``get(id='/unmapped')``: seeded nodes whose legacy dimension label had no
 mapping and so carry no ``dimension_kind``. The link rules (taxon at both ends, no cycle, the
 inherited start-node contract) live in
-:func:`precis.handlers._link_tag_ops.guard_taxon_hierarchy`, called from every
+:func:`precis.utils.link_tag_ops.guard_taxon_hierarchy`, called from every
 link door; traversal is :mod:`precis.store._taxon_ops`.
 
 Stage C adds search and dedup:

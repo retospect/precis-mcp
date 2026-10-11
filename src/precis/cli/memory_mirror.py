@@ -79,6 +79,9 @@ class MirrorReport:
     retired_missing: list[str] = field(default_factory=list)
     #: Export: native nodes (no ``file_mirror``) rendered to new files and stamped.
     exported_native: list[str] = field(default_factory=list)
+    #: Import: live legacy repo-dev nodes with no confident topic match; never
+    #: retired or adopted, listed as ``me<id> '<title>'`` for explicit handling.
+    legacy_unmatched: list[str] = field(default_factory=list)
     #: Import: legacy nodes adopted in place by ``legacy='refresh'`` (not in created).
     refreshed: list[str] = field(default_factory=list)
 
@@ -263,18 +266,60 @@ def _state(
     )
 
 
-def _legacy_nodes(conn: Connection, titles: set[str]) -> list[tuple[int, str]]:
-    """Live repo-dev memories with no ``file_mirror`` key titled like a topic."""
+def _norm(value: str) -> str:
+    """Title/slug/stem comparison key: case, spacing, dashes and ``.md`` ignored."""
+    value = value.strip()
+    if value.casefold().endswith(".md"):
+        value = value[:-3]
+    return slugify(value).replace("-", "_")
+
+
+def _legacy_nodes(conn: Connection) -> list[tuple[int, str, set[str]]]:
+    """Live repo-dev memories with no ``file_mirror`` key: id, title, match keys.
+
+    The keys are the normalized title and ``meta.slug`` (the one-shot importer's
+    handle); a node is matched to a topic only through them, see ``_split_legacy``.
+    """
     rows = conn.execute(
-        "SELECT r.ref_id, r.title FROM refs r WHERE r.kind='memory' "
-        "AND r.retired_at IS NULL AND NOT (r.meta ? %s) AND r.title = ANY(%s) "
+        "SELECT r.ref_id, r.title, r.meta->>'slug' FROM refs r "
+        "WHERE r.kind='memory' "
+        "AND r.retired_at IS NULL AND NOT (r.meta ? %s) "
         "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id=rt.tag_id "
         "WHERE rt.ref_id=r.ref_id AND t.namespace='SPACE' AND t.value='repo-dev' "
         "AND (rt.expires_at IS NULL OR rt.expires_at > now())) "
         "ORDER BY r.ref_id FOR NO KEY UPDATE OF r",
-        (_KEY, sorted(titles)),
+        (_KEY,),
     ).fetchall()
-    return [(int(rid), str(title)) for rid, title in rows]
+    return [
+        (int(rid), str(title), {k for k in (_norm(str(title)), _norm(slug or "")) if k})
+        for rid, title, slug in rows
+    ]
+
+
+def _split_legacy(
+    nodes: list[tuple[int, str, set[str]]], files: dict[str, _File]
+) -> tuple[list[tuple[int, str, str]], list[tuple[int, str]]]:
+    """Split legacy nodes into confident matches ``(id, title, topic key)`` and rest.
+
+    A topic's keys are its ``name:`` and its filename stem. A node matches only
+    when its keys hit exactly one topic: a key shared by two topics is not
+    confident, so the node stays unmatched (reported, never retired).
+    """
+    topic_keys: dict[str, set[str]] = {}
+    for fname, f in files.items():
+        if fname == "MEMORY.md":
+            continue
+        for key in {_norm(f.title), _norm(fname)} - {""}:
+            topic_keys.setdefault(key, set()).add(fname)
+    matched: list[tuple[int, str, str]] = []
+    unmatched: list[tuple[int, str]] = []
+    for rid, title, keys in nodes:
+        hit = {fn for k in keys for fn in topic_keys.get(k, ())}
+        if len(hit) == 1:
+            matched.append((rid, title, next(iter(hit))))
+        else:
+            unmatched.append((rid, title))
+    return matched, unmatched
 
 
 def _unexported(conn: Connection, namespace: str) -> list[str]:
@@ -364,11 +409,14 @@ def import_mirror(
     """Atomically import a file snapshot; refuse conflicting graph changes.
 
     ``legacy`` decides what happens to live repo-dev nodes made by the one-shot
-    importer (no ``file_mirror`` key, title equal to a topic's ``name:``):
+    importer (no ``file_mirror`` key) that confidently match one topic by
+    normalized title or ``meta.slug`` against its ``name:`` or filename stem.
+    Unmatched legacy nodes are never retired or adopted: they are listed in
+    ``report.legacy_unmatched``:
     ``refuse`` (default) raises, ``retire`` soft-deletes them in this
     transaction, ``keep`` imports beside them, ``refresh`` adopts each in place
     (same ref_id and inbound links, ``file_mirror`` stamped, body and links
-    rewritten as for a new node; several nodes with one title refuse).
+    rewritten as for a new node; several nodes for one topic refuse).
     ``missing`` decides the nodes of files deleted since the last import:
     ``keep`` (default) leaves them live and only lists them; ``retire``
     soft-deletes them once validation passes (``MEMORY.md``'s node, the index
@@ -388,38 +436,31 @@ def import_mirror(
         nodes = _nodes(conn, namespace)
         adopt: dict[str, int] = {}
         if legacy != "keep":
-            found = _legacy_nodes(
-                conn,
-                {f.title for n, f in files.items() if n != "MEMORY.md"},
-            )
+            found, unmatched = _split_legacy(_legacy_nodes(conn), files)
+            report.legacy_unmatched = [f"me{rid} {title!r}" for rid, title in unmatched]
             if found and legacy == "refuse":
-                listing = "; ".join(f"me{rid} {title!r}" for rid, title in found)
+                listing = "; ".join(f"me{rid} {title!r}" for rid, title, _ in found)
                 raise ImportRefused(
-                    f"legacy nodes without file_mirror share topic titles: {listing}; "
+                    f"legacy nodes without file_mirror match topics: {listing}; "
                     "re-run with legacy='retire' (or --legacy retire) to soft-delete "
                     "them, or 'keep' to import beside them"
                 )
             if legacy == "refresh":
-                by_title: dict[str, list[int]] = {}
-                for rid, title in found:
-                    by_title.setdefault(title, []).append(rid)
-                for title, rids in by_title.items():
+                by_file: dict[str, list[int]] = {}
+                for rid, _title, fname in found:
+                    by_file.setdefault(fname, []).append(rid)
+                for fname, rids in by_file.items():
                     if len(rids) > 1:
                         listing = ", ".join(f"me{r}" for r in rids)
                         raise ImportRefused(
-                            f"ambiguous legacy nodes for title {title!r}: {listing}; "
+                            f"ambiguous legacy nodes for topic {fname!r}: {listing}; "
                             "retire all but one first"
                         )
-                for n, f in files.items():
-                    if n != "MEMORY.md" and n not in nodes and f.title in by_title:
-                        rid = by_title[f.title][0]
-                        if rid in adopt.values():
-                            raise ImportRefused(
-                                f"me{rid}: several files share title {f.title!r}"
-                            )
-                        adopt[n] = rid
+                for n in files:
+                    if n != "MEMORY.md" and n not in nodes and n in by_file:
+                        adopt[n] = by_file[n][0]
             else:
-                for rid, _title in found:
+                for rid, _title, _fname in found:
                     store.retire_ref(rid, conn=conn)
                     report.retired.append(f"me{rid}")
         folded = {name.casefold(): name for name in nodes}
@@ -556,7 +597,9 @@ def import_mirror(
     return report
 
 
-def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
+def export_mirror(
+    store: Store, dest: Path, *, namespace: str, stamp: bool = True
+) -> MirrorReport:
     """Export a locked snapshot to an exclusively new directory; never overwrite.
 
     Nodes carrying this namespace's ``file_mirror`` key are written byte-faithfully.
@@ -570,6 +613,11 @@ def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
     set it); handles go in ``exported_native``. ``created`` counts every file
     written. ``unexported`` lists the remaining live repo-dev
     nodes (another namespace's, or an empty or unsluggable title).
+
+    ``stamp=False`` is the backup mode: native nodes are rendered to files but
+    the graph is left untouched (no ``file_mirror`` stamp, no retitling), so
+    they stay visible to a later ``legacy`` selector; ``exported_native`` still
+    lists what was rendered.
     """
     _namespace(namespace)
     report = MirrorReport()
@@ -611,6 +659,9 @@ def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
             output[name] = raw
             stamps.append((rid, title, name, header, fm, meta, raw))
         stamped_ids = {st[0] for st in stamps}
+        if not stamp:
+            report.exported_native = [f"me{st[0]}" for st in stamps]
+            stamps = []
         report.unexported = [
             h for h in _unexported(conn, namespace) if int(h[2:]) not in stamped_ids
         ]

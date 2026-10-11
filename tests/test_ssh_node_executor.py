@@ -967,6 +967,78 @@ def test_legacy_dispatch_still_works_with_deprecation_warning(
     assert len(gr_warnings) == 1  # once per job_type, not once per job
 
 
+def test_hung_legacy_dispatch_is_cut_off_at_bound(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr336604: a legacy blocking dispatch that never returns is failed at
+    the outer wall-clock bound instead of holding the worker pass forever."""
+    import threading
+
+    release = threading.Event()
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(dispatch=lambda c, s: release.wait()),
+    )
+    monkeypatch.setattr(ssh_node, "_wall_bound_seconds", lambda meta: 1)
+    rid = _mk_job(store)
+
+    t0 = time.time()
+    try:
+        with caplog.at_level("ERROR", logger="precis.workers.executors.ssh_node"):
+            result = ssh_node.run_ssh_node_pass(store, limit=1)
+    finally:
+        release.set()
+
+    assert time.time() - t0 < 30
+    assert result["failed"] == 1 and result["ok"] == 0  # timeout counts failed
+    assert _status(store, rid) == "failed"
+    assert _meta(store, rid)["failure_class"] == "timeout"
+    assert any("gr336604" in r.getMessage() for r in caplog.records)
+    blocks = store.chunks.list_chunks_for_ref(rid)
+    assert any("wall-clock bound" in b.text for b in blocks)
+
+
+def test_abandoned_dispatch_thread_cannot_write_job_state(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr336604: after the bound fires, a late-returning dispatch calling
+    ctx.set_status('succeeded') is a logged no-op; the job stays failed."""
+    import threading
+
+    release = threading.Event()
+    done = threading.Event()
+    spawned: list[Any] = []
+
+    def _dispatch(ctx: Any, _spec: Any) -> None:
+        release.wait()
+        ctx.set_status("succeeded")
+        ctx.append_chunk("job_summary", "late write")
+        spawned.append(ctx.spawn_child("fake_relax", {}))
+        done.set()
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _spec(dispatch=_dispatch)
+    )
+    monkeypatch.setattr(ssh_node, "_wall_bound_seconds", lambda meta: 1)
+    rid = _mk_job(store)
+
+    with caplog.at_level("WARNING", logger="precis.workers.executors.ssh_node"):
+        ssh_node.run_ssh_node_pass(store, limit=1)
+        assert _status(store, rid) == "failed"
+        release.set()
+        assert done.wait(10)
+
+    assert _status(store, rid) == "failed"
+    assert not any(
+        "late write" in b.text for b in store.chunks.list_chunks_for_ref(rid)
+    )
+    assert any("abandoned dispatch thread" in r.getMessage() for r in caplog.records)
+    # spawn_child after abandonment is a logged no-op returning None.
+    assert spawned == [None]
+    assert any("ctx.spawn_child" in r.getMessage() for r in caplog.records)
+
+
 # ── §H piece 2: detached poll wall-clock deadline ───────────────────
 
 

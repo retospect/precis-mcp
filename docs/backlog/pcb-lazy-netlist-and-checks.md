@@ -439,102 +439,38 @@ from "you forgot".
 
 ### Slice 1 — `realized` tells the truth; the F.Cu neck reaches its electrode (gr449483, PRIO high)
 
-**Measured on prod 2026-09-24**, route job 449188, `ran_on` the deployed
-sha `8.34.0@1ae63c570bf6` — which contains every router fix (e311fdbf
-polygon touch, 8b899ca1 bottom mirror, 0600f679 layer-aware router,
-65f4e27f true-shape pad claims, af2da257 rulings 3/10/11). Design
-`ewod-dogfood-2`, DRC run `b13770b5`, 132 errors / 162 warnings.
+**Shipped (2026-10-11):** the route job asks `connectivity.net_islands`
+(via `session.split_nets`, over the same quantized model the post-route
+DRC gate judges) and a would-be-`realized` net whose copper is in more
+than one piece lands `failed` with reason `disconnected`
+(`workers/job_types/pcb_route.py`, `CODE_VERSION` 6). Tests: the
+set-identity check in `tests/test_pcb_ewod_dogfood.py`, the shortened-copper
+failure direction in `tests/workers/test_pcb_route.py`, and the dogfood-sizing
+`−0.025 mm` clearance pin in `tests/test_pcb_ewod_generator_drc.py`. On
+that fixture at seed=1: 37/54 escape nets realized, 17 split per
+`view='drc'`, all 17 already failed for a named reason; the new rung fired
+on 0 nets.
 
-`view='route-status'` says **32 realized / 30 failed** (up from 3/59 on
-2026-09-18). Cross-referenced against the same run's `connectivity`
-findings, **13 of the 24 realized electrode nets have copper in 2 or 3
-disconnected pieces**: ARR1_R0C2, R0C3, R0C6, R2C0, R2C5, R2C6, R3C0,
-R5C0, R5C2, R5C5, R6C0, R6C2, R6C5. Only **11 of 53** electrode nets are
-genuinely complete — the headline overstates the finished board ~2×.
+**The anchor hypothesis was wrong** (re-measured 2026-10-11 on the 8x8,
+250 V, 2.25 mm fixture). All 25 diagonal and 30 cardinal neck starts sit on
+the real `_electrode_polygon` ring (signed distance 0 to 4e-33 mm). The
+F.Cu capsule overlaps its electrode by a quarter disc (0.00159 mm², w =
+0.09 mm) on a diagonal and a half disc on a cardinal. The 13 "split" nets
+were `connectivity._pad_primitives`' inscribed-disk false positive (fixed
+aa861102, `test_diagonal_escape_neck_anchor_is_a_real_vertex_of_the_electrode_polygon`
+pins the vertex).
 
-Contract violated: `precis-pcb-route-help` — "A net only ever reads
-`'realized'` when it is **actually clean** — no residual same-layer
-crossing, no over-capacity gap." Connectivity is not in that list. The
-status ladder in `workers/job_types/pcb_route.py` (module docstring + the
-`problems = chord_crossings + congestion + unrouted_fail + unstitched_fail`
-ladder) never asks whether the net's copper forms one component;
-`drc.py::check_connectivity` asks separately and afterwards, which is why
-the two views disagree.
-
-Witness geometry: for ARR1_R2C0 (status realized) the pieces are
-`(-5.500,-4.500)` on B.Cu and `(-7.000,-3.000)` on F.Cu; the B.Cu witness
-coincides with the net's own plaza via, `via[ARR1_R2C0] @
-(-5.499818827088606, -4.500181172911394)` (same run's `annular_ring`
-finding). So via + ruling-11 B.Cu breakout form one component, the
-electrode body another, and the F.Cu neck bridges neither.
-
-**New observation from checking the list against the plaza rule
-(`r % 3 == 1 and c % 3 == 1`): all 13 broken nets are DIAGONAL escapes;
-no cardinal escape is among them.** (R0C2 is NE of plaza (1,1), R2C0 is
-SW of it, R0C3 is NW of (1,4), … every one maps to a diagonal slot.)
-Whatever the mechanism, it is specific to the diagonal neck.
-
-**Hypothesis (code-anchored, not verified by running it).** The neck's
-start is computed against the NOMINAL square, not the real outline. In the
-plaza variant the anchor is `generators.py::_edge_anchor` — "an edge
-midpoint for a cardinal direction, the pad's own corner for a diagonal
-one", both at `layout.sizing["half"]` from the cell centre; the rim
-variant has the same idea inline (via direction normalised × `half`). The
-real pad is `_electrode_polygon`'s output: chamfered at plaza-adjacent
-corners by `plaza_corner_chamfer` (`sqrt(2) * corridor_target − gap`, not a
-small margin), crenellated to depth `tooth_depth`, with zero-deflection
-margins widened at shared corners (`_needs_diagonal_margin_widen`).
-Candidate mechanisms for the investigator, in order: (a) the diagonal
-escaper's own corner is not chamfered (`_needs_plaza_corner_chamfer` needs
-one flat wall; both of its walls are `mesh`) — so check whether the
-polygon vertex actually sits at `(half, half)` after `_meshing_wall`'s
-`_s_curve` rounding and any `corner_radius`; (b)
-`connectivity.py::_prim_polygon_gap` evaluated for a capsule whose
-centreline starts exactly on a polygon vertex (`point_in_polygon` on a
-vertex is numerically ambiguous — a tangency, not an overlap); (c) a
-frame or rounding mismatch between the copper row and the pad polygon.
-`_stub_track_row`'s docstring asserts a constant-width track "needs no
-taper of its own to stay clear" because the chamfer "already does that
-clearance job on the ELECTRODE side" — the chamfer moving the boundary is
-exactly what the anchor formula ignores.
-
-**Fix direction.** (1) Anchor the neck by ray–polygon intersection against
-the real `_electrode_polygon` ring along the via direction, then pull
-inward by a small overlap (≥ half the track width) so the joint is an
-overlap, never a tangency. (2) **Add connectivity to the realizer's own
-`realized` predicate**: run `connectivity` over the net's realised +
-fixed copper inside the route job and put a split net into `problems`
-with `reason: "disconnected"` — the two views then cannot disagree. The
-job already does this for planes (`RealizeResult.unstitched` → `problems`);
-extend the same path to signal nets.
-
-**Likely same root cause, fold in:** the `−0.025 mm` stub gap, previously
-pinned as a single known residue (fabric slice 2 geometry residue, since deleted; ruling 1's corridor re-solve was meant to remove it), is
-now the dominant error class — dozens of `clearance` errors
-`track[ARR1_RxCy] <-> pad[ARR1_<neighbour>] on F.Cu, -0.025, copper
-clearance 0.065mm < JLC min 0.090mm`, roughly one pair per realized
-electrode. It scaled with the realized count instead of staying fixed.
-Investigate with the anchor.
-
-**Repro:** `put(kind='pcb', id='ewod-dogfood-2',
-args={'op':'route','iters':8000,'seed':1})`, then compare
-`view='route-status'` against `view='drc'` connectivity findings net by
-net. **Trap:** `op='route'` is idempotent per `(design, op, content-hash)`
-and `session.py::content_hash` covers instances/nets/stackup/params, NOT
-the code version — a re-submit with an unchanged design and the same
-iters/seed collapses onto the PRIOR job and returns the old result even
-across a deploy. Vary the seed.
-
-*Accept:* on the `ewod-dogfood-2`-shaped fixture (`tests/test_pcb_ewod_dogfood.py`),
-(a) every net `route-status` reports `realized` has exactly one connected
-component in `connectivity.py` — asserted as a set identity between the
-two views on the same run, not a count; (b) a fixture that deliberately
-shortens a neck produces `failed (disconnected)`, never `realized` (test
-the failure direction); (c) every diagonal-escape neck's start point lies
-strictly inside its electrode polygon by ≥ `stub_width/2`; (d) the
-`−0.025 mm` clearance class is either gone or re-pinned with a stated
-reason; (e) prod: re-run with a new seed, `realized` count == connected
-count.
+**Open:**
+- **Decision: pull the neck start inward?** Accept (c) asks for every
+  diagonal neck start to sit strictly inside its polygon by ≥
+  `stub_width/2`. The joint is an overlap today, not a tangency of
+  copper. Pulling inward would change the geometry
+  `test_diagonal_escape_neck_anchor_is_a_real_vertex_of_the_electrode_polygon`
+  pins and bump the generator version. Not done: it is fab-margin
+  hardening, not a fix for a measured defect.
+- **(e) prod:** re-run `ewod-dogfood-2` with a new seed (`op='route'`
+  dedups on `(design, op, content-hash, CODE_VERSION)`); `realized` count
+  must equal the connected count in `view='drc'`.
 
 ### Slice 2 — every footprint pad is a declared pin, with intent markers (Defect A, gr339236/gr346744 class)
 
@@ -576,12 +512,20 @@ it lands:
 **Known nuances to carry:** courtyards grow (`ir.py::instance_courtyard_polygon`
 is the hull of pad outlines), so hand placements may need a look; the
 HV507 has 12 distinct non-channel names on 13 non-channel named pads
-(memory, verify at intake) and `session.py::_real_pin_offsets` is
-first-wins per name, so the second same-named pad stays invisible even
-after this fix — **decision needed** before this slice ships: key pins by
-`(name, pad)` in the IR (the multi-pad-per-pin story of gr339236), or
-declare the duplicate under `name#2` and record it in the
-`undeclared_pad` text. Do not silently accept either.
+(memory, verify at intake). The second same-named pad is no longer
+invisible: the IR's pad set (`ir.footprint_pad_set`, keyed by pad number,
+gr451276) emits it, claims it for its pin's net, DRC-checks it and
+unions it with the primary in connectivity, and the maze router offers it
+as an extra start/goal terminal (`realize._sibling_pad_terminals_by_pin`,
+gr339236), so a locked or walled-in primary can route from a sibling.
+`session.py::_real_pin_offsets` is still first-wins per name, which now
+decides only the pin's PRIMARY position. Consumers that still read the
+primary alone: placement wirelength (`cost.py`), pin-swap edges
+(`pinswap._instance_edges`), segment spans and route order, and
+`layer_lock.layer_locked_pins` (counts per pad, not per pin, and ignores
+a drilled sibling on an allowed layer, so `view='feasibility'` can call a
+pin stranded that the router now routes). Fold those in with this slice
+if they bite; the `name#2` alternative is no longer needed.
 
 *Accept:* on the ring-sink fixture (`tests/test_pcb_island_terminal_polygon.py`)
 `len(pads_for_ir(...))` for the sink == its footprint's pad count; two

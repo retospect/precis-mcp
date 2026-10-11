@@ -553,7 +553,7 @@ def _load_tags(store: Store, ref_ids: list[int]) -> dict[int, dict[str, Any]]:
     subselect repeating the join. ``None`` for a node with no STATUS
     tag at all.
     """
-    from precis.handlers._todo_views import _level_label
+    from precis.todo.views import _level_label
 
     out: dict[int, dict[str, Any]] = {
         rid: {"status": "open", "level": "subtask", "status_since": None}

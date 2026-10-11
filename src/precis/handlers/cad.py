@@ -598,11 +598,11 @@ class CadHandler(Handler):
         legal by design. Catalog ``part`` lines sync their own rows
         (``links.meta.catalog``) automatically; rows added here carry no
         catalog marker, so the sync never prunes them."""
-        from precis.handlers._link_tag_ops import (
+        from precis.utils.link_tag_ops import (
             require_link_target,
             validate_link_mode,
         )
-        from precis.handlers._link_target import parse_link_target
+        from precis.utils.link_target import parse_link_target
 
         mode = validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
@@ -635,11 +635,11 @@ class CadHandler(Handler):
         """
         from datetime import UTC, datetime
 
-        from precis.handlers._link_tag_ops import (
+        from precis.utils.link_tag_ops import (
             require_link_target,
             validate_link_mode,
         )
-        from precis.handlers._link_target import parse_link_target
+        from precis.utils.link_target import parse_link_target
 
         mode = validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
@@ -678,11 +678,11 @@ class CadHandler(Handler):
         """Align this design (a block) to a make-tree (``target='make:<slug>'``
         — "this design is made by this process") or to one of its steps
         (``target='mk<id>'`` — chunk-scoped, many-to-many by design)."""
-        from precis.handlers._link_tag_ops import (
+        from precis.utils.link_tag_ops import (
             require_link_target,
             validate_link_mode,
         )
-        from precis.handlers._link_target import parse_link_target
+        from precis.utils.link_target import parse_link_target
 
         mode = validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
@@ -904,6 +904,7 @@ class CadHandler(Handler):
             f"{self._interference_note(design, built)}"
             f"{self._connectivity_note(design, built)}"
             f"{self._payload_note(spec)}"
+            f"{self._units_note(spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -963,8 +964,17 @@ class CadHandler(Handler):
             f"{self._interference_note(design, built)}"
             f"{self._connectivity_note(design, built)}"
             f"{self._payload_note(spec)}"
+            f"{self._units_note(spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
+
+    @staticmethod
+    def _units_note(spec: SceneSpec) -> str:
+        """Advisory lines for awkward-mantissa quantities (gr336344) —
+        warn-only; the design was saved exactly as authored."""
+        if not spec.warnings:
+            return ""
+        return "\n⚠ units: " + "; ".join(spec.warnings)
 
     def _sync_contains(self, ref_id: int, spec: SceneSpec) -> None:
         """Mirror the design's ``use`` lines as ``contains`` links

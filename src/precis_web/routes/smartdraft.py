@@ -453,6 +453,16 @@ def _document_shape_stats(store: Store, ref_id: int) -> dict[str, Any]:
         "flagged": [
             {"title": s.title or "(untitled)", "verdict": s.verdict, "words": s.words}
             for s in flagged
+        ]
+        + [
+            {
+                "title": s.title or "(untitled)",
+                "verdict": s.char_verdict,
+                "chars": s.chars,
+                "unit": "chars",
+            }
+            for s in report.sections
+            if s.char_verdict in ("under", "over")
         ],
         "scaffold_note": (
             "scaffold-completeness unavailable — no stored expected-section "

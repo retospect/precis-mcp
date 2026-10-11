@@ -67,7 +67,7 @@ bridge role mints a terminal rung and the root has a *benign* capability
 demanded axes are appended to the rung's ``consumes`` (required); for an
 intermediate rung they are advisory in the prompt only. A stored
 ``meta.rung.benign == "required"`` is honoured upward (never downward) when
-present; ``handlers/_todo_guards.py::_RUNG_ALLOWED_KEYS`` admits the key
+present; ``todo/guards.py::_RUNG_ALLOWED_KEYS`` admits the key
 with ``"required"`` as its only accepted value.
 """
 

@@ -18,31 +18,28 @@ in the vault, which agent_rw can't read by design. Ops.
 Bundled in the 2026-10-11 gripe triage: the three gripes below are the same
 cohort seen from three sides.
 
-## 1. Under-chunked refs 464484 and 463425 (gr465468)
+## 1. Preview refs 463425 and 464484 need a re-fetch (gr465468)
 
-Both chunk to 0 and 7 chunks from ~100 KB cached payloads, so they are
-likely entitlement-preview PDFs from the same cohort. Still under-chunked
-on 2026-10-11. Fix direction: inspect both cached payloads during the
-requeue; if the payload is an entitlement preview, mark the ref incomplete
-rather than leaving it looking ingested.
+Diagnosed read-only 2026-10-11: both are genuine entitlement-preview PDFs
+(`pdfs.page_count` 1 and 2), chunked correctly (7 and 20 chunks) — no
+parser defect. Both predate the XML-body preflight (f98edbb16, 2026-10-06).
+The truncation alert now states the page count and says preview vs
+extraction defect. Prod repair: re-fetch these two refs via the runbook's
+reset SQL (2 refs measured).
 
 Who: ops (the requeue is cluster-side).
 
 ## 2. pa167977 is a one-page preview and grounds two finding hubs (gr372863)
 
 pa167977 is still a one-page preview PDF, yet two finding hubs rest on it.
-Nothing on the read path or at evidence attach says the body is one page of
-an article.
 
 - Ops: re-fetch it through
   `docs/runbooks/elsevier-preview-pdf-remediation.md`, then re-check the two
-  hubs' evidence against the full text.
-- Code: add a one-page coverage flag (from `refs.pdf_pages`) on the
-  `src/precis/handlers/paper.py` read path and at evidence attach in
-  `src/precis/taproot/hub.py`, so a preview-grounded edge is visible instead
-  of presented as full-paper support.
+  hubs' evidence against the full text. (The read-path and evidence-attach
+  one-page flag shipped; existing edges are not back-stamped, so these two
+  hubs show it only on their next attach.)
 
-Who: ops for the re-fetch; agent-code for the flag.
+Who: ops for the re-fetch.
 
 ## 3. Front-matter-only backfiller exists only for Elsevier (gr372785)
 

@@ -303,7 +303,7 @@ def run_briefing(
         ref_meta={"briefing": True, "date": date_tag, "source": "briefing"},
         cache_meta={"articles": len(refs), "date": date_tag},
     )
-    from precis.handlers._link_tag_ops import apply_tag_ops
+    from precis.utils.link_tag_ops import apply_tag_ops
 
     apply_tag_ops(
         store,

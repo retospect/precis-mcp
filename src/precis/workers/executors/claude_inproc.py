@@ -564,7 +564,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 error=repr(exc)[:_ERROR_META_CAP],
             )
             conn.commit()
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id)
         return
@@ -774,7 +774,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 )
             _set_status(store, ref_id, _FAILED, conn=conn)
             conn.commit()
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id)
             return
@@ -1495,7 +1495,7 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             # Slice-5 failure bubble: tag the parent todo if any.
             # Inside the same tx so the status + bubble commit
             # together; orphan jobs (legacy, no parent_id) just no-op.
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id, conn=conn)
         conn.commit()
@@ -1536,7 +1536,7 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
                 wall_seconds=wall,
                 error=repr(exc)[:_ERROR_META_CAP],
             )
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id, conn=conn)
             conn.commit()
@@ -1579,7 +1579,7 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
             # Parentless (cadence-minted, like draft_refresh) — a no-op
             # for the common case; harmless when a caller ever gives a
             # doctor_tick job a parent todo.
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id, conn=conn)
         conn.commit()

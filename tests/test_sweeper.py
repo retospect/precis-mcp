@@ -490,7 +490,7 @@ def test_infra_orphan_retry_latches_past_the_cap(
     (dead executor, not a transient sweep) must stop instead of retrying
     forever. Latches with both ``child-failed:`` and
     ``halt:orphan-retry-cap`` for visibility."""
-    from precis.handlers._job_bubble import ORPHAN_RETRY_CAP
+    from precis.utils.job_bubble import ORPHAN_RETRY_CAP
     from precis.workers.dispatch import _candidate_parent_ids
 
     r = handler.put(

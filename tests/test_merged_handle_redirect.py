@@ -18,9 +18,9 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import NotFound
-from precis.handlers._link_target import parse_link_target
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.store import Store
+from precis.utils.link_target import parse_link_target
 
 
 def _seed_paper(store: Store, slug: str) -> int:

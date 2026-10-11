@@ -27,45 +27,39 @@ lack a DOI); (c) flag substantive registry/local title mismatches for a human (c
 
 Who: agent-code.
 
-### 2. Track 2 accepts a title match the body contradicts (gr262881)
+### 4. Multi-article PDFs (gr353777)
 
-Track 2 of `src/precis/ingest/metadata_resolve.py` resolves by title search
-and accepts a hit on title similarity alone. pa693 shows the failure: stored
-title WSe2, body MoS2. Fix direction: a body-corroboration gate — require
-distinctive title terms (formula, material name) to appear in the paper's
-own chunks before Track 2 applies the match; otherwise route to review.
+A PDF that bundles several articles is ingested whole under one title.
+pa207748 holds nine helium/superfluid chunks from a different article.
+Fix direction: detect multi-article PDFs when chunk-level title/topic
+clusters split. (The supersede path now fills a blank survivor's
+title/authors from the stub; DOIs already moved with the identifiers.)
+
+RULED (Reto 2026-10-11): multi-article scans are tagged `multi-article`
+rather than split or trimmed (body chunks are append-only). Tagged so far:
+pa44468, pa42559, pa207748. Follow-up: the title/body sweep detector (item
+5) applies the same tag.
+
+Shipped (gr463414): `link` onto a claim hub from a `multi-article` paper
+returns an advisory to confirm the passage's article. Nanopub assembly is
+pure over frozen input with no paper refs, so no refusal there.
 
 Who: agent-code.
-
-### 3. Track 1 ignores version and year (gr260193)
-
-`_resolve_one` in `src/precis/ingest/metadata_resolve.py` takes a
-DOI/identifier hit without checking that the body is the same edition.
-pa5468 carries the title of v5.0.0 on a 2015 v4.0 body. Fix direction: a
-version/year guard in Track 1 — compare the registry year (and a version
-token in the title) against the body's own year; disagreement goes to review.
-
-Who: agent-code.
-
-### 4. Supersede drops the stub's identity; multi-article PDFs (gr353777)
-
-Superseding a stub with a fetched PDF does not carry the stub's
-title/doi/authors onto the surviving ref, and a PDF that bundles several
-articles is ingested whole under one title. pa207748 holds nine
-helium/superfluid chunks from a different article. Fix direction: the
-supersede path inherits title/doi/authors from the stub; flag (or trim)
-multi-article PDFs when chunk-level title/topic clusters split.
-
-Who: agent-code for the inheritance; needs-Reto: flag versus trim for
-multi-article PDFs (trimming deletes append-only body chunks).
 
 ### 5. No title/body mismatch sweep; downstream gates blind to it (gr264184)
 
 Nothing compares a paper's title with its body, so mismatches surface only
 when someone reads a chunk. Fix direction, in order:
 
-- A read-only sweep that scores title-to-body agreement (title terms
-  against chunk embeddings/text) and lists outliers for review.
+- DONE: `scripts/title-body-sweep` (scoring in
+  `precis.utils.title_body`) ranks live papers by lexical title-to-body
+  agreement, read-only via `prod-psql --ro`. Placeholder titles
+  (`is_placeholder_title`) are listed separately, not ranked. First full
+  run (30.4k scored): pa693 ranks 274, pa44468 1688, pa42567 1825 (the
+  last two overlap lexically: a multi-article PDF body, a topic-adjacent
+  body; they need embeddings). Head false positives ~0 of 10 spot-checked.
+  Open for the gate design: the cutoff (a low score alone misses the 0.5
+  to 0.6 band; a missing title formula caps the rank at 0.35).
 - A nanopub mint gate in `src/precis/nanopub/assemble.py` that refuses to
   assemble from a source flagged as a title/body mismatch.
 - cite_key regeneration, or refusal, when an author edit changes the
@@ -73,8 +67,8 @@ when someone reads a chunk. Fix direction, in order:
 
 Item 1 of the gripe (pa5837) is already repaired.
 
-Who: agent-code; the sweep first, gates after its false-positive rate is
-measured.
+Who: agent-code; remaining: the two gates below, once the sweep's
+false-positive rate on a chosen threshold is measured.
 
 ## Prod data repairs
 
@@ -88,15 +82,17 @@ the code part are marked.
 - **pa42567** (gr348665): title/body mismatch. Compare pa4815 (likely the
   true holder of one side) before deciding which row keeps which.
 - **pa207748** (gr353777): nine helium/superfluid chunks belong to a foreign
-  article. Body chunks are append-only (DELETE + INSERT only); split them
-  out through the supersede path, not an UPDATE.
-- **pa44468** (gr249575): title "thalidomide defects", chunks are HRTEM
-  peapod text. Find the true title from the body, retitle, and re-check any
-  grounding edges that relied on the old title.
+  article. Ruled: tag `multi-article`, no split or trim (done).
+- **pa44468** (gr249575): scan of four unrelated Nature articles (title is
+  correct for the first); pa42559 is a second ingest of the same scan.
+  Ruled: tag both `multi-article`, no split or trim (done).
 - **Dup and misfiled rows** (gr356743): pa204955 and pa210358 are
   duplicates (merge); pa1873 is a separate preprint of pa1604 (link, do not
   merge); pa3063 is not a paper (retire or retype); pa209931 needs its
   Crossref title; check the cohort for an embedding gap.
+- **Placeholder-title papers** (362 found by `scripts/title-body-sweep`:
+  `Microsoft Word - x.doc`, `*.indd`, `Untitled`, `(no title)`, one- and
+  two-word titles) need retitling from their body/Crossref.
 - **Ground-truth check after repair**: list findings grounded on each
   repaired paper and re-verify their edges.
 

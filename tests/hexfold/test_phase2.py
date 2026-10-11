@@ -197,7 +197,7 @@ b @ h/(7,0,A):0 [8-7]
 @pytest.mark.parametrize("menu,rings", [("9-6", {6: 3, 9: 3}), ("8-7", {7: 3, 8: 3})])
 @pytest.mark.parametrize("nm,site", [((10, 10), "(7,0,A)"), ((17, 0), "(8,0,A)")])
 def test_bud_menu_seams(menu: str, rings: dict, nm: tuple, site: str) -> None:
-    # Wang & Li 2009: bond-mode C54 attachment onto an intact host; the
+    # Zhu & Su 2009: bond-mode C54 attachment onto an intact host; the
     # two C3-symmetric registrations give exactly these seam multisets
     n, m = nm
     codes = _codes(
@@ -401,6 +401,73 @@ b @ h/(7,0,A):0 [9-6]
     assert len(subs) == 6 and all(x in ("A", "B") for x in subs)
     summary = dict(codes["annot.host_sublattices"][0].data)
     assert summary["A"] + summary["B"] == 6
+
+
+@pytest.mark.parametrize(
+    "host, site",
+    [
+        ("sheet(14,14)", "(7,7,A):0"),
+        ("tube(10,10, len=14)", "(7,0,A):0"),
+        ("tube(17,0, len=10)", "(8,0,A):0"),
+    ],
+)
+@pytest.mark.parametrize("menu, seam", [("9-6", {6: 3, 9: 3}), ("8-7", {7: 3, 8: 3})])
+def test_c54_menus_bond_one_host_sublattice(
+    host: str, site: str, menu: str, seam: dict[int, int]
+) -> None:
+    """gr461791: Zhu & Su's 9-6 and 8-7 (spec [S14], pa543; Wang & Li
+    2011's magnetic Cases A and B, pa3322) bond the same six host atoms,
+    all on one sublattice (8-7 on (10,10) ~6 uB).
+    The 8-7 solver's lex-min tie-break picked a 3A/3B registration
+    instead (36 of its 60 {8:3, 7:3} registrations mix), a junction
+    neither case describes; single-sublattice registrations now rank
+    first."""
+    codes = _codes(
+        f"hexfold 0.2\norigin h\nh: {host}\nb: fullerene(C60)\nb @ h/{site} [{menu}]\n"
+    )
+    summary = dict(codes["annot.host_sublattices"][0].data)
+    assert sorted((summary["A"], summary["B"])) == [0, 6], summary
+    (rings,) = codes["seam.rings"]
+    assert dict(rings.data)["rings"] == seam
+
+
+@pytest.mark.parametrize(
+    "host, site", [("sheet(14,14)", "(7,7,A):0"), ("tube(10,10, len=14)", "(7,0,A):1")]
+)
+def test_menu_4p4_bonds_para_atoms(host: str, site: str) -> None:
+    """gr461791: ``[4+4]`` (Nasibulin et al. 2007, Fig. 3c) bonds the 1,4
+    atoms of a C60 hexagon to the 1,4 atoms of a host hexagon: two bonds,
+    one per host sublattice, each pair 2.84 A apart on its own side, and
+    stick seats it with no clash."""
+    text = f"hexfold 0.2\norigin h\nh: {host}\nb: fullerene(C60)\nb @ h/{site} [4+4]\n"
+    rep = check(text, geometry=True)
+    assert not [f for f in rep.findings if f.severity.name == "ERROR"]
+    assert not [f for f in rep.findings if f.code == "geom.clash"]
+    net = _net(text)
+    inst = [a.instance for a in net.atoms]
+    attach = [(i, j) for i, j, _ in net.bonds if inst[i] != inst[j]]
+    assert len(attach) == 2
+    (sub,) = [f for f in rep.findings if f.code == "annot.sublattice"]
+    assert "A=1 B=1" in sub.message
+    import numpy as np
+
+    pos = stick(net)
+    for who in ("b", "h"):
+        a, b = (i if inst[i] == who else j for i, j in attach)
+        assert 2.5 < float(np.linalg.norm(pos[a] - pos[b])) < 3.2
+    for i, j in attach:
+        assert 1.35 < float(np.linalg.norm(pos[i] - pos[j])) < 1.7
+
+
+def test_unknown_menu_is_refused() -> None:
+    """gr461791: an unknown menu name expanded to nothing and the bud built
+    as a loose second part with no finding; it is now an ERROR."""
+    rep = check(
+        "hexfold 0.2\norigin h\nh: sheet(12,12)\nb: fullerene(C60)\n"
+        "b @ h/(6,6,A):0 [5+5]\n"
+    )
+    (f,) = [f for f in rep.findings if f.code == "menu.unknown"]
+    assert f.severity.name == "ERROR" and "[5+5]" in f.message
 
 
 def test_bond_joined_net_component_euler() -> None:

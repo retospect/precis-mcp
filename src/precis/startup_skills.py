@@ -109,8 +109,8 @@ def resolve(
     would fail when the agent calls the kind, so we'd rather not
     teach unusable knowledge.
     """
-    from precis.handlers._skill_common import parse_frontmatter
     from precis.handlers.skill import _kinds_referenced_by_skill
+    from precis.utils.skill_common import parse_frontmatter
 
     known_set = set(known())
     pinned: list[str] = []

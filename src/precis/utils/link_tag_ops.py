@@ -27,13 +27,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_target import (
+from precis.store import Store, Tag
+from precis.store.types import Relation
+from precis.utils.link_target import (
     LinkTarget,
     mint_lazy_link_target,
     parse_link_target,
 )
-from precis.store import Store, Tag
-from precis.store.types import Relation
 from precis.utils.relations import (  # noqa: F401  (re-export)
     _DEFAULT_RELATION,
     _VALID_RELATIONS,

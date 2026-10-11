@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** local-compute
-- **Next:** Read a full day of `llm_summarize` placement (`llm_call_log.placement_routed` vs `placement`, `source='llm_summarize'`) and decide whether the melchior slot's overflow share justifies more local capacity. The summarise-only chain is live: `app_settings` `llm.op.llm_summarize` written 2026-10-11 11:53:54Z (local `glm-4.7-flash`, cloud `z-ai/glm-4.7-flash` overflow). Before: 11,857 calls in 24 h, all cloud. First ~9 min after: 190 local, 688 routed local but overflowed to cloud (the slot is capacity 4). Revert: delete that row.
-- **Blocked by:** Nothing for the placement read. NAS role shares await Reto’s local-compute-12 answer; model pick/vLLM slice 1 await knowledge-mesh’s km-8 task set.
+- **Next:** Run the 40-task `chase:verify` compare, local `gpt-oss-120b` vs Haiku 4.5, each arm twice (`scripts/llm_eval/build_chase_verify_gold.py`, then `precis llm eval gpt-oss-120b --compare claude-haiku-4-5 --placement-a local --placement-b cloud --tier medium --gold <set>`), and bring Reto the numbers before touching `llm.chain.medium`. `chase:verify` is ~96% of medium-tier calls (7,191 / $70 in the 7 days to 2026-10-11). It is a claim-support judgment, and the 2026-10-03 tuned-models plan keeps judgment ops on Claude, so Reto decides with the numbers in hand.
+- **Blocked by:** The eval code is deployed (round 24, prod 7530b327a), but running it reads prod from melchior as reto, which the agent permission classifier refuses without Reto's explicit OK in that session. NAS role shares await Reto’s local-compute-12 answer.
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
 - **Worktree:** `local-compute`
@@ -14,6 +14,10 @@
 ## Thread context
 
 Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
+**Castor serving, 2026-10-11 (Reto):** model picked by ruling: **gpt-oss 120B** (vLLM), skipping the km-8 quality gate. castor serves it via `49-vllm.yml` (`vllm.service`, port 8000, `--max-num-seqs 64`, gpu-memory-utilization 0.70 until castor leaves the science lanes, then 0.80). Tool calling verified from melchior over the LAN. Card lm162513 carries a `source="static"` `served_by` (max_parallel 32) and prod `resource_slots` has `castor | llm:openai/gpt-oss-120b | 32`. No chain routes to it yet. The overlay does not yet carry the `vllm_serving` group; the run used a layered extra inventory. Castor exclusive (autocatpath/aizynth → pollux, compute/sandbox units stopped) is ruled and queued for the round-24 deploy with the coordinator. Stale DeepSeek-V4-Flash `served_by` (dead castor :8080) and its caspar slot row removed.
+
+**Still open:** the `llm_summarize` placement read (summarise chain live since 2026-10-11 11:53Z; first 24 h 3,521 local / 16,416 overflowed to cloud at melchior's capacity-4 slot). Revert: delete `llm.op.llm_summarize`.
 
 **Status:** ends when the local box continuously improves the graph
 (summarise, insert, mesh, link, categorise) on local rungs, with frontier
@@ -348,6 +352,10 @@ task set.
 12. **gr458727** — the capacity-idle monitor ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned with
     `backlog/graph-maintenance-queue.md` (Ruled 2026-10-01, `INDEX.md`).
+    Half shipped: `get(kind='job', id='/throughput')` reports claims and
+    outcomes per host/process plus queue depth by executor. Still open: GPU
+    busy fraction and queue depth per tier in `host_heartbeat_log`, and the
+    `precis stats --utilization` row.
 13. **backlog/local-coder-batch-harness.md** — idea (Reto 2026-10-04); last
     because it needs the standing castor server and has no quality number.
 

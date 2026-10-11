@@ -584,8 +584,7 @@ self-weight (fine for a taut tie, wrong for a slack one — declare the
 assumption); creep and stress relaxation in synthetic rope (a `material`
 question first); buckling FEA; multi-material / multi-load-case SIMP;
 strut/node-graph reinterpretation of a density field; form-finding for
-non-axial continua; port-offset node positions in the classifier (v1 pins
-nodes at block poses); belt/pulley couplings (already deferred in
+non-axial continua; belt/pulley couplings (already deferred in
 `joints.py`'s unknown-key error text). The physics-layer notes (modal
 before time-stepping, one-way fluid coupling, thermal chain) live in the
 multiscale map's §Physics.

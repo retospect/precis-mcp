@@ -100,7 +100,7 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         return Response(body="\n".join(header))
 
     refs_by_id = store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
-    fetched_paper_ids = store.chunks.ref_ids_with_chunks(
+    fetched_paper_ids = store.chunks.usable_body_ref_ids(
         [e.paper_ref_id for e in all_edges]
     )
 
@@ -358,7 +358,7 @@ def _collapse_patent_families(
     grouping by ``paper_ref_id`` for the non-family case can't collide.
 
     The rendered row is the family's deterministic representative
-    (:func:`precis.handlers._patent_family.family_representative`) when
+    (:func:`precis.patent.family.family_representative`) when
     it's among this list's edges, else the first (already
     seniority-ordered, i.e. senior-first) member. The second tuple element
     is a ``"passage in <SLUG>[, <SLUG>...]"`` note naming EVERY *other*
@@ -368,7 +368,7 @@ def _collapse_patent_families(
     in a non-representative sibling stays traceable rather than silently
     dropped.
     """
-    from precis.handlers._patent_family import family_representative
+    from precis.patent.family import family_representative
 
     order: list[str] = []
     groups: dict[str, list[seniority.EvidenceEdge]] = {}

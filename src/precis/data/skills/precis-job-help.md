@@ -410,6 +410,10 @@ get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&limit=50')
 # host=, q= (substring on message), since= (hours, max 168),
 # limit= (default 100, cap 200) all compose
 
+get(kind='job', id='/logs?job=jo123')
+# job= anchors on that job: its run window +-5 min on the host that claimed
+# it (host= overrides); since= is ignored. Errors if never claimed.
+
 get(kind='job', id='/logs?process=precis-worker-agentlane')
 # process= is an exact match on the PRECIS_PROCESS env the LaunchDaemon
 # plist sets (NULL unless set) — a host running several worker units
@@ -452,6 +456,20 @@ a common failure shape that per-host reading hides. Two builds for the same
 host/process in the window is a restart boundary — read the newest.
 `precis-status` answers a different question (the build serving *your own*
 process, which in a container is not the fleet's).
+
+## Is the fleet working or idle?
+
+```python
+get(kind='job', id='/throughput')            # last 24h per host/process
+get(kind='job', id='/throughput?since=168')  # widen to a week
+```
+
+Rows are `host process claimed=N succeeded=N failed=N running=N
+last_claim=<UTC>`, from the same lease stamps as `/builds`; hosts that
+heartbeat but claimed nothing show `claimed=0`. The trailer gives the queue
+depth now by executor. Read the two together: no claims beside an empty
+queue is a healthy idle; no claims beside queued work is the fault. It is a
+measurement only, no alert reads it. GPU busy fraction is not measured yet.
 
 ## See also
 

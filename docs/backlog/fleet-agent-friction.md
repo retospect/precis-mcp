@@ -1,28 +1,15 @@
 ---
 status: idea
-title: Fleet agents stall on prompts and lack a checkout — prod-psql approvals, plan_tick repo access
+title: Fleet agents stall on session-hook refusals and per-call hook cost
 pillar: platform
 ---
 
-# Fleet agent friction — prompts and missing repo access
+# Fleet agent friction — session hooks
 
 Bundled in the 2026-10-10 gripe triage. Each item stops fleet or lane
 agents on something a human already decided or never needed to decide.
 
-## 1. prod-psql hook asks on every write (gr462727, merged gr462731)
-
-`guard-prod-psql.py` asks for confirmation on every prod write, including
-writes Reto already approved. That contradicts
-`docs/conventions/thresholds.md`, so approved prod work stalls on a prompt
-in the pane.
-
-Ruling (Reto, 2026-10-11): the hook asks only on destructive writes
-(DELETE, DROP, TRUNCATE, ALTER … DROP, an UPDATE/DELETE without WHERE, or
-anything over the `thresholds.md` limits); every other write passes.
-
-Who: agent-code, S. Files: `scripts/hooks/guard-prod-psql.py`.
-
-## 2. Session hooks reject read-only commands and cost a process per call (gr343750)
+## 1. Session hooks reject read-only commands and cost a process per call (gr343750)
 
 Isolation and pretool hooks refuse many read-only shell commands as "too
 complex to verify" (pipelines, `for` loops, computed values), so agents
@@ -33,13 +20,22 @@ widen the read-only allow-list (pipelines and loops whose every stage is
 read-only), and measure session-start and per-call hook cost before and
 after. Files: `scripts/hooks/*`.
 
+Checked 2026-10-11: the "too complex to verify that it stays inside the
+worktree" refusal is not ours. No file in `scripts/`, `.claude/` or
+`~/.claude/hooks` contains that text. It comes from the Claude Code
+harness's own worktree isolation, and it fired four times in one session
+that day: a `for` loop over `git log`, a heredoc that mentioned git, and a
+`scripts/ship` call whose message had parentheses. A repo hook change
+cannot widen it. Agents should keep each `git`/`ship` call a plain single
+command. The repo-side work is our own pretool checkers and the per-call
+process cost.
+
 Who: agent-code, M.
 
 ## Acceptance
 
-- A read-only pipeline or `for` loop runs without a "too complex" refusal,
-  and a write inside one still does.
+- A read-only pipeline or `for` loop passes our own hooks (the harness's
+  worktree-isolation refusal is out of scope, see above), and a write
+  inside one is still caught.
 - One hook process serves each tool call. The measured per-call and
   session-start cost is recorded in the commit body.
-- An approved non-destructive prod write runs without a prompt, and a
-  `DELETE` without a `WHERE` still asks.

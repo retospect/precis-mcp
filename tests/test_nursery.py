@@ -930,7 +930,7 @@ def test_orphaned_coordinator_detector_flags_dark_planner(store: Store) -> None:
     child rested STATUS:failed past the stale window, with no newer child
     minted and no child-failed/halt tag on it, is dark — the planner-lane
     analogue of the quest case (e.g. an infra-class retry per
-    ``handlers/_job_bubble.py`` that never got a dispatch pass to act
+    ``utils/job_bubble.py`` that never got a dispatch pass to act
     on it because dispatch itself is down)."""
     p = _mk_llm_planner(store, "Dark planner\nmore")
     job_id = _mint_plan_tick(store, p, status="failed")

@@ -173,6 +173,92 @@ def evaluate(store: Store | None) -> QuotaPause | None:
     return None
 
 
+#: Taper thresholds (gr347551), as percent of the window *used*: at or past
+#: the first, stop admitting BIG/FRONTIER (<25% remaining); at or past the
+#: second, stop MEDIUM too (<10% remaining). At 100 (or a blocking status)
+#: :func:`evaluate` parks every paid tier until the reset. SMALL and local
+#: tiers never reach this gate.
+TAPER_STOP_BIG_PCT = 75.0
+TAPER_STOP_MEDIUM_PCT = 90.0
+
+#: Statuses the CLI raises ahead of exhaustion: the window is inside its
+#: warning band (the provider's own "running low" signal), so the first taper
+#: stage applies when no percentage is reported.
+_WARNING_STATUSES: frozenset[str] = frozenset({"allowed_warning", "warning"})
+
+
+#: Windows the taper reads; ``overage`` and unknown buckets are ignored.
+_TAPER_WINDOWS: frozenset[str] = frozenset({"five_hour", "seven_day"})
+
+
+@dataclass(frozen=True, slots=True)
+class Taper:
+    """Admission-taper reading of the quota snapshot.
+
+    ``level``: 0 admit all, 1 stop BIG/FRONTIER, 2 also stop MEDIUM.
+    ``no_signal`` is True when the snapshot carried neither a usable
+    ``used_percentage`` nor a warning status, so the taper cannot see the
+    remaining headroom and fails open (surfaced on /budget so a blind taper
+    is visible rather than silently inert).
+    """
+
+    level: int
+    no_signal: bool
+    reason: str = ""
+
+
+def taper_state(store: Store | None) -> Taper:
+    """Read the snapshot's remaining headroom into a :class:`Taper`.
+
+    Per window: ``used_percentage`` wins; otherwise a warning ``status``
+    maps to level 1; otherwise that window gives no signal. The highest
+    level over live windows wins. Windows already past their ``resets_at``
+    are ignored (they have rolled). Dark (``level=0``, ``no_signal=True``)
+    on no store / snapshot / bad shape; never raises.
+    """
+    dark = Taper(level=0, no_signal=True)
+    if store is None:
+        return dark
+    try:
+        row = store.read_claude_quota()
+    except Exception:
+        log.debug("quota taper: snapshot read failed", exc_info=True)
+        return dark
+    if row is None:
+        return dark
+    windows = row.data.get("windows")
+    if not isinstance(windows, dict):
+        return dark
+    now = datetime.now(UTC)
+    level, reason, any_signal = 0, "", False
+    for name, bucket in windows.items():
+        # Headroom windows only: overage is extra-usage credit, not headroom.
+        if name not in _TAPER_WINDOWS or not isinstance(bucket, dict):
+            continue
+        reset_dt = as_utc(bucket.get("resets_at"))
+        if reset_dt is not None and reset_dt <= now:
+            continue
+        status = str(bucket.get("status", "")).strip().lower()
+        raw = bucket.get("used_percentage")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            any_signal = True
+            if raw >= TAPER_STOP_MEDIUM_PCT:
+                lvl = 2
+            elif raw >= TAPER_STOP_BIG_PCT:
+                lvl = 1
+            else:
+                lvl = 0
+            why = f"{raw:.0f}% of the {name} window used"
+        elif status in _WARNING_STATUSES:
+            any_signal = True
+            lvl, why = 1, f"the {name} window is {status}"
+        else:
+            continue
+        if lvl > level:
+            level, reason = lvl, why
+    return Taper(level=level, no_signal=not any_signal, reason=reason)
+
+
 def window_for_notice(text: str | None) -> str:
     """The snapshot window a quota notice names (``five_hour`` when the
     wording names none — the shortest window, so the stamp clears soonest)."""
@@ -268,8 +354,10 @@ def probe_due(store: Store | None, *, now: datetime | None = None) -> bool:
 __all__ = [
     "DEFAULT_CEILING_PCT",
     "QuotaPause",
+    "Taper",
     "evaluate",
     "probe_due",
     "stamp_exhausted",
+    "taper_state",
     "window_for_notice",
 ]

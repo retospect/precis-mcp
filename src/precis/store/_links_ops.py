@@ -123,7 +123,7 @@ def _reraise_link_fk_violation(
     raised a raw ``[error:Internal] ... ForeignKeyViolation`` on a
     deployment whose ``relations`` table was missing the ``fixes``/
     ``fixed-by`` seed rows. The handler-layer pre-flight
-    (:func:`precis.handlers._link_tag_ops.validate_relation`) doesn't
+    (:func:`precis.utils.link_tag_ops.validate_relation`) doesn't
     catch this class of gap: a **built-in** relation (one already in the
     static ``Relation`` Literal) is accepted via the fast literal-only
     path *without* a live ``relations`` table check — that live check
@@ -296,7 +296,7 @@ class LinksMixin:
         table is the authoritative link vocabulary: a plugin kind seeds
         its own relations here in its migration (as it must for the FK).
         The handler-layer pre-flight check
-        (:func:`precis.handlers._link_tag_ops.validate_relation`)
+        (:func:`precis.utils.link_tag_ops.validate_relation`)
         consults this set so a plugin relation is accepted without a
         core edit to the ``Relation`` literal — the literal stays the
         static typo-safety hint for the built-ins.
@@ -349,7 +349,7 @@ class LinksMixin:
         self, *, refresh: bool = False
     ) -> dict[str, RelationConstraint]:
         """Every registered relation's constraint columns (migration 0180),
-        keyed by slug — the data :func:`precis.handlers._link_tag_ops.
+        keyed by slug — the data :func:`precis.utils.link_tag_ops.
         check_relation_constraints` enforces at the link doors.
 
         One read per store, cached exactly like :meth:`valid_relations`
@@ -396,7 +396,7 @@ class LinksMixin:
         is depth-capped at ``max_depth`` so a pre-existing cycle terminates.
 
         The one closure helper: ``acyclic`` enforcement
-        (:func:`~precis.handlers._link_tag_ops.check_relation_constraints`)
+        (:func:`~precis.utils.link_tag_ops.check_relation_constraints`)
         and :meth:`~precis.store._component_ops.ComponentMixin.component_would_cycle`
         both call it, and later readers (taxon ``view='path'``, quest
         reweight) should too rather than roll their own CTE.

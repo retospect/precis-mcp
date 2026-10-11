@@ -2723,6 +2723,34 @@ class DraftStore(_AbbrevMixin):
             "input_shas": [str(render.get("src"))] + [str(r[2]) for r in data_rows],
         }
 
+    def figure_render_recipe(self, figure_chunk_id: int) -> dict[str, Any] | None:
+        """The figure chunk's ``meta.render`` recipe dict (any kind), or None."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'render' FROM chunks "
+                "WHERE chunk_id = %s AND chunk_kind = 'figure'",
+                (figure_chunk_id,),
+            ).fetchone()
+        recipe = row[0] if row else None
+        return dict(recipe) if isinstance(recipe, dict) else None
+
+    def stamp_render_fields(
+        self,
+        figure_chunk_id: int,
+        fields: dict[str, Any],
+        *,
+        drop: tuple[str, ...] = (),
+    ) -> None:
+        """Merge ``fields`` into ``meta.render`` (after removing ``drop``
+        keys) — view-figure stamps: cached_key / source_version / failed."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE chunks SET meta = jsonb_set(meta, '{render}', "
+                "((meta->'render') - %s::text[]) || %s::jsonb, true) "
+                "WHERE chunk_id = %s AND jsonb_typeof(meta->'render') = 'object'",
+                (list(drop), Jsonb(fields), figure_chunk_id),
+            )
+
     def stamp_render_key(self, figure_chunk_id: int, cached_key: str) -> None:
         """Record a freshly-rendered figure's invalidation key at
         ``meta.render.cached_key`` — a later mark-stale pass
@@ -3233,10 +3261,15 @@ class DraftStore(_AbbrevMixin):
         return None
 
     def set_word_target(
-        self, handle: str, target: tuple[int, int] | None
+        self,
+        handle: str,
+        target: tuple[int, int] | None,
+        *,
+        key: str = "word_target",
     ) -> DraftChunk | None:
         """Set (or clear) a heading section's word target (proposal
-        writing). Writes ``meta.word_target = {"min": lo, "max": hi}`` in
+        writing); ``key="char_target"`` sets the character target instead
+        (same shape, same storage). Writes ``meta.word_target = {"min": lo, "max": hi}`` in
         place — metadata-only, no re-embed. ``target`` falsy clears it.
         Logs an ``edited`` event. A *section* concern, rejected on a
         non-heading chunk. Read back by
@@ -3253,7 +3286,7 @@ class DraftStore(_AbbrevMixin):
             chunk_id, chunk_kind, meta, retired = row
             if chunk_kind != "heading":
                 raise BadInput(
-                    f"word_target applies to a heading section; {_bare(handle)} "
+                    f"{key} applies to a heading section; {_bare(handle)} "
                     f"is a {chunk_kind}"
                 )
             if retired is not None:
@@ -3264,9 +3297,9 @@ class DraftStore(_AbbrevMixin):
             meta = dict(meta or {})
             if target:
                 lo, hi = target
-                meta["word_target"] = {"min": int(lo), "max": int(hi)}
+                meta[key] = {"min": int(lo), "max": int(hi)}
             else:
-                meta.pop("word_target", None)
+                meta.pop(key, None)
             conn.execute(
                 "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
                 (Jsonb(meta), chunk_id),
@@ -3274,7 +3307,10 @@ class DraftStore(_AbbrevMixin):
             conn.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "set-word-target", "target": target})),
+                (
+                    chunk_id,
+                    Jsonb({"reason": f"set-{key.replace('_', '-')}", "target": target}),
+                ),
             )
         return self.get_draft_chunk(handle)
 

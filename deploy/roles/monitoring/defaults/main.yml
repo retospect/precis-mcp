@@ -1,0 +1,38 @@
+---
+# monitoring — two shapes.
+#
+# macOS (brew): Prometheus + Grafana, files under /usr/local/etc. No
+# Alertmanager there; rules load but nothing routes them.
+#
+# Linux (apt, systemd): the `monitoring` inventory group. Prometheus from the
+# distro package with its config rendered here (rule_files + alerting),
+# Alertmanager, and `precis alertmanager-receiver`, which queues each alert
+# group as an ops message (asa_bot posts it to PRECIS_OPS_ALERT_TARGET's
+# channel). thread monitors-that-go-quiet, Do-next 1 (gr465126).
+
+monitoring_config_dir: "{{ '/etc/prometheus' if os_family == 'linux' else '/usr/local/etc/prometheus' }}"
+
+# Alertmanager runs only where there is a Linux package for it and a
+# receiver to hand to. Override per host to turn it off.
+monitoring_alertmanager_enabled: "{{ os_family == 'linux' }}"
+monitoring_alertmanager_port: 9093
+monitoring_alertmanager_config_dir: /etc/prometheus
+monitoring_alertmanager_config: "{{ monitoring_alertmanager_config_dir }}/alertmanager.yml"
+
+# Grouping: one message per (alertname, instance) burst; a standing alert
+# re-notifies every repeat_interval (the receiver de-duplicates sub-10-minute
+# resends, not these reminders).
+monitoring_alertmanager_group_by: [alertname, instance]
+monitoring_alertmanager_group_wait: 30s
+monitoring_alertmanager_group_interval: 5m
+monitoring_alertmanager_repeat_interval: 12h
+
+# Receiver: loopback-only, unauthenticated by design (see
+# precis.workers.alertmanager_receiver). Needs /opt/precis/venv from the
+# precis_worker role and PRECIS_OPS_ALERT_TARGET in precis_shared_env.
+monitoring_receiver_venv: /opt/precis/venv
+monitoring_receiver_host: 127.0.0.1
+monitoring_receiver_port: 9095
+monitoring_receiver_user: deploy
+monitoring_receiver_pgpass: /home/deploy/.pgpass
+monitoring_receiver_dsn: "{{ precis_worker_dsn | default('postgresql://agent_rw@' + hostvars[postgres_host]['ansible_host'] + ':' + (pgbouncer_port | string) + '/precis_prod') }}"

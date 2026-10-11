@@ -75,10 +75,35 @@ export (docx/LaTeX) or reader view of the figure renders it, saves the PNG,
 and later exports reuse it. It receives `data={'tables': [...]}` and `out`
 (the PNG path). A render error shows up as an export warning (the figure
 falls back to caption-only) and is retried on the next export. The image is
-**deferred** — a placeholder until then, then refreshes
-whenever the plotted data changes (the `plots` edge is the one reactive
-recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
+**deferred** — a placeholder until then. Each export or view compares the
+plotted tables' current content to the key stamped at the last render and
+re-renders on mismatch, so editing a plotted table refreshes the graph (the
+`plots` edge is the one reactive recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
 caption, export all apply identically.
+
+**Structure view** (`origin='original'`): a ball-and-stick picture of a
+`structure` design, rendered server-side (no image bytes needed). Pass the
+recipe in `meta={'view': {...}}`:
+
+```python
+put(kind="draft", id="nanotrans", chunk_kind="figure",
+    text="Fig 3. (8,8) nanobud, bud22.",
+    meta={"view": {"source": "structure:nanobud-review-figs-bud22",
+                   "camera": {"azimuth_deg": 30, "elevation_deg": 15},
+                   "refine": 2}},   # refine 0 wire | 1 shaded | 2 gradients
+    at={"last": True})
+```
+
+`camera` takes `azimuth_deg`, `elevation_deg`, `twist_deg`, `projection`
+(`ortho`|`persp`), `zoom`; `style` takes `stick_radius`, `ball_scale`,
+`color` (`cpk`|`mono`). Rendering is lazy like a graph: first export/view
+renders, and a later geometry edit to the structure re-renders on the next
+export. Limits: values are validated at `put` (zoom 0.1-20, `stick_radius`
+0.01-2 Å, `ball_scale` 0.05-3, `refine` an int); structures over 20000
+atoms are refused, and large ones render at reduced `refine`. **Bonds that
+cross a periodic cell wall are not drawn** (molecular structures only; a
+periodic sheet shows missing bonds at the edges). It pins the live slug; there is no `se:` source yet (render the
+structure an `se` block is bound to).
 
 ## Data / table chunks
 

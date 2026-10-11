@@ -33,6 +33,7 @@ from precis.ingest.add import (
     MarkupInput,
     MarkupTriggerSpent,
     PdfInput,
+    _fold_into_named_stub,
     _reconcile_orphan_stub,
     _valid_fold_stub,
     precis_add,
@@ -474,6 +475,39 @@ class TestReconcileOrphanStub:
         # supersedes edge recorded for audit.
         assert link is not None
 
+    def test_orphan_stub_fold_rejects_title_mismatch(self, store, caplog):
+        """gr264748 (pa42497 -> pa42939): a stub named by handle whose title
+        shares nothing with the PDF's ref/body is left live."""
+        survivor = store.insert_ref(
+            kind="paper", slug="stannyne24", title="Stannynes from tin hydrides"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (survivor.id, "Organotin hydride addition to alkynes."),
+            )
+            conn.commit()
+        stub = store.insert_ref(
+            kind="paper", slug="graphene24", title="Metal graphene nanotube networks"
+        )
+        with store.pool.connection() as conn:
+            with caplog.at_level("WARNING", logger="precis.ingest.add"):
+                merged = _fold_into_named_stub(
+                    store,
+                    matched_ref_id=survivor.id,
+                    file_stem=f"pa{stub.id}",
+                    pdf_path=Path(f"pa{stub.id}.pdf"),  # unreadable: identity passes
+                    conn=conn,
+                )
+            conn.commit()
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()[0]
+        assert merged == survivor.id  # refused: nothing merged
+        assert retired is None
+        assert any("not folding twin" in r.message for r in caplog.records)
+
     def test_noop_when_no_matching_stub(self, store):
         survivor = store.insert_ref(kind="paper", slug="solo24", title="No twin")
         with store.pool.connection() as conn:
@@ -689,6 +723,172 @@ class TestSidecarFold:
         assert row[0] == sha
         assert row[1] == "Wanted stub"
 
+    def _seed_twin(self, store, tmp_path: Path):
+        """A live bodied paper holding the bytes ``b"%PDF-1.4 twin"``."""
+        first = tmp_path / "twin.pdf"
+        first.write_bytes(b"%PDF-1.4 twin")
+        sha = hashlib.sha256(b"%PDF-1.4 twin").hexdigest()
+        with patch(
+            "precis.ingest.pipeline.extract_paper",
+            return_value=_fixture_paper(
+                paper_id="twinpid", doi="10.1/twin", pdf_sha256=sha
+            ),
+        ):
+            twin = precis_add(PdfInput(pdf_path=first), store=store)
+        assert twin is not None and twin.chunks_written == 2
+        return twin, sha
+
+    def test_named_stub_wins_over_sha_twin_fast_path(self, store, tmp_path: Path):
+        """gr479362: ``pa<S>.pdf`` whose sha matches a live bodied twin must
+        keep the named stub (the twin merges into it), not retire it."""
+        twin, sha = self._seed_twin(store, tmp_path)
+        stub = store.insert_ref(
+            kind="paper", slug="wanted24", title="Quantum error correction wanted"
+        )
+        pdf = tmp_path / f"pa{stub.id}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 twin")
+
+        with patch("precis.ingest.pipeline.extract_paper") as marker:
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        marker.assert_not_called()  # fast path, no Marker
+
+        assert result is not None
+        assert result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            stub_row = conn.execute(
+                "SELECT retired_at, pdf_sha256 FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+            twin_row = conn.execute(
+                "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                (twin.ref_id,),
+            ).fetchone()
+            n_body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0", (stub.id,)
+            ).fetchone()[0]
+            n_twin_body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (twin.ref_id,),
+            ).fetchone()[0]
+            owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='pdf_sha256' AND id_value=%s",
+                (sha,),
+            ).fetchone()[0]
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1/twin'"
+            ).fetchone()[0]
+        assert stub_row[0] is None  # the named handle stays live
+        assert stub_row[1] == sha
+        assert twin_row[0] is not None and twin_row[1] == str(stub.id)
+        assert n_body == 1 and n_twin_body == 0  # body moved, not copied
+        assert owner == stub.id and doi_owner == stub.id
+
+    @staticmethod
+    def _real_pdf(path: Path, text: str) -> str:
+        import fitz
+
+        doc = fitz.open()
+        for _ in range(3):
+            page = doc.new_page()
+            page.insert_text((72, 72), text)
+        doc.save(str(path))
+        doc.close()
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    CITING = (
+        "A Computational Design Tool for Compliant Mechanisms. "
+        "References: Howell and Midha 1994, A method for the design of "
+        "compliant mechanisms (doi 10.9999/other)."
+    )
+
+    def _howell_stub(self, store):
+        stub = store.insert_ref(
+            kind="paper",
+            slug="howell94",
+            title="A loop-closure theory for pseudo-rigid-body models of mechanisms",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.1115/1.2919359', 'manual')",
+                (stub.id,),
+            )
+            conn.commit()
+        return stub
+
+    def test_handle_named_drop_of_citing_paper_does_not_fold(
+        self, store, tmp_path: Path, caplog
+    ):
+        """Megaro 2017 only cites Howell-Midha: named pa<stub>.pdf must ingest
+        as a fresh ref, warn naming the stub, and leave the stub untouched."""
+        stub = self._howell_stub(store)
+        pdf = tmp_path / f"pa{stub.id}.pdf"
+        sha = self._real_pdf(pdf, self.CITING)
+        paper = _fixture_paper(paper_id="megaro17", doi="10.1145/mega", pdf_sha256=sha)
+        with caplog.at_level("WARNING", logger="precis.ingest.add"):
+            with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+                result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert result is not None
+        assert result.inserted is True
+        assert result.ref_id != stub.id
+        assert any(f"ref_id={stub.id}" in r.getMessage() for r in caplog.records)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT retired_at, pdf_sha256 FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+            doi_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='doi' AND id_value='10.1115/1.2919359'"
+            ).fetchone()[0]
+        assert row[0] is None and row[1] is None  # stub live, still bodiless
+        assert doi_owner == stub.id
+
+    def test_named_stub_wins_checks_identity_first(self, store, tmp_path: Path):
+        """Sha-match twin path: a citing paper named pa<stub> must not hand
+        its body to the stub (nor retire anything)."""
+        stub = self._howell_stub(store)
+        pdf = tmp_path / "megaro.pdf"
+        sha = self._real_pdf(pdf, self.CITING)
+        paper = _fixture_paper(paper_id="megaro18", doi="10.1145/mega2", pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            twin = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert twin is not None
+        named = tmp_path / f"pa{stub.id}.pdf"
+        named.write_bytes(pdf.read_bytes())
+        result = precis_add(PdfInput(pdf_path=named), store=store)
+        assert result is not None and result.ref_id == twin.ref_id
+        with store.pool.connection() as conn:
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = ANY(%s)",
+                ([stub.id, twin.ref_id],),
+            ).fetchall()
+        assert all(r[0] is None for r in retired)
+
+    def test_named_stub_uncorroborated_leaves_both_live(
+        self, store, tmp_path: Path, caplog
+    ):
+        """Title shares nothing with the twin: refuse (warning names the twin),
+        never retire the named stub, dedup result is the twin as before."""
+        twin, _ = self._seed_twin(store, tmp_path)
+        stub = store.insert_ref(
+            kind="paper", slug="other24", title="Metal graphene nanotube networks"
+        )
+        pdf = tmp_path / f"pa{stub.id}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 twin")
+        with caplog.at_level("WARNING", logger="precis.ingest.add"):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert result is not None and result.ref_id == twin.ref_id
+        assert any(
+            f"twin ref_id={twin.ref_id}" in r.getMessage() for r in caplog.records
+        )
+        with store.pool.connection() as conn:
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = ANY(%s)",
+                ([stub.id, twin.ref_id],),
+            ).fetchall()
+        assert all(r[0] is None for r in retired)
+
     def test_handle_named_drop_on_bodied_ref_falls_back(self, store, tmp_path: Path):
         """Handle naming a paper that already has a body is not a stub:
         normal insert, the existing paper is untouched."""
@@ -760,7 +960,7 @@ class TestSidecarFold:
 
         # Orphan stub: good full DOI, named after its cite_key (= file stem).
         stub = store.insert_ref(
-            kind="paper", slug="fair26", title="FAIR Data and the Future"
+            kind="paper", slug="fair26", title="Quantum Error Correction in Practice"
         )
         with store.pool.connection() as conn:
             conn.execute(

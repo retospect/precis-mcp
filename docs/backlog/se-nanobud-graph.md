@@ -85,11 +85,11 @@ substrate for a nanobud library.
   menu** — `[2+2]`, `[4+4]`, fused-neck variants seeded from the
   literature's Cases A–D. Fused-neck stitching is not unique; the menu
   choice IS the junction type, never an implicit pick.
-  gr461791 (2026-10-10): the deployed hexfold menus cannot express
-  `[4+4]` or a bud bonded to two same-sublattice (next-nearest) host atoms.
-  `menus.py` `expand()` also silently no-ops unknown names; it should
-  refuse them (`src/hexfold/menus.py::expand` falls through to `gen = []`
-  for any name other than the implemented ones). Who: agent-code.
+  gr461791 shipped in hexfold 0.3.4: `[4+4]` (para-para, two bonds),
+  unknown menu names refused (`menu.unknown`), and `8-7` bonding six
+  one-sublattice host atoms. Wang & Li's magnetic Cases A/B (pa3322) are
+  `9-6`/`8-7` (their own naming); their non-magnetic Cases C/D (C54 onto a
+  host hexagon's own six atoms, or the ring beyond) have no menu yet.
 - Assertions **before geometry**: valence 3 everywhere, Euler
   bookkeeping (P5 − P7 = 12 closed; rim accounting open), loud
   `GeneratorError` otherwise.

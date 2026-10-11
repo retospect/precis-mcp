@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.handlers._skill_common import (
+from precis.utils.skill_common import (
     SYNTH_SKILL_SLUGS,
     VALID_FLAVORS,
     VALID_TAGS,

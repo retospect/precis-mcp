@@ -208,7 +208,7 @@ class AngleMixin(RuntimeShape):
         store = self.hub.store
         assert store is not None  # guarded by caller
         if like:
-            from precis.handlers._link_target import parse_link_target
+            from precis.utils.link_target import parse_link_target
 
             tgt = parse_link_target(str(like), store=store)
             if tgt.pos is None:

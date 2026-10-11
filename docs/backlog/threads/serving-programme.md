@@ -77,7 +77,9 @@ correct it.
   worker host.
 - **gr260050** — `claude -p` under an interactive ssh user on melchior
   cannot dispatch (OAuth state); blocks CLI-driven repair passes on that
-  host. Adjacent to serving infra, not owned here.
+  host. RULED (Reto 2026-10-11): credentials for `claude -p` under the
+  interactive ssh user come from the vault, never a one-time `claude /login`.
+  Adjacent to serving infra, not owned here.
 
 ## No action needed
 

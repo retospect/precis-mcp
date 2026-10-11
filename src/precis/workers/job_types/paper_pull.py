@@ -29,12 +29,12 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from precis.ingest.fetch_sidecar import sidecar_path, write_sidecar
+from precis.ingest.pdf_identity import identity_verdict, read_leading_pages
 from precis.store._body_predicate import has_body_sql
 from precis.utils.timeutil import now_iso
 from precis.workers.job_types import JobTypeSpec
@@ -98,40 +98,6 @@ _PREVIEW_MARKERS = (
     "preview of",
     "access through your institution",
 )
-#: Pages of text the identity check reads (cheap; no Marker).
-_IDENTITY_PAGES = 3
-#: Fraction of the stub title's significant words that must occur.
-_TITLE_OVERLAP = 0.8
-_STOPWORDS = frozenset(
-    [
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "in",
-        "into",
-        "is",
-        "of",
-        "on",
-        "or",
-        "the",
-        "to",
-        "with",
-        "via",
-        "using",
-        "use",
-        "its",
-        "their",
-        "this",
-        "that",
-    ]
-)
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -161,24 +127,19 @@ def target_problem(store: Store, ref_id: int) -> str | None:
     put (immediate refusal) and the job (state may have moved)."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT r.kind, r.pdf_sha256 IS NOT NULL, "
-            f"{has_body_sql('r')} FROM refs r "
+            f"SELECT r.kind, {has_body_sql('r')} FROM refs r "
             "WHERE r.ref_id = %s AND r.retired_at IS NULL",
             (ref_id,),
         ).fetchone()
     if row is None:
         return "is not a live ref"
-    kind, has_pdf, has_body = row
+    kind, has_body = row
     if kind != "paper":
         return f"is a {kind}, not a paper"
     if has_body:
         return "already has a body (chunks); pdf_url only feeds body-less stubs"
-    if has_pdf:
-        return (
-            "is reference-only (a PDF is already attached, no body); the "
-            "ingest fold promotes only stubs without a PDF, so a replacement "
-            "would mint a duplicate paper - replacing a body is not supported"
-        )
+    # A bodiless ref that already holds a PDF (e.g. a 1-page preview) is a
+    # valid sidecar fold target since 5d95cb2fc (gr465474).
     return None
 
 
@@ -192,19 +153,6 @@ def blocked_host(url: str) -> str | None:
     if any(host == suf or host.endswith("." + suf) for suf in BLOCKED_HOST_SUFFIXES):
         return host
     return None
-
-
-def _words(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
-
-
-def _sig_words(title: str) -> list[str]:
-    return [w for w in _words(title) if len(w) > 2 and w not in _STOPWORDS]
-
-
-def _first_line(text: str) -> str:
-    line = next((ln.strip() for ln in text.splitlines() if len(ln.strip()) > 8), "")
-    return line[:120]
 
 
 def _stub_facts(store: Store, ref_id: int) -> tuple[str, str | None, str]:
@@ -234,15 +182,10 @@ def check_pdf(
     ``preview_suspected``, ``identity_mismatch``) when the file must not be
     dropped.
     """
-    import fitz  # PyMuPDF
-
     try:
-        with fitz.open(str(path)) as doc:
-            n_pages = doc.page_count
-            texts = [doc[i].get_text() for i in range(min(_IDENTITY_PAGES, n_pages))]
+        n_pages, texts = read_leading_pages(path)
     except Exception as exc:  # fitz raises its own FileDataError family
         raise _dl._Failed("unreadable_pdf", f"{type(exc).__name__}: {exc}") from exc
-    text = "\n".join(texts)
     first = texts[0] if texts else ""
 
     if n_pages <= 2 and entry_type.strip().lower() not in _NON_ARTICLE_TYPES:
@@ -253,26 +196,11 @@ def check_pdf(
             raise _dl._Failed("preview_suspected", f"page 1 says {marker!r}")
 
     out: dict[str, Any] = {"pages": n_pages}
-    sig = _sig_words(title)
-    if doi and re.sub(r"\s+", "", doi.lower()) in re.sub(r"\s+", "", text.lower()):
-        out["identity"] = "doi"
-    elif len(sig) >= 2:
-        have = set(_words(text))
-        overlap = sum(w in have for w in sig) / len(sig)
-        if overlap < _TITLE_OVERLAP:
-            raise _dl._Failed(
-                "identity_mismatch",
-                f"title overlap {overlap:.2f} < {_TITLE_OVERLAP}; "
-                f"page 1: {_first_line(first)!r}",
-            )
-        out["identity"] = "title"
-    elif doi:
-        raise _dl._Failed(
-            "identity_mismatch",
-            f"DOI {doi} not in first pages; page 1: {_first_line(first)!r}",
-        )
-    else:
-        out["identity"] = "unchecked"
+    identity, detail = identity_verdict(texts, title=title, doi=doi)
+    if identity == "mismatch":
+        raise _dl._Failed("identity_mismatch", detail)
+    out["identity"] = identity
+    if identity == "unchecked":
         out["identity_unchecked"] = True
     return out
 
@@ -353,8 +281,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"paper_pull ref {ref_id}: {record['status']}"
         + (f" ({record['reason']})" if record.get("reason") else ""),
     )
+    # Not ``ref_id=``: the executor's set_meta binds the job's own ref_id
+    # positionally, so that key collides (TypeError on prod, r24).
     ctx.set_meta(
-        ref_id=ref_id, pull_status=record["status"], pull_reason=record.get("reason")
+        paper_ref_id=ref_id,
+        pull_status=record["status"],
+        pull_reason=record.get("reason"),
     )
 
 

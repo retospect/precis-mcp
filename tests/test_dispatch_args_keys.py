@@ -32,11 +32,13 @@ PASSTHROUGH = [
     ("component", "put"),
     ("component", "get"),
     ("quest", "get"),
+    ("paper", "edit"),
     ("structure", "put"),
     ("structure", "edit"),
     ("structure", "get"),
     ("random", "get"),
     ("time", "get"),
+    ("paper", "put"),
     # Plugin handlers (entry point group ``precis.handlers``).
     ("estimate", "get"),
     ("pathway", "get"),

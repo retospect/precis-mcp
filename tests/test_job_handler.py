@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,7 +23,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers import job as job_mod
 from precis.handlers.job import JobHandler
-from precis.store import Store
+from precis.store import Store, Tag
 
 
 @pytest.fixture
@@ -522,6 +524,77 @@ def test_limit_zero_raises_badinput(jobs: JobHandler) -> None:
 # ── list-view registration ─────────────────────────────────────────
 
 
+# -- '/throughput': is the fleet working or idle (gr458727) -----------------
+
+
+def _seed_throughput_job(
+    store: Store,
+    *,
+    host: str | None,
+    status: str,
+    started_hours_ago: float | None = None,
+    executor: str = "coordinator",
+) -> None:
+    meta: dict[str, Any] = {"job_type": "fake", "executor": executor}
+    if host is not None:
+        meta["lease_host"] = host
+        meta["lease_process"] = "precis-worker"
+    if started_hours_ago is not None:
+        started = datetime.now(UTC) - timedelta(hours=started_hours_ago)
+        meta["started_at"] = started.isoformat()
+    ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    if started_hours_ago is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - (%s || ' hours')::interval "
+                "WHERE ref_id = %s",
+                (started_hours_ago, ref.id),
+            )
+            conn.commit()
+
+
+def test_throughput_counts_claims_outcomes_and_queue(
+    jobs: JobHandler, store: Store
+) -> None:
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=1)
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=2)
+    _seed_throughput_job(store, host="castor", status="failed", started_hours_ago=3)
+    _seed_throughput_job(store, host="melchior", status="running", started_hours_ago=1)
+    _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    # Finished before the window: counted nowhere.
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
+
+    body = jobs.get(id="/throughput").body
+
+    assert "castor precis-worker claimed=3 succeeded=2 failed=1 running=0" in body
+    assert "melchior precis-worker claimed=1 succeeded=0 failed=0 running=1" in body
+    assert "4 claim(s) across 2 host/process row(s)." in body
+    assert "queued now by executor: ssh_node=1" in body
+
+
+def test_throughput_window_widens(jobs: JobHandler, store: Store) -> None:
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
+    assert "castor" not in jobs.get(id="/throughput").body
+    assert "castor precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
+
+
+def test_throughput_lists_heartbeating_host_with_no_claims(
+    jobs: JobHandler, store: Store
+) -> None:
+    store.record_heartbeat("idle-box", load1=0.1)
+
+    body = jobs.get(id="/throughput").body
+
+    assert "idle-box (heartbeating) claimed=0" in body
+    assert "queued now by executor: none" in body
+
+
+def test_throughput_rejects_bad_window(jobs: JobHandler) -> None:
+    with pytest.raises(BadInput):
+        jobs.get(id="/throughput?since=0")
+
+
 def test_logs_is_a_supported_list_view(jobs: JobHandler) -> None:
     assert "logs" in jobs._supported_list_views()
 
@@ -530,3 +603,83 @@ def test_unknown_view_still_enumerates_logs_as_an_option(jobs: JobHandler) -> No
     with pytest.raises(Unsupported) as excinfo:
         jobs.get(id="/bogus-view-name")
     assert "logs" in (excinfo.value.options or [])
+
+
+# ── /logs?job= : window anchored on a job ───────────────────────────
+
+
+def _seed_run_job(store: Store, *, host: str, minutes_ago: float) -> int:
+    started = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="anchored job",
+        meta={
+            "job_type": "fake",
+            "executor": "coordinator",
+            "lease_host": host,
+            "started_at": started.isoformat(),
+            "wall_seconds": 600,
+        },
+    )
+    return int(ref.id)
+
+
+def test_logs_job_window_filters_time_and_host(jobs: JobHandler, store: Store) -> None:
+    # job ran from 120 to 110 minutes ago (window: 125..105 min ago)
+    job_id = _seed_run_job(store, host="melchior", minutes_ago=120)
+    for msg, host, hours in [
+        ("inside window", "melchior", 115 / 60),
+        ("too early", "melchior", 3.0),
+        ("too late", "melchior", 1.0),
+        ("other host", "caspar", 115 / 60),
+    ]:
+        _insert_log(store, message=msg, host=host, hours_ago=hours)
+
+    resp = jobs.get(id=f"/logs?job=jo{job_id}")
+
+    assert "inside window" in resp.body
+    assert "too early" not in resp.body
+    assert "too late" not in resp.body
+    assert "other host" not in resp.body
+    assert "since= ignored" in resp.body
+    # explicit host= overrides the job's host; bare numeric id accepted
+    other = jobs.get(id=f"/logs?job={job_id}&host=caspar")
+    assert "other host" in other.body
+    assert "inside window" not in other.body
+
+
+def test_logs_job_window_follows_last_reclaim(jobs: JobHandler, store: Store) -> None:
+    # first claim 180 min ago; reclaimed 60 min ago and ran 10 min from there
+    started = datetime.now(UTC) - timedelta(minutes=180)
+    reclaimed = datetime.now(UTC) - timedelta(minutes=60)
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="reclaimed job",
+        meta={
+            "job_type": "fake",
+            "executor": "coordinator",
+            "lease_host": "melchior",
+            "started_at": started.isoformat(),
+            "wall_seconds": 600,
+            "reclaims": [{"at": reclaimed.isoformat(), "why": "expiry"}],
+        },
+    )
+    _insert_log(store, message="final attempt", host="melchior", hours_ago=55 / 60)
+
+    resp = jobs.get(id=f"/logs?job=jo{ref.id}")
+
+    assert "final attempt" in resp.body
+
+
+def test_logs_job_unknown_raises(jobs: JobHandler) -> None:
+    with pytest.raises(BadInput) as exc:
+        jobs.get(id="/logs?job=jo99999999")
+    assert exc.value.next
+
+
+def test_logs_job_never_claimed_raises(jobs: JobHandler, store: Store) -> None:
+    ref = store.insert_ref(kind="job", slug=None, title="queued", meta={})
+    with pytest.raises(BadInput, match="never claimed"):
+        jobs.get(id=f"/logs?job={ref.id}")

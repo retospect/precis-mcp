@@ -328,11 +328,11 @@ class GripeHandler(NumericRefHandler):
         # rare read-only one. Any caller-supplied ``tags=``/``link=``
         # beyond the default are still applied in the same transaction,
         # same as before.
-        from precis.handlers._link_tag_ops import (
+        from precis.utils.link_tag_ops import (
             guard_taxon_hierarchy,
             validate_relation,
         )
-        from precis.handlers._link_target import (
+        from precis.utils.link_target import (
             mint_lazy_link_target,
             parse_link_target,
         )

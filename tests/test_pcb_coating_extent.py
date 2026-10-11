@@ -5,11 +5,11 @@ chamber caps the part independently of anything the fab can etch. Before
 this there was NO board-extent cap of any kind in the package — the gripe's
 premise of "a second limit beside the fab cap" was generous.
 
-The figure itself is a physical fact about the coater in use and has not
-been supplied, so it ships null. These tests therefore do two things: pin
-the unconfigured behaviour (which must say "unchecked", never "clean"), and
-exercise the configured path by monkeypatching the accessor, so the check
-is reachable rather than dead code waiting on a number.
+The figure is a physical fact about the coater in use; it ships as the
+house default of 200 x 200 mm (Reto 2026-10-11, lab coater). These tests
+pin that default, pin the unconfigured behaviour (which must say
+"unchecked", never "clean") by monkeypatching the accessor to None, and
+exercise the configured path.
 """
 
 from __future__ import annotations
@@ -27,10 +27,10 @@ def _grid_params(**over: Any) -> dict[str, Any]:
     return params
 
 
-def test_coating_extent_ships_unconfigured() -> None:
-    """Null means UNKNOWN. If someone fills the figure in, this test is the
-    one that should be updated deliberately rather than quietly."""
-    assert capabilities.coating_extent_mm() is None
+def test_coating_extent_ships_the_house_default() -> None:
+    """200 x 200 mm is the lab coater's house default. A change to the
+    figure should update this test deliberately rather than quietly."""
+    assert capabilities.coating_extent_mm() == (200.0, 200.0)
 
 
 def test_the_data_file_declares_the_key_with_both_dimensions() -> None:
@@ -57,7 +57,10 @@ def test_a_half_configured_limit_reads_as_unconfigured(monkeypatch) -> None:
     assert capabilities.coating_extent_mm() is None
 
 
-def test_unconfigured_verdict_says_unchecked_rather_than_passing() -> None:
+def test_unconfigured_verdict_says_unchecked_rather_than_passing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(generators, "coating_extent_mm", lambda: None)
     verdict = generators._coating_verdict("ARR1", 18.1, 18.1)
     assert verdict["checked"] is False
     assert "NOT been screened" in verdict["reason"]
@@ -106,5 +109,6 @@ def test_the_generator_ledger_carries_the_coating_verdict() -> None:
     unit test — an unreachable check reads as a clean one."""
     expansion = generators.expand("ewod_pad_array", "ARR1", _grid_params())
     coating = expansion.ledger["coating"]
-    assert coating["checked"] is False
+    assert coating["checked"] is True
+    assert coating["limit_mm"] == [200.0, 200.0]
     assert coating["array_mm"][0] > 0.0

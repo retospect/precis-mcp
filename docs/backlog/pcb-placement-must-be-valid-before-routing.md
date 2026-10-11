@@ -86,10 +86,12 @@ another cost term.
 
 ## Relationship to the existing pre-route DRC gate item
 
-`pcb-escape-and-driver-chain.md` item 6 already carries a pre-route DRC
-gate (gr451274a). This is that item's motivating case and sharpens it in
-one way worth keeping: the gate's job is to make an invalid board
-**unroutable**, not to annotate it.
+**Shipped (gr451274a):** `pcb_route` runs `placement_drc_findings` after
+the anneal and before the router; error findings fail the job and write
+nothing (warnings do not block). Still open here: the gate runs after the
+anneal rather than before it, `pcb_place` still only reports, and a gate
+that exists without a placer cost term (b)/(c) refuses boards it could have
+placed.
 
 ## Acceptance criteria
 

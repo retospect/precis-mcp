@@ -184,6 +184,18 @@ def _combine_tier(a: Tier, b: Tier) -> Tier:
     return a if _TIER_RANK[a] >= _TIER_RANK[b] else b
 
 
+def _stability_line(report: se_stability.StabilityReport) -> tuple[str, Tier]:
+    """Header ``stability:`` line + tier. A PARTIAL report (rigid connects
+    the analysis ignored, gr334788) is never green: floor of 'warn' and a
+    count suffix. Non-partial reports render exactly as before."""
+    line = f"stability: {report.verdict}"
+    tier = _stability_tier(report.verdict)
+    if report.partial:
+        line += f" (partial: {len(report.unmodelled_connects)} rigid connect(s) not modelled)"
+        tier = _combine_tier(tier, "warn")
+    return line, tier
+
+
 def _stability_tier(verdict: str) -> Tier:
     """Stability-verdict → header tier.
 
@@ -921,12 +933,13 @@ def _build_svg(
     members: list[MemberLine] = []
     if adapter.has_stability:
         report = se_stability.classify(tree)  # type: ignore[arg-type]
+        stab_line, stab_tier = _stability_line(report)
         header_lines = [
-            f"stability: {report.verdict}",
+            stab_line,
             f"validate: {vline}",
             fill_line,
         ]
-        tier = _combine_tier(_stability_tier(report.verdict), vtier)
+        tier = _combine_tier(stab_tier, vtier)
         for row in report.members:
             if row.skipped is not None:
                 continue
@@ -1415,7 +1428,6 @@ async def _scene3d_response(
             #: badges. Empty when the design is clean, has no validator,
             #: or the validate call itself failed (degrade, never a 500).
             "findings": findings,
-            "mermaid": scene.mermaid,
             # gr340030 — the scale-bar overlay's own conversion factor:
             # real SI metres = a displayed coordinate / scale.
             "scale": scene.scale,

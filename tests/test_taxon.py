@@ -359,8 +359,8 @@ class TestHierarchyGuard:
         self, store: Any
     ) -> None:
         from precis.dispatch import Hub
-        from precis.handlers._link_tag_ops import apply_link_ops
         from precis.handlers.memory import MemoryHandler
+        from precis.utils.link_tag_ops import apply_link_ops
 
         t = _mk(store, "door taxon")
         mem = _created_memory(store, "a memory about doors")
@@ -440,8 +440,8 @@ class TestHierarchyGuard:
         assert _count() == before
 
     def test_chunk_level_target_refused(self, store: Any) -> None:
-        from precis.handlers._link_tag_ops import guard_taxon_hierarchy
-        from precis.handlers._link_target import LinkTarget
+        from precis.utils.link_tag_ops import guard_taxon_hierarchy
+        from precis.utils.link_target import LinkTarget
 
         a = _mk(store, "chunky a")
         b = _mk(store, "chunky b")

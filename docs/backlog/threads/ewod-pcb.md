@@ -324,15 +324,19 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
     (ITO top sheet, spacer adhesive, alignment holes, via-plaza covers),
     generalising the pcb 2D layer system the way solder paste already
     does; the hard part is stencil bridges that keep the adhesive sheet
-    one connected component. Reto-architected 2026-09-26; waits on nothing
-    but is large. Interacts with gr414481.
+    one connected component. Reto-architected 2026-09-26; waits on nothing.
+    Interacts with gr414481. **v1 shipped** as `precis.pcb.mech2d` (pure,
+    never in `export_fab`): ITO cut + spacer adhesive (frame with array
+    window, optional via covers), shared round-hole+slot alignment
+    primitive, kerf and mirror at export, board-fingerprinted SVG,
+    connected-component check. **Left:** stencil bridges (open-polyline
+    gaps) for interior islands, the channel-cutout style variant,
+    persisting the layers as generator rows / a `pcb` view wiring, the
+    parylene-liner-edge note, Cricut importer check (Reto: "later"),
+    gr414481 extent as an input.
 11. **gr414481** — EWOD boards need a second max-extent check for parylene
     coating, separate from the fab/manufacturing size cap; feeds gr451662's
     adhesive-layer extent.
-12. **gr338660** — the ewod-oil route-platform-constraint screen has no
-    reagent-economy axis (distinct-reagent count vs reservoir budget,
-    reaction-type diversity, longest unpurified run); waits on 9
-    (ewod-oil-constraint-grounding), the file this screen lives beside.
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
 14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +

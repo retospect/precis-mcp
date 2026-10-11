@@ -31,7 +31,8 @@ Accepted input forms (broadly accepting):
 Ergonomic carve-outs: a bare `0` component is always legal (zero
 needs no unit); e-notation mantissas are fine in every form
 (`[3e-9, 0, 0] m` ≡ `[3, 0, 0] nm` — Reto 2026-09-12; the
-shipped awkward-mantissa advisory — `parse_quantity(warnings=[...])` —
+shipped awkward-mantissa advisory — `parse_quantity(warnings=[...])`,
+surfaced on cad put/derive as `⚠ units:` via `SceneSpec.warnings` —
 nudges toward the neat prefix, warn-only). Mixing form 1
 and form 2 in one vector (some components united, others bare-nonzero
 relying on a trailing unit) rejects.
@@ -106,7 +107,8 @@ machinery; sweep se/nm op docstrings + skills examples to the
 canonical form; fixture sweep for authored pose literals. Natural
 bundle: ship as one "interface explicitness" round together with
 gr336352 (MCP-wide angle explicitness — calc's deg/rad triple
-convention, pcb `rot` self-naming). SEQUENCE AFTER the prompt-surface audit fixes land (they touch
+convention, pcb `rot` self-naming). RULED (Reto 2026-10-11): the explicit
+angle-unit change ships bundled with the pose-vector work, not alone. SEQUENCE AFTER the prompt-surface audit fixes land (they touch
 the same hint machinery/files).
 
 ## Angle units across every MCP surface (gr336352)

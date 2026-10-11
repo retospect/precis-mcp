@@ -518,3 +518,46 @@ def test_dispatch_unknown_scope_records_failure(hub: Hub) -> None:
     )
     _spec().dispatch(ctx, _spec())
     assert ctx.failures
+
+
+def test_dispatch_shares_one_mint_cap_across_the_run(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr204874: paragraphs citing the same pc share ONE MintCap for the
+    whole run, so the (limit+1)th new hub from that chunk is refused."""
+    from precis.taproot.canon import MAX_HUBS_PER_CHUNK_PER_RUN
+
+    draft = DraftHandler(hub=hub)
+    _paper, pc = _pc_of(store)
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    prev = store.drafts.reading_order(ref.id)[0].dc
+    n = MAX_HUBS_PER_CHUNK_PER_RUN + 1
+    dcs: list[str] = []
+    for i in range(n):
+        r = draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text=f"Para {i} [{pc}].",
+            at={"after": prev},
+        )
+        prev = _dc(r.body)
+        dcs.append(prev)
+
+    monkeypatch.setattr(
+        "precis.taproot.backfill.apply_chunk",
+        _wrap_apply_chunk(lambda cid: f"Distinct claim number {cid}."),
+    )
+    ctx = _FakeCtx(store=store, meta={"params": {"scope": "nt"}})
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    chunks = [store.drafts.get_draft_chunk(dc) for dc in dcs]
+    texts = [c.text for c in chunks if c is not None]
+    assert len(texts) == len(dcs)
+    converted = [t for t in texts if "[fi" in t]
+    capped = [t for t in texts if f"[{pc}]" in t]
+    assert len(converted) == MAX_HUBS_PER_CHUNK_PER_RUN, texts
+    assert len(capped) == 1, texts

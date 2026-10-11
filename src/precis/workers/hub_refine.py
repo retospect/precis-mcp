@@ -1107,7 +1107,7 @@ def _citation_candidates(
     return candidates, unresolved
 
 
-#: Patent legal-claim blocks (``handlers/_patent_claims.py``'s
+#: Patent legal-claim blocks (``patent/claims.py``'s
 #: ``claim_block_meta`` marker) — grounding policy (docs/backlog/
 #: patent-evidence-parity): legal scope is not empirical support, so
 #: these never reach Verify. Description/abstract blocks carry no

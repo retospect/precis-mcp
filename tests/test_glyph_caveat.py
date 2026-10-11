@@ -4,7 +4,7 @@ surfaces (paper view banner, finding view, draft cite lint)."""
 from __future__ import annotations
 
 from precis.dispatch import Hub
-from precis.handlers._draft_lint import glyph_cite_hint
+from precis.draft.lint import glyph_cite_hint
 from precis.handlers.finding import FindingHandler
 from precis.handlers.paper import _paper_banner
 from precis.ingest.glyph_health import glyph_caveat, glyph_suspected

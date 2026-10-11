@@ -1193,7 +1193,7 @@ def _terminate(
     shutil.rmtree(work_dir, ignore_errors=True)
 
     if status == _FAILED:
-        from precis.handlers._job_bubble import bubble_job_failure
+        from precis.utils.job_bubble import bubble_job_failure
 
         bubble_job_failure(store, ref_id)
 
@@ -1227,7 +1227,7 @@ def _fail(store: Store, ref_id: int, reason: str) -> None:
         _append_chunk(store, ref_id, _JOB_EVENT_KIND, reason, conn=conn)
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
-    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.utils.job_bubble import bubble_job_failure
 
     bubble_job_failure(store, ref_id)
 

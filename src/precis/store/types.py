@@ -8,6 +8,7 @@ them in place.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -437,6 +438,18 @@ _INVERSE_RELATIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+#: PG renders a discrete int4range canonically as ``[lo,hi)``.
+_INT4RANGE_RE = re.compile(r"\[(-?\d+),(-?\d+)\)")
+
+#: Shown on a one-page-PDF paper's read views and stamped on evidence edges
+#: grounded in it (gr372863). ``Ref.is_one_page_pdf`` decides when.
+ONE_PAGE_COVERAGE_NOTE = (
+    "ONE-PAGE SOURCE - the ingested PDF is a single page (likely a publisher "
+    "preview): methods, results and caveats are not in the corpus, so this "
+    "supports at most what the abstract and opening say"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Ref:
     """A ref row from the v2 ``refs`` table.
@@ -484,7 +497,7 @@ class Ref:
     # Migration 0013 / todo-tree. NULL for refs not in a tree (everything
     # but todo branches/leaves today). Self-referencing FK with ON DELETE
     # SET NULL — orphaned children survive parent deletion. Cycle / depth
-    # / level-gradient guards live in ``handlers/_todo_guards.py`` and run
+    # / level-gradient guards live in ``todo/guards.py`` and run
     # at write time.
     parent_id: int | None = None
     # Migration 0014 / Slice 4 priority column. 1..10 inclusive. NULL =
@@ -514,6 +527,15 @@ class Ref:
     # First consumer: kind='anki' — each card belongs to the AnkiWeb
     # account it syncs to.
     owner_login: str | None = None
+
+    @property
+    def is_one_page_pdf(self) -> bool:
+        """True when ``pdf_pages`` spans exactly one page - the shape of an
+        entitlement-preview PDF (docs/runbooks/elsevier-preview-pdf-
+        remediation.md). The single definition read surfaces and evidence
+        attach share; a ref with no recorded span is not flagged."""
+        m = _INT4RANGE_RE.fullmatch((self.pdf_pages or "").strip())
+        return m is not None and int(m.group(2)) - int(m.group(1)) == 1
 
     @property
     def public_id(self) -> str:

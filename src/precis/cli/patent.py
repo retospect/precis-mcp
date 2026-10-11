@@ -381,11 +381,11 @@ def run_runner(args: argparse.Namespace) -> None:
 
     from precis.config import load_config
     from precis.embedder import make_embedder
-    from precis.handlers._patent_ops import OpsClient
     from precis.jobs.patent_watch import (
         DEFAULT_FAIR_USE_LIMIT_GB,
         run_one_pass,
     )
+    from precis.patent.ops import OpsClient
     from precis.store import Store
 
     cfg = load_config()
@@ -473,12 +473,12 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
 
     from precis.config import load_config
     from precis.embedder import make_embedder
-    from precis.handlers._patent_ops import OpsClient
     from precis.jobs.patent_fulltext_sweep import (
         DEFAULT_SWEEP_LIMIT,
         run_fulltext_sweep,
     )
     from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
+    from precis.patent.ops import OpsClient
     from precis.store import Store
 
     cfg = load_config()
@@ -618,9 +618,9 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
 
     from precis.config import load_config
     from precis.embedder import make_embedder
-    from precis.handlers._patent_ops import OpsClient
     from precis.jobs.patent_reingest import run_reingest_pass
     from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
+    from precis.patent.ops import OpsClient
     from precis.store import Store
 
     cfg = load_config()

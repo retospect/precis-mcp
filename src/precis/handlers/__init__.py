@@ -140,7 +140,7 @@ children, auto-injects ``meta.auto_check={'type':
 deterministic (non-``llm_tier``) parent until ``auto_check`` flips it
 done (``dispatch._job_blocks_dispatch_sql``) — the brake against daily
 re-mint storms. On **failure** the parent gets a ``child-failed:<job_id>``
-open tag (``handlers/_job_bubble.py``) and leaves the doable view;
+open tag (``utils/job_bubble.py``) and leaves the doable view;
 infra-class failures (``INFRA_FAILURE_TAGS`` — lease-expiry orphan sweep
 or a signal-killed/result-less compute child) get a bounded auto-retry
 (``ORPHAN_RETRY_CAP`` 3 per 6h window) before latching; content-class

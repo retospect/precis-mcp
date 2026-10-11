@@ -78,13 +78,6 @@ from precis import supply
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    format_link_tag_ack,
-    require_link_target,
-    validate_link_mode,
-)
-from precis.handlers._link_target import parse_link_target
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers._value_entity import (
     _MATURITIES,
@@ -105,6 +98,13 @@ from precis.store._component_ops import (
 )
 from precis.supply.catalog import series_mapping, validate_filters
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
+from precis.utils.link_target import parse_link_target
 
 #: ``component_spec_values.method`` (migration 0093's comment: "measured |
 #: datasheet | estimated | ..."), plus ``standard`` — already written

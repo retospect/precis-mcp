@@ -711,7 +711,14 @@ def _ops_alert_target() -> str:
     return os.environ.get(OPS_ALERT_TARGET_ENV, "")
 
 
-def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") -> bool:
+def queue_ops_message(
+    store: Store,
+    title: str,
+    body: str,
+    *,
+    reason: str = "",
+    raise_on_error: bool = False,
+) -> bool:
     """Best-effort push of ``body`` to the ops Discord channel.
 
     Queues a ``kind='message'`` to the channel configured by
@@ -720,7 +727,9 @@ def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") 
     asa_bot (the one process holding a Discord socket) then posts it.
     Returns ``True`` if a push was queued, ``False`` if no target is
     configured (the default — dark until an operator wires the channel).
-    Never raises: a failed push must not break the caller's pass.
+    Never raises by default: a failed push must not break the caller's pass.
+    A caller that must know the push landed (the Alertmanager receiver, whose
+    non-2xx makes Alertmanager retry) passes ``raise_on_error=True``.
 
     The shared push primitive behind :func:`notify_critical_alert` (a new
     critical nursery finding) and ``health_digest``'s daily/on-degradation
@@ -757,6 +766,8 @@ def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") 
                 (json.dumps({"ref_id": ref.id, "target": target, "author": "asa"}),),
             )
     except Exception:
+        if raise_on_error:
+            raise
         log.warning("queue_ops_message: push failed", exc_info=True)
     return True
 

@@ -35,17 +35,11 @@ from datetime import UTC
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
+from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import toon
-from precis.handlers import _draft_lint
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    format_link_tag_ack,
-    require_link_target,
-    validate_link_mode,
-)
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
@@ -57,6 +51,12 @@ from precis.utils import draft_regex, handle_registry
 from precis.utils.authors import to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 from precis.utils.table_data import (
     find_replace_cells,
     normalize_table,
@@ -292,10 +292,17 @@ def _coerce_authoring(v: bool | str) -> bool:
     )
 
 
-def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
-    """Validate an ``edit(word_target=…)`` payload → ``(min, max)`` or
-    ``None`` (clear). ``{}`` / both-bounds-absent clears; a present bound
-    must be a non-negative int and ``min <= max``."""
+def _coerce_word_target(
+    raw: dict[str, Any], what: str = "word_target"
+) -> tuple[int, int] | None:
+    """Validate an ``edit(word_target=…)`` (or ``char_target``) payload →
+    ``(min, max)`` or ``None`` (clear). ``{}`` / both-bounds-absent clears;
+    a present bound must be a non-negative int and ``min <= max``."""
+    if not isinstance(raw, dict):
+        raise BadInput(
+            f"{what} must be a dict like {{'min':200,'max':400}}",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
+        )
     if not raw:
         return None
     lo_raw = raw.get("min")
@@ -307,15 +314,15 @@ def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
         hi = int(hi_raw) if hi_raw is not None else 10**9
     except (TypeError, ValueError):
         raise BadInput(
-            "word_target min/max must be integers",
-            next="edit(id='dc<heading>', word_target={'min':200,'max':400})",
+            f"{what} min/max must be integers",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
         ) from None
     if lo < 0 or hi < 0:
-        raise BadInput("word_target min/max must be non-negative")
+        raise BadInput(f"{what} min/max must be non-negative")
     if lo > hi:
         raise BadInput(
-            f"word_target min={lo} exceeds max={hi}",
-            next="edit(id='dc<heading>', word_target={'min':200,'max':400})",
+            f"{what} min={lo} exceeds max={hi}",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
         )
     return (lo, hi)
 
@@ -325,6 +332,7 @@ class DraftHandler(Handler):
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
         "get": frozenset({"limit"}),
+        "edit": frozenset({"char_target"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -1094,6 +1102,19 @@ class DraftHandler(Handler):
                 at=at,
             )
 
+        # A structure view figure: meta={'view': {...}} names the structure;
+        # the image is rendered server-side at export/view time.
+        if chunk_kind == "figure" and isinstance(meta, dict) and "view" in meta:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
+            return self._add_view_figure(
+                slug=slug,
+                ref_id=ref.id,
+                caption=text or caption,
+                view=meta["view"],
+                at=at,
+            )
+
         # A computed figure (graph): render code + plots links, image deferred
         # to the render pass. text= is the caption.
         if chunk_kind == "figure" and (render is not None or plots is not None):
@@ -1414,6 +1435,73 @@ class DraftHandler(Handler):
             body=f"added figure {chunk.dc} [{org}] to {slug} ({len(raw)} bytes)"
         )
 
+    def _add_view_figure(
+        self,
+        *,
+        slug: str,
+        ref_id: int,
+        caption: str | None,
+        view: Any,
+        at: dict[str, Any] | None,
+    ) -> Response:
+        """Add a *structure view* figure (se-view-figures §2): ``view`` is
+        ``{'source': 'structure:<slug>', 'camera': {az/el/…}, 'style': {…},
+        'refine': 0|1|2}``. Only the recipe is stored; the stick-figure PNG is
+        rendered through viz3d at export/view time (placeholder until then) and
+        re-rendered when the structure's geometry changes. ``origin='original'``."""
+        from precis.render.figure import VIEW_MAX_ATOMS, view_recipe
+
+        nxt = (
+            "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
+            "meta={'view': {'source': 'structure:<slug>', "
+            "'camera': {'azimuth_deg': 30, 'elevation_deg': 15}}})"
+        )
+        if caption is None or not str(caption).strip():
+            raise BadInput("a figure requires text= (the caption)", next=nxt)
+        if not isinstance(view, dict):
+            raise BadInput("meta['view'] must be an object", next=nxt)
+        kind, _, src_slug = str(view.get("source") or "").partition(":")
+        src_slug = src_slug.strip()
+        if kind != "structure" or not src_slug:
+            raise BadInput(
+                "meta['view']['source'] must be 'structure:<slug>'", next=nxt
+            )
+        sref = self.store.get_ref(kind="structure", id=src_slug)
+        if sref is None:
+            raise NotFound(f"structure {src_slug!r} not found")
+        try:
+            recipe = view_recipe(
+                src_slug, view.get("camera"), view.get("style"), view.get("refine", 2)
+            )
+        except ValueError as exc:
+            raise BadInput(str(exc), next=nxt) from exc
+        scene, _handles = self.store.structure_load(sref.id)
+        if len(scene.atoms) > VIEW_MAX_ATOMS:
+            raise BadInput(
+                f"structure {src_slug!r} has {len(scene.atoms)} atoms; a view "
+                f"figure is capped at {VIEW_MAX_ATOMS}",
+                next="render a smaller structure (a fragment or sub-block)",
+            )
+        chunk = self.store.drafts.add_figure(
+            ref_id=ref_id,
+            caption=str(caption),
+            origin="original",
+            image=_PLACEHOLDER_PNG,  # deferred — rendered at export/view time
+            mime="image/png",
+            at=at,
+            figure_meta={"render_pending": True},
+        )
+        self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
+        self.sync_draft_links(ref_id)
+        self._attribute_touch([chunk.chunk_id])
+        return Response(
+            body=(
+                f"added structure view figure {chunk.dc} to {slug} "
+                f"(structure:{src_slug}); "
+                "image renders on first export/view — render pending"
+            )
+        )
+
     def _add_graph_figure(
         self,
         *,
@@ -1527,6 +1615,7 @@ class DraftHandler(Handler):
         style: str | None = None,
         list_kind: str | None = None,
         word_target: dict[str, Any] | None = None,
+        char_target: dict[str, Any] | None = None,
         base_sha: str | None = None,
         authors: list[dict[str, Any]] | str | None = None,
         not_abbrev: list[str] | str | None = None,
@@ -1761,6 +1850,7 @@ class DraftHandler(Handler):
             or style is not None
             or list_kind is not None
             or word_target is not None
+            or char_target is not None
             or move is not None
             or voice is not None
             or lang is not None
@@ -1840,6 +1930,21 @@ class DraftHandler(Handler):
             _reject_dry_run("meta", _base)
             c = self.store.drafts.set_term_attrs(handle, meta)
             return Response(body=f"updated term attributes {c.dc}" if c else "updated")
+        if char_target is not None:
+            # Same shape as word_target, counted in characters (form boxes
+            # that cap characters, spaces included). Arrives via args=.
+            ctarget = _coerce_word_target(char_target, "char_target")
+            c = self.store.drafts.set_word_target(handle, ctarget, key="char_target")
+            dc = (c or _base).dc
+            if ctarget:
+                lo, hi = ctarget
+                return Response(
+                    body=(
+                        f"set char target on {dc} → {lo}–{hi} characters "
+                        f"(check with get(kind='draft', view='wordcount'))"
+                    )
+                )
+            return Response(body=f"cleared char target on {dc}")
         if word_target is not None:
             # Set/clear a heading section's word limit (proposal writing).
             # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.
@@ -2093,6 +2198,73 @@ class DraftHandler(Handler):
         self.store.drafts.retire_chunk(chunk.handle, mode=mode)
         self.sync_draft_links(chunk.ref_id)
         return Response(body=f"retired {chunk.dc}")
+
+    # ── structural block edits for the web inline editor ─────────────
+    #
+    # The reader's Enter / Backspace / ``+`` affordances do multi-step
+    # structural edits no single verb expresses (a blank chunk the ``put``
+    # verb rejects; an atomic split / merge). They live here — not as
+    # ``store.drafts.*`` calls in ``precis_web`` — so the machine-owner
+    # refusal, link sync and agent-run attribution stay single-sourced
+    # with the verbs (gr343752).
+
+    def insert_blank_block(
+        self, ref_id: int, *, chunk_kind: str, after_handle: str
+    ) -> Any:
+        """Add an empty ``chunk_kind`` chunk right after ``after_handle``
+        ("add a blank paragraph, then type into it" — the ``put`` verb's
+        empty-``text`` guard would reject this). Returns the new chunk."""
+        self._refuse_if_machine_owned(ref_id)
+        chunks = self.store.drafts.add_chunks(
+            ref_id=ref_id,
+            chunk_kind=chunk_kind,
+            text="",
+            at={"after": f"¶{after_handle}"},
+        )
+        self._attribute_touch([c.chunk_id for c in chunks])
+        return chunks[0]
+
+    def split_block(
+        self,
+        ref_id: int,
+        handle: str,
+        *,
+        before: str,
+        after: str,
+        tail_kind: str,
+        base_sha: str,
+    ) -> Any:
+        """Split ``handle`` at the caret: it keeps ``before`` (and its
+        handle, so cross-refs survive); a new ``tail_kind`` chunk carrying
+        ``after`` lands right after it. ``base_sha`` guards the head edit
+        (``BadInput`` "changed since you read" on a concurrent write).
+        Returns the new tail chunk."""
+        self._refuse_if_machine_owned(ref_id)
+        head = self.store.drafts.edit_text(handle, before, base_sha=base_sha)
+        new = self.store.drafts.add_chunks(
+            ref_id=ref_id,
+            chunk_kind=tail_kind,
+            text=after,
+            at={"after": f"¶{handle}"},
+            split=False,
+        )[0]
+        self.sync_draft_links(ref_id)
+        touched = [new.chunk_id] + ([head.chunk_id] if head is not None else [])
+        self._attribute_touch(touched)
+        return new
+
+    def merge_prev_block(
+        self, ref_id: int, handle: str, prev_handle: str, text: str, *, base_sha: str
+    ) -> None:
+        """Append ``text`` onto ``prev_handle`` and retire ``handle`` in one
+        transaction (``base_sha`` = sha of the previous block's text the
+        caller read)."""
+        self._refuse_if_machine_owned(ref_id)
+        self.store.drafts.merge_prev_block(handle, prev_handle, text, base_sha=base_sha)
+        self.sync_draft_links(ref_id)
+        prev = self.store.drafts.get_draft_chunk(prev_handle)
+        if prev is not None:
+            self._attribute_touch([prev.chunk_id])
 
     # ── helpers ──────────────────────────────────────────────────────
 
@@ -3286,7 +3458,7 @@ class DraftHandler(Handler):
 
     def _cited_paper_ref_ids(self, chunks: list[Any]) -> list[int]:
         """Every paper/patent cite token in the draft
-        (:func:`~precis.handlers._draft_lint.find_paper_cite_tokens`, one
+        (:func:`~precis.draft.lint.find_paper_cite_tokens`, one
         pass per chunk), resolved to its target ``ref_id``, in mention
         order with repeats kept (a paper cited twice appears twice).
         Shared by :meth:`_taproot_hub_scoreboard` (which counts cited
@@ -3358,12 +3530,12 @@ class DraftHandler(Handler):
     def _hygiene_drift_lines(self, ref_id: int, *, limit: int | None) -> list[str]:
         """The fourth hygiene check (docs/backlog/cite-pins-hub-version.md):
         ``cites`` edges whose pinned hub version has moved on since the
-        citing prose was written — :func:`~precis.handlers._draft_lint.
+        citing prose was written — :func:`~precis.draft.lint.
         find_drifted_cites`. One ``⚠`` line per drifted cite, each naming
         the citing ``dc<id>`` and quoting both statements — ``was "<old>",
         now "<new>"`` — so a reader doesn't need a second pass to see what
         changed. An edge stamped before the title pin existed carries a
-        pub_id but no title (:attr:`~precis.handlers._draft_lint.
+        pub_id but no title (:attr:`~precis.draft.lint.
         DriftedCite.stamped_title` is ``None``): that degrades to "old
         statement not recorded", never a crash and never a claimed-empty
         old title.
@@ -3705,19 +3877,19 @@ class DraftHandler(Handler):
     # reach into directly.
     def _dangling_finding_tokens(self, text: str) -> list[str]:
         """The ``finding #slug`` markers in ``text`` that resolve to no live
-        finding ref. See :func:`~precis.handlers._draft_lint.
+        finding ref. See :func:`~precis.draft.lint.
         dangling_finding_tokens`."""
         return _draft_lint.dangling_finding_tokens(self.store, text)
 
     def _dangling_chunk_tokens(self, text: str) -> list[str]:
         """The ``[<handle>]`` references in ``text`` that resolve to
-        nothing. See :func:`~precis.handlers._draft_lint.
+        nothing. See :func:`~precis.draft.lint.
         dangling_chunk_tokens`."""
         return _draft_lint.dangling_chunk_tokens(self.store, text)
 
     def _tombstone_chunk_tokens(self, text: str) -> list[tuple[str, int]]:
         """``[<handle>]`` references naming a real ref that has been
-        soft-deleted (gr265228). See :func:`~precis.handlers._draft_lint.
+        soft-deleted (gr265228). See :func:`~precis.draft.lint.
         tombstone_chunk_tokens` — reported distinctly from
         ``_dangling_chunk_tokens``' "resolves to nothing at all"."""
         return _draft_lint.tombstone_chunk_tokens(self.store, text)
@@ -3726,7 +3898,7 @@ class DraftHandler(Handler):
         self, new_text: str, old_text: str
     ) -> tuple[list[str], list[str]]:
         """``(newly-broken chunk-ref tokens, newly-broken finding slugs)``.
-        See :func:`~precis.handlers._draft_lint.newly_dangling` — the
+        See :func:`~precis.draft.lint.newly_dangling` — the
         shared core of the inline-editor validation gate
         (``docs/backlog/draft-inline-editor.md``)."""
         return _draft_lint.newly_dangling(self.store, new_text, old_text)
@@ -3843,10 +4015,14 @@ class DraftHandler(Handler):
 
         report = aggregate_word_counts(chunks)
         if not report.sections:
-            body = f"{header}\n\ntotal: {report.total} words\n\n(no sections yet)"
+            body = (
+                f"{header}\n\ntotal: {report.total} words, "
+                f"{report.total_chars} chars\n\n(no sections yet)"
+            )
             return Response(body=body)
 
         rows = []
+        has_chars = any(s.char_target is not None for s in report.sections)
         for sc in report.sections:
             if sc.target is None:
                 target_s = "—"
@@ -3863,11 +4039,31 @@ class DraftHandler(Handler):
                     "verdict": sc.verdict,
                 }
             )
-        table = toon.dump(
-            rows, schema=["handle", "title", "words", "target", "verdict"]
-        )
+            if has_chars:
+                rows[-1].update(
+                    {
+                        "chars": sc.chars,
+                        "char_target": (
+                            "—"
+                            if sc.char_target is None
+                            else f"{sc.char_target[0]}–{sc.char_target[1]}"
+                        ),
+                        "char_verdict": sc.char_verdict,
+                    }
+                )
+        schema = ["handle", "title", "words", "target", "verdict"]
+        if has_chars:
+            schema += ["chars", "char_target", "char_verdict"]
+        table = toon.dump(rows, schema=schema)
         flagged = [s for s in report.sections if s.verdict in ("under", "over")]
-        trailer = f"\n\ntotal: {report.total} words"
+        trailer = f"\n\ntotal: {report.total} words, {report.total_chars} chars"
+        cflagged = [s for s in report.sections if s.char_verdict in ("under", "over")]
+        if cflagged:
+            names = ", ".join(
+                f"{s.title or '(untitled)'} ({s.char_verdict} {s.chars} chars)"
+                for s in cflagged[:6]
+            )
+            trailer += f"\n⚠ {len(cflagged)} section(s) off char target: {names}"
         if flagged:
             names = ", ".join(
                 f"{s.title or '(untitled)'} ({s.verdict})" for s in flagged[:6]

@@ -52,12 +52,9 @@ brief. Owner `src/precis/draft/narrate.py`.
 ## Briefing cast links findings at document level only (gr372773)
 
 Bundled in the 2026-10-11 gripe triage. The briefing cast's findings lane
-(`src/precis/reading/briefing_cast.py`) hands the composer finding titles
-without their `[fi]` handles, so the script cannot attribute a statement to
-a specific finding and the episode links back only at document level.
+(`src/precis/reading/briefing_cast.py`) now hands the composer `[fi]` handles and writes per-paragraph `cites` edges
+(shipped); what remains is the render mode below.
 
-- Pass the handles to the composer alongside the titles, or run a
-  post-compose attribution step that matches script sentences to findings.
 - Add a rail-only cite render mode: handles shown in the reader's rail but
   not read aloud by the TTS.
 

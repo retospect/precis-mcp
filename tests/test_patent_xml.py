@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from precis.handlers._patent_xml import (
+from precis.patent.xml import (
     parse_patent,
     parse_search_response,
 )

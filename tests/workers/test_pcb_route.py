@@ -302,7 +302,7 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
                     "refdes": f"W{i}",
                     "label": "wall",
                     "x": 12.0,
-                    "y": -8.0 + i * 1.1,
+                    "y": -15.0 + i * 2.0,
                     "pins": [{"name": "1"}],
                 }
                 for i in range(16)
@@ -325,7 +325,10 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
     # meets it.
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 1, "seed": 1})
     _route(ctx)
+    # The wall must be placement-DRC clean (pitch above the courtyard width),
+    # or the pre-route gate refuses the route before any via can appear.
     assert not ctx.failures
+    assert any(", 0 pre-route DRC error(s)," in str(c) for c in ctx.summaries)
 
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1119,6 +1122,59 @@ def test_pcb_route_strips_a_net_whose_router_copper_violates_drc(
     assert _copper_count(store, ref_id) == 0
     assert ctx.failures and ctx.failures[0][1] == "non-convergence"
     assert "1 net(s) stripped by post-route DRC" in ctx.summaries[0][1]
+
+
+def _shortened(track: Any) -> Any:
+    """``track`` cut back to the first half of its own run: one straight
+    segment from its first point to the midpoint of first-start/last-end —
+    real copper that leaves one end in bare board, which is what a neck
+    stopping short of its electrode is."""
+    import dataclasses
+
+    segs = track.segments
+    (x0, y0), (x1, y1) = segs[0]["start"], segs[-1]["end"]
+    mid = [(x0 + x1) / 2.0, (y0 + y1) / 2.0]
+    return dataclasses.replace(
+        track, segments=({"shape": "line", "start": [x0, y0], "end": mid},)
+    )
+
+
+def test_pcb_route_fails_a_routed_net_whose_copper_is_in_two_pieces(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr449483: ``realized`` must mean one connected piece. The realizer is
+    wrapped so it returns N1's track SHORTENED to half its run — no
+    unrouted segment, no DRC finding, so every older rung of the ladder
+    passes it — and the net must still land ``failed`` with reason
+    ``disconnected`` (the witness points in ``fail``), never ``realized``.
+    The unwrapped run of the same board reads ``realized``, so the flip is
+    the shortening and nothing else."""
+    import dataclasses
+
+    ref_id = _seed(store, "route-split-net", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    _route(ctx)
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+
+    real = pcb_route.pcb_realize.realize
+
+    def short_neck(*args: Any, **kwargs: Any) -> Any:
+        res = real(*args, **kwargs)
+        assert res.tracks, "the fixture must route N1 for this test to mean anything"
+        return dataclasses.replace(res, tracks=tuple(_shortened(t) for t in res.tracks))
+
+    monkeypatch.setattr(pcb_route.pcb_realize, "realize", short_neck)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 2})
+    _route(ctx)
+
+    (row,) = store.pcb_route_status(ref_id)
+    assert row["status"] == "failed"
+    assert row["note"] == "failed: disconnected"
+    (problem,) = store.pcb_routes_get(ref_id)["N1"]["fail"]["problems"]
+    assert problem["reason"] == "disconnected"
+    assert problem["components"] >= 2
+    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
+    assert "1 net(s) failed as disconnected copper" in ctx.summaries[0][1]
 
 
 def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(

@@ -17,12 +17,12 @@ from typing import TYPE_CHECKING, Any
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import apply_tag_ops
-from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.response import Response
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import apply_tag_ops
+from precis.utils.link_target import LinkTarget, parse_link_target
 
 if TYPE_CHECKING:
     from precis.store import Store

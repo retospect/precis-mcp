@@ -46,21 +46,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from precis.handlers._patent_ingest import (
-    AWAITING_FULLTEXT_TAG,
-    FULLTEXT_GIVEUP_DAYS,
-    FULLTEXT_UNAVAILABLE_TAG,
-    next_fulltext_retry_at,
-)
-from precis.handlers._patent_ops import OpsClientProto, OpsError, OpsNotFound
-from precis.handlers._patent_slug import parse_docdb_id
-from precis.handlers._patent_xml import parse_patent
 from precis.ingest.blocks import ParsedBlock, classify_density
 from precis.jobs.patent_watch import (
     DEFAULT_FAIR_USE_LIMIT_GB,
     _gb_to_bytes,
     compute_rolling_fair_use_bytes,
 )
+from precis.patent.ingest import (
+    AWAITING_FULLTEXT_TAG,
+    FULLTEXT_GIVEUP_DAYS,
+    FULLTEXT_UNAVAILABLE_TAG,
+    next_fulltext_retry_at,
+)
+from precis.patent.ops import OpsClientProto, OpsError, OpsNotFound
+from precis.patent.slug import parse_docdb_id
+from precis.patent.xml import parse_patent
 from precis.store import Tag
 from precis.store.types import ChunkInsert
 

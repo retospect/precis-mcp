@@ -341,6 +341,57 @@ def test_mcp_check_rejects_a_bad_flag(wf: Fleet) -> None:
     assert wf.run("mcp-check", "--bogus").returncode == 2
 
 
+def test_mcp_reconnect_default_targets_only_idle_disconnected(wf: Fleet) -> None:
+    _mcp_fleet(wf)
+    cp = wf.run("mcp-reconnect")
+    assert cp.returncode == 0, cp.stderr
+    lines = sorted(cp.stdout.splitlines())
+    assert lines == [
+        "alpha: reconnected",
+        "beta: skipped(busy)",
+        "delta: skipped(connected)",
+        "epsilon: skipped(unknown)",
+        "gamma: skipped(dialog)",
+        "seat: skipped(orchestrator)",
+    ]
+    assert "/mcp reconnect all" in wf.pane("alpha")
+    for name in ("beta", "gamma", "delta", "epsilon", "seat"):
+        assert "/mcp reconnect all" not in wf.pane(name), name
+
+
+def test_mcp_reconnect_connected_needs_force(wf: Fleet) -> None:
+    _mcp_fleet(wf)
+    assert (
+        wf.run("mcp-reconnect", "delta").stdout.strip() == "delta: skipped(connected)"
+    )
+    assert "/mcp" not in wf.pane("delta")
+    cp = wf.run("mcp-reconnect", "--force", "delta")
+    assert cp.stdout.strip() == "delta: reconnected"
+    assert "/mcp reconnect all" in wf.pane("delta")
+
+
+def test_mcp_reconnect_named_tries_unknown_but_never_busy(wf: Fleet) -> None:
+    _mcp_fleet(wf)
+    cp = wf.run("mcp-reconnect", "--force", "epsilon", "beta")
+    assert sorted(cp.stdout.splitlines()) == [
+        "beta: skipped(busy)",
+        "epsilon: reconnected",
+    ]
+
+
+def test_mcp_reconnect_dry_run_sends_nothing(wf: Fleet) -> None:
+    _mcp_fleet(wf)
+    cp = wf.run("mcp-reconnect", "--dry-run")
+    assert "alpha: would reconnect (precis=dead)" in cp.stdout.splitlines()
+    for name in ("alpha", "beta", "gamma", "delta", "epsilon", "seat"):
+        assert "/mcp" not in wf.pane(name), name
+
+
+def test_mcp_reconnect_rejects_bad_flag_and_unknown_window(wf: Fleet) -> None:
+    assert wf.run("mcp-reconnect", "--bogus").returncode == 2
+    assert wf.run("mcp-reconnect", "nosuchwin").returncode == 2
+
+
 # --- watch ---------------------------------------------------------------------
 
 
@@ -531,6 +582,7 @@ def test_usage_lists_compact_mcp_check_and_watch(wf: Fleet) -> None:
         "compact",
         "--at-idle",
         "mcp-check",
+        "mcp-reconnect",
         "--fix",
         "scripts/fleet watch ",
         "PRECIS_FLEET_WATCH_TICKS",

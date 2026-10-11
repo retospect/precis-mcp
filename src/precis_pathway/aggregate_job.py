@@ -210,7 +210,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     try:
         from precis_pathway import runner
 
-        artifact = runner.aggregate_seed_partials(
+        artifact = runner.aggregate_seed_partials_subprocess(
             config, seed_results, force_backend=force_backend
         )
     except Exception as exc:  # pragma: no cover - defensive

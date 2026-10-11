@@ -394,7 +394,7 @@ def test_pass_no_candidates_returns_zero(store: Store, gp_enabled: None) -> None
 
 
 # Drift smoke test removed — the worker now imports the awaiting/
-# unavailable tag constants directly from precis.handlers._patent_ingest
+# unavailable tag constants directly from precis.patent.ingest
 # rather than re-declaring them, so divergence is structurally impossible.
 
 

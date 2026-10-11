@@ -8,7 +8,7 @@ model: sonnet
 # Decided and implemented; the corpus sweep is what remains
 
 Found 2026-08-19: the claim notation canon mandated `25 °C` (spaced) while
-`precis-draft-help` and `handlers/_draft_lint.py` mandated `63°C` (unspaced)
+`precis-draft-help` and `draft/lint.py` mandated `63°C` (unspaced)
 and flagged the spaced form as an offender. Two live rules, opposite
 instructions, same characters — an agent drafting a paper *and* minting
 claims from it received both.

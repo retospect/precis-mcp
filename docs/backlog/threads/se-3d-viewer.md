@@ -206,9 +206,6 @@ se-machine-design's `backlog/se-region-property-layer.md`.
    captures; publishable figures out of the same scene.
 7. **backlog/se-feasibility-and-cost.md** — the far end the arc serves;
    waits on 3 and 4.
-8. **gr341482** — retire the mermaid `graph LR` topology-panel fallback.
-    Reto 2026-10-11: the cloud is fine in prod, retire now; delete list in
-    the gripe.
 
 ## Parked
 

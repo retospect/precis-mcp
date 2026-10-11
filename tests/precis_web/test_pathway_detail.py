@@ -1949,6 +1949,20 @@ def test_pathway_diagram_renders_folded_steps_with_annotations(
     assert 'stroke-dasharray="4 3"' not in svg
     shoulders = re.findall(r'<line class="pw-shoulder"[^>]*data-state="([^"]*)"', svg)
     assert sorted(shoulders) == ["N+H", "NH+H", "NH2+H", "O+H", "OH+H"]
+    # the drop line, the tick and the transparent hit-rect over it all carry
+    # the shoulder's hover title (the rect is what the pointer actually hits)
+    for tag in ("line", "rect"):
+        titled = re.findall(
+            rf'<{tag} class="pw-(?:shoulder(?:-drop)?|svg-node)"[^>]*>'
+            rf"(?:<title>[^<]*</title>)?",
+            svg,
+        )
+        assert titled
+    drops = re.findall(r'<line class="pw-shoulder-drop"[^>]*><title>', svg)
+    hits = re.findall(
+        r'<rect class="pw-svg-node"[^>]*data-state="[^"]*\+H"[^>]*><title>', svg
+    )
+    assert len(drops) == len(hits) == 5
     # level labels: one per chemical node, none for the shoulder states
     labels = re.findall(r'font-weight="bold"[^>]*>([^<(]*?)(?: \(|<)', svg)
     assert sorted(labels) == sorted(["NO@N", "N+O", "NH", "NH2", "NH3", "OH", "H2O"])

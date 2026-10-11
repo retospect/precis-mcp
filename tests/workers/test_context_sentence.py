@@ -22,10 +22,12 @@ from precis.workers.context_sentence import (
     META_NO_ABSTRACT_KEY,
     NO_CONTEXT,
     TransientFailure,
+    _claim,
     _generate_with_lint,
     backfill_candidate_ref_ids,
     is_decline,
     lint_violation,
+    pick_abstract_chunk,
     propose_context_sentence,
     run_context_sentence_pass,
     usable_context,
@@ -334,6 +336,54 @@ class TestUsableContext:
         say about the method."""
         title = " ".join(f"word{i}" for i in range(40))
         assert not usable_context(title, title)
+
+
+class TestAbstractSelection:
+    """The block handed to the model is a real abstract or nothing
+    (gr346458 root cause: it used to be ord 0 unconditionally)."""
+
+    _REFS = (
+        "21. Smith, J. Acta Metall. 12, 345-367 (1964).\n"
+        "22. Jones, K. et al. J. Mater. Sci. 8, 100-120 (1973).\n"
+        "23. Brown, L. Phil. Mag. 30, 55-70 (1990)."
+    )
+
+    def test_masthead_at_ord0_is_never_returned(self) -> None:
+        title = "Helical microtubules of graphitic carbon"
+        assert pick_abstract_chunk(title, [(_MASTHEAD, None)]) == ""
+
+    def test_skips_masthead_to_the_real_abstract(self) -> None:
+        got = pick_abstract_chunk("A paper", [(_MASTHEAD, None), (_ABSTRACT, None)])
+        assert got == _ABSTRACT
+
+    def test_reference_list_is_not_an_abstract(self) -> None:
+        assert pick_abstract_chunk("Elastic Properties", [(self._REFS, None)]) == ""
+
+    def test_abstract_heading_beats_earlier_prose(self) -> None:
+        intro = _ABSTRACT.replace("We measured", "Earlier work measured")
+        got = pick_abstract_chunk(
+            "A paper", [(intro, ["Introduction"]), (_ABSTRACT, ["Abstract"])]
+        )
+        assert got == _ABSTRACT
+
+    def test_claim_passes_empty_block_for_masthead_only_paper(self, store: Any) -> None:
+        ref_id, _ = _seed_paper(store, title="Helical microtubules", body=_MASTHEAD)
+        with store.pool.connection() as conn:
+            (row,) = _claim(conn, limit=5, ref_ids=[ref_id])
+        assert row[2] == ""
+
+    def test_claim_finds_abstract_behind_the_masthead(self, store: Any) -> None:
+        ref_id, _ = _seed_paper(store, title="Helical microtubules", body=_MASTHEAD)
+        seed_chunk(store, ref_id=ref_id, text=_ABSTRACT, ord=1)
+        with store.pool.connection() as conn:
+            (row,) = _claim(conn, limit=5, ref_ids=[ref_id])
+        assert row[2] == _ABSTRACT
+
+    def test_pass_makes_no_model_call_on_masthead_only_paper(self, store: Any) -> None:
+        ref_id, _ = _seed_paper(store, title="Helical microtubules", body=_MASTHEAD)
+        client = _FakeClient(["should never be asked"])
+        run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+        assert client.calls == []
 
 
 class TestBackfillSelection:

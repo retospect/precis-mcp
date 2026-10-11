@@ -125,10 +125,11 @@ nonempty DRC findings retain their counts/rows alongside validation context;
 budget skips/failures remain qualified. No geometry, threshold, response
 envelope schema or pure `drc::drc` checker change is needed.
 
-**Separate work:** gr464342 concerns `meta.generated.report` findings that
-`atomic.validate::validate_atomic` currently does not roll up (only its
-composite-part check consumes generated records). Its proposed helper and
-DRC error rows belong to atomic-core. Assembly atom clashes and new
+**Separate work:** gr464342 (`meta.generated.report` findings not rolled
+up) is built: `atomic.validate::generated_report_findings` feeds
+`validate_atomic`, giving one `generated_report_error` row per (block, code)
+and one `generated_report_warn` summary row per block; `view='drc'` shows it
+through its validate digest and headline qualifier, not as separate rows. Assembly atom clashes and new
 proximity rules/layers remain separate; neither a connect nor a new bond
 is a remedy for a physical collision. This proposal does not claim atomic
 coverage from envelope warnings or cure gr464342 by itself.

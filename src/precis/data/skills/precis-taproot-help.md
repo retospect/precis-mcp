@@ -64,6 +64,8 @@ converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
 the held `cites` graph). No intra-supporter citation edge held → every
 supporter stays `corroborates` (never guessed).
 
+Attaching evidence from a paper tagged `multi-article` (one stored body bundling several articles) succeeds but the response carries an advisory: confirm the cited passage's page carries that paper's own title or DOI before relying on the edge.
+
 ## The evidence model — conflict search and inbound grounding
 
 **Every hub hunts its own opposition.** One sweep, three doors, one

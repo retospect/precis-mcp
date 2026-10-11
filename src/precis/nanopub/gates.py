@@ -96,7 +96,9 @@ META_PROPOSED_PAYLOAD = "proposed_payload"
 #: ``docs/backlog/claim-terms-absent-from-quotes.md``; a claim that
 #: generalizes past a quote's literal wording is sometimes exactly right,
 #: so the reviewer must see the flag, never be stopped by it. This code
-#: NEVER joins the blocking set.)
+#: NEVER joins the blocking set), and ``numeral-absent`` (a claim numeral
+#: matching no numeral of the grounding text -- gr250034; derived values
+#: and image-only numbers are accepted false positives. NEVER blocking.)
 _BLOCKING_LINT_CODES: frozenset[str] = frozenset(
     {
         # lint_claim_sentence — admissibility + grammar

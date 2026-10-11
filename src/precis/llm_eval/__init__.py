@@ -6,6 +6,9 @@ it deterministically, and write a ``measured-eval`` ordinal per capability axis
 through :func:`precis.llm_catalog.record_eval` — before routing production work
 to an unproven model.
 
+Separate one-off experiment: :mod:`.notation` (quantity-notation A/B, gr336349;
+run with ``python -m precis.llm_eval.notation``).
+
 Public surface: :func:`harness.run_eval`, :func:`harness.compare`,
 :func:`tasks.load_gold_set`.
 """

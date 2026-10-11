@@ -48,6 +48,7 @@
     {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
       --constraints /opt/precis/constraints.txt \
+      --overrides /opt/precis/overrides.txt \
       --no-sources \
       --find-links {{ autocatpath_wheelhouse }} \
       'precis-mcp[{{ autocatpath_extras }}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref | default("main") }}'
@@ -75,6 +76,7 @@
   ansible.builtin.shell: |
     {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python \
       --constraints /opt/precis/constraints.txt \
+      --overrides /opt/precis/overrides.txt \
       'cuequivariance-torch==0.11.1' 'cuequivariance-ops-torch-cu13==0.11.1'
   become: true
   register: autocatpath_cueq_install

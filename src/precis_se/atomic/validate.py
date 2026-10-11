@@ -1430,6 +1430,73 @@ def _atom_clash_findings(
     return findings
 
 
+def generated_report_findings(
+    tree: SeTree,
+    generated_records: Mapping[str, dict[str, Any]],
+) -> list[ValidationIssue]:
+    """Roll up each bound block's stored build report
+    (``meta['generated']['report']['findings']``) into design-level rows
+    (gr464342). Before this only ``view='block'`` read the report, so a
+    build with ERROR ``geom.clash`` findings read clean in validate/drc.
+
+    One ``generated_report_error`` row per (block, code) with the count and
+    the worst-listed ``where``/``message``; ONE ``generated_report_warn``
+    row per block summarising warn codes with counts (dozens of warn rows
+    would bury the errors); info is dropped. A record with no well-formed
+    report stays silent. The record follows the binding to the structure
+    version that built it, so no staleness stamp is needed."""
+    out: list[ValidationIssue] = []
+    for node in tree.blocks.values():
+        if node.bound_kind != "structure" or not node.bound:
+            continue
+        record = generated_records.get(node.bound)
+        report = record.get("report") if record else None
+        stored = report.get("findings") if isinstance(report, dict) else None
+        if not isinstance(stored, list):
+            continue
+        errors: dict[str, list[dict[str, Any]]] = {}
+        warns: dict[str, int] = {}
+        for f in stored:
+            if not isinstance(f, dict):
+                continue
+            code = str(f.get("code", "?"))
+            sev = f.get("severity")
+            if sev == "error":
+                errors.setdefault(code, []).append(f)
+            elif sev == "warn":
+                warns[code] = warns.get(code, 0) + 1
+        pointer = f"see view='block' name={node.name}"
+        for code, rows in errors.items():
+            first = rows[0]
+            out.append(
+                ValidationIssue(
+                    rule="generated_report_error",
+                    subject=node.name,
+                    detail=(
+                        f"stored build report of block {node.name!r} has "
+                        f"{code} x{len(rows)} (first: "
+                        f"{first.get('where') or '—'}: "
+                        f"{first.get('message', '')}); {pointer}"
+                    ),
+                    severity="error",
+                )
+            )
+        if warns:
+            summary = ", ".join(f"{c} x{n}" for c, n in sorted(warns.items()))
+            out.append(
+                ValidationIssue(
+                    rule="generated_report_warn",
+                    subject=node.name,
+                    detail=(
+                        f"stored build report of block {node.name!r} has "
+                        f"warnings: {summary}; {pointer}"
+                    ),
+                    severity="warn",
+                )
+            )
+    return out
+
+
 def validate_atomic(
     tree: SeTree,
     *,
@@ -1474,5 +1541,6 @@ def validate_atomic(
     findings.extend(_bond_length_findings(tree))
     findings.extend(_bond_vector_findings(tree))
     findings.extend(_composite_parts_findings(tree, generated_records or {}))
+    findings.extend(generated_report_findings(tree, generated_records or {}))
     findings.extend(_atom_clash_findings(tree, bound_full_scenes or {}))
     return findings

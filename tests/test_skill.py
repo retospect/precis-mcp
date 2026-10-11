@@ -903,8 +903,8 @@ def test_search_configured_only_drops_unwired(skill: SkillHandler) -> None:
 
 
 def test_requires_gate_env_and_module(monkeypatch: pytest.MonkeyPatch) -> None:
-    from precis.handlers._skill_common import parse_frontmatter
     from precis.handlers.skill import _unmet_requirements
+    from precis.utils.skill_common import parse_frontmatter
 
     fm = parse_frontmatter(
         "---\nid: x\nrequires: [env=PRECIS_TEST_REQ_XYZ, module=json, "

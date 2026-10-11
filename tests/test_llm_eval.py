@@ -866,3 +866,69 @@ def test_run_binds_the_four_process_stores(monkeypatch: pytest.MonkeyPatch) -> N
     cli_llm.run(argparse.Namespace(llm_cmd="list", database_url=None))
     assert sorted(bound) == ["budget", "route_log", "secrets", "settings"]
     assert seen == [fake]
+
+
+# ── chase:verify verdict scorer + gold builder ────────────────────
+
+
+def _verdict(text: str, supports: str = "yes") -> tuple[float, str]:
+    from precis.llm_eval.scorers import score_verdict_detail
+
+    return score_verdict_detail(text, None, {"supports": supports})
+
+
+def test_verdict_match_scores_one_and_is_registered() -> None:
+    from precis.llm_eval.scorers import SCORERS
+
+    reply = 'Reasoning first.\n```json\n{"supports": "partial", "caveats": []}\n```'
+    assert _verdict(reply, "partial") == (1.0, "match")
+    assert SCORERS["verdict"](reply, None, {"supports": "partial"}) == 1.0
+
+
+def test_verdict_mismatch_scores_zero() -> None:
+    reply = '{"supports": "no", "contradicts": true}'
+    assert _verdict(reply, "yes") == (0.0, "mismatch")
+
+
+def test_verdict_unparseable_is_distinguishable() -> None:
+    assert _verdict("I cannot say.") == (0.0, "unparseable")
+    assert _verdict("") == (0.0, "unparseable")
+    assert _verdict('{"supports": "maybe"}') == (0.0, "unparseable")
+    assert _verdict('{"support_reason": "x"}') == (0.0, "unparseable")
+
+
+def test_verdict_prefers_response_data_dict() -> None:
+    from precis.llm_eval.scorers import score_verdict
+
+    assert score_verdict("garbage", {"supports": "Yes"}, {"supports": "yes"}) == 1.0
+
+
+def test_build_chase_verify_gold_helpers() -> None:
+    import importlib.util
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent / "scripts/llm_eval/build_chase_verify_gold.py"
+    spec = importlib.util.spec_from_file_location("build_chase_verify_gold", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    req = json.dumps({"prompt": "PROMPT", "messages": None, "max_tokens": None})
+    resp = 'ok {"supports": "no", "contradicts": true}'
+    t = mod.row_to_task(req, resp, stratum="no_contradicts", request_hash="ab" * 32)
+    assert t["prompt"] == "PROMPT" and t["scorer"] == "verdict"
+    assert t["axis"] in llm_catalog.CAPABILITY_AXES
+    assert t["expect"]["supports"] == "no" and t["expect"]["contradicts"] is True
+    assert "messages" not in t and "max_tokens" not in t
+
+    full = dict.fromkeys(mod.STRATA, 100)
+    assert mod.allocate(full, 40) == {
+        "yes": 12,
+        "partial": 12,
+        "no_contradicts": 6,
+        "no_other": 10,
+    }
+    short = mod.allocate({**full, "partial": 3, "no_contradicts": 0}, 40)
+    assert sum(short.values()) == 40
+    assert short["partial"] == 3 and short["no_contradicts"] == 0

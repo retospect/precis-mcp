@@ -101,18 +101,16 @@ def test_plan_reproduces_the_s3_sweep(n: int, radius: float, k: int) -> None:
 
 
 @pytest.mark.slow
-def test_a_row_with_an_error_finding_does_not_meet_the_bars() -> None:
-    # the (24,0) R=8 k=10 cell used to read as meeting every bar; the
-    # frustum is seeded onto the sheet (gr464358), so hexfold's geometry
-    # tier reports geom.seed_overlap (an ERROR) on the tethered coordinates.
-    # The bars alone pass (misses == ()), the row does not.
+def test_the_wide_24_0_frustum_meets_with_no_error_finding() -> None:
+    # the (24,0) R=8 k=10 cell passed every bar but carried three
+    # geom.seed_overlap ERRORs: the frustum seeded mirror-registered onto
+    # the sheet (gr464358).  With the seed reflected it meets, error-free;
+    # k=12 misses on bond max.  (Error rows never meeting is pinned by
+    # test_a_row_with_errors_never_meets_and_ranks_behind_a_clean_miss.)
     plan = af.plan_foot(24, 8.0, candidates=(10, 12))
     row = next(r for r in plan.rows if r.k == 10)
-    assert row.misses == () and row.errors == ("geom.seed_overlap",)
-    assert not row.meets and not plan.meets
-    # no candidate is clean, so the fallback ranks by (has errors, excess):
-    # k=12 also errors and misses every bar, so k=10 is still the pick
-    assert plan.k == 10
+    assert row.misses == () and row.errors == ()
+    assert row.meets and plan.meets and plan.k == 10
 
 
 def test_a_row_with_errors_never_meets_and_ranks_behind_a_clean_miss() -> None:
@@ -234,5 +232,8 @@ def test_pillar_and_bump_scene_meets_the_s4_bars() -> None:
     for row in plan.rows.values():
         assert row.pyramid_max < 12.0  # under C60's
     summary = next(dict(f.data) for f in plan.findings if f.code == "geom.summary")
-    assert summary["relax"] == "tethered" and summary["clash_min"] >= 1.0
+    # clash_min is None when no pair is under clash_A (1.8 A): so since the
+    # ball neck stopped seeding mirror-registered (gr464358; was 1.05 A)
+    assert summary["relax"] == "tethered"
+    assert summary["clash_min"] is None or summary["clash_min"] >= 1.0
     assert set(plan.tops) == {"t", "q"}

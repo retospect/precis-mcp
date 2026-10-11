@@ -187,8 +187,11 @@ deploy, then the after-deploy steps below.
    tagged `body:partial`, and is never queued again. (b) empty extraction —
    `heal:bodiless` `extract_retry` once, then `unreadable` + tag
    `body:needs_ocr` (also for scanned PDFs). No OCR engine exists beyond
-   Marker, so that tag is the OCR route. Left: show both tag counts on
-   /status and make the read-for-question gates skip tagged refs.
+   Marker, so that tag is the OCR route. Both tags read as "no usable
+   body" in the taproot `[pa]` planner, the citations view and the
+   finding-evidence "(unfetched)" label (`count_usable_chunks`,
+   `usable_body_ref_ids`), and /status shows both counts. The draft
+   fetch list is unchanged, so a tagged ref is never re-queued.
    This thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in

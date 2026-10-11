@@ -40,7 +40,7 @@ def test_range_and_empty() -> None:
 
 
 def test_write_hint_skips_non_prose_chunk_kinds() -> None:
-    from precis.handlers._draft_lint import house_style_hint
+    from precis.draft.lint import house_style_hint
 
     text = "a -- b, **bold**"
     assert house_style_hint(text, "table") == ""

@@ -37,6 +37,7 @@ from typing import Any
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
+from precis.utils.title_merge import title_merge_refusal
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +45,187 @@ log = logging.getLogger(__name__)
 #: the survivor on a merge. Content-derived ids (cite_key, paper_id,
 #: pub_id, pdf_sha256, content_hash) stay on the retired ref — they
 #: describe *that* artifact, and leaving them avoids a unique-constraint
-#: fight with the survivor's own content ids.
+#: fight with the survivor's own content ids — unless the survivor takes
+#: the duplicate's body/PDF (:func:`_move_body_to_survivor`).
 _MIGRATABLE_ID_KINDS = ("doi", "arxiv", "s2", "pubmed", "openalex", "mag", "dblp")
+
+#: Content-derived identifier kinds that follow the PDF / body to the survivor.
+_PDF_ID_KINDS = ("pdf_sha256", "content_hash")
+#: Single-valued per ref (the ``refs_v`` view reads them as scalar
+#: subqueries), so they move only onto a survivor that holds none.
+_SINGLE_ID_KINDS = ("paper_id", "pub_id")
+
+
+def _move_body_to_survivor(
+    store: Store,
+    *,
+    survivor_ref_id: int,
+    duplicate_ref_id: int,
+    source: str,
+    conn: Any,
+) -> list[str]:
+    """Move the duplicate's body and/or PDF onto a survivor that lacks them.
+
+    Returns what moved (``"body"``, ``"pdf"``); empty when the survivor
+    already holds whatever the duplicate has (the ordinary merge).
+
+    * **body**: survivor has no ``ord >= 0`` chunk and the duplicate does.
+      Body chunks are append-only, so each is INSERTed on the survivor and
+      the duplicate's DELETEd (never UPDATEd). Embeddings, summaries and
+      keywords are left to the workers (ingest never fills them); the
+      duplicate's cards (``ord < 0``) stay behind, the survivor keeps its own.
+    * **pdf**: survivor has no ``pdf_sha256`` and the duplicate does:
+      ``refs.pdf_sha256/pdf_pages/pdf_role`` move (the ``pdfs`` row and its
+      stored file are keyed by sha, so the file follows the sha).
+    * Either move carries the content identifiers (``pdf_sha256``,
+      ``content_hash``, and ``paper_id``/``pub_id`` when the survivor has
+      none) so a re-ingest of the file probes onto the survivor.
+    """
+    rows = conn.execute(
+        "SELECT ref_id, pdf_sha256, pdf_pages, pdf_role, meta, "
+        f"       {has_body_sql('r')} "
+        "  FROM refs r WHERE ref_id = ANY(%s) FOR NO KEY UPDATE",
+        ([survivor_ref_id, duplicate_ref_id],),
+    ).fetchall()
+    by_id = {int(r[0]): r for r in rows}
+    sv, du = by_id.get(survivor_ref_id), by_id.get(duplicate_ref_id)
+    if sv is None or du is None:
+        return []
+    move_body = bool(du[5]) and not sv[5]
+    move_pdf = du[1] is not None and sv[1] is None
+    moved: list[str] = []
+    if not (move_body or move_pdf):
+        return moved
+
+    if move_pdf:
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = NULL, updated_at = now() WHERE ref_id = %s",
+            (duplicate_ref_id,),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, pdf_pages = %s, "
+            "pdf_role = COALESCE(%s, pdf_role), updated_at = now() "
+            "WHERE ref_id = %s",
+            (du[1], du[2], du[3], survivor_ref_id),
+        )
+        moved.append("pdf")
+
+    if move_body:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "  section_path, page_first, page_last, token_count, meta, numerics) "
+            "SELECT %s, set_by, ord, chunk_kind, text, section_path, "
+            "       page_first, page_last, token_count, meta, numerics "
+            "  FROM chunks WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL "
+            " ORDER BY ord",
+            (survivor_ref_id, duplicate_ref_id),
+        )
+        conn.execute(
+            "DELETE FROM chunks WHERE ref_id = %s AND ord >= 0",
+            (duplicate_ref_id,),
+        )
+        # The extraction-describing meta keys belong to the body they describe.
+        from precis.ingest.db_writer import _BODY_OWNED_META_KEYS, _merge_ingest_meta
+
+        dmeta = du[4] if isinstance(du[4], dict) else {}
+        _merge_ingest_meta(
+            survivor_ref_id,
+            {k: v for k, v in dmeta.items() if k in _BODY_OWNED_META_KEYS},
+            conn=conn,
+        )
+        moved.append("body")
+
+    held = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT id_kind FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = ANY(%s)",
+            (survivor_ref_id, list(_SINGLE_ID_KINDS)),
+        )
+    }
+    kinds = list(_PDF_ID_KINDS) + [k for k in _SINGLE_ID_KINDS if k not in held]
+    conn.execute(
+        "UPDATE ref_identifiers SET ref_id = %s "
+        "WHERE ref_id = %s AND id_kind = ANY(%s)",
+        (survivor_ref_id, duplicate_ref_id, kinds),
+    )
+    store.append_event(
+        survivor_ref_id,
+        source=source,
+        event="body_moved_from_duplicate",
+        payload={"duplicate_ref_id": duplicate_ref_id, "moved": moved},
+        conn=conn,
+    )
+    return moved
+
+
+def inherit_missing_identity(
+    store: Store,
+    *,
+    survivor_ref_id: int,
+    loser_ref_id: int,
+    source: str,
+    conn: Any,
+) -> list[str]:
+    """Copy the loser's title and authors onto the survivor where it has none.
+
+    Fill-only, never overwrite: a blank survivor title takes the loser's
+    non-blank title; a survivor with no ``paper_authors`` rows and an empty
+    ``refs.authors`` takes the loser's byline. DOIs and other external ids
+    already move with the identifier migration at both call sites. Call
+    before the loser is retired (gr353777: a fetched PDF superseding a stub
+    left the surviving ref titleless). Returns the field names filled.
+    """
+    s = conn.execute(
+        "SELECT title, authors FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+        (survivor_ref_id,),
+    ).fetchone()
+    lo = conn.execute(
+        "SELECT title, authors FROM refs WHERE ref_id = %s", (loser_ref_id,)
+    ).fetchone()
+    if s is None or lo is None:
+        return []
+    filled: list[str] = []
+    lo_title = (lo[0] or "").strip()
+    if not (s[0] or "").strip() and lo_title and not _title_is_junk(lo_title):
+        # A stub titled by its own cite_key (e.g. "krishnan97") is a
+        # placeholder, not a title.
+        keys = {
+            str(r[0]).strip().lower()
+            for r in conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key'",
+                (loser_ref_id,),
+            )
+        }
+        if lo_title.lower() not in keys:
+            store.chunks.set_ref_title(survivor_ref_id, lo[0], source=source, conn=conn)
+            filled.append("title")
+    if lo[1] and not s[1]:
+        has_rows = conn.execute(
+            "SELECT 1 FROM paper_authors WHERE ref_id = %s LIMIT 1",
+            (survivor_ref_id,),
+        ).fetchone()
+        if has_rows is None:
+            # Verbatim row copy (per-row source/orcid/verified_at); the
+            # jsonb projection is the loser's, which was derived from them.
+            copied = conn.execute(
+                "INSERT INTO paper_authors (ref_id, position, given, middle, "
+                "family, name_raw, orcid, openalex_author_id, person_ref_id, "
+                "source, verified_at) "
+                "SELECT %s, position, given, middle, family, name_raw, orcid, "
+                "openalex_author_id, person_ref_id, source, verified_at "
+                "FROM paper_authors WHERE ref_id = %s",
+                (survivor_ref_id, loser_ref_id),
+            ).rowcount
+            if copied:
+                conn.execute(
+                    "UPDATE refs SET authors = (SELECT authors FROM refs "
+                    "WHERE ref_id = %s), updated_at = now() WHERE ref_id = %s",
+                    (loser_ref_id, survivor_ref_id),
+                )
+                filled.append("authors")
+    return filled
 
 
 def merge_duplicate(
@@ -61,7 +241,10 @@ def merge_duplicate(
 
     Migrates external identifiers + links to the survivor, records the
     ``supersedes`` edge + ``meta.superseded_by`` + audit events, and
-    soft-deletes the duplicate. Mirrors
+    soft-deletes the duplicate. When the survivor lacks a body and/or PDF
+    that the duplicate holds, those move too
+    (:func:`_move_body_to_survivor`, gr479362); a survivor that already has
+    them keeps them and the duplicate's stay behind. Mirrors
     :func:`precis.ingest.add._reconcile_orphan_stub`.
     """
     if survivor_ref_id == duplicate_ref_id:
@@ -88,6 +271,14 @@ def merge_duplicate(
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
         (survivor_ref_id, duplicate_ref_id, list(_MIGRATABLE_ID_KINDS)),
     )
+    # (a2) Body / PDF → a survivor that lacks them (gr479362).
+    moved = _move_body_to_survivor(
+        store,
+        survivor_ref_id=survivor_ref_id,
+        duplicate_ref_id=duplicate_ref_id,
+        source=source,
+        conn=conn,
+    )
     # (b) Graph edges → survivor (self-loops + dup rows dropped internally).
     store.migrate_links(duplicate_ref_id, survivor_ref_id, conn=conn)
     # (b2) Repoint bib entries that already resolved to the loser — else
@@ -97,6 +288,14 @@ def merge_duplicate(
     conn.execute(
         "UPDATE paper_bib_entries SET held_ref_id = %s WHERE held_ref_id = %s",
         (survivor_ref_id, duplicate_ref_id),
+    )
+    # (b3) Fill what the survivor lacks (title/authors) from the loser.
+    inherit_missing_identity(
+        store,
+        survivor_ref_id=survivor_ref_id,
+        loser_ref_id=duplicate_ref_id,
+        source=source,
+        conn=conn,
     )
     # (c) supersedes edge + provenance on the loser.
     store.add_link(
@@ -117,7 +316,11 @@ def merge_duplicate(
         survivor_ref_id,
         source=source,
         event="duplicate_merged",
-        payload={"duplicate_ref_id": duplicate_ref_id, "reason": reason},
+        payload={
+            "duplicate_ref_id": duplicate_ref_id,
+            "reason": reason,
+            **({"moved": moved} if moved else {}),
+        },
         conn=conn,
     )
     store.append_event(
@@ -481,7 +684,7 @@ _TITLE_REVIEW_SIM = 0.6
 #: (A stub carrying any external id is reconcile-able by the DOI/pdf paths
 #: and chaseable by fetch_oa, so it's out of scope here.)
 _TITLE_STUB_SQL = """
-    SELECT r.ref_id, r.title, r.year
+    SELECT r.ref_id, r.title, r.year, r.authors
       FROM refs r
      WHERE r.kind = 'paper' AND r.retired_at IS NULL
        AND r.pdf_sha256 IS NULL AND r.title IS NOT NULL
@@ -500,21 +703,15 @@ class TitleMatchReview:
     held_ref_id: int
     sim: float
     stub_title: str
-    reason: str  # 'low-similarity' | 'year-mismatch'
+    # 'low-similarity' | title_merge_refusal reason ('short-title',
+    # 'year-unknown', 'year-mismatch', 'author-mismatch')
+    reason: str
 
     def line(self) -> str:
         return (
             f"REVIEW stub #{self.stub_ref_id} ~ held #{self.held_ref_id} "
             f"(sim {self.sim:.2f}, {self.reason}): {self.stub_title[:48]}"
         )
-
-
-def _years_compatible(stub_year: int | None, held_year: int | None) -> bool:
-    """A preprint and its published version can differ by a year; allow ±1.
-    Unknown on either side isn't evidence of a mismatch, so it passes."""
-    if stub_year is None or held_year is None:
-        return True
-    return abs(int(stub_year) - int(held_year)) <= 1
 
 
 def reconcile_by_title_similarity(
@@ -529,9 +726,11 @@ def reconcile_by_title_similarity(
 
     For each live, PDF-less, identifier-less paper stub, find the best
     trigram-title match among *held* papers. A match at/above
-    :data:`_TITLE_AUTO_SIM` with a compatible year auto-merges (the held
-    copy is always the survivor). Matches in the review band — lower
-    similarity, or high similarity with disagreeing years — are appended
+    :data:`_TITLE_AUTO_SIM` that also passes :func:`title_merge_refusal`
+    (>=5 title tokens, matching known years, agreeing first author)
+    auto-merges (the held copy is always the survivor). Matches in the
+    review band — lower similarity, or high similarity the corroboration
+    gate refuses — are appended
     to ``review_out`` (when provided) and never merged. Dry-run (default)
     plans the merges without writing. Returns one :class:`ReconcileOutcome`
     per auto-merged stub.
@@ -542,11 +741,12 @@ def reconcile_by_title_similarity(
         stubs = stubs[:limit]
 
     outcomes: list[ReconcileOutcome] = []
-    for stub_id, stub_title, stub_year in stubs:
+    for stub_id, stub_title, stub_year, stub_authors in stubs:
         stub_id = int(stub_id)
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT r.ref_id, r.year, similarity(r.title, %s) AS sim "
+                "SELECT r.ref_id, r.year, similarity(r.title, %s) AS sim, "
+                "       r.title, r.authors "
                 "FROM refs r "
                 "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                 "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
@@ -561,10 +761,13 @@ def reconcile_by_title_similarity(
         if row is None:
             continue
         held_id, held_year, sim = int(row[0]), row[1], float(row[2])
+        held_title, held_authors = row[3], row[4]
         if held_id == stub_id:  # defensive; a stub has no PDF so can't self-match
             continue
-        years_ok = _years_compatible(stub_year, held_year)
-        if sim >= _TITLE_AUTO_SIM and years_ok:
+        refusal = title_merge_refusal(
+            stub_title, stub_year, stub_authors, held_title, held_year, held_authors
+        )
+        if sim >= _TITLE_AUTO_SIM and refusal is None:
             if dry_run:
                 outcomes.append(
                     ReconcileOutcome(held_id, [stub_id], stub_title[:24], "title")
@@ -592,7 +795,7 @@ def reconcile_by_title_similarity(
                     held_ref_id=held_id,
                     sim=sim,
                     stub_title=stub_title or "",
-                    reason="year-mismatch" if not years_ok else "low-similarity",
+                    reason=refusal if refusal is not None else "low-similarity",
                 )
             )
     return outcomes
@@ -607,4 +810,5 @@ __all__ = [
     "reconcile_by_doi_case",
     "reconcile_by_pdf_sha256",
     "reconcile_by_title_similarity",
+    "title_merge_refusal",
 ]

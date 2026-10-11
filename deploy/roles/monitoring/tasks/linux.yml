@@ -1,0 +1,62 @@
+---
+# Linux monitoring node: distro Prometheus (config + rules rendered by
+# main.yml), Alertmanager, and the precis webhook receiver. node_exporter on
+# every node is playbooks/18-node-exporter.yml, not this role.
+
+- name: Install Prometheus and Alertmanager (Linux)
+  ansible.builtin.apt:
+    name:
+      - prometheus
+      - prometheus-alertmanager
+    state: present
+  become: true
+
+- name: Verify the precis venv exists (the receiver runs from it)
+  ansible.builtin.stat:
+    path: "{{ monitoring_receiver_venv }}/bin/precis"
+  register: _monitoring_precis_bin
+  become: true
+
+- name: Fail early if the precis venv is missing
+  ansible.builtin.fail:
+    msg: "{{ monitoring_receiver_venv }}/bin/precis not found. Run playbooks/20-precis-worker.yml on this host first."
+  when: not _monitoring_precis_bin.stat.exists
+
+- name: Deploy Alertmanager config
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ monitoring_alertmanager_config }}"
+    mode: "0644"
+    validate: amtool check-config %s
+  become: true
+  notify: restart alertmanager
+
+# Loopback web (Prometheus reaches it there) and no gossip cluster port.
+- name: Bind Alertmanager to loopback
+  ansible.builtin.lineinfile:
+    path: /etc/default/prometheus-alertmanager
+    regexp: '^ARGS='
+    line: "ARGS='--web.listen-address=127.0.0.1:{{ monitoring_alertmanager_port }} --cluster.listen-address='"
+    create: true
+    mode: "0644"
+  become: true
+  notify: restart alertmanager
+
+- name: Render the precis Alertmanager receiver unit
+  ansible.builtin.template:
+    src: precis-alertmanager-receiver.service.j2
+    dest: /etc/systemd/system/precis-alertmanager-receiver.service
+    mode: "0644"
+  become: true
+  notify: restart alertmanager receiver
+
+- name: Enable and start Alertmanager and the receiver
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true
+  loop:
+    - prometheus-alertmanager
+    - precis-alertmanager-receiver

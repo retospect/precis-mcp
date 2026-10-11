@@ -174,7 +174,7 @@ downward) for a rung whose product leaves the lab despite being consumed.
    `mark_roadmap_quest(store, quest_id)`.
 2. Meta validation: `demand` / `supply` join
    `handlers/quest.py::_META_ALLOWED_KEYS` with shape checks; `rung` gets a
-   `check_rung_meta` guard in `handlers/_todo_guards.py` (put path; and add
+   `check_rung_meta` guard in `todo/guards.py` (put path; and add
    `rung` to `TAG_META_ALLOWED_KEYS` so a rung's produces can be updated on
    completion without a re-put).
 3. `unmet-capability` gap in `quest/gaps.py::quest_gaps()`; the tree render
@@ -260,7 +260,7 @@ downward) for a rung whose product leaves the lab despite being consumed.
   `src/precis/quest/dossier.py` (pinned-chunk helper generalised),
   `src/precis/quest/weave_tick.py` (`QUEST_BODY_META_KEY` shared constant).
 - `src/precis/handlers/quest.py` — `_META_ALLOWED_KEYS`, `_render_tree`,
-  frontier render; `src/precis/handlers/_todo_guards.py` — `check_rung_meta`,
+  frontier render; `src/precis/todo/guards.py` — `check_rung_meta`,
   `TAG_META_ALLOWED_KEYS`.
 - `src/precis/cli/quest.py` — `--dry-run` role print.
 - Tests: `tests/test_quest_gaps.py`, `tests/test_quest_tick.py`,
@@ -275,7 +275,7 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (ski
 
 1. **`meta.rung.benign = "required"` cannot be stored.** The "Terminal vs
    intermediate rungs" section specifies it as an upward-only override, but
-   `handlers/_todo_guards.py::_RUNG_ALLOWED_KEYS` is a closed set
+   `todo/guards.py::_RUNG_ALLOWED_KEYS` is a closed set
    `{pathway, consumes, produces}`, so the write is refused. `rung_is_terminal()`
    honours the key if present and the bridge honours a model-emitted one at
    mint time, but **no door admits it** — the override is dead until `benign`
@@ -318,7 +318,7 @@ Ordered:
    roadmap body. Delegate to a documenter; skills live in
    `src/precis/data/skills/`.
 2. **Residual 1** — `benign` joins
-   `handlers/_todo_guards.py::_RUNG_ALLOWED_KEYS` with a value check
+   `todo/guards.py::_RUNG_ALLOWED_KEYS` with a value check
    (`"required"` only, upward-only override) and a test.
 3. **`/go`** — full gate + deploy. The first real verification the roadmap
    code gets.

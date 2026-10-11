@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# One route, one receiver: every alert goes to the precis receiver, which
+# queues it to the ops channel. Severity routing would add nothing until a
+# second sink exists.
+route:
+  receiver: precis
+  group_by: [{{ monitoring_alertmanager_group_by | join(', ') }}]
+  group_wait: {{ monitoring_alertmanager_group_wait }}
+  group_interval: {{ monitoring_alertmanager_group_interval }}
+  repeat_interval: {{ monitoring_alertmanager_repeat_interval }}
+
+receivers:
+  - name: precis
+    webhook_configs:
+      - url: http://{{ monitoring_receiver_host }}:{{ monitoring_receiver_port }}/alerts
+        send_resolved: true

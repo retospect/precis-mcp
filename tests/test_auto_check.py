@@ -199,7 +199,7 @@ def test_derived_job_succeeded_ignores_unrelated_jobs(store: Store) -> None:
 def test_compute_lane_failure_bubbles_to_requester(store: Store) -> None:
     """A derived job parents on its artifact, so its failure has no todo to
     tag directly — the bubble follows the ``requested`` link to the requester."""
-    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.utils.job_bubble import bubble_job_failure
 
     todo_id, job_id = _requested_job(store, status="failed")
     bubble_job_failure(store, job_id)
@@ -210,7 +210,7 @@ def test_compute_lane_failure_bubbles_to_requester(store: Store) -> None:
 def test_compute_lane_failure_without_requester_is_noop(store: Store) -> None:
     """A pure direct-manipulation build (no requester todo) has nowhere to
     bubble — the failure just sits on the artifact's runs. No crash, no tag."""
-    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.utils.job_bubble import bubble_job_failure
 
     art = store.insert_ref(kind="structure", slug="pd-noreq", title="pd", meta={})
     job = store.insert_ref(

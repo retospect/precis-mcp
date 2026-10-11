@@ -70,6 +70,7 @@
     </div>
     <div class="mb-1 border-t border-slate-100 pt-1 text-slate-500">
       {{ shape_stats.total_words }} words over {{ shape_stats.n_sections }} section(s){% if shape_stats.flagged %} — {{ shape_stats.flagged | length }} off target{% endif %}.
+      {% for f in shape_stats.flagged %}<div class="text-amber-700">{{ f.title }}: {{ f.verdict }} ({% if f.unit == 'chars' %}{{ f.chars }} chars{% else %}{{ f.words }} words{% endif %})</div>{% endfor %}
       <div class="italic text-slate-400">{{ shape_stats.scaffold_note }}</div>
     </div>
     <div class="flex items-center gap-3 border-t border-slate-100 pt-1">

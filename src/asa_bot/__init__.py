@@ -37,6 +37,12 @@ speakers and cron turns write as ``agent``, as do asa's own bookkeeping
 writes over the long-lived client (conv capture, the per-user placeholder
 memory), which carry the speaker in ``author`` / ``user:<handle>`` instead.
 
+**Paper attachments.** :mod:`asa_bot.attachments`: a PDF attached to a message
+in a served channel is fetched (``safe_stream``, 50 MB, ``%PDF`` magic) into
+the watch inbox (``$PAPERS_INBOX``) for the normal ingest; asa polls
+``refs.pdf_sha256`` and replies with the ``pa<id>``, tagged ``user:<abbrev>``.
+Only mapped speakers may ingest; others and non-PDFs get a refusal reply.
+
 **Inbound from the cluster.** :mod:`asa_bot.pg_listen` holds a dedicated
 connection ``LISTEN``ing on ``precis.cron`` (a due scheduled tick with
 ``meta.deliver``: synthesize a user message, run a turn, post the result) and

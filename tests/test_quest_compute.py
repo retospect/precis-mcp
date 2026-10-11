@@ -1866,7 +1866,7 @@ class TestHarvest:
     ) -> None:
         """A seed todo latched ``child-failed-final`` (the todo-tree
         sweeper's OWN, unrelated terminal park — an exhausted lease-expiry
-        orphan-retry budget, see ``handlers/_job_bubble.py``) must still be
+        orphan-retry budget, see ``utils/job_bubble.py``) must still be
         repaired here: this ladder keys off the seed JOB's own ``STATUS``,
         never that tag."""
         from precis.store import Tag

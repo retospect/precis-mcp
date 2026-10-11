@@ -25,7 +25,7 @@ from __future__ import annotations
 #: * ``halt`` / ``halt:<reason>`` — explicit "robot don't touch this"
 #:   marker. A worker source can ADD it (escalation) but only the
 #:   owner can REMOVE it — see
-#:   :func:`precis.handlers._todo_guards.check_halt_remove`. The
+#:   :func:`precis.todo.guards.check_halt_remove`. The
 #:   ``halt:<reason>`` prefix form lets the runtime self-halt with a
 #:   reason (``halt:cost-cap``, ``halt:tick-cap``, ``halt:planner-stuck``)
 #:   so the attention view can show *why* without a separate lookup.

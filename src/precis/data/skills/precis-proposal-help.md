@@ -102,7 +102,24 @@ are stripped before counting, so a citation-dense paragraph is not
 inflated by its handles. A section's count includes its subsections.
 Set a target with `edit(id='dc<heading>', word_target={'min':200,'max':400})`;
 clear it with `word_target={}`. The web reader shows the same total and
-an amber badge when any section is off target.
+an amber badge when any section is off target. For character-capped
+boxes set `edit(id='dc<heading>', args={'char_target': {'max': 350}})`;
+`view='wordcount'` then shows chars and an over/under/ok verdict too
+(all characters count, spaces included; see precis-draft-help).
+
+## Watching a call for changes
+
+Tag a cfp `WATCH:weekly` (any `WATCH:<interval>`) and its source page is
+re-fetched weekly (scheduler cadence `cfp_watch`) and whenever
+`/whatneedsdoing` runs (`precis maintenance cfp-watch`). The page's
+text hash and any dates on deadline/submission/opens lines are compared
+with the last snapshot in `meta.cfp_watch`; a change raises an open
+`cfp_watch` alert (`search(kind='alert')`, subject = the cfp) and keeps
+the last 5 changes in `meta.cfp_watch.history`. The first check only
+records a baseline. Set the page with
+`edit(kind='cfp', id='<slug>', args={'source_url': 'https://…'})` (http or
+https); a tagged cfp without one is skipped. At most 25
+fetches per run.
 
 ## Why a CFP is its own kind (not a paper)
 

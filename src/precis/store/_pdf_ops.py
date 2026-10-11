@@ -66,6 +66,17 @@ class DuePdf:
     cite_keys: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class GlyphBackfillRef:
+    """A live paper ref with a held PDF that carries no ``glyph_health``
+    record yet (the ``precis backfill-glyph-health`` cohort)."""
+
+    ref_id: int
+    pdf_sha256: str
+    storage_path: str
+    cite_keys: tuple[str, ...]
+
+
 class PdfMixin:
     """``pdfs.storage_path`` accessors + the ``pdf_locations`` ledger."""
 
@@ -237,5 +248,40 @@ class PdfMixin:
             for r in rows
         ]
 
+    def refs_for_glyph_backfill(
+        self, *, after_ref_id: int = 0, limit: int
+    ) -> list[GlyphBackfillRef]:
+        """Live paper refs with a held PDF and no ``meta.glyph_health`` yet,
+        ``ref_id`` ascending from ``after_ref_id`` (the resume cursor: clean
+        documents write nothing, so the cursor is the only progress mark)."""
+        with self.pool.connection() as c:
+            rows = c.execute(
+                """
+                SELECT r.ref_id, r.pdf_sha256, p.storage_path,
+                       array_remove(array_agg(DISTINCT ri.id_value), NULL)
+                  FROM refs r
+                  JOIN pdfs p ON p.pdf_sha256 = r.pdf_sha256
+                  LEFT JOIN ref_identifiers ri
+                    ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
+                 WHERE r.kind = 'paper'
+                   AND r.retired_at IS NULL
+                   AND r.ref_id > %s
+                   AND NOT (r.meta ? 'glyph_health')
+                 GROUP BY r.ref_id, r.pdf_sha256, p.storage_path
+                 ORDER BY r.ref_id
+                 LIMIT %s
+                """,
+                (after_ref_id, limit),
+            ).fetchall()
+        return [
+            GlyphBackfillRef(
+                ref_id=int(r[0]),
+                pdf_sha256=str(r[1]),
+                storage_path=str(r[2] or ""),
+                cite_keys=tuple(k for k in (r[3] or ()) if k),
+            )
+            for r in rows
+        ]
 
-__all__ = ["DuePdf", "PdfMixin"]
+
+__all__ = ["DuePdf", "GlyphBackfillRef", "PdfMixin"]

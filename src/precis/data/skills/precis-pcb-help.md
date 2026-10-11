@@ -150,7 +150,19 @@ Field notes:
   mark repeated subcircuits (channel 0..k of identical driver stages): every
   instance is laid out **identically** (instance 0's internal layout is
   stamped onto the rest and each tile then moves rigidly), so repeats read
-  as clean tiles instead of four ad-hoc arrangements.
+  as clean tiles instead of four ad-hoc arrangements. **Edge-mating
+  connectors** (USB, card edge, barrel jack — anything cabled from the
+  side): `edge_mate: {face, require}`. `face` is the mating face in the
+  part's own frame (`N|E|S|W`, N = +y, or degrees clockwise from +y), so it
+  follows rotation; `require` is `required` (default) or `preferred`.
+  Autoplace rotates the part to face outward, sits it flush on the nearest
+  outline edge and locks it; `view='drc'` reports `edge_mating` (error /
+  warn for `preferred`) when it is interior or faces inward. Authored, not
+  inferred — EasyEDA footprints carry no mating side. A `fixed` or grouped
+  part is not moved, only checked.
+
+## Author a design — nets, connections, board
+
 - **net**: `name` is **required and meaningful** — the name *is* the intent
   (`I2C_SCL`, not `N$7`). `class` drives width / plane / measure defaults
   ([[precis-net-class-help]]); `current` (amps) sizes the trace; `width` (mm)
@@ -220,6 +232,9 @@ rotation, layers and stored pin/net mapping evidence. `explicit-pin-pad`,
 identity fallback is not an independently known signal. `unconnected`
 means a mapped pin without a net; `unclaimed` means no declared pin;
 `ambiguous` retains conflicting pins/nets rather than choosing one.
+A footprint with non-plated holes (pegs, standoffs) gets a second table,
+one row per hole: `local_x_mm`/`local_y_mm`, `board_x_mm`/`board_y_mm`
+(same transform as pads) and `dia_mm`; it is omitted when there are none.
 
 Local +X is right and +Y up; board coordinates are top-view, rotations CW.
 Bottom-side pads mirror local X before rotation and translation. Unplaced

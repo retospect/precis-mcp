@@ -47,9 +47,7 @@ residual items.
    slices 2–4 (slice 1 shipped); after the deny-list gap is real.
 2. **backlog/render-sandbox-network-jail.md** — render sandbox phase 2,
    network and filesystem jail.
-3. **backlog/pillow-marker-pin.md** — Dependabot pillow alerts blocked on
-   marker-pdf's Pillow<11 cap; waits upstream.
-4. **backlog/web-basic-auth-users.md** — shipped and live 2026-08-22;
+3. **backlog/web-basic-auth-users.md** — shipped and live 2026-08-22;
    only residuals remain (failed-auth logging, full CSP, feed-token rotate
    race). Pending Reto's housekeeping ruling on whether the file closes
    (td461205).

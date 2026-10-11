@@ -69,7 +69,9 @@ put(kind="pcb", id="sensor-node", args={"op": "route", "iters": 3000, "seed": 0}
   (same job, same params) — carries a deprecation note in its response;
   will be removed in a future release. Use `op='place'` directly.
 
-After a route job lands, check the result:
+## Check a route job's result
+
+After a route job lands:
 
 ```python
 get(kind="pcb", id="sensor-node", view="route-status")  # per-net: unrouted|sketched|realized|failed
@@ -77,11 +79,15 @@ get(kind="pcb", id="sensor-node", view="congestion")     # the run's over-capaci
 ```
 
 A net only ever reads `'realized'` when it is **actually clean** — no
-residual same-layer crossing, no over-capacity gap. A `'failed'` net's
-`pcb_routes.fail` names the blocking participants (the same "fail legibly"
-discipline as everywhere else in this kind): a same-layer crossing names
-the other net it crosses; a congestion failure names the gap size, its
-capacity, and how many strands wanted through it.
+residual same-layer crossing, no over-capacity gap, and its pads plus
+fixed and routed copper form **one connected piece** (the same check
+`view='drc'`'s `connectivity` rule runs, so the two views agree). A
+`'failed'` net's `pcb_routes.fail` names the blocking participants (the
+same "fail legibly" discipline as everywhere else in this kind): a
+same-layer crossing names the other net it crosses; a congestion failure
+names the gap size, its capacity, and how many strands wanted through it;
+a `disconnected` failure gives the piece count and one witness point per
+piece.
 
 **The route job itself fails when any net is not realized.** Its copper,
 per-net statuses and summary are still written first, so the partial board
@@ -94,6 +100,14 @@ fails before routing and writes nothing; its reason lists each collision.
 No route can remove such a short. Move the part off the fixed copper
 (`op='move'`) or re-place, then route again. `view='drc'` shows the same
 findings.
+
+**An illegal placement refuses the route.** After the anneal and before the
+router, the job runs the placement-only DRC (pad overlap, pad-to-via keepout,
+courtyard overlap, outline containment) over the settled poses plus authored
+fixed copper. Any error-severity finding fails the job (`input`) and writes
+nothing; the reason lists each finding with its measured margin. Warnings do
+not block. Fix the placement (`op='move'`, unpin a part, re-place) and route
+again; `view='drc'` runs the full check.
 
 `view='congestion'` reports gaps only. With failed nets and no gap warning
 it says the failures have another cause; read `view='route-status'` for
@@ -294,6 +308,9 @@ easy to miss from the tool surface alone:
   run. The settled swap persists exactly as before (`pcb_pin_swaps`,
   `source: 'derived'`) — only the FEED was missing; the persistence and
   re-application path was already real.
+  Assignment scoring is crossings first, wire length second: among
+  assignments with the same crossing count the shorter total Manhattan
+  wire to the far terminals wins; a crossing always outweighs any length.
 - **`ROTATE` is cost-neutral too**, for the same structural reason as
   `SIDE_FLIP` — no term reads `inst_rot`. `op='move'`'s `rot=` still
   writes a real rotation to the database (useful for footprint/courtyard

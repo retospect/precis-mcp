@@ -185,7 +185,7 @@ def test_relations_table_vocabulary_matches_runtime(store: Store) -> None:
     ``links`` row) and is checked against that constant instead of the
     link-table vocabulary.
     """
-    from precis.handlers._link_tag_ops import validate_relation
+    from precis.utils.link_tag_ops import validate_relation
 
     text = _skill_text("precis-relations")
     rels = _REL_TABLE_ROW_RE.findall(text)

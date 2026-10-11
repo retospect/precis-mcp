@@ -64,7 +64,7 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
    `[[precis-…]]` cross-refs). Tree edges: `part-of` from the `##` section
    a bullet sits under in `MEMORY.md` (memory), and for skills from a
    **new optional `parent:` frontmatter key** on `SkillFrontmatter`
-   (`handlers/_skill_common.py`; today no skill file has one) with a
+   (`utils/skill_common.py`; today no skill file has one) with a
    default rule so the tree exists without hand-editing 176 files: a
    `precis-<kind>-help` skill is `part-of` `precis-overview`, every other
    skill is `part-of` the `-help` skill whose `kinds:` it shares, else
@@ -125,7 +125,7 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
 - `src/precis/config.py` (roots env var, via `handlers/_roots.py::
   parse_alias_roots`), the file-kind handlers' root resolution and slug
   composition (`markdown`, `plaintext`, `tex`; `canonicalize_path_id`,
-  `file_slug_from_path`), `handlers/_skill_common.py::SkillFrontmatter`
+  `file_slug_from_path`), `utils/skill_common.py::SkillFrontmatter`
   (optional `parent:`), `handlers/skill.py` otherwise unchanged (skills
   stay served as skills; the mirror is a second address)
 - `src/precis/cli/` (mirror-links command), one worker hook

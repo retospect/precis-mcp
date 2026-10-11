@@ -105,10 +105,13 @@ same spec with `fidelity="check"`.
 | menu | construction | citation |
 |---|---|---|
 | `[2+2]` | two authored bonds, C60 6-6 bond → host bond | Nasibulin 2007 (pa2069, doi:10.1038/nnano.2007.37) |
+| `[4+4]` | two bonds, para atoms of a C60 hexagon → para atoms of the host hexagon holding `site`'s neighbours `dir`, `dir+1`; DFT finds it unstable or marginal | Nasibulin 2007 (pa2069, doi:10.1038/nnano.2007.37) |
 | `9-6` | six bonds, C54 (C60 − hexagon) onto intact host; seam {9:3, 6:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
-| `8-7` | the other C3 registration; seam {8:3, 7:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
+| `8-7` | the other C3 registration onto the same six one-sublattice host atoms; seam {8:3, 7:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
 | `DA-neck` | C60 − pentagon → (5,0) neck ({7:5}) → host `path3` opening | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
 | `DB-neck` | C60 − 3 pentagons → (6,0) neck → hexagon hole + {7×3} collar (needs `k | gcd(n,m)`) | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
+
+Any other menu name is refused (`menu.unknown` ERROR).
 
 ## Check codes (hexfold spec §13, terse)
 
@@ -142,11 +145,12 @@ without it is not a clean geometry). Nanobud menus
 `--bond face=down-->` arrow) picks the face, per bud, so a sheet can
 carry one on each side (`place.face_authored` INFO; on a tube it is
 ignored with `place.face_ignored` WARN). `[9-6]` and
-`[8-7]` keep WARN clashes of 1.2–1.5 Å at the junction neck. These
-shipped specs still overlap, are known, and are not yet fixed:
-`capped_tube`, `capped_tube_da_neck`, `sheet_pill_bump` (0.90–0.92 Å,
-curved rims seeded mirrored, gr459812), `tube_ring_closure` (0.49 Å,
-gr462074) and `flanged_doughnut` (0.27 Å inside a washer, gr462075).
+`[8-7]` keep WARN clashes of 1.2–1.5 Å at the junction neck. A fused
+part whose seed winds against its fuses is reflected before placement
+(`place.mirrored` INFO; a chiral tube is refused, `place.mirror_refused`
+WARN). These shipped specs still overlap, are known, and are not yet
+fixed: `tube_ring_closure` (0.49 Å, gr462074) and `flanged_doughnut`
+(0.40 Å, the two flat washers' rims seeded ~10 Å apart, gr462075).
 `geom.seed_overlap` ERROR: atoms under 0.7 Å in the placed seed, before
 stick. A clean relaxed geometry does not clear it. Raised by
 `tube_ring_closure`, `sheet_sw`, `flanged_doughnut` and
@@ -544,14 +548,15 @@ Limits:
 
 - `top="ball"` always carries WARN `scene.top.joint`: the fused (6,0)→C60
   neck is stick geometry only; MACE-MP small and GFN2-xTB both open 4 of
-  its 6 seam bonds (gr464391). Bonded alternative: a `(12,0)` feature with `top="lid"` and the C60
+  its 6 seam bonds (gr464391). That was measured on a neck seeded
+  mirror-registered (stick left 7–9 pairs at 1.04–1.23 Å; fixed 2026-10-11,
+  now none under 1.8 Å) and is not yet re-run. Bonded alternative: a `(12,0)` feature with `top="lid"` and the C60
   as a sidewall `[2+2]` bud just under the lid, via `extra`:
   `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"` (the `(4,-7,A)` site is
   for `tube_len=4`; it moves with the tube length). It passes both
   relaxers as an isolated pillar only; inside a tethered scene its seam
   still opens (MACE-MP 2.6/3.6 Å), so it is not a scene recipe yet.
-- `(18,0)` feet crumple (an open row). `k=10` frustums (e.g. `(24,0)`) seed
-  3 atoms onto the sheet: ERROR `geom.seed_overlap` (gr464358).
+- `(18,0)` feet crumple (an open row).
 - Fillet `radius` reaches ~3–8 Å at the narrowest frustum; beyond ~12 Å
   bonds stretch past 1.50.
 

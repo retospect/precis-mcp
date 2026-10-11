@@ -693,3 +693,70 @@ class TestPerTopicGating:
         assert len(grown.calls) == 1
         assert _has_marker(store, ref_id, topic_marker_value(["mof", "nh3-synthesis"]))
         assert not _has_marker(store, ref_id, old)
+
+
+# ── opt-in finding / claim-hub kinds (gr182078) ────────────────────────
+
+
+def _seed_claim(store: Any, sentence: str, scope: dict[str, Any]) -> int:
+    import json
+
+    ref_id = _seed_paper(store, sentence, sentence, kind="finding")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+            (json.dumps({"scope": scope}), ref_id),
+        )
+        conn.commit()
+    return ref_id
+
+
+class TestFindingKinds:
+    def test_finding_excluded_by_default(self, store: Any) -> None:
+        ref_id = _seed_claim(store, "MOF-5 adsorbs CO2", {"material": "MOF-5"})
+        client = _FakeClient('{"topics": ["mof"]}')
+        result = run_classify_topics_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_id]
+        )
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert client.calls == []
+
+    def test_finding_selected_when_enabled_with_sentence_and_scope(
+        self, store: Any
+    ) -> None:
+        ref_id = _seed_claim(store, "A claim about zeolite uptake", {"host": "ZIF-8"})
+        client = _FakeClient('{"topics": ["mof"]}')
+        result = run_classify_topics_pass(
+            store,
+            client=client,
+            batch_size=10,
+            ref_ids=[ref_id],
+            opt_in_kinds=["finding"],
+        )
+        assert result["claimed"] == 1
+        # Tier-0 saw the scope text ("ZIF-8" is a mof keyword), and the
+        # prompt carries sentence + scope, not a body.
+        prompt = client.calls[0][1]["content"]
+        assert "A claim about zeolite uptake" in prompt
+        assert "Scope: host: ZIF-8" in prompt
+
+    def test_review_note_finding_never_selected(self, store: Any) -> None:
+        ref_id = _seed_claim(store, "Rephrase this MOF sentence", {})
+        with store.pool.connection() as conn:
+            store.add_tag(ref_id, Tag.closed("TAPROOT", "review"), conn=conn)
+            conn.commit()
+        result = run_classify_topics_pass(
+            store,
+            client=_FakeClient('{"topics": []}'),
+            batch_size=10,
+            ref_ids=[ref_id],
+            opt_in_kinds=["finding"],
+        )
+        assert result["claimed"] == 0
+
+    def test_finding_context_is_sentence_plus_scope(self, store: Any) -> None:
+        from precis.workers.classify_topics import _context_text
+
+        ref_id = _seed_claim(store, "Pd/C is active", {"temp": "RT", "empty": ""})
+        with store.pool.connection() as conn:
+            assert _context_text(conn, ref_id) == "Pd/C is active\nScope: temp: RT"

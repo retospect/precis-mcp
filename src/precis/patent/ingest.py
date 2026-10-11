@@ -38,7 +38,7 @@ judged identity — so there's no hub-like node, just three light pieces:
    biblio carries one (:func:`_patent_xml._extract_family_id`); the key is
    simply absent — never ``null`` — when OPS didn't serve one, so every
    downstream reader must ``meta.get('family_id')``, never assume presence.
-2. :mod:`precis.handlers._patent_family` is the deterministic read-side
+2. :mod:`precis.patent.family` is the deterministic read-side
    helper (family representative = earliest-published ingested member,
    cite-key-slug tiebreak) — reused by the cites view (Phase 3) and
    available to hub-refine, not wired into either yet.
@@ -66,18 +66,18 @@ from typing import Any
 
 from precis.embedder import Embedder
 from precis.errors import NotFound
-from precis.handlers._patent_claims import (
+from precis.ingest.blocks import ParsedBlock, classify_density
+from precis.patent.claims import (
     DESCRIPTION_BLOCK_META,
     claim_block_meta,
 )
-from precis.handlers._patent_family import family_members, family_representative
-from precis.handlers._patent_ops import (
+from precis.patent.family import family_members, family_representative
+from precis.patent.ops import (
     OpsClientProto,
     OpsNotFound,
 )
-from precis.handlers._patent_slug import DocDbId, parse_docdb_id
-from precis.handlers._patent_xml import ParsedPatent, parse_patent
-from precis.ingest.blocks import ParsedBlock, classify_density
+from precis.patent.slug import DocDbId, parse_docdb_id
+from precis.patent.xml import ParsedPatent, parse_patent
 from precis.store import Ref, Store, Tag
 from precis.store.types import FAMILY_STUB_META_KEY as _FAMILY_STUB_META_KEY
 from precis.store.types import ChunkInsert

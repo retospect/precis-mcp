@@ -649,9 +649,6 @@ and backed out. 3 must be MEASURED before it is built.
    driver pads), which a placer keep-out does not touch. Re-read the
    gripe before closing it.
 
-6. **Pre-route DRC gate** (gr451274a). Cheap once 1 lands, meaningless
-   before it.
-
 ### Deferred out of this item: `escape.py`
 
 `precis.pcb.escape` is still the only general escape primitive and still
@@ -958,13 +955,14 @@ iters:3000,negotiate:10}); ten PathFinder iterations, existing 60s budget,
 only keep a proposal if it routes more. Default negotiate=0 unchanged.
 Capture baseline before B, actual terminal job metadata and after-state.
 
-A: gr469871 records confirmed crossing-only cost defect. (Shipped: the
-opt-in `build_cost_matrix(..., length_aware=True)` / `propose_reassignment`
-term; the route-job opt-in, Hungarian warm start and fixed-copper terminal
-resolution below are NOT wired yet.) Opt-in Manhattan
-length from the actual route terminal at the far end to each candidate
-physical pad plus 2mm per crossing, same Hungarian permutation and existing
-canonical swap/writeback constraints. Use Hungarian for this arm's warm
+A: gr469871 records confirmed crossing-only cost defect. (Shipped, now the
+DEFAULT of `build_cost_matrix` / `propose_reassignment` per Reto 2026-10-11:
+crossings primary, Manhattan wire length to the far terminals a strictly
+secondary tie-break; `length_aware=False` restores crossings-only. NOT wired
+yet: Hungarian warm start for route jobs and fixed-copper terminal
+resolution below.) Manhattan length from the actual route terminal at the
+far end to each candidate physical pad, same Hungarian permutation and
+existing canonical swap/writeback constraints. Use Hungarian for this arm's warm
 start instead of radial angular ordering. Unselected route jobs retain
 existing assignment behavior until measurements/review. Fixed copper's
 escape via terminal must be resolved honestly; pad-centre IR endpoints

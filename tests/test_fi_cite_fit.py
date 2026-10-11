@@ -8,7 +8,7 @@ via its coercion helper — no LLM in tests).
 from __future__ import annotations
 
 from precis.dispatch import Hub
-from precis.handlers._draft_lint import (
+from precis.draft.lint import (
     FitVerdict,
     _coerce_fit_verdict,
     fi_cite_fit_hint,

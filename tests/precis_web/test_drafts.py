@@ -190,11 +190,6 @@ class DraftFakeStore(FakeStore):
     def reading_order(self, ref_id):
         return list(self._chunks)
 
-    def retire_draft(self, ref_id):
-        self.soft_deleted_drafts = getattr(self, "soft_deleted_drafts", [])
-        self.soft_deleted_drafts.append(ref_id)
-        return len(self._chunks)
-
     def search_chunks_semantic(
         self, *, query_vec, scope_ref_id=None, limit=None, max_distance=None, **kw
     ):
@@ -811,7 +806,7 @@ def test_delete_draft_with_matching_name_soft_deletes(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts"
-    assert 500 in getattr(draft_runtime.store, "soft_deleted_drafts", [])
+    assert ("delete", {"kind": "draft", "id": "nt"}) in draft_runtime.calls
 
 
 def test_delete_draft_accepts_slug_too(
@@ -822,7 +817,7 @@ def test_delete_draft_accepts_slug_too(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts"
-    assert 500 in getattr(draft_runtime.store, "soft_deleted_drafts", [])
+    assert ("delete", {"kind": "draft", "id": "nt"}) in draft_runtime.calls
 
 
 def test_delete_draft_wrong_name_does_nothing(
@@ -833,7 +828,7 @@ def test_delete_draft_wrong_name_does_nothing(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts/nt"  # bounced back to the reader
-    assert not getattr(draft_runtime.store, "soft_deleted_drafts", [])
+    assert not [c for c in draft_runtime.calls if c[0] == "delete"]
 
 
 def test_delete_draft_blank_confirm_does_nothing(
@@ -844,7 +839,7 @@ def test_delete_draft_blank_confirm_does_nothing(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts/nt"
-    assert not getattr(draft_runtime.store, "soft_deleted_drafts", [])
+    assert not [c for c in draft_runtime.calls if c[0] == "delete"]
 
 
 def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:

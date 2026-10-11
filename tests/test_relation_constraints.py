@@ -20,13 +20,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import apply_link_ops
 from precis.handlers.concept import ConceptHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.quest import QuestHandler
 from precis.store import Store
 from precis.taproot.hub import EVIDENCE_SRC_KINDS, PATHWAY_EVIDENCE_KINDS
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import apply_link_ops
 
 #: The relations migration 0180 seeds a rule on — nothing else.
 SEEDED = frozenset(

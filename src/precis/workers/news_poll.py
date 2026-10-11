@@ -44,10 +44,10 @@ from email.utils import parsedate_to_datetime
 from types import SimpleNamespace
 from typing import Any
 
-from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers.news import article_blocks, canonical_url
 from precis.store import Store
 from precis.utils.inject_scan import inject_meta, scan_tier0
+from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)

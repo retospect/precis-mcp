@@ -36,14 +36,6 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    require_link_target,
-    require_tag_ops,
-    validate_link_mode,
-)
 from precis.handlers._mode_help import require_mode
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
@@ -68,6 +60,14 @@ from precis.utils.file_id import (
     format_write_result,
     nearest_slugs,
     parse_line_range,
+)
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
 )
 from precis.utils.md_parse import (
     file_slug_from_path,

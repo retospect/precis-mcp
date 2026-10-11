@@ -202,9 +202,11 @@ class RouteGraph:
         # imports RouteGraph/RouteStep from here at module level and
         # *constructs* them, so it needs the real classes — hoisting this to
         # the top would close the cycle. Leave it here.
-        from precis_chem.constraints import requirements_render
+        from precis_chem.constraints import economy_render, requirements_render
 
-        return "\n\n" + requirements_render(self.constraints)
+        economy = economy_render(self, self.constraints)
+        head = "\n\n" + economy if economy else ""
+        return head + "\n\n" + requirements_render(self.constraints)
 
     #: Descriptor keys rendered first, in this order, when present (the rest
     #: follow alphabetically). Keeps the human-facing summary stable across

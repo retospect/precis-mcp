@@ -45,7 +45,7 @@ _BOOTSTRAP_PREFIXES: tuple[str, ...] = ("cli/",)
 _GRANDFATHERED: frozenset[tuple[str, str]] = frozenset(
     {
         ("utils/compile_guard.py", "PRECIS_ROOT"),
-        ("handlers/_todo_views.py", "PRECIS_ROOT"),
+        ("todo/views.py", "PRECIS_ROOT"),
         ("workers/planner_prompt.py", "PRECIS_ROOT"),
         ("workers/job_types/draft_export.py", "PRECIS_ROOT"),
     }

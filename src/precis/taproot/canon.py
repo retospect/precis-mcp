@@ -394,6 +394,110 @@ class Placement:
     reason: str = ""
 
 
+# ── proxy-grounding gate + per-chunk mint cap (gr204874) ────────────────
+
+_DEFER_VERBS = (
+    r"(?:report(?:ed|s)?|show(?:ed|n|s)?|demonstrat(?:ed|es?)|observ(?:ed|es?)"
+    r"|found|finds?|describ(?:ed|es?)|propos(?:ed|es?)|suggest(?:ed|s)?"
+    r"|review(?:ed|s)?|discuss(?:ed|es)?|achiev(?:ed|es?)|realiz(?:ed|es?)"
+    r"|introduc(?:ed|es?)|prepar(?:ed|es?)|synthesi[sz](?:ed|es?))"
+)
+#: A bracketed numeric citation: ``[12]``, ``[10-15]``, ``[3, 7]``.
+_NUM_CITE = r"\[\d+(?:\s*[,\u2013\u2014-]\s*\d+)*\]"
+
+#: Sentence-level shapes that defer to cited work rather than evidence a
+#: claim: ``Smith et al. reported ...`` / ``Smith and Jones [4] showed ...``,
+#: ``[12] showed ...``, and ``... as reported in [10-15]`` / ``... was shown
+#: by [3]`` (attribution to a bracket with nothing else behind it).
+_DEFERRAL_RES = (
+    re.compile(
+        r"^[\W\d]*[A-Z][\w'\u2019-]+(?:\s+(?:and|&)\s+[A-Z][\w'\u2019-]+)?"
+        r"(?:\s+et\s+al\.?)?(?:\s*,?\s*"
+        + _NUM_CITE
+        + r")?,?\s+"
+        + _DEFER_VERBS
+        + r"\b",
+        # Bare surname + verb is too loose ("Doping showed ..."): require
+        # either "et al." or a citation bracket right after the name.
+        re.UNICODE,
+    ),
+    re.compile(r"^\s*" + _NUM_CITE + r"\s+" + _DEFER_VERBS + r"\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:as|was|were|been|is|are)\s+(?:previously\s+)?"
+        + _DEFER_VERBS
+        + r"\s+(?:in|by)\s+(?:refs?\.?\s*)?"
+        + _NUM_CITE
+        + r"[\s.]*$",
+        re.IGNORECASE,
+    ),
+)
+_ET_AL_OR_CITE_RE = re.compile(r"et\s+al\.?|" + _NUM_CITE)
+#: Split after a terminator, but never right after "et al." (the period is an
+#: abbreviation: "Smith et al. [4] showed ..." is one sentence).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<!et al\.)(?<=[.!?])\s+(?=[A-Z\[])")
+#: Own-work markers: a sentence reporting the paper's own result is not a
+#: deferral even if it also cites earlier work ("..., as previously reported
+#: in [12]"), and neither is one with a quantity before the attribution.
+_OWN_WORK_RE = re.compile(
+    r"\b(?:we|our|ours|here|this\s+(?:work|study|paper)|in\s+this\s+study)\b"
+    r"|\d",
+    re.IGNORECASE,
+)
+
+
+def _sentence_defers(sentence: str) -> bool:
+    s = sentence.strip()
+    if _DEFERRAL_RES[0].match(s):
+        # Guard the "Surname verb" looseness: need et al. / a bracket cite.
+        head = s[: _DEFERRAL_RES[0].match(s).end()]  # type: ignore[union-attr]
+        return bool(_ET_AL_OR_CITE_RE.search(head))
+    if _DEFERRAL_RES[1].match(s):
+        return True
+    m = _DEFERRAL_RES[2].search(s)
+    return m is not None and not _OWN_WORK_RE.search(s[: m.start()])
+
+
+def is_proxy_deferral(text: str) -> bool:
+    """True when the passage *defers to cited work* instead of evidencing a
+    claim itself: every sentence is an attribution ("X et al. reported ...",
+    "[12] showed ...", "... as reported in [10-15]"). A passage with even one
+    non-deferring sentence is not proxy -- that sentence may carry the claim.
+    Empty text is not a deferral (nothing to reject)."""
+    sentences = [x for x in _SENTENCE_SPLIT_RE.split(text.strip()) if x.strip()]
+    return bool(sentences) and all(_sentence_defers(x) for x in sentences)
+
+
+#: Most NEW claim hubs one source chunk (a ``pc`` handle) may seed in a
+#: single run. gr204874: one dense review paragraph grounded 3 hubs (worst
+#: corpus chunk: 12), several near-duplicates or vacuous. A single groundable
+#: passage rarely carries more than two or three distinct atomic world-claims;
+#: 3 admits a genuine three-atom decomposition (refused whole otherwise, since
+#: a partial mint would orphan its composite) while refusing the fourth mint
+#: that signals over-mining. Attaches to an existing hub are never counted.
+MAX_HUBS_PER_CHUNK_PER_RUN = 3
+
+
+class MintCap:
+    """Per-run tally of new hubs minted per source chunk. One instance per
+    run (batch); :meth:`admit` is all-or-nothing so a decomposed group is
+    never half-minted (a partial atom set would orphan its composite)."""
+
+    def __init__(self, limit: int = MAX_HUBS_PER_CHUNK_PER_RUN) -> None:
+        self.limit = limit
+        self._used: dict[str, int] = {}
+
+    def admit(self, source_key: str, n_new: int) -> bool:
+        """Reserve ``n_new`` mints against ``source_key``; False (nothing
+        reserved) if that would exceed the limit."""
+        if n_new <= 0:
+            return True
+        used = self._used.get(source_key, 0)
+        if used + n_new > self.limit:
+            return False
+        self._used[source_key] = used + n_new
+        return True
+
+
 # ── extract_claim — SMALL/local ─────────────────────────────────────────
 
 #: Cap the excerpt fed to the extractor — a claim is a sentence, not a
@@ -849,6 +953,13 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
     text = (chunk_text or "").strip()
     if not text:
         return _EMPTY_EXTRACTION
+    if is_proxy_deferral(text):
+        log.info(
+            "taproot: extract_claim rejected proxy-grounded passage "
+            "(origin=%s): defers to cited work",
+            "unknown",
+        )
+        return _EMPTY_EXTRACTION
     excerpt = text[:_EXTRACT_EXCERPT_CHARS]
     prompt = _EXTRACT_PROMPT.format(excerpt=excerpt)
 
@@ -919,6 +1030,13 @@ def _extract_claim_impl(
     ``tier`` controls only which model capability the dispatch targets."""
     text = (chunk_text or "").strip()
     if not text:
+        return _EMPTY_EXTRACTION
+    if is_proxy_deferral(text):
+        log.info(
+            "taproot: extract_claim rejected proxy-grounded passage "
+            "(origin=%s): defers to cited work",
+            origin or "unknown",
+        )
         return _EMPTY_EXTRACTION
     excerpt = text[:_EXTRACT_EXCERPT_CHARS]
     prompt = _EXTRACT_PROMPT.format(excerpt=excerpt)
@@ -1518,6 +1636,7 @@ def place(
 __all__ = [
     "CLAIM_FORM_RULES",
     "CLAIM_HUB_PREDICATE_PARAMS",
+    "MAX_HUBS_PER_CHUNK_PER_RUN",
     "MERGE_CONFIDENCE_THRESHOLD",
     "NOT_HYPOTHESIS_PREDICATE_PARAMS",
     "STATUS_CANONICAL",
@@ -1529,6 +1648,7 @@ __all__ = [
     "ClaimExtraction",
     "ExtractionUnavailable",
     "MergeCandidate",
+    "MintCap",
     "NotClaim",
     "Placement",
     "Verdict",
@@ -1539,6 +1659,7 @@ __all__ = [
     "extract_claim",
     "extract_claim_strict",
     "extract_claim_strict_big",
+    "is_proxy_deferral",
     "judge_candidates",
     "merge_confirm",
     "nearest_hubs",

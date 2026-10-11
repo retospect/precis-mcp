@@ -143,7 +143,7 @@ fan-out's per-hit `kind` tag might warrant an example.
 
 ### 8. Decorative front-matter
 
-The loader (`handlers/_skill_common.py:parse_frontmatter`) reads a
+The loader (`utils/skill_common.py:parse_frontmatter`) reads a
 fixed field set — `id`, `title`, `applies-to`, `status`, `summary`,
 `answers`, `flavor`, `invokes-personas`, `available-when`, `tags`,
 `kinds` — see [Cross-reference and classification
@@ -413,7 +413,7 @@ needed cutting anyway.
 Three frontmatter/body axes, all gated at ingest (hard-fail):
 
 - **`tags:`** — lateral topic bucket(s), checked against `VALID_TAGS`
-  in `handlers/_skill_common.py` (the vocabulary; don't invent a new
+  in `utils/skill_common.py` (the vocabulary; don't invent a new
   value without adding it there first). A tag equal to a registered
   kind name is rejected — that's `kinds:`'s job.
   ```yaml
@@ -467,5 +467,5 @@ different *because of this sentence*?" If no, cut it.
 
 - [`docs-and-skills-redesign.md`](../backlog/docs-and-skills-redesign.md) —
   ingest, chunking, alias groups, `FLAVOR:` tags, static gates.
-- `src/precis/handlers/_skill_common.py:parse_frontmatter` — the only
+- `src/precis/utils/skill_common.py:parse_frontmatter` — the only
   authoritative list of front-matter fields the loader honors.

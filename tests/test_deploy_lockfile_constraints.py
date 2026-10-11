@@ -111,3 +111,49 @@ def test_constraints_export_playbook_exists() -> None:
         "playbooks/03-precis-constraints.yml — the constraints file would "
         "never be generated/copied before the install plays run"
     )
+
+
+_CONSTRAINTS_FLAG = "--constraints /opt/precis/constraints.txt"
+_OVERRIDES_FLAG = "--overrides /opt/precis/overrides.txt"
+
+
+def test_every_constraints_install_also_passes_the_overrides_file() -> None:
+    """pyproject's ``[tool.uv] override-dependencies`` forces pillow>=12.3.0
+    past marker-pdf's ``pillow<11`` cap, so the exported constraints pin
+    ``pillow==12.3.0`` — unsatisfiable for any resolve that pulls marker-pdf
+    unless the install also passes the overrides file that
+    ``03-precis-constraints.yml`` derives. Every ``uv pip install`` block
+    using the constraints file must carry it too."""
+    misses: list[str] = []
+    checked = 0
+    for path in _scannable_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        lines = text.splitlines()
+        rel = path.relative_to(_REPO_ROOT)
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("#") or _CONSTRAINTS_FLAG not in line:
+                continue
+            checked += 1
+            if _OVERRIDES_FLAG not in _install_block(lines, i):
+                misses.append(f"{rel}:{i + 1}: {stripped[:120]}")
+
+    assert checked > 0, "no constraints-using install lines found — scan broken"
+    assert not misses, (
+        "install(s) pass --constraints but not --overrides "
+        "/opt/precis/overrides.txt (pillow==12.3.0 vs marker-pdf's "
+        "pillow<11 makes the resolve unsatisfiable):\n" + "\n".join(misses)
+    )
+
+
+def test_constraints_playbook_writes_the_overrides_file() -> None:
+    """The overrides file must come from the exported lock (not a hardcoded
+    version) and land at the path every install passes."""
+    text = (_DEPLOY / "playbooks" / "03-precis-constraints.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "grep -E '^pillow==' /opt/precis/constraints.txt" in text
+    assert "/opt/precis/overrides.txt" in text

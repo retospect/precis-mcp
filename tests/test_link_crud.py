@@ -24,13 +24,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.todo import TodoHandler
 from precis.store import ChunkInsert, Store
 from precis.store.types import Relation
 from precis.utils import handle_registry
+from precis.utils.link_target import LinkTarget, parse_link_target
 from tests.conftest import id_of
 
 # ── unit: parse_link_target ─────────────────────────────────────────
@@ -533,7 +533,7 @@ class TestPluginRelationVocabulary:
         assert store.valid_relations() == frozenset(r[0] for r in rows)
 
     def test_plugin_relation_accepted_after_seed(self, store: Store) -> None:
-        from precis.handlers._link_tag_ops import validate_relation
+        from precis.utils.link_tag_ops import validate_relation
 
         slug = "test-plugin-consumes"
         # Not in the literal and not yet seeded → rejected (and the
@@ -556,7 +556,7 @@ class TestPluginRelationVocabulary:
             store.valid_relations(refresh=True)
 
     def test_store_free_validation_only_sees_builtins(self) -> None:
-        from precis.handlers._link_tag_ops import validate_relation
+        from precis.utils.link_tag_ops import validate_relation
 
         # No store handle → only the built-in literal is consulted.
         assert validate_relation("cites") == "cites"

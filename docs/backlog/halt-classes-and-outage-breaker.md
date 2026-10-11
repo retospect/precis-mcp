@@ -51,7 +51,7 @@ never auto-retry an uncertain-outcome (non-idempotent) operation.
   (`workers/executors/claude_inproc.py`, "runner-side honoring" block)
   maps halt → `halt:agent-declared` on the parent.
 - The infra-vs-content axis **already exists at the job layer**:
-  `handlers/_job_bubble.py::_is_infra_failure` reads
+  `utils/job_bubble.py::_is_infra_failure` reads
   `INFRA_FAILURE_TAGS`; infra-class job failures get bounded
   `orphan_retry_count` retries, content-class latches
   `child-failed:<jobid>`. This spec extends that same axis to

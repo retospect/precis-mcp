@@ -86,6 +86,16 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Daily housekeeping: refresh WATCH:* tags, purge tombstones, VACUUM.",
     )
     mp_sub = mp.add_subparsers(dest="maint_cmd", required=True)
+    cw_p = mp_sub.add_parser(
+        "cfp-watch",
+        help="Re-check WATCH:*-tagged cfp pages now; alert on changes.",
+    )
+    cw_p.add_argument("--database-url", default=None)
+    cw_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore the 20h per-ref recheck throttle (fetch cap still applies).",
+    )
     run_p = mp_sub.add_parser(
         "run",
         help="Run the full nightly sweep (refreshes + purge + VACUUM).",
@@ -151,12 +161,14 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis maintenance run``."""
-    if args.maint_cmd != "run":
+    if args.maint_cmd not in ("run", "cfp-watch"):
         # argparse already enforces required=True; defensive.
         print(f"maintenance: unknown subcommand {args.maint_cmd!r}", file=sys.stderr)
         sys.exit(2)
 
-    intervals = [s.strip() for s in args.intervals.split(",") if s.strip()]
+    intervals = [
+        s.strip() for s in getattr(args, "intervals", "").split(",") if s.strip()
+    ]
     bad = [i for i in intervals if i not in _INTERVAL_SECONDS]
     if bad:
         print(
@@ -183,6 +195,16 @@ def run(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    if args.maint_cmd == "cfp-watch":
+        from precis.workers.cfp_watch import run_cfp_watch_pass
+
+        try:
+            r = run_cfp_watch_pass(store, min_recheck_s=0 if args.force else 20 * 3600)
+        finally:
+            store.close()
+        print(f"cfp-watch: fetched={r.claimed} ok={r.ok} failed={r.failed}")
+        return
 
     started = time.monotonic()
     summary: dict[str, Any] = {

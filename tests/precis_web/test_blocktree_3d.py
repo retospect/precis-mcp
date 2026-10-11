@@ -24,7 +24,6 @@ from precis_web.blocktree_3d import (
     explode_offsets,
     feature_edges,
     group_planar_faces,
-    mermaid_topology,
     pose_spread,
     scene_scale,
     shape_json,
@@ -775,70 +774,6 @@ def test_pose_spread_empty_tree_is_never_zero() -> None:
     assert pose_spread(_tree()) == 1.0
 
 
-# ── mermaid topology ─────────────────────────────────────────────────────
-
-
-def test_mermaid_topology_labels_edges_with_joint_kind() -> None:
-    tree = _connected_tree()
-    kids = children_map(tree)
-    plan = plan_visibility(tree, kids, level="refined", isolate=None)
-    assembly = Assembly3D()
-    for r in plan.render_roots:
-        build_shapes_node(
-            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
-        )
-    lines = connectivity_lines(
-        tree, plan, assembly.primary_path, lambda c: "axial", lambda c: "#16a34a", "/g"
-    )
-    graph = mermaid_topology(plan, _UIDS, lines, kids)
-    assert graph.startswith("graph LR")
-    assert 'B1["hub"]' in graph
-    assert 'B2["rim"]' in graph
-    assert "axial" in graph and "B1 --" in graph and "--- B2" in graph
-    # flat design (no parent links) — no subgraph wrapper appears
-    assert "subgraph" not in graph
-
-
-def test_mermaid_topology_nests_opened_parents_as_subgraphs() -> None:
-    tree = _fork_tree()
-    tree.connects = [
-        Connect(a_block="hub", a_port="pin", b_block="fork_tip", b_port="pin")
-    ]
-    kids = children_map(tree)
-    plan = plan_visibility(tree, kids, level="refined", isolate=None)
-    assembly = Assembly3D()
-    for r in plan.render_roots:
-        build_shapes_node(
-            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
-        )
-    lines = connectivity_lines(
-        tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
-    )
-    graph = mermaid_topology(plan, _UIDS, lines, kids)
-    rows = graph.splitlines()
-    # fork (opened, has shown children) wraps fork_arm wraps fork_tip
-    i_fork = rows.index('  subgraph B3["fork"]')
-    i_arm = rows.index('    subgraph B4["fork_arm"]')
-    i_tip = rows.index('      B5["fork_tip"]')
-    assert i_fork < i_arm < i_tip
-    assert rows.count("    end") == 1 and rows.count("  end") == 1
-    # leaves outside the subtree stay plain nodes; the edge still targets
-    # the B<id> node scheme
-    assert '  B1["hub"]' in rows
-    assert any(r.startswith('  B1 -- "') and r.endswith("--- B5") for r in rows)
-
-
-def test_mermaid_topology_collapsed_parent_stays_a_plain_node() -> None:
-    tree = _fork_tree()
-    kids = children_map(tree)
-    plan = plan_visibility(tree, kids, level="envelope", isolate=None)
-    graph = mermaid_topology(plan, _UIDS, [], kids)
-    # 'fork' collapses to a box at envelope level -> its children are not
-    # shown, so it renders as an ordinary node, not an empty subgraph
-    assert 'B3["fork"]' in graph
-    assert "subgraph" not in graph
-
-
 # ── build_scene end to end ─────────────────────────────────────────────────
 
 
@@ -973,7 +908,7 @@ def test_build_scene_nm_and_metre_scale_share_topology_and_land_in_working_range
     assert all(any(c != 0.0 for c in v) for v in metre_scene.explode.values())
 
 
-def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:
+def test_build_scene_bundles_shapes_connections_explode_and_nodes() -> None:
     tree = _connected_tree()
     kids = children_map(tree)
     plan = plan_visibility(tree, kids, level="refined", isolate=None)
@@ -997,7 +932,7 @@ def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:
     assert connections_group["parts"][0]["type"] == "edges"
     assert len(scene.connections) == 1
     assert set(scene.explode) == {"/x/hub", "/x/rim"}
-    assert "graph LR" in scene.mermaid
+    assert {n.name for n in scene.nodes} == {"hub", "rim"}
     # gr340030 — the scale-bar overlay's own conversion factor, the SAME
     # multiplier already baked into every emitted coordinate above.
     assert scene.scale == scene_scale(tree, _effective_envelope)

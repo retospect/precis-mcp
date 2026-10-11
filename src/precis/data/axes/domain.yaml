@@ -1,5 +1,8 @@
 id: domain
 version: 1
+# Taproot claim hubs (finding): default-OFF, enabled per `categorize_kind:finding`
+# service_config row (workers/_claim.py). Not in applies_to_kinds on purpose.
+opt_in_kinds: [finding]
 question: "What broad subject area does this paper belong to?"
 values: [chemistry, physics, bio, materials, eng, other, unknown]
 default_unknown: unknown

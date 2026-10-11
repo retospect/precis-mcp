@@ -770,7 +770,9 @@ def _python_roots_from_fix_repo(overlay: dict[str, str]) -> None:
     ``memory-review`` todos could not be verified (gr477865). An operator-set
     ``PRECIS_PYTHON_ROOTS`` wins; an unset/missing dir is a no-op.
     """
-    if os.environ.get("PRECIS_PYTHON_ROOTS", "").strip():
+    from precis.config import load_config
+
+    if (load_config().python_roots or "").strip():
         return
     repo = os.environ.get("PRECIS_FIX_REPO_DIR", "").strip()
     if repo and os.path.isdir(repo):

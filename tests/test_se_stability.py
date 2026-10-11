@@ -13,6 +13,7 @@ import json
 import math
 from typing import Any
 
+import numpy as np
 import pytest
 
 from precis.dispatch import Hub
@@ -20,8 +21,8 @@ from precis.store import Store
 from precis_se import drc as se_drc
 from precis_se import joints as se_joints
 from precis_se import stability as se_stability
-from precis_se.handler import SeHandler
-from precis_se.ops import OpError, SeTree, apply_ops
+from precis_se.handler import SeHandler, _render_stability
+from precis_se.ops import ConnectSpec, OpError, SeTree, apply_ops
 
 
 @pytest.fixture
@@ -862,3 +863,417 @@ def test_stability_view_in_unknown_view_roster(handler: SeHandler) -> None:
     with pytest.raises(BadInput) as exc_info:
         handler.get(id="empty1", view="nope")
     assert "view='stability'" in str(exc_info.value.next)
+
+
+# ── rigid connects merge blocks into one rigid body (gr334788) ───────────
+
+
+def _with_rigid(tree: SeTree, a: str, b: str) -> SeTree:
+    return apply_ops(
+        tree,
+        [
+            {
+                "op": "connect",
+                "a": f"{a}.pin",
+                "b": f"{b}.pin",
+                "joint": {"class": "rigid"},
+            }
+        ],
+    )
+
+
+#: Wall anchor points (grounded pin nodes) for the grouped-body tests.
+_WALLS = {
+    "w1": [2.0, 0.3, -0.2],
+    "w2": [-1.5, 1.2, 0.4],
+    "w3": [0.3, -2.0, 0.9],
+    "w4": [0.8, 1.7, -1.6],
+    "w5": [-0.7, -0.9, 2.1],
+    "w6": [1.1, -1.4, -1.3],
+}
+
+
+def _walls_tree() -> SeTree:
+    ops: list[dict[str, Any]] = []
+    for name, pose in _WALLS.items():
+        ops += [
+            {"op": "add_block", "name": name, "pose": pose},
+            {"op": "add_port", "block": name, "name": "pin"},
+            {"op": "set_load", "block": name, "fixed": True},
+        ]
+    return apply_ops(SeTree(), ops)
+
+
+def _bar(a: str, port_a: str, b: str) -> dict[str, Any]:
+    return {
+        "op": "connect",
+        "a": f"{a}.{port_a}",
+        "b": f"{b}.pin",
+        "joint": {"class": "axial", "params": dict(_ROD)},
+    }
+
+
+def _grouped(n_bars: int) -> SeTree:
+    """g1 + g2 rigidly joined, bars 0..n-1 alternate g1/g2 to the walls."""
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "g1", "pose": [0.0, 0.0, 0.0]},
+        {"op": "add_port", "block": "g1", "name": "pin"},
+        {"op": "add_block", "name": "g2", "pose": [0.4, 0.1, -0.2]},
+        {"op": "add_port", "block": "g2", "name": "pin"},
+    ]
+    for k, wall in enumerate(list(_WALLS)[:n_bars]):
+        ops.append(_bar("g1" if k % 2 == 0 else "g2", "pin", wall))
+    return _with_rigid(apply_ops(_walls_tree(), ops), "g1", "g2")
+
+
+def _single(n_bars: int) -> SeTree:
+    """The same body as ONE block: g2's attachment as a port offset."""
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "g1", "pose": [0.0, 0.0, 0.0]},
+        {"op": "add_port", "block": "g1", "name": "pin"},
+        {"op": "add_port", "block": "g1", "name": "q", "pose": [0.4, 0.1, -0.2]},
+    ]
+    for k, wall in enumerate(list(_WALLS)[:n_bars]):
+        ops.append(_bar("g1", "pin" if k % 2 == 0 else "q", wall))
+    return apply_ops(_walls_tree(), ops)
+
+
+@pytest.mark.parametrize("n_bars", [4, 6])
+def test_two_block_rigid_group_behaves_like_one_body(n_bars: int) -> None:
+    grouped = se_stability.classify(_grouped(n_bars))
+    single = se_stability.classify(_single(n_bars))
+    key = lambda r: (r.b, r.c, r.rank, r.m, r.rb_dim, r.m_internal, r.s)
+    assert key(grouped) == key(single)
+    assert grouped.verdict == single.verdict
+    assert grouped.j == single.j == 1 + n_bars  # n walls + the one body
+    assert grouped.m == 6 - grouped.rank > 0  # a real, non-trivial count
+    assert grouped.b == n_bars
+    assert any("merged into one rigid body" in n for n in grouped.notes)
+
+
+def test_rigid_group_stress_state_matches_single_body() -> None:
+    gsys = se_stability._assemble(_grouped(6))
+    ssys = se_stability._assemble(_single(6))
+    assert gsys.n == ssys.n == 24
+    assert np.allclose(gsys.equilibrium, ssys.equilibrium)
+    state = np.arange(1.0, 7.0)
+    assert np.allclose(
+        se_stability._stress_matrix(gsys, state),
+        se_stability._stress_matrix(ssys, state),
+    )
+
+
+def test_rigid_connects_are_modelled_not_partial() -> None:
+    report = se_stability.classify(_grouped(4))
+    assert not report.partial and report.unmodelled_connects == []
+    assert not any("PARTIAL" in n for n in report.notes)
+
+
+def test_rigid_connect_to_missing_block_stays_partial() -> None:
+    tree = _grouped(4)
+    tree.connects.append(
+        ConnectSpec(
+            a_block="g1",
+            a_port="pin",
+            b_block="ghost",
+            b_port="pin",
+            joint={"class": "rigid"},
+        )
+    )
+    report = se_stability.classify(tree)
+    assert report.partial
+    assert report.unmodelled_connects == ["g1.pin—ghost.pin"]
+    assert any("PARTIAL" in n for n in report.notes)
+
+
+def test_no_rigid_connect_is_not_partial() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]}, [("a", "b", dict(_ROD))]
+    )
+    report = se_stability.classify(tree)
+    assert not report.partial and report.unmodelled_connects == []
+
+
+def test_rigid_only_design_is_not_applicable_and_says_why() -> None:
+    tree = _with_rigid(
+        _pin_structure({"a": [0.0, 0.0, 0.0], "r": [1.0, 0.0, 0.0]}, []), "a", "r"
+    )
+    report = se_stability.classify(tree)
+    assert not report.partial
+    assert report.verdict.startswith("no axial members")
+    assert "rigid" in report.verdict
+
+
+def test_axial_between_rigid_group_members_is_internal() -> None:
+    tree = apply_ops(
+        _grouped(4),
+        [
+            {"op": "add_port", "block": "g1", "name": "x"},
+            {"op": "add_port", "block": "g2", "name": "x"},
+            {
+                "op": "connect",
+                "a": "g1.x",
+                "b": "g2.x",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+        ],
+    )
+    report = se_stability.classify(tree)
+    skipped = [r for r in report.members if r.skipped]
+    assert len(skipped) == 1 and "same rigid group" in str(skipped[0].skipped)
+    assert report.b == 4
+
+
+def test_rigid_group_with_axial_elsewhere_classifies() -> None:
+    """A rigid pair held by 4 bars plus an independent grounded triangle:
+    each part keeps its own verdict contribution."""
+    tree = _grouped(4)
+    tree = apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t", "pose": [5.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "t", "name": "pin"},
+            _bar("t", "pin", "w5"),
+            _bar("t", "pin", "w6"),
+        ],
+    )
+    report = se_stability.classify(tree)
+    base = se_stability.classify(_grouped(4))
+    assert report.b == base.b + 2
+    assert report.m == base.m + 3 - 2  # pin node: 3 DOF, 2 bars
+    assert not report.partial
+
+
+def test_stability_view_has_no_partial_banner_for_modelled_rigid() -> None:
+    text = _render_stability(_grouped(4))
+    assert "PARTIAL" not in text
+    assert "merged into one rigid body" in text
+
+
+# ── port moment arms: 6-DOF rigid-body nodes (gr334787) ──────────────────
+
+
+def _hub_wheel(tangential: float) -> SeTree:
+    """A hub block with 8 flange-hole ports (4 angles x two flanges at
+    z = ±0.02, radius 0.03) laced by axial spokes to 8 grounded rim
+    points at radius 1 (z = 0). ``tangential`` shifts each rim end that
+    many radians around from its hole's angle (alternating sign per
+    flange); 0 = radial lacing. The hub is grounded in translation only
+    (``fixed`` x/y/z), so its three rotations are the question."""
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "hub", "pose": [0.0, 0.0, 0.0]},
+        {"op": "set_load", "block": "hub", "fixed": True},
+    ]
+    k = 0
+    for flange, z in ((1.0, 0.02), (-1.0, -0.02)):
+        for i in range(4):
+            phi = i * math.pi / 2.0
+            ops.append(
+                {
+                    "op": "add_port",
+                    "block": "hub",
+                    "name": f"h{k}",
+                    "pose": [0.03 * math.cos(phi), 0.03 * math.sin(phi), z],
+                }
+            )
+            psi = phi + flange * tangential
+            ops += [
+                {
+                    "op": "add_block",
+                    "name": f"rim{k}",
+                    "pose": [math.cos(psi), math.sin(psi), 0.0],
+                },
+                {"op": "add_port", "block": f"rim{k}", "name": "pin"},
+                {"op": "set_load", "block": f"rim{k}", "fixed": True},
+                {
+                    "op": "connect",
+                    "a": f"hub.h{k}",
+                    "b": f"rim{k}.pin",
+                    "joint": {"class": "axial", "params": dict(_ROD)},
+                },
+            ]
+            k += 1
+    return apply_ops(SeTree(), ops)
+
+
+def _axle_moment_row(system: se_stability._System) -> int:
+    return int(system.start[system.index["hub"]]) + 5  # rot-z row
+
+
+def test_radial_spokes_carry_no_axle_moment_and_leave_the_hub_mobile() -> None:
+    tree = _hub_wheel(0.0)
+    system = se_stability._assemble(tree)
+    assert system.dof[system.index["hub"]] == 6
+    row = system.equilibrium[_axle_moment_row(system)]
+    assert float(np.max(np.abs(row))) < 1e-12
+    report = se_stability.classify(tree)
+    # first-order mechanism about the axle; the taut radial spokes only
+    # stiffen it at second order (geometric stiffness), never first order
+    assert report.m_internal == 1
+    assert not report.verdict.startswith("rigid")
+
+
+def test_tangential_spokes_stiffen_the_hub_about_the_axle() -> None:
+    tree = _hub_wheel(0.3)
+    system = se_stability._assemble(tree)
+    row = system.equilibrium[_axle_moment_row(system)]
+    assert float(np.max(np.abs(row))) > 1e-3  # non-zero axle moment arm
+    report = se_stability.classify(tree)
+    assert report.m == 0 and report.m_internal == 0
+    assert report.verdict.startswith("rigid")
+    assert (report.j, report.b, report.rank) == (9, 8, 3)
+
+
+def test_port_offset_follows_the_block_rotation() -> None:
+    tree = apply_ops(
+        SeTree(),
+        [
+            {
+                "op": "add_block",
+                "name": "a",
+                "pose": [1.0, 0.0, 0.0],
+                "rot": [0.0, 0.0, math.pi / 2],
+            },
+            {"op": "add_port", "block": "a", "name": "p", "pose": [1.0, 0.0, 0.0]},
+        ],
+    )
+    got = se_stability.port_world(tree, "a", "p")
+    assert got == pytest.approx([1.0, 1.0, 0.0], abs=1e-9)
+
+
+def test_origin_port_designs_keep_three_dof_nodes() -> None:
+    system = se_stability._assemble(_prism(fixed=_PRISM_FIXED))
+    assert set(system.dof.tolist()) == {3}
+    assert system.n == 3 * len(system.node_names)
+
+
+def test_single_offset_bar_leaves_two_rotation_mechanisms() -> None:
+    """One bar from a grounded point to a body's offset port: translations
+    held, three rotations free, one resisted."""
+    tree = apply_ops(
+        SeTree(),
+        [
+            {"op": "add_block", "name": "wall", "pose": [2.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "wall", "name": "pin"},
+            {"op": "set_load", "block": "wall", "fixed": True},
+            {"op": "add_block", "name": "body", "pose": [0.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "body", "name": "p", "pose": [0.0, 1.0, 0.0]},
+            {"op": "set_load", "block": "body", "fixed": True},
+            {
+                "op": "connect",
+                "a": "body.p",
+                "b": "wall.pin",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+        ],
+    )
+    report = se_stability.classify(tree)
+    assert report.m == 2
+    assert "mobile" in report.verdict
+
+
+def test_stress_matrix_matches_finite_difference_hessian() -> None:
+    """``_stress_matrix`` is the Hessian of the prestress energy
+    ``Σ t·L(x)`` plus ``Σ q·g gᵀ`` (``g = ∇L``: the parallel component
+    the first-order-mechanism test drops anyway). Central differences over
+    the full DOF vector (rotations by exact Rodrigues), two prestressed
+    bars into one offset-port body that is also a rotated block."""
+    tree = apply_ops(
+        SeTree(),
+        [
+            {
+                "op": "add_block",
+                "name": "body",
+                "pose": [0.1, 0.2, -0.1],
+                "rot": [0.3, -0.4, 0.5],
+            },
+            {"op": "add_port", "block": "body", "name": "p", "pose": [0.2, 0.1, 0.3]},
+            {"op": "add_port", "block": "body", "name": "q", "pose": [-0.3, 0.2, 0.1]},
+            {"op": "add_block", "name": "w1", "pose": [1.5, 0.3, 0.2]},
+            {"op": "add_port", "block": "w1", "name": "pin"},
+            {"op": "add_block", "name": "w2", "pose": [-0.4, 1.7, 0.5]},
+            {"op": "add_port", "block": "w2", "name": "pin"},
+            {
+                "op": "connect",
+                "a": "body.p",
+                "b": "w1.pin",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+            {
+                "op": "connect",
+                "a": "w2.pin",
+                "b": "body.q",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+        ],
+    )
+    system = se_stability._assemble(tree)
+    assert system.dof[system.index["body"]] == 6
+    _assert_stress_matches_fd(system, np.array([2.0, 3.0]))
+
+
+def _assert_stress_matches_fd(system: se_stability._System, state: np.ndarray) -> None:
+    k_mat = se_stability._stress_matrix(system, state)
+
+    def points(x: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+        row = system.live[k]
+        out = []
+        for node, arm, pt in (
+            (row.a_block, system.arms[k][0], row.a_point),
+            (row.b_block, system.arms[k][1], row.b_point),
+        ):
+            i = system.index[node]
+            r0 = int(system.start[i])
+            p = system.coords[i] + arm + x[r0 : r0 + 3]
+            if system.dof[i] == 6:
+                th = x[r0 + 3 : r0 + 6]
+                ang = float(np.linalg.norm(th))
+                if ang > 0.0:
+                    kx = se_stability._skew(th / ang)
+                    rot = np.eye(3) + math.sin(ang) * kx + (1 - math.cos(ang)) * kx @ kx
+                    p = system.coords[i] + rot @ arm + x[r0 : r0 + 3]
+            out.append(p)
+        return out[0], out[1]
+
+    def length(x: np.ndarray, k: int) -> float:
+        a, b = points(x, k)
+        return float(np.linalg.norm(b - a))
+
+    def energy(x: np.ndarray) -> float:
+        return sum(float(state[k]) * length(x, k) for k in range(len(state)))
+
+    n, h = system.n, 1e-4
+    x0 = np.zeros(n)
+    hess = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            ei, ej = np.eye(n)[i] * h, np.eye(n)[j] * h
+            hess[i, j] = (
+                energy(x0 + ei + ej)
+                - energy(x0 + ei - ej)
+                - energy(x0 - ei + ej)
+                + energy(x0 - ei - ej)
+            ) / (4 * h * h)
+    parallel = np.zeros((n, n))
+    for k in range(len(state)):
+        g = np.array(
+            [
+                (length(x0 + np.eye(n)[i] * h, k) - length(x0 - np.eye(n)[i] * h, k))
+                / (2 * h)
+                for i in range(n)
+            ]
+        )
+        parallel += float(state[k]) / float(system.lengths[k]) * np.outer(g, g)
+    expected = hess + parallel
+    err = float(np.max(np.abs(k_mat - expected))) / float(np.max(np.abs(expected)))
+    assert err < 1e-6, err
+
+
+def test_stress_matrix_of_a_rigid_group_matches_finite_difference() -> None:
+    """Same Hessian check on a merged body: g2's attachment arm is
+    measured from the group reference, the block poses are rotated."""
+    tree = _grouped(6)
+    system = se_stability._assemble(tree)
+    assert system.dof[system.index["g2"]] == 6
+    assert system.index["g1"] == system.index["g2"]
+    _assert_stress_matches_fd(system, np.array([1.0, 2.0, 3.0, 1.5, 0.5, 2.5]))

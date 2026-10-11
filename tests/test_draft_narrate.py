@@ -516,3 +516,11 @@ def test_markdown_segments_threads_episode_date():
         episode_date=date(2026, 10, 11),
     )
     assert segs[0].text == "The D F T run finished on Sunday the eleventh of October."
+
+
+def test_speakable_strips_single_bracket_finding_handles() -> None:
+    out = speakable("Copper rule holds [fi349173] and more [fi1][fi2] here.")
+    assert "fi" not in out
+    assert "[" not in out
+    assert "  " not in out
+    assert out == "Copper rule holds and more here."

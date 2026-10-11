@@ -7,7 +7,7 @@ on the torch-free host without a database.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
 
@@ -816,3 +816,128 @@ def test_resume_active_expired_is_inactive() -> None:
         settings={budget_settings.RESUME_UNTIL_KEY: "2000-01-01T00:00:00+00:00"}
     )
     assert budget_settings.resume_active(cast("Store", store)) is False
+
+
+# ── tiered quota taper (gr347551) ────────────────────────────────────────
+
+
+def _taper_gate(tier: Tier, windows: object, **kw: Any) -> str | None:
+    return breaker_mod.gate_tier(
+        tier,
+        transport="claude_agent",
+        store=cast("Store", SqlStore(windows=windows)),
+        **kw,
+    )
+
+
+@pytest.mark.parametrize(
+    ("used", "blocked"),
+    [
+        (50, set()),
+        (80, {Tier.BIG, Tier.FRONTIER}),
+        (92, {Tier.MEDIUM, Tier.BIG, Tier.FRONTIER}),
+        (100, {Tier.MEDIUM, Tier.BIG, Tier.FRONTIER}),
+    ],
+)
+def test_quota_taper_by_used_percentage(used: int, blocked: set[Tier]) -> None:
+    windows = {"five_hour": {"status": "allowed", "used_percentage": used}}
+    for tier in (Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
+        assert (_taper_gate(tier, windows) is not None) == (tier in blocked), (
+            used,
+            tier,
+        )
+
+
+@pytest.mark.parametrize("used", [80, 92, 100, None])
+def test_quota_taper_never_gates_small_or_local(used: int | None) -> None:
+    bucket: dict[str, object] = {"status": "rejected" if used is None else "allowed"}
+    if used is not None:
+        bucket["used_percentage"] = used
+    windows = {"five_hour": bucket}
+    assert _taper_gate(Tier.SMALL, windows) is None
+    for tier in (Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
+        assert _taper_gate(tier, windows, local=True) is None
+
+
+def test_quota_taper_prod_shape_fails_open_with_marker() -> None:
+    # Prod snapshot: status only, no used_percentage — the taper is blind.
+    windows = {
+        "five_hour": {"status": "allowed", "resets_at": "2099-01-01T00:00:00+00:00"}
+    }
+    for tier in (Tier.SMALL, Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
+        assert _taper_gate(tier, windows) is None
+    taper = quota_mod.taper_state(cast("Store", SqlStore(windows=windows)))
+    assert taper.no_signal is True and taper.level == 0
+    # No snapshot at all is blind too.
+    assert quota_mod.taper_state(cast("Store", SqlStore())).no_signal is True
+
+
+def test_quota_taper_percentage_present_clears_marker() -> None:
+    windows = {"five_hour": {"status": "allowed", "used_percentage": 10}}
+    taper = quota_mod.taper_state(cast("Store", SqlStore(windows=windows)))
+    assert taper.no_signal is False and taper.level == 0
+
+
+@pytest.mark.parametrize("status", ["allowed_warning", "warning"])
+def test_quota_taper_warning_status_blocks_big_and_frontier_only(status: str) -> None:
+    windows = {"five_hour": {"status": status}}
+    assert _taper_gate(Tier.MEDIUM, windows) is None
+    assert _taper_gate(Tier.SMALL, windows) is None
+    for tier in (Tier.BIG, Tier.FRONTIER):
+        reason = _taper_gate(tier, windows)
+        assert reason is not None and "quota" in reason
+    taper = quota_mod.taper_state(cast("Store", SqlStore(windows=windows)))
+    assert taper.no_signal is False and taper.level == 1
+
+
+def test_quota_taper_expired_window_allows_again() -> None:
+    past = "2000-01-01T00:00:00+00:00"
+    for bucket in (
+        {"status": "rejected", "resets_at": past},
+        {"status": "allowed_warning", "resets_at": past},
+        {"status": "allowed", "used_percentage": 100, "resets_at": past},
+    ):
+        for tier in (Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
+            assert _taper_gate(tier, {"five_hour": bucket}) is None, (bucket, tier)
+
+
+def test_quota_taper_ignores_overage_and_unknown_windows() -> None:
+    windows = {
+        "overage": {"status": "allowed", "used_percentage": 99},
+        "mystery": {"status": "allowed_warning", "used_percentage": 99},
+    }
+    assert _taper_gate(Tier.BIG, windows) is None
+    assert quota_mod.taper_state(cast("Store", SqlStore(windows=windows))).no_signal
+
+
+def test_quota_taper_seven_day_window_counts() -> None:
+    windows = {"seven_day": {"status": "allowed", "used_percentage": 80}}
+    assert _taper_gate(Tier.BIG, windows) is not None
+
+
+def test_quota_park_alert_clears_when_park_lifts_into_taper_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str | None] = []
+    monkeypatch.setattr(
+        breaker_mod,
+        "_apply_quota_alert",
+        lambda store, window, pause: calls.append(window),
+    )
+    breaker_mod._reset_alert_state()
+    parked = {"five_hour": {"status": "allowed", "used_percentage": 100}}
+    assert _taper_gate(Tier.BIG, parked) is not None
+    healthy = {"five_hour": {"status": "allowed", "used_percentage": 60}}
+    assert _taper_gate(Tier.BIG, healthy) is None
+    assert calls == ["five_hour", None]  # raised, then cleared
+    breaker_mod._reset_alert_state()
+
+
+def test_quota_taper_rejected_parks_all_paid_tiers_until_reset() -> None:
+    windows = {
+        "five_hour": {"status": "rejected", "resets_at": "2099-01-01T00:00:00+00:00"}
+    }
+    for tier in (Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
+        reason = _taper_gate(tier, windows)
+        assert reason is not None and "00:00 UTC" in reason
+    assert _taper_gate(Tier.SMALL, windows) is None

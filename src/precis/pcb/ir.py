@@ -57,6 +57,7 @@ from shapely.geometry import (
 )
 
 from precis.pcb import landpattern, padplace
+from precis.pcb.edge_mate import parse_edge_mate
 
 #: Sentinel: a pin/segment/via with no net (unconnected / pure keepout).
 NO_NET: int = -1
@@ -451,6 +452,13 @@ class PcbIR:
     #: closing, not repeating).
     outline: list[tuple[float, float]] | None = None
 
+    #: object[n_inst] -> :class:`precis.pcb.edge_mate.EdgeMateSpec` | None —
+    #: the instance's authored side-insertion requirement (gr451356: the
+    #: part must sit ON the outline, mating face outward). Static authored
+    #: data like ``inst_bottom``; ``None`` (the field default, for IRs built
+    #: without :func:`from_graph`) means no instance has one.
+    inst_edge_mate: np.ndarray | None = None
+
     #: The board's mounting holes (:class:`MountingHole`) — board-config
     #: data with the same status as ``outline`` above: populated once at
     #: hydration from ``ftype='mounting_hole'`` features, never mutated
@@ -575,6 +583,15 @@ class PcbIR:
         for seg_id in self._segs_of_instance.get(inst_id, []):
             self.dirty_l4[seg_id] = True
             self.dirty_l5[seg_id] = True
+
+    def lock_instance(self, inst_id: int, *, xy: bool = True, rot: bool = True) -> None:
+        """Pin an instance against the optimizer's moves (the same two bits
+        ``fixed='xy'|'rot'|'both'`` sets at hydration). A run-local lock:
+        nothing persists it. Does not move or dirty anything."""
+        if xy:
+            self.inst_fixed_xy[inst_id] = True
+        if rot:
+            self.inst_fixed_rot[inst_id] = True
 
     def set_layer(self, seg_id: int, layer: int) -> None:
         """L1 mutator: (re)assign a segment's routing layer. Dirties L1 and
@@ -1199,6 +1216,9 @@ def from_graph(
             [bool(inst.get("extended_part")) for inst in instances], dtype=bool
         ),
         inst_bottom=np.array(inst_is_bottom, dtype=bool),
+        inst_edge_mate=_obj_array(
+            [parse_edge_mate(inst.get("edge_mate")) for inst in instances]
+        ),
         instance_part_lcsc=_obj_array([inst.get("part_lcsc") for inst in instances]),
         pin_instance=np.array(pin_instance, dtype=np.int32),
         pin_label=_obj_array(pin_label),

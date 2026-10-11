@@ -167,8 +167,8 @@ def test_skill_index_lists_active_skill_slugs() -> None:
     assert "precis-todo-tree-help" in out
     assert "precis-decomposition-help" in out
     # A skill with no `summary:` front-matter is still not advertised.
-    from precis.handlers._skill_common import parse_frontmatter
     from precis.handlers.skill import _load_skills_map
+    from precis.utils.skill_common import parse_frontmatter
 
     undocumented = [
         slug

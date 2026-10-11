@@ -1134,7 +1134,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
                 default="refuse",
                 help=(
                     "Live repo-dev nodes from the one-shot importer (no "
-                    "file_mirror, title = a topic's name:): refuse (default), "
+                    "file_mirror, title or slug = a topic's name: or file stem; unmatched ones are only listed): refuse (default), "
                     "retire (soft-delete in the import), keep (import beside), or "
                     "refresh (adopt the node in place, keeping its id and links)."
                 ),
@@ -1145,6 +1145,15 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
                 choices=("keep", "retire"),
                 default="keep",
                 help="Nodes of files deleted since last import: keep live (default) or retire.",
+            )
+        if mode == "export":
+            parser.add_argument(
+                "--no-stamp",
+                action="store_true",
+                help=(
+                    "Backup mode: render native nodes to files but leave the "
+                    "graph untouched (no file_mirror stamp, no retitling)."
+                ),
             )
         parser.add_argument(
             "--database-url", default=None, help="Postgres DSN override."
@@ -1178,7 +1187,10 @@ def run(args: argparse.Namespace) -> None:
                     print(json.dumps(asdict(report_mirror), sort_keys=True))
                 else:
                     exported = export_mirror(
-                        store, Path(args.dir), namespace=args.namespace
+                        store,
+                        Path(args.dir),
+                        namespace=args.namespace,
+                        stamp=not args.no_stamp,
                     )
                     print(f"exported {exported.created} files")
                     if exported.exported_native:

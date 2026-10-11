@@ -102,8 +102,11 @@ def test_fused_tube_seeds_meet_at_one_bond_length(body: str, skew_deg: float) ->
         # origin ('s') only touches the seam, so the whole spec was
         # unplaced pre-fix (measured max 26.48 A); the seam's own
         # consecutive-rim correspondence fed to _place_seeds as a
-        # placement-only entry measured max 3.74 A
-        ("sheet_pill_bump.hx", 4.0),
+        # placement-only entry measured max 3.74 A.  gr464358: the seam's
+        # second pair (up.in, down.in) is bonded index to index but was
+        # fitted as P[i] <-> Q[-i], and `down` must be the mirror of `up`
+        # through the sheet: 2.90 A before, 1.71 A after
+        ("sheet_pill_bump.hx", 1.9),
         # item 2, a 3-rim seam where two of the three rims (top, bottom)
         # are already real-fuse-connected through a third instance
         # (wall): measured pre-fix max 11.43 A ('flange' unplaced); after
@@ -129,14 +132,26 @@ def test_fused_tube_seeds_meet_at_one_bond_length(body: str, skew_deg: float) ->
         # once the flange -- a cap(36,0) - hex(3) washer -- got its rim
         # normal from the dangling-list winding (_winding_normal): the
         # flange's seam-placement edge itself dropped 18.6 -> 2.0 A, the
-        # residual moved between the three seam rims.
-        ("flanged_doughnut.hx", 11.7),
+        # residual moved between the three seam rims.  gr464358 (2026-10-11):
+        # the flange's placement edge now fits the seam's index-to-index
+        # pairing instead of its mirror, 11.45 -> 10.79 A; what is left is
+        # the two rigid flat washers' outer rims sitting ~10 A apart
+        ("flanged_doughnut.hx", 11.0),
         # item 3, a flat washer (cap(24,0) - hex(1) hole) fused on both
         # its hole rim (to a neck tube) and its outer rim (to a bulge):
         # measured pre-fix max 17.86 A (both rims signed the same way);
         # signing each flat rim by its own winding (_flat_sign) measured
         # max 2.10 A
         ("valve_shell.hx", 2.3),
+        # gr464358: seeds inside out against their fused rims (the C60
+        # cap's and C60 hole's lists wind positively about their outward
+        # normals) were fitted mirror-registered; _fuse_parity reflects
+        # them.  Measured max before -> after: 6.31 -> 1.58, 6.31 -> 1.86,
+        # 4.40 -> 1.71, 4.63 -> 1.76 A
+        ("capped_tube.hx", 1.7),
+        ("capped_tube_da_neck.hx", 2.0),
+        ("nanobud_da_neck.hx", 1.9),
+        ("nanobud_db_neck.hx", 1.9),
     ],
 )
 def test_example_seeds_have_no_long_crossing_bonds(name: str, bound_A: float) -> None:
@@ -144,6 +159,53 @@ def test_example_seeds_have_no_long_crossing_bonds(name: str, bound_A: float) ->
     net = build(text, strict=False)
     lengths = _crossing_lengths(net)
     assert lengths.max() < bound_A, (name, lengths.min(), lengths.max())
+
+
+def _foot(n: int, k: int) -> str:
+    # precis_se's authored 3+3 foot (authored_foot.foot_text): a sheet
+    # hole fused to a cap(6k,0) frustum with three heptagons, fused to an
+    # (n,0) tube
+    return (
+        "hexfold 0.2\norigin s\n"
+        f"s: sheet(40,40) - hex({k // 2 - 1})@(20,20,A):0\n"
+        f"b: cap({6 * k},0) + 3@(-1,0,A):2 - hex({n // 3 - 1})@(-1,0,A):0\n"
+        f"t: tube({n},0, len=8)\n"
+        "s.hole --fuse k=0--> b.in\n"
+        "b.hole --fuse k=0--> t.in\n"
+    )
+
+
+@pytest.mark.parametrize("n, k", [(6, 10), (12, 10), (24, 10), (6, 14), (9, 16)])
+def test_wide_frustum_seeds_clear_of_the_sheet(n: int, k: int) -> None:
+    """gr464358: the frustum's disclination lift folded onto the face its
+    rims wind against, so the fit registered it mirrored -- 12-21 A mean
+    sheet crossing bonds for every n, and at k = 10 three frustum atoms
+    seeded 0.09 A from sheet atoms (9 under 0.7 A at k = 14, 3 at k = 16).
+    Reflected, no non-bonded seed pair comes within 1.2 A for k = 4..16
+    and n = 6..24, and the crossing bonds stay under 4.4 A."""
+    net = build(_foot(n, k), strict=True)
+    assert net.seed3 is not None
+    pos = np.array(net.seed3, dtype=np.float64)
+    close = _clash_pairs(pos, net.bonds, 1.0)
+    assert not close, close[:3]
+    assert _crossing_lengths(net).max() < 4.4
+    assert any(f.code == "place.mirrored" for f in net.report.findings)
+
+
+def test_c60_hole_neck_seeds_at_one_bond_length() -> None:
+    """gr464358 / gr464391: ``fullerene(C60) - hexagon`` fused to a (6,0)
+    tube seeded its six neck bonds mirror-registered (3.5/4.6 A mean/max),
+    which stick closed into a neck with nine non-bonded pairs at
+    1.04-1.2 A.  Reflected, the six seed at 1.45 A and stick leaves no
+    pair under ``clash_A``."""
+    net = build(
+        "hexfold 0.2\norigin t\nt: tube(6,0, len=5)\n"
+        "c: fullerene(C60) - hexagon@(0,0,A)\nt.out --fuse k=0--> c.hole\n",
+        strict=True,
+    )
+    assert _crossing_lengths(net).max() < 1.6
+    pos = stick(net)
+    assert not _clash_pairs(pos, net.bonds, Profile.DEFAULT.clash_A)
 
 
 @pytest.mark.parametrize("r", [1, 2, 3])

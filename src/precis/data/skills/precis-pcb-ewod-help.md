@@ -159,9 +159,10 @@ get(kind="skill", id="precis-pcb-route-help")  # op='route' -- escapes route lik
 
 ## Parylene coater size
 
-`view='drc'` on a board with an `ewod_pad_array` warns
-`coating_extent_unknown` until the coater's max board width/height is
-configured (`coating_extent_mm` in `pcb_capabilities.json`): until then the
-board size has NOT been screened against the coating step. Once set, an
-outline larger than the coater (either orientation) is an error,
-`coating_extent_exceeded`. Boards without an EWOD array get neither.
+The lab coater takes boards up to 200 x 200 mm (house default,
+`coating_extent_mm` in `pcb_capabilities.json`). `view='drc'` on a board
+with an `ewod_pad_array` errors `coating_extent_exceeded` when the outline
+does not fit in either orientation. The generator also refuses an electrode
+array that alone exceeds it. If the figure is ever cleared to null, the DRC
+warns `coating_extent_unknown` instead: the board size has NOT been screened.
+Boards without an EWOD array get neither.

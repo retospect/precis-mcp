@@ -45,3 +45,17 @@ def fetch_ref_any_kind(store: Store, ref_id: int) -> Ref:
             ),
         )
     return _row_to_ref(row)
+
+
+def multi_article_advisory(store: Store, paper_ref_id: int, handle: str) -> str:
+    """One-line advisory when the cited paper is tagged ``multi-article``
+    (gr463414), else ``""``. The write still succeeds; the agent confirms
+    the cited passage belongs to this paper before relying on the edge."""
+    if not store.is_multi_article(paper_ref_id):
+        return ""
+    return (
+        f"\nadvisory: {handle}'s stored body bundles several articles "
+        "(tag multi-article) - confirm the cited passage belongs to this "
+        "paper (its page carries this paper's own title or DOI) before "
+        "relying on the edge"
+    )

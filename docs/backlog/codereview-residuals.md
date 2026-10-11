@@ -13,7 +13,7 @@ _Grouped 2026-09-26; was `codereview-handler-size-cleanups`._
 
 Done (shipped): DraftStore review surface lifted to `DraftReviewStore`
 (`store.drafts.review.*`, 12 methods, transitional delegations kept);
-draft-lint hint generators extracted to `handlers/_draft_lint.py`;
+draft-lint hint generators extracted to `draft/lint.py`;
 finding.py's store-only state machines extracted to
 `handlers/_finding_acquire.py`/`_finding_edit.py`/`_finding_evidence.py`
 (FindingHandler stays on NumericRefHandler — it genuinely uses the

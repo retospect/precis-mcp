@@ -49,12 +49,6 @@ from precis.design.history import record_revision
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Internal, NotFound, Unsupported
 from precis.format import render_agent_table
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    format_link_tag_ack,
-    require_link_target,
-    validate_link_mode,
-)
 from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
@@ -83,6 +77,12 @@ from precis.structure.importers import catalysis_hub, get_adapter
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 
 if TYPE_CHECKING:
     from precis.store.protocols import LinksStore
@@ -2077,7 +2077,7 @@ class StructureHandler(Handler):
         and inject a ``derived_job_succeeded`` auto_check so that todo closes on
         success and gets a ``child-failed`` bubble on failure."""
         slug = str(ref.slug)
-        from precis.handlers import _todo_guards as todo_guards
+        from precis.todo import guards as todo_guards
 
         # A named requester must be a live todo (fail fast, before the mint).
         if nd.requester_id is not None:

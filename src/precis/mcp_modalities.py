@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp.prompts.base import Prompt
 
-from precis.handlers._skill_common import parse_frontmatter
 from precis.handlers.skill import (
     SkillHandler,
     _availability_gap,
@@ -49,6 +48,7 @@ from precis.handlers.skill import (
     _load_skill,
     _skill_title,
 )
+from precis.utils.skill_common import parse_frontmatter
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP

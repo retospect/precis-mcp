@@ -459,6 +459,20 @@ rotational phase (360·k/N) — the only "angle" in the discrete notation, an
 integer. Equal dangling counts are required (`port.mismatch`, ERROR).
 `--fuse k=-->` is sugar for a two-rim `seam` statement (§11.3).
 
+**Seed handedness `[impl 0.2, 2026-10-11]`.** The rigid seed placement
+reaches that pairing with a proper rotation only when both dangling lists
+wind the same way about their rims' outward normals. A flat instance's
+rim normal is a free sign, so it takes the sign its partner needs; a
+non-flat seed whose lists wind against its fuses (a heptagon frustum's
+lift on the wrong face, the closed-form C60 tables) is reflected through
+its local `z` before placement (`place.mirrored`, INFO). Parities are
+propagated over the fuse graph per component; a chiral tube or a
+menu-placed cage is never reflected, and a component whose cycle
+disagrees with itself, or that would need one of those reflected, is
+left as seeded (`place.mirror_refused`, WARN). In a k ≥ 3 seam, rims
+after the first pair are bonded index to index, and the placement fits
+that pairing.
+
 Euler bookkeeping for `bond`-joined surfaces: the counting law is reported
 per surface component evaluated **before** the authored attachment bonds
 (`euler.chi` findings carry `where=<instances>`); the fused/bonded whole
@@ -673,14 +687,15 @@ no ERROR. No `__bool__`.
 | `registry.closure` `[spec 0.2]` | WARN (STRICT: ERROR) | cycle residual in symmetry steps (`data.cycle`, `data.residual`) |
 | `seam.rings` `[spec 0.2]` | INFO | ring census along a seam (was `fuse.seam`); `data.rings`, `data.k` |
 | `op.dangling` `[spec 0.2]` | ERROR | an atom-addressed op names an atom that no longer exists after regeneration |
+| `menu.unknown` `[impl 0.2, 2026-10-11]` | ERROR | a menu line names no implemented menu (§16); it used to expand to nothing and leave the bud as a loose part |
 | `gen.stale` `[spec 0.2]` | WARN | generated section's hash ≠ hash of the authored sections |
 | `frag.unrealized` | INFO | fragment referenced but not built (no rdkit) |
 | `geom.summary` | INFO | rms/max bond-length and angle deviation, `bond_n_over`/`angle_n_over` (every bond/ring corner past tolerance, not just the ten listed), `clash_count`/`clash_min` (geometry tier) |
 | `geom.clash` `[impl 0.2, 2026-10-02]` | ERROR / WARN | two atoms neither bonded nor sharing a bonded neighbour sit closer than `Profile.clash_A` (1.8 Å) in the stick geometry; ERROR under `Profile.clash_error_A` (1.0 Å, overlapping atoms), WARN between (a squeezed junction); names both atoms, instances and elements and the pair's bar, ten worst listed (a bud sunk into its host, a crumpled lid — gr459567). `Profile.clash_pair_A` gives an element pair its own bar in place of `clash_A`: by default H–H 1.5 Å, since a terminated armchair bay holds its two H at 1.87–1.89 Å (`tube(8,8)`, `tube(10,5)`), a legitimate geometry 0.07 Å inside the carbon bar (gr459567 W3) |
 | `geom.seed_overlap` `[impl 0.2, 2026-10-02]` | ERROR | two non-bonded atoms (1-2 and 1-3 excluded) closer than `Profile.seed_overlap_A` (0.7 Å) in the *placed seed*, before stick runs: a placement bug, reported whatever the relaxer does afterwards. `geom.summary` carries `seed_clash_count`/`seed_clash_min` (seed pairs under `clash_A`) beside the relaxed `clash_*` |
 | `geom.seed_short_bond` `[impl 0.2, 2026-10-03]` | WARN | a *bonded* pair shorter than `Profile.seed_short_bond_A` (1.0 Å) in the placed seed: two atoms nearly stacked, which `geom.seed_overlap` skips because they are bonded. `geom.summary` carries `seed_short_bond_count` |
-| `place.mirrored` `[impl 0.2, 2026-10-02]` | INFO | a nanobud menu's C60 seed was reflected (in x, about its centroid) because the proper fit of its pairing seats it inside the host; C60 is achiral, so the molecule is unchanged |
-| `place.mirror_refused` `[impl 0.2, 2026-10-02]` | WARN | the same case for a cage not known to be achiral (anything but C60): not reflected, left seeded inside its host |
+| `place.mirrored` `[impl 0.2, 2026-10-02]` | INFO | a nanobud menu's C60 seed was reflected (in x, about its centroid) because the proper fit of its pairing seats it inside the host; C60 is achiral, so the molecule is unchanged. Also `[impl 0.2, 2026-10-11]`: a fused non-flat seed reflected through its local z because its rims wound against its fuses (§11.2 seed handedness) |
+| `place.mirror_refused` `[impl 0.2, 2026-10-02]` | WARN | the same case for a cage not known to be achiral (anything but C60): not reflected, left seeded inside its host. Also `[impl 0.2, 2026-10-11]`: a fused part that would need reflecting but is a chiral tube or a menu-placed cage, or a fuse cycle with no consistent handedness (§11.2) |
 | `place.inward` `[impl 0.2, 2026-10-02]` | WARN | after placement a cage still seeds inside one of its hosts (a cage bridging two hosts, decided off the first) |
 | `place.face_conflict` `[impl 0.2, 2026-10-03]` | ERROR | a flat instance fused through two rims (a washer) whose windings put an attached bud on opposite faces |
 | `place.face_authored` `[impl 0.2, 2026-10-07]` | INFO | an attachment onto a flat host carries `face=up|down` (§11.1) and seeds there; `data.against_fuse` is true when that goes against the face the host's fused rim implies |
@@ -802,9 +817,9 @@ generated line inherits.
 | menu | expands to | cite | accessibility |
 |---|---|---|---|
 | `[2+2]` | 2 `bond` lines: the C60 6-6 bond with lex-min atom pair to the host bond from `site` along `dir` | [S13] | CVD-observed |
-| `[4+4]` | 4 `bond` lines | — | theoretical |
+| `[4+4]` | 2 `bond` lines: the 1,4 (para) atoms of the lex-min C60 hexagon, entered at its smallest site, to `site` and to the atom across the host hexagon that holds `site`'s neighbours `dir` and `dir+1` (one bond per host sublattice) | [S13] | DFT: unstable or marginal on (8,8) |
 | `9-6` | C54 = C60 `- hexagon`; six `bond` lines onto the **intact** host in the C3 registration whose seam is `{9:3, 6:3}` | [S14] | DFT |
-| `8-7` | same, in the registration whose seam is `{8:3, 7:3}` | [S14] | DFT |
+| `8-7` | same, in the registration whose seam is `{8:3, 7:3}`; registrations bonding all six host atoms on one sublattice rank first, as in [S14] (the 9-6 host atoms rebonded, ~6 μB on (10,10)) — 36 of the 60 `{8:3, 7:3}` registrations mix sublattices and match no published case `[impl 0.2, 2026-10-11]` | [S14] | DFT |
 | `DA-neck(len)` | C60 `- pentagon` → `tube(5,0,len)` → host `- path3` opening, neck fuse `k` fitted over 0..4 by smallest max seam ring | [S15] | TEM-consistent |
 | `DB-neck(len)` | C60 `- hexagon` → `tube(6,0,len)` → host `- hexagon`, both fuses `k=0` | [S15] | TEM-consistent |
 | `collar{r×k @fit}` | k defects of ring size r in a `C_k` orbit | — | — |

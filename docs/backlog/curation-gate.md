@@ -48,7 +48,7 @@ What exists, stated so nobody rebuilds it:
   and `chunks.set_by` are left NULL by `insert_ref` / `insert_blocks`
   (schema comment); only `ref_tags.set_by` is stamped, and its usual value
   is the literal `agent` or `system`. The owner/worker gradient is read
-  from `$PRECIS_SOURCE` at guard time (`handlers/_todo_guards.py`), never
+  from `$PRECIS_SOURCE` at guard time (`todo/guards.py`), never
   persisted. So "protect human-authored content from a rebuild" (handoff
   Q4) has nothing to key on today.
 - **`skill_bug` is a `gripe`.** No new kind.
@@ -159,7 +159,7 @@ notes from attempt N still meaningful at attempt N+1.
 
 Touched: `workers/executors/claude_inproc.py` (`_review_meta`,
 `_anchor_chunk_snapshot`, `_maybe_record_review_pass`),
-`quest/review_guard.py`, `handlers/_job_bubble.py` (park path),
+`quest/review_guard.py`, `utils/job_bubble.py` (park path),
 `store/_refs_ops.py::insert_ref` + `_chunks_ops.py::insert_blocks`
 (`set_by`), the `protected` derivation in the row renderer, `handlers/draft.py`
 (`copy_of` ledger carry-forward, `view='review'`), `handlers/gripe.py`

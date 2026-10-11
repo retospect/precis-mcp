@@ -20,6 +20,35 @@ near-tautological for a scraped query, so it can't corroborate alone).
 ``[_REVIEW_SIM, _AUTO_SIM)`` is surfaced for review, never auto-written.
 Not-a-paper candidates (book cruft, held-without-chunks) are only flagged.
 
+**Body-corroboration gate (gr262881, Track 2).** Title similarity can't tell
+two near-identical titles apart (WSe2 vs MoS2 transistor papers). Before an
+``auto`` Track-2 verdict, every *formula-like* token of the hit's title
+(``WSe2``, ``Ti3C2`` — see :data:`_FORMULA_RE`) must occur somewhere in the
+paper's own chunks (:func:`_formula_terms_missing`); otherwise the verdict
+is ``parked`` / ``title-terms-not-in-body`` (see below). Formulas are
+element-symbol runs with a digit, whole-token matched, reference list
+excluded; ``CO2`` in a title vs "carbon dioxide" in the body parks too
+(accepted). Plain words are not checked (too noisy: a title says "implications", the body
+doesn't); a title with no formula token, or a body under
+:data:`_MIN_CHUNK_TOKENS` tokens, passes.
+
+**Edition guard (gr260193, Track 1).** A DOI names a work, not an edition
+(living reports keep one DOI across versions). Compared against the first
+:data:`_TITLE_SCAN_CHUNKS` chunks (:func:`_edition_conflict`): a registry
+title whose version token (``version 5.0.0``) is absent from the body's own
+version tokens, or a registry year more than one year after the newest
+year in that front matter, routes to ``parked`` (``edition-mismatch-*``). The year test only runs when
+the registry title has a version token or shares <:data:`_TITLE_AGREE_FRAC`
+of its tokens with the front matter (preprint → journal years differ
+legitimately; front-matter years include citations). Body version tokens
+count only as explicit ``version N``/``ver. N``. Also run on Track 2.
+
+Both guards use the ``parked`` path (:func:`park_mismatch`): the hit is
+withheld, :data:`MISMATCH_TAG` + ``meta.registry_mismatch`` (with ``reason``)
+are written, and :func:`_triage_refs` skips tagged refs so sweeps don't
+re-hit them. Only the zero-overlap case also clears the stored DOI.
+Missing body evidence (no version token / no year) never trips it.
+
 **Zero-overlap guard (gr353804).** An otherwise-``auto`` verdict on either
 track is rerouted to ``parked`` — the one write this module does perform
 outside ``apply``/``discard`` — when the registry title shares zero
@@ -79,6 +108,43 @@ MISMATCH_TAG = Tag.open("paper-meta:title-mismatch")
 #: :func:`_guard_registry_mismatch` abstains rather than risk a false
 #: park on a legitimately thin first chunk.
 _MIN_CHUNK_TOKENS = 8
+
+#: gr262881: chemical-formula token in a title — a run of element symbols
+#: with optional counts and at least one digit (``WSe2``, ``Ti3C2``,
+#: ``CO2``). Candidates are validated against :data:`_ELEMENTS` in
+#: :func:`_formulas_in`, so ``COVID19``/``GPT4``/``ResNet50`` don't qualify.
+_FORMULA_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][a-z]?\d*){2,}(?![A-Za-z0-9])")
+_ELEMENTS = frozenset(
+    re.findall(
+        r"[A-Z][a-z]?",
+        "HHeLiBeBCNOFNeNaMgAlSiPSClArKCaScTiVCrMnFeCoNiCuZnGaGeAsSeBr"
+        "KrRbSrYZrNbMoTcRuRhPdAgCdInSnSbTeIXeCsBaLaCePrNdPmSmEuGdTbDy"
+        "HoErTmYbLuHfTaWReOsIrPtAuHgTlPbBiPoAtRnFrRaAcThPaUNpPuAmCm",
+    )
+)
+_SUBSCRIPT_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+_SUPSUB_TAG_RE = re.compile(r"</?(?:sub|sup)\b[^>]*>", re.I)
+#: A heading line like this (own line) starts the reference list.
+_REFS_HEADING_RE = re.compile(
+    r"^\W*(?:\d+\.?\s*)?(references|bibliography|literature cited)\W*$", re.I | re.M
+)
+#: Leading chunks where a References heading is taken as a TOC entry.
+_TOC_CHUNKS = 2
+#: Max body chunks scanned for formula corroboration.
+_BODY_SCAN_CHUNKS = 400
+
+#: gr260193: version token (registry side: ``version 5.0.0``/``v5.0``; body
+#: side: only explicit ``version N``/``ver. N`` — bare ``v2`` in a body is
+#: usually software) and 4-digit year.
+_REG_VERSION_RE = re.compile(
+    r"(?:\bversion\s*|\bver\.?\s*|\bv)(\d+(?:\.\d+){0,3})\b", re.I
+)
+_BODY_VERSION_RE = re.compile(r"(?:\bversion|\bver\.)\s*(\d+(?:\.\d+){0,3})\b", re.I)
+_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+
+#: Registry title is taken to disagree with the front matter when fewer than
+#: this fraction of its distinctive tokens occur there.
+_TITLE_AGREE_FRAC = 0.5
 
 #: Book front-matter DOIs (Elsevier `b<isbn>` chapter DOIs) whose Crossref
 #: record is itself "Index" / "Dedication" — not a paper.
@@ -293,6 +359,94 @@ def _guard_registry_mismatch(store: Store, res: Resolution) -> Resolution:
     return res
 
 
+def _formulas_in(title: str) -> list[str]:
+    """Chemical formulas in ``title``: every element-symbol run with a digit."""
+    out = set()
+    for m in _FORMULA_RE.findall(title):
+        syms = re.findall(r"[A-Z][a-z]?", m)
+        if re.search(r"\d", m) and all(x in _ELEMENTS for x in syms):
+            out.add(m)
+    return sorted(out)
+
+
+def _plain(text: str) -> str:
+    """Fold sub/sup markup, unicode subscripts and TeX (``$\\mathrm{WSe}_{2}$``)
+    so ``WSe₂``, ``WSe<sub>2</sub>``, ``WSe_2`` all read ``WSe2``."""
+    text = _SUPSUB_TAG_RE.sub("", text.translate(_SUBSCRIPT_DIGITS))
+    text = re.sub(r"\\(?:mathrm|textrm|text|mathit|rm)\s*\{([^{}]*)\}", r"\1", text)
+    return re.sub(r"_\{?(\d+)\}?", r"\1", text).replace("$", "")
+
+
+def _body_text_sans_references(store: Store, ref_id: int) -> str:
+    """Body chunk text up to the reference list (``references`` chunk_kind, or
+    a References/Bibliography heading), so cited formulas don't count. A
+    heading in the first :data:`_TOC_CHUNKS` chunks is a table-of-contents
+    entry, not the list, and is ignored."""
+    parts: list[str] = []
+    blocks = store.chunks.list_chunks_for_ref(ref_id, pos_range=(0, _BODY_SCAN_CHUNKS))
+    for i, b in enumerate(blocks):
+        if b.chunk_kind == "references":
+            break
+        text = b.text or ""
+        m = _REFS_HEADING_RE.search(text) if i >= _TOC_CHUNKS else None
+        if m:
+            parts.append(text[: m.start()])
+            break
+        parts.append(text)
+    return " ".join(parts)
+
+
+def _formula_terms_missing(store: Store, ref_id: int, registry_title: str) -> list[str]:
+    """gr262881: chemical formulas of ``registry_title`` that occur (as whole
+    tokens) nowhere in the paper's body outside its reference list. Empty =
+    corroborated, nothing to check, or too little body text to judge."""
+    terms = _formulas_in(registry_title)
+    if not terms:
+        return []
+    body = _body_text_sans_references(store, ref_id)
+    if len(content_tokens(body)) < _MIN_CHUNK_TOKENS:
+        return []
+    hay = _plain(body)
+    return [
+        t
+        for t in terms
+        if not re.search(rf"(?<![A-Za-z0-9]){re.escape(t)}(?![A-Za-z0-9])", hay)
+    ]
+
+
+def _norm_version(v: str) -> tuple[int, ...]:
+    parts = [int(x) for x in v.split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def _edition_conflict(store: Store, res: Resolution) -> str | None:
+    """gr260193: reason string if the registry hit describes a different
+    edition than the body's front matter, else ``None`` (see module doc)."""
+    blocks = store.chunks.list_chunks_for_ref(
+        res.ref_id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
+    )
+    front = "\n".join(b.text or "" for b in blocks)
+    if not front:
+        return None
+    reg_versions = {_norm_version(v) for v in _REG_VERSION_RE.findall(res.title)}
+    body_versions = {_norm_version(v) for v in _BODY_VERSION_RE.findall(front)}
+    if reg_versions and body_versions and not (reg_versions & body_versions):
+        return "edition-mismatch-version"
+    # Year check is narrow: front-matter years include cited-reference years
+    # and a preprint/accepted manuscript legitimately predates its registry
+    # year, so it only runs when the registry title names a version or does
+    # not read like this paper's own front matter.
+    body_years = [int(y) for y in _YEAR_RE.findall(front)]
+    if res.year is not None and body_years and int(res.year) > max(body_years) + 1:
+        toks = content_tokens(res.title)
+        agree = len(toks & content_tokens(front)) / len(toks) if toks else 1.0
+        if reg_versions or agree < _TITLE_AGREE_FRAC:
+            return "edition-mismatch-year"
+    return None
+
+
 def _from_meta(ref_id: int, meta: dict[str, Any], *, track: str) -> Resolution:
     """Shape a resolver dict into a Resolution (verdict filled by caller)."""
     return Resolution(
@@ -358,6 +512,10 @@ def _resolve_one(
         if not res.title or is_garbage_title(res.title):
             res.verdict, res.reason = "discard", "resolved-title-junk"
             return res
+        conflict = _edition_conflict(store, res)
+        if conflict:
+            res.verdict, res.reason = "parked", conflict
+            return res
         res.verdict, res.reason = "auto", "crossref-resolved"
         return _guard_registry_mismatch(store, res)
 
@@ -414,6 +572,17 @@ def _resolve_one(
         if owner is not None and owner != rid:
             res.verdict, res.reason = "review", f"recovered-doi-owned-by-#{owner}"
             return res
+    # gr262881: near-identical titles (WSe2 vs MoS2) pass the trigram gate;
+    # the body must contain the hit's formula terms or it goes to review.
+    missing = _formula_terms_missing(store, rid, res.title)
+    if missing:
+        res.verdict, res.reason = "parked", "title-terms-not-in-body"
+        log.info("resolve-metadata: #%s title terms %s not in body", rid, missing)
+        return res
+    conflict = _edition_conflict(store, res)
+    if conflict:
+        res.verdict, res.reason = "parked", conflict
+        return res
     res.verdict, res.reason = "auto", "s2-title-resolved"
     return _guard_registry_mismatch(store, res)
 
@@ -475,11 +644,12 @@ def park_mismatch(
 ) -> None:
     """Write a ``verdict='parked'`` (gr353804) resolution onto the ref:
     tag it :data:`MISMATCH_TAG` for human review, record what was
-    withheld in ``meta.registry_mismatch``, and — Track 1 only, where a
-    *stored* DOI is what produced the mismatched title — clear that DOI
-    so the wrong identifier stops being offered/refetched. Track 2 never
-    stored a DOI here (it was only a recovery candidate), so there's
-    nothing to clear.
+    withheld (with ``reason``) in ``meta.registry_mismatch``, and — only
+    for ``registry-title-zero-overlap`` on Track 1, where the *stored*
+    DOI is what produced an unrelated title — clear that DOI. Edition
+    (``edition-mismatch-*``) and ``title-terms-not-in-body`` parks keep
+    the DOI. Parked refs are skipped by :func:`_triage_refs` until a human
+    removes the tag.
 
     Deliberately the mirror image of :func:`apply_resolution`: never
     writes ``title``/``authors``/``doi`` from ``res`` onto the ref — the
@@ -497,12 +667,19 @@ def park_mismatch(
                     "doi": res.doi,
                     "registry_title": res.title,
                     "overlap": res.token_overlap or 0,
+                    "reason": res.reason,
                 }
             },
             source=source,
             conn=conn,
         )
-        if res.track == "doi" and res.doi:
+        # Only the zero-overlap case proves the stored DOI names another
+        # work; an edition mismatch keeps the (valid) DOI for the human.
+        if (
+            res.track == "doi"
+            and res.doi
+            and res.reason == "registry-title-zero-overlap"
+        ):
             store.clear_ref_identifier(res.ref_id, "doi", source=source, conn=conn)
 
 
@@ -521,13 +698,18 @@ def _triage_refs(store: Store, limit: int | None) -> list[Any]:
             "LEFT JOIN tags t ON t.tag_id = rt.tag_id "
             "  AND t.namespace='OPEN' AND t.value='needs-triage' "
             "WHERE r.kind='paper' AND r.retired_at IS NULL "
+            # Parked refs (MISMATCH_TAG) await a human; don't re-hit them.
+            "  AND NOT EXISTS (SELECT 1 FROM ref_tags mt "
+            "    JOIN tags mtt ON mtt.tag_id = mt.tag_id "
+            "    WHERE mt.ref_id = r.ref_id AND mtt.namespace='OPEN' "
+            "      AND mtt.value = %s) "
             "  AND ( t.tag_id IS NOT NULL "
             "        OR ( r.pdf_sha256 IS NOT NULL "
             "             AND ( r.title IS NULL OR btrim(r.title) = '' "
             "                   OR lower(r.title) IN "
             "                      ('[no metadata]', 'untitled', 'no title') ) ) ) "
             "ORDER BY r.ref_id" + (" LIMIT %s" if limit else ""),
-            ((limit,) if limit else ()),
+            (MISMATCH_TAG.value, *((limit,) if limit else ())),
         ).fetchall()
     ids = [int(r[0]) for r in rows]
     refs_map = store.fetch_refs_by_ids(ids)

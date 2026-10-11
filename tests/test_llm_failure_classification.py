@@ -339,3 +339,50 @@ def test_small_retry_skips_content_and_timeout(monkeypatch: pytest.MonkeyPatch) 
         transport=Transport.LOCAL,
     )
     assert out.reason_class == "transport" and prov.calls == 1
+
+
+# ── gr347551: the captured out_of_credits rejection (gr345366 comment 2) ──
+
+_OUT_OF_CREDITS_PAYLOAD = (
+    'rate_limit_event: {"status":"rejected","overageStatus":"rejected",'
+    '"overageDisabledReason":"out_of_credits"}\n'
+    'Message: "You\'re out of extra usage · resets 11am (UTC)"'
+)
+
+
+def test_out_of_credits_rejection_payload_is_quota_with_parsed_reset() -> None:
+    # Not `rate` (the event name) and not `budget` (the credits wording): the
+    # reset clause makes it a quota pause that wakes at 11:00 UTC.
+    found = failure.classify(_OUT_OF_CREDITS_PAYLOAD, now=NOW)
+    assert found.reason_class == "quota"
+    assert found.retry_at == datetime(2026, 10, 6, 11, 0, tzinfo=UTC)
+
+
+def test_out_of_credits_key_alone_is_quota_not_rate() -> None:
+    found = failure.classify(
+        'rate_limit_event: {"status":"rejected","overageDisabledReason":"out_of_credits"}',
+        now=NOW,
+    )
+    assert found.reason_class == "quota"
+    assert found.retry_at == NOW + timedelta(hours=2)
+
+
+def test_out_of_credits_payload_reply_is_paused_quota_with_retry_at() -> None:
+    # The payload is 164 chars once whitespace-normalized; the old 160-char
+    # cap let it through as an ordinary (unparseable) answer.
+    from precis.utils.claude_agent import AgentResult
+
+    res = router.result_from_agent(
+        AgentResult(
+            final_text=_OUT_OF_CREDITS_PAYLOAD,
+            cost_usd=0.0,
+            duration_s=0.0,
+            turns_used=1,
+        ),
+        model="claude-opus-4-7",
+        tier=Tier.BIG,
+    )
+    assert res.paused and res.quota_exhausted
+    assert res.reason_class == "quota"
+    assert res.retry_at is not None and res.retry_at.hour == 11
+    assert res.retry_at.minute == 0 and res.retry_at.tzinfo is not None

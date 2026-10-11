@@ -146,25 +146,24 @@ same change.** The regression test that enforces this is the `pa494`-shaped one:
 a document with a lying `ToUnicode` and zero control-char residue must still be
 flagged. A control-char-only patch fails it.
 
-## What remains: corpus backfill (gr228594)
+## What remains: run the corpus backfill (gr228594)
 
-The detector shipped (4889b7258, `src/precis/ingest/glyph_health.py`) and
-runs at write time, so new ingests are checked. It never ran over the
-existing corpus: on 2026-10-11 only 76 of 31,085 papers carry a
-`glyph_health` record, and `pa47024` (a confirmed mode-(b) scar) is still
-unflagged. Until the backfill runs, the ~5,000 older exposed papers are
-invisible to every consumer of the flag.
+The detector (`src/precis/ingest/glyph_health.py`) runs at write time, and
+the backfill entry point shipped: `precis backfill-glyph-health`
+(`src/precis/ingest/glyph_backfill.py`; font-level re-read of each held
+PDF, no re-extraction, no OCR; stamps `meta['glyph_health']` only when
+`suspected` fires; dry-run by default, `--apply` writes, `--after <ref_id>`
+resumes). Prod on 2026-10-11, before any run: 90 of 48,881 live papers carry a
+record (31,137 hold a PDF), so `pa47024` (a confirmed mode-(b) scar) is
+still unflagged and the older exposed papers stay invisible to every
+consumer of the flag.
 
-- Fix direction: a backfill that re-reads each held PDF's fonts through
-  `glyph_health` (font-level, no re-extraction, no OCR) and writes
-  `meta['glyph_health']` when `suspected` fires. Dry-run first; confirm it
-  flags `pa494` and `pa47024` and not the clean papers from the dr42995
-  audit.
-- Owner `src/precis/ingest/glyph_health.py` (reuse, do not fork the
-  detector); run on cluster infra where the PDFs are mounted.
-
-Who: ops (S) once a backfill entry point exists; the entry point is
-agent-code (S).
+- Ops (S): run it on a node that mounts the corpus, in batches
+  (`--limit`, resume with the printed `--after`). Dry-run first and confirm
+  it flags `pa494` and `pa47024` and not the clean papers from the dr42995
+  audit; no real-PDF fixture is in the test suite, so this check is manual.
+- Refs with a `pdf_pages` range (~24k) are judged on the whole PDF, not
+  their page range: a flag can over-cover if the PDF holds other papers.
 
 ## Fix order
 
@@ -210,7 +209,7 @@ agent-code (S).
    heuristic at all.
 2. **Stop destroying evidence** at `marker.py:163` — count and record before
    deleting. Ship only with (1).
-3. **Recovery is not OCR.** See the ruling below — tested and falsified.
+3. **Recovery is not OCR.** See the ruling below — tested and falsified. Recovery is glyph-outline fingerprinting (§Recovery).
 
 Highest-value near-zero-cost signal, worth having regardless: **prose contains
 `micron|micrometer|nanometer` while the text contains no `μ`.** `pa494` says
@@ -273,16 +272,40 @@ elsewhere in the stack **would** silently skip exactly the poisoned pages and
 report success. If a pre-OCR pass is ever found to have run on some other
 subset, assume it skipped the scars.
 
-Recovery, if pursued, is **glyph-outline fingerprinting** (hash the CFF
-charstring, match against known μ outlines — deterministic and lossless, but
-per-font-family work) or a **VLM pass over rendered regions** (general, but
-probabilistic, needs a confidence gate). Choosing between them, and whether
-repair runs at ingest or as a backfill, is an open architecture call. Either way
+Recovery is ruled: see §Recovery below. Either way
 body chunks are append-only (`ord >= 0`), so replacement is DELETE + INSERT
 through a registered synthesis pass with the embedding/summary cascade re-run.
 
 `gr228652` carries the root cause; `gr228594` the unrun corpus backfill;
 `gr228699` the OCR falsification.
+
+## Recovery — ruled 2026-10-11: glyph-outline fingerprinting first
+
+Reto, 2026-10-11 (gr228652): recovery proceeds by **glyph-outline
+fingerprinting**. For each code that `glyph_health` flags (mode a or b), hash
+that glyph's CFF/Type1 charstring after normalising it (drop hints, translate
+to the origin, ignore subset renumbering) and look the hash up in a table of
+known outlines for μ, Greek and ≤. Deterministic and lossless; it misses fonts
+whose outlines are not in the table yet. A confidence-gated VLM pass over the
+rendered region is the fallback for what fingerprinting cannot resolve, and is
+not built until step 4 measures how much that is.
+
+1. Seed the outline table (a data file) from the two confirmed scars:
+   `AdvP7DA6` `/m` → μ (pa494), `AdvP4C4E51` `/C22` → μ and `AdvP0004` → ≤
+   (pa47024). Each entry names its source font and paper.
+2. Resolver: for each flagged (font, code), fingerprint the outline. A hit
+   yields the true codepoint; a miss is recorded on `meta['glyph_health']`
+   (font name, code, outline hash) so the table grows from real misses.
+3. Repair as a backfill first: re-extract with the resolved code → codepoint
+   map, replace body chunks DELETE + INSERT through a registered synthesis
+   pass, re-run the embedding/summary cascade. Move it to ingest time once
+   the backfill path is proven.
+4. Measure the share of flagged papers fully resolved. That number decides
+   whether the VLM fallback gets built.
+
+test: a pa494-shaped font (lying `ToUnicode`) recovers `V/μm`; a
+pa47024-shaped font (no `ToUnicode`, `\x02` residue) recovers `6 μm`; an
+unknown outline stays unrepaired and is recorded as a miss.
 
 ## Interim guard, worth having regardless
 

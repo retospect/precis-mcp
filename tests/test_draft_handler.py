@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
+from precis.draft import lint as _draft_lint
 from precis.errors import BadInput, Gone, NotFound, Unsupported
-from precis.handlers import _draft_lint
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 
@@ -1318,8 +1318,8 @@ def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
 def test_outline_surfaces_blocked_work(draft: DraftHandler, hub: Hub) -> None:
     """A failed enrichment job parks its parent silently; the draft
     outline now walks draft→project→subtree and shows it as blocked."""
-    from precis.handlers._job_bubble import bubble_job_failure
     from precis.store.types import Tag
+    from precis.utils.job_bubble import bubble_job_failure
 
     store = hub.live_store
     proj = _proj(hub)
@@ -1959,7 +1959,7 @@ def test_uncited_pinned_finding_tombstone_not_flagged(
 ) -> None:
     """A pinned cite (``[fi<id>>pc<id>]``) is out of this check's scope —
     same bare-bracket-only scope as the pre-existing dangling-handle
-    check (:data:`precis.handlers._draft_lint._CHUNK_REF`)."""
+    check (:data:`precis.draft.lint._CHUNK_REF`)."""
     fid = _mint_retired_finding(hub)
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
@@ -2890,7 +2890,7 @@ def test_bare_xref_hint(draft: DraftHandler, hub: Hub) -> None:
 
 def test_title_heading_dup_hint(draft: DraftHandler, hub: Hub) -> None:
     """A heading first in reading order that repeats the draft title warns."""
-    from precis.handlers import _draft_lint
+    from precis.draft import lint as _draft_lint
 
     proj = _proj(hub)
     draft.put(id="td", title="Carbon  Nanobuds", project=proj)
@@ -2909,3 +2909,28 @@ def test_title_heading_dup_hint(draft: DraftHandler, hub: Hub) -> None:
         ("heading", "Carbon Nanobuds", first.chunk_id + 999),
     ):
         assert _draft_lint.title_heading_dup_hint(store, ref.id, cid, kind, text) == ""
+
+
+def test_char_target_wordcount_verdict_and_clear(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="nt", title="Proposal", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    intro = _add_heading(draft, hub, title_dc, "Box")
+    _add_para(draft, intro, "one two three four five")  # 23 chars with spaces
+
+    draft.edit(id=intro, char_target={"max": 10})
+    assert _chunk_meta(hub, intro)["char_target"] == {"min": 0, "max": 10}
+    out = draft.get(id="nt", view="wordcount").body
+    assert "23 chars" in out
+    assert "off char target" in out
+    assert "over" in out
+
+    draft.edit(id=intro, char_target={"min": 1, "max": 30})
+    out = draft.get(id="nt", view="wordcount").body
+    assert "off char target" not in out
+
+    with pytest.raises(BadInput, match="char_target min=40 exceeds max"):
+        draft.edit(id=intro, char_target={"min": 40, "max": 30})
+
+    draft.edit(id=intro, char_target={})
+    assert "char_target" not in _chunk_meta(hub, intro)

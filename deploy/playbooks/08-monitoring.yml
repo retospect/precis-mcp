@@ -1,5 +1,14 @@
 ---
-# 08-monitoring.yml — Prometheus, Grafana, exporters, alerts on the data node
+# 08-monitoring.yml — Prometheus rules + Alertmanager + the precis webhook
+# receiver on the `monitoring` inventory group (a Linux node; the role also
+# still renders the macOS brew layout if a darwin host is put in the group).
+# Without the group nothing evaluates deploy/roles/monitoring's alert rules.
+# node_exporter on every node is 18-node-exporter.yml; the receiver needs
+# playbook 20 (the precis venv) to have run on the monitoring host first.
+#
+# First run over a hand-edited /etc/prometheus/prometheus.yml: the role keeps a
+# timestamped backup; diff the scrape jobs against it before relying on the
+# rendered config (a new always-down target fires NodeDown).
 - name: Configure monitoring stack
   hosts: monitoring
   become: true

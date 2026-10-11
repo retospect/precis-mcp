@@ -420,6 +420,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         ),
     ),
     _nursery(
+        "unattributed-claimant",
+        "unattributed-claimant:{host}",
+        "A non-fleet identity (container id, no host heartbeat) claimed work.",
+        severity="warn",
+        triage=(
+            "Find who launched a worker under that identity; set "
+            "PRECIS_HOST_NAME on legitimate workers, stop the rest."
+        ),
+    ),
+    _nursery(
         "dispatch-stall",
         "dispatch-stall",
         "The single agent-profile executor stopped claiming — planner dark.",
@@ -592,6 +602,15 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         triage="get(kind='llm', id='/budget'); raise the cap deliberately or wait "
         "for the window.",
         budget="per window",
+    ),
+    AlertRule(
+        "cfp_watch",
+        "changed:{ref_id}",
+        "A WATCH-tagged call-for-proposal page changed (text or deadline dates).",
+        "warn",
+        None,
+        triage="get(kind='cfp', id=<ref>); re-read the call at its "
+        "meta.source_url, update proposal todos, then resolve the alert.",
     ),
     AlertRule(
         "parts_refresh",

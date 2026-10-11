@@ -149,6 +149,14 @@ class PlatformConstraint:
     #: that side of the bound.
     temp_min_c: float | None = None
     temp_max_c: float | None = None
+    #: How many distinct purchased/leaf reagents the chip can hold in
+    #: reservoirs at once; every distinct species claims one. ``None``
+    #: disables the budget comparison (the count is still reported).
+    reservoir_budget: int | None = None
+    #: Longest chain of dependent steps tolerated without inter-step
+    #: purification before compounded yield / accumulating side products
+    #: make the route doubtful. ``None`` disables the flag.
+    unpurified_run_max: int | None = None
 
 
 #: EWOD digital microfluidics, oil filler medium (silicone oil; fluorinated
@@ -348,6 +356,11 @@ EWOD_OIL = PlatformConstraint(
     # below 0 °C the filler oil's viscosity stalls droplet transport.
     temp_min_c=0.0,
     temp_max_c=120.0,
+    # Uncalibrated placeholders (gr338660): a plate holds "a handful" of
+    # reservoirs and nothing is purified between steps. Replace with the
+    # real plate's reservoir count / a measured yield-compounding limit.
+    reservoir_budget=8,
+    unpurified_run_max=4,
 )
 
 #: Registry of known platform constraints by name.
@@ -518,4 +531,91 @@ def requirements_render(names: list[str]) -> str:
     for c in resolve_constraints(names):
         lines.append(f"## constraint: {c.name} — {c.title}")
         lines += [f"- {req}" for req in c.requirements]
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class RouteEconomy:
+    """Route-level reagent economy: what the chip must hold and chain."""
+
+    #: Distinct reactant SMILES no step makes (bought / loaded), sorted.
+    reagents: tuple[str, ...]
+    #: Distinct ``template_id`` values; steps without one are counted apart.
+    reaction_types: tuple[str, ...]
+    untyped_steps: int
+    #: Longest chain of dependent steps (each consumes the previous product).
+    longest_run: int
+
+
+def route_economy(graph: RouteGraph) -> RouteEconomy:
+    """Count distinct reagents, reaction types and the longest dependent run.
+
+    Intermediates (a reactant that is another step's product) are made
+    on-chip and claim no reservoir. Solvents/reagents named only in the
+    free-text ``conditions`` are NOT counted — the IR has no structured
+    signal for them — so the reagent count is a lower bound.
+    """
+    products = {s.product for s in graph.steps}
+    reagents = sorted({r for s in graph.steps for r in s.reactants} - products)
+    types = sorted({s.template_id for s in graph.steps if s.template_id})
+    by_product = {s.product: s for s in graph.steps}
+    depth: dict[str, int] = {}
+
+    def _depth(step: RouteStep, active: frozenset[str]) -> int:
+        if step.product in depth:
+            return depth[step.product]
+        best = 0
+        for r in step.reactants:
+            prev = by_product.get(r)
+            if prev is not None and prev.product not in active:
+                best = max(best, _depth(prev, active | {step.product}))
+        depth[step.product] = best + 1
+        return best + 1
+
+    longest = max((_depth(s, frozenset()) for s in graph.steps), default=0)
+    return RouteEconomy(
+        reagents=tuple(reagents),
+        reaction_types=tuple(types),
+        untyped_steps=sum(1 for s in graph.steps if not s.template_id),
+        longest_run=longest,
+    )
+
+
+def economy_render(graph: RouteGraph, names: list[str]) -> str:
+    """Route-level reagent-economy advisory (one block per constraint with a
+    declared budget); empty when the route has no steps or nothing declares
+    one. Advisory like the per-step screen: it counts, it does not refuse."""
+    if not graph.steps:
+        return ""
+    eco = route_economy(graph)
+    lines: list[str] = []
+    for c in resolve_constraints(names):
+        if c.reservoir_budget is None and c.unpurified_run_max is None:
+            continue
+        n = len(eco.reagents)
+        budget = c.reservoir_budget
+        mark = "⚠" if budget is not None and n > budget else "·"
+        of = f" of {budget} reservoirs" if budget is not None else ""
+        lines.append(
+            f"{mark} {c.name}: reagent economy — {n} distinct leaf reagent(s)"
+            f"{of} (lower bound: solvents/reagents named only in free-text "
+            "conditions are not counted)"
+        )
+        k = len(eco.reaction_types)
+        untyped = (
+            f" (+{eco.untyped_steps} step(s) with no template)"
+            if eco.untyped_steps
+            else ""
+        )
+        lines.append(
+            f"· {c.name}: {k} distinct reaction type(s) over {len(graph.steps)} "
+            f"step(s){untyped}"
+        )
+        cap = c.unpurified_run_max
+        mark = "⚠" if cap is not None and eco.longest_run > cap else "·"
+        lim = f" (tolerance ≈ {cap}, uncalibrated)" if cap is not None else ""
+        lines.append(
+            f"{mark} {c.name}: longest unpurified run — {eco.longest_run} "
+            f"dependent step(s) with no inter-step purification{lim}"
+        )
     return "\n".join(lines)

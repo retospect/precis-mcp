@@ -4282,7 +4282,7 @@ def test_llm_tag_big_passes_todo_guards_vocab() -> None:
     """`llm_tier='big'` (the new alias) is a valid closed-vocab value — the
     guard is single-sourced from PLANNER_MODEL_ALIASES, so this is a
     regression test on that wiring, not a hardcoded vocab copy."""
-    from precis.handlers._todo_guards import _LLM_TIER_VALUES
+    from precis.todo.guards import _LLM_TIER_VALUES
 
     assert "big" in _LLM_TIER_VALUES
     assert "frontier" in _LLM_TIER_VALUES

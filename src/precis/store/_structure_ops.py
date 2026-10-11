@@ -48,6 +48,7 @@ class StructurePositionsSnapshot(TypedDict):
     lattice: Any
     fractional: list[list[float]]
     atom_ids: list[int]
+    elements: list[str]
     pbc: Any
     has_lattice: bool
     generated: Any
@@ -487,7 +488,7 @@ class StructureMixin:
         ):
             cur.execute(
                 "SELECT r.ref_id, r.meta, "
-                "COALESCE(jsonb_agg(jsonb_build_array(a.id, a.fa, a.fb, a.fc) "
+                "COALESCE(jsonb_agg(jsonb_build_array(a.id, a.fa, a.fb, a.fc, a.element) "
                 "ORDER BY a.id) FILTER (WHERE a.id IS NOT NULL), '[]'::jsonb) "
                 "AS fractional FROM refs r "
                 "LEFT JOIN struct_atoms a ON a.ref_id = r.ref_id "
@@ -504,7 +505,8 @@ class StructureMixin:
             "ref_id": int(row["ref_id"]),
             "version": meta.get("version"),
             "lattice": meta.get("lattice", (np.eye(3) * 10).tolist()),
-            "fractional": [a[1:] for a in row["fractional"]],
+            "fractional": [a[1:4] for a in row["fractional"]],
+            "elements": [a[4] for a in row["fractional"]],
             "atom_ids": [int(a[0]) for a in row["fractional"]],
             "pbc": meta.get("pbc"),
             "has_lattice": "lattice" in meta,

@@ -97,7 +97,7 @@ def gate_tier(
         return None
     st = store if store is not None else meter.active_store()
     if transport in meter.OAUTH_TRANSPORTS and not bare:
-        return _gate_quota(st)
+        return _gate_quota(st, tier)
     return _gate(st, label="paid model call")
 
 
@@ -146,16 +146,53 @@ def _gate(store: Store | None, *, label: str) -> str | None:
     )
 
 
-def _gate_quota(store: Store | None) -> str | None:
-    """Gate the claude-OAuth lane on the subscription quota snapshot."""
+#: Tiers the quota taper stops at each level (gr347551): level 1 (<25%
+#: remaining) the expensive lanes, level 2 (<10%) MEDIUM as well. SMALL is
+#: free and never reaches the quota gate.
+_TAPER_BLOCKED: dict[int, frozenset[str]] = {
+    1: frozenset({"big", "frontier"}),
+    2: frozenset({"medium", "big", "frontier"}),
+}
+
+
+def _taper_reason(store: Store | None, tier: Tier) -> str | None:
+    from precis.budget import quota
+
+    taper = quota.taper_state(store)
+    if taper.level == 0:
+        if taper.no_signal:
+            log.debug("quota taper: no signal in snapshot; failing open")
+        return None
+    name = str(getattr(tier, "value", tier)).lower()
+    if name not in _TAPER_BLOCKED[taper.level]:
+        return None
+    left = "25%" if taper.level == 1 else "10%"
+    return (
+        f"budget: claude quota low ({taper.reason}; under {left} remaining) "
+        f"— {name} work paused. Smaller tiers and free local work still "
+        f"run; auto-clears when the window resets, or resume now on /budget."
+    )
+
+
+def _gate_quota(store: Store | None, tier: Tier | None = None) -> str | None:
+    """Gate the claude-OAuth lane on the subscription quota snapshot.
+
+    Parks every paid tier on an exhausted window; otherwise tapers by tier as
+    remaining headroom shrinks (:func:`_taper_reason`)."""
     from precis.budget import quota
 
     pause = quota.evaluate(store)
     window = pause.window if pause is not None else None
-    if window is not None and _resume_active(store):
+    resumed = _resume_active(store)
+    if window is not None and resumed:
         window, pause = None, None  # operator override
+    # Sync first so a cleared park resolves its alert even on a taper return.
     _sync_quota_alert(store, window, pause)
-    return pause.reason if pause is not None else None
+    if pause is not None:
+        return pause.reason
+    if tier is not None and not resumed:
+        return _taper_reason(store, tier)
+    return None
 
 
 def _sync_alert(

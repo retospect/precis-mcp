@@ -13,8 +13,10 @@ import re
 from dataclasses import replace
 from typing import Any
 
+import numpy as np
+
 from .fullerene import C60Data
-from .lattice import Site, neighbors
+from .lattice import Lattice, Site, neighbors
 from .text import Connect, Hole, Instance, Spec
 
 _MENU_ARG = re.compile(r"^(?P<name>[A-Za-z0-9+\-]+)(?:\((?P<arg>[^)]*)\))?$")
@@ -39,6 +41,39 @@ def _lexmin_ring(rings: list[list[Any]]) -> list[Any]:
 def _c60_min_site(ring: list[Any]) -> Site:
     """Smallest Site label on a C60 ring (vids are already Sites)."""
     return min((v for v in ring if isinstance(v, Site)), key=lambda v: (v.u, v.v, v.s))
+
+
+#: menu names :func:`expand` implements; anything else is refused
+#: (:class:`MenuError`) instead of expanding to nothing
+KNOWN = ("2+2", "4+4", "9-6", "8-7", "DA-neck", "DB-neck")
+
+
+class MenuError(ValueError):
+    """A menu line names no implemented menu."""
+
+    def __init__(self, menu: str, span: tuple[int, int] | None) -> None:
+        super().__init__(
+            f"unknown menu [{menu}]; known: " + ", ".join(f"[{k}]" for k in KNOWN)
+        )
+        self.menu = menu
+        self.span = span
+
+
+def _para(site: Site, d: int) -> Site:
+    """The atom across the host hexagon from ``site`` (1,4 / para): the
+    hexagon is the one holding ``site``'s neighbours ``d`` and ``d+1``,
+    i.e. centred opposite neighbour ``d+2``, so the para atom sits at
+    ``site - 2*delta(d+2)`` (opposite sublattice)."""
+    lat = Lattice()
+    here = lat.cart(site)
+    far = lat.cart(neighbors(site)[(d + 2) % 3])
+    target = here - 2.0 * (far - here)
+    cands = (
+        Site(site.u + du, site.v + dv, 1 - site.s)
+        for du in range(-3, 4)
+        for dv in range(-3, 4)
+    )
+    return min(cands, key=lambda c: float(np.linalg.norm(lat.cart(c) - target)))
 
 
 def _hole_name(inst: Instance) -> str:
@@ -118,8 +153,34 @@ def expand(spec: Spec) -> Spec:
                 ),
             ]
             exp["connects"] = [f"{g.src} --bond--> {g.dst}" for g in gen]
+        elif name == "4+4":
+            # [4+4] cycloaddition (Nasibulin et al. 2007, Fig. 3c): the
+            # 1,4 (para) atoms of a C60 hexagon bond to the 1,4 atoms of a
+            # host hexagon -- two bonds, a bicyclo[2.2.2] bridge on each
+            # side.  Bud hexagon: the lex-min one, entered at its smallest
+            # site; host hexagon: the one holding `site`'s neighbours
+            # `dir` and `dir+1`.
+            d = c60()
+            sites = d.sites()
+            ring = _lexmin_ring([[sites[a] for a in r] for r in d.hexagons])
+            i0 = ring.index(_c60_min_site(ring))
+            gen = [
+                Connect(
+                    src=f"{bud}/{ring[i0]}",
+                    dst=f"{host}/{hsite}",
+                    verb="bond",
+                    span=c.span,
+                ),
+                Connect(
+                    src=f"{bud}/{ring[(i0 + 3) % 6]}",
+                    dst=f"{host}/{_para(hsite, hdir or 0)}",
+                    verb="bond",
+                    span=c.span,
+                ),
+            ]
+            exp["connects"] = [f"{g.src} --bond--> {g.dst}" for g in gen]
         elif name in ("9-6", "8-7"):
-            # bond-mode attachment onto an intact host (Wang & Li 2009):
+            # bond-mode attachment onto an intact host (Zhu & Su 2009, spec [S14]):
             # the C54 bud hole's six dangling atoms are bonded onto the C3
             # orbits around one host hexagon.  The registration that gives
             # the named seam ({9,6} or {8,7}) is solved at build time.
@@ -212,7 +273,7 @@ def expand(spec: Spec) -> Spec:
                 for g in gen
             ]
         else:
-            gen = []
+            raise MenuError(menu, c.span)
 
         connects.append(replace(c, expanded=exp))
         # Generated connects carry the menu that made them, like the

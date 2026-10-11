@@ -150,8 +150,12 @@ New `src/precis/viz3d/`. Touches `utils/figure_source.py`,
   placement problem.
 - Decided: refine = render quality only.
 - Decided: live-slug source + deliberate refresh.
-- Open: draft handler op name/shape (`add_view_figure` vs a mode on
-  `_add_figure`) — decide at the wiring slice.
+- Decided (wiring slice, gr461790): no new tool kwarg — `put(kind='draft',
+  chunk_kind='figure', meta={'view': {'source': 'structure:<slug>', camera,
+  style, refine}})` → `DraftHandler._add_view_figure`; recipe on
+  `meta.render` (`kind: 'view'`), rendered lazily by
+  `render.figure.ensure_rendered` (export/blob route), `cached_key` =
+  structure_sha + params + `VIZ3D_CODE_VERSION`.
 - Residual (slice 1, cosmetic): the two half-sticks of a bond meet
   round-cap-to-round-cap at the midpoint, leaving a faint hairline
   visible only at ~3x magnification (sub-pixel at natural scale, and
@@ -165,6 +169,14 @@ New `src/precis/viz3d/`. Touches `utils/figure_source.py`,
   needs atoms to read as distinct.
 - Decided (2026-09-14, build start): `envelope` view is a follow-on
   once stick ships.
+
+**Shipped (structure-source slice):** stick view of a `structure` slug in a
+draft figure, lazy render at export/view, stale on geometry edit. **Still
+open from §2:** `se:<slug>` source (via `hydrate_bound_scenes`), `block`
+selection, lighting/scalebar params in the recipe, r1-sync + enqueued-r2
+`figure_render` job, `derived-from` link, caption/export provenance
+(slug + version), the §4 dev-loop routes, periodic-image bonds (drawn only
+when image is (0,0,0)).
 
 **Gripe:** gr461790 (2026-10-10 triage) is this item from the agent's side.
 An agent can mint a nanobud but has no way to put its picture in a draft

@@ -212,11 +212,13 @@ export/fab if this file outgrows itself.
 7. **backlog/pcb-engine-plan.md** §5 — 2-layer and n-layer stackups; enqueue
    refuses len(stackup) != 4 while the processor already handles 2. Waits on
    nothing; removes the wall a colleague's 2-layer .epro2 hits at import.
-8. **gr451356** — a side-insertion connector (USB, card edge) must sit on
-   the board edge, and nothing in the imported part/footprint model
-   records that; an imported board that re-routes could relocate one to
-   an unbuildable position with no warning. Waits on nothing; cheap DRC
-   half is buildable independent of the placer term.
+8. **gr451356 residue** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
+   is authored per instance; shipped: placer snap + `edge_mating` DRC in
+   `view='drc'` and the place job's pre-route check. Left: the `.epro2`
+   import never sets it (a re-imported USB-C loses its constraint); the
+   judged-mutation gate (`_validity_findings`) and `pcb_route`'s pre-route
+   gate do not run the rule; a small package table (USB/card-edge/barrel)
+   to default `face` from the footprint name.
 9. **backlog/pcb-freeze-mechanicals-and-parts.md** — Reto, 2026-09-30:
    "All should be able to be frozen — nuts, holes etc for sure. But also
    parts ... But only actually freeze when needed."

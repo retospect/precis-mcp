@@ -75,6 +75,11 @@ Note from the user: `$ARGUMENTS`
    nothing and a first start announces nothing that already exists; it also
    drains the held queue each tick. `scripts/fleet mcp-check [--fix]` is the
    by-hand version of the `mcp` line (`--fix` reconnects idle windows only).
+   `scripts/fleet mcp-reconnect [--force] [--dry-run] [win…]` prints one line
+   per window (`skipped(connected|busy|dialog|orchestrator|unknown)`,
+   `reconnected`, `failed`): it skips connected and non-idle windows, so it is
+   safe to run fleet-wide; `--force` reconnects connected ones too (`/mcp
+   reconnect all` is a no-op reconnect there).
    `watch-ctx` remains as the old ctx-only loop.
 
 5. **Round.** `scripts/round status` and `scripts/fleet refs` (main / gated /

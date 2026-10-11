@@ -306,7 +306,7 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             problems=$((problems+1))
         fi
         if (( live == 0 )); then
-            echo "  orphan → $(label_of "$h.md" "$tf"): no live links, reachable by search only — link it to its hub and neighbours: link(kind='memory', id='$h', target='memory:me…')"
+            echo "  orphan → $(label_of "$h.md" "$tf"): no live links, reachable by search only — link it to its hub and neighbours: link(kind='memory', id='$h', target='memory:<numeric id, no me prefix>')"
             problems=$((problems+1))
         fi
         if (( hidden > 0 )) && [[ "$sec" != index ]]; then   # hubs list members uncapped
@@ -349,7 +349,7 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             fi
         fi
         if [[ "$hubh" == "-" ]]; then
-            echo "  no hub → $(label_of "$h.md" "$tf"): not part-of any section:index hub — link it: link(kind='memory', id='$h', target=<hub>, rel='part-of')"
+            echo "  no hub → $(label_of "$h.md" "$tf"): not part-of any section:index hub — link it: link(kind='memory', id='$h', target='memory:<hub numeric id, e.g. 477655>', rel='part-of')"
             problems=$((problems+1))
         elif [[ "$sec" == threads ]] && [[ "$qual" != "?" ]] && (( qual == 0 && hubgot >= 1 )) \
                 && [[ "$gnone" != 1 && "$parsec" != threads ]]; then

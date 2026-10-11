@@ -15,13 +15,13 @@ import pytest
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported, Upstream
-from precis.handlers._patent_ops import (
+from precis.handlers.patent import PatentHandler
+from precis.patent.ops import (
     FakeOpsClient,
     OpsAuthError,
     OpsError,
     OpsQuotaError,
 )
-from precis.handlers.patent import PatentHandler
 from precis.store import Store, Tag
 from tests.conftest import chunk_handle, record_handle
 
