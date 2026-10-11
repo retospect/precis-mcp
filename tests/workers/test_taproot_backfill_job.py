@@ -133,6 +133,7 @@ class _FakeCtx:
     failures: list[str] = field(default_factory=list)
     meta_set: dict[str, Any] = field(default_factory=dict)
     status: str = "running"
+    renew_lease: Any = None  # per-chunk lease renewal hook (None = no lease)
 
     def set_status(self, v: str) -> None:
         self.status = v

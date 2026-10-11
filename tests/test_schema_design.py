@@ -183,6 +183,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # per_shell_capacity/required_layers) — footprint-intrinsic, cached
         # once, never recomputed per placement.
         "part_footprints.escape",
+        # mounting/NPTH hole list: open-ended per-footprint geometry, same
+        # shape family as pads; read whole, never queried by key.
+        "part_footprints.holes",
         "part_footprints.pads",
         "part_footprints.pin_map",
         # 0139: the untouched EasyEDA component JSON, kept so a future
@@ -231,6 +234,7 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # instead of C-number-keyed.
         "pcb_local_footprints.centroid",
         "pcb_local_footprints.courtyard",
+        "pcb_local_footprints.holes",
         "pcb_local_footprints.pads",
         "pcb_local_footprints.pin_map",
         # 0193: the se_notes shape verbatim (pcb-argue-with-design.md) —

@@ -165,6 +165,9 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # -- put: message thread attachments -------------------------------
         ("message", "put", "attachments"),
         # -- put: paper acquire() conveniences -----------------------------
+        # citation= (f7301ad67): free-text citation resolved to a DOI;
+        # reachable through args={...}, rare enough to stay off the verb.
+        ("paper", "put", "citation"),
         ("paper", "put", "context_ref_id"),
         ("paper", "put", "verify"),
         # -- edit: the args= extras tunnel, still unwired on edit ---------
