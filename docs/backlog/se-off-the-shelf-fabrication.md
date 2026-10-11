@@ -603,8 +603,18 @@ the numbers and the URL, never redistribute the PDFs or CAD):
   use to measure channel geometry where the catalog omits it.
 - MiniTec, Kanya, 80/20 metric: catalogs and STEP via their portals.
 
-First slice: one vendor (MISUMI HFS5/HFS6/HFS8 for 20/30/40) end to end,
-with the part number as the reference a design uses.
+First slice (landed 2026-10-11): `precis_se.profiles` +
+`precis/data/se_profiles.json` seed MISUMI HFS5-2020, HFS6-3030, HFS8-4040/
+4545/6060/8080 (area, Ix, Iy, kg/m, slot, bore where published, end tap,
+URL). Reference by part number or by alias (`40x40`); an alias two parts
+claim is refused as ambiguous. All rows are `verified: false`: figures came
+via perplexity-reasoning:479366 because MISUMI pages 403 the fetcher.
+
+Open: check each row against its product URL (HFS8 bore, slot type B/I,
+channel W×D, It and wall are unseeded); item / Bosch Rexroth / Motedis
+rows; wiring `part_profile` into a block (stiffness, `bom` mass, a swept
+envelope from `catalog._tube`'s `profile` category) — nothing consumes the
+resolver yet.
 
 Who: agent-code.
 
