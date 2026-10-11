@@ -914,7 +914,11 @@ testpaths = ["tests"]
 # gets its own per-session DB clone (see tests/conftest.py), so DB
 # isolation holds. For a clean single-test debug session
 # (pdb / -s output), override with ``-n0``.
-addopts = "-n auto"
+# --max-worker-restart=0 (gr346941): xdist otherwise replaces a crashed
+# (OOM-killed) worker, and under --cov-context the replacement errored
+# every test it ran (~1400 ERRORs + INTERNALERROR). With 0 the run stops
+# at once with one failure naming the crashed worker.
+addopts = "-n auto --max-worker-restart=0"
 
 [tool.coverage.run]
 # relative_files: coverage runs INSIDE the gate container (/app) but
