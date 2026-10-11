@@ -32,6 +32,7 @@ capability axis. Deferred: retry cost after the reject-with-hint.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 from collections import Counter
@@ -156,8 +157,32 @@ def build_prompt(task: NotationTask, arm: str) -> str:
         f"The design intent is {_QUANTITY_NAME[task.dimension]} "
         f"equal to {task.intent}.\n"
         f"{_ARM_INSTRUCTIONS[arm]}\n"
-        "Reply with exactly one line: `ANSWER: <quantity>` and nothing else."
+        'Reply with a JSON object and nothing else: {"answer": "<quantity>"}.'
     )
+
+
+def reply_answer(res: Any) -> str:
+    """The answer from a router result.
+
+    The claude_p transport returns the parsed JSON as ``res.data``; otherwise
+    take the last ``{"answer": ...}`` object in ``res.text``, else the text.
+    """
+    data = getattr(res, "data", None)
+    if isinstance(data, dict) and data.get("answer") is not None:
+        return str(data["answer"])
+    text = getattr(res, "text", "") or ""
+    decoder = json.JSONDecoder()
+    found: str | None = None
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, i)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("answer") is not None:
+            found = str(obj["answer"])
+    return found if found is not None else text
 
 
 def extract_answer(text: str) -> str:
@@ -287,7 +312,7 @@ def run_notation_eval(
                 if getattr(res, "error", None):
                     errors += 1
                     continue
-                outcomes.append(classify(t, getattr(res, "text", "") or "", arm))
+                outcomes.append(classify(t, reply_answer(res), arm))
         out[arm] = summarize(arm, outcomes, errors)
     return out
 

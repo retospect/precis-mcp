@@ -17,6 +17,7 @@ from precis.llm_eval.notation import (
     classify,
     extract_answer,
     format_report,
+    reply_answer,
     run_notation_eval,
 )
 from precis.utils.units import format_quantity
@@ -43,7 +44,7 @@ def test_tasks_are_deterministic_and_span_scales() -> None:
 
 def test_prompts_name_intent_and_arm_rule() -> None:
     p = build_prompt(NM, "si_prefix")
-    assert "3.99 nanometres" in p and "ANSWER:" in p
+    assert "3.99 nanometres" in p and '{"answer"' in p
     assert "e-notation" in build_prompt(NM, "e_notation")
     with pytest.raises(BadInput):
         build_prompt(NM, "nope")
@@ -98,20 +99,23 @@ def test_run_with_fake_model_counts_per_arm() -> None:
     nano-scale lengths and emits a prefixed unit once."""
     seen: list[Any] = []
 
+    def reply(answer: str) -> Any:
+        # Real claude_p transport: raw text + parsed dict in ``data``.
+        return SimpleNamespace(
+            text=f'{{"answer": "{answer}"}}', data={"answer": answer}, error=None
+        )
+
     def fake(req: Any) -> Any:
         seen.append(req)
         task = next(t for t in TASKS if t.intent in req.prompt)
         if "e-notation" not in req.prompt:
-            text = "ANSWER: " + format_quantity(task.expect_si, task.dimension)
-            return SimpleNamespace(text=text, error=None)
+            return reply(format_quantity(task.expect_si, task.dimension))
         if task.task_id == TASKS[1].task_id:
-            return SimpleNamespace(text="ANSWER: 20 um", error=None)
+            return reply("20 um")
         v = task.expect_si
         if task.dimension == "length" and v < 1e-8:
             v *= 1000
-        return SimpleNamespace(
-            text=f"ANSWER: {v!r} {_BASE[task.dimension]}", error=None
-        )
+        return reply(f"{v!r} {_BASE[task.dimension]}")
 
     res = run_notation_eval(model="fake", tier="medium", dispatch_fn=fake)
     assert set(res) == set(ARMS)
@@ -131,3 +135,19 @@ def test_transport_errors_are_kept_out_of_n() -> None:
         arms=("si_prefix",),
     )
     assert (res["si_prefix"].n, res["si_prefix"].errors) == (0, 16)
+
+
+def test_reply_answer_parsed_dict_and_json_text() -> None:
+    """Regression: claude -p hands back JSON as ``data`` (dict), never an
+    ``ANSWER:`` line; the old parser scored every such reply parse_fail."""
+    parsed = SimpleNamespace(text="raw", data={"answer": "3.99 nm"}, error=None)
+    assert reply_answer(parsed) == "3.99 nm"
+    embedded = SimpleNamespace(text='ok {"answer": "2 mN"} done', data=None)
+    assert reply_answer(embedded) == "2 mN"
+    assert reply_answer(SimpleNamespace(text="3.99 nm", data=None)) == "3.99 nm"
+    res = run_notation_eval(
+        model="f", tier="medium", dispatch_fn=lambda r: parsed, arms=("si_prefix",)
+    )["si_prefix"]
+    # Only the 3.99 nm task is exact; the 3.99 nm answer is the wrong
+    # dimension elsewhere. The point: the dict is read (exact == 1, not 0).
+    assert (res.n, res.errors, res.exact) == (16, 0, 1)
