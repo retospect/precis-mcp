@@ -80,7 +80,12 @@ _EXPECTED_AGENT = frozenset(
 
 
 def _worker_ast() -> ast.Module:
-    source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+    from precis.cli import _worker_passes
+
+    source = "\n".join(
+        Path(str(m.__file__)).read_text(encoding="utf-8")
+        for m in (worker_mod, _worker_passes)
+    )
     return ast.parse(source)
 
 

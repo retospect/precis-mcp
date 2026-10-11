@@ -507,10 +507,10 @@ class TestRefPassPriority:
         import ast
         from pathlib import Path
 
-        from precis.cli import worker as worker_mod
+        from precis.cli import _worker_passes
         from precis.cli.worker import _REF_PASS_PRIORITY
 
-        source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+        source = Path(_worker_passes.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
 
         appended: set[str] = set()
@@ -660,9 +660,9 @@ def test_quest_loop_reconcile_registers_under_agent_and_all_not_system():
     import ast
     from pathlib import Path
 
-    from precis.cli import worker as worker_mod
+    from precis.cli import _worker_passes
 
-    source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+    source = Path(_worker_passes.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     condition: ast.expr | None = None
@@ -685,7 +685,7 @@ def test_quest_loop_reconcile_registers_under_agent_and_all_not_system():
             break
     assert condition is not None, (
         'no `if ... and _register("quest_loop_reconcile")` guard found '
-        "in cli/worker.py — has the gate been restructured?"
+        "in cli/_worker_passes.py — has the gate been restructured?"
     )
 
     profile_check = next(
@@ -985,9 +985,12 @@ def test_chase_trigger_pass_does_not_forward_the_loop_batch_size() -> None:
     import ast
     import inspect
 
+    from precis.cli import _worker_passes
     from precis.cli import worker as worker_mod
 
-    tree = ast.parse(inspect.getsource(worker_mod))
+    tree = ast.parse(
+        inspect.getsource(worker_mod) + "\n" + inspect.getsource(_worker_passes)
+    )
     calls = [
         n
         for n in ast.walk(tree)
