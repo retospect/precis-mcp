@@ -46,8 +46,17 @@ from precis.pcb.capabilities import capability_for
 from precis.store.types import ActorSlug
 
 
-def _validate_pin_declarations(pins: list[dict[str, Any]], component: str) -> None:
-    """Check canonical ownership without choosing a winner or rebinding."""
+def _validate_pin_declarations(
+    pins: list[dict[str, Any]],
+    component: str,
+    pin_map: dict[str, Any] | None = None,
+) -> None:
+    """Check canonical ownership without choosing a winner or rebinding.
+
+    ``pin_map`` is the component's footprint ``pin_map`` (pad number ->
+    ``{"name": ...}``), when known. An explicit pad the footprint already
+    maps to a different pin name is a conflict (gr467885), unless that
+    other pin is itself explicitly re-padded in ``pins``."""
     by_name: dict[str, str | None] = {}
     by_pad: dict[str, str] = {}
     for pin in pins:
@@ -71,6 +80,20 @@ def _validate_pin_declarations(pins: list[dict[str, Any]], component: str) -> No
         by_name[name] = pad
         if pad is not None:
             by_pad[pad] = name
+    for name, pad in by_name.items():
+        entry = (pin_map or {}).get(pad) if pad is not None else None
+        owner = entry.get("name") if isinstance(entry, dict) else None
+        if owner is None or str(owner) in (name, pad):
+            continue  # unmapped, same pin, or the normalizer's identity entry
+        owner = str(owner)
+        if owner in by_name and by_name[owner] != pad:
+            continue  # the footprint's pin is re-padded in this same put
+        raise ValueError(
+            f"component {component}: pin {name!r} declares pad {pad!r}, but the "
+            f"footprint maps pad {pad!r} to pin {owner!r}; use one canonical "
+            "name for this physical pad in pins and connections, or correct "
+            "the erroneous pad number"
+        )
 
 
 _BULK_BATCH = 2000  # rows per round trip in parts_bulk_replace
@@ -674,7 +697,13 @@ class PcbMixin:
             if not refdes:
                 raise ValueError("pcb component needs a refdes")
             declarations.setdefault(refdes, []).extend(c.get("pins") or [])
-            _validate_pin_declarations(declarations[refdes], refdes)
+            _validate_pin_declarations(
+                declarations[refdes],
+                refdes,
+                self._pcb_footprint_pin_map(
+                    conn, ref.id, c, inst_by_refdes.get(refdes)
+                ),
+            )
             if refdes in inst_by_refdes:
                 continue  # already placed; skip (re-runnable)
             comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
@@ -956,6 +985,46 @@ class PcbMixin:
         ).fetchone()
         assert row is not None
         return int(row[0])
+
+    def _pcb_footprint_pin_map(
+        self,
+        conn: Connection,
+        ref_id: int,
+        c: dict[str, Any],
+        existing: tuple[int, int] | None,
+    ) -> dict[str, Any] | None:
+        """The ``pin_map`` of the footprint a component resolves to, by the
+        same precedence readers use (``session.footprints_by_refdes``):
+        the catalog part's cached footprint first, else the design-local
+        footprint named by ``footprint``. An already-stored component
+        contributes its stored part/footprint when the put omits them."""
+        part = c.get("part_lcsc") or c.get("part")
+        name = c.get("footprint")
+        if existing is not None and not (part and name):
+            row = conn.execute(
+                "SELECT part_lcsc, footprint FROM pcb_components "
+                "WHERE component_id = %s",
+                (existing[1],),
+            ).fetchone()
+            if row is not None:
+                part = part or row[0]
+                name = name or row[1]
+        if part:
+            row = conn.execute(
+                "SELECT pin_map FROM part_footprints WHERE lcsc = %s",
+                (str(part).strip().upper(),),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+        if name:
+            row = conn.execute(
+                "SELECT pin_map FROM pcb_local_footprints "
+                "WHERE ref_id = %s AND name = %s",
+                (ref_id, str(name)),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+        return None
 
     def _pcb_resolve_parts(
         self, conn: Connection, lcscs: list[str]

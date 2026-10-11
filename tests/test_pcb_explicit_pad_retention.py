@@ -274,3 +274,29 @@ def test_split_declarations_for_one_refdes_do_not_hide_conflict(pcb, store):
     with pytest.raises(BadInput, match="one canonical name"):
         pcb.put(id="split-declarations", args=args)
     assert _snapshot(store) == before
+
+
+def test_lone_pin_on_footprint_mapped_pad_refuses(pcb, store):
+    args = _args()
+    args["components"][0]["pins"] = [{"name": "OTHER", "pad": "2"}]
+    args["connections"] = args["connections"][1:]
+    before = _snapshot(store)
+    with pytest.raises(BadInput) as error:
+        pcb.put(id="footprint-conflict", args=args)
+    for evidence in ("OTHER", "'2'", "CLK"):
+        assert evidence in str(error.value)
+    assert _snapshot(store) == before
+    assert store.get_ref(kind="pcb", id="footprint-conflict") is None
+
+
+def test_pin_on_footprint_unmapped_pad_accepted(pcb, store):
+    args = _args()
+    args["footprints"][0]["pads"][1]["pin"] = "3"
+    args["components"][0]["pins"] = [{"name": "OTHER", "pad": "3"}]
+    args["connections"] = args["connections"][1:]
+    pcb.put(id="footprint-unmapped", args=args)
+    ref = store.get_ref(kind="pcb", id="footprint-unmapped")
+    assert ref is not None
+    neighbors = store.pcb_instance_neighbors(ref.id, "J_UNPLACED")
+    assert neighbors is not None
+    assert {p["pin"]: p["pad"] for p in neighbors["pins"]} == {"OTHER": "3"}
