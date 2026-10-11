@@ -103,6 +103,14 @@ _SELF_RESOLVING_JOB_TYPES: frozenset[str] = frozenset({"plan_tick"})
 # blocking unconditionally — no cooldown ever lifts it.
 _PARKED_CHILD_REPLAN_COOLDOWN = "6 hours"
 
+# Upper bound of the slow-poll: a parked child that has NOT changed since
+# the parent's last plan_tick (no new tag, no ``updated_at`` bump after
+# that tick finished) keeps blocking for this long, instead of the short
+# cooldown above. Past it the parent ticks once more as a sanity re-check.
+# A changed child is re-armed as soon as the short cooldown elapses.
+# (gr252969: identical zero-progress ticks every 6h forever.)
+_PARKED_CHILD_UNCHANGED_SLOWPOLL = "7 days"
+
 
 def _parked_child_still_blocks_sql(parent_alias: str, child_alias: str) -> str:
     """SQL fragment: true when a not-done ``child_alias`` should still
@@ -119,8 +127,13 @@ def _parked_child_still_blocks_sql(parent_alias: str, child_alias: str) -> str:
 
         bypassable = bypass_tag_present AND NOT hard_block_tag_present
         still_blocks = NOT bypassable OR recent_plan_tick_job_exists
-                      = (NOT bypass_tag_present OR hard_block_tag_present)
-                        OR recent_plan_tick_job_exists
+                       OR unchanged_since_last_tick_within_slowpoll
+
+    ``unchanged_since_last_tick``: a plan_tick job under the parent no
+    older than ``_PARKED_CHILD_UNCHANGED_SLOWPOLL`` finished (its latest
+    tag, i.e. the terminal STATUS, or its creation) after the child's
+    last change — the child's ``updated_at`` or any of its tag rows. The
+    tick already saw this exact parked state; re-ticking is a no-op.
 
     Embed inside a ``NOT EXISTS`` child-liveness check, ANDed after the
     existing STATUS filter — see both call sites below. Used
@@ -147,6 +160,26 @@ def _parked_child_still_blocks_sql(parent_alias: str, child_alias: str) -> str:
                   AND j.retired_at IS NULL
                   AND j.meta->>'job_type' = 'plan_tick'
                   AND j.created_at > now() - interval '{_PARKED_CHILD_REPLAN_COOLDOWN}'
+           )
+           OR EXISTS (
+               SELECT 1 FROM refs j2
+                WHERE j2.parent_id = {parent_alias}.ref_id
+                  AND j2.kind = 'job'
+                  AND j2.retired_at IS NULL
+                  AND j2.meta->>'job_type' = 'plan_tick'
+                  AND j2.created_at > now() - interval '{_PARKED_CHILD_UNCHANGED_SLOWPOLL}'
+                  AND {child_alias}.updated_at <= GREATEST(
+                          j2.created_at,
+                          COALESCE((SELECT max(jt.created_at) FROM ref_tags jt
+                                     WHERE jt.ref_id = j2.ref_id), j2.created_at))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ref_tags ct
+                       WHERE ct.ref_id = {child_alias}.ref_id
+                         AND ct.created_at > GREATEST(
+                              j2.created_at,
+                              COALESCE((SELECT max(jt2.created_at) FROM ref_tags jt2
+                                         WHERE jt2.ref_id = j2.ref_id), j2.created_at))
+                  )
            )
        )"""
 

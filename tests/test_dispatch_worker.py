@@ -587,10 +587,16 @@ def _open_tag_values(store: Store, ref_id: int) -> set[str]:
 
 
 def _backdate(store: Store, ref_id: int, hours: float) -> None:
-    """Move ``refs.created_at`` backwards, for cooldown-window tests."""
+    """Move ``refs.created_at`` (and its tag rows' + ``updated_at``) backwards,
+    for cooldown-window tests."""
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE refs SET created_at = now() - %s::interval WHERE ref_id = %s",
+            "UPDATE refs SET created_at = now() - %s::interval,"
+            " updated_at = now() - %s::interval WHERE ref_id = %s",
+            (f"{hours} hours", f"{hours} hours", ref_id),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - %s::interval WHERE ref_id = %s",
             (f"{hours} hours", ref_id),
         )
 
@@ -674,6 +680,65 @@ def test_waiting_for_child_allows_redispatch_after_cooldown(
         store, handler, child_tags=["waiting-for:reto"]
     )
     _backdate(store, job_id, hours=7)
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
+def _only_child_todo(store: Store, pid: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE parent_id = %s AND kind = 'todo'", (pid,)
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_unchanged_parked_child_not_reticked_after_cooldown(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr252969: past the 6h cooldown, a parked child that has not changed
+    since the last tick finished does NOT re-arm the planner."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(
+        store, handler, child_tags=["waiting-for:reto"]
+    )
+    _backdate(store, _only_child_todo(store, pid), hours=8)
+    _backdate(store, job_id, hours=7)
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    assert run_dispatch_pass(store).claimed == 0
+
+
+def test_parked_child_change_after_tick_rearms_planner(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A new tag on the parked child after the last tick re-arms it (once
+    the short cooldown has elapsed)."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(
+        store, handler, child_tags=["waiting-for:reto"]
+    )
+    child_id = _only_child_todo(store, pid)
+    _backdate(store, child_id, hours=8)
+    _backdate(store, job_id, hours=7)
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    store.add_tag(child_id, Tag.open("note-added"), set_by="agent")
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
+def test_unchanged_parked_child_slowpoll_after_seven_days(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The unchanged-child block is bounded: past the slow-poll window the
+    planner ticks once more."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    pid, job_id = _mint_planner_with_parked_child(
+        store, handler, child_tags=["waiting-for:reto"]
+    )
+    _backdate(store, _only_child_todo(store, pid), hours=24 * 9)
+    _backdate(store, job_id, hours=24 * 8)
     assert pid in _candidate_parent_ids(store, limit=10)
 
 
