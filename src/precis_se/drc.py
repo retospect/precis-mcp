@@ -65,6 +65,7 @@ throughout, same posture as the DOF probe.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from precis.cad import bulk as cad_bulk
 from precis.cad import relate as cad_relate
@@ -131,6 +132,26 @@ class DrcReport:
     findings: list[ValidationIssue]
     stackup: list[StackupResult]
     dof_probes: list[DofProbe]
+
+
+_BORE_NAMES = ("bore",)
+_SHAFT_NAMES = ("od", "shaft", "axle", "outer")
+#: nominal mate tolerance in metres (0.05 mm).
+_MATE_TOL_M = 5e-5
+
+
+def _declared_dims(tree: SeTree, block: str, tokens: tuple[str, ...]) -> list[Any]:
+    """Point-valued metre measures on ``block`` (no relation) whose name has
+    one of ``tokens`` as an underscore-separated word."""
+    out = []
+    for m in tree.measures:
+        if m.block != block or m.value is None or m.relation is not None:
+            continue
+        if m.unit != "m":
+            continue
+        if set(m.name.lower().split("_")) & set(tokens):
+            out.append(m)
+    return out
 
 
 def _resolved_block(tree: SeTree, name: str) -> str:
@@ -365,6 +386,46 @@ def drc(tree: SeTree) -> DrcReport:
                     severity="warn",
                 )
             )
+
+    # 3a. declared-dimension mate check (gr334784): when one endpoint
+    # declares a bore and the other an OD/shaft diameter, they must mate.
+    # No repo fit data covers shaft/bore pairs (fit_classes is screw
+    # clearance holes only), so this is nominal equality within
+    # _MATE_TOL_M for a `bearing`, and "shaft not smaller than bore" for a
+    # `press`. A relation between the two blocks owns the offset: skipped.
+    for c in tree.connects:
+        mech = c.joint.get("mechanism") if c.joint else None
+        if mech not in ("bearing", "press"):
+            continue
+        a_res = _resolved_block(tree, c.a_block)
+        b_res = _resolved_block(tree, c.b_block)
+        if frozenset({a_res, b_res}) in related_pairs:
+            continue
+        for bore_blk, shaft_blk in ((a_res, b_res), (b_res, a_res)):
+            for bore in _declared_dims(tree, bore_blk, _BORE_NAMES):
+                for shaft in _declared_dims(tree, shaft_blk, _SHAFT_NAMES):
+                    delta = float(shaft.value) - float(bore.value)
+                    if mech == "bearing":
+                        bad = abs(delta) > _MATE_TOL_M
+                        why = f"differ by {abs(delta):.6g} m"
+                    else:
+                        bad = delta < -_MATE_TOL_M
+                        why = f"shaft is {-delta:.6g} m smaller than the bore"
+                    if bad:
+                        findings.append(
+                            ValidationIssue(
+                                rule="mate_mismatch",
+                                subject=f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}",
+                                detail=(
+                                    f"{bore.block}.{bore.name}={bore.value:g} vs "
+                                    f"{shaft.block}.{shaft.name}={shaft.value:g} "
+                                    f"({mech}): {why}; nominal check, tol "
+                                    f"{_MATE_TOL_M:g} m — fix a dimension or "
+                                    "declare a tolerance relation"
+                                ),
+                                severity="warn",
+                            )
+                        )
 
     # 3b. mechanism-implied BOM demands (live since se_bom): a mechanism
     # realized by a bought thing needs a line saying which one — on the

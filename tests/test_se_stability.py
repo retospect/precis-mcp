@@ -519,6 +519,18 @@ def test_cable_mechanism_demands_a_bom_line() -> None:
     assert any("cable / wire rope" in d for d in details)
 
 
+def test_tensioner_mechanism_demands_rod_and_nipple() -> None:
+    tree = _pin_structure(
+        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},
+        [("a", "b", dict(_TIE))],
+    )
+    for conn in tree.connects:
+        conn.joint = {"class": "axial", "mechanism": "tensioner", "params": dict(_TIE)}
+    details = _rules(tree)["mechanism_bom"]
+    assert any("nipple / turnbuckle" in d for d in details)
+    assert not any("wire rope" in d for d in details)
+
+
 # ── prestress: declared preloads vs the self-stress space ────────────────
 # (rung 5's null-space DRC — structural-solution-space.md slice 3)
 

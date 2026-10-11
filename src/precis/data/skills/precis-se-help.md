@@ -408,9 +408,11 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
   [N/m > 0]. Physically `preload = rate × (L_installed − L_free)` —
   declare all three so the builder has a tensioning instruction
   (consistency is NOT yet cross-checked; keep them honest yourself).
-- Mechanism for a tensioned member is currently only `cable` (BOM
-  demand: "the cable / wire rope") — there is no spoke/turnbuckle
-  idiom yet; note the mismatch in a `add_note` if it matters.
+- Mechanism for a tensioned member: `cable` (BOM demand: "the cable /
+  wire rope") or `tensioner` for a threaded rod tensioned by a
+  nipple / turnbuckle (spoke, tie-rod; BOM demand names the rod and the
+  tensioning part). The nipple thread pitch / assembly-instruction slot
+  does not exist yet; put it in an `add_note`.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 

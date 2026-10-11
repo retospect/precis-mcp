@@ -2207,6 +2207,38 @@ def test_drc_mechanism_demand_unmet_then_met() -> None:
     assert not [f for f in report.findings if f.rule == "mechanism_demand"]
 
 
+def _mate_findings(mech: str, bore: float, od: float) -> list:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "rigid", "mechanism": mech},
+            },
+            {"op": "add_measure", "block": "wheel", "name": "bore_d", "value": bore},
+            {"op": "add_measure", "block": "hub", "name": "od_d", "value": od},
+        ],
+    )
+    return [f for f in se_drc.drc(tree).findings if f.rule == "mate_mismatch"]
+
+
+def test_drc_mate_mismatch_bearing_bore_vs_shaft() -> None:
+    assert _mate_findings("bearing", 0.017, 0.017) == []
+    # 17 mm bore on a 16 mm shaft: 1 mm apart, well past the 0.05 mm tol
+    found = _mate_findings("bearing", 0.017, 0.016)
+    assert len(found) == 1
+    assert "wheel.bore_d=0.017" in found[0].detail
+    assert "nominal check" in found[0].detail
+
+
+def test_drc_mate_mismatch_press_needs_shaft_not_smaller() -> None:
+    assert _mate_findings("press", 0.017, 0.01702) == []
+    assert len(_mate_findings("press", 0.017, 0.016)) == 1
+
+
 def test_drc_flags_stray_stored_objective_key() -> None:
     tree = _l2_tree()
     tree.blocks["wheel"].objectives = {"radial_N": 40}  # pre-schema stray

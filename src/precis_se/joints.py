@@ -122,6 +122,13 @@ MECHANISMS: dict[str, dict[str, Any]] = {
     # buy is a drawing, not rigging (two-axis rule: the mechanism names
     # the physical article, the class names what it does).
     "cable": {"demands_relation": None, "demands_bom": "the cable / wire rope"},
+    # a threaded rod tensioned by a nipple / turnbuckle (spoke, tie-rod):
+    # the tensioning part is what creates the preload, so the BOM demand
+    # names it rather than a cable (gr334786).
+    "tensioner": {
+        "demands_relation": None,
+        "demands_bom": "the threaded rod and its tensioning nipple / turnbuckle",
+    },
 }
 
 _JOINT_KEYS = frozenset({"class", "axis", "mechanism", "params"})
