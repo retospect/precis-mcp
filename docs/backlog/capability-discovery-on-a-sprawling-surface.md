@@ -130,4 +130,4 @@ Fix direction:
   only usable skills.
 
 Who: agent-code, M. Pairs with the loadability view in §3 and with
-`dark-features-activation.md` (gr477799).
+`dark-features-activation.md`.

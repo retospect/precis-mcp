@@ -338,6 +338,16 @@ Reading it:
   usually mounts the main repo `:ro` at prod, so worktree edits are
   invisible until you rebuild + restart pointed at the worktree.
 
+## Is a dark service lit? (conflict_search, inbound_chase, ...)
+
+Read the **Dark switches** table in `get(kind='skill', id='precis-status')`.
+One row per dark-switched service: `state` is `lit` (a `service_config` row
+with priority >= 1), `off` (priority 0) or `dark` (no row: nobody has set a
+priority, so it is not running; not a fault). `setting` lists the
+controlling `host=priority` rows. Only a human operator changes it (ask
+one); a worker whose profile rotation lists the pass can still run it with
+no row.
+
 ## Where the database schema is written down
 
 Before reaching for `information_schema` or `\d <table>`, read

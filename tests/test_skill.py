@@ -1956,3 +1956,29 @@ def test_status_names_kinds_that_failed_their_gate(
         "**Kinds unavailable: pathway (plugin failed to import: autocatpath).**" in body
     )
     assert "route (" not in body
+
+
+def test_status_renders_dark_switches_table(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr477799: precis-status names each dark service's lit/dark state."""
+    from unittest.mock import MagicMock
+
+    from precis import install_watchdog
+    from precis.handlers import skill as skill_mod
+    from precis.workers import service_config
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    monkeypatch.setattr(
+        service_config,
+        "dark_switch_states",
+        lambda store: [
+            {"service": "conflict_search", "state": "dark", "setting": "no row"}
+        ],
+    )
+    out = "\n".join(skill_mod._render_dark_switches(MagicMock()))
+    assert "conflict_search" in out and "dark" in out
+    assert skill_mod._render_dark_switches(None) == [
+        "_stateless build — no service_config to read_"
+    ]
+    assert "**Dark switches**" in skill.get(id="precis-status").body

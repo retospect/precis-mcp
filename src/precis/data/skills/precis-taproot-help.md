@@ -68,7 +68,8 @@ supporter stays `corroborates` (never guessed).
 
 **Every hub hunts its own opposition.** One sweep, three doors, one
 switch (the `conflict_search` service stays dark until you ask a human
-operator to give it a priority).
+operator to give it a priority; read whether it is lit now under
+**Dark switches** in `get(kind='skill', id='precis-status')`).
 The sweep: LLM-negated paraphrases of the claim are ANN-searched over
 paper/patent/hub passages ("X has no effect" sits far from "X enhances"
 in embedding space), the hits are verify-budgeted by `paper_rank` with
@@ -91,7 +92,8 @@ opposition in either direction. By hand:
 `conflict_search.coverage_counts()` (swept/total at the live version).
 
 **A new paper is checked against the claim set as it lands.** The
-`inbound_ground` worker pass (dark until enabled) takes each paper whose
+`inbound_ground` worker pass (dark until enabled; state under
+**Dark switches** in `precis-status`) takes each paper whose
 body just finished embedding, ANN-matches its passages against the
 claim-hub index (top-k hubs, default 5), verifies each near pair with
 the shared chase verifier (capped per paper) and writes the verdict:

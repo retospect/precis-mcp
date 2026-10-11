@@ -289,3 +289,19 @@ def test_run_loop_clears_activity_even_when_a_pass_raises(monkeypatch) -> None:
 
     assert activity.snapshot().get("idle") is True
     assert activity.snapshot().get("last_pass") == "_boom_pass"
+
+
+def test_dark_switch_states_dark_lit_off(store) -> None:
+    """gr477799: no row ⇒ dark; prio>=1 ⇒ lit; prio 0 ⇒ off."""
+    from precis.workers.service_config import dark_switch_states
+
+    def state(name: str) -> dict[str, str]:
+        return next(r for r in dark_switch_states(store) if r["service"] == name)
+
+    assert state("conflict_search")["state"] == "dark"
+    set_service_prio(store, "*", "conflict_search", 4, actor="test")
+    set_service_prio(store, "melchior", "inbound_chase", 0, actor="test")
+    cs = state("conflict_search")
+    assert cs["state"] == "lit"
+    assert cs["setting"] == "*=4"
+    assert state("inbound_chase")["state"] == "off"

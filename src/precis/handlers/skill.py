@@ -2016,6 +2016,8 @@ class SkillHandler(Handler):
                     schema=["field", "value"],
                 )
             )
+        lines.extend(["", "**Dark switches**", ""])
+        lines.extend(_render_dark_switches(store))
         lines.extend(["", "**Embedder**", ""])
         embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
         if embedder is None:
@@ -2858,6 +2860,28 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
     except Exception:  # pragma: no cover — a status row must not raise
         pass
     return rows
+
+
+def _render_dark_switches(store: Store | None) -> list[str]:
+    """Lit/dark table for the dark-switched services (gr477799).
+
+    ``dark`` = no ``service_config`` row (not broken: the operator has not
+    set a priority); ``lit`` = a row with prio >= 1; ``off`` = prio 0.
+    """
+    if store is None:
+        return ["_stateless build — no service_config to read_"]
+    from precis.workers.service_config import dark_switch_states
+
+    try:
+        rows = dark_switch_states(store)
+    except Exception as exc:
+        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+    return [
+        "`dark` = no priority set (not broken); `lit` = priority >= 1; "
+        "`off` = priority 0. Ask a human operator to set a priority.",
+        "",
+        render_agent_table(rows, schema=["service", "state", "setting"]),
+    ]
 
 
 def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:

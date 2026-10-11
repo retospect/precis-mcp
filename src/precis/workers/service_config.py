@@ -290,6 +290,36 @@ def list_service_config(store: Store) -> list[dict[str, object]]:
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
+def dark_switch_states(store: Store) -> list[dict[str, str]]:
+    """Lit/dark state of every dark-switched service (``enable_env`` set).
+
+    One row per service: ``state`` is ``lit`` (a row with ``prio >= 1``),
+    ``off`` (every row is ``prio 0``) or ``dark`` (no ``service_config``
+    row; a worker whose profile rotation lists the pass may still run it).
+    ``setting`` names the controlling rows as ``host=prio``. Read-only; the
+    ``precis-status`` skill renders it. Raises on a DB error (caller decides).
+    """
+    from precis.workers.registry import SERVICES
+
+    by_service: dict[str, list[tuple[str, int]]] = {}
+    for row in list_service_config(store):
+        by_service.setdefault(str(row["service"]), []).append(
+            (str(row["host"]), int(str(row["prio"])))
+        )
+    out: list[dict[str, str]] = []
+    for spec in SERVICES:
+        if not spec.enable_env:
+            continue
+        rows = by_service.get(spec.name, [])
+        if not rows:
+            state, setting = "dark", "no service_config row"
+        else:
+            state = "lit" if any(p > 0 for _, p in rows) else "off"
+            setting = ", ".join(f"{h}={p}" for h, p in rows)
+        out.append({"service": spec.name, "state": state, "setting": setting})
+    return out
+
+
 # ── Reserve mode (the human-first GPU reservation) ─────────────────────
 #
 # A pseudo-service: `(host | '*', service='reserve', prio=1, expires_at=
