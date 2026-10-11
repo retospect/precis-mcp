@@ -190,6 +190,7 @@ def test_track1_zero_overlap_parks_instead_of_applying(store: Store) -> None:
         "doi": "10.1099/wrong-mining-doi",
         "registry_title": meta["title"],
         "overlap": 0,
+        "reason": "registry-title-zero-overlap",
     }
     assert _identifiers(store, rid).get("doi") is None  # wrong DOI cleared
     assert _has_mismatch_tag(store, rid)
@@ -534,3 +535,258 @@ def test_widened_selection_reaches_untagged_titleless(store: Store) -> None:
     assert untagged in ids  # widened selection now reaches it
     assert tagged in ids  # old cohort still covered
     assert titled not in ids  # a populated title is never re-resolved
+
+
+# ── gr262881 / gr260193: body-corroboration + edition guards ──────
+
+_MOS2_BODY = (
+    "Quantum Transport Simulation of Sub-1-nm Gate Length Monolayer MoS2 "
+    "Transistors. We study monolayer MoS2 field effect transistors with "
+    "ab initio quantum transport and report on-state current for scaled gates."
+)
+
+_WSE2_TITLE = (
+    "Ab-Initio Quantum Transport Simulation of Sub-1 nm Gate Length "
+    "Monolayer and Bilayer WSe2 Transistors"
+)
+
+
+def test_track2_title_formula_absent_from_body_goes_to_review(store: Store) -> None:
+    # pa693's shape: stored title is the WSe2 paper's, body is the MoS2 paper.
+    rid = _triage_paper(
+        store, slug="pa693", title=_WSE2_TITLE, year=2025, chunk0=_MOS2_BODY
+    )
+    cand: dict[str, Any] = {
+        "title": _WSE2_TITLE,
+        "authors": [{"name": "Yang"}],
+        "year": 2025,
+        "doi": "10.1021/acsanm.4c06561",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    r = _verdict(out, rid)
+    assert r.verdict == "parked" and r.reason == "title-terms-not-in-body"
+    assert _identifiers(store, rid).get("doi") is None
+    assert _has_mismatch_tag(store, rid)
+    assert (_ref(store, rid).meta or {})["registry_mismatch"]["reason"] == r.reason
+    assert rid not in {x.id for x in _triage_refs(store, None)}  # not re-hit
+
+
+def test_track2_title_formula_in_body_still_applies(store: Store) -> None:
+    # Subscript markup in the body must still corroborate "MoS2".
+    title = "Quantum Transport Simulation of Sub-1-nm Gate Length Monolayer MoS2 Transistors"
+    rid = _triage_paper(
+        store,
+        slug="mos2ok",
+        title=title,
+        year=2023,
+        chunk0=_MOS2_BODY.replace("MoS2", "MoS<sub>2</sub>"),
+    )
+    cand: dict[str, Any] = {
+        "title": title,
+        "authors": [{"name": "Li"}],
+        "year": 2023,
+        "doi": "10.1/mos2ok",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    r = _verdict(out, rid)
+    assert r.verdict == "auto" and r.doi == "10.1/mos2ok", r.reason
+    assert _identifiers(store, rid).get("doi") == "10.1/mos2ok"
+
+
+_HENRY_BODY = (
+    "Compilation of Henry's law constants (version 4.0) for water as solvent. "
+    "Atmospheric Chemistry and Physics, 2015. This article lists 17350 "
+    "constants for 4632 species collected from the literature."
+)
+
+
+def _track1(store: Store, slug: str, doi: str, meta: dict[str, Any]):
+    rid = _triage_paper(store, slug=slug, title="", doi=doi, chunk0=_HENRY_BODY)
+    meta = {"authors": [], "doi": doi, **meta}
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
+    )
+    return rid, _verdict(out, rid)
+
+
+def test_track1_newer_version_goes_to_review(store: Store) -> None:
+    # pa5468's shape: stored DOI resolves to the v5.0.0 record, body is v4.0.
+    rid, r = _track1(
+        store,
+        "pa5468",
+        "10.5194/acp-15-4399-2015",
+        {"title": "Compilation of Henry's law constants (version 5.0.0) for water"},
+    )
+    assert r.verdict == "parked" and r.reason == "edition-mismatch-version"
+    assert _ref(store, rid).title == ""
+    assert _identifiers(store, rid).get("doi") == "10.5194/acp-15-4399-2015"
+    assert _has_mismatch_tag(store, rid)  # persisted, DOI kept
+    assert rid not in {x.id for x in _triage_refs(store, None)}
+
+
+def test_track1_year_far_after_body_years_goes_to_review(store: Store) -> None:
+    _rid, r = _track1(
+        store,
+        "yr-late",
+        "10.1/late",
+        {
+            "title": "Henry's law solubility aerosol measurements dataset",
+            "year": 2023,
+        },
+    )
+    assert r.verdict == "parked" and r.reason == "edition-mismatch-year"
+
+
+def test_track1_matching_edition_still_applies(store: Store) -> None:
+    rid, r = _track1(
+        store,
+        "ed-ok",
+        "10.1/ok",
+        {
+            "title": "Compilation of Henry's law constants (version 4.0) for water",
+            "year": 2015,
+        },
+    )
+    assert r.verdict == "auto"
+    assert _ref(store, rid).title.endswith("for water")
+
+
+def test_track1_preprint_year_gap_same_title_still_applies(store: Store) -> None:
+    # arXiv 2021 body, journal 2023 registry, same title, no version token.
+    title = "Sparse attention for long documents in scientific literature"
+    rid = _triage_paper(
+        store,
+        slug="preprint",
+        title="",
+        doi="10.1/pre",
+        chunk0=f"{title}. arXiv preprint 2021. We study sparse attention "
+        "mechanisms for long scientific documents and evaluate on benchmarks.",
+    )
+    meta: dict[str, Any] = {
+        "title": title,
+        "authors": [],
+        "year": 2023,
+        "doi": "10.1/pre",
+    }
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
+    )
+    assert _verdict(out, rid).verdict == "auto"
+
+
+def test_track1_software_v2_in_body_is_not_a_version(store: Store) -> None:
+    rid = _triage_paper(
+        store,
+        slug="sw",
+        title="",
+        doi="10.1/sw",
+        chunk0="Compilation of Henry's law constants (version 5.0.0) for water. "
+        "Computed with toolkit v2 and plotted for the published collection 2015.",
+    )
+    meta: dict[str, Any] = {
+        "title": "Compilation of Henry's law constants (version 5.0.0) for water",
+        "authors": [],
+        "year": 2015,
+        "doi": "10.1/sw",
+    }
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
+    )
+    assert _verdict(out, rid).verdict == "auto"
+
+
+def _t2_formula(
+    store: Store, slug: str, title: str, body: str, *, kind: str = "paragraph"
+):
+    rid = _triage_paper(store, slug=slug, title=title, year=2020, chunk0=body)
+    cand: dict[str, Any] = {
+        "title": title,
+        "authors": [],
+        "year": 2020,
+        "doi": f"10.1/{slug}",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    return _verdict(out, rid)
+
+
+_FILLER = " We measure adsorption isotherms and report the capacity of the framework."
+
+
+def test_track2_formula_only_in_references_is_parked(store: Store) -> None:
+    title = "Adsorption on WSe2 porous frameworks"
+    rid = _titleless_paper(
+        store,
+        slug="refonly",
+        n=0x106,
+        title=title,
+        year=2020,
+        tag=True,
+        chunks=(
+            "Study of adsorption on porous frameworks." + _FILLER + _FILLER,
+            "More adsorption results on the frameworks." + _FILLER,
+            "Conclusions on adsorption.",
+            "References\n\n1. Smith, WSe2 transistors, 2019.",
+        ),
+    )
+    cand: dict[str, Any] = {
+        "title": title,
+        "authors": [],
+        "year": 2020,
+        "doi": "10.1/ro",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    r = _verdict(out, rid)
+    assert r.verdict == "parked" and r.reason == "title-terms-not-in-body"
+
+
+def test_track2_formula_requires_whole_token(store: Store) -> None:
+    body = "Study of adsorption on porous frameworks of WSe20 type." + _FILLER
+    r = _t2_formula(store, "wholetok", "Adsorption on WSe2 porous frameworks", body)
+    assert r.verdict == "parked"
+
+
+def test_track2_non_chemical_alnum_title_tokens_are_ignored(store: Store) -> None:
+    body = "Study of adsorption on porous frameworks." + _FILLER
+    r = _t2_formula(
+        store, "covid", "Adsorption frameworks after COVID19 and GPT4 ResNet50", body
+    )
+    assert r.verdict == "auto"
+
+
+def test_track2_name_vs_formula_is_parked_by_design(store: Store) -> None:
+    # Known limitation, accepted: title says CO2, body says "carbon dioxide".
+    body = "Capture of carbon dioxide on porous frameworks." + _FILLER
+    r = _t2_formula(store, "co2", "Capture of CO2 on porous frameworks", body)
+    assert r.verdict == "parked" and r.reason == "title-terms-not-in-body"
+
+
+def test_track2_latex_formula_in_body_corroborates(store: Store) -> None:
+    body = (
+        "Study of adsorption on porous frameworks of $\\mathrm{WSe}_{2}$ and "
+        "\\mathrm{WSe}_2 layers." + _FILLER
+    )
+    r = _t2_formula(store, "latex", "Adsorption on WSe2 porous frameworks", body)
+    assert r.verdict == "auto"
+
+
+def test_track2_toc_references_heading_does_not_cut_body(store: Store) -> None:
+    rid = _titleless_paper(
+        store,
+        slug="toc",
+        n=0x105,
+        tag=True,
+        title="Adsorption on WSe2 porous frameworks",
+        year=2020,
+        chunks=(
+            "Contents\n1. Introduction\n7. References\n8. Index of topics here",
+            "Study of adsorption on porous frameworks of WSe2 layers." + _FILLER,
+        ),
+    )
+    cand: dict[str, Any] = {
+        "title": "Adsorption on WSe2 porous frameworks",
+        "authors": [],
+        "year": 2020,
+        "doi": "10.1/toc",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    assert _verdict(out, rid).verdict == "auto"

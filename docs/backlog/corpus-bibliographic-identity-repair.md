@@ -27,26 +27,6 @@ lack a DOI); (c) flag substantive registry/local title mismatches for a human (c
 
 Who: agent-code.
 
-### 2. Track 2 accepts a title match the body contradicts (gr262881)
-
-Track 2 of `src/precis/ingest/metadata_resolve.py` resolves by title search
-and accepts a hit on title similarity alone. pa693 shows the failure: stored
-title WSe2, body MoS2. Fix direction: a body-corroboration gate — require
-distinctive title terms (formula, material name) to appear in the paper's
-own chunks before Track 2 applies the match; otherwise route to review.
-
-Who: agent-code.
-
-### 3. Track 1 ignores version and year (gr260193)
-
-`_resolve_one` in `src/precis/ingest/metadata_resolve.py` takes a
-DOI/identifier hit without checking that the body is the same edition.
-pa5468 carries the title of v5.0.0 on a 2015 v4.0 body. Fix direction: a
-version/year guard in Track 1 — compare the registry year (and a version
-token in the title) against the body's own year; disagreement goes to review.
-
-Who: agent-code.
-
 ### 4. Supersede drops the stub's identity; multi-article PDFs (gr353777)
 
 Superseding a stub with a fetched PDF does not carry the stub's

@@ -204,8 +204,11 @@ guards against pulling in the *wrong* identity in the first place
 distinctive words with the paper's own chunk-0 text (e.g. an SI PDF that
 would otherwise take an unrelated paper's DOI), it withholds the write
 instead — tags the ref `paper-meta:title-mismatch`, records the withheld
-`doi`/`title` under `meta.registry_mismatch` on the Meta tab, and clears
-any stored DOI that caused the mismatch. Never touches a ref with
+`doi`/`title`/`reason` under `meta.registry_mismatch` on the Meta tab, and
+clears the stored DOI only for the zero-overlap case (edition mismatches —
+registry version/year newer than the body — and title formulas absent from
+the body park the same way but keep the DOI). Parked refs leave the triage
+sweep until the tag is removed by hand. Never touches a ref with
 `human_verified_at` set.
 
 ALL-CAPS titles (journals that print titles in capitals) are repaired by
