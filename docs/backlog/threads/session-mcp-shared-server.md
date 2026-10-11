@@ -341,10 +341,6 @@ check their state first.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.
-- **gr345270** — the dev-stdio launcher preflight runs `precis --help`
-  then `precis serve`, duplicating the import chain over the bind mount
-  (~2 s + 6 s unloaded). Moot once td458385 retires the per-session stdio
-  containers; close rather than fix if that lands first.
 
 ## No action needed
 
