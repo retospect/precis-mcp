@@ -859,3 +859,15 @@ def test_unminted_detector_ignores_parent_waiting_on_live_child_todo(
         seed.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
     )
     assert [h["id"] for h in _attention_unminted(store)] == [parent]
+
+
+def test_unminted_detector_ignores_recurring_todo(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A cron todo (meta.schedule) has no live job between ticks by design."""
+    from precis.todo.views import _attention_unminted
+
+    meta = {**_EXECUTOR_META, "schedule": {"cron": "0 5 * * *"}}
+    rid = _id_of(handler.put(text="news poll", meta=meta).body)
+    _age_todo(store, rid, 45)
+    assert _attention_unminted(store) == []

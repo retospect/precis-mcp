@@ -1561,6 +1561,8 @@ def _attention_unminted(
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND COALESCE(r.meta->>'executor', '') <> ''
+               -- A recurring todo has no live job between cron ticks by design.
+               AND NOT (COALESCE(r.meta, '{}'::jsonb) ? 'schedule')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
