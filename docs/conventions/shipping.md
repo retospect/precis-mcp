@@ -24,15 +24,25 @@ the squash carries a `Gate: forward-merged over N commits` trailer
 Squawk on new migration SQL stays host-side. `--remote --impacted` = opt-in
 local impacted pre-gate first; bare `--impacted` = legacy local-only gate.
 
-## /go — local gate + deploy
+## /go — land, cut a release, gate it, deploy it
 
-Ship with the LOCAL suite + diff-coverage gate (changed src lines need tests;
-the gate's default lane is `-m 'not slow'` — the slow cluster is covered by
-check.yml's unfiltered 6 shards on every push, `--slow` /
-`PRECIS_GATE_SLOW=1` restores the full set) + `scripts/deploy` of the
-**gated sha** (`--pinned`, never bare — bare re-resolves `main` and can ship
-an ungated sibling qland), plus a budgeted advisory mutation pass
-(`scripts/mutate-diff`).
+`scripts/ship --quick` lands the tree on `main` (lint only), then
+`scripts/release` drives `scripts/round`: open a round if none is open,
+`round cut --sha S` pushes `release/r<N>` at S = `origin/main`, check.yml
+runs the full gate (lint + 6 shards, never cancelled) on that exact head,
+and `round deploy` deploys it `--pinned` and moves `gated`/`prod`. Exit 3
+leaves runtime proof to the session: verify boot shas and the session MCP,
+then `round deploy --confirm-runtime S --runtime-evidence …` tags
+`deployed/r<N>`, deletes the branch, and `round close` ends the round.
+
+Main pushes after the cut never reach the release. One release at a time:
+a `/go` whose sha the in-flight release contains exits 0 (rides along); any
+other waits for it to retire, then cuts the next (exit 4 if the wait times
+out). Release CI has no diff-coverage gate or mutation pass yet
+(`docs/backlog/release-ci-diff-coverage.md`); the local full gate with
+both is still `scripts/ship --mutate --full` + `scripts/deploy <.ship-sha>
+--pinned`, now off the `/go` path. Exit-code table: `.claude/commands/go.md`
+step 7.
 
 ## /qland — pytest-ungated burst-land
 
@@ -43,8 +53,8 @@ it could not look up) → **pre-qland lint** (ruff · mypy · import contracts �
 DB-free hygiene tests (type-ignore ratchet, posix/encoding guards, doc
 pointers, secret scan) — no full pytest, no gate slot, ~3 min;
 `PRECIS_QLAND_LINT=0` to skip) → squash-merge. For when many trees are in
-flight — qland them one by one, then one `/go` gates the integrated `main` +
-deploys (ship skips the push when the tree already equals main).
+flight — qland them one by one, then one `/go` releases the integrated
+`main` (ship lands nothing when the tree already equals main).
 
 ## /qgo — ungated deploy
 
@@ -62,14 +72,17 @@ the `✖` — read *that*, never `scripts/ship` (remote-gate red: ship prints th
 failing jobs + `gh run view <id> --log-failed`). Where a commit has got to is
 three refs: `main` (landed), `origin/gated` (last full-gate green),
 `origin/prod` (what the cluster runs) — script-moved, fast-forward only,
-never committed to (`deploy/README.md`).
+never committed to (`deploy/README.md`). While a release is open,
+`release/r<N>` is the frozen sha being gated/deployed; `deployed/r<N>` tags
+each one that went live.
 
 ## Rounds and the fleet
 
 When a coordinator has a peer round open (`scripts/round status`), end your
 land by marking it from your own tree — `scripts/round in <sha>`,
-`scripts/round none`, or `scripts/round eta <text>` — instead of messaging;
-leave deploys to the coordinator (`/round`: deploys the exact open release
+`scripts/round none`, or `scripts/round eta <text>` — instead of messaging.
+Outside a fleet, `/go` is its own coordinator for one release (above); in a
+fleet session leave deploys to the coordinator (`/round`: deploys the exact open release
 head with a fresh green CI verdict (newest green main without a release) via
 `scripts/round gate|deploy` — no local gate, no ship lock). The fleet itself
 — one tmux window per active thread plus Reto's `review` window — comes up,

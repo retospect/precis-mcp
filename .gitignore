@@ -151,6 +151,7 @@ docs/codebase-map.md
 # sibling --quick ship may have moved meanwhile). Per-worktree, rewritten every
 # ship — state, not source.
 .ship-sha
+.release-owner
 
 # Conference posters and the DFT structures behind them. This repo is PUBLIC and
 # these hold unpublished work (Raju's CONTCARs, a paper in preparation), so they

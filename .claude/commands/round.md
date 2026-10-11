@@ -8,6 +8,9 @@ You are the coordinator of a peer round. Many sessions land onto `main` with
 `/qland` (no pytest); main's GitHub CI samples the newest sha about once
 per run (~45 min, a running run is never cancelled), and one
 session — you — freezes a green main SHA as a release and puts that release head on the cluster. A round is one pass of that.
+Outside a fleet, `/go` runs the same pass for one release through
+`scripts/release` (open → `cut --sha` → wait CI → `deploy` → confirm →
+close); an open `release/r<N>` from either path blocks the other's cut.
 
 The tally is a file, not a conversation: `scripts/round` keeps who has landed
 under the common git dir, and peers mark themselves from their own trees. A

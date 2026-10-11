@@ -7,8 +7,8 @@ allowed-tools: Bash(scripts/ship:*), Bash(git:*), Agent
 You are quick-landing this worktree: merge to `main` **without pytest**.
 This exists for the 20-trees-in-flight case — every `/land` gate competing
 for the same Docker VM turns each ship into a queue. `/qland` defers the
-suite: qland the burst one by one, then run **one** `/go` (full suite +
-deploy) over the integrated `main`.
+suite: qland the burst one by one, then run **one** `/go` (release cut
+from the integrated `main`, CI-gated, deployed).
 
 `scripts/ship --quick` runs its own **pre-qland lint** (ruff autofix · mypy ·
 import contracts · DB-free hygiene tests such as the `type: ignore` ratchet
@@ -88,7 +88,7 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
    Gated:           ~ ruff+mypy passed; pytest deferred — main is untested
-   Deployed:        — not deployed (run /go after the burst: full gate + deploy)
+   Deployed:        — not deployed (run /go after the burst: gated release + deploy)
    ```
    Then one line summarizing what shipped.
 

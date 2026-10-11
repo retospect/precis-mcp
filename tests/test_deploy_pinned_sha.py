@@ -608,15 +608,17 @@ def test_ship_never_pins_an_empty_sha(tmp_path: Path) -> None:
 
 
 def test_ship_full_flag_forces_the_local_suite_on_a_docs_only_diff() -> None:
-    """/go passes --full: the docs-only classification must be overridable
-    so a docs-only /go still ends in a deploy pin, and /go must pass it."""
+    """--full: the docs-only classification must be overridable so a docs-only
+    local-gate ship still ends in a deploy pin. (/go itself now lands with
+    --quick and gates the release cut instead — it must say so.)"""
     text = SHIP_SRC.read_text(encoding="utf-8")
     assert "--full)     FULL=1; shift ;;" in text
     override_at = text.index('if [[ "$FULL" == 1 && "$DOCS_ONLY" == 1 ]]; then')
     pin_at = text.index('if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1')
     assert override_at < pin_at
     go = (REPO_ROOT / ".claude" / "commands" / "go.md").read_text(encoding="utf-8")
-    assert "scripts/ship --mutate --full" in go
+    assert "scripts/ship --quick" in go
+    assert "scripts/release" in go
 
 
 def test_ship_clears_a_stale_pin_before_it_can_do_anything_else() -> None:

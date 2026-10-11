@@ -21,8 +21,10 @@ a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
 
 - **`/land`** — `scripts/ship --remote`: GitHub's check.yml gate, then CAS
   squash-merge to `main`. Run ship in background, output to a log.
-- **`/go`** — local suite + diff-coverage gate, then `scripts/deploy --pinned`
-  of the gated sha (never bare `scripts/deploy`).
+- **`/go`** — `scripts/ship --quick` to `main`, then `scripts/release`: cut
+  `release/r<N>` from main at a fixed sha, gate it on check.yml, deploy that
+  head pinned. Later main pushes don't touch it; one release at a time, a
+  second `/go` rides along or waits.
 - **`/qland`** — `scripts/ship --quick`: lint only, no pytest. Burst-land many
   trees, then one `/go`.
 - **`/qgo`** — qland + ungated deploy. Never for `*/migrations/*.sql` or
@@ -30,13 +32,14 @@ a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
 
 All are idempotent — fix and re-run. Red gate: read the failure above the
 `✖`, not `scripts/ship`. Refs: `main` (landed), `origin/gated` (last
-full-gate green), `origin/prod` (what runs) — script-moved, never committed to.
+full-gate green), `origin/prod` (what runs), `release/r<N>` (the open
+release) — script-moved, never committed to.
 
 Many sibling sessions run at once: scan the injected `scripts/inflight` table
 for overlap; once your task is clear, write one line to `.claude/purpose`.
 When a coordinator has a round open (`scripts/round status`), mark it from
-your tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging,
-and leave deploys to the coordinator. Fleet: `/fleet`; in a fleet session a
+your tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging.
+In a fleet session leave deploys (and `/go`) to the coordinator. Fleet: `/fleet`; in a fleet session a
 question for Reto goes to the review queue (`.claude/fleet/review-protocol.md`).
 Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
 (`docs/backlog/threads/<slug>.md`) updates that file in the same commit —

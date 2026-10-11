@@ -27,7 +27,9 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    playbooks in order.
 5. Ongoing code pushes: `scripts/deploy [ref]` (wraps `redeploy-precis.yml`;
    ping-gate + report — see ["Canary-staged deploys"](#canary-staged-deploys-opt-in)).
-   `/go` does not use the bare form: it deploys the **gated sha**,
+   `/go` does not use the bare form: `scripts/release` cuts `release/r<N>`
+   and `scripts/round deploy` deploys that exact CI-green head `--pinned`;
+   a local full-gate ship deploys its **gated sha**,
    `scripts/deploy "$(cat .ship-sha)" --pinned`. Bare `scripts/deploy`
    resolves the branch name `main` at deploy time, so a sibling `/qland`
    landing between the gate and the deploy substitutes an ungated tree.

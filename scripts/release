@@ -1,0 +1,635 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/release — land-to-prod in one command: cut at main SHA S, wait for CI, deploy.
+
+`/go` lands its change to main (`scripts/ship --quick`), then runs this. It
+freezes S (default: origin/main) as a release branch, waits for GitHub CI on
+exactly that head, and deploys it. Later pushes to main never affect it.
+
+All lifecycle logic stays in `scripts/round` (open, close, cut, gate, deploy
+and their guards); this is a thin orchestrator that calls it as a subprocess
+and never bypasses a refusal.
+
+  scripts/release [--sha S] [--queue-timeout MIN] [--ci-timeout MIN]
+                  [--poll SEC] [--dry-run] [--adopt]
+
+Steps, in order:
+  1. fetch origin main/prod; S = --sha or origin/main; S must sit on
+     origin/main's first-parent line (else exit 1).
+  2. S already in origin/prod: "already live", exit 0.
+  3. A release in flight (round.json record or any origin `release/*`):
+     - this worktree owns it (`.release-owner` marker at the worktree root,
+       written at cut, matching the recorded branch + base; round.json is
+       shared by every worktree, so "recorded" is not "mine") and its head
+       contains S: resume (6-7). `--adopt` takes ownership of a recorded
+       release whose cutting session died (prints a warning);
+     - any other release's head contains S: "riding release ...", exit 0;
+     - otherwise queue: poll until none is in flight (--queue-timeout, exit 4),
+       then redo 1-2.
+  4. Round: open one if none; close + reopen one that already deployed.
+  5. `round cut --sha S` (its stdout, incl. `late:` and `fleet say`, passes
+     through). Losing a race to a sibling cut goes back to 3.
+  6. Poll `round gate --json` until the candidate equals the release head.
+     Early red comes from the head's check-runs (sha-keyed REST `gh api`, never
+     `gh run list`: stale cache, see scripts/last-gated-main-sha): a completed
+     `lint` / `test-linux*` run that is not success/skipped/neutral exits 2
+     with job names, URLs and the `gh run view --log-failed` line. The release
+     branch stays; fix via `scripts/ship --release` or `round cut --abandon`.
+     --ci-timeout also exits 2.
+  7. `round deploy`, output streamed. Exit 3 (rollout done, runtime pending)
+     prints the `next:` confirm line and exits 3.
+
+Re-running after any partial state resumes: a recorded release containing S
+skips the cut (owner only; the marker is removed after `round close`
+succeeds or once the recorded release is gone; a re-run retries a close that
+failed); a journal with rollout done prints the `next:` line at once.
+
+--dry-run only reads; it prints the plan and passes --dry-run to round cut and
+round deploy where they apply.
+
+Exit codes: 0 live / riding / done; 1 refused; 2 CI red or timeout;
+3 runtime confirmation pending; 4 queue timeout; any other = `round deploy`'s.
+
+PRECIS_ROUND_ROOT selects the checkout (as for scripts/round).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+ROUND = HERE / "round"
+OK_CONCLUSIONS = ("success", "skipped", "neutral")
+_JQ = (
+    '.check_runs[] | [.name, .status, (.conclusion // ""), .html_url,'
+    ' (.details_url // ""), .id] | @tsv'
+)
+MAX_CUT_RACES = 5
+
+
+def _root() -> Path:
+    override = os.environ.get("PRECIS_ROUND_ROOT", "").strip()
+    return Path(override) if override else HERE.parent
+
+
+ROOT = _root()
+
+
+def say(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def git(*args: str) -> str | None:
+    try:
+        cp = subprocess.run(
+            ["git", "-C", str(ROOT), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return cp.stdout.strip() if cp.returncode == 0 else None
+
+
+def ancestor(older: str, newer: str) -> bool:
+    cp = subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", older, newer],
+        capture_output=True,
+        check=False,
+    )
+    return cp.returncode == 0
+
+
+def rev(name: str) -> str:
+    return git("rev-parse", "--verify", "--quiet", f"{name}^{{commit}}") or ""
+
+
+def remote(ref: str) -> str | None:
+    """None = unreadable, empty = absent."""
+    out = git("ls-remote", "origin", ref)
+    if out is None:
+        return None
+    return next((ln.split()[0] for ln in out.splitlines() if ln.split()[1] == ref), "")
+
+
+def release_branches() -> list[str] | None:
+    out = git("ls-remote", "--heads", "origin", "release/*")
+    if out is None:
+        return None
+    return [ln.split("refs/heads/", 1)[1] for ln in out.splitlines() if "\trefs/" in ln]
+
+
+def rnd(*args: str, stream: bool = False) -> subprocess.CompletedProcess[str]:
+    argv = [str(ROUND), *args]
+    if stream:
+        return subprocess.run(argv, cwd=ROOT, check=False, text=True, encoding="utf-8")
+    return subprocess.run(
+        argv,
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def die(code: int, msg: str) -> int:
+    print(msg, file=sys.stderr, flush=True)
+    return code
+
+
+def fetch() -> None:
+    if git("fetch", "-q", "origin", "main", "prod") is not None:
+        return
+    for ref in ("main", "prod"):  # a ref absent on origin fails the combined fetch
+        git("fetch", "-q", "origin", ref)
+
+
+def round_state() -> dict[str, Any] | None:
+    cp = rnd("status", "--json")
+    try:
+        data = json.loads(cp.stdout)
+        cur = data["round"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return cur if cp.returncode == 0 and isinstance(cur, dict) else None
+
+
+def head_containing(sha: str, branch: str, base: str) -> tuple[str, bool]:
+    """(head or base of a release, whether it contains sha)."""
+    head = remote(f"refs/heads/{branch}") or ""
+    if head and not rev(head):
+        git("fetch", "-q", "origin", f"refs/heads/{branch}")
+    tip = head or base
+    return tip, bool(tip and rev(tip) and ancestor(sha, tip))
+
+
+def _run_id(row: list[str]) -> int:
+    try:
+        return int(row[5])
+    except (IndexError, ValueError):
+        return 0
+
+
+def ci_red(head: str) -> dict[str, Any] | bool | None:
+    """False = gh unreadable; None = no completed red; else the failing jobs."""
+    try:
+        cp = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs",
+                "--paginate",
+                "--jq",
+                _JQ,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if cp.returncode != 0:
+        return False
+    rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") >= 3]
+    # A rerun adds a newer check-run of the same name: only the latest counts,
+    # and a latest that is still running is not red yet.
+    latest: dict[str, list[str]] = {}
+    for r in rows:
+        if r[0] != "lint" and not r[0].startswith("test-linux"):
+            continue
+        old = latest.get(r[0])
+        if old is None or _run_id(r) >= _run_id(old):
+            latest[r[0]] = r
+    bad = [
+        r for r in latest.values() if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
+    ]
+    if not bad:
+        return None
+    urls: list[str] = []
+    for r in bad:
+        for u in (r[3], r[4] if len(r) > 4 else ""):
+            if u and u not in urls:
+                urls.append(u)
+    run_id = ""
+    for u in urls:
+        m = re.search(r"/actions/runs/(\d+)", u)
+        if m:
+            run_id = m.group(1)
+            break
+    return {"jobs": [r[0] for r in bad], "urls": urls, "run_id": run_id}
+
+
+def marker_path() -> Path:
+    """`.release-owner` at THIS worktree's root (round.json is shared by all)."""
+    top = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    ).stdout.strip()
+    return Path(top or Path.cwd()) / ".release-owner"
+
+
+def read_owner() -> dict[str, Any]:
+    try:
+        data = json.loads(marker_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_owner(branch: str, base: str, cut_at: str) -> None:
+    path = marker_path()
+    data = {
+        "branch": branch,
+        "base": base,
+        "cut_at": cut_at,
+        "worktree": str(path.parent),
+    }
+    path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+
+
+def clear_owner() -> None:
+    marker_path().unlink(missing_ok=True)
+
+
+def owns(rel: dict[str, Any]) -> bool:
+    """This worktree cut the recorded release (marker matches branch + base)."""
+    mark = read_owner()
+    return bool(
+        rel
+        and mark.get("branch") == rel.get("branch")
+        and mark.get("base") == rel.get("base")
+    )
+
+
+def gate_facts() -> dict[str, Any]:
+    cp = rnd("gate", "--json")
+    try:
+        data = json.loads(cp.stdout)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def next_line(sha: str) -> str:
+    return (
+        f"next: verify runtime, then scripts/round deploy --confirm-runtime {sha} "
+        "--runtime-evidence '<observed services/boot SHAs/readiness/session MCP>' "
+        "&& scripts/round close"
+    )
+
+
+def pending_sha(rel: dict[str, Any], default: str) -> str:
+    dep = rel.get("deployment") or {}
+    return str(dep.get("sha") or default)
+
+
+def wait_ci(branch: str, args: argparse.Namespace) -> int:
+    """0 = release head is green; else the exit code to return."""
+    deadline = time.monotonic() + args.ci_timeout * 60
+    warned = False
+    say(f"waiting for CI on {branch}")
+    while True:
+        facts = gate_facts()
+        head = str(facts.get("release_head") or "")
+        cand = str(facts.get("candidate") or "")
+        if facts.get("candidate_state") == "release_missing":
+            return die(1, f"release {branch} is missing on origin — investigate")
+        if head and cand == head:
+            say(f"CI green on {branch} at {head[:9]}")
+            return 0
+        if head:
+            red = ci_red(head)
+            if red is False:
+                if not warned:
+                    say("gh unreadable: polling `round gate` only (no early red)")
+                    warned = True
+            elif isinstance(red, dict):
+                # `gh run rerun` can lag the old failure: confirm one poll later
+                time.sleep(args.poll)
+                red = ci_red(head)
+            if isinstance(red, dict):
+                print(
+                    f"CI red on {branch} at {head[:9]} — failing: {', '.join(red['jobs'])}",
+                    file=sys.stderr,
+                )
+                for u in red["urls"]:
+                    print(f"  {u}", file=sys.stderr)
+                if red["run_id"]:
+                    print(
+                        f"  gh run view {red['run_id']} --log-failed", file=sys.stderr
+                    )
+                print(
+                    f"{branch} left in place: fix via scripts/ship --release, "
+                    "or abandon with scripts/round cut --abandon",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 2
+        if time.monotonic() >= deadline:
+            return die(
+                2,
+                f"CI not green after {args.ci_timeout:g} min on {branch} (left in place)",
+            )
+        time.sleep(args.poll)
+
+
+def deploy_and_close(sha: str) -> int:
+    rc = rnd("deploy", stream=True).returncode
+    if rc == 3:
+        cur = round_state() or {}
+        say(next_line(pending_sha(cur.get("release") or {}, sha)))
+        return 3
+    if rc != 0:
+        return die(
+            rc,
+            "deploy failed — the release pin is retained; fix and re-run "
+            "scripts/release (it resumes) or scripts/round deploy",
+        )
+    cur = round_state() or {}
+    if cur.get("open") and cur.get("deployed") and not cur.get("release"):
+        if rnd("close", stream=True).returncode:
+            return 0  # deployed; keep the marker, a re-run retries the close
+    clear_owner()
+    return 0
+
+
+def run(args: argparse.Namespace) -> int:
+    queue_deadline = time.monotonic() + args.queue_timeout * 60
+    queued_said = False
+    races = 0
+    while True:
+        fetch()
+        if args.sha:
+            s = rev(args.sha)
+            if not s:
+                return die(1, f"scripts/release: {args.sha} is not a commit here")
+        else:
+            s = rev("origin/main")
+            if not s:
+                return die(1, "scripts/release: cannot resolve origin/main")
+        s9 = s[:9]
+        line = (
+            git("rev-list", "--first-parent", "refs/remotes/origin/main") or ""
+        ).split()
+        if s not in line:
+            return die(
+                1, f"scripts/release: {s9} is not on origin/main's first-parent line"
+            )
+        cur = round_state()
+        if cur is None:
+            return die(1, "scripts/release: cannot read `scripts/round status --json`")
+        rel = cur.get("release") or {}
+        if args.adopt and rel and not args.dry_run and not owns(rel):
+            print(
+                f"warning: adopting release {rel.get('branch')} cut elsewhere — "
+                "the cutting session must not also deploy it",
+                file=sys.stderr,
+                flush=True,
+            )
+            write_owner(
+                str(rel.get("branch")), str(rel.get("base")), str(rel.get("cut_at"))
+            )
+        mine = owns(rel)
+        owner = read_owner()
+        deployed = cur.get("deployed") or {}
+        closing = bool(
+            cur.get("open")
+            and deployed
+            and not rel
+            and owner.get("branch")
+            and owner.get("branch") == deployed.get("branch")
+        )
+        if closing and not args.dry_run:
+            # we deployed this round and its close never landed: retry it
+            cp = rnd("close")
+            sys.stdout.write(cp.stdout)
+            if cp.returncode:
+                sys.stderr.write(cp.stderr)
+                print("warning: `round close` failed; re-run retries", file=sys.stderr)
+            else:
+                clear_owner()
+                cur = round_state() or cur
+        elif owner and not mine and not args.dry_run:
+            clear_owner()  # recorded release is gone/retired or someone else's
+        dep = rel.get("deployment") or {}
+        dsha = str(dep.get("sha") or "")
+        if (
+            mine
+            and dep.get("rollout_at")
+            and not dep.get("runtime_confirmed_at")
+            and rev(dsha)
+            and ancestor(s, dsha)
+        ):
+            # prod already holds it, but the coordinator has not confirmed runtime
+            say(f"resuming release {rel.get('branch')}: rollout done, {s9} pinned")
+            say(next_line(dsha))
+            return 3
+        prod = remote("refs/heads/prod") or ""
+        if prod and not rev(prod):
+            git("fetch", "-q", "origin", "prod")
+        if prod and rev(prod) and ancestor(s, prod):
+            say(f"already live: {s9} is in origin/prod {prod[:9]}")
+            return 0
+
+        branches = release_branches()
+        if branches is None:
+            return die(1, "scripts/release: cannot read origin's branches")
+        if rel and rel.get("branch") not in branches:
+            branches.append(rel["branch"])  # record without a branch: still in flight
+
+        if branches:
+            if rel and mine:
+                tip, has = head_containing(s, rel["branch"], rel.get("base", ""))
+                return resume(args, s, rel, tip, has)
+            for b in branches:
+                if (
+                    rel
+                    and b == rel["branch"]
+                    and (rel.get("cut_pending") or not remote(f"refs/heads/{b}"))
+                ):
+                    continue  # not (yet) a real release: only its owner resumes
+                tip, has = head_containing(s, b, "")
+                if has:
+                    say(f"riding release {b} at {tip[:9]}: it ships {s9}")
+                    return 0
+            flight = rel.get("branch") if rel else branches[0]
+            if args.dry_run:
+                say(f"would queue: {flight} in flight; wait for it to retire")
+                return 0
+            if not queued_said:
+                say(f"queued: {flight} in flight; waiting for it to retire")
+                queued_said = True
+            if time.monotonic() >= queue_deadline:
+                return die(
+                    4,
+                    f"queued: {flight} still in flight after {args.queue_timeout:g} min — "
+                    f"re-run scripts/release later; {s9} is on main",
+                )
+            time.sleep(args.poll)
+            continue
+
+        # Nothing in flight: prepare the round, then cut.
+        n = int(cur.get("n", 0) or 0)
+        is_open = bool(cur.get("open"))
+        if is_open and cur.get("deployed"):
+            if args.dry_run:
+                say(f"would close round {n} (deployed) and open round {n + 1}")
+                n += 1
+            else:
+                for verb in ("close", "open"):
+                    cp = rnd(verb)
+                    sys.stdout.write(cp.stdout)
+                    if cp.returncode:
+                        sys.stderr.write(cp.stderr)
+                        return 1
+        elif not is_open:
+            if args.dry_run:
+                say(f"would open round {n + 1}")
+                n += 1
+            else:
+                cp = rnd("open")
+                sys.stdout.write(cp.stdout)
+                if cp.returncode:
+                    sys.stderr.write(cp.stderr)
+                    return 1
+        if args.dry_run:
+            return dry_run_plan(s, n, is_open and not cur.get("deployed"))
+
+        rc = cut_and_finish(args, s)
+        if rc == -1:  # lost a cut race
+            races += 1
+            if races > MAX_CUT_RACES:
+                return die(1, "scripts/release: gave up after repeated cut races")
+            continue
+        return rc
+
+
+def dry_run_plan(s: str, n: int, can_ask_cut: bool) -> int:
+    if can_ask_cut:  # `round cut` refuses without an open round
+        cp = rnd("cut", "--sha", s, "--dry-run")
+        sys.stdout.write(cp.stdout)
+        if cp.returncode:
+            sys.stderr.write(cp.stderr)
+    say(f"would cut release/r{n} at {s[:9]}")
+    say("would wait for CI")
+    say("would deploy")
+    return 0
+
+
+def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
+    """Cut (or reconcile our own pending cut), wait for CI, deploy. -1 = not ours."""
+    n = (round_state() or {}).get("n")
+    branch = branch or f"release/r{n}"
+    pre = read_owner()
+    preowned = pre.get("branch") == branch and pre.get("base") == s
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Marker first: a crash between cut and marker must still resume as ours.
+    write_owner(branch, s, stamp)
+    cp = rnd("cut", "--sha", s)
+    sys.stdout.write(cp.stdout)
+    sys.stdout.flush()
+    if cp.returncode:
+        err = cp.stderr
+        if "exists on origin" in err or "already records an open release" in err:
+            clear_owner()  # lost the race: nothing recorded by us
+            sys.stderr.write(err)
+            return -1
+        # Anything else may leave our cut_pending intent recorded: keep ownership.
+        return die(1, err.rstrip())
+    fresh = f" cut at {s[:9]}" in cp.stdout
+    if not (fresh or preowned or args.adopt):
+        clear_owner()  # reconciled someone else's pending cut: not ours
+        return -1
+    rel = (round_state() or {}).get("release") or {}
+    if rel:
+        write_owner(str(rel["branch"]), str(rel["base"]), str(rel.get("cut_at", "")))
+    return finish(args, s)
+
+
+def finish(args: argparse.Namespace, s: str) -> int:
+    cur = round_state() or {}
+    rel = cur.get("release") or {}
+    branch = str(rel.get("branch") or f"release/r{cur.get('n')}")
+    rc = wait_ci(branch, args)
+    if rc:
+        return rc
+    return deploy_and_close(s)
+
+
+def resume(
+    args: argparse.Namespace, s: str, rel: dict[str, Any], tip: str, has: bool
+) -> int:
+    """Act on our own release first; S not in it rides the next release."""
+    branch = str(rel["branch"])
+    dep = rel.get("deployment") or {}
+    if rel.get("cut_pending"):
+        say(f"resuming: {branch} has a pending cut — reconciling")
+        if args.dry_run:
+            say("would reconcile the cut, wait for CI, deploy")
+            return 0
+        # the recorded base, not S: cut refuses a different pending SHA
+        rc = cut_and_finish(args, str(rel["base"]), branch)
+        return die(1, "scripts/release: lost the pending cut") if rc == -1 else rc
+    if has:
+        say(f"resuming release {branch} at {tip[:9]}: it ships {s[:9]}")
+    else:
+        say(
+            f"resuming release {branch} at {tip[:9]}: {s[:9]} is not in it "
+            "and rides the next release"
+        )
+    if dep.get("rollout_at") and not dep.get("runtime_confirmed_at"):
+        say(next_line(pending_sha(rel, s)))
+        return 3
+    if args.dry_run:
+        say("would wait for CI")
+        rc = rnd("deploy", "--dry-run", stream=True).returncode
+        if rc:
+            say(f"(round deploy --dry-run: exit {rc} — expected until CI is green)")
+        return 0
+    facts = gate_facts()
+    head = str(facts.get("release_head") or "")
+    if not (head and facts.get("candidate") == head):
+        rc = wait_ci(branch, args)
+        if rc:
+            return rc
+    return deploy_and_close(s)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="scripts/release",
+        description="Cut a release at main SHA S, wait for CI, deploy it.",
+    )
+    ap.add_argument("--sha", default="", help="commit on origin/main (default: tip)")
+    ap.add_argument("--queue-timeout", type=float, default=120.0, metavar="MIN")
+    ap.add_argument("--ci-timeout", type=float, default=90.0, metavar="MIN")
+    ap.add_argument("--poll", type=float, default=60.0, metavar="SEC")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--adopt",
+        action="store_true",
+        help="take ownership of the recorded release (its cutting session died)",
+    )
+    return run(ap.parse_args(argv))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

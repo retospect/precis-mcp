@@ -1,11 +1,12 @@
 ---
-description: "Implement the agreed spec, ship to main with the local gate, and deploy. Run from a feature worktree."
+description: "Implement the agreed spec, land it to main, cut a release branch from main, gate it on CI and deploy it. Run from a feature worktree."
 argument-hint: "[optional ship/commit message]"
-allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(cat:*), Bash(scripts/mutate-diff:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
+allowed-tools: Bash(scripts/ship:*), Bash(scripts/release:*), Bash(scripts/round:*), Bash(scripts/test:*), Bash(scripts/deploy:*), Bash(fleet:*), Bash(gh:*), Bash(cat:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
 ---
 
 You said **go**. Turn the spec we've established this session into shipped,
-deployed software. Everything mechanical is a script — spend tokens on the
+deployed software: land to main, cut a release branch from main, gate that
+exact sha on CI, deploy it. Everything mechanical is a script — spend tokens on the
 implementation and on genuine failures, nothing else.
 
 Live state at invocation:
@@ -48,145 +49,101 @@ Optional ship message from the user: `$ARGUMENTS`
    before step 5; if you deliberately don't fix one, note why. `clean`, or
    under-threshold, means go straight to step 5.
 
-5. **Ship.** `scripts/ship` is idempotent (re-run resumes cleanly): it does
-   commit WIP → sync (`git fetch` + `git merge` main) → the container gate
-   (auto-fixes ruff, then authoritative `ruff · format · mypy · pytest`) →
-   squash-merge to `main` → reset the branch to the shipped `main` →
-   local-main fast-forward. `/go` deliberately runs the **full** pytest suite
-   here (no `--impacted`) — a deploy ships this code to the whole cluster, so
-   the gate must be authoritative, unlike `/land`'s testmon-narrowed run. The
-   full path also runs the **diff-coverage gate** (changed `src/` lines must
-   be executed by a test, min `PRECIS_DIFF_COVER_MIN`, default 90) —
-   `--mutate` additionally records per-test coverage contexts for step 7's
-   background mutation pass.
+5. **Land to main.** `scripts/ship --quick` is idempotent: commit WIP →
+   sync onto main → lint (ruff · mypy · import contracts · DB-free hygiene
+   tests) → squash-merge. No pytest here: the authoritative gate is CI on the
+   release cut in step 7, which tests main at a frozen sha, so later main
+   pushes cannot change what you deploy.
    ```
-   scripts/ship --mutate --full "<message>"
+   scripts/ship --quick "<message>"
    ```
-   This is also the settle-up step after a `/qland` burst: those merges were
-   ungated, so this full gate validates the *integrated* `main`. When the
-   tree is already identical to `origin/main` (everything qlanded), the
-   script gates it and skips the push instead of minting an empty commit —
-   proceed to deploy on its green exit as usual.
+   Before landing, run the tests you touched with `scripts/test <path or -k>`
+   — a red release blocks every session's next deploy, not only yours.
+   Release CI has no diff-coverage gate yet
+   (`docs/backlog/release-ci-diff-coverage.md`): changed `src/` lines need
+   tests all the same. When the tree already equals `origin/main`
+   (everything qlanded), ship lands nothing; go straight to step 7 — `/go`
+   is also the settle-up after a `/qland` burst.
 
-6. **Handle a red ship.** The script only exits non-zero on something it can't
-   do mechanically. **Do NOT deploy if ship failed.**
-   - **Red gate (mypy/pytest)** — fix the failure printed above the `✖`,
-     re-run `scripts/ship`. Iterate locally with `scripts/test <path or -k>`
-     (same container + test DB, against this worktree). (A lone
-     `UniqueViolation` in an unrelated test is usually shared-`precis_test`
-     pollution — clean the row, re-run.)
-   - **Red diff-coverage gate** — the diff-cover report above the `✖` lists
-     the exact changed lines no test executed. Write tests for them (spawn
-     `test-author` with the uncovered lines as the spec if they're
-     non-trivial) and re-run; `PRECIS_DIFF_COVER_MIN=0 scripts/ship …` is the
-     deliberate, say-why-in-the-ship-message override, not a reflex.
-   - **Flake vs. real — classify before you re-run.** Infra flakes from a
-     concurrent sibling gate look like reds but aren't your code. *Zero
-     output after ruff* / dots stopping mid-run / `gwN crashed` = **OOM-137**;
-     `import file mismatch` / `Different tests collected between gwN` =
-     **colima bind-mount** flake; `database does not exist` / `recovery mode`
-     = **shared test-DB** concurrency. Fix is an **isolated re-run in a quiet
-     window** (let sibling `precis-dev-run` containers clear; optionally
-     `PRECIS_GATE_N=3`) — not churn, log-tail loops, or `PRECIS_GATE_N=0`.
-     Re-touch code only once the failure names *your* changed files.
-   - **Merge conflict** — resolve, `git add -A && git commit`, re-run.
-   - **CAS push rejected** — a sibling shipped first. Ship handles it: it
-     re-gates while attempts remain, then forward-merges main inside the
-     lock and retries the push there (≤5 tries, never another gate). Only
-     the named die after those tries needs a re-run.
-   - A `WARNING:` about the primary main not fast-forwarding is best-effort,
-     not a failure — relay it and continue to deploy.
+6. **Handle a red land.** Lint red: fix what is printed above the `✖`,
+   re-run. Merge conflict: resolve, `git add -A && git commit`, re-run. CAS
+   push rejected: ship forward-merges and retries itself. A `WARNING:` about
+   the primary main not fast-forwarding is best-effort — relay it and
+   continue. **Do not release if the land failed.**
 
-7. **Deploy — the GATED sha, not the branch name.** Only after a green ship,
-   push **exactly the tree the gate validated** to the cluster:
-
-   Two separate Bash calls — the worktree guard refuses a `$(…)` target
-   (it cannot prove the substitution is not git), so read the sha first and
-   pass it literally:
+7. **Release — cut, gate, deploy.** `scripts/release` takes S =
+   `origin/main` (your landed sha plus whatever siblings landed before it)
+   and drives the round machinery: open a round if none is open (close and
+   reopen one that already deployed), `scripts/round cut --sha S` →
+   `release/r<N>`, wait for check.yml's full gate (lint + 6 shards) on that
+   exact head, then `scripts/round deploy`, which deploys the head
+   `--pinned` and moves `gated`/`prod`. Run it in the background, output to
+   a log:
    ```
-   cat .ship-sha
-   scripts/deploy <that 40-hex sha> --pinned
+   scripts/release > .claude/release.log 2>&1; echo "RELEASE_EXIT=$?" >> .claude/release.log
    ```
+   Wait on `^RELEASE_EXIT=` (Bash `run_in_background`), and arm a Monitor on
+   the log for `^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]|queued|riding|red`
+   so silence is never ambiguous. The deploy step still tees to the main
+   checkout's `.deploy-logs/<ts>-<ref>.log`.
 
-   `scripts/ship` wrote `.ship-sha` on its way out (full-gate runs only). Bare
-   `scripts/deploy` resolves the *branch* `main` at deploy time, so a sibling
-   `/qland` landing between your CAS push and that resolution silently sends an
-   **ungated** tree to the fleet while your ship reports green — pinning is what
-   closes that window. If `.ship-sha` is missing, do not deploy. Either the
-   gate was not a full one (`--quick`/bare `--impacted`), or ship printed
-   "not a deploy warrant" because main kept moving and the land was a
-   forward merge of a tree the gate never saw: the round deploys that, not
-   this ship. Do not re-run the gate just to get a pin.
+   | Exit | Meaning | Do |
+   |---|---|---|
+   | 0 | S already in `origin/prod`, or the in-flight release contains S (`riding …`) | nothing to deploy; that release ships it |
+   | 1 | refused: S off main's first-parent line, or a cut guard (migration-number collision, `gated`/`prod` cannot fast-forward) | read the refusal; fix on main, re-run |
+   | 2 | release CI red, or not green by the timeout | see below |
+   | 3 | rollout succeeded; runtime confirmation pending | step 8 |
+   | 4 | another session's release stayed in flight past the queue timeout | S is on main; re-run `scripts/release` later |
+   | other | `scripts/deploy` failed; the pin is retained | surface the failing ansible task verbatim — the cluster may be on mixed versions. Fix, re-run `scripts/release`; it resumes |
 
-   The same fact is published: a green full gate fast-forwards origin's
-   `gated` ref to that sha, and a successful deploy fast-forwards `prod`
-   (`scripts/lib/env-pointers.sh`). From any other worktree, the gated sha is
-   `git rev-parse origin/gated` after a fetch and the cluster's is
-   `origin/prod` — deploy `gated` from there as
-   `git rev-parse origin/gated`, then `scripts/deploy <that sha> --pinned`,
-   never as the branch name. Nobody commits to either ref.
+   **Red release (exit 2).** The log names the failing jobs and the
+   `gh run view <id> --log-failed` line; read its `FAILED` / `E  ` lines.
+   The release branch stays and blocks other sessions' releases until it is
+   fixed or abandoned. Classify flake vs real first — OOM-137, colima
+   bind-mount and shared test-DB failures look like reds but aren't code: a
+   flake is `gh run rerun <id> --failed`, then re-run `scripts/release`. A
+   real failure is fixed onto the release from a fresh tree cut from
+   `origin/release/r<N>` holding only the fix, with
+   `scripts/ship --release "<subject>"` (`.claude/commands/round.md`
+   §Release fixes), then re-run `scripts/release`. If the fix is out of
+   reach: `scripts/round cut --abandon` (only once everything on the
+   release is on main), file it, say so.
 
-   You do not have to get this right from memory: while `.ship-sha` is
-   unconsumed, `scripts/deploy` **refuses** any other target and prints this
-   exact command. A successful deploy of the pin removes the file. If you
-   genuinely mean to deploy something else, that needs `--ignore-pin` — which
-   in a `/go` means you have gone off-script, so stop and say so.
+   Concurrency is ride-along: one release at a time. A `/go` whose sha is in
+   the in-flight release exits 0; one whose sha is not waits for that release
+   to retire, then cuts the next. Only the worktree that cut the release
+   resumes it (CI wait, deploy, runtime confirmation) — it holds the
+   gitignored `.release-owner` marker, removed after `round close`. If the
+   cutting session died, `scripts/release --adopt` from another tree takes
+   ownership; say so. The marker binds `scripts/release` only — a hand-run
+   `scripts/round deploy`/`--confirm-runtime` ignores it, so don't run those
+   on a release another tree owns. Main pushes after the cut never touch the
+   open release. Between 03:00 and 04:20 UTC, deploy refuses a release that
+   adds a migration beyond prod; re-run after the window.
 
-   Run it **in the background, watching the live log**. Never foreground-wait on
-   `scripts/deploy`: its stdout reaches you only at exit, minutes of zero
-   visibility.
-   - Launch it via Bash `run_in_background: true`. Its exit (code + task
-     notification) is the authoritative completion signal.
-   - Two informational lines are **expected**, not failures: a `NOTE: --pinned
-     — deploying … N commit(s) behind origin/main` (that N is the ungated
-     backlog your pin is correctly leaving behind), and, from the next
-     `scripts/ship`, a matching `📦 N commit(s) on main not yet deployed`.
-     Relay the number; it is the signal, not a bug.
-   - It tees every run live to the MAIN checkout's
-     `.deploy-logs/<ts>-<ref>.log` — the path is announced on the script's
-     first `▶` line (read it from the background task's output file). Arm a
-     Monitor on that log covering milestones AND every failure signature,
-     so silence is never ambiguous:
-     ```
-     tail -F "$LOG" | grep -E --line-buffered '^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]'
-     ```
-     TaskStop the monitor once the completion notification lands. Keep
-     working (e.g. step 9's issue-closer prep) between events.
-   The script pings all hosts first (aborts on any unreachable — a partial
-   deploy mixes versions), then runs the ansible redeploy (reinstalls
-   `precis-mcp@<the pinned sha>` into every venv, bounces every daemon, auto-applies
-   pending migrations via the precis-web role). If it exits non-zero,
-   surface the failing ansible task verbatim — the cluster may be on mixed
-   versions; do not declare success.
-
-   **Also launch the mutation pass in parallel** (background, advisory —
-   costs no wall time next to the deploy): `scripts/mutate-diff` bare. It
-   mutates only the just-shipped squash commit's covered `src/` lines and
-   runs each mutant against just its covering tests (the contexts
-   `--mutate` recorded), capped by `PRECIS_MUTATE_MAX`/`_BUDGET`. A sampled
-   survivor is re-run against the full covering set before being reported, so
-   a plain `SURVIVED` line means none of the covering tests (not just the
-   sample) notice that change — treat each survivor as a step-10 residual
-   (add the missing assertion now, or file it); never ignore one silently.
-   Only a note ending `UNVERIFIED, may be a false survivor` (the re-run hit
-   its budget or timeout) needs a manual check first — apply the mutation and
-   run the module's tests — before treating it as real. It's advisory: it
-   cannot fail the ship, and a "no .coverage / skipping" note (e.g. after a
-   docs-only ship) is fine to relay as-is.
-
-8. **Confirm — always end with this exact three-line block** (verify each
-   line, don't assume; check `git rev-parse origin/main` for the sha):
+8. **Verify, confirm, close.** On exit 3, verify the runtime: the deploy's
+   `origin/prod →` line names the sha; `get(kind='skill', id='precis-status')`
+   reports that `git_sha`, the expected migration and the kinds you had
+   before; every required daemon's boot sha and readiness match, including
+   the serving worker. Then run the command the log's `next:` line prints:
    ```
-   Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
-   Pushed:          ✓ origin/main             (the squash-merge IS the push)
-   Deployed:        ✓ cluster running <sha>   (or ✗ — deploy failed above)
+   scripts/round deploy --confirm-runtime <S> --runtime-evidence "<services, boot SHAs, readiness, session MCP>" && scripts/round close
    ```
-   Use ✗ on any line that did not happen (a red gate → all three ✗; a green
-   ship but failed deploy → first two ✓, deploy ✗). If the local primary
-   `main` didn't fast-forward, add the `WARNING:` line as a fourth line.
+   That publishes `deployed/r<N>`, deletes the release branch and closes
+   the round. Every deploy restarts the shared session MCP: `fleet say` the
+   sha, restart time and "verify a write landed before retrying". End with
+   this exact three-line block (verify each line against `origin/main` and
+   `origin/prod`):
+   ```
+   Merged to main:  ✓ <sha> on origin/main   (or ✗ — land failed above)
+   Released:        ✓ release/r<N> at <S>, CI green   (or ✗ / riding r<N> / queued)
+   Deployed:        ✓ cluster running <S>     (or ✗ — deploy failed above)
+   ```
+   If the local primary `main` didn't fast-forward, add the `WARNING:` line
+   as a fourth line.
 
 9. **Close what this ship resolved (background, non-blocking) — only if step 8
-   confirmed ✓ (merged, regardless of deploy status).** If the ship itself
+   confirmed ✓ (merged, regardless of release/deploy status).** If the ship itself
    failed (✗ on the "Merged to main" line), skip this step entirely — there
    is no new shipped sha to check. Otherwise spawn a background
    `issue-closer` agent with the sha just confirmed in step 8 (not a
