@@ -161,6 +161,8 @@ gr346534, soft-deleted)
    the container claimed 53 nursery jobs and failed all 53, plus 16 axis jobs
    likewise, under an identity nobody can contact, alert on, or trace once
    `worker_logs` prunes (around 2026-10-09, after which the evidence is gone).
+   Ruled 2026-10-11 (Reto): such identities may keep claiming; record an
+   attribution event per claim instead of refusing.
    Left on the Horizon only as a pointer — Do-next 4 is the narrow read-only
    slice of it and is still this thread's.
 2. **backlog/alert-failure-id-registry.md** — the registry, `/rules`

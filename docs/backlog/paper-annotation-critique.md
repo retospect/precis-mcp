@@ -118,8 +118,9 @@ which-pipe-it-came-through. `set_by` keeps meaning `user` vs `agent`.
   count. Pushing opinion text into draft citation views would put
   unreviewed annotation next to the paper's own claims — the boundary
   `cite-findings-only` and the draft-faithfulness policy already defend.
-- **Dream consolidation over notes.** Deliberately undecided — gripe 372794
-  holds the argument. Do not wire notes into `supersede` in this cut.
+- **Dream consolidation over notes.** Decided yes (Reto 2026-10-11, gripe
+  372794): notes participate, critiques stay out. A follow-up cut, not this
+  one — do not wire notes into `supersede` here.
 - **Threading / replies.** A flat, author-attributed accumulation. Rebuttal
   is another note.
 
@@ -164,7 +165,8 @@ budget in the acceptance criteria is the thing to watch post-deploy.
   two relations, rendered as two sections under independent caps.
 - **Decided 2026-09-20:** notes render for every agent, always attributed.
 - **Decided 2026-09-20:** agents read but do not write notes in this cut.
-- **Decided 2026-09-20:** dream consolidation deferred → gripe 372794.
+- **Decided 2026-10-11 (Reto):** review notes feed dream consolidation;
+  critiques do not (gripe 372794).
 - **Open:** does the Meta default apply to the whole reader family (cfp,
   datasheet) or papers only?
 - **Decided 2026-09-24 (Reto): slice boundary = hand-anchor now, merge C

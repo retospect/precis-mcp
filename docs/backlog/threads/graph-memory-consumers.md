@@ -196,9 +196,9 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 9. **gr440078** — how LLM-driven paper access during live note-taking
    interacts with dreaming, request load and stats (front-pinning burst
    budget, per-session stub stats, the interactive-lane question).
-10. **gr372794** — whether paper review notes should participate in dream
-    consolidation; deferred by Reto 2026-09-20 pending a decision on
-    anchor loss and the autoreviewer-volume question.
+10. **gr372794** — paper review notes participate in dream consolidation,
+    critiques do not (Reto 2026-10-11). Unbuilt; anchor loss and
+    autoreviewer volume are design inputs for the cut, not open questions.
 
 ## Parked
 
