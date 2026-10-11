@@ -6,7 +6,7 @@ allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:
 
 You are the coordinator of a peer round. Many sessions land onto `main` with
 `/qland` (no pytest); main's GitHub CI samples the newest sha about once
-per run (~45 min, a running run is never cancelled), and one
+per run (~45 min; a running run is never cancelled, but a pending one is replaced by the next push, so most shas get no verdict), and one
 session — you — freezes a green main SHA as a release and puts that release head on the cluster. A round is one pass of that.
 Outside a fleet, `/go` runs the same pass for one release through
 `scripts/release` (open → `cut --sha` → wait CI → `deploy` → confirm →
@@ -46,7 +46,9 @@ Note from the user: `$ARGUMENTS`
    ```
    The candidate is the newest main sha whose GitHub CI verdict is fully
    green (lint + every `test-linux` shard; main's CI samples the newest
-   sha about once per run and never cancels a running one). It prints the candidate, its verdict age,
+   sha about once per run; a pending run is replaced by the next push). When
+   busy main yields no green sha, `scripts/round cut --sha S` at the last green
+   one and gate the release instead (its CI is never replaced). It prints the candidate, its verdict age,
    `origin/gated` / `origin/prod`, and how many docs-only and code commits
    main is ahead of it. No local suite runs and no ship lock is taken, so
    peers' qlands never queue behind the round. A peer's sha that is not yet

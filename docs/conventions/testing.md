@@ -95,6 +95,17 @@ platform-only break therefore surfaces the next morning, off the ship that
 caused it — `tests/test_posix_only_guards.py` is the compile-time stand-in
 for the Windows leg.
 
+**Pending main runs are replaced (gr479090).** Main's group never cancels a
+*running* run (`cancel-in-progress` is false), but GitHub keeps at most one
+*pending* run per group: a push that queues behind a running run replaces the
+older pending one, which ends `cancelled` with zero jobs. Under a busy
+fleet most main shas therefore never get a verdict (2026-10-11: 33 of 40 runs
+cancelled, 5 went green). Don't expect a
+specific main sha to be gated; to gate a fixed sha, cut `release/r<N>`
+(`scripts/round cut --sha S`) — release refs get a group per sha and are never
+replaced. Keying main by sha would give every push a verdict but cost a full
+run per push (see the check.yml concurrency note).
+
 Tiers, fastest to most complete — pick by what you changed:
 
 - **`--impacted`** is the tightest inner loop: `pytest-testmon` maps
