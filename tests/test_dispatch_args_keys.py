@@ -37,6 +37,7 @@ PASSTHROUGH = [
     ("structure", "get"),
     ("random", "get"),
     ("time", "get"),
+    ("paper", "put"),
     # Plugin handlers (entry point group ``precis.handlers``).
     ("estimate", "get"),
     ("pathway", "get"),

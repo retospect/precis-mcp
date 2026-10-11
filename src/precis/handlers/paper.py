@@ -264,6 +264,9 @@ class PaperHandler(Handler):
 
     #: ingest of third-party papers (cfp/datasheet inherit): the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "put": frozenset({"pdf_url"}),
+    }
 
     stamps_recall = True
 
