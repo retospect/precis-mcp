@@ -75,19 +75,27 @@ def test_title_only_acquire_of_held_paper_is_idempotent(store: Store) -> None:
         store,
         n=1,
         slug="vaswani17",
-        title="Attention Is All You Need",
+        title="Attention Mechanisms Replace Recurrence Entirely Transformer Architecture",
         authors=("Ashish Vaswani",),
         year=2017,
     )
     ref_id, created = store.upsert_stub_paper(
-        identifiers=[], title="Attention Is All You Need", year=2017
+        identifiers=[],
+        title="Attention Mechanisms Replace Recurrence Entirely Transformer Architecture",
+        year=2017,
     )
     assert created is False
     assert ref_id == held
 
 
 def test_title_only_acquire_of_new_paper_still_mints(store: Store) -> None:
-    _held(store, n=2, slug="vaswani17", title="Attention Is All You Need", year=2017)
+    _held(
+        store,
+        n=2,
+        slug="vaswani17",
+        title="Attention Mechanisms Replace Recurrence Entirely Transformer Architecture",
+        year=2017,
+    )
     ref_id, created = store.upsert_stub_paper(
         identifiers=[], title="A Totally Different Paper About Frogs", year=2021
     )
@@ -97,9 +105,17 @@ def test_title_only_acquire_of_new_paper_still_mints(store: Store) -> None:
 
 def test_title_match_but_year_far_off_mints(store: Store) -> None:
     """Same title, incompatible year → not the same paper; mint a stub."""
-    _held(store, n=3, slug="dupe20", title="On the Theory of Widgets", year=2005)
+    _held(
+        store,
+        n=3,
+        slug="dupe20",
+        title="Comprehensive Theory Concerning Widgets Manufacturing Reliability Models",
+        year=2005,
+    )
     ref_id, created = store.upsert_stub_paper(
-        identifiers=[], title="On the Theory of Widgets", year=2020
+        identifiers=[],
+        title="Comprehensive Theory Concerning Widgets Manufacturing Reliability Models",
+        year=2020,
     )
     assert created is True
 
@@ -112,14 +128,17 @@ def test_reconcile_folds_leaked_stub_into_held(store: Store) -> None:
         store,
         n=4,
         slug="vaswani17",
-        title="Attention Is All You Need",
+        title="Attention Mechanisms Replace Recurrence Entirely Transformer Architecture",
         authors=("Ashish Vaswani",),
         year=2017,
     )
     # A pre-existing leaked stub (predates the mint guard): id-less,
     # title-only, no PDF — insert directly to bypass the guard.
     stub = store.insert_ref(
-        kind="paper", slug="attention17", title="Attention Is All You Need", year=2017
+        kind="paper",
+        slug="attention17",
+        title="Attention Mechanisms Replace Recurrence Entirely Transformer Architecture",
+        year=2017,
     ).id
 
     dry = reconcile_by_title_similarity(store, dry_run=True)
@@ -138,10 +157,16 @@ def test_reconcile_folds_leaked_stub_into_held(store: Store) -> None:
 
 def test_reconcile_skips_stub_with_external_id(store: Store) -> None:
     """A stub carrying a DOI is out of scope — the id paths handle it."""
-    _held(store, n=5, slug="held5", title="Graphene Synthesis Routes", year=2019)
+    _held(
+        store,
+        n=5,
+        slug="held5",
+        title="Graphene Synthesis Routes Using Chemical Vapor Deposition Methods",
+        year=2019,
+    )
     stub, _ = store.upsert_stub_paper(
         identifiers=[("doi", "10.1/xyz")],
-        title="Graphene Synthesis Routes",
+        title="Graphene Synthesis Routes Using Chemical Vapor Deposition Methods",
         year=2019,
     )
     applied = reconcile_by_title_similarity(store, dry_run=False)
@@ -162,7 +187,10 @@ def test_no_merge_into_held_flag_without_chunks(store: Store) -> None:
     have content we don't. Declining is the truthful choice; if that ref
     later gains chunks, the next reconcile pass will merge then."""
     ref = store.insert_ref(
-        kind="paper", slug="flag20", title="Ghost Paper Title", year=2020
+        kind="paper",
+        slug="flag20",
+        title="Ghost Paper Concerning Phantom Measurement Artifacts Thoroughly",
+        year=2020,
     )
     with store.pool.connection() as conn:
         with conn.transaction():
@@ -178,7 +206,10 @@ def test_no_merge_into_held_flag_without_chunks(store: Store) -> None:
             )
             # deliberately NO chunk insert
     stub = store.insert_ref(
-        kind="paper", slug="ghost20", title="Ghost Paper Title", year=2020
+        kind="paper",
+        slug="ghost20",
+        title="Ghost Paper Concerning Phantom Measurement Artifacts Thoroughly",
+        year=2020,
     ).id
     applied = reconcile_by_title_similarity(store, dry_run=False)
     assert all(stub not in o.duplicate_ref_ids for o in applied)
@@ -186,7 +217,9 @@ def test_no_merge_into_held_flag_without_chunks(store: Store) -> None:
 
     # And the mint-time guard likewise won't collapse onto the ghost.
     rid, created = store.upsert_stub_paper(
-        identifiers=[], title="Ghost Paper Title", year=2020
+        identifiers=[],
+        title="Ghost Paper Concerning Phantom Measurement Artifacts Thoroughly",
+        year=2020,
     )
     assert created is True
     assert rid != ref.id
@@ -212,3 +245,97 @@ def test_reconcile_does_not_auto_merge_a_weak_match(store: Store) -> None:
     applied = reconcile_by_title_similarity(store, dry_run=False, review_out=review)
     assert all(stub not in o.duplicate_ref_ids for o in applied)
     assert _ref_state(store, stub)["deleted"] is False
+
+
+# ── corroboration gate (gr264748) ─────────────────────────────────
+
+
+def _reviews_for(store: Store) -> tuple[list, list[TitleMatchReview]]:
+    review: list[TitleMatchReview] = []
+    applied = reconcile_by_title_similarity(store, dry_run=False, review_out=review)
+    return applied, review
+
+
+def test_title_merge_requires_corroboration(store: Store) -> None:
+    """Same title but NULL stub year -> review, not merge; a 3-token title
+    with the same year -> review as well."""
+    held = _held(
+        store,
+        n=20,
+        slug="held20",
+        title="Defects in Carbon Nanotubes",
+        year=2002,
+    )
+    stub = store.insert_ref(
+        kind="paper", slug="defects", title="Defects in Carbon Nanotubes", year=None
+    ).id
+    applied, review = _reviews_for(store)
+    assert all(stub not in o.duplicate_ref_ids for o in applied)
+    assert _ref_state(store, stub)["deleted"] is False
+    assert [(r.stub_ref_id, r.held_ref_id) for r in review] == [(stub, held)]
+
+    # Same year but only 3 distinctive tokens (< 5) -> still review.
+    stub2 = store.insert_ref(
+        kind="paper", slug="defects02", title="Defects in Carbon Nanotubes", year=2002
+    ).id
+    applied, review = _reviews_for(store)
+    assert all(stub2 not in o.duplicate_ref_ids for o in applied)
+    assert _ref_state(store, stub2)["deleted"] is False
+    assert any(r.stub_ref_id == stub2 and r.reason == "short-title" for r in review)
+
+
+def test_title_merge_refuses_null_year_and_author_mismatch(store: Store) -> None:
+    title = "Attention Mechanisms Replace Recurrence Entirely Transformer Architecture"
+    held = _held(
+        store, n=21, slug="held21", title=title, authors=("Ashish Vaswani",), year=2017
+    )
+    nullyear = store.insert_ref(kind="paper", slug="ny17", title=title).id
+    other = store.insert_ref(
+        kind="paper",
+        slug="oa17",
+        title=title,
+        authors=[{"name": "Jane Doe"}],
+        year=2017,
+    ).id
+    applied, review = _reviews_for(store)
+    assert all(
+        nullyear not in o.duplicate_ref_ids and other not in o.duplicate_ref_ids
+        for o in applied
+    )
+    reasons = {r.stub_ref_id: r.reason for r in review}
+    assert reasons[nullyear] == "year-unknown"
+    assert reasons[other] == "author-mismatch"
+    assert _ref_state(store, held)["deleted"] is False
+
+
+def test_upsert_stub_paper_short_title_mints(store: Store) -> None:
+    held = _held(
+        store, n=22, slug="held22", title="Defects in Carbon Nanotubes", year=2002
+    )
+    for year in (None, 2002):
+        ref_id, created = store.upsert_stub_paper(
+            identifiers=[], title="Defects in Carbon Nanotubes", year=year
+        )
+        assert created is True
+        assert ref_id != held
+
+
+def test_upsert_stub_paper_yearless_long_title_returns_held(store: Store) -> None:
+    """A year-less title-only acquire of a held paper stays idempotent."""
+    title = "Attention Mechanisms Replace Recurrence Entirely Transformer Architecture"
+    held = _held(store, n=23, slug="held23", title=title, year=2017)
+    ref_id, created = store.upsert_stub_paper(identifiers=[], title=title, year=None)
+    assert created is False
+    assert ref_id == held
+
+
+def test_first_family_normalisation() -> None:
+    from precis.utils.title_merge import _first_family
+
+    assert _first_family([{"name": "Anna van der Berg"}]) == _first_family(
+        [{"family": "Berg"}]
+    )
+    assert _first_family([{"family": "Müller"}]) == _first_family(
+        [{"name": "Hans Muller"}]
+    )
+    assert _first_family([{"name": "Smith, J."}]) == "smith"

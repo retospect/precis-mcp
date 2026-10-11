@@ -474,6 +474,38 @@ class TestReconcileOrphanStub:
         # supersedes edge recorded for audit.
         assert link is not None
 
+    def test_orphan_stub_fold_rejects_title_mismatch(self, store, caplog):
+        """gr264748 (pa42497 -> pa42939): a stub named by handle whose title
+        shares nothing with the PDF's ref/body is left live."""
+        survivor = store.insert_ref(
+            kind="paper", slug="stannyne24", title="Stannynes from tin hydrides"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (survivor.id, "Organotin hydride addition to alkynes."),
+            )
+            conn.commit()
+        stub = store.insert_ref(
+            kind="paper", slug="graphene24", title="Metal graphene nanotube networks"
+        )
+        with store.pool.connection() as conn:
+            with caplog.at_level("WARNING", logger="precis.ingest.add"):
+                merged = _reconcile_orphan_stub(
+                    store,
+                    survivor_ref_id=survivor.id,
+                    file_stem=f"pa{stub.id}",
+                    conn=conn,
+                )
+            conn.commit()
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()[0]
+        assert merged is None
+        assert retired is None
+        assert any("not folding stub" in r.message for r in caplog.records)
+
     def test_noop_when_no_matching_stub(self, store):
         survivor = store.insert_ref(kind="paper", slug="solo24", title="No twin")
         with store.pool.connection() as conn:
@@ -760,7 +792,7 @@ class TestSidecarFold:
 
         # Orphan stub: good full DOI, named after its cite_key (= file stem).
         stub = store.insert_ref(
-            kind="paper", slug="fair26", title="FAIR Data and the Future"
+            kind="paper", slug="fair26", title="Quantum Error Correction in Practice"
         )
         with store.pool.connection() as conn:
             conn.execute(

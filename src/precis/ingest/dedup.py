@@ -37,6 +37,7 @@ from typing import Any
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
+from precis.utils.title_merge import title_merge_refusal
 
 log = logging.getLogger(__name__)
 
@@ -481,7 +482,7 @@ _TITLE_REVIEW_SIM = 0.6
 #: (A stub carrying any external id is reconcile-able by the DOI/pdf paths
 #: and chaseable by fetch_oa, so it's out of scope here.)
 _TITLE_STUB_SQL = """
-    SELECT r.ref_id, r.title, r.year
+    SELECT r.ref_id, r.title, r.year, r.authors
       FROM refs r
      WHERE r.kind = 'paper' AND r.retired_at IS NULL
        AND r.pdf_sha256 IS NULL AND r.title IS NOT NULL
@@ -500,21 +501,15 @@ class TitleMatchReview:
     held_ref_id: int
     sim: float
     stub_title: str
-    reason: str  # 'low-similarity' | 'year-mismatch'
+    # 'low-similarity' | title_merge_refusal reason ('short-title',
+    # 'year-unknown', 'year-mismatch', 'author-mismatch')
+    reason: str
 
     def line(self) -> str:
         return (
             f"REVIEW stub #{self.stub_ref_id} ~ held #{self.held_ref_id} "
             f"(sim {self.sim:.2f}, {self.reason}): {self.stub_title[:48]}"
         )
-
-
-def _years_compatible(stub_year: int | None, held_year: int | None) -> bool:
-    """A preprint and its published version can differ by a year; allow ±1.
-    Unknown on either side isn't evidence of a mismatch, so it passes."""
-    if stub_year is None or held_year is None:
-        return True
-    return abs(int(stub_year) - int(held_year)) <= 1
 
 
 def reconcile_by_title_similarity(
@@ -529,9 +524,11 @@ def reconcile_by_title_similarity(
 
     For each live, PDF-less, identifier-less paper stub, find the best
     trigram-title match among *held* papers. A match at/above
-    :data:`_TITLE_AUTO_SIM` with a compatible year auto-merges (the held
-    copy is always the survivor). Matches in the review band — lower
-    similarity, or high similarity with disagreeing years — are appended
+    :data:`_TITLE_AUTO_SIM` that also passes :func:`title_merge_refusal`
+    (>=5 title tokens, matching known years, agreeing first author)
+    auto-merges (the held copy is always the survivor). Matches in the
+    review band — lower similarity, or high similarity the corroboration
+    gate refuses — are appended
     to ``review_out`` (when provided) and never merged. Dry-run (default)
     plans the merges without writing. Returns one :class:`ReconcileOutcome`
     per auto-merged stub.
@@ -542,11 +539,12 @@ def reconcile_by_title_similarity(
         stubs = stubs[:limit]
 
     outcomes: list[ReconcileOutcome] = []
-    for stub_id, stub_title, stub_year in stubs:
+    for stub_id, stub_title, stub_year, stub_authors in stubs:
         stub_id = int(stub_id)
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT r.ref_id, r.year, similarity(r.title, %s) AS sim "
+                "SELECT r.ref_id, r.year, similarity(r.title, %s) AS sim, "
+                "       r.title, r.authors "
                 "FROM refs r "
                 "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                 "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
@@ -561,10 +559,13 @@ def reconcile_by_title_similarity(
         if row is None:
             continue
         held_id, held_year, sim = int(row[0]), row[1], float(row[2])
+        held_title, held_authors = row[3], row[4]
         if held_id == stub_id:  # defensive; a stub has no PDF so can't self-match
             continue
-        years_ok = _years_compatible(stub_year, held_year)
-        if sim >= _TITLE_AUTO_SIM and years_ok:
+        refusal = title_merge_refusal(
+            stub_title, stub_year, stub_authors, held_title, held_year, held_authors
+        )
+        if sim >= _TITLE_AUTO_SIM and refusal is None:
             if dry_run:
                 outcomes.append(
                     ReconcileOutcome(held_id, [stub_id], stub_title[:24], "title")
@@ -592,7 +593,7 @@ def reconcile_by_title_similarity(
                     held_ref_id=held_id,
                     sim=sim,
                     stub_title=stub_title or "",
-                    reason="year-mismatch" if not years_ok else "low-similarity",
+                    reason=refusal if refusal is not None else "low-similarity",
                 )
             )
     return outcomes
@@ -607,4 +608,5 @@ __all__ = [
     "reconcile_by_doi_case",
     "reconcile_by_pdf_sha256",
     "reconcile_by_title_similarity",
+    "title_merge_refusal",
 ]

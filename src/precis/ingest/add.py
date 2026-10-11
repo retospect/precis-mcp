@@ -932,6 +932,41 @@ def _warn_skipped_cite_key_match(conn: Any, *, stem: str, exclude_ref_id: int) -
         )
 
 
+#: Leading body chunks of the survivor searched for the stub's title tokens.
+_FOLD_EVIDENCE_CHUNKS = 5
+
+
+def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> bool:
+    """True when the stub's title overlaps the survivor's title/leading body.
+
+    Needs ``min(2, len(stub tokens))`` shared distinctive tokens
+    (:func:`~precis.ingest.verify_metadata.title_overlap`); a stub with no
+    usable title tokens cannot be corroborated and is not folded.
+    """
+    from precis.ingest.verify_metadata import content_tokens, title_overlap
+
+    srow = conn.execute(
+        "SELECT title FROM refs WHERE ref_id = %s", (stub_id,)
+    ).fetchone()
+    stub_title = (srow[0] if srow else None) or ""
+    need = min(2, len(content_tokens(stub_title)))
+    if need == 0:
+        return False
+    vrow = conn.execute(
+        "SELECT title FROM refs WHERE ref_id = %s", (survivor_ref_id,)
+    ).fetchone()
+    parts = [(vrow[0] if vrow else None) or ""]
+    parts += [
+        r[0] or ""
+        for r in conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "AND retired_at IS NULL ORDER BY ord LIMIT %s",
+            (survivor_ref_id, _FOLD_EVIDENCE_CHUNKS),
+        ).fetchall()
+    ]
+    return title_overlap(stub_title, "\n".join(parts)) >= need
+
+
 def _reconcile_orphan_stub(
     store: Store,
     *,
@@ -1019,6 +1054,20 @@ def _reconcile_orphan_stub(
         _warn_skipped_cite_key_match(conn, stem=stem, exclude_ref_id=survivor_ref_id)
         return None
     stub_id = int(row[0])
+
+    # Corroboration (gr264748): the filename/handle link alone folded
+    # unrelated papers (pa42497 -> pa42939). Require the stub's title to
+    # share distinctive tokens with the survivor's title or leading body.
+    if not _stub_title_corroborated(conn, stub_id, survivor_ref_id):
+        log.warning(
+            "precis_add: not folding stub ref_id=%s into survivor ref_id=%s "
+            "(stem=%r): stub title shares no distinctive tokens with the "
+            "survivor's title/leading body — stub left live",
+            stub_id,
+            survivor_ref_id,
+            stem,
+        )
+        return None
 
     # Move external bibliographic identifiers onto the survivor so a
     # future probe_existing() dedups by DOI/arXiv/S2 directly — the very

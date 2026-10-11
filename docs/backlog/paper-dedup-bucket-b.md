@@ -20,20 +20,18 @@ Ops-gated resolve-metadata runs plus the standing-worker follow-up.
   `src/precis/cli/watch.py` and skip silently; verify the 7 split orphans
   self-heal post-deploy.
 
-## Systemic: title auto-merge is unsafe and cannot be undone (gr264748)
+## Systemic: paper unmerge + bad-merge data repair (gr264748)
 
-Bundled in the 2026-10-11 gripe triage. Title-similarity auto-merge fuses
-distinct papers and nothing can split them again.
+The corroboration gates shipped (title auto-merge needs >=5 title tokens,
+matching known years and agreeing first author; the orphan-stub filename/handle
+fold needs title overlap with the PDF). What is left:
 
-- Tighten the title auto-merge gate (`_TITLE_AUTO_SIM` in
-  `src/precis/ingest/dedup.py`) and require corroboration (year, first
-  author, or a shared identifier) before an auto-merge; a bare title match
-  goes to the review lane.
-- Build a paper unmerge primitive. None exists: a wrong merge is permanent
-  today. It must restore the absorbed ref's identifiers, chunks and links
-  from the merge record.
-- Data repair: fix pa2069 and pa42497 (wrongly merged), after the unmerge
-  primitive exists.
+- Build a paper unmerge primitive (`unmerge_duplicate`). None exists: a wrong
+  merge is permanent today. It must restore the absorbed ref's identifiers,
+  chunks and links from the merge record.
+- Data repair: fix pa2069 (handle collision, ~25 rows in dc1519359 cite it for
+  unrelated papers) and pa42497->pa42939 (wrongly merged), after the unmerge
+  primitive exists; then sweep the pa4249x range for the same pattern.
 
-Size: L. Who: agent-code (gate, corroboration, unmerge); the pa2069/pa42497
-repair is ops after unmerge lands.
+Size: M. Who: agent-code (unmerge); the pa2069/pa42497 repair is ops after
+unmerge lands.

@@ -738,8 +738,10 @@ class RefsMixin:
             # title against *held* papers; a high-confidence hit returns
             # the held ref instead of inserting, so a title-only
             # re-acquire is idempotent too. Gated tight (held-only,
-            # trigram sim >= 0.85, publication year within 1 when both are
-            # known) so a genuinely-new paper still mints. See
+            # trigram sim >= 0.85 plus ``title_merge_refusal`` corroboration:
+            # >=5 title tokens, years within 1 (a missing year needs sim
+            # >= 0.95); no author check, the stub has none) so a
+            # genuinely-new paper still mints. See
             # ingest/dedup.py (Phase 3).
             if not norm and title and title.strip():
                 # "Truly held" = a real, ingested copy: a pdf_sha256 AND
@@ -747,22 +749,38 @@ class RefsMixin:
                 # strict gate — it rules out a bare pdf_sha256 flag on a
                 # never-ingested ref, so the guard only ever collapses a
                 # title-only acquire onto a paper we demonstrably have.
-                held = c.execute(
-                    "SELECT r.ref_id FROM refs r "
+                from precis.utils.title_merge import title_merge_refusal
+
+                cands = c.execute(
+                    "SELECT r.ref_id, r.title, r.year, r.authors, "
+                    "       similarity(r.title, %s) FROM refs r "
                     "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
                     "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
                     "  AND similarity(r.title, %s) >= 0.85 "
-                    # Cast the year param: a title-only acquire with no year
-                    # passes NULL, and a bare ``%s IS NULL`` leaves Postgres
-                    # unable to infer the parameter type (IndeterminateDatatype).
-                    "  AND (%s::int IS NULL OR r.year IS NULL "
-                    "       OR abs(r.year - %s::int) <= 1) "
                     f"  AND {has_body_sql('r')} "
-                    "ORDER BY similarity(r.title, %s) DESC, r.ref_id ASC LIMIT 1",
-                    (title, year, year, title),
-                ).fetchone()
-                if held is not None:
-                    return int(held[0]), False
+                    "ORDER BY similarity(r.title, %s) DESC, r.ref_id ASC LIMIT 5",
+                    (title, title, title),
+                ).fetchall()
+                # A bare title match is a weak signal (gr264748): fold only
+                # with >=5 title tokens and a year within 1 on both sides.
+                # A missing year is tolerated only at sim >= 0.95, so a
+                # year-less title-only re-acquire of a held paper stays
+                # idempotent. No author check here (stubs carry none).
+                for cid, ctitle, cyear, cauthors, csim in cands:
+                    if (
+                        title_merge_refusal(
+                            title,
+                            year,
+                            None,
+                            ctitle,
+                            cyear,
+                            cauthors,
+                            sim=float(csim),
+                            unknown_year_min_sim=0.95,
+                        )
+                        is None
+                    ):
+                        return int(cid), False
 
             # No collapse hit — mint a stub. Derive a non-colliding
             # cite_key from the title's first word + year.

@@ -8,6 +8,7 @@ import unicodedata
 from rapidfuzz import fuzz
 
 from precis.ingest.literature import surname_from_name
+from precis.utils.title_merge import _STOPWORDS, content_tokens
 
 # Unicode dashes / hyphens that should all be treated as ASCII hyphen-minus
 _DASH_RE = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]")
@@ -73,53 +74,6 @@ _GREEK_FOLD = str.maketrans(
     }
 )
 
-# Common English stopwords — excluded from word-overlap scoring so it
-# focuses on distinctive content words.
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "of",
-        "in",
-        "on",
-        "at",
-        "to",
-        "for",
-        "by",
-        "with",
-        "and",
-        "or",
-        "but",
-        "not",
-        "from",
-        "into",
-        "onto",
-        "upon",
-        "as",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "this",
-        "that",
-        "these",
-        "those",
-        "its",
-        "it",
-        "via",
-        "using",
-        "based",
-        "new",
-        "novel",
-        "study",
-        "studies",
-        "review",
-    }
-)
 
 # Prefixed-DOI patterns recognised as "this paper's DOI" typographic markers.
 # Bare DOIs in reference lists are deliberately NOT matched — only forms the
@@ -178,25 +132,6 @@ def _word_overlap_score(norm_title: str, norm_text: str) -> float:
         return 0.0
     hits = sum(1 for w in title_words if w in norm_text)
     return 100.0 * hits / len(title_words)
-
-
-def content_tokens(text: str) -> frozenset[str]:
-    """Lowercase alphanumeric tokens (≥4 chars), stopwords dropped.
-
-    The shared tokenizer for :func:`title_overlap` (gr353804) — deliberately
-    a plainer cut than :func:`_word_overlap_score`'s substring matching:
-    that function tolerates pluralisation/prefix variants on purpose (a
-    *real* paper's title vs its own PDF text), while ``title_overlap``
-    exists to catch the opposite case — a registry hit with NO genuine
-    relationship to the PDF at all — where exact-token intersection is
-    the cleaner signal (no risk of a short substring like "the" tucked
-    inside an unrelated word inflating the count; ``\\w`` already excludes
-    that here since stopwords are filtered post-tokenization, not via
-    substring).
-    """
-    return frozenset(
-        w for w in re.findall(r"[a-z0-9]{4,}", text.lower()) if w not in _STOPWORDS
-    )
 
 
 def title_overlap(registry_title: str, chunk_text: str) -> int:
