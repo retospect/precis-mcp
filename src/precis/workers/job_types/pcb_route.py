@@ -71,7 +71,8 @@ log = logging.getLogger(__name__)
 # 4 = restore global grid baseline after reference/fab seed regressions.
 # 5 = connected-via distance assignment as the route warm start.
 # 6 = a split net fails `disconnected` instead of reading `realized`.
-CODE_VERSION = 6
+# 7 = placement-DRC errors refuse the route before the router runs.
+CODE_VERSION = 7
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -604,12 +605,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # positions plus only the authored fixed copper, and surface any error
     # LOUDLY and by name in the job summary — "a check you did not RUN is
     # not a check that passed" (handlers/pcb.py doctrine), enforced at this
-    # seam. This is scope (a) of the report: the early NAMED flag. It does
-    # not by itself refuse the route or shift a part — (b)/(c), a placement-
-    # illegality cost term and an escape hatch for a `fixed='both'` violator,
-    # are the larger design question the report parks; on ewod-dogfood-2
-    # every part is `fixed='both'`, so even a perfect gate has zero degrees
-    # of freedom to act on without a human unpinning something.
+    # seam. This is scope (a) of the report: an error-severity finding now
+    # REFUSES the route (below), before the router runs and before anything
+    # is written; warnings do not block. It does not shift a part — (b)/(c),
+    # a placement-illegality cost term and an escape hatch for a
+    # `fixed='both'` violator, are the larger design question the report
+    # parks; on ewod-dogfood-2 every part is `fixed='both'`, so the
+    # refusal is a named complaint the user must act on by hand.
     # Belt-and-suspenders: the gate is a NEW geometry pass, so a crash in it
     # must never take down a route that would otherwise succeed — an added
     # check that fails closed on the whole job would be worse than the silent
@@ -630,6 +632,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
     except Exception:
         log.exception("pcb_route: pre-route DRC gate raised; routing anyway")
+    if n_placement_errors:
+        gate_failure = (
+            "pcb_route: refusing to route — the placement is already "
+            f"illegal; nothing written.\n{placement_report}"
+        )
+        ctx.record_failure(gate_failure, failure_class="input")
+        return
 
     # Authored fixed copper (`fixed_copper`, read before the anneal for the
     # collision gate; pcb-pre-place-route-blocks Slice 1, "Realize seam"):

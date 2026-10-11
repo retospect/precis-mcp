@@ -688,3 +688,27 @@ def test_pcb_route_refuses_to_start_when_fixed_copper_pierces_a_foreign_pad(
     assert not ctx.summaries
     assert all(r["status"] != "realized" for r in store.pcb_route_status(ref_id))
     assert store.pcb_load(ref_id)["instances"] == components_before
+
+
+def test_pcb_route_refuses_an_already_illegal_placement_before_routing(
+    store: Store,
+) -> None:
+    """gr451274: two pinned parts whose pads overlap are unmanufacturable
+    before a trace exists; the route job fails with the findings named and
+    writes nothing, where a clean board (test above) routes as before."""
+    u1, r1 = cast("list[dict[str, Any]]", _DESIGN_BRIDGED["components"])
+    design = {**_DESIGN_BRIDGED, "components": [u1, {**r1, "x": 0.1}]}
+    ref_id = _seed(store, "fxroute-overlap", design)
+    components_before = store.pcb_load(ref_id)["instances"]
+
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
+
+    assert len(ctx.failures) == 1
+    reason, failure_class = ctx.failures[0]
+    assert failure_class == "input"
+    assert "refusing to route" in reason
+    assert "pre-route DRC" in reason and "\u2717" in reason
+    assert not ctx.summaries
+    assert all(r["status"] != "realized" for r in store.pcb_route_status(ref_id))
+    assert store.pcb_load(ref_id)["instances"] == components_before

@@ -649,9 +649,6 @@ and backed out. 3 must be MEASURED before it is built.
    driver pads), which a placer keep-out does not touch. Re-read the
    gripe before closing it.
 
-6. **Pre-route DRC gate** (gr451274a). Cheap once 1 lands, meaningless
-   before it.
-
 ### Deferred out of this item: `escape.py`
 
 `precis.pcb.escape` is still the only general escape primitive and still

@@ -101,6 +101,14 @@ No route can remove such a short. Move the part off the fixed copper
 (`op='move'`) or re-place, then route again. `view='drc'` shows the same
 findings.
 
+**An illegal placement refuses the route.** After the anneal and before the
+router, the job runs the placement-only DRC (pad overlap, pad-to-via keepout,
+courtyard overlap, outline containment) over the settled poses plus authored
+fixed copper. Any error-severity finding fails the job (`input`) and writes
+nothing; the reason lists each finding with its measured margin. Warnings do
+not block. Fix the placement (`op='move'`, unpin a part, re-place) and route
+again; `view='drc'` runs the full check.
+
 `view='congestion'` reports gaps only. With failed nets and no gap warning
 it says the failures have another cause; read `view='route-status'` for
 each net's reason. Before routing, `view='feasibility'` lists pins whose

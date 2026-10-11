@@ -302,7 +302,7 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
                     "refdes": f"W{i}",
                     "label": "wall",
                     "x": 12.0,
-                    "y": -8.0 + i * 1.1,
+                    "y": -15.0 + i * 2.0,
                     "pins": [{"name": "1"}],
                 }
                 for i in range(16)
@@ -325,7 +325,10 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
     # meets it.
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 1, "seed": 1})
     _route(ctx)
+    # The wall must be placement-DRC clean (pitch above the courtyard width),
+    # or the pre-route gate refuses the route before any via can appear.
     assert not ctx.failures
+    assert any(", 0 pre-route DRC error(s)," in str(c) for c in ctx.summaries)
 
     with store.pool.connection() as conn:
         rows = conn.execute(
