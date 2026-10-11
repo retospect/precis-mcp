@@ -871,62 +871,74 @@ class _NoFileKindsHub:
     }
 
 
-def test_search_hides_unwired_skills_from_rows(skill: SkillHandler) -> None:
-    """``search(kind='skill', q=...)`` filters unwired skills out of
-    the result rows entirely — an LLM with no cross-session memory
-    gains nothing from reading recipes it can't invoke (2026-06-06).
-    The legacy ``[unwired]`` slug prefix must no longer appear in
-    the body, and no row may start with an unwired skill slug.
-    """
+_UNWIRED_SLUGS = (
+    "precis-markdown-help",
+    "precis-plaintext-help",
+    "precis-tex-help",
+    "precis-python-help",
+)
+
+
+def test_search_marks_unwired_skills_inline(skill: SkillHandler) -> None:
+    """Unwired skills stay in the rows, each suffixed
+    ``[not configured: ...]`` (gr51206); no row for an unwired slug
+    lacks the marker, and the old footer is gone."""
     skill.hub = _NoFileKindsHub()
-    out = skill.search(q="edit")
-    body = out.body
-    assert "[unwired]" not in body, (
-        "unwired rows must be filtered, not prefix-marked; got body:\n" + body
-    )
-    # No table row may BEGIN with an unwired slug.
-    unwired_slugs = (
-        "precis-markdown-help",
-        "precis-plaintext-help",
-        "precis-tex-help",
-        "precis-python-help",
-    )
+    body = skill.search(q="edit").body
     rows = [ln for ln in body.splitlines() if ln.startswith("precis-")]
-    for ln in rows:
-        slug = ln.split("\t", 1)[0]
-        assert slug not in unwired_slugs, (
-            f"unwired skill leaked into result rows: {ln!r}"
-        )
+    unwired = [
+        ln for ln in rows if ln.split("\t", 1)[0].split(" ")[0] in _UNWIRED_SLUGS
+    ]
+    assert unwired, body
+    assert all("[not configured:" in ln for ln in unwired), unwired
+    assert "Also matched in unwired skills" not in body
 
 
-def test_search_surfaces_escalation_line_for_unwired_matches(
-    skill: SkillHandler,
-) -> None:
-    """When the query matches unwired skills, the response carries a
-    single escalation line naming them and explaining they need a
-    build with the kind enabled — preserves the redirect signal
-    without burning context on inactionable recipes (2026-06-06).
-    """
+def test_search_configured_only_drops_unwired(skill: SkillHandler) -> None:
     skill.hub = _NoFileKindsHub()
-    out = skill.search(q="edit")
-    body = out.body
-    assert "Also matched in unwired skills:" in body, (
-        "expected escalation line for unwired matches; got body:\n" + body
+    body = skill.search(q="edit", configured_only=True).body
+    assert "[not configured" not in body
+    for ln in body.splitlines():
+        assert ln.split("\t", 1)[0].split(" ")[0] not in _UNWIRED_SLUGS, ln
+
+
+def test_requires_gate_env_and_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.handlers._skill_common import parse_frontmatter
+    from precis.handlers.skill import _unmet_requirements
+
+    fm = parse_frontmatter(
+        "---\nid: x\nrequires: [env=PRECIS_TEST_REQ_XYZ, module=json, "
+        "module=no_such_mod_xyz]\n---\n"
     )
-    # The escalation line should reference at least one of the
-    # disabled file-kind skills by slug.
-    esc_line = next(
-        ln for ln in body.splitlines() if "Also matched in unwired skills:" in ln
+    assert fm.requires == (
+        "env=PRECIS_TEST_REQ_XYZ",
+        "module=json",
+        "module=no_such_mod_xyz",
     )
-    assert any(
-        s in esc_line
-        for s in (
-            "precis-markdown-help",
-            "precis-plaintext-help",
-            "precis-tex-help",
-            "precis-python-help",
-        )
-    ), f"escalation line missing an unwired skill slug: {esc_line!r}"
+    monkeypatch.delenv("PRECIS_TEST_REQ_XYZ", raising=False)
+    assert _unmet_requirements(fm) == [
+        "env=PRECIS_TEST_REQ_XYZ",
+        "module=no_such_mod_xyz",
+    ]
+    monkeypatch.setenv("PRECIS_TEST_REQ_XYZ", "1")
+    assert _unmet_requirements(fm) == ["module=no_such_mod_xyz"]
+
+
+def test_gap_label_carries_loadability_reason() -> None:
+    from precis.handlers.skill import _availability_gap_parts
+
+    class _L:
+        loaded = False
+        reason = "missing PRECIS_PATENT_RAW_ROOT"
+
+    class _Hub:
+        kinds: list[str] = []
+        loadabilities = {"patent": _L()}
+
+    parts = _availability_gap_parts("precis-patent-power", hub=_Hub())
+    assert parts is not None
+    assert "missing PRECIS_PATENT_RAW_ROOT" in parts[0]
+    assert "missing PRECIS_PATENT_RAW_ROOT" in parts[1]
 
 
 def test_search_omits_escalation_line_when_all_matches_wired(
@@ -940,7 +952,7 @@ def test_search_omits_escalation_line_when_all_matches_wired(
     # owned by a verb-help skill (precis-search-help) and confirm
     # the escalation footer is absent.
     out = skill.search(q="search")
-    assert "Also matched in unwired skills:" not in out.body
+    assert "[not configured" not in out.body
 
 
 def test_semantic_row_question_only_uses_skill_title_anchor() -> None:

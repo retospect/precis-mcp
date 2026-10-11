@@ -148,6 +148,12 @@ class SkillFrontmatter:
     #: Mirrored at ingest as a tag the search-time filter respects.
     available_when: str | None = None
 
+    #: Non-kind dependencies the skill's recipes need, each ``env=NAME``
+    #: (env var set and non-empty) or ``module=NAME`` (importable Python
+    #: module). Evaluated by ``skill.py::_availability_gap``; an unmet
+    #: item marks the skill ``[not configured: ...]`` in skill search.
+    requires: tuple[str, ...] = ()
+
     #: Lateral topic tags, checked against :data:`VALID_TAGS` at ingest
     #: (see :func:`unknown_tags`). A tag equal to a registered kind name
     #: is also invalid — ``kinds:`` is a separate axis. Empty tuple when
@@ -203,6 +209,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "flavor",
         "invokes_personas",
         "available_when",
+        "requires",
         "tags",
         "kinds",
         "family",
@@ -334,7 +341,14 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
         # shapes: bare comma-separated (``a, b``) and YAML flow-sequence
         # (``[a, b]``, incl. single-item ``[x]``) — the bracket form is
         # stripped before splitting so both parse identically.
-        list_keys = {"invokes-personas", "invokes_personas", "answers", "tags", "kinds"}
+        list_keys = {
+            "invokes-personas",
+            "invokes_personas",
+            "answers",
+            "tags",
+            "kinds",
+            "requires",
+        }
         if key in list_keys and val.startswith("[") and val.endswith("]"):
             inner = val[1:-1].strip()
             items = [v.strip().strip("\"'") for v in inner.split(",")] if inner else []
@@ -394,6 +408,13 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     elif isinstance(tg, str):
         fields_in["tags"] = (tg,) if tg else ()
     # else already tuple from the parser
+
+    # requires: always tuple[str, ...], same normalisation as tags.
+    rq = fields_in.get("requires")
+    if rq is None:
+        fields_in["requires"] = ()
+    elif isinstance(rq, str):
+        fields_in["requires"] = (rq,) if rq else ()
 
     # kinds: unlike tags/answers/invokes_personas, absence is meaningful
     # here (see SkillFrontmatter.kinds) — a missing key must stay

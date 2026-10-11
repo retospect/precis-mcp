@@ -109,25 +109,3 @@ does not.
 4. Hint rules for the common "doing it the hard way" shapes (needs
    per-shape judgement; do last, and only for shapes seen in real transcripts
    — `llm_confusion_log_mining` is the source).
-
-## 5. Mark matched skills that need an unconfigured tool (gr51206)
-
-A `search(kind='skill')` hit can describe a workflow that needs a tool this
-deployment does not have, and the result gives no sign of it. The agent reads
-the skill, follows the recipe, and fails at the missing tool.
-`src/precis/handlers/skill.py::_availability_gap` gates only on the subject
-kind being wired (and on `status: planned|aspirational`). It has no notion of
-a required tool or service.
-
-Fix direction:
-
-- Add an optional `requires:` frontmatter list (kinds, env-gated services,
-  external tools) and evaluate it in `_availability_gap`.
-- Mark the hit inline in search results, e.g. `[not configured: <what>]`,
-  rather than hiding it, so the agent learns the capability exists and is off
-  here (the point of §3).
-- A flag on the search call suppresses marked hits for callers that want
-  only usable skills.
-
-Who: agent-code, M. Pairs with the loadability view in §3 and with
-`dark-features-activation.md`.

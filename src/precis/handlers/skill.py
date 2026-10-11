@@ -34,6 +34,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import importlib
+import importlib.util
 import logging
 import os
 import platform
@@ -889,6 +890,7 @@ class SkillHandler(Handler):
         tag: str | None = None,
         kinds: str | None = None,
         family: str | None = None,
+        configured_only: bool = False,
         **_kw: Any,
     ) -> Response:
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
@@ -1093,19 +1095,18 @@ class SkillHandler(Handler):
         if wanted is not None:
             all_rows = [row for row in all_rows if row.slug in wanted]
 
-        # 2026-06-06: partition by availability. Unwired skills are
-        # filtered from the result rows (recipes won't all run on
-        # this build, and an LLM with no cross-session memory gains
-        # nothing from reading them) and surfaced instead as a
-        # single escalation line below the table so the agent can
-        # still suggest "spin up a build with kind X wired."
-        wired_rows: list[_SkillSearchRow] = []
-        unwired_rows: list[_SkillSearchRow] = []
+        # gr51206: unconfigured skills stay in the ranked rows, marked
+        # ``[not configured: <why>]`` so the agent learns the capability
+        # exists but is off here; ``configured_only=True`` drops them for
+        # task-specific search where only runnable recipes matter.
+        gaps: dict[str, str] = {}
         for row in all_rows:
-            if _availability_gap(row.slug, hub=self.hub) is not None:
-                unwired_rows.append(row)
-            else:
-                wired_rows.append(row)
+            parts = _availability_gap_parts(row.slug, hub=self.hub)
+            if parts is not None:
+                gaps[row.slug] = parts[0]
+        wired_rows = (
+            [r for r in all_rows if r.slug not in gaps] if configured_only else all_rows
+        )
 
         total_wired = len(wired_rows)
         visible = wired_rows[:page_size]
@@ -1130,7 +1131,12 @@ class SkillHandler(Handler):
             more = f"+{extra}" if extra > 0 else "."
             table_rows.append(
                 {
-                    "slug": row.slug,
+                    "slug": row.slug
+                    + (
+                        f" [not configured: {gaps[row.slug]}]"
+                        if row.slug in gaps
+                        else ""
+                    ),
                     "section": row.section,
                     "more": more,
                     "keywords": keyword_summary(row.snippet, top_k=5),
@@ -1154,19 +1160,6 @@ class SkillHandler(Handler):
             )
         else:
             body = f"# no actionable skill matches for {q!r}"
-
-        if unwired_rows:
-            _ESC_CAP = 5
-            shown = [r.slug for r in unwired_rows[:_ESC_CAP]]
-            overflow = len(unwired_rows) - len(shown)
-            tail = f" (+{overflow} more)" if overflow > 0 else ""
-            body += (
-                "\n\n"
-                f"Also matched in unwired skills: {', '.join(shown)}{tail}. "
-                "These need a build with their kind enabled to run; "
-                "use `get(kind='skill', id='<slug>')` only to read for "
-                "context, not to invoke recipes."
-            )
 
         # ``related:`` line on the top hit (docs/backlog/skill-graph.md
         # slice 1 surfacing) — the top result's graph neighbours, so a
@@ -3656,6 +3649,9 @@ def _kinds_referenced_by_skill(slug: str, fm: SkillFrontmatter) -> list[str]:
 def _availability_gap(slug: str, *, hub: Any) -> str | None:
     """Return a human-readable reason why this skill is filtered, or None.
 
+    Long form for banners; :func:`_availability_gap_parts` also yields the
+    short label rendered as ``[not configured: <label>]`` in search.
+
     Two gates:
 
     1. Subject-kind gate. The skill names a kind via the slug
@@ -3682,8 +3678,46 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
     reference no kind and pass gate 1 automatically. They're still
     subject to gate 2.
 
+    3. Requires gate. Front-matter ``requires:`` items (``env=NAME``,
+       ``module=NAME``) and the legacy ``available-when:`` env var must
+       all be satisfied (:func:`_unmet_requirements`).
+
     Returns ``None`` if the skill is fully available.
     """
+    parts = _availability_gap_parts(slug, hub=hub)
+    return None if parts is None else parts[1]
+
+
+def _unmet_requirements(fm: SkillFrontmatter) -> list[str]:
+    """Items of ``requires:`` / ``available-when:`` not satisfied here.
+
+    ``env=NAME`` is met when the env var is set and non-empty;
+    ``module=NAME`` when the module is importable. An unrecognised item
+    shape is reported unmet (an authoring typo should be visible).
+    """
+    items = list(fm.requires)
+    if fm.available_when:
+        items.append(f"env={fm.available_when}")
+    unmet: list[str] = []
+    for item in items:
+        scheme, _, name = item.partition("=")
+        name = name.strip()
+        if scheme.strip() == "env" and name:
+            ok = bool(os.environ.get(name))
+        elif scheme.strip() == "module" and name:
+            try:
+                ok = importlib.util.find_spec(name) is not None
+            except (ImportError, ValueError):
+                ok = False
+        else:
+            ok = False
+        if not ok:
+            unmet.append(item)
+    return unmet
+
+
+def _availability_gap_parts(slug: str, *, hub: Any) -> tuple[str, str] | None:
+    """``(short_label, long_reason)`` for an unavailable skill, else None."""
     if slug in SkillHandler._SYNTHESIZED_SKILLS:
         return None
 
@@ -3695,9 +3729,19 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
     status = (fm.status or "active").lower()
     if status in ("planned", "aspirational"):
         return (
+            f"status: {status}",
             f"this skill is marked status: {status} - its examples "
             "describe a planned API, not the live runtime. Treat as "
-            "design notes, not as recipes."
+            "design notes, not as recipes.",
+        )
+
+    unmet = _unmet_requirements(fm)
+    if unmet:
+        return (
+            "missing " + ", ".join(unmet),
+            f"this skill requires {', '.join(unmet)} which is **not "
+            "available** in this deployment - its recipes will fail at "
+            "that dependency.",
         )
 
     # Verb-help exemption from the subject-kind gate.
@@ -3718,14 +3762,26 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
             if not _kind_is_known(hub, kind):
                 continue
             if not _hub_has_kind(hub, kind):
+                why = _loadability_reason(hub, kind)
                 return (
+                    f"kind={kind} {why or 'not wired'}",
                     f"this skill documents kind={kind!r} which is **not "
-                    "wired** in this build - its examples will return "
+                    "wired** in this build"
+                    + (f" ({why})" if why else "")
+                    + " - its examples will return "
                     "[error:Unsupported] for missing env vars or "
-                    "[error:NotFound] for genuinely unknown kinds."
+                    "[error:NotFound] for genuinely unknown kinds.",
                 )
 
     return None
+
+
+def _loadability_reason(hub: Any, kind: str) -> str | None:
+    """The boot-time reason ``kind`` is not loaded (``missing X``), if known."""
+    try:
+        return getattr(hub.loadabilities[kind], "reason", None)
+    except (AttributeError, KeyError, TypeError):
+        return None
 
 
 def _kind_is_known(hub: Any, kind: str) -> bool:

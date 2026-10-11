@@ -493,8 +493,9 @@ search(kind="skill", q="patent prior art")
 ```
 
 Natural-language queries work — phrase your query the way you'd ask
-it. Skill hits whose subject kind isn't loaded in the current build
-are prefixed `[unwired]` so you don't follow them to no-op verbs.
+it. Skill hits whose kind or required tool isn't available in the current
+build carry `[not configured: <why>]` so you don't follow them to no-op
+recipes; add `args={'configured_only': True}` to drop them.
 This is the standard first move on any non-trivial task.
 
 ## Find patents not yet in the local store
