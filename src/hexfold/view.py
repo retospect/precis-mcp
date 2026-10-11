@@ -25,8 +25,22 @@ def _element_colour(element: str) -> str:
     return "#" + h[:6]
 
 
-def render(net: Net, coords: np.ndarray, out: str | None, show_h: bool) -> None:
-    """Draw ``net`` at ``coords``; write PNG to ``out`` or show a window."""
+def render(
+    net: Net,
+    coords: np.ndarray,
+    out: str | None,
+    show_h: bool,
+    *,
+    elev: float = 30.0,
+    azim: float = 20.0,
+    size_in: float = 8.0,
+    dpi: int = 160,
+) -> None:
+    """Draw ``net`` at ``coords``; write PNG to ``out`` or show a window.
+
+    ``elev``/``azim`` override the fixed camera tilt (``scripts/guide-figures``
+    sweeps ``azim`` for turntable frames); ``size_in``/``dpi`` set the PNG size.
+    """
     import matplotlib
 
     if out is not None:
@@ -37,7 +51,7 @@ def render(net: Net, coords: np.ndarray, out: str | None, show_h: bool) -> None:
     keep_set = set(keep)
     pos = coords[keep]
 
-    fig = plt.figure(figsize=(8, 8))
+    fig = plt.figure(figsize=(size_in, size_in))
     ax = fig.add_subplot(111, projection="3d")
 
     # bonds as line segments, clipped to kept atoms
@@ -94,12 +108,12 @@ def render(net: Net, coords: np.ndarray, out: str | None, show_h: bool) -> None:
     ax.set_ylim(mid[1] - r, mid[1] + r)
     ax.set_zlim(mid[2] - r, mid[2] + r)
     ax.set_box_aspect((1, 1, 1))
-    ax.view_init(elev=30.0, azim=20.0)
+    ax.view_init(elev=elev, azim=azim)
     ax.set_axis_off()
     fig.tight_layout()
 
     if out is not None:
-        fig.savefig(out, dpi=160, bbox_inches="tight")
+        fig.savefig(out, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
     else:
         plt.show()

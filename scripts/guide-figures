@@ -1,0 +1,154 @@
+#!/usr/bin/env -S uv run python
+"""scripts/guide-figures — render the molecular-machines page's figures.
+
+``guide/molecular-machines.md`` is hand-written prose; its pictures are not.
+This script rebuilds every figure from the tools themselves, so the page
+tracks the code: re-run after hexfold changes and commit the results.
+
+For each entry in ``FIGURES`` it builds the ``.hx`` file with hexfold, places
+it with the ``stick`` preview model (never physics), and writes into
+``guide/assets/molecular-machines/``:
+
+- ``<slug>.png`` — a still, whitespace-cropped.
+- ``<slug>.svg`` — when ``turntable`` is set: a looping turntable, the frames
+  embedded as base64 PNGs and stepped by SMIL ``<animate>`` (no JS, no external
+  references — renders natively in a GitHub-rendered markdown page, the same
+  trick as ``scripts/guide-annotate``'s ``tour.svg``).
+
+Needs matplotlib and Pillow.
+
+Usage::
+
+    scripts/guide-figures                 # all figures
+    scripts/guide-figures --only valve    # one slug
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import io
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "guide" / "assets" / "molecular-machines"
+
+
+@dataclass(frozen=True)
+class Figure:
+    slug: str
+    hx: str  # repo-relative .hx source
+    turntable: bool = False
+
+
+FIGURES = [
+    Figure("valve", "hexfold/examples/valve_shell_lidded.hx", turntable=True),
+    Figure("nanobud", "hexfold/examples/nanobud_22.hx"),
+    Figure("capped-tube", "hexfold/examples/capped_tube.hx"),
+    Figure("lid", "hexfold/examples/lid_pillbox.hx"),
+]
+
+FRAMES = 16  # turntable frames per revolution
+FRAME_S = 0.18  # seconds per frame
+
+
+def _png(net, coords, *, azim: float, size_in: float, dpi: int) -> bytes:
+    from PIL import Image, ImageChops
+
+    from hexfold.view import render
+
+    buf = io.BytesIO()
+    tmp = OUT / ".frame.png"
+    render(net, coords, str(tmp), False, azim=azim, size_in=size_in, dpi=dpi)
+    img = Image.open(tmp).convert("RGB")
+    tmp.unlink()
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    box = ImageChops.difference(img, bg).getbbox()
+    if box:
+        pad = 12
+        box = (
+            max(box[0] - pad, 0),
+            max(box[1] - pad, 0),
+            min(box[2] + pad, img.width),
+            min(box[3] + pad, img.height),
+        )
+        img = img.crop(box)
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _turntable_svg(frames: list[bytes]) -> str:
+    from PIL import Image
+
+    sizes = [Image.open(io.BytesIO(f)).size for f in frames]
+    w = max(s[0] for s in sizes)
+    h = max(s[1] for s in sizes)
+    n = len(frames)
+    dur = f"{n * FRAME_S:.2f}s"
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
+        f'<rect width="{w}" height="{h}" fill="#ffffff"/>',
+    ]
+    for i, (data, (fw, fh)) in enumerate(zip(frames, sizes, strict=True)):
+        b64 = base64.b64encode(data).decode("ascii")
+        x, y = (w - fw) // 2, (h - fh) // 2
+        if i == 0:
+            values, times = "1;0", f"0;{1 / n:.4f}"
+        else:
+            values, times = "0;1;0", f"0;{i / n:.4f};{(i + 1) / n:.4f}"
+        start = "1" if i == 0 else "0"
+        parts.append(
+            f'<image x="{x}" y="{y}" width="{fw}" height="{fh}" opacity="{start}" '
+            f'xlink:href="data:image/png;base64,{b64}">'
+            f'<animate attributeName="opacity" values="{values}" keyTimes="{times}" '
+            f'calcMode="discrete" dur="{dur}" repeatCount="indefinite"/></image>'
+        )
+    parts.append("</svg>")
+    return "\n".join(parts) + "\n"
+
+
+def render_figure(fig: Figure) -> list[Path]:
+    from hexfold.build import build
+    from hexfold.report import Profile
+    from hexfold.stick import stick
+
+    text = (ROOT / fig.hx).read_text(encoding="utf-8")
+    net = build(text, profile=Profile.DEFAULT, strict=False)
+    coords = stick(net)
+    written = []
+    still = OUT / f"{fig.slug}.png"
+    still.write_bytes(_png(net, coords, azim=20.0, size_in=6.0, dpi=110))
+    written.append(still)
+    if fig.turntable:
+        frames = [
+            _png(net, coords, azim=20.0 + 360.0 * k / FRAMES, size_in=4.0, dpi=80)
+            for k in range(FRAMES)
+        ]
+        svg = OUT / f"{fig.slug}.svg"
+        svg.write_text(_turntable_svg(frames), encoding="utf-8")
+        written.append(svg)
+    return written
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--only", help="render one slug")
+    args = ap.parse_args(argv)
+    figs = [f for f in FIGURES if args.only in (None, f.slug)]
+    if not figs:
+        print(f"error: no figure {args.only!r}", file=sys.stderr)
+        return 2
+    OUT.mkdir(parents=True, exist_ok=True)
+    for fig in figs:
+        for path in render_figure(fig):
+            kb = path.stat().st_size / 1024
+            print(f"{path.relative_to(ROOT)}  {kb:.0f} KB")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
