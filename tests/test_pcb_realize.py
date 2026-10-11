@@ -2596,6 +2596,72 @@ def test_diagnose_unrouted_reason_congestion_when_a_corridor_exists_in_isolation
     assert reason.kind == "congestion", reason.message
 
 
+def test_class_layer_drops_names_the_partial_narrowing():
+    """gr472108: a class asking for a plane layer beside a signal one is
+    narrowed silently by `_net_class_layers`; `class_layer_drops` says so.
+    A fully-unroutable class is NOT listed (it fails as layer_lock)."""
+    stackup = [
+        {"name": "F.Cu", "role": "signal"},
+        {"name": "In2.Cu", "role": "plane"},
+        {"name": "B.Cu", "role": "signal"},
+    ]
+    rules = {
+        "esc": {"layers": ["In2.Cu", "B.Cu"]},
+        "ok": {"layers": ["F.Cu", "B.Cu"]},
+        "none": {"layers": ["In2.Cu"]},
+        "plain": {"clearance_mm": 0.2},
+    }
+    from precis.pcb import realize as pcb_realize
+
+    drops = pcb_realize.class_layer_drops(stackup, rules)
+    assert len(drops) == 1
+    assert "'esc'" in drops[0] and "In2.Cu" in drops[0] and "B.Cu" in drops[0]
+    assert pcb_realize.class_layer_drops(stackup, None) == []
+
+
+def _diagnose_boxed_with_copper(tracks):
+    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
+        _boxed_scenario(gap_mm=3.0)
+    )
+    return pcb_realize._diagnose_unrouted(
+        ir,
+        seg_id,
+        spec,
+        pads,
+        clearance,
+        signal_layers,
+        NetRules(track_width_mm=0.2, clearance_mm=clearance),
+        n_vias=1,
+        group_extent=None,
+        max_expansions=80_000,
+        routed_copper=(tracks, []),
+    )
+
+
+def test_diagnose_unrouted_alone_on_an_empty_grid_is_not_congestion():
+    """gr472026: no foreign router copper anywhere -> the net did not
+    lose a race, so it must not be labelled congestion."""
+    reason = _diagnose_boxed_with_copper([])
+    assert reason.kind == "no_path", reason.message
+    assert "no other net's routed copper" in reason.message
+
+
+def test_diagnose_unrouted_congestion_when_foreign_copper_blocks_the_corridor():
+    from precis.pcb.realize import RealizedTrack
+
+    wall = RealizedTrack(
+        seg_id=99,
+        net_id=77,
+        layer=0,
+        segments=({"shape": "line", "start": [7.0, 3.0], "end": [7.0, 7.0]},),
+        length_mm=4.0,
+        blocked_by=None,
+        width_mm=0.2,
+    )
+    reason = _diagnose_boxed_with_copper([wall])
+    assert reason.kind == "congestion", reason.message
+
+
 def test_diagnose_unrouted_reason_width_when_the_required_trace_does_not_fit():
     pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
         _boxed_scenario(gap_mm=3.0)

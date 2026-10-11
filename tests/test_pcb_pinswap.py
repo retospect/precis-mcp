@@ -233,3 +233,46 @@ def test_group_from_pads_with_no_pads_is_a_safe_no_op():
     # every pin defaults to the instance centroid -> nothing to gain
     assert total_group_crossings(ir, group) == 0
     assert propose_reassignment(ir, group) is None
+
+
+# ── length-aware cost (gr469871, fix A) ──────────────────────────────────
+def test_length_aware_cost_ranks_equal_crossing_assignments_by_wire_length():
+    """Both assignments have zero crossings, so the crossing-only matrix is
+    all zeros and proposes nothing; the opt-in Manhattan term sees that
+    swapping saves 4 mm (24 -> 20)."""
+    ir, group, pin_left, pin_right = _fixture()
+    ir.inst_x[1], ir.inst_y[1] = -8.0, 5.0  # A's far end (A sits on "right")
+    ir.inst_x[2], ir.inst_y[2] = 4.0, -5.0  # B's far end (B sits on "left")
+    assert total_group_crossings(ir, group) == 0
+    ir.swap_pins(pin_left, pin_right)
+    assert total_group_crossings(ir, group) == 0
+    ir.swap_pins(pin_left, pin_right)
+
+    built = build_cost_matrix(ir, group)
+    assert built is not None and all(c == 0.0 for row in built[1] for c in row)
+    assert propose_reassignment(ir, group) is None  # default unchanged
+
+    aware = build_cost_matrix(ir, group, length_aware=True)
+    assert aware is not None
+    movable, cost = aware
+    i_right, i_left = movable.index(pin_right), movable.index(pin_left)
+    # A (on right): 9+5 = 14 staying, 7+5 = 12 on the left pad.
+    assert cost[i_right][i_right] == 14.0 and cost[i_right][i_left] == 12.0
+    # B (on left): 5+5 = 10 staying, 3+5 = 8 on the right pad.
+    assert cost[i_left][i_left] == 10.0 and cost[i_left][i_right] == 8.0
+    pairs = propose_reassignment(ir, group, length_aware=True)
+    assert pairs is not None and {*pairs[0]} == {pin_left, pin_right}
+
+
+def test_length_aware_cost_adds_two_mm_per_crossing():
+    ir, group, pin_left, pin_right = _fixture()
+    assert total_group_crossings(ir, group) == 1
+    plain = build_cost_matrix(ir, group)
+    aware = build_cost_matrix(ir, group, length_aware=True)
+    assert plain is not None and aware is not None
+    movable, c_plain = plain
+    _, c_aware = aware
+    i = movable.index(pin_right)  # A on "right" stays: 1 crossing
+    # A: far (-5,5), pad (1,0) -> 6+5 = 11 mm + 2 mm per crossing.
+    assert c_plain[i][i] == 1.0
+    assert c_aware[i][i] == 11.0 + 2.0 * 1

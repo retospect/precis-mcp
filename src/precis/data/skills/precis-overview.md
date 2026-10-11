@@ -37,6 +37,13 @@ to every kind that supports them.
 For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
 For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 
+**A precis web path is a handle, not a page to fetch.** If a user gives
+you `/smartdraft/348633`, `/papers/<id-or-slug>` or `/gripes/<id>`, read
+it with the MCP (`get(kind='draft', id='dr348633')`,
+`get(kind='paper', id='<id-or-slug>')`, `get(kind='gripe', id=<id>)`);
+`webfetch` on the web UI returns 401. For a sample, take the outline or
+a chunk handle, not the whole body.
+
 ## Where does my work live? (the graph is the memory)
 
 In the graph. Papers, extracted numbers, notes, findings, experiment

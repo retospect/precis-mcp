@@ -65,8 +65,11 @@ se-machine-design's input shape (Do-next).
 4. gr464537: JLCPCB's getComponentInfos answers prod's parts_refresh with
    HTTP 500, so `parts` stays empty. Build 5's datasheet pulls resolve
    URLs through the same API and will mostly record `jlc_api_error`
-   until this is fixed. Probe the first-page payload by hand (one
-   API call), then fix it. This comes first after build 5 deploys.
+   until this is fixed. Best-guess fix landed (first page now omits the
+   null `lastKey`; a failing walk also raises a `parts_refresh` alert).
+   After deploy, check `parts` count > 0 and the `parts_refresh` log;
+   if it still 500s, probe by hand (smaller/omitted `pageSize`) or fall
+   back to `refresh-parts --from-sqlite`. Delete this item once rows land.
 5. **Judge cost (round-3 diff review, 2026-10-03).** `_judged_mutation`
    runs the validity DRC twice, plus pcb_load, _build_ir and a copper
    listing, on every judged put, class_rules and footprint call.
@@ -77,8 +80,6 @@ se-machine-design's input shape (Do-next).
    "before"). The contract (first put judged, rip at any severity,
    class_rules lists pad shortfalls without refusing) is written
    into precis-pcb-help.
-6. gr464529: re-putting an outline feature appends a second outline.
-   Small; decide replace-or-refuse when Do-next 2 allows.
 Reto approved se-machine-design-7 option 1 (2026-10-03): the shared 2-D
 sheet job lives under flat-pack; pcb only emits into it. This thread builds
 the pcb model -> sheet-job adapter (edge-cut->cut, NPTH->drill,
@@ -209,7 +210,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
      Each net alone (all other router nets ripped, `route_passes=1`):
      53/55 route; only R0C1 and R0C4 fail alone, labelled `congestion`
      (gripe 472026 — the label-honesty case this item already warned
-     about). The 33 failed nets alone: 17 route. So no re-ordering or
+     about; fixed: a net that fails with no foreign router copper in its
+     corridor now reports `no_path`). The 33 failed nets alone: 17 route. So no re-ordering or
      negotiation reaches far past 22 on B.Cu alone.
    - *Opening In2.Cu is the lever:* same placement, escape class layers
      `[In2.Cu, B.Cu]`: hard 40/55 (21 vias), negotiate=10 43/55 (26
@@ -218,7 +220,9 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    EWOD has vias on every layer):
    - *The first class_rules route (job 472103) gained nothing.* In2.Cu
      was role `plane` in dogfood-6's stackup, so `_net_class_layers`
-     narrowed the class back to B.Cu without a word (gripe 472108). Fixed
+     narrowed the class back to B.Cu without a word (gripe 472108; now
+     `op='class_rules'` refuses an unroutable layer and the route
+     summary warns for boards authored before). Fixed
      by re-authoring the stackup (`op='stackup'`: In1.Cu plane without a
      `plane_net`, the board has no GND net; In2.Cu signal).
    - *Then the replay reproduced:* job 472109 `negotiate=10` → 43/55, 26

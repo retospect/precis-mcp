@@ -593,6 +593,15 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "for the window.",
         budget="per window",
     ),
+    AlertRule(
+        "parts_refresh",
+        "jlcpcb-api",
+        "The daily JLCPCB catalog walk failed — the parts table stays stale.",
+        "warn",
+        None,
+        triage="Read the alert detail (auth/permission vs transport); fallback "
+        "is `precis pcb refresh-parts --from-sqlite`.",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

@@ -543,6 +543,7 @@ class PcbMixin:
             "conns": 0,
             "measures": 0,
             "features": 0,
+            "outline_replaced": 0,
             "footprints": 0,
             "generators": 0,
         }
@@ -728,6 +729,16 @@ class PcbMixin:
             counts["measures"] += 1
 
         for ft in features or []:
+            if str(ft.get("ftype") or ft.get("type") or "").strip() == "outline":
+                # A board has ONE outline (gr464529): a new one retires the
+                # old, the same retired_at path every other feature removal
+                # uses, so `_outline_from_features` never picks between two.
+                counts["outline_replaced"] += conn.execute(
+                    "UPDATE pcb_features SET retired_at = now() "
+                    "WHERE ref_id = %s AND ftype = 'outline' "
+                    "AND retired_at IS NULL",
+                    (ref.id,),
+                ).rowcount
             self._pcb_insert_feature(conn, ref.id, board_id, ft)
             counts["features"] += 1
 

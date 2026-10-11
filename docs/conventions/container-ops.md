@@ -81,6 +81,26 @@ Note the guard is text-based, so it also fires on commands that merely
 *mention* the tool in a heredoc or a quoted string. When that blocks a
 legitimate edit, use the Edit/Write file tools instead of a shell script.
 
+### Refused shapes and the accepted alternative
+
+5-day audit (gr456287): 308 refusals across 97 of 99 sessions. The guard
+fails closed whenever it cannot prove from the command text that git stays
+in this worktree. Write the plain shape:
+
+| Refused | Accepted |
+|---|---|
+| `git` inside a loop, pipeline, subshell, `$(...)` or `&&`/`;` chain with variable assignments (68 "git in a construct") | One plain `git …` per Bash call; independent commands as parallel calls |
+| `git -C <other tree> …` (18) | `scripts/inflight --json` for other trees; bare `git …` for this one |
+| `rtk git …`, i.e. the rtk hook's rewrite of `git …` (34) | `RTK_DISABLED=1 git …` or `/usr/bin/git …`; see `rtk.md` Known gaps |
+| `X=1; python3 -c "print($X)"` — an interpreter given a dynamically computed program, even with no git in it | A static program: a literal `-c '…'` with no `$` expansion, or a script file written with the Write tool and then run |
+| `python3 - <<EOF` / shell heredoc whose text names git | Edit/Write file tools |
+| `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
+| `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |
+
+`github`, `git_sha` and similar word-boundary near-misses pass. The guard
+is a harness built-in; the upstream asks are tracked in
+`docs/backlog/worktree-path-guard-false-positives.md`.
+
 A log audit found ~60% of Bash calls carried a redundant
 `cd` prefix — the single largest source of wasted tokens across the fleet,
 which is why this is called out explicitly rather than left as an assumed

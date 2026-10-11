@@ -493,6 +493,26 @@ def test_parts_refresh_pass_surfaces_permission_error(store):
     assert "console scope not granted" in result["error"]
 
 
+def test_parts_refresh_failure_raises_alert_and_success_resolves_it(store):
+    """gr464537: a failing walk must be visible, and clear on recovery."""
+    from precis.alerts import open_alert_severity
+    from precis.pcb._http import VendorError
+    from precis.workers.parts_refresh import run_parts_refresh_pass
+
+    def _sev():
+        return open_alert_severity(
+            store, source="parts_refresh", fingerprint="jlcpcb-api"
+        )
+
+    client = _FakeJlcApiClient(permission_error=VendorError("jlcpcb", "HTTP 500"))
+    assert run_parts_refresh_pass(store, client=client)["failed"] == 1
+    assert _sev() is not None
+
+    ok = _FakeJlcApiClient(pages=[{"lcsc": "C90009", "stock": 1}])
+    assert run_parts_refresh_pass(store, client=ok)["failed"] == 0
+    assert _sev() is None
+
+
 def test_parts_refresh_service_spec_is_registered_and_discoverable():
     """The registration this whole gripe (gr264357) is about: before this
     change `parts_refresh` had no ServiceSpec at all — see

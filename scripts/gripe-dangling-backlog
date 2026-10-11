@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# scripts/gripe-dangling-backlog — list live gripes whose title/comments cite a
+# docs/backlog/<f>.md that no longer exists in this checkout (delete-on-ship
+# removed it). Read-only: one agent_ro SELECT via scripts/prod-psql --ro; it
+# repoints/closes nothing — that is a judgment step (gr478804).
+#
+# Why a script, not a `get(kind='gripe')` flag: the runtime image ships only
+# the venv + models, never docs/, so the server cannot see what is gone.
+#
+# Usage: scripts/gripe-dangling-backlog   (run from a tree at/near main)
+# Output: "gr<id> docs/backlog/<f>.md" per dangling citation; exit 0 always
+# unless prod is unreachable.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+rows=$(PRECIS_PROD_PSQL_OPTS="-At" scripts/prod-psql --ro "SELECT DISTINCT r.ref_id, m[1]
+FROM refs r
+LEFT JOIN chunks c ON c.ref_id = r.ref_id AND c.retired_at IS NULL,
+LATERAL regexp_matches(r.title || E'\n' || coalesce(c.text, ''),
+    'docs/backlog/([A-Za-z0-9_./-]+\.md)', 'g') AS m
+WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+ORDER BY 1, 2;")
+
+n=0
+while IFS='|' read -r id f; do
+    [[ "$id" =~ ^[0-9]+$ && -n "$f" ]] || continue
+    # a threads/ citation or nested path is checked verbatim under docs/backlog/
+    if [[ ! -e "docs/backlog/$f" ]]; then
+        echo "gr$id docs/backlog/$f"
+        n=$((n + 1))
+    fi
+done <<<"$rows"
+echo "gripe-dangling-backlog: $n dangling citation(s)" >&2

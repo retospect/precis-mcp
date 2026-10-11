@@ -20,6 +20,7 @@ needed.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -181,6 +182,27 @@ def _clip_quote(text: str) -> str:
     return text.strip()
 
 
+def _fetch_preview_rows(store, numeric_id: int, ord_for_quote: int | None):
+    """Blocking title + body-chunk lookup (run via ``asyncio.to_thread``)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title, retired_at IS NOT NULL FROM refs WHERE ref_id = %s",
+            (numeric_id,),
+        ).fetchone()
+        if ord_for_quote is not None:
+            body_row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
+                (numeric_id, ord_for_quote),
+            ).fetchone()
+        else:
+            body_row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
+                "ORDER BY ord LIMIT 1",
+                (numeric_id,),
+            ).fetchone()
+    return row, body_row
+
+
 @router.get("/preview/{kind}/{ref_id}", response_class=HTMLResponse)
 async def preview(
     request: Request, kind: str, ref_id: str, chunk: str | None = None
@@ -200,7 +222,7 @@ async def preview(
     """
     store = get_store(request)
     hub = get_runtime(request).hub
-    numeric_id = _resolve_ref_id(store, kind, ref_id, hub=hub)
+    numeric_id = await asyncio.to_thread(_resolve_ref_id, store, kind, ref_id, hub=hub)
     if numeric_id is None:
         return templates.TemplateResponse(
             request,
@@ -213,22 +235,9 @@ async def preview(
         m = _CHUNK_RE.match(chunk)
         if m is not None:
             ord_for_quote = int(m.group("from"))
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT title, retired_at IS NOT NULL FROM refs WHERE ref_id = %s",
-            (numeric_id,),
-        ).fetchone()
-        if ord_for_quote is not None:
-            body_row = conn.execute(
-                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
-                (numeric_id, ord_for_quote),
-            ).fetchone()
-        else:
-            body_row = conn.execute(
-                "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
-                "ORDER BY ord LIMIT 1",
-                (numeric_id,),
-            ).fetchone()
+    row, body_row = await asyncio.to_thread(
+        _fetch_preview_rows, store, numeric_id, ord_for_quote
+    )
     if row is None:
         return templates.TemplateResponse(
             request,
@@ -258,7 +267,8 @@ async def preview(
     head = None
     abstract = ""
     if kind in PAPER_IDENT_KINDS:
-        ref = store.fetch_refs_by_ids([numeric_id]).get(numeric_id)
+        refs = await asyncio.to_thread(store.fetch_refs_by_ids, [numeric_id])
+        ref = refs.get(numeric_id)
         if ref is not None:
             held = bool(body_row and body_row[0])
             head = paper_head(ref, held=held)

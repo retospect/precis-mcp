@@ -78,7 +78,6 @@ from precis.cad.export import (
     _component_meshes,
     _scaled_for_export,
     _solid_mesh,
-    _write_3mf,
     manifold_available,
 )
 from precis.cad.printability import BuildCandidate, rotate_all_to_frame
@@ -98,6 +97,7 @@ from precis_se.printing import (
     format_down,
     frame_findings,
     frame_free_findings,
+    write_checked_3mf,
 )
 from precis_se.printsolid import PrintedSolid, printed_solid
 from precis_se.validate import ValidationIssue
@@ -878,17 +878,24 @@ def report_for(
 # ── export ──────────────────────────────────────────────────────────────
 
 
-def write_group_mesh(report: GroupPrintReport, out_path: str | Path) -> Path:
+def write_group_mesh(
+    report: GroupPrintReport,
+    out_path: str | Path,
+    findings: list[ValidationIssue] | None = None,
+) -> Path:
     """Write the group as one 3MF — one object per member (a multi-
     component member contributes ``<member>/<component>`` objects), every
     member in its world pose, rotated so the group's build-down is ``-z``
     with the union's lowest point at ``z = 0``, millimetres. Reuses the
     cad export seam exactly as :func:`precis_se.printing.write_mesh` does
-    (mm-scale first, fold, then rotate the finished meshes)."""
+    (mm-scale first, fold, then rotate the finished meshes), then runs the
+    same print-mesh cleanup and floating-island check
+    (:func:`precis_se.printing.write_checked_3mf`); the findings it makes
+    are appended to ``findings``."""
     if report.manufacture is not None:
         from precis_se import manufacture as se_manufacture
 
-        return se_manufacture.write_mesh(report, out_path)
+        return se_manufacture.write_mesh(report, out_path, findings)
     if report.chosen_down is None:
         raise ExportError(
             f"print group {report.root!r} has no build frame to export in "
@@ -912,6 +919,10 @@ def write_group_mesh(report: GroupPrintReport, out_path: str | Path) -> Path:
             verts.append(v @ m.xform.R.T + t_mm)
             tris.append(t)
     framed = rotate_all_to_frame(verts, report.chosen_down)
-    out = Path(out_path)
-    _write_3mf(out, list(zip(names, framed, tris, strict=True)))
-    return out
+    return write_checked_3mf(
+        out_path,
+        list(zip(names, framed, tris, strict=True)),
+        block=report.root,
+        pitch=report.pitch,
+        findings=findings,
+    )

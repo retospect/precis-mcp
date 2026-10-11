@@ -62,7 +62,6 @@ off that gap until it closes.
     - Two message gaps were fixed in 3285cbdc4 (round 6, not yet deployed). The summary view said "no findings" though it skips the mesh checks, and the block view gave no count line when the counts were 0.
     - The web route could not be checked by an agent, because the web UI needs a login. Reto's first click on "Print files" on the bracket's 3-D page is the check.
     - The old bracket field has no `fieldops` provenance key, as expected: it was minted before the stamp.
-    gr464493: print-group and manufacture 3MFs still skip the check.
   - **Scaled downloads (se-3d-viewer-7, Reto answered A1/B1/C1/D1).**
     Mine:
     - the writer scale, ½ build: `scale=` on `write_mesh`/`_write_3mf`,

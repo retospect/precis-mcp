@@ -766,6 +766,37 @@ def test_outline_without_corner_radius_mm_is_unchanged(pcb):
     assert outline == [[float(x), float(y)] for x, y in path]
 
 
+def test_reputting_an_outline_replaces_the_existing_one(pcb):
+    """gr464529: a board has one outline; the second put's geometry wins and
+    the response says it replaced one."""
+    first = [[0, 0], [62, 0], [62, 46], [0, 46], [0, 0]]
+    second = [[0, 0], [40, 0], [40, 30], [0, 30], [0, 0]]
+
+    def put(path):
+        return pcb.put(
+            id="reoutline",
+            args={
+                "components": [],
+                "nets": [],
+                "connections": [],
+                "features": [{"ftype": "outline", "geom": {"path": path}}],
+            },
+        )
+
+    assert "replaced" not in put(first).body
+    resp = put(second)
+    assert "replaced the existing outline" in resp.body
+    ref = pcb.store.get_ref(kind="pcb", id="reoutline")
+    outlines = [
+        f for f in pcb.store.pcb_features_list(ref.id) if f["ftype"] == "outline"
+    ]
+    assert len(outlines) == 1
+    assert outlines[0]["geom"]["path"] == second
+    assert pcb._outline_from_features(ref.id) == [
+        [float(x), float(y)] for x, y in second
+    ]
+
+
 def _many_pins(n: int) -> list[dict[str, Any]]:
     return [{"name": str(i)} for i in range(1, n + 1)]
 
@@ -1464,6 +1495,29 @@ def test_op_class_rules_sets_rules(pcb, store):
     assert ref is not None
     graph = store.pcb_graph(ref.id)
     assert graph["net_classes"]["power"] == {"clearance_mm": 0.3}
+
+
+def test_op_class_rules_refuses_a_layer_the_stackup_does_not_route_on(pcb, store):
+    """gr472108: the default stackup's In2.Cu is a plane; naming it beside
+    B.Cu used to be silently narrowed to B.Cu at route time."""
+    pcb.put(id="op-classrules-layers", args=_CROSSED)
+    with pytest.raises(BadInput, match=r"In2\.Cu.*routable.*B\.Cu"):
+        pcb.put(
+            id="op-classrules-layers",
+            args={
+                "op": "class_rules",
+                "name": "esc",
+                "rules": {"layers": ["In2.Cu", "B.Cu"]},
+            },
+        )
+    ref = store.get_ref(kind="pcb", id="op-classrules-layers")
+    assert "esc" not in store.pcb_graph(ref.id)["net_classes"]
+    # A routable-only layer list is still accepted.
+    pcb.put(
+        id="op-classrules-layers",
+        args={"op": "class_rules", "name": "esc", "rules": {"layers": ["B.Cu"]}},
+    )
+    assert store.pcb_graph(ref.id)["net_classes"]["esc"] == {"layers": ["B.Cu"]}
 
 
 def test_op_plane_net_rejects_unknown_layer(pcb):

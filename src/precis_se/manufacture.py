@@ -197,7 +197,6 @@ from precis.cad.export import (
     EXPORT_LATTICE_KEY,
     EXPORT_OBJECTS_KEY,
     ExportError,
-    _write_3mf,
     manifold_available,
     object_meshes,
 )
@@ -249,6 +248,7 @@ from precis_se.printing import (
     format_down,
     frame_findings,
     frame_free_findings,
+    write_checked_3mf,
 )
 from precis_se.realize import _unique_cad_slug, resolve_realize_target
 from precis_se.validate import ValidationIssue
@@ -2791,10 +2791,16 @@ def report_for(tree: SeTree, root: str, *, cad_store_reader: Store) -> GroupPrin
     )
 
 
-def write_mesh(report: GroupPrintReport, out_path: str | Path) -> Path:
+def write_mesh(
+    report: GroupPrintReport,
+    out_path: str | Path,
+    findings: list[ValidationIssue] | None = None,
+) -> Path:
     """One 3MF, one object per connected component of the fused root
     (world pose, rotated so the group's build-down is ``-z``, one shared
-    bed offset, millimetres)."""
+    bed offset, millimetres), through the same print-mesh cleanup and
+    floating-island check as the single-block export
+    (:func:`precis_se.printing.write_checked_3mf`; findings -> ``findings``)."""
     detail: ManufactureDetail | None = report.manufacture
     if detail is None or not detail.realized or not detail.objects:
         raise ExportError(
@@ -2817,9 +2823,13 @@ def write_mesh(report: GroupPrintReport, out_path: str | Path) -> Path:
     verts = [v * _MM_PER_M for _n, v, _t in detail.objects]
     tris = [t for _n, _v, t in detail.objects]
     framed = rotate_all_to_frame(verts, report.chosen_down)
-    out = Path(out_path)
-    _write_3mf(out, list(zip(names, framed, tris, strict=True)))
-    return out
+    return write_checked_3mf(
+        out_path,
+        list(zip(names, framed, tris, strict=True)),
+        block=report.root,
+        pitch=report.pitch,
+        findings=findings,
+    )
 
 
 __all__ = [

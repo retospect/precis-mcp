@@ -958,7 +958,10 @@ iters:3000,negotiate:10}); ten PathFinder iterations, existing 60s budget,
 only keep a proposal if it routes more. Default negotiate=0 unchanged.
 Capture baseline before B, actual terminal job metadata and after-state.
 
-A: gr469871 records confirmed crossing-only cost defect. Opt-in Manhattan
+A: gr469871 records confirmed crossing-only cost defect. (Shipped: the
+opt-in `build_cost_matrix(..., length_aware=True)` / `propose_reassignment`
+term; the route-job opt-in, Hungarian warm start and fixed-copper terminal
+resolution below are NOT wired yet.) Opt-in Manhattan
 length from the actual route terminal at the far end to each candidate
 physical pad plus 2mm per crossing, same Hungarian permutation and existing
 canonical swap/writeback constraints. Use Hungarian for this arm's warm

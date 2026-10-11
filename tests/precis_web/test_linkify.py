@@ -210,7 +210,7 @@ def test_anchor_delegates_open_close_to_shared_popover_registry() -> None:
     card mouseleave), so a later page-wide Escape/scroll is a no-op once
     this popover has already closed."""
     out = str(linkify_refs("paper:acheson26"))
-    assert "window.__refPopover.open($el)" in out
+    assert "window.__refPopover.open(el)" in out
     assert out.count("window.__refPopover.release($el)") >= 2
     # The wrapper carries its popover id as a data attribute so the shared,
     # delegated scroll listener (base.html.j2) can find its teleported card
@@ -1486,3 +1486,32 @@ def test_no_template_loads_assets_from_a_runtime_cdn() -> None:
         "template(s) load assets from a live CDN, which silently no-ops on "
         f"the tailnet-only (no internet egress) deployment: {offenders}"
     )
+
+
+def test_popover_reveals_on_content_arrival_not_just_timer() -> None:
+    """gr240051: the 200ms hover-intent timer is a minimum; the card opens
+    only once the htmx fetch has landed (``loaded``), so a slow first fetch
+    never reveals a stale placeholder."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert "@htmx:after-request.camel=" in out
+    assert "loaded = true" in out
+    assert (
+        "this.want &amp;&amp; this.loaded" in out or "this.want && this.loaded" in out
+    )
+    # the timer no longer opens the card directly
+    assert "want = true; show($el)" in out
+    assert "}, 200)" in out
+
+
+def test_preview_route_runs_db_work_off_the_event_loop() -> None:
+    """gr240051: ``preview`` is ``async``; its blocking pool calls must go
+    through ``asyncio.to_thread`` rather than stall the loop."""
+    import inspect
+
+    from precis_web.routes import preview as mod
+
+    src = inspect.getsource(mod.preview)
+    assert "store.pool.connection()" not in src
+    assert "await asyncio.to_thread(" in src
+    assert "_resolve_ref_id," in src and "store.fetch_refs_by_ids," in src
+    assert "store.pool.connection()" in inspect.getsource(mod._fetch_preview_rows)

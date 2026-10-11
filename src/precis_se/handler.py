@@ -1780,8 +1780,9 @@ class SeHandler(Handler):
             if raw_path
             else Path(tempfile.gettempdir()) / f"{ref.slug}-{root}.3mf"
         )
+        mesh_findings: list[se_validate.ValidationIssue] = []
         try:
-            path = se_printgroup.write_group_mesh(report, out)
+            path = se_printgroup.write_group_mesh(report, out, mesh_findings)
         except se_printing.PrintUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
@@ -1789,7 +1790,9 @@ class SeHandler(Handler):
         except ExportError as exc:
             raise BadInput(str(exc)) from exc
         size = path.stat().st_size
-        error_findings = [f for f in report.findings if f.severity == "error"]
+        error_findings = [
+            f for f in [*report.findings, *mesh_findings] if f.severity == "error"
+        ]
         if detail is not None:
             object_names = [n for n, _v, _t in detail.objects]
             what = "one per connected component of the fused root"

@@ -713,6 +713,8 @@ class PcbHandler(Handler):
         extra = f", +{counts['measures']} measure(s)" if counts["measures"] else ""
         if counts["features"]:
             extra += f", +{counts['features']} feature(s)"
+        if counts.get("outline_replaced"):
+            extra += ", replaced the existing outline (a board has one)"
         if counts.get("footprints"):
             extra += f", +{counts['footprints']} footprint(s)"
         if counts.get("generators"):
@@ -1583,6 +1585,24 @@ class PcbHandler(Handler):
                 next="args={'op':'class_rules','name':'i2c',"
                 "'rules':{'clearance_mm':0.2}}",
             )
+        named = rules.get("layers")
+        if isinstance(named, list | tuple) and named:
+            stackup = (self.store.pcb_load(ref.id)["board"]).get("stackup") or []
+            routable = [
+                str(e.get("name")) for e in stackup if pcb_ir.layer_is_routable(e)
+            ]
+            unroutable = [str(n) for n in named if str(n) not in routable]
+            if stackup and unroutable:
+                raise BadInput(
+                    f"class {name!r} names layer(s) {unroutable} that this "
+                    f"board's stackup does not route on (routable: {routable}); "
+                    "the router would silently drop them",
+                    next=(
+                        "put(args={'op':'stackup',...}) to make the layer a "
+                        "signal layer first, or name only routable layers"
+                    ),
+                    options=routable,
+                )
         _, judged = self._judged_mutation(
             ref.id,
             lambda conn: self.store.pcb_set_class_rules(ref.id, name, rules, conn=conn),

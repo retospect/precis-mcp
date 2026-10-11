@@ -33,6 +33,10 @@ hops to memory, concept or note nodes — are authoring aids and drop. A
 claim that lives only in such a node needs a finding minted or found
 before it can be cited.
 
+The web reader URL `/smartdraft/<id>` (or `/smartdraft/<slug>`) is this
+same draft: read it with `get(kind='draft', id='dr<id>')`, never
+`webfetch`.
+
 ## Quick reference — verbs, views, edit params, grammar
 
 See [[precis-draft-reference-help]].

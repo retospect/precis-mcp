@@ -42,12 +42,13 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
 2. For each: verify the fix is actually on `main` (and ideally deployed) —
    `git log -S'<callsite>'` / `git merge-base --is-ancestor <sha>
    <deployed_sha>` as needed.
-3. Close the **genuinely-fully-shipped** ones via the MCP soft-delete
-   convention: a one-line resolution comment naming the sha, then
-   `delete(kind='gripe', id=N)`. History is preserved (soft-delete).
+3. Close the **genuinely-fully-shipped** ones as `STATUS:done`: a
+   one-line resolution comment naming the sha, then
+   `tag(kind='gripe', id=N, add=['STATUS:done'])`. `delete` is for
+   junk/test artifacts and empty duplicates only.
 4. **Do not close** a gripe marked "shipped" whose fix landed **with open
    follow-ups** — those are still real open work, just relabeled; leave them
-   open (fix the misleading title if you have time, but don't delete).
+   open (fix the misleading title if you have time).
 5. Append **one** dated line here summarizing the pass (count closed / left
    open and why) — newest first, so the script reads the top.
 

@@ -367,11 +367,13 @@ class JlcApiClient:
             return
         cursor = since_key
         while True:
-            data = self._call(
-                COMPONENT_INFO_PATH,
-                {"lastKey": cursor, "pageSize": page_size},
-                policy=BULK_POLICY,
-            )
+            # First page omits lastKey entirely: a JSON null made prod's
+            # getComponentInfos answer HTTP 500 on every call (gr464537,
+            # best-guess fix pending a prod probe).
+            payload: dict[str, Any] = {"pageSize": page_size}
+            if cursor:
+                payload["lastKey"] = cursor
+            data = self._call(COMPONENT_INFO_PATH, payload, policy=BULK_POLICY)
             rows = _extract_rows(data)
             previous, cursor = cursor, _extract_cursor(data)
             self.last_key = cursor

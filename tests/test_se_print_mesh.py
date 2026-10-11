@@ -384,3 +384,71 @@ def test_shipped_mesh_rules_name_every_mesh_judged_rule() -> None:
         "slicer_cantilever",
         "mesh_cleanup",
     }
+
+
+def _pendant_parts() -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """The pendant block's framed mm parts, as a group writer holds them."""
+    built = se_printing.build_print_mesh(_printed(_PENDANT), _DOWN, pitch=_LAYER_M)
+    return built.parts
+
+
+def test_write_checked_3mf_cleans_and_reports_floating_islands(tmp_path: Path) -> None:
+    findings: list[Any] = []
+    out = se_printing.write_checked_3mf(
+        tmp_path / "g.3mf",
+        _pendant_parts(),
+        block="grp",
+        pitch=_LAYER_M,
+        findings=findings,
+    )
+    assert out.exists()
+    islands = [f for f in findings if f.rule == "floating_island"]
+    assert len(islands) == 1 and islands[0].severity == "error"
+    assert islands[0].subject == "grp"
+
+
+def test_write_group_mesh_runs_the_cleanup_and_island_check(tmp_path: Path) -> None:
+    from precis_se import printgroup as se_printgroup
+
+    spec = parse_source(_PENDANT)
+    member = SimpleNamespace(
+        block="m",
+        spec=spec,
+        xform=SimpleNamespace(R=np.eye(3), t=np.zeros(3)),
+    )
+    report = SimpleNamespace(
+        manufacture=None,
+        chosen_down=_DOWN,
+        root="grp",
+        pitch=_LAYER_M,
+        exportable=[member],
+    )
+    findings: list[Any] = []
+    out = se_printgroup.write_group_mesh(
+        cast(Any, report), tmp_path / "g.3mf", findings
+    )
+    assert out.exists()
+    assert [f.rule for f in findings if f.rule == "floating_island"] == [
+        "floating_island"
+    ]
+
+
+def test_manufacture_write_mesh_runs_the_cleanup_and_island_check(
+    tmp_path: Path,
+) -> None:
+    from precis_se import manufacture as se_manufacture
+
+    objects = [(n, v / 1000.0, t) for n, v, t in _pendant_parts()]
+    report = SimpleNamespace(
+        manufacture=SimpleNamespace(
+            realized=True, objects=objects, plan=SimpleNamespace(bridged=[])
+        ),
+        chosen_down=_DOWN,
+        root="mfg",
+        pitch=_LAYER_M,
+    )
+    findings: list[Any] = []
+    out = se_manufacture.write_mesh(cast(Any, report), tmp_path / "m.3mf", findings)
+    assert out.exists()
+    islands = [f for f in findings if f.rule == "floating_island"]
+    assert len(islands) == 1 and islands[0].subject == "mfg"

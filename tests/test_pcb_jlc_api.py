@@ -233,6 +233,11 @@ def test_iter_components_paginates_and_exposes_cursor(creds):
     assert [r["lcsc"] for r in rows] == ["C1", "C2"]
     assert client.last_key is None
     assert len(calls) == 2
+    # gr464537: first page must not send lastKey (null made JLC 500);
+    # the second page carries the cursor from the first response.
+    assert "lastKey" not in calls[0]
+    assert '"pageSize":100' in calls[0]
+    assert '"lastKey":"page2"' in calls[1]
 
 
 def test_iter_components_resumes_from_since_key(creds):

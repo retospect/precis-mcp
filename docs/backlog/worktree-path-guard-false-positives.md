@@ -103,3 +103,8 @@ In-repo levers are limited (the guard is a harness built-in, re-confirmed:
 nothing in `scripts/hooks/` or `.claude/settings.json` emits this text):
 put the accepted-shape cheat sheet in `docs/conventions/container-ops.md`, and
 flag the two mechanisms upstream.
+
+Cheat sheet of refused shapes and accepted alternatives now lives in
+`docs/conventions/container-ops.md` ("Refused shapes and the accepted
+alternative"). Remaining here, upstream only: `rtk git` refusal and
+fail-closed dynamic interpreter payloads.

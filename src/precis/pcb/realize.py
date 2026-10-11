@@ -148,6 +148,7 @@ from precis.pcb.ir import (
     PcbIR,
     footprint_pad_set,
     instance_courtyard_polygon,
+    layer_is_routable,
     nearest_other_instance,
     pin_point,
     plane_layers_of,
@@ -872,6 +873,12 @@ class RealizeResult:
     #: nothing says whether the loop converged, ran out of time, or never
     #: settled — the three very different next steps.
     negotiation: NegotiationReport | None = None
+    #: One line per net class whose ``"layers"`` rule names layers this
+    #: stackup does not route on while at least one named layer does
+    #: (:func:`class_layer_drops`, gr472108): :func:`_net_class_layers`
+    #: silently narrows such a class, and only a class left with NOTHING
+    #: fails as ``'layer_lock'``. Empty for ``router='tangent'``.
+    class_layer_drops: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -894,7 +901,10 @@ class UnroutedReason:
       ``'width'``), so this connection lost a race for it to a net that
       routed first. Rip-up/retry (:attr:`RealizeConfig.route_passes`)
       already re-orders failures to the front of the next attempt; a
-      connection reported here survived every attempt anyway.
+      connection reported here survived every attempt anyway. Only
+      reported when another net's routed copper actually lies in that
+      corridor; a connection that fails with none there is ``'no_path'``
+      (gr472026).
     - ``'no_path'`` — no path connects the two endpoints on the allowed
       layers AT ANY WIDTH (probed at a near-zero width with no via
       requirement). Not "too tight" — genuinely walled in, e.g. by a ring
@@ -1059,6 +1069,27 @@ def _layer_preferences(ir: PcbIR, signal_layers: list[int]) -> dict[int, str]:
     outer = [layer for layer in signal_layers if layer_is_outer(ir, layer)]
     inner = [layer for layer in signal_layers if not layer_is_outer(ir, layer)]
     return {**maze.preferred_directions(outer), **maze.preferred_directions(inner)}
+
+
+def class_layer_drops(
+    stackup: list[dict[str, Any]], class_rules: dict[str, Any] | None
+) -> list[str]:
+    """One line per net class that names a layer this stackup does not
+    route on (absent, or not routable) while another named layer does —
+    the partial narrowing :func:`_net_class_layers` applies silently. A
+    class with NO surviving layer is not listed: that one fails its nets
+    loudly as ``'layer_lock'``."""
+    routable = {str(entry.get("name")) for entry in stackup if layer_is_routable(entry)}
+    out: list[str] = []
+    for cls, rules in sorted((class_rules or {}).items()):
+        names = [str(n) for n in ((rules or {}).get("layers") or [])]
+        dropped = [n for n in names if n not in routable]
+        if dropped and len(dropped) < len(names):
+            out.append(
+                f"net class {cls!r} asked for {dropped}, not routable on this "
+                f"stackup; routing on {sorted(set(names) - set(dropped))}"
+            )
+    return out
 
 
 def _net_class_layers(
@@ -1754,6 +1785,7 @@ def _realize_maze(
         fixed_copper=fixed_copper,
         npth_clearance_mm=_npth_clearance_mm(config),
         net_layer_lock_fail=net_layer_lock_fail,
+        routed_copper=(tracks, vias),
     )
     return (
         tracks,
@@ -1782,6 +1814,7 @@ def _diagnose_all(
     fixed_copper: list[dict[str, Any]] | None = None,
     npth_clearance_mm: float = 0.0,
     net_layer_lock_fail: dict[int, str] | None = None,
+    routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
     extra_unrouted`` — split out of :func:`_realize_maze` purely to keep
@@ -1845,6 +1878,7 @@ def _diagnose_all(
                 max_expansions,
                 fixed_copper=fixed_copper,
                 probe=probe,
+                routed_copper=routed_copper,
             )
         )
     for seg_id in extra_unrouted:
@@ -2217,6 +2251,82 @@ def _pads_only_probe(
     return probe
 
 
+def _seg_point_dist(
+    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n2 = dx * dx + dy * dy
+    t = (
+        0.0
+        if n2 < 1e-18
+        else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / n2))
+    )
+    return math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy))
+
+
+def _seg_seg_dist(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> float:
+    """Distance between segments ``ab`` and ``cd`` (0 when they cross)."""
+
+    def orient(
+        p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]
+    ) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    if orient(a, b, c) * orient(a, b, d) < 0 and orient(c, d, a) * orient(c, d, b) < 0:
+        return 0.0
+    return min(
+        _seg_point_dist(a, c, d),
+        _seg_point_dist(b, c, d),
+        _seg_point_dist(c, a, b),
+        _seg_point_dist(d, a, b),
+    )
+
+
+def _foreign_copper_near_path(
+    path: maze.RoutePath,
+    net_id: int,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    reach_mm: float,
+) -> bool:
+    """True when another net's routed track or via lies within
+    ``reach_mm`` (+ its own half width / radius) of ``path`` on the
+    path's layers. Conservative on arcs: a track's segment endpoints
+    stand in for its curve."""
+    runs = [
+        ((a[0], a[1]), (b[0], b[1]), a[2])
+        for a, b in itertools.pairwise(path.points)
+        if a[2] == b[2]
+    ]
+    for tr in tracks:
+        if tr.net_id == net_id:
+            continue
+        for seg in tr.segments:
+            if "start" not in seg or "end" not in seg:
+                continue
+            c, d = tuple(seg["start"]), tuple(seg["end"])
+            reach = reach_mm + tr.width_mm / 2.0
+            for a, b, layer in runs:
+                if layer == tr.layer and _seg_seg_dist(a, b, c, d) <= reach:
+                    return True
+    for v in vias:
+        if v.net_id == net_id:
+            continue
+        reach = reach_mm + v.dia_mm / 2.0
+        for a, b, layer in runs:
+            if (
+                v.layer_lo <= layer <= v.layer_hi
+                and _seg_point_dist((v.x, v.y), a, b) <= reach
+            ):
+                return True
+    return False
+
+
 def _diagnose_unrouted(
     ir: PcbIR,
     seg_id: int,
@@ -2231,6 +2341,7 @@ def _diagnose_unrouted(
     *,
     fixed_copper: list[dict[str, Any]] | None = None,
     probe: maze.OccupancyGrid | None = None,
+    routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
 ) -> UnroutedReason:
     """WHY ``seg_id`` never routed, in one of :class:`UnroutedReason`'s
     three route-search categories — 'BOARD TWO' finding 1's diagnostic gap
@@ -2256,6 +2367,13 @@ def _diagnose_unrouted(
     segment and :meth:`maze.OccupancyGrid.route` never stamps the grid it
     searches, so :func:`_diagnose_all` builds it once. Rebuilding it per
     segment was 36 of 85 s of realize on a 140-part board (2026-10-01).
+
+    ``routed_copper`` (the finished tracks and vias, gr472026) lets a
+    ``'congestion'`` verdict be checked: when the pads-only probe finds a
+    corridor but NO other net's routed copper lies in it, the connection
+    did not lose a race — it failed alone, so it is reported as
+    ``'no_path'`` with a message saying so. ``None`` (callers without the
+    routed copper) keeps the unqualified ``'congestion'`` verdict.
     """
     net_id = int(ir.seg_net[seg_id])
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
@@ -2291,6 +2409,23 @@ def _diagnose_unrouted(
     )
     clear_exhausted = probe.last_route_exhausted
     if clear_path is not None:
+        if routed_copper is not None and not _foreign_copper_near_path(
+            clear_path,
+            net_id,
+            routed_copper[0],
+            routed_copper[1],
+            rules.track_width_mm / 2.0 + clearance,
+        ):
+            return UnroutedReason(
+                seg_id,
+                net_id,
+                "no_path",
+                "this connection failed with no other net's routed copper in "
+                "its corridor: a pads-only probe finds a path, so the blocker "
+                "is static (fixed copper, pads, a layer restriction on its "
+                "class) or the search itself, not contention with another "
+                "net's routing",
+            )
         via_note = (
             f", stitching {n_vias} via(s) at a layer change" if group_extent else ""
         )
@@ -5862,6 +5997,7 @@ def realize(
             tuple(fixed_realized),
             island_notes,
             negotiation=negotiation,
+            class_layer_drops=tuple(class_layer_drops(ir.stackup, config.class_rules)),
         )
     if config.router != "tangent":
         raise ValueError(

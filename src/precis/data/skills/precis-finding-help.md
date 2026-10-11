@@ -85,10 +85,28 @@ resulting paper's chunk.
 
 ## When to create a finding
 
-Quantitative or empirical claims whose **setup context** matters to
-the next reader: *"X = 2.4 kV"*, *"0.1 mol/L NaCl"*, *"12% of
-patients responded"*. Skip opinions, definitions, speculation, and
-claims you're stating for the first time.
+A claim you can trace to a corpus chunk (`cited_in`, below) **and**
+that meets one of two grounds:
+
+- **Contestable** — a later reader could disagree or a later paper
+  contradict it. Quantitative or empirical claims whose **setup
+  context** matters (*"X = 2.4 kV"*, *"0.1 mol/L NaCl"*, *"12% of
+  patients responded"*), but also methodological or architectural
+  claims a paper reports without numbers (*"infill location comes from
+  the highest-fidelity surrogate, fidelity level from the cheapest
+  accurate-enough model"*) and qualitative negative-capability claims
+  (*"current MLLMs do not reliably separate plausible from implausible
+  scenes"*).
+- **Attribution-worthy** — you cite it for priority or standard
+  vocabulary, not support: a definitional claim a paper introduced or
+  fixed (*"an over-approximation is sound for proving a property
+  absent, not present"*). It cannot be refuted by experiment, only
+  shown misattributed or non-standard; state the source and term
+  precisely so a reader can check that.
+
+Skip opinions, speculation, and your own synthesis (no single source
+is not a finding). Nothing in the tool enforces a claim class; the
+requirement is `cited_in`.
 
 Different setups need different findings even when the bare number
 is identical: 2.4 kV on Cu / N₂ is not the same finding as 2.4 kV on

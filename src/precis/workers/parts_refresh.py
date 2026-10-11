@@ -30,6 +30,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Protocol
 
+from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.pcb._http import VendorError
 from precis.pcb.jlc_api import JlcApiClient, JlcPermissionError
 
@@ -63,6 +64,27 @@ class ComponentSource(Protocol):
 #: :func:`run_parts_refresh_pass`), so either one continues where the other
 #: left off rather than each keeping its own progress.
 CURSOR_SETTING_KEY = "pcb.parts_refresh.last_key"
+
+#: Alert identity for a failing walk (gr464537: a daily 500 sat as a log
+#: WARNING for a week while ``parts`` stayed empty).
+_ALERT_SOURCE = "parts_refresh"
+_ALERT_FINGERPRINT = "jlcpcb-api"
+
+
+def _sync_failure_alert(store: Store, error: str | None) -> None:
+    """Open an alert while the walk fails; resolve it on the next clean pass."""
+    if error is None:
+        resolve_stale_alerts(store, source=_ALERT_SOURCE, live_fingerprints=())
+        return
+    raise_alert(
+        store,
+        source=_ALERT_SOURCE,
+        fingerprint=_ALERT_FINGERPRINT,
+        title="[parts_refresh] JLCPCB catalog walk is failing",
+        detail=f"{error}\n\nThe `parts` catalog stays stale/empty until this "
+        "clears; fallback is `precis pcb refresh-parts --from-sqlite`.",
+    )
+
 
 #: Rows imported per cycle — bounds one tick's transaction + HTTP time. The
 #: standing pass fires daily (``workers/scheduler.py`` CADENCES), so the
@@ -140,6 +162,7 @@ def run_parts_refresh_pass(
         if client.last_key != since_key:
             store.set_setting(CURSOR_SETTING_KEY, client.last_key or "")
 
+    _sync_failure_alert(store, error)
     if error is not None:
         return {"claimed": len(rows), "ok": 0, "failed": 1, "error": error}
     if not rows:

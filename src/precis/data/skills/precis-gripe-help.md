@@ -234,16 +234,24 @@ comment with the reason:
 put(kind="gripe", id=42, text="parking until after the F20 freeze")
 ```
 
+## Close a gripe after the fix is merged
 ## Retire a gripe that's been resolved
-## Delete a gripe after the fix is merged
 
 ```python
-delete(kind="gripe", id=42)
-# soft-delete: history preserved, excluded from default search
+put(kind="gripe", id=42, text="fixed in <sha>: <one-line evidence>")
+tag(kind="gripe", id=42, add=["STATUS:done"])
 ```
 
-Use after a fix is merged, or when the gripe is no longer
-relevant. Leaving a final comment first is good manners.
+Fixed gripes close as `STATUS:done` with a closing comment naming the
+sha, so the resolution stays searchable. `delete` is only for
+junk/test artifacts and empty duplicates; won't-do is `STATUS:wontfix`.
+
+## Bundled into a planned-work spec
+
+A gripe folded into a planned-work spec stays `STATUS:triaged`; record
+the home in a comment ("home is <spec name>"). Separate homed from
+not-yet-homed:
+`search(kind='gripe', status='triaged', q='home is')`.
 
 ## Soft-delete a duplicate I filed by mistake
 
@@ -393,7 +401,7 @@ citation audit emits findings and todos, not gripes.
 | `STATUS:in_review`     | A fix landed on a branch; awaits merge  |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
-| (deleted)              | Retired via `delete` — for junk/test artifacts and duplicates-with-nothing-to-keep; history preserved. A *fixed* gripe closes as `STATUS:done` (with a closing comment naming the fix), so the resolution stays searchable |
+| (deleted)              | `delete` — junk/test artifacts and empty duplicates only; history preserved. A *fixed* gripe is `STATUS:done` + closing comment naming the fix |
 
 ## See also
 

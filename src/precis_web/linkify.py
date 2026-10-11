@@ -340,19 +340,26 @@ def _anchor_html(
     #    ``position:fixed`` card computed from a point-in-time bounding rect
     #    won't track a scrolling page — handled by the single delegated
     #    ``window`` listener below (gr171760), not a per-anchor one.
-    open_expr = (
-        "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
-        "hoverTimer = setTimeout(() => { "
-        "const r = $el.getBoundingClientRect(); "
+    # Reveal needs BOTH the hover-intent delay (``want``) and the fetched
+    # content (``loaded``, set on the anchor's ``htmx:afterRequest``): the
+    # timer is a minimum, not the trigger, so a slow first fetch never
+    # paints a stale placeholder (gr240051). ``show`` positions + opens.
+    show_fn = (
+        "show(el) { if (!(this.want && this.loaded)) return; "
+        "const r = el.getBoundingClientRect(); "
         "const below = r.bottom + 8 + 200 < window.innerHeight; "
         "const left = Math.max(4, Math.min(r.left, window.innerWidth - 392)); "
-        "popStyle = 'position:fixed;z-index:100;left:' + left + 'px;' + "
+        "this.popStyle = 'position:fixed;z-index:100;left:' + left + 'px;' + "
         "(below ? ('top:' + (r.bottom + 4) + 'px') "
         ": ('bottom:' + (window.innerHeight - r.top + 4) + 'px')); "
-        "window.__refPopover.open($el); "
-        "hovered = true; "
-        "}, 200)"
+        "window.__refPopover.open(el); "
+        "this.hovered = true; }"
     )
+    open_expr = (
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
+        "hoverTimer = setTimeout(() => { want = true; show($el); }, 200)"
+    )
+    loaded_expr = "loaded = true; show($el.closest('[data-popid]'))"
     # Delayed close — shared by the wrapper's mouseleave and the
     # teleported card's own mouseleave, so leaving either one starts the
     # same countdown and re-entering either one cancels it. Also releases
@@ -360,15 +367,15 @@ def _anchor_html(
     # still the one holding it, so a later Escape/scroll is a no-op instead
     # of re-closing an already-closed popover.
     delayed_close_expr = (
-        "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); want = false; "
         "closeTimer = setTimeout(() => { hovered = false; "
         "window.__refPopover.release($el); }, 120)"
     )
     # Immediate close — click-outside wants the card gone right away, not
     # after a travel grace.
     immediate_close_expr = (
-        "clearTimeout(hoverTimer); clearTimeout(closeTimer); hovered = false; "
-        "window.__refPopover.release($el);"
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); want = false; "
+        "hovered = false; window.__refPopover.release($el);"
     )
     pop_id = f"refpop-{uuid.uuid4().hex[:10]}"
     attrs = f" {extra_attrs}" if extra_attrs else ""
@@ -377,7 +384,7 @@ def _anchor_html(
     rel = ' rel="noopener"' if target in _RESERVED_TARGETS else ""
     return (
         f'<span x-data="{{hovered: false, hoverTimer: null, closeTimer: null, '
-        f"popStyle: ''}}\" "
+        f"popStyle: '', want: false, loaded: false, {show_fn}}}\" "
         f'class="relative inline-block" data-popid="{pop_id}" '
         f'@mouseenter="{open_expr}" '
         f'@mouseleave="{delayed_close_expr}" '
@@ -386,6 +393,7 @@ def _anchor_html(
         f'href="{href}" target="{target}"{rel} '
         f'hx-get="{preview_url}" '
         f'hx-trigger="mouseenter once" '
+        f'@htmx:after-request.camel="{loaded_expr}" '
         f'hx-target="#{pop_id}" hx-swap="innerHTML">'
         f"{label}</a>"
         f'<template x-teleport="body">'

@@ -181,8 +181,8 @@ tagging:
 
 | Lifecycle | Kinds | Values |
 |---|---|---|
-| Workflow (original) | `todo`, `gripe` | `open`, `doing`, `blocked`, `done`, `won't-do` |
-| Gripe-specific | `gripe` | also: `triaged`, `ready_for_fix`, `in_review`, `wontfix` |
+| Workflow (original) | `todo` | `open`, `doing`, `blocked`, `done`, `won't-do` |
+| Gripe (DB-checked) | `gripe` | `open`, `triaged`, `ready_for_fix`, `in_review`, `done`, `wontfix` — never `won't-do` |
 | Citation chase | `finding` | `tracing`, `established`, `multi_candidate`, `dead_chain`, `refuted`, `acquiring` |
 | Taproot claim hub | `finding` | `canonical` |
 | Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |

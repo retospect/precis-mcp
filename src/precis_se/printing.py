@@ -923,8 +923,17 @@ def build_print_mesh(
         flat_bed_skipped=skipped,
         line_width_mm=None if line_width is None else line_width * _MM_PER_M,
     )
+    _clean_parts_into(out, [(n, rotate_to_frame(v, down), t) for n, v, t in raw])
+    return out
+
+
+def _clean_parts_into(
+    out: PrintMesh, raw: list[tuple[str, np.ndarray, np.ndarray]]
+) -> None:
+    """Weld, drop degenerates and lift sub-layer tails on each already-framed
+    ``(name, verts, tris)`` part, appending to ``out.parts`` and its counters."""
+    tol_mm = out.tol_mm
     for name, v, t in raw:
-        v = rotate_to_frame(v, down)
         v, t, dropped = weld_and_drop_degenerate(v, t)
         out.n_dropped += dropped
         if tol_mm is not None and len(v):
@@ -939,6 +948,42 @@ def build_print_mesh(
                 out.n_kept_flip += res.n_kept_flip
         out.n_slivers += count_slivers(v, t)
         out.parts.append((name, v, t))
+
+
+def clean_framed_parts(
+    parts: list[tuple[str, np.ndarray, np.ndarray]],
+    *,
+    pitch: float | None = None,
+    source_pitch: float | None = None,
+) -> PrintMesh:
+    """:func:`build_print_mesh`'s cleanup for parts already in the build frame
+    (millimetres, bed at ``z = 0``) — the print-group / manufacture writers,
+    which pose and frame their own meshes. Same ``tol`` rule."""
+    halves = [p * _MM_PER_M / 2.0 for p in (pitch, source_pitch) if p is not None]
+    out = PrintMesh(parts=[], tol_mm=max(halves) if halves else None)
+    _clean_parts_into(out, parts)
+    return out
+
+
+def write_checked_3mf(
+    out_path: str | Path,
+    parts: list[tuple[str, np.ndarray, np.ndarray]],
+    *,
+    block: str,
+    pitch: float | None = None,
+    source_pitch: float | None = None,
+    findings: list[ValidationIssue] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Clean framed ``parts`` (:func:`clean_framed_parts`), judge them
+    (:func:`_mesh_findings`: floating islands, cleanup receipt — appended to
+    ``findings`` when given) and write the 3MF. The one path group and
+    manufacture exports share with the single-block export."""
+    built = clean_framed_parts(parts, pitch=pitch, source_pitch=source_pitch)
+    if findings is not None and built.parts:
+        findings.extend(_mesh_findings(block, built, pitch))
+    out = Path(out_path)
+    _write_3mf(out, built.parts, title=title)
     return out
 
 

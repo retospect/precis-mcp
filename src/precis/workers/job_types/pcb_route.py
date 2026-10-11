@@ -980,6 +980,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "negotiation": (
                     rres.negotiation.as_dict() if rres.negotiation else None
                 ),
+                "class_layer_drops": list(rres.class_layer_drops),
             }
         },
     )
@@ -988,6 +989,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # follow-up: job 470129 reported the baseline 22/33 and nothing else).
     if rres.negotiation is not None:
         pin_swap_summary += "\n" + rres.negotiation.line()
+    # A class naming a layer the stackup does not route on is narrowed, not
+    # refused (gr472108): say so, or a "no gain" reads as a routing result.
+    for drop in rres.class_layer_drops:
+        pin_swap_summary += f"\nwarning: {drop}"
     if unmatched_sketch:
         pin_swap_summary += (
             f"\nwarning: {unmatched_sketch} stored layer/side sketch "
