@@ -1145,11 +1145,15 @@ def _quota_view(store: Store) -> dict[str, Any]:
                     }
                 )
     pause = budget_quota.evaluate(store)
+    taper = budget_quota.taper_state(store)
     return {
         "ts": ts,
         "windows": windows,
         "paused": pause is not None,
         "pause_reason": pause.reason if pause is not None else None,
+        "taper_level": taper.level,
+        "taper_reason": taper.reason,
+        "taper_no_signal": taper.no_signal,
     }
 
 

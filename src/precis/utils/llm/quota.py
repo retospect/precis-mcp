@@ -55,7 +55,11 @@ _QUOTA_CLOCK_LEAD_IN = (
 #: wording only needs a new alternative here. Anchored on multi-word
 #: phrases specific to a quota notice, never on the bare word "limit" —
 #: ordinary prose that happens to mention a limit must not match.
-QUOTA_LEAD_IN = rf"usage limit|{_QUOTA_CLOCK_LEAD_IN}"
+#: ``out_of_credits`` is the machine key of the same exhaustion in a
+#: ``rate_limit_event`` payload (gr347551); it carries no reset clause, so a
+#: payload with only the key falls to the two-hour quota backoff instead of
+#: classifying as a bare ``rate`` (fifteen minutes) from its event name.
+QUOTA_LEAD_IN = rf"usage limit|{_QUOTA_CLOCK_LEAD_IN}|\bout_of_credits\b"
 
 #: Reset-clause-parseable subset (weekly/session + pay-as-you-go), with
 #: the ``hour``/``minute``/``meridiem``/``tz`` capture groups
@@ -84,7 +88,10 @@ QUOTA_MESSAGE_PATTERN = re.compile(QUOTA_LEAD_IN, re.IGNORECASE)
 #: reasonable drift (a longer reset clause, a reworded lead sentence),
 #: while still excluding a real multi-paragraph answer that happens to
 #: quote one of these phrases in passing.
-_MAX_QUOTA_TEXT_CHARS = 160
+#: 240 (was 160): the ``rate_limit_event: {...}`` + ``Message: "..."`` shape
+#: captured in gr345366 (2026-09-18) is 164 normalized chars and slipped past
+#: the old cap, reaching quest_tick as "unparseable model output" (gr347551).
+_MAX_QUOTA_TEXT_CHARS = 240
 
 
 def parse_quota_reset_at(match: re.Match[str], now: datetime) -> datetime | None:

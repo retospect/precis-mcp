@@ -1250,6 +1250,38 @@ class TestQuestTick:
             if b.chunk_kind == "quest_log"
         ]
 
+    def test_quota_taper_trip_pauses_not_fails(self, store: Any) -> None:
+        # gr347551: the breaker's quota-taper refusal reaches the tick as an
+        # ordinary paused LlmResult — a skip, never a FAILED tick.
+        from datetime import UTC, datetime
+
+        from precis.budget import breaker
+        from precis.store._claude_quota_ops import ClaudeQuotaRow
+        from precis.utils.llm.router import Tier
+
+        snapshot = ClaudeQuotaRow(
+            scope="unified",
+            ts=datetime(2026, 10, 11, tzinfo=UTC),
+            data={
+                "windows": {"five_hour": {"status": "allowed", "used_percentage": 80}}
+            },
+        )
+        fake: Any = SimpleNamespace(read_claude_quota=lambda scope="unified": snapshot)
+        reason = breaker.gate_tier(
+            Tier.BIG,
+            transport="claude_agent",
+            store=fake,
+        )
+        assert reason is not None
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(None, error=reason, paused=True),
+        )
+        assert out.status == "paused"
+        assert out.pause_kind == "window"
+
     def test_partial_output_persists_to_agentlog_on_error(self, store: Any) -> None:
         # A streamed rung that dies mid-generation returns its partial
         # reasoning on LlmResult.text alongside the error — the tick persists

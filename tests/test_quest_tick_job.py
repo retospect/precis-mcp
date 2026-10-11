@@ -385,6 +385,22 @@ class TestPhaseAwaitDryTicks:
         assert isinstance(out, Yield)
         assert out.state["tick_failures"] == 2  # unchanged by a pause
 
+    def test_quota_pause_retries_without_decrementing_failure_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr347551: credit exhaustion / the quota taper is a skip, not a
+        # failure — the failure counter must be untouched and the loop alive.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(status="paused", note="paused: quota", pause_kind="quota"),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {"phase": "tick", "slice_count": 3, "tick_failures": 4}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["tick_failures"] == 4
+
     def test_window_pause_still_retries_for_free(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

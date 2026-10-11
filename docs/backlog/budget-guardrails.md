@@ -67,24 +67,12 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
 - Blocking interactive user work — the breaker only ever throttles
   autonomy.
 
-## Credit-aware admission: no demand tapering against remaining LLM credit (gr347551)
+## Credit-aware admission: taper blind on the prod snapshot (gr347551 remainder)
 
-Nothing tapers demand as the remaining LLM credit falls. `precis.budget` has a
-breaker (trips at a cap) and a quota gate (pauses on `rejected`), but between
-"plenty" and "out" the system keeps admitting big-tier work at full rate, then
-`out_of_credits` failures arrive as ordinary errors and get retried.
-
-Ruling (Reto, 2026-10-11): tiered taper.
-
-- Below 25% remaining credit, stop admitting BIG/FRONTIER work.
-- Below 10%, stop MEDIUM too. SMALL is covered by the open breaker item
-  above.
-- At 0, park gated work on a wake timer set to the provider's reset time
-  instead of retrying.
-- `out_of_credits` is a skip, not a failure: no retry, no `STATUS:failed`,
-  no gripe or alert per job.
-
-Files: `src/precis/budget/breaker.py` (`gate_tier`), `src/precis/quest/tick.py`
-(admission), the router's error classification.
-
-Who: agent-code. M.
+The tiered quota taper shipped (`quota.taper_state`, `breaker._gate_quota`):
+BIG/FRONTIER stop below 25% remaining, MEDIUM below 10%, park at exhaustion.
+The prod `claude_quota_snapshot` carries no `used_percentage`, so only the
+`allowed_warning` / `warning` status (stage one) and `rejected` (park) can
+fire; stage two never will until the probe records a percentage. /budget shows
+"taper: no signal" meanwhile. Open: have `quota_check` capture a usable
+remaining figure from the provider.
