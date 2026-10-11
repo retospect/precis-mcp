@@ -70,9 +70,11 @@ Bundled in the 2026-10-11 gripe triage. The `s2_stub_meta` venue fix
 - Fix direction: add a Crossref venue fallback (`container-title`) for DOI
   papers after the S2 pass misses, stamped like the abstract fallback above
   so a miss is not retried. Owner `src/precis/ingest/semantic_scholar.py`.
-- The endnote exporter (`src/precis/export/endnote.py`) should read the
-  same 3-key venue precedence the enrichment writes, so a paper with a venue
-  under any of the keys exports with one.
 - Ops: after deploy, re-arm the venue pass over the held cohort and re-count.
+  No further S2 re-arm: S2 holds no venue for the 1,470 (comment 6).
 
-Who: agent-code (fallback + exporter); ops re-arm.
+Exporters are done (venue-less papers export as `@misc`, not an empty
+`In: (YYYY)` `@article`; endnote reads the 3-key precedence). Backfill of
+existing rows is only the Crossref pass above.
+
+Who: agent-code (fallback); ops re-arm.

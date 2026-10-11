@@ -2609,6 +2609,10 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
             ).strip()
             if journal:
                 fields.append(f"  journaltitle = {{{_bib_text(journal)}}}")
+            else:
+                # biblatex renders a venue-less @article as "In: (YYYY)";
+                # @misc prints just author/title/year.
+                entry_type = "misc"
             for bib_key, meta_key in (
                 ("volume", "volume"),
                 ("number", "number"),

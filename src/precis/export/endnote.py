@@ -100,6 +100,10 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     Research Notes when a traveling library is imported into a real library;
     the passage is present in the field data regardless.)"""
     name, code = _REF_TYPES.get(source.get("kind", "paper"), _REF_TYPES["paper"])
+    # Same venue precedence as the .bib/.docx exporters.
+    venue = (
+        source.get("venue") or source.get("journal") or source.get("container_title")
+    )
     rec = source["rec_number"]
     parts = [
         "<record>",
@@ -113,14 +117,11 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
         inner = "".join(f"<author>{esc(a)}</author>" for a in authors)
         parts.append(f"<contributors><authors>{inner}</authors></contributors>")
     titles = [f"<title>{esc(source.get('title'))}</title>"]
-    if source.get("journal"):
-        titles.append(f"<secondary-title>{esc(source['journal'])}</secondary-title>")
+    if venue:
+        titles.append(f"<secondary-title>{esc(venue)}</secondary-title>")
     parts.append("<titles>" + "".join(titles) + "</titles>")
-    if source.get("journal"):
-        parts.append(
-            f"<periodical><full-title>{esc(source['journal'])}"
-            "</full-title></periodical>"
-        )
+    if venue:
+        parts.append(f"<periodical><full-title>{esc(venue)}</full-title></periodical>")
     if source.get("pages"):
         parts.append(f"<pages>{esc(source['pages'])}</pages>")
     if source.get("volume"):

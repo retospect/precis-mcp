@@ -29,3 +29,14 @@ def test_locators_emitted_when_present() -> None:
 def test_locators_omitted_when_absent() -> None:
     rec = build_record(_source(volume=None, number=None, pages=None))
     assert "<volume>" not in rec and "<number>" not in rec and "<pages>" not in rec
+
+
+def test_build_record_venue_precedence_matches_bib_exporters() -> None:
+    from precis.export.endnote import build_record
+
+    base = {"kind": "paper", "rec_number": 1, "title": "T"}
+    rec = build_record({**base, "container_title": "Nature"})
+    assert "<secondary-title>Nature</secondary-title>" in rec
+    rec = build_record({**base, "venue": "V", "journal": "J"})
+    assert "<secondary-title>V</secondary-title>" in rec
+    assert "secondary-title" not in build_record(base)

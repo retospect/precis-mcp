@@ -1745,6 +1745,8 @@ def test_build_bib_article_no_journal_omits_field() -> None:
     )
     bib = latex.build_bib(store, ["p1"], [])
     assert "journaltitle" not in bib
+    # biblatex would render a venue-less @article as "In: (2020)".
+    assert bib.startswith("@misc{p1,")
 
 
 def test_build_bib_article_journal_ampersand_escaped() -> None:
@@ -2568,9 +2570,13 @@ def test_build_bib_other_crossref_types() -> None:
 
 
 def test_build_bib_article_for_journal_or_missing_entry_type() -> None:
-    assert _bib_one({"entry_type": "journal-article"}).startswith("@article{")
+    assert _bib_one({"entry_type": "journal-article", "journal": "J"}).startswith(
+        "@article{"
+    )
     assert _bib_one({"journal": "J"}).startswith("@article{")
-    assert _bib_one(None).startswith("@article{")
+    # No venue anywhere -> @misc, never a venue-less @article ("In: (YYYY)").
+    assert _bib_one(None).startswith("@misc{")
+    assert _bib_one({"container_title": "J"}).startswith("@article{")
 
 
 # ── supplementary-information records cite as their parent ───────────────
