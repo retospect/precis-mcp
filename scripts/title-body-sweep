@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scripts/title-body-sweep — READ-ONLY title-vs-body mismatch sweep (gr264184).
+#
+# Scores each live paper's title terms against its first body paragraphs
+# (precis.utils.title_body) and prints the lowest-scoring outliers for human
+# review. SELECT only, through `scripts/prod-psql --ro`; never writes.
+#
+# Usage:
+#   scripts/title-body-sweep                        # whole corpus, top 40
+#   scripts/title-body-sweep --limit 5000 --top 60  # first 5000 papers by ref_id
+#   scripts/title-body-sweep --ref 693 --ref 44468  # just these (shows score)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python scripts/_title_body_sweep.py "$@"

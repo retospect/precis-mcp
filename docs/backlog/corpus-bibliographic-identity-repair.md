@@ -64,8 +64,15 @@ multi-article PDFs (trimming deletes append-only body chunks).
 Nothing compares a paper's title with its body, so mismatches surface only
 when someone reads a chunk. Fix direction, in order:
 
-- A read-only sweep that scores title-to-body agreement (title terms
-  against chunk embeddings/text) and lists outliers for review.
+- DONE: `scripts/title-body-sweep` (scoring in
+  `precis.utils.title_body`) ranks live papers by lexical title-to-body
+  agreement, read-only via `prod-psql --ro`. Placeholder titles
+  (`is_placeholder_title`) are listed separately, not ranked. First full
+  run (30.4k scored): pa693 ranks 274, pa44468 1688, pa42567 1825 (the
+  last two overlap lexically: a multi-article PDF body, a topic-adjacent
+  body; they need embeddings). Head false positives ~0 of 10 spot-checked.
+  Open for the gate design: the cutoff (a low score alone misses the 0.5
+  to 0.6 band; a missing title formula caps the rank at 0.35).
 - A nanopub mint gate in `src/precis/nanopub/assemble.py` that refuses to
   assemble from a source flagged as a title/body mismatch.
 - cite_key regeneration, or refusal, when an author edit changes the
@@ -73,8 +80,8 @@ when someone reads a chunk. Fix direction, in order:
 
 Item 1 of the gripe (pa5837) is already repaired.
 
-Who: agent-code; the sweep first, gates after its false-positive rate is
-measured.
+Who: agent-code; remaining: the two gates below, once the sweep's
+false-positive rate on a chosen threshold is measured.
 
 ## Prod data repairs
 
@@ -97,6 +104,9 @@ the code part are marked.
   duplicates (merge); pa1873 is a separate preprint of pa1604 (link, do not
   merge); pa3063 is not a paper (retire or retype); pa209931 needs its
   Crossref title; check the cohort for an embedding gap.
+- **Placeholder-title papers** (362 found by `scripts/title-body-sweep`:
+  `Microsoft Word - x.doc`, `*.indd`, `Untitled`, `(no title)`, one- and
+  two-word titles) need retitling from their body/Crossref.
 - **Ground-truth check after repair**: list findings grounded on each
   repaired paper and re-verify their edges.
 
