@@ -604,6 +604,15 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="per window",
     ),
     AlertRule(
+        "cfp_watch",
+        "changed:{ref_id}",
+        "A WATCH-tagged call-for-proposal page changed (text or deadline dates).",
+        "warn",
+        None,
+        triage="get(kind='cfp', id=<ref>); re-read the call at its "
+        "meta.source_url, update proposal todos, then resolve the alert.",
+    ),
+    AlertRule(
         "parts_refresh",
         "jlcpcb-api",
         "The daily JLCPCB catalog walk failed — the parts table stays stale.",

@@ -402,6 +402,21 @@ def _run_nanopub_mirror(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_cfp_watch(store: Store, batch_size: int) -> None:
+    """Weekly re-check of ``WATCH:*``-tagged cfp refs (gr462088).
+    ``batch_size`` is unused — the pass caps its own fetches. See
+    workers/cfp_watch.py."""
+    from precis.workers.cfp_watch import run_cfp_watch_pass
+
+    result = run_cfp_watch_pass(store)
+    log.info(
+        "scheduler: cfp_watch inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
     """One nanopub candidate re-gate sweep (gr279770's sweep half), fired
     from the daily host-agnostic ``nanopub_stale_sweep`` cadence.
@@ -728,6 +743,14 @@ CADENCES: tuple[Cadence, ...] = (
         name="nanopub_stale_sweep",
         interval_s=24 * 3600 + 41 * 60,
         run=_run_nanopub_stale_sweep,
+    ),
+    # gr462088: weekly re-fetch of WATCH:*-tagged cfp refs; a changed page
+    # or deadline raises a cfp_watch alert. Host-agnostic; off the exact
+    # week (7d+53m). Bounded to MAX_FETCHES_PER_RUN fetches. spends=False.
+    Cadence(
+        name="cfp_watch",
+        interval_s=7 * 24 * 3600 + 53 * 60,
+        run=_run_cfp_watch,
     ),
 )
 

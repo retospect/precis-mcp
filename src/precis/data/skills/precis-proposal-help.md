@@ -107,6 +107,19 @@ boxes set `edit(id='dc<heading>', args={'char_target': {'max': 350}})`;
 `view='wordcount'` then shows chars and an over/under/ok verdict too
 (all characters count, spaces included; see precis-draft-help).
 
+## Watching a call for changes
+
+Tag a cfp `WATCH:weekly` (any `WATCH:<interval>`) and its source page is
+re-fetched weekly (scheduler cadence `cfp_watch`) and whenever
+`/whatneedsdoing` runs (`precis maintenance cfp-watch`). The page's
+text hash and any dates on deadline/submission/opens lines are compared
+with the last snapshot in `meta.cfp_watch`; a change raises an open
+`cfp_watch` alert (`search(kind='alert')`, subject = the cfp) and keeps
+the last 5 changes in `meta.cfp_watch.history`. The first check only
+records a baseline. Needs `meta.source_url` on the cfp; a tagged cfp
+without one is skipped (URL intake for cfp is not built yet). At most 25
+fetches per run.
+
 ## Why a CFP is its own kind (not a paper)
 
 A `cfp` is ingested and read exactly like a `paper` — but it carries
