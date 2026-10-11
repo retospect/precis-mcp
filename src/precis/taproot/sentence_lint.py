@@ -378,6 +378,57 @@ _STUDY_HAPPENED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── no-result (advisory; gr351820) ───────────────────────────────────────
+
+#: Study/investigate-class verbs -- the activity a "study happened"
+#: sentence narrates. Finite/participle forms only: `-ing` ("a tool for
+#: analyzing ...") and `probes` (noun) were corpus false positives, and a
+#: hyphen-led participle ("well-characterised") is an adjective, not the
+#: narrated act. `studies` is left out (the noun); `studied` is the form.
+_STUDY_VERB_RE = re.compile(
+    r"(?<!-)\b(?:studied|investigat(?:es|ed)|examin(?:es|ed)|"
+    r"explor(?:es|ed)|characteri[sz](?:es|ed)|probed|"
+    r"analy[sz](?:es|ed)|assess(?:es|ed)|scrutini[sz](?:es|ed))\b",
+    re.IGNORECASE,
+)
+
+#: Direction of change or comparison -- what makes a study sentence carry a
+#: result. Two arms: stems (`\w*` tail, so `raised`/`increases`/`depends`
+#: all count -- a bare trailing `\b` after a stem matches nothing) and
+#: whole words/phrases that stay word-bounded (`than`, `more`, `less`).
+_RESULT_DIRECTION_RE = re.compile(
+    r"\b(?:increas|decreas|rais|enhanc|reduc|improv|suppress|boost|degrad|"
+    r"outperform|surpass|diminish|accelerat|inhibit|promot|broaden|"
+    r"stabili[sz]|destabili[sz]|depend|correlat|"
+    r"exceed|shift|narrow|lower|higher|greater|larger|smaller|"
+    r"fewer|faster|slower|stronger|weaker|better|worse|remain|become|"
+    r"becom|caus|yield|exhibit|retain|reach|convert)\w*"
+    r"|\b(?:less|more|than|versus|vs\.?|compared|relative to|"
+    r"independent of|scal(?:es|ed|ing) with|leads? to|results? in)\b",
+    re.IGNORECASE,
+)
+
+_DIGIT_RE = re.compile(r"\d")
+
+
+def _no_result_hit(sentence: str) -> re.Match[str] | None:
+    """The study-class verb in ``sentence`` when nothing else in it states a
+    result -- no digit (quantity), no direction/comparison/outcome word, no
+    controlled evidence verb -- else ``None``. The verb is only the trigger;
+    the result signals decide, and they are generous on purpose (advisory
+    lint: a miss costs nothing, a false alarm costs reviewer attention)."""
+    m = _STUDY_VERB_RE.search(sentence)
+    if m is None:
+        return None
+    if (
+        _DIGIT_RE.search(sentence)
+        or _RESULT_DIRECTION_RE.search(sentence)
+        or _EVIDENCE_VERB_RE.search(sentence)
+    ):
+        return None
+    return m
+
+
 # ── verbless (folded into not-falsifiable) ────────────────────────────────
 
 #: Closed set of copulas/auxiliaries/modals -- any hit is unambiguous verb
@@ -1190,6 +1241,15 @@ def lint_claim_sentence(
                 "must assert a finding a future measurement could "
                 "contradict, not narrate that a study happened."
             )
+
+    m = _no_result_hit(sentence)
+    if m:
+        warnings.append(
+            f"no-result: {m.group(0)!r} found with no quantity, direction "
+            "or comparison -- a sentence that says something was studied "
+            "states no finding; name what was found (a value, an increase/"
+            "decrease, a comparison). Advisory only."
+        )
 
     m = _EM_DASH_SEPARATOR_RE.search(sentence)
     if m:

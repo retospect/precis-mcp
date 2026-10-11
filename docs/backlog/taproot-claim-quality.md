@@ -151,21 +151,6 @@ cited correctly, with the right title, in at least five other papers'
 bibliographies in the corpus. So the underlying reference data is fine in
 general; the corruption is specific to this entry in this paper.
 
-## Claim-sentence gate passes "study happened" sentences (gr351820)
-
-Bundled in the 2026-10-11 gripe triage. `check_claim_sentence` passes
-sentences that report that a study occurred but state no result ("X was
-studied by Y"), so they mint as claims with nothing to verify.
-
-- Fix direction: an advisory no-result lint in
-  `src/precis/taproot/sentence_lint.py` (study/investigate/examine verbs with
-  no quantity, direction or comparison). Advisory only; do not block mint.
-- Dry-run it over the existing hubs first and read the hit list before
-  choosing severity: the corpus has been burned by lints fired without a
-  measured false-positive rate.
-
-Who: agent-code.
-
 ## One review paragraph minted into several claim hubs (gr204874)
 
 Bundled in the 2026-10-11 gripe triage. A single review-article paragraph

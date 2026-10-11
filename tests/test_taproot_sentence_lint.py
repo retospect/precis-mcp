@@ -10,6 +10,8 @@ must still pass clean).
 
 from __future__ import annotations
 
+import pytest
+
 from precis.taproot.sentence_lint import lint_claim_sentence, lint_scope
 
 _CLEAN_SENTENCE = (
@@ -890,3 +892,39 @@ def test_unsupported_term_corpus_exclusions_and_allowlist() -> None:
         )
     )
     assert len(hits) == 1 and "'B3LYP'" in hits[0]
+
+
+# ── no-result (advisory, gr351820) ───────────────────────────────────────
+
+
+def _has_no_result(sentence: str) -> bool:
+    return any(w.startswith("no-result") for w in lint_claim_sentence(sentence))
+
+
+def test_no_result_hits_study_happened_sentence() -> None:
+    assert _has_no_result("Ammonia synthesis was studied by Smith et al.")
+    assert _has_no_result("MOFs have been explored for energy-harvesting use.")
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Ru loading was examined and raised conversion.",
+        "Temperature was studied and increased selectivity.",
+        "Doping was investigated and enhanced stability.",
+        "Alloy composition was explored and depends strongly on Ru.",
+        "Ammonia synthesis was studied at 450 K.",
+    ],
+)
+def test_no_result_silent_on_direction_or_quantity(sentence: str) -> None:
+    assert not _has_no_result(sentence)
+
+
+def test_no_result_ignores_adjectival_and_gerund_forms() -> None:
+    assert not _has_no_result("Zeo++ is a tool for analyzing pore geometry.")
+    assert not _has_no_result("These molecules have well-characterised switching.")
+
+
+def test_no_result_ignores_noun_probes_and_studies() -> None:
+    assert not _has_no_result("Fluorescent probes label the membrane.")
+    assert not _has_no_result("Prior studies of the membrane label it.")
