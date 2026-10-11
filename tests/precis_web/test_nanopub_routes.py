@@ -1147,13 +1147,63 @@ def test_claim_page_shows_nearest_claims_and_merge_form(
         "Pd/C catalyzes Suzuki coupling at room temperature.",
     )
 
-    resp = client.get(f"/claim/fi{winner}")
+    page = client.get(f"/claim/fi{winner}")
+    assert page.status_code == 200
+    assert "Nearest claims" in page.text
+    assert f'hx-get="/claim/fi{winner}/nearest"' in page.text  # lazy placeholder
+
+    resp = client.get(f"/claim/fi{winner}/nearest")
 
     assert resp.status_code == 200
-    assert "Nearest claims" in resp.text
     assert f"fi{neighbour}" in resp.text
     assert f'action="/nanopub/fi{winner}/merge"' in resp.text
     assert f'value="{neighbour}"' in resp.text  # the loser= hidden field
+
+
+def test_claim_page_makes_no_judge_calls_fragment_does(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    """gr473425: /claim/<id> must return without the slow LLM judge; only
+    the lazy /nearest fragment pays for it."""
+    from types import SimpleNamespace
+
+    from precis.taproot import canon
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    store = _store(runtime_with_store)
+    embedder = runtime_with_store.hub.embedder
+    calls: list[Any] = []
+
+    def _route(req: Any) -> Any:
+        calls.append(req)
+        return SimpleNamespace(
+            text="",
+            data={"verdict": "different", "confidence": 0.4, "rationale": "s"},
+            error=None,
+        )
+
+    monkeypatch.setattr(canon, "route", _route)
+    a = mint_hub(store, CanonicalClaim(sentence="Lazy panel claim alpha.", scope={}))
+    b = mint_hub(
+        store, CanonicalClaim(sentence="Lazy panel claim alpha two.", scope={})
+    )
+    _embed_hub_body(store, embedder, a, "Lazy panel claim alpha.")
+    _embed_hub_body(store, embedder, b, "Lazy panel claim alpha two.")
+
+    page = client.get(f"/claim/fi{a}", headers={"HX-Request": "true"})
+    assert page.status_code == 200
+    assert "checking near-duplicates" in page.text
+    assert "near-duplicate check unavailable" in page.text  # failure fallback
+    assert calls == []
+
+    frag = client.get(f"/claim/fi{a}/nearest")
+    assert frag.status_code == 200
+    assert f"fi{b}" in frag.text
+    assert len(calls) >= 1
+
+    # A non-hub id degrades to an empty list, never a 500.
+    assert client.get("/claim/fi99999999/nearest").status_code == 200
 
 
 def test_merge_without_confirm_renders_plan_and_writes_nothing(

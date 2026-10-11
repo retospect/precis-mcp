@@ -1,0 +1,30 @@
+{# Nearest-claims list: included inline by _review.html.j2, or served alone
+   by GET /claim/<head>/nearest (the lazy-load fragment). #}
+{% if np.nearest_note %}
+<p class="text-xs text-slate-500">{{ np.nearest_note }}</p>
+{% elif not np.nearest %}
+<p class="text-xs text-slate-500">No other claim hubs found nearby.</p>
+{% else %}
+<ul class="space-y-1.5">
+  {% for n in np.nearest %}
+  <li class="flex items-center justify-between gap-2 text-xs">
+    <span class="grow min-w-0 truncate" title="{{ n.claim }}">
+      <span class="px-1.5 py-0.5 rounded font-mono
+        {% if n.verdict == 'same' %}bg-rose-100 text-rose-700
+        {% elif n.verdict == 'contradicts' %}bg-amber-100 text-amber-700
+        {% else %}bg-slate-100 text-slate-600{% endif %}"
+        title="dedup_judge: {{ n.verdict }} (confidence {{ '%.2f' | format(n.confidence) }})">{{ n.verdict }}</span>
+      <a class="text-emerald-700 hover:underline" href="/claim/{{ n.handle }}">{{ n.handle }}</a>
+      {{ n.claim[:100] }}{% if n.claim|length > 100 %}…{% endif %}
+      <span class="text-slate-400 font-mono">d={{ '%.3f' | format(n.distance) }}</span>
+    </span>
+    {% if n.can_merge %}
+    <form method="post" action="/nanopub/fi{{ hub_ref_id }}/merge" class="shrink-0">
+      <input type="hidden" name="loser" value="{{ n.hub_ref_id }}">
+      <button class="px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs whitespace-nowrap">Merge into this</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

@@ -48,9 +48,10 @@ from precis_web.claim_render import (
     claim_citers,
     claim_full_sentence,
     render_claim_evidence,
+    resolve_head_ref_id,
 )
 from precis_web.deps import get_embedder, get_store, get_web_config, templates
-from precis_web.nanopub_render import hub_context
+from precis_web.nanopub_render import hub_context, nearest_fragment_context
 from precis_web.routes.refs import _followup_discussions
 
 router = APIRouter(tags=["claim"])
@@ -139,7 +140,7 @@ def claim_page_context(
         "discussions": _followup_discussions(store, hub_ref_id),
         "ask_model": ask.answer_model_label(),
         "passages_by_paper": _passages_by_paper(data["chunks"]),
-        "np": hub_context(store, hub_ref_id, embedder=embedder)
+        "np": hub_context(store, hub_ref_id, embedder=embedder, lazy_nearest=True)
         if _publish_row_fn
         else None,
         "refuted": _refuted_ruling(store, hub_ref_id),
@@ -203,6 +204,20 @@ def claim_view(request: Request, head: str) -> HTMLResponse:
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request, "claim/_body.html.j2", ctx)
     return templates.TemplateResponse(request, "claim/view.html.j2", ctx)
+
+
+@router.get("/claim/{head}/nearest", response_class=HTMLResponse)
+def claim_nearest(request: Request, head: str) -> HTMLResponse:
+    """The lazy "Nearest claims" list (ANN + per-row LLM judge, the slow
+    part of the review pane — gr473425), fetched by the placeholder in
+    ``claim/_review.html.j2`` after the pane has already rendered. Plain
+    ``def`` so the judge calls run in the threadpool, not the event loop."""
+    store = get_store(request)
+    hub_id = resolve_head_ref_id(store, head)
+    if hub_id is None:
+        return HTMLResponse("", status_code=404)
+    ctx = nearest_fragment_context(store, hub_id, embedder=get_embedder(request))
+    return templates.TemplateResponse(request, "claim/_nearest.html.j2", ctx)
 
 
 @router.get("/preview/claim/{head}", response_class=HTMLResponse)
