@@ -86,6 +86,11 @@ def main() -> None:
     p.add_argument("--apply", action="store_true", help="delete rejected rows")
     p.add_argument("--sample", type=int, default=10, help="sample rows to print")
     p.add_argument("--batch", type=int, default=500, help="rows per delete txn")
+    p.add_argument(
+        "--reason",
+        default="",
+        help="only rows whose reason contains this text (e.g. \"'detail:'\")",
+    )
     args = p.parse_args()
 
     scanned = 0
@@ -96,11 +101,14 @@ def main() -> None:
             scanned += 1
             yield row
 
-    rejected = reject_rows(counted())
+    rejected = [r for r in reject_rows(counted()) if args.reason in r[1]]
     by_reason = Counter(reason_class(r) for _, r, _ in rejected)
     print(f"scanned:  {scanned}")
     print(f"rejected: {len(rejected)}")
     for reason, n in by_reason.most_common():
+        print(f"  {n:>8}  {reason}")
+    print("top exact reasons:")
+    for reason, n in Counter(r for _, r, _ in rejected).most_common(12):
         print(f"  {n:>8}  {reason}")
     print("sample:")
     for chunk_id, reason, text in rejected[: args.sample]:

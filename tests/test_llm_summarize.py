@@ -1371,6 +1371,10 @@ def test_reject_reason_caps_total_length() -> None:
         "methanol C–H bond breaking controls rate\n\nstep 8 irreversible.",
         "DFT error small on eV scale\n\nKeywords: density-functional, benchmark.",
         "DFT error small on eV scale\n\nkey words: DFT, benchmark.",
+        # Third dry run (2026-10-11): word-prefix and casual-phrase hits.
+        "HMMs generate DNA sequences via state paths",
+        "wait for fire to die down before closing flue",
+        "porous carbon behaves something like a sponge for Li ions",
     ],
 )
 def test_reject_reason_does_not_overfire_on_clean_gists(clean: str) -> None:

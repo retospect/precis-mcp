@@ -1076,7 +1076,7 @@ def parse_summary(text: str) -> str:
 #: lifted verbatim from ``_INSTRUCTION_BLOCK``'s own wording (a leak that
 #: echoes the contract back at us trips on the contract's own words).
 _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
-    "something like",
+    "something like:",
     "count words",
     "count the words",
 )
@@ -1111,7 +1111,7 @@ _PROMPT_FRAGMENT_RE = re.compile(
 _REASONING_PREAMBLE_RE = re.compile(
     r"^\s*(?:"
     r"let me|let's|let us|i'll|i will|i need|i should|i can|i'm going|i think|"
-    r"okay[,.! ]|ok[,.!]|sure[,.!]|alright[,.!]|hmm|wait[,.! ]|"
+    r"okay[,.! ]|ok[,.!]|sure[,.!]|alright[,.!]|hmm\b|wait[,.!]|"
     r"first[,:]|firstly|"
     r"here is|here's|here are|the user|we need|we should|we have|"
     r"looking at"
