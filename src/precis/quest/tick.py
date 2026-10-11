@@ -167,7 +167,8 @@ def _render_tick_conclusion(outcome: QuestTickOutcome) -> str:
             f"logbook+{outcome.logbook_added} dossier_rewritten="
             f"{outcome.dossier_rewritten} proposals={outcome.proposals} "
             f"sims={outcome.sims_dispatched} harvested={outcome.results_harvested} "
-            f"searches={outcome.searches_run} papers_linked={outcome.papers_linked} "
+            f"searches={outcome.searches_run} refused={outcome.searches_refused} "
+            f"papers_linked={outcome.papers_linked} "
             f"ledger_added={outcome.ledger_added} "
             f"dialectic={outcome.dialectic_applied} "
             f"rulings={outcome.rulings_minted} graduated={outcome.graduated} "
@@ -294,6 +295,10 @@ class QuestTickOutcome:
     graduated: int = 0  # rung 4e — candidates that crossed the ceiling
     # Lit-search grounding action.
     searches_run: int = 0
+    #: Planned `searches` entries the tick did NOT execute (compute lane off,
+    #: unparseable entry, over the per-tick cap) — each is also logged as an
+    #: `observation`, so a narrated dispatch is never silently dropped (gr476100).
+    searches_refused: int = 0
     papers_linked: int = 0
     hypotheses_deduped: int = 0
     # Dossier-owned-by-process pinned ledger — applied (non-deduped) `ledger_add`
@@ -2999,7 +3004,16 @@ class _TickRun:
         resets the stall clock. Its own stage because a per-DOI acquire walk is
         minutes of network, not a fraction of the compute step."""
         self.st["stage"] = "compute"
+        from precis.quest.search import MAX_QUERIES, _parse_search_entry
+
+        planned = self.payload().get("searches")
+        planned = planned if isinstance(planned, list) else []
         if not self.compute:
+            self._refuse_searches(
+                len(planned),
+                "compute lane is off for this quest (meta.compute_lane=off), so "
+                "lit-search is skipped on its ticks",
+            )
             return None
 
         from precis.quest.search import run_search_step
@@ -3022,7 +3036,35 @@ class _TickRun:
             self.st["searches_run"] = sstep.queries_run
             self.st["papers_linked"] = sstep.papers_linked
             self._bump("added", sstep.queries_run)
+            capped = raw_searches[:MAX_QUERIES]
+            unparsed = sum(1 for r in capped if _parse_search_entry(r) is None)
+            self._refuse_searches(
+                unparsed, "entry has no usable `query` (blank or malformed)"
+            )
+            self._refuse_searches(
+                len(raw_searches) - len(capped),
+                f"over the per-tick cap of {MAX_QUERIES} searches",
+            )
         return None
+
+    def _refuse_searches(self, n: int, why: str) -> None:
+        """Record ``n`` planned searches that did not run: bump the outcome
+        counter and log an ``observation``, so the model's next tick (and the
+        tick record) sees a refusal instead of a narrated-then-dropped
+        dispatch (gripe 476100)."""
+        if n <= 0:
+            return
+        self._bump("searches_refused", n)
+        try:
+            append_entry(
+                self.store,
+                self.quest_id,
+                text=f"{n} planned search(es) NOT run: {why}.",
+                entry_type="observation",
+                by=self.by,
+            )
+        except Exception:
+            log.warning("run_quest_tick: failed to log refused searches", exc_info=True)
 
     def _stage_compute(self) -> QuestTickOutcome | None:
         """Materialise + dispatch the capped proposals, harvest what landed,
@@ -3448,6 +3490,7 @@ class _TickRun:
                 ruled_out=ruled,
                 graduated=graduated,
                 searches_run=int(st.get("searches_run") or 0),
+                searches_refused=int(st.get("searches_refused") or 0),
                 papers_linked=papers_linked,
                 hypotheses_deduped=int(st.get("deduped") or 0),
                 ledger_added=ledger_added,

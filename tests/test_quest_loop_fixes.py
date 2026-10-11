@@ -184,6 +184,33 @@ class TestTickGrounding:
         assert out.hypotheses_deduped == 0
         assert out.logbook_added >= 1
 
+    def test_planned_search_with_compute_off_is_reported_not_dropped(
+        self, store: Any
+    ) -> None:
+        # gr476100: the inquiry tick narrated a search dispatch but the
+        # compute-off lane silently skipped the stage. A planned search that
+        # does not run must show up on the outcome and in the logbook.
+        qid = _mk_quest(store, "A reason-only quest")
+        payload = {"logbook": [], "searches": ["a", {"query": "b"}]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.searches_run == 0
+        assert out.searches_refused == 2
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("2 planned search(es) NOT run" in t for t in texts)
+
+    def test_unparseable_search_entry_is_reported(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest with a malformed search")
+        payload = {"logbook": [], "searches": ["real query", {"q": "wrong key"}, " "]}
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(payload),
+            compute=True,
+            search_fn=lambda _s, _q, _e: [],
+        )
+        assert out.searches_run == 1
+        assert out.searches_refused == 2
+
     def test_search_action_links_papers(self, store: Any) -> None:
         qid = _mk_quest(store, "A quest that needs grounding")
         stand_in = _mk_quest(store, "A stand-in for a held paper")  # any linkable ref
