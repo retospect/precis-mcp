@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 from contextlib import contextmanager
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -2158,7 +2159,8 @@ _HYDRO_ARROW_RE = (
     r'<g class="pw-hydro-arrow"[^>]*data-to="([^"]*)">'
     r'<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)"[^>]*/>'
     r'<polygon points="([\d.-]+),([\d.-]+) [^"]*"[^>]*/>'
-    r'(?:<text class="pw-hydro-label" x="([\d.-]+)" y="([\d.-]+)" [^>]*fill="([^"]*)"'
+    r'(?:<line class="pw-hydro-leader"[^>]*/>)?'
+    r'(?:<text class="pw-hydro-label[^"]*" x="([\d.-]+)" y="([\d.-]+)" [^>]*fill="([^"]*)"'
     r"[^>]*>([^<]*)</text>)?(?:<title>[^<]*</title>)?</g>"
 )
 
@@ -2192,15 +2194,97 @@ def test_pathway_hydrogenation_arrow_tip_lands_on_fed_level_from_upper_right(
         assert (tip[0] - tail[0]) * (base[1] - tail[1]) == pytest.approx(
             (tip[1] - tail[1]) * (base[0] - tail[0]), abs=1e-6
         )
-        if lx:
+        assert lx, to  # every arrow is labelled in the SVG itself (print/export)
+        if text.endswith("+H⁺+e⁻") and text != "+H⁺+e⁻":
+            # stacked: right of the tail AND the bars, prefixed with its product
+            assert text == f"{to}: +H⁺+e⁻", text
+            assert float(lx) > tail[0] and float(lx) >= x1, (to, lx, x1)
+        else:
             assert float(lx) == tail[0] and float(ly) < tail[1]
             assert text == "+H⁺+e⁻"
-    # every arrow with room is labelled (gr478861: not all were), in its own
-    # path colour; only a pile-up (tips < 11px apart) falls back to the <title>
-    labelled = [g[0] for g in groups if g[7]]
-    assert labelled == ["NH", "NH2", "NH3", "OH", "H2O"]
+    # every arrow is labelled (gr478861), in its own path colour
+    assert all(g[7] for g in groups)
     assert all(g[9] != "#64748b" for g in groups)
+    # closer than 11px -> the column's labels are stacked, never overlapping:
+    # distinct y, >= 9px apart, none above its own tail's label line
+    for xs in {round(float(g[5]) // 40) for g in groups}:
+        col = sorted(
+            (g for g in groups if round(float(g[5]) // 40) == xs),
+            key=lambda g: float(g[6]),
+        )
+        stacked = [g for g in col if g[10].startswith(g[0] + ": ")]
+        ys = [float(g[8]) for g in stacked]
+        assert all(b - a >= 9.99 for a, b in pairwise(ys)), (xs, ys)
+        if len(col) > 1 and any(
+            float(b[6]) - float(a[6]) < 11 for a, b in pairwise(col)
+        ):
+            assert len(stacked) == len(col)  # all-or-nothing within a column
     assert svg.count("feeds ") >= len(groups)  # hover title on each arrow
+
+
+@_needs_node
+def test_pathway_hydrogenation_labels_stack_when_tips_crowd(
+    client, runtime, tmp_path: Path
+) -> None:
+    """NH/OH and NH2/H2O land within a pixel or two of each other (energies
+    0.01 eV apart): the column's labels STACK instead of falling back to
+    hover — every arrow labelled in the SVG text, right of the bars, >= 9px
+    apart, prefixed with the product it feeds (a text distinction that
+    survives black-and-white print), in the arrow's own path colour."""
+    graph = _parked_graph()
+    for n in graph["nodes"]:
+        if n["id"] == "OH":
+            n["rel_energy"] = -0.51
+        if n["id"] == "H2O":
+            n["rel_energy"] = -0.61
+    _seed_parked(runtime, graph)
+    svg = _render_diagram_svg(tmp_path, client.get("/refs/pathway/171696").text)
+    bars = _level_bars(svg)
+    groups = re.findall(_HYDRO_ARROW_RE, svg)
+    by_to = {g[0]: g for g in groups}
+    assert set(by_to) == {"NH", "NH2", "NH3", "OH", "H2O"}
+    # the pinned precondition: these tips really are < 11px apart
+    for a, b in (("NH", "OH"), ("NH2", "H2O")):
+        assert abs(float(by_to[a][6]) - float(by_to[b][6])) < 11
+    stacked = {g[0]: g for g in groups if g[10].startswith(g[0] + ": ")}
+    assert {"NH", "OH", "NH2", "H2O"} <= set(stacked)
+    for to, g in stacked.items():
+        assert g[10] == f"{to}: +H⁺+e⁻"
+        assert float(g[7]) > float(g[5]) and float(g[7]) >= bars[to][1]
+        assert g[9] != "#64748b"
+    assert float(stacked["OH"][8]) - float(stacked["NH"][8]) >= 9.99
+    assert float(stacked["H2O"][8]) - float(stacked["NH2"][8]) >= 9.99
+    assert all(g[7] for g in groups)  # NH3 (uncrowded) keeps its own label too
+    assert 'class="pw-hydro-leader"' in svg
+
+
+def test_pathway_graph_payload_carries_low_confidence_reasons() -> None:
+    """catpath's ``trust_reasons`` ride into ``low_confidence_reasons`` on
+    nodes and links; an older stored graph yields ``[]`` (the tooltip then
+    falls back to its inferred text)."""
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [
+            {"id": "A", "low_confidence": True, "trust_reasons": ["spread"]},
+            {"id": "B", "low_confidence": True},
+        ],
+        "links": [
+            {
+                "source": "A",
+                "target": "B",
+                "low_confidence": True,
+                "trust_reasons": ["insufficient_samples", "tr123"],
+            }
+        ],
+    }
+    out = _pathway_graph_payload(graph)
+    assert out is not None
+    assert [n["low_confidence_reasons"] for n in out["nodes"]] == [["spread"], []]
+    assert out["links"][0]["low_confidence_reasons"] == [
+        "insufficient_samples",
+        "tr123",
+    ]
 
 
 @_needs_node

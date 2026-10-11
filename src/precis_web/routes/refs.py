@@ -1001,6 +1001,16 @@ def _pathway_link_counts(raw: Any) -> dict[str, int] | None:
     return out or None
 
 
+def _pathway_reasons(raw: Any) -> list[str]:
+    """catpath's ``trust_reasons`` (cause tags ``spread`` /
+    ``insufficient_samples`` / ``no_samples`` plus tainting trust-record
+    ids) as a clean ``list[str]``; ``[]`` on a result stored before catpath
+    recorded them (the diagram then falls back to its inferred text)."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(r) for r in raw if r]
+
+
 def _pathway_graph_payload(
     graph: dict[str, Any] | None, target: str | None = None
 ) -> dict[str, Any] | None:
@@ -1019,6 +1029,7 @@ def _pathway_graph_payload(
             "rel_energy": n.get("rel_energy"),
             "energy_std": n.get("energy_std"),
             "low_confidence": bool(n.get("low_confidence")),
+            "low_confidence_reasons": _pathway_reasons(n.get("trust_reasons")),
             # CHE potential lever
             # — reservoir H atoms this node has absorbed relative to the
             # root (root = 0); null on a legacy graph catpath never
@@ -1040,6 +1051,7 @@ def _pathway_graph_payload(
             "delta_e": e.get("delta_e"),
             "delta_e_std": e.get("delta_e_std"),
             "low_confidence": bool(e.get("low_confidence")),
+            "low_confidence_reasons": _pathway_reasons(e.get("trust_reasons")),
             # catpath's per-link stoichiometry (``added`` elements,
             # ``removed`` species) when it emits them; null on an older
             # graph, where the diagram infers the step annotations from the

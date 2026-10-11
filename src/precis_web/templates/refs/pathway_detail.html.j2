@@ -955,19 +955,38 @@
     return t + '\nclick to select';
   }
 
-  // The graph payload only carries a boolean ``low_confidence`` per node, so
-  // the reason is assembled from what the client does know: the per-state
-  // warnings, the energy spread, and any flagged link touching the state.
+  // Why a state/step was flagged: ``low_confidence_reasons`` (catpath's
+  // ``trust_reasons`` cause tags, via the payload) is authoritative. Only a
+  // result stored before those existed falls back to the reason assembled
+  // from what the client knows: the per-state warnings, the energy spread,
+  // and any flagged link touching the state.
+  const PW_REASON_TEXT = {
+    spread: 'sampled geometries/seeds disagree (spread above the tolerance)',
+    insufficient_samples: 'fewer than 2 samples survived',
+    no_samples: 'no usable sample (every attempt failed)',
+    'edge:low_confidence': 'an adjacent step was flagged low-confidence',
+  };
+  function pwReasonText(r) {
+    return PW_REASON_TEXT[r] || (/^[a-z]{2}\d+$/.test(r) ? `trust record ${r} tainted it` : r);
+  }
   function lowConfidenceReason(nd) {
     const bits = [];
     ((V.stateWarnings || {})[nd.id] || []).forEach((w) => bits.push(w.text));
+    const rs = nd.low_confidence_reasons || [];
+    if (rs.length) {
+      rs.forEach((r) => bits.push(pwReasonText(r)));
+      return 'low confidence — ' + bits.join('; ');
+    }
     const sd = nd.energy_std || 0;
     if (sd > 1e-6) { bits.push(`energy spread \u00b1${sd.toFixed(2)} eV across the sampled geometries`); }
     const links = ((V.diagram || {}).links || []).filter(
       (e) => e.low_confidence && (e.source === nd.id || e.target === nd.id));
     if (links.length) {
       bits.push('adjacent step flagged low-confidence: '
-        + links.map((e) => `${e.source}\u2192${e.target}`).join(', '));
+        + links.map((e) => {
+          const why = (e.low_confidence_reasons || []).map(pwReasonText).join(', ');
+          return `${e.source}\u2192${e.target}` + (why ? ` (${why})` : '');
+        }).join(', '));
     }
     if (nd.low_confidence && !bits.length) {
       bits.push('flagged low-confidence by the barrier computation (no finer reason recorded)');
@@ -1309,13 +1328,22 @@
     });
     Object.keys(arrowCols).forEach((k) => {
       const col = arrowCols[k].slice().sort((a, b) => a.tipY - b.tipY);
-      // Label every arrow that has room (tips >= 11px apart); a crowded one
-      // still carries the same text as a hover <title>.
-      let lastTip = -Infinity;
-      col.forEach((ha, i) => {
+      // Tips >= 11px apart keep the label centred over their own tail. A
+      // column with any closer pair STACKS: every label (never hover-only,
+      // so print/export is complete) moves right of the tails and bars, one
+      // 10px line each (top arrow first, never above its own tail), joined
+      // to its tail by a short leader and prefixed with the product it
+      // feeds, so the lines stay tellable apart in black and white.
+      const crowded = col.some((ha, i) => i > 0 && ha.tipY - col[i - 1].tipY < 11);
+      let lastY = -Infinity;
+      col.forEach((ha) => {
         ha.shared = col.length > 1;
-        ha.labelled = (i === 0) || (ha.tipY - lastTip >= 11);
-        if (ha.labelled) { lastTip = ha.tipY; }
+        ha.labelled = true;
+        ha.stacked = crowded;
+        if (crowded) {
+          ha.labY = Math.max(ha.tipY - 22 + 3, lastY + 10);
+          lastY = ha.labY;
+        }
       });
     });
     hydroArrows.forEach((ha) => {
@@ -1329,12 +1357,14 @@
       const headLen = 6, headHalf = 2.6;
       const bx = tipX + ux * headLen, by = tipY + uy * headLen;  // head base centre
       const nx = -uy, ny = ux;  // perpendicular
+      const labX = Math.max(tailX, cx + half) + 4;  // stacked labels: right of tail and bar
       parts.push(`<g class="pw-hydro-arrow"${ha.pa} data-from="${esc(ha.step.src)}" data-to="${esc(ha.step.tgt)}">`
         + `<line x1="${tailX}" y1="${tailY}" x2="${bx}" y2="${by}" stroke="${ha.color}" stroke-width="1.2"/>`
         + `<polygon points="${tipX},${tipY} ${bx + nx * headHalf},${by + ny * headHalf} ${bx - nx * headHalf},${by - ny * headHalf}" fill="${ha.color}"/>`
-        + (ha.labelled
-          ? `<text class="pw-hydro-label" x="${tailX}" y="${tailY - 3}" font-size="8" fill="${ha.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(ha.text)}</text>`
-          : '')
+        + (ha.stacked
+          ? `<line class="pw-hydro-leader" x1="${tailX}" y1="${tailY}" x2="${labX - 1}" y2="${ha.labY - 3}" stroke="${ha.color}" stroke-width="0.6"/>`
+            + `<text class="pw-hydro-label pw-hydro-stacked" x="${labX}" y="${ha.labY}" font-size="9" font-weight="bold" fill="${ha.color}" text-anchor="start" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(ha.step.tgt)}: ${esc(ha.text)}</text>`
+          : `<text class="pw-hydro-label" x="${tailX}" y="${tailY - 3}" font-size="9" fill="${ha.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(ha.text)}</text>`)
         + `<title>${esc(`${ha.text} feeds ${ha.step.src} \u2192 ${ha.step.tgt}`)}</title>`
         + `</g>`);
     });
