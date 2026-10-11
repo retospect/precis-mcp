@@ -524,8 +524,26 @@ def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
         items = _work_items(store, ref_id)
     except Exception:
         return []
+    # The draft's own project todo is a container: it surfaces in the walk
+    # only because an old job failed or finished. Show it only when it
+    # actually wants something (asks / blocked / live or failed latest job);
+    # otherwise the row reads "succeeded" and tells the reader nothing.
+    try:
+        from precis_web.routes.drafts import _project_id
+
+        project_id = _project_id(store, ref_id)
+    except Exception:
+        project_id = None
     out: list[dict[str, Any]] = []
     for w in items or []:
+        if project_id is not None and w.get("todo_id") == project_id:
+            last = (w.get("jobs") or [{}])[-1].get("status")
+            if not (
+                w.get("asks")
+                or w.get("blocked")
+                or last in ("running", "queued", "failed")
+            ):
+                continue
         # ``_work_items`` returns dicts (jobs = ``[{"id", "status", "reason"}]``,
         # asks = ``[{"tag", "question"}]``) — read keys, not attributes, or every
         # field silently defaults and the pane shows a blank row (todo → None).

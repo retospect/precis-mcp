@@ -35,6 +35,7 @@ condition it deliberately doesn't copy.
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from markupsafe import Markup, escape
 
 from precis.errors import NotFound
 from precis.utils.llm.router import llm_select_from_payload
@@ -1194,6 +1196,23 @@ def _paginate_roots(
     return page_rows, total_roots, has_next
 
 
+_TODO_HANDLE_RE = re.compile(r"\b(td\d+)\b")
+
+
+def _linkify_todo_handles(text: str) -> Markup:
+    """HTML-escape ``text`` and turn bare ``tdN`` handles into links to that
+    todo's focused tree, so ids in the plain-text doable panel are clickable."""
+    return Markup(
+        _TODO_HANDLE_RE.sub(
+            lambda m: (
+                '<a class="text-sky-700 hover:underline" '
+                f'href="/todo?focus={m.group(1)[2:]}">{m.group(1)}</a>'
+            ),
+            str(escape(text)),
+        )
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(
@@ -1239,9 +1258,14 @@ async def dashboard(
     filtered, total_roots, has_next = _paginate_roots(
         filtered, page=page, per_page=_TASKS_ROOTS_PER_PAGE
     )
-    doable_body, _ = await await_dispatch(
-        request, "search", {"kind": "todo", "view": "doable", "page_size": 20}
-    )
+    # A focused page is about one subtree: scope the doable queue to it
+    # (``under=``) rather than showing the global rotation's leaves, which
+    # have nothing to do with the focused node (gr477174).
+    doable_args: dict[str, Any] = {"kind": "todo", "view": "doable", "page_size": 20}
+    if focus is not None:
+        doable_args["under"] = focus
+    doable_raw, _ = await await_dispatch(request, "search", doable_args)
+    doable_body = _linkify_todo_handles(doable_raw)
     focus_row: dict[str, Any] | None = None
     if focus is not None:
         # The focused node itself is the heading; everything below it
