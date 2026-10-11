@@ -67,3 +67,12 @@ Idempotent: re-running is a no-op once converged. The sshd drop-in triggers a
   `earlyoom_args` in `deploy/roles/hardening/defaults/main.yml`.
 - This does not replace the nightly gentle reboot; it prevents the *unplanned*
   thrash lockout between reboots.
+
+## Per-unit memory guards + memsnap
+
+Earlyoom does not catch file-backed mmap thrash (MemAvailable stays high). Use
+cgroup limits: `precis_worker_memory_*`, `host_memory_guard_units`, `memsnap_enabled`
+(roles/hardening/defaults/main.yml; example in
+`deploy/inventory.example/group_vars/all/memory-guard.example.yml`). Apply with
+`playbooks/10-hardening.yml`; daemon-reload only, no restarts. Read snapshots with
+`journalctl -t memsnap`.

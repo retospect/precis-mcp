@@ -35,3 +35,37 @@ earlyoom_args: >-
 # e.g. "96G". The sshd backstop + earlyoom already carry the lockout guarantee;
 # this is a belt-and-suspenders cap, not required.
 linux_compute_memory_max: ""
+
+# ── Per-unit memory guards (Linux only; all default off) ──────────────────
+# Rendered as /etc/systemd/system/<unit>.d/50-memory-guard.conf; only set
+# values produce a directive, so empty = unchanged. Applied with
+# daemon-reload, never a restart: cgroup limits on a running unit take effect
+# on reload. (A legacy memory.conf from linux_compute_memory_max sorts after
+# 50-memory-guard.conf and wins for precis-worker.)
+# Applied by playbooks/10-hardening.yml (tag: hardening).
+#
+# Workers: top-level values apply to every unit in precis_worker_memory_units;
+# precis_worker_memory_overrides replaces values per unit, e.g.
+#   precis_worker_memory_overrides:
+#     precis-worker-sandbox: {memory_high: 8G, memory_max: 12G}
+precis_worker_memory_high: ""
+precis_worker_memory_max: ""
+precis_worker_memory_swap_max: ""
+precis_worker_memory_units:
+  - precis-worker
+  - precis-worker-compute
+  - precis-worker-sandbox
+precis_worker_memory_overrides: {}
+
+# Existing units NOT managed by ansible (hand-made): we only add the drop-in,
+# never template the unit. systemd reads the limits on daemon-reload; we do
+# not restart, so a unit not yet running them picks them up on its next start.
+#   host_memory_guard_units:
+#     - {name: example-server.service, memory_high: 96G, memory_max: 104G}
+host_memory_guard_units: []
+
+# ── memsnap: journal memory snapshot timer (Linux, opt-in) ────────────────
+# Logs top-15 RSS processes + MemoryCurrent of precis-* and guard units under
+# identifier `memsnap` (`journalctl -t memsnap`; needs a persistent journal).
+memsnap_enabled: false
+memsnap_interval_min: 10

@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Per-unit cgroup memory guard (roles/hardening/defaults/main.yml). Page cache
+# of an mmapped file is charged to the unit's cgroup, so MemoryHigh makes the
+# unit reclaim/thrash itself instead of starving sshd and the rest of the box.
+# Only directives with a value are rendered.
+[Service]
+{% if unit_cfg.memory_high | default('') | string | length > 0 %}
+MemoryHigh={{ unit_cfg.memory_high }}
+{% endif %}
+{% if unit_cfg.memory_max | default('') | string | length > 0 %}
+MemoryMax={{ unit_cfg.memory_max }}
+{% endif %}
+{% if unit_cfg.memory_swap_max | default('') | string | length > 0 %}
+MemorySwapMax={{ unit_cfg.memory_swap_max }}
+{% endif %}

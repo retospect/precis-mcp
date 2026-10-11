@@ -1,0 +1,12 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Memory snapshot to the journal (identifier memsnap): top 15 by RSS, plus
+# MemoryCurrent of every precis-* unit and the guard units.
+echo "== top 15 by RSS (pid rss_mb comm args) =="
+ps -eo pid=,rss=,comm=,args= --sort=-rss | head -15 |
+  awk '{ a=""; for (i=5;i<=NF && i<=8;i++) a=a" "$i; printf "%s %d %s%s\n", $1, $2/1024, $3, a }'
+echo "== MemoryCurrent =="
+for u in $(systemctl list-units --all --no-legend --plain 'precis-*' | awk '{print $1}') {{ memsnap_guard_unit_names | join(' ') }}; do
+  printf '%s %s\n' "$u" "$(systemctl show -p MemoryCurrent --value "$u" 2>/dev/null)"
+done
+grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo

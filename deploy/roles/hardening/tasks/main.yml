@@ -260,6 +260,100 @@
   become: true
   notify: reload systemd and restart precis-worker linux
 
+# ── Per-unit memory guards + memsnap (Linux, opt-in; see defaults) ─────────
+# cgroup MemoryHigh/Max: an mmapped model's page cache is charged to its unit,
+# so the unit thrashes itself instead of starving sshd. daemon-reload only.
+- name: Ensure precis worker memory-guard drop-in dirs (Linux)
+  when:
+    - os_family == "linux"
+    - unit_cfg.memory_high | string | length > 0 or unit_cfg.memory_max | string | length > 0 or unit_cfg.memory_swap_max | string | length > 0
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ unit_cfg.name }}.d"
+    state: directory
+    mode: "0755"
+  become: true
+  loop: "{{ precis_worker_memory_units }}"
+  loop_control:
+    loop_var: wunit
+  vars:
+    unit_cfg: &worker_unit_cfg
+      name: "{{ wunit | regex_replace('[.]service$', '') }}.service"
+      memory_high: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_high | default(precis_worker_memory_high) }}"
+      memory_max: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_max | default(precis_worker_memory_max) }}"
+      memory_swap_max: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_swap_max | default(precis_worker_memory_swap_max) }}"
+
+- name: Memory-guard drop-in for precis worker units (Linux)
+  when:
+    - os_family == "linux"
+    - unit_cfg.memory_high | string | length > 0 or unit_cfg.memory_max | string | length > 0 or unit_cfg.memory_swap_max | string | length > 0
+  ansible.builtin.template:
+    src: memory-guard.conf.j2
+    dest: "/etc/systemd/system/{{ unit_cfg.name }}.d/50-memory-guard.conf"
+    mode: "0644"
+  become: true
+  loop: "{{ precis_worker_memory_units }}"
+  loop_control:
+    loop_var: wunit
+  vars:
+    unit_cfg: *worker_unit_cfg
+  notify: reload systemd (hardening)
+
+- name: Ensure memory-guard drop-in dirs for hand-managed units (Linux)
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ unit_cfg.name }}.d"
+    state: directory
+    mode: "0755"
+  become: true
+  loop: "{{ host_memory_guard_units }}"
+  loop_control:
+    loop_var: unit_cfg
+
+- name: Memory-guard drop-in for hand-managed units, no restart (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: memory-guard.conf.j2
+    dest: "/etc/systemd/system/{{ unit_cfg.name }}.d/50-memory-guard.conf"
+    mode: "0644"
+  become: true
+  loop: "{{ host_memory_guard_units }}"
+  loop_control:
+    loop_var: unit_cfg
+  notify: reload systemd (hardening)
+
+- name: memsnap journal snapshot script + timer (Linux, opt-in)
+  when:
+    - os_family == "linux"
+    - memsnap_enabled | bool
+  become: true
+  block:
+    - name: Install memsnap script
+      ansible.builtin.template:
+        src: memsnap.sh.j2
+        dest: /usr/local/sbin/memsnap.sh
+        mode: "0755"
+      vars:
+        memsnap_guard_unit_names: "{{ host_memory_guard_units | map(attribute='name') | list }}"
+
+    - name: Install memsnap service
+      ansible.builtin.template:
+        src: memsnap.service.j2
+        dest: /etc/systemd/system/memsnap.service
+        mode: "0644"
+
+    - name: Install memsnap timer
+      ansible.builtin.template:
+        src: memsnap.timer.j2
+        dest: /etc/systemd/system/memsnap.timer
+        mode: "0644"
+
+    - name: Enable + start memsnap timer
+      ansible.builtin.systemd:
+        name: memsnap.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
 - name: Deploy sudoers drop-in for deploy user
   ansible.builtin.template:
     src: sudoers_deploy.j2

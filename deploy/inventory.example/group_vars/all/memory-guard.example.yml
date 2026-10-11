@@ -1,0 +1,11 @@
+---
+# EXAMPLE per-cluster memory guards (roles/hardening; playbooks/10-hardening.yml).
+# Placeholder values — size to the host: leave >=12G for the system. Put the
+# real values in the gitignored overlay (host_vars/<node>.yml), not the tree.
+precis_worker_memory_high: 20G
+precis_worker_memory_max: 24G
+precis_worker_memory_overrides:
+  precis-worker-sandbox: {memory_high: 8G, memory_max: 12G}
+host_memory_guard_units:
+  - {name: example-server.service, memory_high: 96G, memory_max: 104G}
+memsnap_enabled: true

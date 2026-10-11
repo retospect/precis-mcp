@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Memory snapshot every {{ memsnap_interval_min }} min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ memsnap_interval_min }}min
+
+[Install]
+WantedBy=timers.target

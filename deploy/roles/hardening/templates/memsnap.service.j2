@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Memory snapshot to the journal
+
+[Service]
+Type=oneshot
+SyslogIdentifier=memsnap
+ExecStart=/usr/local/sbin/memsnap.sh

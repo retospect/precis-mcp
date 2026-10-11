@@ -32,3 +32,8 @@
     daemon_reload: true
     state: restarted
   become: true
+
+- name: reload systemd (hardening)
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
