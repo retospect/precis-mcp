@@ -39,9 +39,9 @@ and C27–29 with pad-strip courtyards: the reader dropped footprint FILLs
 on the multi layer (KiCad maps them to Edge.Cuts) and `--update` never
 refreshed a stored footprint. Both fixed; the board got 15 refreshed
 footprints and 8 footprint holes (CN1/2/5/6 Ø6.4, U32/U33 SATA pegs
-Ø1.6). A footprint hole is a `mounting_hole` feature (`geom.part`), so it
-does not follow a moved part — cutouts inside footprints need a real
-model before anything re-places those parts. Worse, found the same day:
+Ø1.6). Footprint holes now live on the footprint (migration 0197) and follow
+the part, optimizer included; `--update` retires the legacy part-owned
+`mounting_hole` features and warns about measures still naming them. Worse, found the same day:
 the importer had written every mounting hole as `geom: {x, y, dia_mm}`,
 a shape no reader takes, so the board's 24 Ø6 holes never reached the
 drill file, DRC or router keep-outs. Fixed: position on the feature row,
@@ -81,8 +81,8 @@ not owned by this session: review-queue `pcb-easyeda-round-trip-2`
 on round-1 code: 70/89 realized, 19 failed, 0 stripped by the post-route
 gate, 398 vias (unfrozen: the anneal moved parts). That anneal moved the
 standoffs CN1/CN2/CN5/CN6 1.0–5.4 mm off their own Ø6.4 holes (features
-47–50 do not follow the part). Four hard `align` measures (CN→its hole,
-offset 0) are now on the board and read VIOLATED 1.019/3.104/5.358/4.559,
+47–50 then did not follow the part; the footprint holes now do). Four hard `align` measures (CN→its hole,
+offset 0) are redundant once `--update` retires 47–50; they were on the board and read VIOLATED 1.019/3.104/5.358/4.559,
 as expected before a re-place. The follow-up `put(op='route', seed=1)`
 crashed in `session.content_hash`: two measures tied up to their dict
 operands raise TypeError in `sorted` (any board with two same-shaped
@@ -226,10 +226,9 @@ export/fab if this file outgrows itself.
    anything does, and it is already the wrong answer to "did my freeze
    take?". Waits on nothing. Live evidence, 2026-10-03 (job 464286): a
    hard `align` from standoff to hole held for 2 of 4 standoffs on
-   heater-base-test. An imported footprint hole does not follow its part,
-   so the anneal moves the standoff off its own hole. Either the hole
-   moves with the part, or a part aligned to a fixed datum is placed
-   there and frozen before the anneal.
+   heater-base-test. Footprint holes now follow their part, so the
+   hole-side fix shipped; what remains is a part aligned to a fixed
+   datum (not a hole) being placed there and frozen before the anneal.
 10. **backlog/pcb-free-pad-model.md** — Reto, 2026-09-30: "just to
     measure. we should add a free pad model." His board's 6 plated free
     pads on GND are probe points with no precis model, so the import drops

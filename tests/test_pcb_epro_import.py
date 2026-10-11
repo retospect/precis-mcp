@@ -1100,3 +1100,66 @@ def test_update_retires_legacy_part_owned_hole_features(store, imported) -> None
     ]
     again = pcb_epro.import_epro(store, _zip(), slug=imported.slug, update=True)
     assert again.update is not None and again.update.legacy_hole_features == []
+
+
+def test_update_warns_about_measures_on_retired_hole_features(store, imported) -> None:
+    """An ``align`` measure naming a legacy hole by ``feature_id`` goes
+    unresolved when ``--update`` retires that feature: dry-run and real both
+    name the measure, feature and part; the measure itself is left alone."""
+    ref_id = imported.ref_id
+    _set_stored_footprint(store, ref_id, "R0603", "holes", [])
+    store.pcb_apply(
+        slug=imported.slug,
+        title="Tiny",
+        components=[],
+        nets=[],
+        connections=[],
+        features=[
+            {
+                "ftype": "mounting_hole",
+                "x": 1.0,
+                "y": 2.0,
+                "geom": {"diameter": 0.508, "part": "R1"},
+            }
+        ],
+    )
+    fid = next(
+        int(f["feature_id"])
+        for f in store.pcb_features_list(ref_id)
+        if (f["geom"] or {}).get("part") == "R1"
+    )
+    store.pcb_apply(
+        slug=imported.slug,
+        title="Tiny",
+        components=[],
+        nets=[],
+        connections=[],
+        features=[],
+        measures=[
+            {
+                "metric": "proximity",
+                "strength": "hard",
+                "goal": 0,
+                "operands": [{"instance": "R1"}, {"feature_id": fid}],
+            }
+        ],
+    )
+    before = store.pcb_measures_list(ref_id)
+    assert len(before) == 1
+
+    dry = pcb_epro.import_epro(
+        store, _zip(), slug=imported.slug, update=True, dry_run=True
+    )
+    assert dry.update is not None
+    assert len(dry.update.legacy_hole_measures) == 1
+    for text in (dry.update.legacy_hole_measures[0], "\n".join(dry.update.lines())):
+        assert f"measure #{before[0]['measure_id']}" in text
+        assert f"feature {fid}" in text
+        assert "part R1" in text
+    assert store.pcb_measures_list(ref_id) == before
+
+    real = pcb_epro.import_epro(store, _zip(), slug=imported.slug, update=True)
+    assert real.update is not None
+    assert len(real.update.legacy_hole_measures) == 1
+    assert "redundant" in "\n".join(real.update.lines())
+    assert store.pcb_measures_list(ref_id) == before

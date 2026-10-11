@@ -202,6 +202,9 @@ class UpdatePlan:
     #: the part's footprint now carries as footprint holes: retired so the
     #: hole is not doubled (and so it follows its part from now on).
     legacy_hole_features: list[int] = field(default_factory=list)
+    #: Live measures with a ``feature_id`` operand on a retired legacy hole
+    #: (one warning line each). Reported, never edited or deleted.
+    legacy_hole_measures: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = [
@@ -232,6 +235,7 @@ class UpdatePlan:
                 f"mounting-hole feature(s): their footprints now carry the "
                 f"holes, which follow the part"
             )
+        out += [f"  warning: {w}" for w in self.legacy_hole_measures]
         if self.features_added or self.features_missing:
             out.append(
                 f"  features: {self.features_added} in the source but not on "
@@ -805,6 +809,37 @@ def _legacy_hole_features(
     return sorted(out)
 
 
+def _legacy_hole_measure_warnings(
+    retired: list[int],
+    features: list[dict[str, Any]],
+    measures: list[dict[str, Any]],
+) -> list[str]:
+    """One warning per (live measure, retired feature) pair where the measure
+    has a ``{"feature_id": n}`` operand on a retired legacy hole."""
+    owner = {
+        int(f["feature_id"]): str((f.get("geom") or {}).get("part") or "?")
+        for f in features
+        if int(f["feature_id"]) in set(retired)
+    }
+    out: list[str] = []
+    for m in measures:
+        for o in m.get("operands") or []:
+            if not isinstance(o, dict) or "feature_id" not in o:
+                continue
+            try:
+                fid = int(o["feature_id"])
+            except (TypeError, ValueError):
+                continue
+            if fid in owner:
+                out.append(
+                    f"measure #{m.get('measure_id')} ({m.get('metric')}) "
+                    f"references feature {fid}, the retired hole of part "
+                    f"{owner[fid]}: the hole now rides the footprint, so this "
+                    f"measure is redundant and now reads unresolved; remove it"
+                )
+    return out
+
+
 def _pad_numbers(footprint: dict[str, Any]) -> list[str]:
     return sorted(str(p.get("number")) for p in footprint.get("pads") or [])
 
@@ -868,6 +903,10 @@ def _update(
         plan, graph, features, stored_fps, design
     )
     plan.features_missing -= len(plan.legacy_hole_features)
+    if plan.legacy_hole_features:
+        plan.legacy_hole_measures = _legacy_hole_measure_warnings(
+            plan.legacy_hole_features, features, store.pcb_measures_list(ref_id)
+        )
     result = ImportResult(
         slug=slug,
         ref_id=ref_id,
