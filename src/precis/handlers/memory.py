@@ -434,6 +434,7 @@ class MemoryHandler(NumericRefHandler):
         put_meta: dict[str, Any] | None = None,
         set_by: ActorSlug = "agent",
         system_meta: dict[str, Any] | None = None,
+        default_tags: bool = True,
     ) -> tuple[Response, int]:
         # Mirror NumericRefHandler._create, but the body prose goes into a
         # `memory_body` chunk (not `refs.title`) and the header gets a short
@@ -476,7 +477,9 @@ class MemoryHandler(NumericRefHandler):
         if system_meta:
             meta.update(system_meta)
 
-        all_tag_strs: list[str] = list(self.default_tags_on_create)
+        all_tag_strs: list[str] = (
+            list(self.default_tags_on_create) if default_tags else []
+        )
         if tags:
             all_tag_strs.extend(tags)
 
@@ -556,7 +559,8 @@ class MemoryHandler(NumericRefHandler):
         ``set_by='system'``, ``meta`` may carry arbitrary keys (not just the
         public allowlist), and ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject``
         never drops the write -- an ungrounded number is still tagged
-        ``AUDIT:ungrounded-number``, the memory still lands.
+        ``AUDIT:ungrounded-number``, the memory still lands. No default
+        ``SPACE:`` tag: a system digest is not research recall.
         """
         text = mask_secrets(text) or ""
         put_meta = {"title": mask_secrets(title).strip()} if title else None
@@ -567,6 +571,7 @@ class MemoryHandler(NumericRefHandler):
             put_meta=put_meta,
             set_by="system",
             system_meta=meta,
+            default_tags=False,
         )
         return ref_id
 
@@ -1468,6 +1473,7 @@ class MemoryHandler(NumericRefHandler):
         # (control/closed tags like STATUS:/DREAM: are dropped); the survivor
         # always carries DREAM:consolidated.
         if new_tags is not None:
+            _refuse_system_dream(new_tags, verb="supersede")
             tag_objs = [Tag.parse_strict(t, kind="memory") for t in new_tags]
         else:
             tag_objs = []

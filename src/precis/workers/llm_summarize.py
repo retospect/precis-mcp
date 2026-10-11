@@ -1076,24 +1076,32 @@ def parse_summary(text: str) -> str:
 #: lifted verbatim from ``_INSTRUCTION_BLOCK``'s own wording (a leak that
 #: echoes the contract back at us trips on the contract's own words).
 _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
-    "at most",
-    "self-contained",
     "something like",
     "count words",
     "count the words",
     "words:",
 )
 
+#: Contract phrases that are also ordinary prose ("at most 3 layers", "a
+#: self-contained device"), so they only count next to the contract's own
+#: nouns. The 2026-10-11 prod dry run of scripts/gist-cleanup showed the bare
+#: substrings flagging thousands of clean scientific gists.
+_INSTRUCTION_ECHO_RE = re.compile(
+    r"at most \d+ words|self-contained (?:gist|clause|summary)",
+    re.IGNORECASE,
+)
+
 #: More prompt fragments (gr478547): the 'Keep BRIEF <= N words' style budget
 #: reminder and the output labels, which :func:`parse_summary` strips from a
 #: well-formed answer — so a surviving one is an echo of the prompt.
-_PROMPT_FRAGMENT_SUBSTRINGS: tuple[str, ...] = (
-    "keep brief",
-    "brief:",
-    "detail:",
-    "≤",
-    "<=",
-    f"{_BRIEF_MAX_WORDS} words",
+_PROMPT_FRAGMENT_SUBSTRINGS: tuple[str, ...] = ("keep brief",)
+
+#: Budget reminders and surviving output labels. "≤"/"<=" alone is ordinary
+#: maths ("x ≤ 5 nm"), so only a budget phrase counts; labels only at a line
+#: start, where :func:`parse_summary` would have stripped a real one.
+_PROMPT_FRAGMENT_RE = re.compile(
+    r"(?:≤|<=)\s*\d+\s*words|^\s*(?:brief|detail)\s*:",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 #: Reasoning / chatty openers. A gist is telegraphic ("drop leading articles
@@ -1103,9 +1111,9 @@ _REASONING_PREAMBLE_RE = re.compile(
     r"^\s*(?:"
     r"let me|let's|let us|i'll|i will|i need|i should|i can|i'm going|i think|"
     r"okay[,.! ]|ok[,.!]|sure[,.!]|alright[,.!]|hmm|wait[,.! ]|"
-    r"first[,:]|firstly|so[,:]|well[,:]|now[,:]|"
+    r"first[,:]|firstly|"
     r"here is|here's|here are|the user|we need|we should|we have|"
-    r"looking at|analy[sz]ing|thinking|step \d"
+    r"looking at|step \d"
     r")",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -1119,7 +1127,11 @@ _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
 _SUMMARY_MAX_CHARS = 800
 
 #: A leaked self-verification tally: "boxel(1) platform(2) ... 11 words.".
-_TALLY_RE = re.compile(r"\b\w+\(\d+\)")
+#: Lowercase word + 1-2 digit count, three or more times: one match alone is
+#: chemistry or citation notation ("RuO2(110)", "Co(101)", "10(1):19") —
+#: 39,762 clean prod gists tripped the old single-match rule (2026-10-11).
+_TALLY_RE = re.compile(r"\b[a-z][a-z-]*\(\d{1,2}\)")
+_TALLY_MIN_MATCHES = 3
 
 #: A candidate whose BRIEF clause is more than this many times the prompt's
 #: own word budget is not a compression failure, it's a different kind of
@@ -1177,11 +1189,15 @@ def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
     for needle in _INSTRUCTION_ECHO_SUBSTRINGS:
         if needle in low:
             return f"instruction-echo substring {needle!r}"
-    if _TALLY_RE.search(candidate):
+    if m := _INSTRUCTION_ECHO_RE.search(candidate):
+        return f"instruction-echo substring {m.group(0).lower()!r}"
+    if len(_TALLY_RE.findall(candidate)) >= _TALLY_MIN_MATCHES:
         return "digit-parenthesis tally pattern"
     for needle in _PROMPT_FRAGMENT_SUBSTRINGS:
         if needle in low:
             return f"prompt-fragment echo {needle!r}"
+    if m := _PROMPT_FRAGMENT_RE.search(candidate):
+        return f"prompt-fragment echo {m.group(0).strip().lower()!r}"
     if _REASONING_PREAMBLE_RE.search(candidate):
         return "reasoning preamble"
     if len(_NUMBERED_LINE_RE.findall(candidate)) >= 2:
@@ -1360,7 +1376,9 @@ def _mark_failed(
         VALUES (%s, %s, 'failed', %s, %s,
                 (SELECT content_sha FROM chunks WHERE chunk_id = %s))
         ON CONFLICT (chunk_id, summarizer) DO UPDATE
-           SET status = 'failed',
+           SET status = CASE WHEN chunk_summaries.status = 'ok'
+                              AND chunk_summaries.content_sha IS NULL
+                             THEN 'ok' ELSE 'failed' END,
                last_error = EXCLUDED.last_error,
                attempts = EXCLUDED.attempts,
                content_sha = EXCLUDED.content_sha

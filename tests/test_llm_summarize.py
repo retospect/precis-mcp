@@ -1358,6 +1358,14 @@ def test_reject_reason_caps_total_length() -> None:
         "First-principles DFT screening of cobalt catalysts\n\nB3LYP, 12 systems.",
         "Sure-footed turnover claim in acidic acetonitrile\n\n80 °C.",
         "cobalt catalyst triples turnover\n\nReported at pH 2; unstable above 80 °C.",
+        # False positives from the 2026-10-11 prod dry run of gist-cleanup.
+        "erratum corrects RuO2(110) stability study under oxygen pressure",
+        "Co(101) has lowest water-dissociation barrier, weaker for N2 models",
+        "door-to-door survey of Parkinson's in rural Bolivia\n\n10(1):19-27.",
+        "bootstrap samples match stick-breaking samples from DP(n, F̂)",
+        "gap closes for x ≤ 0.3\n\nvalid for T <= 40 K.",
+        "self-contained microfluidic device\n\nat most 3 layers bonded.",
+        "Analyzing grain boundaries by EBSD\n\n12 samples.",
     ],
 )
 def test_reject_reason_does_not_overfire_on_clean_gists(clean: str) -> None:
@@ -1466,3 +1474,48 @@ def test_failed_marker_is_per_sha_so_an_edit_retries(store: Any) -> None:
         )
         conn.commit()
         assert cid in _claimable_ids(conn)
+
+
+def test_failure_over_legacy_ok_row_keeps_the_summary(store: Any) -> None:
+    """A pre-sha ``ok`` row (content_sha NULL) is re-claimed once after
+    deploy; if that re-run fails terminally the old gist is kept and adopts
+    the chunk's sha, rather than being flipped to ``failed`` (review of
+    gr478547)."""
+    from tests.workers._helpers import seed_chunks
+
+    _ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET content_sha = 'sha-v1' WHERE chunk_id = %s", (cid,)
+        )
+        write_chunk_summary(
+            conn,
+            cid,
+            summarizer="llm-v1",
+            text="legacy gist\n\nlegacy detail.",
+            prompt_hash="h",
+            token_count=1,
+        )
+        conn.execute(
+            "UPDATE chunk_summaries SET content_sha = NULL WHERE chunk_id = %s", (cid,)
+        )
+        conn.commit()
+        assert cid in _claimable_ids(conn)
+        conn.commit()
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact, attempts) "
+            "VALUES (%s, 'llm-v1', %s) ON CONFLICT DO NOTHING",
+            (cid, MAX_SUMMARIZE_ATTEMPTS - 1),
+        )
+        conn.execute(
+            "UPDATE chunk_claims SET attempts = %s WHERE chunk_id = %s",
+            (MAX_SUMMARIZE_ATTEMPTS - 1, cid),
+        )
+        _mark_failed(conn, cid, summarizer="llm-v1", error="boom")
+        conn.commit()
+        row = conn.execute(
+            "SELECT status, text, content_sha FROM chunk_summaries WHERE chunk_id = %s",
+            (cid,),
+        ).fetchone()
+        assert row == ("ok", "legacy gist\n\nlegacy detail.", "sha-v1")
+        assert cid not in _claimable_ids(conn)

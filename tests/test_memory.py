@@ -1743,3 +1743,11 @@ def test_agent_cannot_write_system_dream_values(handler: MemoryHandler) -> None:
     # the system writer path is unaffected
     sid = handler.write_system(text="sys note", tags=["DREAM:consolidated"])
     assert "DREAM:consolidated" in {str(t) for t in handler.store.tags_for(sid)}
+    # a system note gets no default SPACE tag (not research recall)
+    assert not any(str(t).startswith("SPACE:") for t in handler.store.tags_for(sid))
+    # supersede's new_tags= is an agent write too
+    other = id_of(handler.put(text="a hunch, again").body)
+    with pytest.raises(BadInput, match="system-set"):
+        handler.supersede(
+            merge_ids=[mid, other], new_text="a hunch", new_tags=["DREAM:acquire"]
+        )
