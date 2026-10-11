@@ -374,6 +374,37 @@ class TestBuild:
         # the narrated audio instead) — so no link is written for it here.
         assert news_rels == set()
 
+    def test_per_paragraph_finding_cites(self, store: Any) -> None:
+        date_tag = f"2026-07-{uuid.uuid4().hex[:2]}"
+        f1 = store.insert_ref(kind="finding", slug=None, title="Cu138X2 rule")
+        f2 = store.insert_ref(kind="finding", slug=None, title="Gd SA NiO400")
+        bogus = f2.id + 999999
+        client = _FakeClient(
+            f"Opening.\n\nCopper rule holds [fi{f1.id}].\n\n"
+            f"Gadolinium next [fi{f2.id}] and a ghost [fi{bogus}]."
+        )
+        draft_id = build_reading_briefing(store, client=client, date_tag=date_tag)
+        assert draft_id is not None
+        # The composer was handed the handles.
+        assert f"[fi{f1.id}]" in client.calls[0][1]["content"]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT l.dst_ref_id, c.text FROM links l "
+                "JOIN chunks c ON c.chunk_id = l.src_chunk_id "
+                "WHERE l.src_ref_id=%s AND l.relation='cites' "
+                "AND l.dst_ref_id = ANY(%s)",
+                (draft_id, [f1.id, f2.id, bogus]),
+            ).fetchall()
+            ghost = conn.execute(
+                "SELECT COUNT(*) FROM links WHERE src_ref_id=%s AND dst_ref_id=%s",
+                (draft_id, bogus),
+            ).fetchone()
+        by_dst = {r[0]: r[1] for r in rows}
+        assert set(by_dst) == {f1.id, f2.id}
+        assert f"[fi{f1.id}]" in by_dst[f1.id]
+        assert f"[fi{f2.id}]" in by_dst[f2.id]
+        assert ghost[0] == 0
+
     def test_idempotent_second_call_skips_compose(self, store: Any) -> None:
         date_tag = f"2026-08-{uuid.uuid4().hex[:2]}"
         store.insert_ref(

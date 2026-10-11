@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -148,6 +149,10 @@ _MORNING_CONTRACT = (
     "supports, copied verbatim (brackets and all). These markers are SILENT — "
     "they become a citation link on the page and are removed entirely from the "
     "audio — so cite freely; they never disrupt what is read aloud.\n"
+    "- FINDINGS: each new finding is given with a bracketed handle like "
+    "'[fi1234]'. When a sentence draws on a finding, put that handle (single "
+    "brackets, copied verbatim) at the end of the sentence, inside the SAME "
+    "paragraph that discusses it. Never cite a handle you were not given.\n"
     "- ON YOUR READING LIST: these are papers the person has actually been reading "
     "(opened them in the reader), as distinct from what was auto-acquired overnight "
     "above. Reconnect them briefly — name the paper and, in a sentence, what it is "
@@ -176,7 +181,7 @@ _MORNING_CONTRACT = (
     "material to carry the brief.\n\n"
     "Write for the EAR: describe relationships in plain words, expand "
     "abbreviations and symbols, never read a URL, a slash, a path, a list "
-    "marker, or a formula aloud. The ONE exception is the '[[pa…]]' citation "
+    "marker, or a formula aloud. The ONE exception is the '[[pa…]]' and '[fi…]' citation "
     "markers described above — those are invisible to the ear (stripped from the "
     "audio), so keep them exactly as given. If a lane is empty, simply don't "
     "mention it. Return plain paragraphs separated by blank lines — no headings, "
@@ -263,6 +268,66 @@ def _titles(refs: list[Any], cap: int = _LANE_ITEM_CAP) -> list[str]:
         if t:
             out.append(t)
     return out
+
+
+def _handled_titles(refs: list[Any], cap: int = _LANE_ITEM_CAP) -> list[str]:
+    """Titles of finding refs, each prefixed with its ``[fi<id>]`` handle."""
+    out = []
+    for r in refs[:cap]:
+        t = (getattr(r, "title", "") or "").strip()
+        rid = getattr(r, "id", None)
+        if not t or rid is None:
+            continue
+        handle = handle_registry.try_format("finding", int(rid))
+        out.append(f"[{handle}] {t}" if handle else t)
+    return out
+
+
+#: A single-bracket finding handle as the composer carries it into prose.
+_FINDING_CITE_RE = re.compile(r"\[(fi\d+)\]")
+
+
+def _link_finding_cites(
+    store: Store,
+    draft_id: int,
+    chunks: list[Any],
+    lanes: dict[str, str],
+    *,
+    date_tag: str,
+) -> int:
+    """Write chunk-level ``cites`` edges for each ``[fi<id>]`` in a paragraph.
+
+    Only handles the lanes actually supplied count; anything else the model
+    emitted is dropped (and logged) rather than linked. Best-effort per edge.
+    """
+    supplied = set(_FINDING_CITE_RE.findall("\n".join(lanes.values())))
+    ord_map = store.drafts.chunk_ord_map(draft_id)
+    written = 0
+    for chunk in chunks:
+        for handle in dict.fromkeys(_FINDING_CITE_RE.findall(chunk.text or "")):
+            if handle not in supplied:
+                log.warning(
+                    "reading brief: dropping unsupplied finding handle [%s]", handle
+                )
+                continue
+            try:
+                store.add_link(
+                    src_ref_id=draft_id,
+                    src_pos=ord_map.get(chunk.chunk_id),
+                    dst_ref_id=int(handle[2:]),
+                    relation="cites",
+                    set_by="agent",
+                    meta={"via": "reading_brief", "date": date_tag},
+                )
+                written += 1
+            except Exception:  # pragma: no cover - per-edge isolation
+                log.warning(
+                    "reading brief: could not link chunk %s -> [%s]",
+                    chunk.chunk_id,
+                    handle,
+                    exc_info=True,
+                )
+    return written
 
 
 def _abstract_snippet(meta: Any, *, limit: int = _PAPER_ABSTRACT_CHARS) -> str:
@@ -479,7 +544,10 @@ def _lane_system_activity(
         kind="finding", updated_after=cutoff, limit=_LANE_ITEM_CAP
     )
     if findings:
-        parts.append(f"New findings ({len(findings)}): " + "; ".join(_titles(findings)))
+        parts.append(
+            f"New findings ({len(findings)}; cite as the bracketed handle): "
+            + "; ".join(_handled_titles(findings))
+        )
         _collect(sources, findings, "cites")
 
     # Open alerts (health/ops conditions) — machine-raised, best-effort.
@@ -999,19 +1067,22 @@ def build_reading_briefing(
         return None
 
     ref, _created = create_cast_draft(store, profile=profile, date_tag=date_tag)
-    store.drafts.add_chunks(
+    chunks = store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text=script, split=True
     )
+    n_cites = _link_finding_cites(store, int(ref.id), chunks, lanes, date_tag=date_tag)
     # Link the draft back to its sources — the brief names them but reads no URL
     # aloud, so these edges are the only way to reach the paper/finding later.
     n_links = link_sources(
         store, int(ref.id), sources, via="reading_brief", date_tag=date_tag
     )
     log.info(
-        "reading brief: composed %s → draft ref %s (%d source link(s))",
+        "reading brief: composed %s → draft ref %s (%d source link(s), "
+        "%d paragraph finding cite(s))",
         date_tag,
         ref.id,
         n_links,
+        n_cites,
     )
     return int(ref.id)
 
