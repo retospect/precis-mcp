@@ -25,6 +25,32 @@ query excludes while unexpired:
 ``hub_refine.py`` needs a variant of this same idea but tied into its own
 due-set predicate (not a flat candidate query), so it implements its own
 claim-time lease rather than importing this module — see its docstring.
+
+Adding a claiming ref-pass
+--------------------------
+Any ref-pass that spends money or time per ref (LLM call, fetch) and has only
+a success-written "done" marker must brake failures with this module,
+else a persistently failing ref is re-claimed and re-billed every sweep. Do
+not hand-roll ``UPDATE ... claimed_by`` columns or ad-hoc lock flags.
+Pattern, from ``classify_topics.py::run_classify_topics_pass``:
+
+1. Claim: ``_claim.py::claim_batch(..., lease_ns=ref_lease.attempt_ns(NS))``
+   excludes refs under an unexpired lease; non-shared queries
+   splice ``ref_lease.exclude_clause("r.ref_id", "attempt_ns")`` instead
+   (``axis_pass.py``).
+2. Before the risky call: ``ref_lease.stamp_attempt(store, ref_id, NS,
+   conn=c)`` in its own short transaction, committed first, so a raise or
+   crash still leaves the brake.
+3. On success: write the marker and ``ref_lease.clear_attempt(store, ref_id,
+   NS, conn=conn)`` in the SAME transaction.
+4. On failure: do nothing; the lease persists.
+
+The lease is a TTL'd ``ref_tags`` row (``<NS>ATTEMPT``); expiry after
+``ref_lease.ATTEMPT_COOLDOWN_MIN`` makes the ref claimable again, and
+re-stamping refreshes it. There is no reaper and no renewal loop: a pass
+whose work outlasts the cooldown must re-stamp mid-work. Chunk-level passes
+use ``chunk_claims``; whole-corpus recompute passes (``paper_rank``) need no
+lease.
 """
 
 from __future__ import annotations
