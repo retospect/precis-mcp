@@ -175,15 +175,17 @@ def _digikey_ladder(
     limit: int,
     category_id: int,
     selected: dict[str, list[str]] | None,
-    ladder: dict[str, str],
+    ladder: dict[str, Any],
 ) -> tuple[list[StockQuote], dict[str, list[str]] | None]:
     """Digi-Key fastener rungs; returns ``(quotes, parameters actually used)``.
 
     1. parametric (``ParameterFilterRequest`` only) + family words — Digi-Key
        refuses it with a 400 on a parent category, which falls through;
-    2. keyword ``designation`` ("<family> M4X12") inside the category;
-    3. keyword "<family> M4" keeping descriptions that contain the size
-       token, else the unfiltered hits labelled as near matches.
+    2. keyword ``designation`` ("<family> M4X12") inside the category,
+       keeping hits whose description has a ``match_words`` head/family
+       marker (a wrong head form is not the match);
+    3. keyword "<family> M4" keeping descriptions with the size token and
+       the marker, else the hits labelled as near matches.
     """
     if selected:
         try:
@@ -199,20 +201,29 @@ def _digikey_ladder(
         else:
             if found:
                 return found, selected
+    words = [w.casefold() for w in ladder.get("match_words") or []]
+
+    def has_marker(q: StockQuote) -> bool:
+        return not words or any(w in q.description.casefold() for w in words)
+
     found = adapter.search(designation, limit=limit, category_id=category_id)
-    if found:
-        return found, None
+    marked = [q for q in found if has_marker(q)]
+    if marked:
+        return marked, None
     wide = adapter.search(
         f"{ladder['family']} {ladder['thread']}", limit=50, category_id=category_id
     )
     needle = ladder["size"].casefold()
-    exact = [q for q in wide if needle in q.description.casefold()]
+    exact = [q for q in wide if needle in q.description.casefold() and has_marker(q)]
     if exact:
         return exact[:limit], None
-    return [
-        replace(q, description=f"[near match, not {ladder['size']}] {q.description}")
-        for q in wide[:limit]
-    ], None
+
+    def near(q: StockQuote) -> StockQuote:
+        # Wrong head/family reads as the match otherwise; say which part failed.
+        what = ladder["size"] if has_marker(q) else ladder["family"]
+        return replace(q, description=f"[near match, not {what}] {q.description}")
+
+    return [near(q) for q in (wide or found)[:limit]], None
 
 
 def quote(
@@ -222,7 +233,7 @@ def quote(
     category_id: int | None = None,
     parameters: dict[str, list[str]] | None = None,
     criteria: dict[str, Any] | None = None,
-    ladder: dict[str, str] | None = None,
+    ladder: dict[str, Any] | None = None,
 ) -> QuoteResult:
     """Ask every configured supplier, best-stocked first.
 

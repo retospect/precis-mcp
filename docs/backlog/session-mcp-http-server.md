@@ -48,9 +48,9 @@ The server side already exists and is in production use:
 runs. This item adds a *second caller* of that endpoint and the
 lifecycle around it; it does not build a new transport.
 
-Multi-session was already designed for — `precis/serve_ledger.py`:
-"two concurrent agent sessions must never see each other's ledger, **and
-the HTTP transport serves many sessions from one process**".
+Multi-session was already designed for — `precis/serve_ledger.py` binds
+the current MCP session per call, and skill dedup is client-held
+(`have=`), so one process serves many sessions without cross-talk.
 
 ## In scope
 
@@ -78,8 +78,7 @@ ensure-script stamps a hash of the env set as a container label and
 recreates on mismatch — without this the knobs in the sizing table below
 are not actually adjustable short of a manual `docker rm`.
 
-Single uvicorn worker — **never** `--workers >1`: the serve ledger's
-`WeakKeyDictionary`, the pagination-cursor registry (`_init_runtime`'s
+Single uvicorn worker — **never** `--workers >1`: the pagination-cursor registry (`_init_runtime`'s
 `long_lived = True`, gr267466) and the DB pool are all per-process.
 
 **2. Snapshot the source instead of bind-mounting it.** The container
@@ -141,7 +140,7 @@ one process serving 12 sessions that regresses to *one of twelve* — the
 other eleven get the gr341515 failure ("the server simply gone with zero
 explanation") on every bounce. Fix: read-and-delete once at boot into a
 module-level value, then serve it once **per MCP session**, keyed on the
-session object exactly as `serve_ledger` already keys its own state. The
+MCP session object (as `serve_ledger.current_session` binds it). The
 invariant becomes "exactly once per session", which is what it always
 meant when a process had exactly one client.
 
@@ -416,7 +415,7 @@ item widens its blast radius from one session to all of them.
   trap (an unawaited coroutine that exits without waiting). AC7 now
   demands the test discriminate between the two.
 - *Breadcrumb consume-once regresses to 1-of-12* → new in-scope item 6
-  makes it session-keyed on the `serve_ledger` pattern; new AC8 covers it.
+  makes it session-keyed via `serve_ledger.current_session`; new AC8 covers it.
 
 **STILL OPEN:**
 
@@ -502,9 +501,8 @@ item widens its blast radius from one session to all of them.
   (`precis-mcp-dev-stdio.sh`) both confirm the stated root cause;
   `_run_network_transport`/`_install_token_auth` exist in `server.py`
   and are reached via `precis serve --transport streamable-http`, used
-  by `_sandbox_read_mcp.py`; `serve_ledger.py` is genuinely
-  session-keyed (`WeakKeyDictionary` + per-call `contextvars.ContextVar`
-  bind/unbind in `tools/core.py`) and safe under one-process-many-
+  by `_sandbox_read_mcp.py`; `serve_ledger.py` binds the
+  session per call (`contextvars.ContextVar` bind/unbind in `tools/core.py`) and safe under one-process-many-
   sessions; `pool.py::DEFAULT_POOL_MIN_SIZE`/`DEFAULT_POOL_MAX_SIZE` are
   2/10 with no env override today, matching both the "today" column and
   the "new knobs required" claim; `server.py::_DEFAULT_TOOL_CONCURRENCY`

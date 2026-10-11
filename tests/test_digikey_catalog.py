@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -452,3 +452,138 @@ def test_quote_filter_unavailable_without_ladder_becomes_outcome_error(
     )
     assert bodies == [] and result.quotes == []
     assert result.outcomes[0].error == "no such filter"
+
+
+_HEX = {
+    "family": "hex head bolt",
+    "thread": "M4",
+    "size": "M4X12",
+    "match_words": ["HEX HEAD", "HEX BOLT"],
+}
+
+
+def _marker_quote(adapter, monkeypatch, responder):
+    monkeypatch.setattr(base, "adapters", lambda: [adapter])
+    bodies = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        return responder(body)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        result = base.quote(
+            "hex head bolt M4X12", category_id=572, limit=5, ladder=_HEX
+        )
+    return result, bodies
+
+
+def test_ladder_rung2_wrong_head_form_is_not_the_match(adapter, monkeypatch):
+    pan = _product("MACH SCREW PAN PHILLIPS M4X0.7", "PAN")
+    result, bodies = _marker_quote(
+        adapter, monkeypatch, lambda body: httpx.Response(200, json={"Products": [pan]})
+    )
+    assert len(bodies) == 2  # fell through to rung 3
+    assert [q.sku for q in result.quotes] == ["PAN-ND"]
+    assert result.quotes[0].description.startswith("[near match, not hex head bolt]")
+
+
+def test_ladder_rung2_marker_hit_kept_case_insensitive(adapter, monkeypatch):
+    products = [
+        _product("MACH SCREW PAN PHILLIPS M4X0.7", "PAN"),
+        _product("Screw, Hex Head (M4X12)", "HEX"),
+    ]
+    result, bodies = _marker_quote(
+        adapter,
+        monkeypatch,
+        lambda body: httpx.Response(200, json={"Products": products}),
+    )
+    assert len(bodies) == 1
+    assert [q.sku for q in result.quotes] == ["HEX-ND"]
+
+
+def test_ladder_rung3_needs_size_and_marker_and_requests_limit_50(adapter, monkeypatch):
+    def respond(body):
+        if body["Keywords"] == "hex head bolt M4":
+            return httpx.Response(
+                200,
+                json={
+                    "Products": [
+                        _product("PAN SCREW (M4X12)", "PAN"),
+                        _product("HEX HEAD (M4X16)", "LONG"),
+                        _product("HEX HEAD (M4X12)", "OK"),
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"Products": []})
+
+    result, bodies = _marker_quote(adapter, monkeypatch, respond)
+    assert [q.sku for q in result.quotes] == ["OK-ND"]
+    wide = [b for b in bodies if b["Keywords"] == "hex head bolt M4"]
+    assert len(wide) == 1 and wide[0]["Limit"] == 50
+
+
+def test_ladder_rung3_near_matches_say_what_failed(adapter, monkeypatch):
+    def respond(body):
+        if body["Keywords"] == "hex head bolt M4":
+            return httpx.Response(
+                200,
+                json={
+                    "Products": [
+                        _product("PAN SCREW (M4X12)", "PAN"),
+                        _product("HEX HEAD (M4X16)", "LONG"),
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"Products": []})
+
+    result, _ = _marker_quote(adapter, monkeypatch, respond)
+    desc = {q.sku: q.description for q in result.quotes}
+    assert desc["PAN-ND"].startswith("[near match, not hex head bolt]")
+    assert desc["LONG-ND"].startswith("[near match, not M4X12]")
+
+
+def test_digikey_series_keywords_and_match_words():
+    for sid, kw in [
+        ("iso-10642", "flat head socket"),
+        ("iso-4026", "set screw"),
+        ("iso-4017", "hex head bolt"),
+        ("iso-14579", "torx"),
+        ("iso-7089", "flat washer"),
+        ("iso-7090", "flat washer"),
+        ("iso-7040", "nylon lock nut"),
+    ]:
+        mapping = series_mapping(sid)
+        assert mapping is not None
+        assert mapping["keywords"][sid] == kw
+    for sid in ("iso-7089", "iso-7090", "iso-7040"):
+        mapping = series_mapping(sid)
+        assert mapping is not None
+        assert mapping.get("stock_category", True) is False
+    torx = series_mapping("iso-14586")
+    countersunk = series_mapping("iso-10642")
+    assert torx is not None and countersunk is not None
+    assert torx["match_words"]["iso-14586"] == ["TORX"]
+    assert countersunk["match_words"]["iso-10642"] == [
+        "COUNTERSUNK",
+        "FLAT HEAD",
+    ]
+
+
+def test_stock_view_passes_match_words_to_ladder(adapter, monkeypatch):
+    seen: dict[str, Any] = {}
+
+    def fake_quote(query, **kw):
+        seen.update(kw, query=query)
+        return base.QuoteResult(quotes=[], outcomes=[])
+
+    monkeypatch.setattr("precis.supply.quote", fake_quote)
+    monkeypatch.setattr("precis.supply.unavailable_reason", lambda: None)
+    handler = ComponentHandler(hub=Hub(store=cast(Any, SimpleNamespace())))
+    handler._render_stock(
+        SimpleNamespace(id="n", meta={"series": "iso-10642", "size": "M4x12"}),
+        args=None,
+    )
+    assert seen["query"] == "flat head socket M4X12"
+    assert seen["ladder"]["match_words"] == ["COUNTERSUNK", "FLAT HEAD"]

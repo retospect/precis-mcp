@@ -291,8 +291,7 @@ status: active
 - [[precis-<sibling>]] — <why you'd hop there>
 ```
 
-The See also list is `[[slug]]` wikilink bullets (docs/backlog/
-skill-graph.md) — a dangling target reddens the ingest gate, so every
+The See also list is `[[slug]]` wikilink bullets — a dangling target reddens the ingest gate, so every
 entry must resolve to a real file stem or a synthesised meta-skill
 (`precis-help`/`precis-status`/`precis-toc`/`toc`).
 
@@ -411,8 +410,7 @@ needed cutting anyway.
 
 ## Cross-reference and classification axes (tags:, kinds:, [[wikilink]])
 
-Three frontmatter/body axes, all gated at ingest (hard-fail —
-docs/backlog/skill-graph.md slice 2):
+Three frontmatter/body axes, all gated at ingest (hard-fail):
 
 - **`tags:`** — lateral topic bucket(s), checked against `VALID_TAGS`
   in `handlers/_skill_common.py` (the vocabulary; don't invent a new

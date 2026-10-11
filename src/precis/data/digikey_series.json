@@ -9,7 +9,50 @@
       "source": "https://www.digikey.com/en/products/filter/screws-bolts/572",
       "keywords": {
         "iso-4762": "socket head cap screw",
-        "iso-7380": "button head"
+        "iso-7380": "button head",
+        "iso-10642": "flat head socket",
+        "iso-4026": "set screw",
+        "iso-4017": "hex head bolt",
+        "iso-14579": "torx",
+        "iso-14581": "torx",
+        "iso-14583": "torx",
+        "iso-14585": "torx",
+        "iso-14586": "torx"
+      },
+      "match_words": {
+        "iso-14579": [
+          "TORX"
+        ],
+        "iso-14581": [
+          "TORX"
+        ],
+        "iso-14583": [
+          "TORX"
+        ],
+        "iso-14585": [
+          "TORX"
+        ],
+        "iso-14586": [
+          "TORX"
+        ],
+        "iso-4762": [
+          "SOCKET HEAD",
+          "SOCKET CAP"
+        ],
+        "iso-7380": [
+          "BUTTON"
+        ],
+        "iso-10642": [
+          "COUNTERSUNK",
+          "FLAT HEAD"
+        ],
+        "iso-4026": [
+          "SET SCREW"
+        ],
+        "iso-4017": [
+          "HEX HEAD",
+          "HEX BOLT"
+        ]
       },
       "series": [
         "iso-4762",
@@ -29,9 +72,16 @@
       "name": "Nuts",
       "stock_category": false,
       "keywords": {
-        "iso-4032": "hex nut"
+        "iso-4032": "hex nut",
+        "iso-7040": "nylon lock nut"
       },
       "source": "https://www.digikey.com/en/products/filter/nuts/573",
+      "match_words": {
+        "iso-4032": [
+          "NUT HEX",
+          "HEX NUT"
+        ]
+      },
       "series": [
         "iso-4032",
         "iso-7040",
@@ -42,6 +92,21 @@
       "category_id": 571,
       "name": "Standard Washers",
       "source": "https://www.digikey.com/en/products/filter/washers/standard-washers/571",
+      "keywords": {
+        "iso-7089": "flat washer",
+        "iso-7090": "flat washer"
+      },
+      "stock_category": false,
+      "match_words": {
+        "iso-7089": [
+          "WASHER FLAT",
+          "FLAT WASHER"
+        ],
+        "iso-7090": [
+          "WASHER FLAT",
+          "FLAT WASHER"
+        ]
+      },
       "series": [
         "iso-7089",
         "iso-7090"

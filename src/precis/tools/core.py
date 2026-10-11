@@ -453,9 +453,9 @@ def get(
     # spec=/category= promotion) so strict-schema MCP clients don't strip
     # it; other kinds' get() ignore it (swallowed by their **kwargs).
     spec: str | None = None,
-    # skill (docs/backlog/skill-graph.md slice 1): get(kind='skill',
-    # id='<slug>', full=true) forces a full re-serve past the session
-    # serve-ledger's soft-dedup stub; tag=/kinds= narrow the *catalogue*
+    # skill: get(kind='skill',
+    # id='<slug>', full=true) forces a full re-serve past the have=<rev>
+    # stub (``have`` rides args=, see precis-addressing-help); tag=/kinds= narrow the *catalogue*
     # listing (get(kind='skill', id='toc') or a bare get(kind='skill'))
     # to one tags:/kinds: frontmatter axis value — distinct from a
     # per-ref smart-toc (see precis-toc-help), which these don't touch.
@@ -485,8 +485,8 @@ def get(
     node with its neighbourhood (get(kind='skill', id='precis-fisheye-help')).
     `project=` (draft only) looks up by owning project todo instead of id=.
     `spec=` (component only) picks the spec for `view='bom'`'s consistency
-    query. `full=` (skill only) forces a full re-serve past the session
-    dedup stub; `tag=`/`kinds=` (skill only) filter `id='toc'`.
+    query. `full=` (skill only) forces a full re-serve past the
+    `args={'have': <rev>}` stub; `tag=`/`kinds=` (skill only) filter `id='toc'`.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
     search(kind='skill', q='reading a paper') for a topical lookup.
@@ -645,7 +645,7 @@ def search(
     # verb level so strict-schema clients don't strip it before it ever
     # reaches the handler.
     link: str | None = None,
-    # skill (docs/backlog/skill-graph.md slice 1): narrows an empty-q=
+    # skill: narrows an empty-q=
     # (index) or a real search to one tags:/kinds: frontmatter axis
     # value. Distinct from the existing ``tags=`` list filter above (a
     # different, cross-kind per-ref tag axis). Declared at the verb

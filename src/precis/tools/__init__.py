@@ -50,7 +50,7 @@ def _extract_parameters(func: Callable) -> dict[str, dict[str, Any]]:
     for name, param in sig.parameters.items():
         if name == "self":
             continue
-        # ``ctx`` (docs/backlog/skill-graph.md slice 1 serve ledger) is
+        # ``ctx`` (session binding) is
         # FastMCP's injected per-request Context — real MCP clients
         # never pass it and it isn't CLI-constructible, so it must not
         # become a spurious ``--ctx`` flag.

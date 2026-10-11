@@ -358,3 +358,30 @@ def test_error_detail_non_dict_json_is_empty() -> None:
     from precis.supply.digikey import _error_detail
 
     assert _error_detail(httpx.Response(400, json=["a", "b"])) == ""
+
+
+def test_error_detail_key_precedence_first_present_wins() -> None:
+    from precis.supply.digikey import _error_detail
+
+    body = {
+        "title": "t",
+        "ErrorMessage": "m",
+        "ErrorDetails": "d",
+        "detail": "first",
+    }
+    assert _error_detail(httpx.Response(400, json=body)) == "first"
+    del body["detail"]
+    assert _error_detail(httpx.Response(400, json=body)) == "d"
+    del body["ErrorDetails"]
+    assert _error_detail(httpx.Response(400, json=body)) == "m"
+    # a blank earlier key is skipped, not taken
+    blank = {"detail": "  ", "title": "t"}
+    assert _error_detail(httpx.Response(400, json=blank)) == "t"
+
+
+def test_error_detail_json_cap_is_exactly_300() -> None:
+    from precis.supply.digikey import _error_detail
+
+    assert len(_error_detail(httpx.Response(400, json={"detail": "x" * 301}))) == 300
+    assert len(_error_detail(httpx.Response(400, json={"detail": "x" * 300}))) == 300
+    assert len(_error_detail(httpx.Response(400, json={"detail": "x" * 299}))) == 299

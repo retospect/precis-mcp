@@ -1683,94 +1683,98 @@ def test_availability_gate_empty_kinds_list_means_no_gate(
     assert _availability_gap("precis-nonexistent-kind-help", hub=hub) is None
 
 
-# ── serve ledger (session-keyed soft-dedup) ─────────────────────────────
+# ── client-held rev tag (gr477798) ──────────────────────────────────────
 
 
-class _FakeSession:
-    """Weakly-referenceable stand-in for a real MCP session object."""
+def _rev_of(body: str) -> str:
+    last = body.rstrip().splitlines()[-1]
+    assert last.startswith("skill rev "), last
+    return last.removeprefix("skill rev ")
 
 
-def test_ledger_stub_on_repeat_get_unchanged(
+def test_first_read_is_full_with_trailing_rev(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    first = skill.get(id="a")
+    assert "body" in first.body
+    rev = _rev_of(first.body)
+    assert len(rev) == 8 and int(rev, 16) >= 0
+
+
+def test_repeat_read_without_have_is_full(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr477798 regression: shared session, repeat read -> still full."""
     from precis import serve_ledger
 
     _install_corpus(monkeypatch, {"a": _md(body="body")})
-    session = _FakeSession()
-    with serve_ledger.session_scope(session):
-        first = skill.get(id="a")
-        assert "unchanged this session" not in first.body
-
-        second = skill.get(id="a")
-        assert "unchanged this session" in second.body
-        assert "get(kind='skill', id='a', full=true) to resend" in second.body
-        # gr477798: a subagent sharing the session must be told to retry.
-        assert "Subagents share their parent's session" in second.body
-
-
-def test_ledger_full_override_resends_full_body(
-    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from precis import serve_ledger
-
-    _install_corpus(monkeypatch, {"a": _md(body="body")})
-    session = _FakeSession()
-    with serve_ledger.session_scope(session):
+    with serve_ledger.session_scope(object.__new__(type("S", (), {}))):
         skill.get(id="a")
-        third = skill.get(id="a", full=True)
-        assert "unchanged this session" not in third.body
+        second = skill.get(id="a")
+    assert "unchanged" not in second.body
+    assert "body" in second.body
+    assert second.body.rstrip().splitlines()[-1].startswith("skill rev ")
 
 
-def test_ledger_sha_change_forces_full_serve(
+def test_have_current_rev_returns_stub(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    rev = _rev_of(skill.get(id="a").body)
+    out = skill.get(id="a", have=rev)
+    assert f"you passed have={rev}: unchanged since you read it" in out.body
+    assert "get(kind='skill', id='a', full=true)" in out.body
+    assert "Subagents share" not in out.body
+    assert "body" not in out.body.replace("unchanged", "")
+
+
+def test_have_stale_or_malformed_returns_full(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    for have in ("deadbeef", "not-a-rev", "  "):
+        out = skill.get(id="a", have=have)
+        assert "unchanged" not in out.body
+        assert "body" in out.body
+
+
+def test_full_overrides_have(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="body")})
+    rev = _rev_of(skill.get(id="a").body)
+    out = skill.get(id="a", have=rev, full=True)
+    assert "unchanged" not in out.body
+    assert "body" in out.body
+
+
+def test_content_change_changes_rev(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import precis.handlers.skill as skill_mod
-    from precis import serve_ledger
 
-    session = _FakeSession()
-    with serve_ledger.session_scope(session):
-        _install_corpus(monkeypatch, {"a": _md(body="body v1")})
-        first = skill.get(id="a")
-        assert "unchanged this session" not in first.body
-
-        # File content changes mid-session (e.g. a fresh cache build) —
-        # the sha no longer matches, so the next get must serve full,
-        # not the stub.
-        monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", {"a": _md(body="body v2")})
-        monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
-        second = skill.get(id="a")
-        assert "unchanged this session" not in second.body
-        assert "body v2" in second.body
+    _install_corpus(monkeypatch, {"a": _md(body="body v1")})
+    rev1 = _rev_of(skill.get(id="a").body)
+    monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", {"a": _md(body="body v2")})
+    monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
+    out = skill.get(id="a", have=rev1)
+    assert "body v2" in out.body
+    assert _rev_of(out.body) != rev1
 
 
-def test_ledger_two_sessions_never_share_state(
-    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+def test_serve_logs_have_outcome(
+    skill: SkillHandler,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from precis import serve_ledger
-
     _install_corpus(monkeypatch, {"a": _md(body="body")})
-    session1 = _FakeSession()
-    session2 = _FakeSession()
-
-    with serve_ledger.session_scope(session1):
-        skill.get(id="a")
-
-    # A different session has never read "a" — must get the full body,
-    # not session1's stub.
-    with serve_ledger.session_scope(session2):
-        out = skill.get(id="a")
-        assert "unchanged this session" not in out.body
-
-
-def test_ledger_no_bound_session_never_stubs(
-    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Direct handler calls / the CLI bind no session — every get is a
-    full serve, ledger writes are no-ops."""
-    _install_corpus(monkeypatch, {"a": _md(body="body")})
-    skill.get(id="a")
-    out = skill.get(id="a")
-    assert "unchanged this session" not in out.body
+    with caplog.at_level("INFO", logger="precis.handlers.skill"):
+        rev = _rev_of(skill.get(id="a").body)
+        skill.get(id="a", have="deadbeef")
+        skill.get(id="a", have=rev)
+    msgs = [r.getMessage() for r in caplog.records if "skill serve" in r.getMessage()]
+    assert [m.rsplit("have=", 1)[1] for m in msgs] == ["absent", "stale", "matched"]
 
 
 # ── precis-status: previous-exit breadcrumb (gr341515) ─────────────────

@@ -10,8 +10,8 @@ pillar: platform
 ## Motivation / why
 
 The shared session server is pinned to a single uvicorn worker, and
-`session-mcp-http-server.md` says why: "**never** `--workers >1`: the serve
-ledger's `WeakKeyDictionary`, the pagination-cursor registry
+`session-mcp-http-server.md` says why: "**never** `--workers >1`: the
+pagination-cursor registry
 (`_init_runtime`'s `long_lived = True`, gr267466) and the DB pool are all
 per-process." That pin is correct today and should stay until this item
 lands — a second worker would silently split sessions across two memories,
@@ -34,9 +34,9 @@ person who hits the ceiling does not rediscover the list.
 
 An inventory, with a decision per entry, of what is per-process today:
 
-- **Serve ledger** (`serve_ledger.py`) — `WeakKeyDictionary` keyed on the
-  MCP session object. Loss degrades to full serves, so this is the
-  cheapest to externalise or simply accept as per-worker.
+- **Session binding** (`serve_ledger.py`) — only the per-call
+  `ContextVar` bind/unbind of the current MCP session; not shared state.
+  Skill dedup is client-held (`have=`, gr477798), so nothing to move.
 - **Pagination cursor registry** (`_pagination.py`, gr267466) — the one
   that genuinely breaks: a cursor minted on worker A is unreadable on
   worker B, and the failure is a user-visible "no such cursor".
@@ -66,6 +66,5 @@ An inventory, with a decision per entry, of what is per-process today:
 
 ## Target + blast radius
 
-Inventory only: `src/precis/serve_ledger.py`,
-`src/precis/_pagination.py`, `src/precis/install_watchdog.py`,
+Inventory only: `src/precis/_pagination.py`, `src/precis/install_watchdog.py`,
 `src/precis/server.py`, `src/precis/store/pool.py`.

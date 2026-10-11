@@ -104,7 +104,9 @@ def test_read_mints_and_section_and_toc_reads_stamp_parent(
 
 def test_footer_and_open_concern_banner(runtime: PrecisRuntime, store: Store) -> None:
     out = runtime.dispatch("get", {"kind": "skill", "id": SKILL, "full": True})
-    assert out.rstrip().splitlines()[-1].startswith("misled by this skill? put(")
+    lines = out.rstrip().splitlines()
+    assert lines[-1].startswith("skill rev ")
+    assert lines[-3].startswith("misled by this skill? put(")
     assert f"link='skill:{SKILL}', rel='raises-concern-about')" in out
     assert not any(ln.startswith("⚠") for ln in out.splitlines())
 
@@ -286,3 +288,21 @@ def test_families_are_a_closed_set_with_real_groups() -> None:
     small = {f: n for f, n in counts.items() if n < 3}
     assert not small and set(SKILL_FAMILIES) <= set(counts), (small, counts)
     assert 10 <= len(SKILL_FAMILIES) <= 15
+
+
+def test_have_rides_args_through_get_dispatch(runtime) -> None:
+    """get(kind=skill, args={have: rev}) reaches the handler (gr477798)."""
+    from precis.tools import core as tools_core
+
+    tools_core._runtime = runtime
+    try:
+        full = tools_core.get(kind="skill", id="precis-addressing-help")
+        rev = str(full).rstrip().splitlines()[-1].removeprefix("skill rev ")
+        assert len(rev) == 8
+        stub = tools_core.get(
+            kind="skill", id="precis-addressing-help", args={"have": rev}
+        )
+    finally:
+        tools_core._runtime = None
+    assert f"you passed have={rev}" in str(stub)
+    assert len(str(stub)) < len(str(full)) // 2

@@ -1321,7 +1321,14 @@ class ComponentHandler(ValueEntityHandler):
             query = f"{family} {token}"
             if mapping and not filters and mapping.get("stock_category", True):
                 filters["category_id"] = mapping["category_id"]
-                filters["ladder"] = {"family": family, "thread": thread, "size": token}
+                filters["ladder"] = {
+                    "family": family,
+                    "thread": thread,
+                    "size": token,
+                    "match_words": (mapping.get("match_words") or {}).get(
+                        srs.series_id, []
+                    ),
+                }
                 filters["criteria"] = {
                     "thread": thread,
                     "pitch": row.specs.get("thread_pitch"),

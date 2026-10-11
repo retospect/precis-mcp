@@ -128,11 +128,21 @@ agent-facing copy.
 
 Inside a skill's markdown body, `[[precis-overview]]` (double brackets
 around a skill slug) is a lateral cross-reference to another skill —
-the graph-derived successor to a prose `## See also` list
-(docs/backlog/skill-graph.md). It renders as
+the graph-derived successor to a prose `## See also` list.
+It renders as
 `get(kind='skill', id='precis-overview')` in a full-skill or `~N`
 section serve, and a raw `[[precis-overview]]` in a search snippet
 means the same thing. The target must resolve — either a real file
 slug or a synthesised meta-skill (`precis-help`/`precis-status`/
 `precis-toc`/`toc`) — a dangling link is a static ingest-gate finding
 (see `precis.ingest.skill_ingest`).
+
+## Skill revisions — `have=`
+
+Every whole-skill serve ends with one line, `skill rev <sha8>`. To
+re-read a skill whose text is unchanged, pass it back:
+`get(kind='skill', id='<slug>', args={'have': '<sha8>'})` returns a
+short stub (section list) instead of the body. Pass `have=<rev>` only if
+that skill's full text is still in your context; if unsure, omit it. A
+stale or malformed `have=` just returns the full body, and
+`full=true` always forces the full body.

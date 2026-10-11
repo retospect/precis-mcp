@@ -34,7 +34,7 @@ of the transport and are shared either way.
 Three tests now pin the per-session layer
 (`tests/test_mcp_session_concurrency.py`): cross-session head-of-line
 blocking stays fixed, the tool-concurrency cap is process-wide, and the
-serve ledger does not leak between sessions.
+per-call session binding does not leak between sessions.
 
 The open work is the tier that needs a real database:
 

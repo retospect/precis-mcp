@@ -239,7 +239,9 @@ do speak to availability, and they are different kinds of fact:
   M14×55 offline, and that `q=` weighs *after* fit;
 - `get(kind='component', id=<slug>, view='stock')` shows that tier **and**
   asks a supplier for a live in-stock number, when one is configured
-  (fasteners use family words plus a compact size, e.g. `socket head cap screw M4X12`; hand-entered
+  (fasteners use family words plus a compact size, e.g. `socket head cap screw M4X12`; a Digi-Key
+  hit counts as the match only if its description carries the series' head-form words, otherwise
+  it is shown labelled `[near match, not ...]`; hand-entered
   rows use their MPN when no designation is recorded)
   (`precis.supply`; Digi-Key, Farnell and Mouser — configure supplier
   credentials on the web `/secrets` page). With no credentials it

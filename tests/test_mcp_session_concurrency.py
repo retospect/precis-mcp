@@ -228,42 +228,25 @@ def test_a_call_cancelled_while_queued_gives_up_its_place() -> None:
 # ── per-session state really is per-session ──────────────────────────
 
 
-def test_serve_ledger_state_does_not_leak_between_sessions() -> None:
-    """The serve ledger's central claim, proven against two real sessions.
+def test_session_binding_is_per_session() -> None:
+    """:mod:`precis.serve_ledger`'s binding resolves to the calling session.
 
-    :mod:`precis.serve_ledger` keys its state on the FastMCP session
-    object via a ``WeakKeyDictionary`` precisely so that "two concurrent
-    agent sessions must never see each other's ledger, and the HTTP
-    transport serves many sessions from one process" (that module's
-    docstring). Until this harness existed there was no way to hand it
-    two sessions, so the claim rested on reading the code.
-
-    A leak here would not corrupt data — the ledger only ever decides
-    whether to re-send an unchanged skill body — but it would silently
-    starve one agent of a skill another agent had already read, which is
-    close to undiagnosable from the affected agent's side.
+    ``install_watchdog`` keys its per-session breadcrumb off
+    ``current_session()``; two real sessions must each see their own
+    object, never a sibling's.
     """
 
-    def serve(slug: str, ctx: Context) -> str:
-        """Record ``slug`` as served in the calling session's ledger."""
+    def whoami(ctx: Context) -> str:
+        """Report whether the bound session is this call's own session."""
         with serve_ledger.session_scope(ctx.session):
-            serve_ledger.record(slug, "sha-" + slug)
-        return "recorded"
+            return "own" if serve_ledger.current_session() is ctx.session else "other"
 
-    def seen(slug: str, ctx: Context) -> str:
-        """Report whether ``slug`` was already served in THIS session."""
-        with serve_ledger.session_scope(ctx.session):
-            return "yes" if serve_ledger.was_served(slug) else "no"
-
-    mcp = build_test_mcp([serve, seen])
+    mcp = build_test_mcp([whoami])
 
     async def _run() -> tuple[str, str]:
         async with connected_sessions(mcp, 2) as (session_a, session_b):
-            await session_a.call_tool("serve", {"slug": "precis-overview"})
-            a = await session_a.call_tool("seen", {"slug": "precis-overview"})
-            b = await session_b.call_tool("seen", {"slug": "precis-overview"})
+            a = await session_a.call_tool("whoami", {})
+            b = await session_b.call_tool("whoami", {})
             return text_of(a), text_of(b)
 
-    a_text, b_text = asyncio.run(_run())
-    assert a_text == "yes", "the recording session must see its own entry"
-    assert b_text == "no", "a sibling session must NOT inherit it"
+    assert asyncio.run(_run()) == ("own", "own")

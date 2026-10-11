@@ -50,7 +50,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
-from precis import serve_ledger
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -603,6 +602,7 @@ class SkillHandler(Handler):
         kinds: str | None = None,
         family: str | None = None,
         by: str | None = None,
+        have: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Round-2 picky 2026-05-30: ``get(kind='skill', q='reading a
@@ -718,19 +718,26 @@ class SkillHandler(Handler):
                     "slug; get(kind='skill', id='toc') lists every skill"
                 ),
             )
-        # Serve ledger dedup (docs/backlog/skill-graph.md slice 1): a
-        # repeat whole-body get of a skill unchanged since it was last
-        # served THIS session degrades to a cheap stub instead of
-        # resending an unchanged multi-KB body. ``full=True`` always
-        # overrides; the sha is over the raw (include-expanded, pre-
-        # banner/footer) body so a serve-time-only addition below
-        # (the availability banner, the live-registry/graph footers)
-        # never itself counts as a content change.
+        # Client-held rev tag (gr477798): every whole-skill serve ends
+        # with ``skill rev <sha8>``; the stub is returned only when the
+        # caller echoes the current sha8 via ``have=``. The sha is over
+        # the raw (include-expanded, pre-banner/footer) body so a
+        # serve-time-only addition below never itself counts as a
+        # content change. No server-side session state: subagents share
+        # the parent's MCP session, so a session ledger would stub a
+        # reader that never saw the body.
         body_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        prior = serve_ledger.lookup(slug)
-        if not full and prior is not None and prior[0] == body_sha:
-            return self._render_serve_stub(slug, text)
-        serve_ledger.record(slug, body_sha)
+        rev = body_sha[:8]
+        have_s = have.strip() if isinstance(have, str) else ""
+        if not have_s:
+            outcome = "absent"
+        elif have_s == rev:
+            outcome = "matched"
+        else:
+            outcome = "stale"
+        log.info("skill serve slug=%s rev=%s have=%s", slug, rev, outcome)
+        if outcome == "matched" and not full:
+            return self._render_serve_stub(slug, text, rev)
 
         # Banner if this skill is filtered from the index — the agent
         # asked for it explicitly, so we serve it, but we want them
@@ -762,27 +769,26 @@ class SkillHandler(Handler):
         if graph_footer:
             text = text.rstrip() + "\n\n" + graph_footer
         text = text.rstrip() + "\n\n" + _MISLED_LINE.format(slug=slug)
+        text += f"\n\nskill rev {rev}"
         return Response(body=text, pagination_alt_hint=_pagination_alt_hint(slug))
 
-    def _render_serve_stub(self, slug: str, text: str) -> Response:
-        """Soft-dedup stub for a repeat get() of an unchanged skill.
+    def _render_serve_stub(self, slug: str, text: str, rev: str) -> Response:
+        """Stub for a ``have=<rev>`` get() of an unchanged skill (gr477798).
 
-        docs/backlog/skill-graph.md slice 1 "Serve ledger": a cheap
-        section listing plus the one required re-fetch line. Never a
-        hard block — the stub always carries its own ``full=true``
-        escape hatch ("hint always, suppress never").
+        A cheap section listing plus the one re-fetch line; the caller
+        asserted it still holds the body, and ``full=true`` is the
+        escape hatch if that assertion was wrong.
         """
         headings = [c.heading for c in chunk_by_h2(text) if c.heading]
-        lines = [f"# {slug} (unchanged this session)", ""]
+        lines = [f"# {slug} (unchanged)", ""]
         if headings:
             lines.append("## Sections")
             lines.extend(f"- {h}" for h in headings)
             lines.append("")
         lines.append(
-            "unchanged since you read it this session — "
-            f"get(kind='skill', id='{slug}', full=true) to resend. "
-            "Subagents share their parent's session: if you have not read "
-            "this skill yourself, call it with full=true now."
+            f"you passed have={rev}: unchanged since you read it. "
+            "If you cannot quote this skill now, call "
+            f"get(kind='skill', id='{slug}', full=true)."
         )
         return Response(body="\n".join(lines))
 
@@ -808,7 +814,7 @@ class SkillHandler(Handler):
         neighbours = graph.linked(slug)
         if neighbours:
             capped = graph.linked(slug, cap=_FOOTER_LINK_CAP)
-            shown = ", ".join(_annotate_read(s) for s in capped)
+            shown = ", ".join(capped)
             if len(neighbours) > len(capped):
                 rows.append(
                     (
@@ -839,7 +845,7 @@ class SkillHandler(Handler):
 
         siblings = _tree_siblings(slug)
         if siblings:
-            shown_siblings = ", ".join(_annotate_read(s) for s in siblings)
+            shown_siblings = ", ".join(siblings)
             rows.append(
                 (
                     f"get(kind='skill', id={siblings[0]!r})",
@@ -1169,7 +1175,7 @@ class SkillHandler(Handler):
         if visible:
             related = _get_skill_graph().linked(visible[0].slug, cap=_FOOTER_LINK_CAP)
             if related:
-                body += "\n\nrelated: " + ", ".join(_annotate_read(s) for s in related)
+                body += "\n\nrelated: " + ", ".join(related)
 
         # Drill-down: interpolate the top hit's real slug (mirrors
         # tag.py's ``_render_search_body`` pattern) rather than a
@@ -3276,12 +3282,6 @@ def _age_label(last: Any, now: datetime) -> str:
     if secs < 86400:
         return f"{secs // 3600}h"
     return f"{secs // 86400}d"
-
-
-def _annotate_read(slug: str) -> str:
-    """``slug``, suffixed with "(read this session)" if the serve
-    ledger already recorded it this session — see :mod:`precis.serve_ledger`."""
-    return f"{slug} (read this session)" if serve_ledger.was_served(slug) else slug
 
 
 def _expand_wikilinks(text: str) -> str:

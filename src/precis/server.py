@@ -794,8 +794,8 @@ def precis(
     ``ctx`` is FastMCP's injected per-request Context (excluded from
     the wire schema, same mechanism as the typed profile's own
     ``get``/``search`` — see ``tools.core``) — forwarded into ``get``/
-    ``search`` so the skill serve ledger (docs/backlog/skill-graph.md
-    slice 1) works under the ``command`` profile too, not just typed.
+    ``search`` so session binding works under the ``command`` profile
+    too, not just typed.
     """
     from precis.errors import BadInput
     from precis.tools import TOOL_REGISTRY
