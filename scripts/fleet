@@ -32,6 +32,12 @@
 #   scripts/fleet mcp-check [--fix]  per window: precis= connected|dead|unknown;
 #       --fix sends `/mcp reconnect all` to idle windows with a dead one (busy or
 #       dialog: `pending: <win> (busy|dialog)`; the orchestrator's seat is skipped)
+#   scripts/fleet mcp-reconnect [--force] [--dry-run] [win…]   one line per window:
+#       skipped(connected|busy|dialog|orchestrator|unknown) · reconnected · failed.
+#       Sends `/mcp reconnect all` (benign on a connected session) to idle windows
+#       whose precis is not connected; --force also reconnects connected ones.
+#       No windows named: every window in the mcp-check table (unknown skipped);
+#       named: unknown is tried too. --dry-run prints the would-be line, sends nothing.
 #   scripts/fleet watch              ONE watcher, typed lines on transition only:
 #       ctx <win> <pct>% <busy|idle> · note <slug> new|changed · dialog <win> <type>
 #       · ci main <sha9> <conclusion> · mcp <win> dead · delivered <win>
@@ -626,6 +632,47 @@ cmd_mcp_check() {
   done
 }
 
+# mcp_reconnect_verdict <precis-state> <win-state> <force> <named> -> one word:
+# connected | busy | dialog | unknown (a skip reason) or `go`. Pure, so the
+# selection is testable without a session.
+mcp_reconnect_verdict() {
+  case "$2" in busy|dialog) echo "$2"; return 0 ;; esac
+  case "$1" in
+    connected) [ "$3" = 1 ] && echo go || echo connected ;;
+    unknown) [ "$4" = 1 ] && echo go || echo unknown ;;
+    *) echo go ;;
+  esac
+}
+
+cmd_mcp_reconnect() {
+  need_tmux
+  local force=0 dry=0 named=() a states w p st v out
+  for a in "$@"; do
+    case "$a" in
+      --force) force=1 ;;
+      --dry-run) dry=1 ;;
+      -*) echo "usage: scripts/fleet mcp-reconnect [--force] [--dry-run] [win…]" >&2; exit 2 ;;
+      *) named+=("$a") ;;
+    esac
+  done
+  states=$(mcp_states) || { echo "scripts/fleet mcp-reconnect: no usable fleet_mcp_state.py — states unknown" >&2; exit 1; }
+  for w in ${named[@]+"${named[@]}"}; do
+    has_window "$w" || { echo "scripts/fleet mcp-reconnect: no window: $w" >&2; exit 2; }
+  done
+  printf '%s\n' "$states" | while read -r w p; do
+    if [ "${#named[@]}" -gt 0 ]; then
+      case " ${named[*]} " in *" $w "*) ;; *) continue ;; esac
+    fi
+    if orch_window "$w"; then echo "$w: skipped(orchestrator)"; continue; fi
+    st=$(win_state "$w")
+    v=$(mcp_reconnect_verdict "$p" "$st" "$force" "$([ "${#named[@]}" -gt 0 ] && echo 1 || echo 0)")
+    if [ "$v" != go ]; then echo "$w: skipped($v)"; continue; fi
+    if [ "$dry" = 1 ]; then echo "$w: would reconnect (precis=$p)"; continue; fi
+    out=$(send "$w" "/mcp reconnect all") && case "$out" in SKIPPED*) false ;; esac \
+      && echo "$w: reconnected" || echo "$w: failed"
+  done
+}
+
 # --- watch --------------------------------------------------------------------
 # State is tab-separated `kind key value` lines, held in W_STATE and written
 # whole, atomically, once a tick. bash 3.2: no associative arrays.
@@ -839,6 +886,7 @@ case "${1:-}" in
   refs) cmd_refs ;;
   compact) shift; cmd_compact "$@" ;;
   mcp-check) shift; cmd_mcp_check "$@" ;;
+  mcp-reconnect) shift; cmd_mcp_reconnect "$@" ;;
   watch) cmd_watch ;;
   effort) cmd_effort ;;
   model) thread_model "${2:?usage: scripts/fleet model <slug>}" ;;
