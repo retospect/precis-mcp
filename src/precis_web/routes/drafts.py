@@ -1796,9 +1796,12 @@ async def delete_draft(
     if not _delete_confirm_ok(ref, confirm):
         # name mismatch — bounce back to the reader, nothing deleted.
         return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
-    try:
-        store.drafts.retire_draft(ref.id)
-    except Exception as exc:  # pragma: no cover - defensive
+    # Ref-level ``delete`` verb: the same atomic retire_draft, plus the
+    # machine-owned-body refusal (gr343752).
+    body, is_error = await await_dispatch(
+        request, "delete", {"kind": "draft", "id": ref.slug or str(ref.id)}
+    )
+    if is_error:
         return templates.TemplateResponse(
             request,
             "error.html.j2",
@@ -1806,7 +1809,7 @@ async def delete_draft(
                 "active_tab": "drafts",
                 "title": "Delete draft error",
                 "status": 400,
-                "detail": str(exc),
+                "detail": body,
             },
             status_code=400,
         )
@@ -2511,7 +2514,7 @@ async def add_block(
     ``+`` affordance (docs/backlog/draft-inline-editor.md, slice 2b). Returns
     the new block's handle so the client can hydrate and open it for editing.
 
-    Goes straight to ``store.drafts.add_chunks`` rather than the ``put`` verb: the
+    Uses ``DraftHandler.insert_blank_block`` rather than the ``put`` verb: the
     verb rejects empty ``text=`` (an agent-ergonomics guard against blank
     chunks), but "add a blank paragraph then type into it" is exactly the
     human flow here."""
@@ -2525,10 +2528,8 @@ async def add_block(
             {"ok": False, "error": "anchor block not found"}, status_code=404
         )
     kind = chunk_kind if chunk_kind in _EDITABLE_KINDS else "paragraph"
-    chunks = store.drafts.add_chunks(
-        ref_id=ref.id, chunk_kind=kind, text="", at={"after": f"¶{after}"}
-    )
-    new = chunks[0]
+    handler = get_runtime(request).hub.handler_for("draft")
+    new = handler.insert_blank_block(ref.id, chunk_kind=kind, after_handle=after)
     return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
 
 
@@ -2571,21 +2572,20 @@ async def split_block(
     # edit_text_inline/edit_table_inline conflict shape so the client's XHR
     # handler gets a consistent, machine-readable 409 — any other BadInput
     # (a genuinely bad request) still surfaces via the global handler.
+    handler = get_runtime(request).hub.handler_for("draft")
     try:
-        store.drafts.edit_text(handle, before, base_sha=content_sha(chunk.text or ""))
+        new = handler.split_block(
+            ref.id,
+            handle,
+            before=before,
+            after=after,
+            tail_kind=tail_kind,
+            base_sha=content_sha(chunk.text or ""),
+        )
     except BadInput as exc:
         if "changed since you read" in str(exc):
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
         raise
-    new = store.drafts.add_chunks(
-        ref_id=ref.id,
-        chunk_kind=tail_kind,
-        text=after,
-        at={"after": f"¶{handle}"},
-        split=False,
-    )[0]
-    handler = get_runtime(request).hub.handler_for("draft")
-    handler.sync_draft_links(ref.id)
     return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
 
 
@@ -2627,16 +2627,15 @@ async def merge_prev_block(
     # base_sha = the sha of the prev text this handler read above; a
     # concurrent edit of prev raises BadInput instead of silently
     # clobbering it — mirrored 409 shape, same as split_block above.
+    handler = get_runtime(request).hub.handler_for("draft")
     try:
-        store.drafts.merge_prev_block(
-            handle, prev.handle, text, base_sha=content_sha(prev.text or "")
+        handler.merge_prev_block(
+            ref.id, handle, prev.handle, text, base_sha=content_sha(prev.text or "")
         )
     except BadInput as exc:
         if "changed since you read" in str(exc):
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
         return JSONResponse({"ok": True, "noop": True})  # childless guard etc.
-    handler = get_runtime(request).hub.handler_for("draft")
-    handler.sync_draft_links(ref.id)
     return JSONResponse({"ok": True, "handle": prev.handle, "caret": caret})
 
 

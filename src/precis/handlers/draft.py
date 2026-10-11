@@ -2119,6 +2119,73 @@ class DraftHandler(Handler):
         self.sync_draft_links(chunk.ref_id)
         return Response(body=f"retired {chunk.dc}")
 
+    # ── structural block edits for the web inline editor ─────────────
+    #
+    # The reader's Enter / Backspace / ``+`` affordances do multi-step
+    # structural edits no single verb expresses (a blank chunk the ``put``
+    # verb rejects; an atomic split / merge). They live here — not as
+    # ``store.drafts.*`` calls in ``precis_web`` — so the machine-owner
+    # refusal, link sync and agent-run attribution stay single-sourced
+    # with the verbs (gr343752).
+
+    def insert_blank_block(
+        self, ref_id: int, *, chunk_kind: str, after_handle: str
+    ) -> Any:
+        """Add an empty ``chunk_kind`` chunk right after ``after_handle``
+        ("add a blank paragraph, then type into it" — the ``put`` verb's
+        empty-``text`` guard would reject this). Returns the new chunk."""
+        self._refuse_if_machine_owned(ref_id)
+        chunks = self.store.drafts.add_chunks(
+            ref_id=ref_id,
+            chunk_kind=chunk_kind,
+            text="",
+            at={"after": f"¶{after_handle}"},
+        )
+        self._attribute_touch([c.chunk_id for c in chunks])
+        return chunks[0]
+
+    def split_block(
+        self,
+        ref_id: int,
+        handle: str,
+        *,
+        before: str,
+        after: str,
+        tail_kind: str,
+        base_sha: str,
+    ) -> Any:
+        """Split ``handle`` at the caret: it keeps ``before`` (and its
+        handle, so cross-refs survive); a new ``tail_kind`` chunk carrying
+        ``after`` lands right after it. ``base_sha`` guards the head edit
+        (``BadInput`` "changed since you read" on a concurrent write).
+        Returns the new tail chunk."""
+        self._refuse_if_machine_owned(ref_id)
+        head = self.store.drafts.edit_text(handle, before, base_sha=base_sha)
+        new = self.store.drafts.add_chunks(
+            ref_id=ref_id,
+            chunk_kind=tail_kind,
+            text=after,
+            at={"after": f"¶{handle}"},
+            split=False,
+        )[0]
+        self.sync_draft_links(ref_id)
+        touched = [new.chunk_id] + ([head.chunk_id] if head is not None else [])
+        self._attribute_touch(touched)
+        return new
+
+    def merge_prev_block(
+        self, ref_id: int, handle: str, prev_handle: str, text: str, *, base_sha: str
+    ) -> None:
+        """Append ``text`` onto ``prev_handle`` and retire ``handle`` in one
+        transaction (``base_sha`` = sha of the previous block's text the
+        caller read)."""
+        self._refuse_if_machine_owned(ref_id)
+        self.store.drafts.merge_prev_block(handle, prev_handle, text, base_sha=base_sha)
+        self.sync_draft_links(ref_id)
+        prev = self.store.drafts.get_draft_chunk(prev_handle)
+        if prev is not None:
+            self._attribute_touch([prev.chunk_id])
+
     # ── helpers ──────────────────────────────────────────────────────
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
