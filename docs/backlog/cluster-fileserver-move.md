@@ -216,9 +216,9 @@ live on the file server exclusively."
     - Before the DB node leaves `nfs_servers`, the 03:30 backup must have
       run once from `host_local_root`, and its NAS archive must have been
       read back.
-    - `pg_backup_local_keep_verified_only` stays off until `drill_pull`
-      can serve the NAS archive. Otherwise the offsite restore drill
-      silently gets nothing.
+    - Do not stop keeping local dumps (no such flag exists today) until
+      `drill_pull` can serve the NAS archive. Otherwise the offsite
+      restore drill silently gets nothing.
 4d. **Where the copies end up:** the NAS (90 days, RAID6) and B2 offsite.
     Both are off the DB machine and none are on it. A third copy on a
     Mac's local disk is possible but not proposed: the NAS and B2 are
