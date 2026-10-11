@@ -134,6 +134,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # cascade on it same as prose (gr240050).
         if c.chunk_id in done_set:
             continue  # checkpoint: already converted by a prior run
+        # Hours-long scopes outlive the 90-min lease: renew per chunk (gr369528).
+        # Lost lease = superseded; stop with no terminal status or summary and
+        # let the new claimant resume from done_chunk_ids.
+        if ctx.renew_lease is not None and not ctx.renew_lease():
+            ctx.append_chunk(
+                "job_event",
+                f"lease lost after {n_scanned} chunk(s) — another worker "
+                "generation reclaimed this job; stopping without a terminal status",
+            )
+            return
         n_scanned += 1
         try:
             result = apply_chunk(

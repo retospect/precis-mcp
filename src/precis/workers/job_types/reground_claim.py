@@ -187,6 +187,15 @@ def _run_verify_mode(
     n_dirty = 0
     n_no_intent = 0
     for hub_id in hub_ids:
+        # Keep the lease alive over a large scope; lost = superseded, so stop
+        # without a summary or terminal status (gr369528).
+        if ctx.renew_lease is not None and not ctx.renew_lease():
+            ctx.append_chunk(
+                "job_event",
+                "lease lost mid-verify — another worker generation reclaimed "
+                "this job; stopping without a terminal status",
+            )
+            return
         try:
             diff = (
                 repair_hub_intent(ctx.store, hub_id, apply=repair_apply)
