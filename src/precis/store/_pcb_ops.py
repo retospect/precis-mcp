@@ -86,7 +86,7 @@ def _validate_pin_declarations(
         if owner is None or str(owner) in (name, pad):
             continue  # unmapped, same pin, or the normalizer's identity entry
         owner = str(owner)
-        if owner in by_name and by_name[owner] != pad:
+        if by_name.get(owner) is not None and by_name[owner] != pad:
             continue  # the footprint's pin is re-padded in this same put
         raise ValueError(
             f"component {component}: pin {name!r} declares pad {pad!r}, but the "
@@ -700,9 +700,9 @@ class PcbMixin:
             _validate_pin_declarations(
                 declarations[refdes],
                 refdes,
-                self._pcb_footprint_pin_map(
-                    conn, ref.id, c, inst_by_refdes.get(refdes)
-                ),
+                self._pcb_footprint_pin_map(conn, ref.id, c, inst_by_refdes.get(refdes))
+                if any(p.get("pad") is not None for p in declarations[refdes])
+                else None,
             )
             if refdes in inst_by_refdes:
                 continue  # already placed; skip (re-runnable)

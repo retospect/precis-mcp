@@ -300,3 +300,13 @@ def test_pin_on_footprint_unmapped_pad_accepted(pcb, store):
     neighbors = store.pcb_instance_neighbors(ref.id, "J_UNPLACED")
     assert neighbors is not None
     assert {p["pin"]: p["pad"] for p in neighbors["pins"]} == {"OTHER": "3"}
+
+
+def test_unpadded_footprint_owner_does_not_exempt_conflict(pcb, store):
+    args = _args()
+    args["components"][0]["pins"] = [{"name": "CLK"}, {"name": "OTHER", "pad": "2"}]
+    before = _snapshot(store)
+    with pytest.raises(BadInput) as error:
+        pcb.put(id="owner-unpadded", args=args)
+    assert "OTHER" in str(error.value) and "CLK" in str(error.value)
+    assert _snapshot(store) == before
