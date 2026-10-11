@@ -70,9 +70,12 @@ put(
 )
 ```
 
-The render code runs **sandboxed, out-of-band** (never at `put` time): it
-receives `data={'tables': [...]}` and `out` (the PNG path). The image is
-**deferred** — a placeholder until the render lands, then refreshes
+The render code runs **sandboxed, lazily** (never at `put` time): the first
+export (docx/LaTeX) or reader view of the figure renders it, saves the PNG,
+and later exports reuse it. It receives `data={'tables': [...]}` and `out`
+(the PNG path). A render error shows up as an export warning (the figure
+falls back to caption-only) and is retried on the next export. The image is
+**deferred** — a placeholder until then, then refreshes
 whenever the plotted data changes (the `plots` edge is the one reactive
 recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
 caption, export all apply identically.

@@ -1464,7 +1464,7 @@ class DraftHandler(Handler):
             ref_id=ref_id,
             caption=str(caption),
             origin="own_graph",
-            image=_PLACEHOLDER_PNG,  # deferred — the render pass overwrites it
+            image=_PLACEHOLDER_PNG,  # deferred — rendered at export/view time
             mime="image/png",
             at=at,
             figure_meta={"render_pending": True},
@@ -1482,7 +1482,7 @@ class DraftHandler(Handler):
             body=(
                 f"added graph figure {chunk.dc} to {slug} "
                 f"(plots {n} data source{'' if n == 1 else 's'}); "
-                "image renders out-of-band — render pending"
+                "image renders on first export/view — render pending"
             )
         )
 

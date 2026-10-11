@@ -714,10 +714,16 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches
 
+    from precis.render.figure import ensure_rendered
     from precis.utils.figure_source import figure_export_asset
 
+    render_err = (
+        None if chunk.dc in ctx.withheld_figures else ensure_rendered(store, chunk)
+    )
     asset = (
-        None if chunk.dc in ctx.withheld_figures else figure_export_asset(store, chunk)
+        None
+        if chunk.dc in ctx.withheld_figures or render_err
+        else figure_export_asset(store, chunk)
     )
     if chunk.dc in ctx.withheld_figures:
         perm = ((chunk.meta or {}).get("figure") or {}).get("permission") or {}
@@ -733,6 +739,8 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
             f"figure {chunk.dc} withheld (third-party image, permission not granted)"
             " — placeholder used"
         )
+    elif render_err:
+        ctx.warnings.append(f"figure {chunk.dc}: {render_err} — caption only")
     elif asset is None:
         ctx.warnings.append(f"figure {chunk.dc} has no exportable image — caption only")
     else:

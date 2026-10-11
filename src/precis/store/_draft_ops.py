@@ -2735,6 +2735,18 @@ class DraftStore(_AbbrevMixin):
                 (cached_key, figure_chunk_id),
             )
 
+    def clear_render_pending(self, figure_chunk_id: int) -> None:
+        """Drop ``meta.figure.render_pending`` once the real image has landed
+        (see :func:`precis.render.figure.ensure_rendered`). Metadata only —
+        the chunk text and its embeddings are untouched."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE chunks SET meta = jsonb_set(meta, '{figure}', "
+                "(meta->'figure') - 'render_pending') "
+                "WHERE chunk_id = %s AND meta->'figure' ? 'render_pending'",
+                (figure_chunk_id,),
+            )
+
     def stamp_figure_data_package(
         self,
         chunk_id: int,

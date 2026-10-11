@@ -207,9 +207,6 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **backlog/contextual-chunk-embeddings.md** — small enabler.
 - **backlog/context-sentence-rag-over-body.md** — small enabler.
 - **backlog/universal-short-codes.md** — small enabler.
-- **gr343055** — `render_figure_chunk` has no production caller, so a
-  draft graph-figure stays a placeholder; parks behind Do-next 1 with
-  the other draft-authoring surface gripes.
 - **gr447365** — an agent routed a Précis URL through webfetch instead of
   the native handle: a discoverability failure on the agent surface;
   unparks with backlog/capability-discovery-on-a-sprawling-surface.md.

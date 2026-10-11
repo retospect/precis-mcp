@@ -15,10 +15,13 @@ order, plus ``out`` (the PNG path) — see the engine's contract.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from precis.render.sandbox import DEFAULT_TIMEOUT_S, render_python
+
+log = logging.getLogger(__name__)
 
 #: mime of the rendered artifact (the engine always emits PNG).
 RENDER_MIME = "image/png"
@@ -79,3 +82,28 @@ def render_figure_chunk(
     key = invalidation_key(bundle["input_shas"])
     store.drafts.stamp_render_key(figure_chunk_id, key)
     return RenderOutcome(ok=True, cached_key=key)
+
+
+def ensure_rendered(store: Any, chunk: Any) -> str | None:
+    """Render a draft graph figure still flagged ``meta.figure.render_pending``.
+
+    This is the consumer of that flag: ``DraftHandler._add_graph_figure``
+    writes a placeholder PNG and the real image is rendered here, lazily, at
+    the moment it is consumed (export, the reader's blob route). The result
+    is persisted — ``chunk_blobs`` is the regenerable render cache, so the
+    next consumer finds the real image and the flag cleared.
+
+    Returns ``None`` when nothing was pending or the render succeeded, else a
+    human-readable failure the caller must surface (the flag stays set, so
+    the next consume retries)."""
+    fig = (getattr(chunk, "meta", None) or {}).get("figure") or {}
+    if not fig.get("render_pending"):
+        return None
+    outcome = render_figure_chunk(store, chunk.chunk_id)
+    if not outcome.ok:
+        tail = outcome.detail.strip().splitlines()[-1:] or [""]
+        return f"graph render failed ({outcome.error})" + (
+            f": {tail[0]}" if tail[0] else ""
+        )
+    store.drafts.clear_render_pending(chunk.chunk_id)
+    return None

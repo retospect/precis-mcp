@@ -2407,9 +2407,16 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
             f"\\caption{{{caption}}}{label}",
             "\\end{figure}",
         ]
-    asset = figure_export_asset(ctx.store, c)
+    from precis.render.figure import ensure_rendered
+
+    render_err = ensure_rendered(ctx.store, c)
+    asset = None if render_err else figure_export_asset(ctx.store, c)
     if asset is None:
-        ctx.warnings.append(f"figure {c.dc} has no exportable image — placeholder used")
+        ctx.warnings.append(
+            f"figure {c.dc}: {render_err} — placeholder used"
+            if render_err
+            else f"figure {c.dc} has no exportable image — placeholder used"
+        )
         return [
             "\\begin{figure}[htbp]",
             "\\centering",

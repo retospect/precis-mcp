@@ -2060,21 +2060,48 @@ async def pdf(request: Request, ident: str) -> Response:
     return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
 
 
+_RENDER_LOCKS: dict[int, threading.Lock] = {}
+_RENDER_LOCKS_GUARD = threading.Lock()
+
+
+def _render_pending_blob(store: Store, handle: str) -> str | None:
+    """Render a ``render_pending`` figure, single-flight per chunk: concurrent
+    viewers queue on one lock and, once through, re-read the chunk — the
+    first render has cleared the flag, so they skip straight to the blob."""
+    from precis.render.figure import ensure_rendered
+
+    chunk = store.drafts.get_draft_chunk(handle)
+    if chunk is None or not (chunk.meta or {}).get("figure", {}).get("render_pending"):
+        return None
+    with _RENDER_LOCKS_GUARD:
+        lock = _RENDER_LOCKS.setdefault(chunk.chunk_id, threading.Lock())
+    with lock:
+        fresh = store.drafts.get_draft_chunk(handle)  # re-check under the lock
+        if fresh is None:
+            return None
+        return ensure_rendered(store, fresh)
+
+
 @router.get("/drafts/blob/{handle}")
 async def chunk_blob(request: Request, handle: str) -> Response:
     """Raw bytes for a figure chunk's image — the ``<img>``
     ``src`` the reader points at. 404 when the chunk carries no blob. The
     handle is globally unique, so no draft ident is needed."""
     store = get_store(request)
+    headers = {"Cache-Control": "public, max-age=300"}
+    # A pending graph figure renders on first view (sandboxed — off the event
+    # loop). A failure serves the placeholder uncached, flagged in a header,
+    # so the next view retries.
+    from starlette.concurrency import run_in_threadpool
+
+    err = await run_in_threadpool(_render_pending_blob, store, handle)
+    if err:
+        headers = {"Cache-Control": "no-store", "X-Render-Error": err[:200]}
     blob = store.drafts.get_chunk_blob(handle)
     if blob is None:
         return Response(status_code=404)
     data, mime = blob
-    return Response(
-        content=data,
-        media_type=mime,
-        headers={"Cache-Control": "public, max-age=300"},
-    )
+    return Response(content=data, media_type=mime, headers=headers)
 
 
 def _is_dc(handle: str) -> bool:
