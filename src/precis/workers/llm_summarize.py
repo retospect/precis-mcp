@@ -1075,11 +1075,7 @@ def parse_summary(text: str) -> str:
 #: model is talking ABOUT the instructions rather than answering them —
 #: lifted verbatim from ``_INSTRUCTION_BLOCK``'s own wording (a leak that
 #: echoes the contract back at us trips on the contract's own words).
-_INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
-    "something like:",
-    "count words",
-    "count the words",
-)
+_INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = ("something like:",)
 
 #: Contract phrases that are also ordinary prose ("at most 3 layers", "a
 #: self-contained device"), so they only count next to the contract's own
@@ -1087,8 +1083,11 @@ _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
 #: substrings flagging thousands of clean scientific gists.
 _INSTRUCTION_ECHO_RE = re.compile(
     r"at most \d+ words|self-contained (?:gist|clause|summary)|"
-    # "words: 11" is a tally; "keywords:" / "key words:" is content.
-    r"(?<!key)(?<!key )\bwords:",
+    # "miscount words" is content; the leak is the instruction itself.
+    r"\bcount (?:the )?words\b|that's \d+ words|"
+    # "words: 11" is a tally; "keywords:", "key words:" and "brainish
+    # words: <p, t>" are content, so a number must follow.
+    r"(?<!key)(?<!key )\bwords:\s*\d",
     re.IGNORECASE,
 )
 
@@ -1112,12 +1111,15 @@ _REASONING_PREAMBLE_RE = re.compile(
     r"^\s*(?:"
     r"let me|let's|let us|i'll|i will|i need|i should|i can|i'm going|i think|"
     r"okay[,.! ]|ok[,.!]|sure[,.!]|alright[,.!]|hmm\b|wait[,.!]|"
-    r"first[,:]|firstly|"
     r"here is|here's|here are|the user|we need|we should|we have|"
     r"looking at"
     r")",
     re.IGNORECASE | re.MULTILINE,
 )
+
+#: "First," opens reasoning only as the whole candidate's opener; on a DETAIL
+#: line it is an enumeration ("first, X; second, Y") — 2026-10-11 dry run.
+_REASONING_OPENER_RE = re.compile(r"\A\s*(?:first[,:]|firstly)", re.IGNORECASE)
 
 #: A numbered list is reasoning, not a gist: two or more "1." / "2)" lines.
 _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
@@ -1128,11 +1130,25 @@ _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
 _SUMMARY_MAX_CHARS = 800
 
 #: A leaked self-verification tally: "boxel(1) platform(2) ... 11 words.".
-#: Lowercase word + 1-2 digit count, three or more times: one match alone is
-#: chemistry or citation notation ("RuO2(110)", "Co(101)", "10(1):19") —
-#: 39,762 clean prod gists tripped the old single-match rule (2026-10-11).
-_TALLY_RE = re.compile(r"\b[a-z][a-z-]*\(\d{1,2}\)")
+#: Lowercase word + 1-2 digit count, counting up by one three or more times:
+#: one match alone is chemistry or citation notation ("RuO2(110)", "Co(101)",
+#: "10(1):19") — 39,762 clean prod gists tripped the old single-match rule —
+#: and a non-consecutive run is maths ("sqrt(2), sqrt(3), sqrt(5)").
+_TALLY_RE = re.compile(r"\b[a-z][a-z-]*\((\d{1,2})\)")
 _TALLY_MIN_MATCHES = 3
+
+
+def _has_tally(candidate: str) -> bool:
+    """Do three word(N) counts run consecutively upward (N, N+1, N+2)?"""
+    run, prev = 0, None
+    for m in _TALLY_RE.finditer(candidate):
+        n = int(m.group(1))
+        run = run + 1 if prev is not None and n == prev + 1 else 1
+        if run >= _TALLY_MIN_MATCHES:
+            return True
+        prev = n
+    return False
+
 
 #: A candidate whose BRIEF clause is more than this many times the prompt's
 #: own word budget is not a compression failure, it's a different kind of
@@ -1192,14 +1208,16 @@ def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
             return f"instruction-echo substring {needle!r}"
     if m := _INSTRUCTION_ECHO_RE.search(candidate):
         return f"instruction-echo substring {m.group(0).lower()!r}"
-    if len(_TALLY_RE.findall(candidate)) >= _TALLY_MIN_MATCHES:
+    if _has_tally(candidate):
         return "digit-parenthesis tally pattern"
     for needle in _PROMPT_FRAGMENT_SUBSTRINGS:
         if needle in low:
             return f"prompt-fragment echo {needle!r}"
     if m := _PROMPT_FRAGMENT_RE.search(candidate):
         return f"prompt-fragment echo {m.group(0).strip().lower()!r}"
-    if _REASONING_PREAMBLE_RE.search(candidate):
+    if _REASONING_PREAMBLE_RE.search(candidate) or _REASONING_OPENER_RE.search(
+        candidate
+    ):
         return "reasoning preamble"
     if len(_NUMBERED_LINE_RE.findall(candidate)) >= 2:
         return "numbered reasoning list"

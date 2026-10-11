@@ -1336,6 +1336,8 @@ def test_chunk_retired_mid_pass_is_skipped_not_failed(
         "I'll summarize: cobalt catalyst triples turnover.",
         "Okay, the passage describes a cobalt catalyst.",
         "First, identify the topic.\n\nThen compress it.",
+        '"validation confirms CSI robust" — that\'s 11 words.',
+        "cobalt catalyst triples turnover\n\nwords: 5",
         "1. The passage is about cobalt.\n2. Keep it short.\n3. Done.",
         'cobalt catalyst\n\nsmooth layer. Keep BRIEF ≤15 words. "smooth layer',
         "cobalt catalyst triples turnover Keep BRIEF short",
@@ -1375,6 +1377,12 @@ def test_reject_reason_caps_total_length() -> None:
         "HMMs generate DNA sequences via state paths",
         "wait for fire to die down before closing flue",
         "porous carbon behaves something like a sponge for Li ions",
+        # Fourth dry run (2026-10-11): enumerations, maths, content "words".
+        "two exercises involve breath retention\n\nfirst: 30 breaths; second: holds.",
+        "concept needs two abilities\n\nfirst, representation; second, systematicity.",
+        "SAXS confirms b.c.c.\n\npeaks at 1, sqrt(2), sqrt(3), 2, sqrt(5).",
+        "tokenized models miscount words and letters",
+        "chunk is a tuple\n\nbrainish words: <p, t> pointers to dictionary entries.",
     ],
 )
 def test_reject_reason_does_not_overfire_on_clean_gists(clean: str) -> None:
