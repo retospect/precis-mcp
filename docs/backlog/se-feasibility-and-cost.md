@@ -245,17 +245,6 @@ as a default; MTBF for anything whose leaves have no published failure
 rate; Monte Carlo tolerance analysis beyond RSS (worth it only once RSS
 is shown insufficient on a real design).
 
-## Folded in: rigid connects in the equilibrium matrix (gr334788)
-
-`view='stability'` counts the axial subgraph only. Shipped: a design with
-valid `rigid` connects is flagged `PARTIAL` (report banner, note listing
-the connects, `StabilityReport.partial`) instead of reading as a complete
-answer. Still open: a rigid-group declaration that merges member blocks
-into one node set (master-slave / rigid-link reduction), so a rim ring or
-frame built from rigid blocks is checked and m−s counting stays meaningful
-without re-expressing it as a redundant axial truss. Fixture:
-`se:unicycle-c1` (20 blocks, 19 parented).
-
 ## Open questions for Reto
 
 - ~~**Where does `fit_class` sit**~~ — **built 2026-09-05 as

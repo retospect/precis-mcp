@@ -102,10 +102,7 @@ walk. Was the walk skipped because it costs an LLM author too much? No.
 Ruling for this item: keep the conceptual / embodiment / detail
 decomposition as the taught workflow and rename it per tier 2; author cost
 is not the obstacle. What still keeps the coarse levels from paying off in
-full is tracked elsewhere and is not vocabulary work: gr334788 (rigid
-connects excluded from the equilibrium matrix, so a rim ring or frame is
-never checked as one body; folded into `se-feasibility-and-cost.md`
-2026-09-25), gr450524 finding 1 (`view='order'`/`'bom'` drop a moded block the
+full is tracked elsewhere and is not vocabulary work: gr450524 finding 1 (`view='order'`/`'bom'` drop a moded block the
 moment it gets a child, so hierarchy silently costs printed parts), and the
 unprofiled `validate`/`drc` slowness (30 s budget brushed at 20 blocks;
 gr337045 was soft-deleted after only the server-death half was fixed).

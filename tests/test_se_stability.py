@@ -22,7 +22,7 @@ from precis_se import drc as se_drc
 from precis_se import joints as se_joints
 from precis_se import stability as se_stability
 from precis_se.handler import SeHandler, _render_stability
-from precis_se.ops import OpError, SeTree, apply_ops
+from precis_se.ops import ConnectSpec, OpError, SeTree, apply_ops
 
 
 @pytest.fixture
@@ -865,7 +865,7 @@ def test_stability_view_in_unknown_view_roster(handler: SeHandler) -> None:
     assert "view='stability'" in str(exc_info.value.next)
 
 
-# ── rigid connects are flagged, never silently dropped (gr334788) ────────
+# ── rigid connects merge blocks into one rigid body (gr334788) ───────────
 
 
 def _with_rigid(tree: SeTree, a: str, b: str) -> SeTree:
@@ -882,23 +882,108 @@ def _with_rigid(tree: SeTree, a: str, b: str) -> SeTree:
     )
 
 
-def test_rigid_connect_marks_the_analysis_partial() -> None:
-    tree = _pin_structure(
-        {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0], "c": [0.5, _S32, 0.0]},
-        [("a", "b", dict(_ROD)), ("b", "c", dict(_ROD)), ("c", "a", dict(_ROD))],
-        fixed={"a": True, "b": ["y", "z"], "c": ["z"]},
+#: Wall anchor points (grounded pin nodes) for the grouped-body tests.
+_WALLS = {
+    "w1": [2.0, 0.3, -0.2],
+    "w2": [-1.5, 1.2, 0.4],
+    "w3": [0.3, -2.0, 0.9],
+    "w4": [0.8, 1.7, -1.6],
+    "w5": [-0.7, -0.9, 2.1],
+    "w6": [1.1, -1.4, -1.3],
+}
+
+
+def _walls_tree() -> SeTree:
+    ops: list[dict[str, Any]] = []
+    for name, pose in _WALLS.items():
+        ops += [
+            {"op": "add_block", "name": name, "pose": pose},
+            {"op": "add_port", "block": name, "name": "pin"},
+            {"op": "set_load", "block": name, "fixed": True},
+        ]
+    return apply_ops(SeTree(), ops)
+
+
+def _bar(a: str, port_a: str, b: str) -> dict[str, Any]:
+    return {
+        "op": "connect",
+        "a": f"{a}.{port_a}",
+        "b": f"{b}.pin",
+        "joint": {"class": "axial", "params": dict(_ROD)},
+    }
+
+
+def _grouped(n_bars: int) -> SeTree:
+    """g1 + g2 rigidly joined, bars 0..n-1 alternate g1/g2 to the walls."""
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "g1", "pose": [0.0, 0.0, 0.0]},
+        {"op": "add_port", "block": "g1", "name": "pin"},
+        {"op": "add_block", "name": "g2", "pose": [0.4, 0.1, -0.2]},
+        {"op": "add_port", "block": "g2", "name": "pin"},
+    ]
+    for k, wall in enumerate(list(_WALLS)[:n_bars]):
+        ops.append(_bar("g1" if k % 2 == 0 else "g2", "pin", wall))
+    return _with_rigid(apply_ops(_walls_tree(), ops), "g1", "g2")
+
+
+def _single(n_bars: int) -> SeTree:
+    """The same body as ONE block: g2's attachment as a port offset."""
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "g1", "pose": [0.0, 0.0, 0.0]},
+        {"op": "add_port", "block": "g1", "name": "pin"},
+        {"op": "add_port", "block": "g1", "name": "q", "pose": [0.4, 0.1, -0.2]},
+    ]
+    for k, wall in enumerate(list(_WALLS)[:n_bars]):
+        ops.append(_bar("g1", "pin" if k % 2 == 0 else "q", wall))
+    return apply_ops(_walls_tree(), ops)
+
+
+@pytest.mark.parametrize("n_bars", [4, 6])
+def test_two_block_rigid_group_behaves_like_one_body(n_bars: int) -> None:
+    grouped = se_stability.classify(_grouped(n_bars))
+    single = se_stability.classify(_single(n_bars))
+    key = lambda r: (r.b, r.c, r.rank, r.m, r.rb_dim, r.m_internal, r.s)
+    assert key(grouped) == key(single)
+    assert grouped.verdict == single.verdict
+    assert grouped.j == single.j == 1 + n_bars  # n walls + the one body
+    assert grouped.m == 6 - grouped.rank > 0  # a real, non-trivial count
+    assert grouped.b == n_bars
+    assert any("merged into one rigid body" in n for n in grouped.notes)
+
+
+def test_rigid_group_stress_state_matches_single_body() -> None:
+    gsys = se_stability._assemble(_grouped(6))
+    ssys = se_stability._assemble(_single(6))
+    assert gsys.n == ssys.n == 24
+    assert np.allclose(gsys.equilibrium, ssys.equilibrium)
+    state = np.arange(1.0, 7.0)
+    assert np.allclose(
+        se_stability._stress_matrix(gsys, state),
+        se_stability._stress_matrix(ssys, state),
     )
-    tree = apply_ops(
-        tree,
-        [
-            {"op": "add_block", "name": "rim", "pose": [2.0, 0.0, 0.0]},
-            {"op": "add_port", "block": "rim", "name": "pin"},
-        ],
+
+
+def test_rigid_connects_are_modelled_not_partial() -> None:
+    report = se_stability.classify(_grouped(4))
+    assert not report.partial and report.unmodelled_connects == []
+    assert not any("PARTIAL" in n for n in report.notes)
+
+
+def test_rigid_connect_to_missing_block_stays_partial() -> None:
+    tree = _grouped(4)
+    tree.connects.append(
+        ConnectSpec(
+            a_block="g1",
+            a_port="pin",
+            b_block="ghost",
+            b_port="pin",
+            joint={"class": "rigid"},
+        )
     )
-    report = se_stability.classify(_with_rigid(tree, "b", "rim"))
+    report = se_stability.classify(tree)
     assert report.partial
-    assert report.unmodelled_connects == ["b.pin—rim.pin"]
-    assert any("PARTIAL" in n and "rigid" in n for n in report.notes)
+    assert report.unmodelled_connects == ["g1.pin—ghost.pin"]
+    assert any("PARTIAL" in n for n in report.notes)
 
 
 def test_no_rigid_connect_is_not_partial() -> None:
@@ -909,21 +994,60 @@ def test_no_rigid_connect_is_not_partial() -> None:
     assert not report.partial and report.unmodelled_connects == []
 
 
-def test_rigid_only_design_is_not_plain_not_applicable() -> None:
+def test_rigid_only_design_is_not_applicable_and_says_why() -> None:
     tree = _with_rigid(
         _pin_structure({"a": [0.0, 0.0, 0.0], "r": [1.0, 0.0, 0.0]}, []), "a", "r"
     )
     report = se_stability.classify(tree)
-    assert report.partial
+    assert not report.partial
+    assert report.verdict.startswith("no axial members")
     assert "rigid" in report.verdict
 
 
-def test_stability_view_shows_partial_banner() -> None:
-    tree = _with_rigid(
-        _pin_structure({"a": [0.0, 0.0, 0.0], "r": [1.0, 0.0, 0.0]}, []), "a", "r"
+def test_axial_between_rigid_group_members_is_internal() -> None:
+    tree = apply_ops(
+        _grouped(4),
+        [
+            {"op": "add_port", "block": "g1", "name": "x"},
+            {"op": "add_port", "block": "g2", "name": "x"},
+            {
+                "op": "connect",
+                "a": "g1.x",
+                "b": "g2.x",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+        ],
     )
-    text = _render_stability(tree)
-    assert "PARTIAL" in text.split("verdict:")[0]
+    report = se_stability.classify(tree)
+    skipped = [r for r in report.members if r.skipped]
+    assert len(skipped) == 1 and "same rigid group" in str(skipped[0].skipped)
+    assert report.b == 4
+
+
+def test_rigid_group_with_axial_elsewhere_classifies() -> None:
+    """A rigid pair held by 4 bars plus an independent grounded triangle:
+    each part keeps its own verdict contribution."""
+    tree = _grouped(4)
+    tree = apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "t", "pose": [5.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "t", "name": "pin"},
+            _bar("t", "pin", "w5"),
+            _bar("t", "pin", "w6"),
+        ],
+    )
+    report = se_stability.classify(tree)
+    base = se_stability.classify(_grouped(4))
+    assert report.b == base.b + 2
+    assert report.m == base.m + 3 - 2  # pin node: 3 DOF, 2 bars
+    assert not report.partial
+
+
+def test_stability_view_has_no_partial_banner_for_modelled_rigid() -> None:
+    text = _render_stability(_grouped(4))
+    assert "PARTIAL" not in text
+    assert "merged into one rigid body" in text
 
 
 # ── port moment arms: 6-DOF rigid-body nodes (gr334787) ──────────────────
@@ -1085,7 +1209,10 @@ def test_stress_matrix_matches_finite_difference_hessian() -> None:
     )
     system = se_stability._assemble(tree)
     assert system.dof[system.index["body"]] == 6
-    state = np.array([2.0, 3.0])
+    _assert_stress_matches_fd(system, np.array([2.0, 3.0]))
+
+
+def _assert_stress_matches_fd(system: se_stability._System, state: np.ndarray) -> None:
     k_mat = se_stability._stress_matrix(system, state)
 
     def points(x: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1113,7 +1240,7 @@ def test_stress_matrix_matches_finite_difference_hessian() -> None:
         return float(np.linalg.norm(b - a))
 
     def energy(x: np.ndarray) -> float:
-        return sum(float(state[k]) * length(x, k) for k in range(2))
+        return sum(float(state[k]) * length(x, k) for k in range(len(state)))
 
     n, h = system.n, 1e-4
     x0 = np.zeros(n)
@@ -1128,7 +1255,7 @@ def test_stress_matrix_matches_finite_difference_hessian() -> None:
                 + energy(x0 - ei - ej)
             ) / (4 * h * h)
     parallel = np.zeros((n, n))
-    for k in range(2):
+    for k in range(len(state)):
         g = np.array(
             [
                 (length(x0 + np.eye(n)[i] * h, k) - length(x0 - np.eye(n)[i] * h, k))
@@ -1140,3 +1267,13 @@ def test_stress_matrix_matches_finite_difference_hessian() -> None:
     expected = hess + parallel
     err = float(np.max(np.abs(k_mat - expected))) / float(np.max(np.abs(expected)))
     assert err < 1e-6, err
+
+
+def test_stress_matrix_of_a_rigid_group_matches_finite_difference() -> None:
+    """Same Hessian check on a merged body: g2's attachment arm is
+    measured from the group reference, the block poses are rotated."""
+    tree = _grouped(6)
+    system = se_stability._assemble(tree)
+    assert system.dof[system.index["g2"]] == 6
+    assert system.index["g1"] == system.index["g2"]
+    _assert_stress_matches_fd(system, np.array([1.0, 2.0, 3.0, 1.5, 0.5, 2.5]))

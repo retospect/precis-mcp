@@ -5196,9 +5196,9 @@ def _render_stability(tree: SeTree) -> str:
         "model: axial members attach at their PORT world positions "
         "(block pose + port pose); a block whose members meet it at "
         "different points is a 6-DOF rigid body, otherwise a pin node at "
-        "its pose; fixed grounds translations only; pin-ended axial "
-        "members only — non-axial connects and envelope contact are NOT "
-        "modelled",
+        "its pose; rigid connects merge their blocks into one rigid body; "
+        "fixed grounds translations only; pin-ended axial members only — "
+        "other non-axial connects and envelope contact are NOT modelled",
         "",
         f"j={report.j} node(s)  b={report.b} member(s)  c={report.c} "
         f"grounded translation(s)  rank={report.rank}",

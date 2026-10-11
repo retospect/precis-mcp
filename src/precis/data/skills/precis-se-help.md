@@ -464,9 +464,11 @@ the design serves, default `related-to` for a sibling variant,
   **port world positions** (block pose + `add_port` pose); a block whose
   members meet it at different points is a 6-DOF rigid body (so a hub's
   spokes laced to rim-offset ports carry axle torque), else a pin node at
-  its pose. `fixed` grounds translations only. Axial members only; `rigid`/`revolute` connects
-  are NOT in the equilibrium matrix, so rigid substructures must be
-  modelled as axial trusses or accepted as unanalysed.
+  its pose. `fixed` grounds translations only. `rigid` connects merge their blocks into ONE
+  rigid body (6 DOF; members attach at their port world positions; reference =
+  first grounded member, else first by name), so a rim ring or frame needs no
+  axial-truss stand-in; an axial between two blocks of one group is internal and
+  skipped. Other non-axial connects (`revolute` …) are NOT in the equilibrium matrix.
 - Verdicts: `rigid` · `prestress-stabilized` · `first-order mobile —
   NOT stabilized …` · the not-checked tripwire line.
 - Declared preloads are checked as a self-stress state (out-of-balance

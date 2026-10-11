@@ -15,7 +15,11 @@ wrench ``(u, (p − pose) × u)`` — without that, a hub's spokes all act
 through one point and carry no moment about the axle (gr334787). A block
 all of whose members attach at its origin stays a 3-DOF pin node.
 ``objectives.fixed`` grounds translations only; rotations stay free.
-Non-axial connects and envelope contact are NOT
+``rigid`` connects merge their blocks into
+ONE rigid body (6 DOF, :func:`rigid_groups`; reference = first grounded
+member else first by name) whose members attach at their port world
+positions relative to that reference (gr334788). Other non-axial connects
+and envelope contact are NOT
 modelled — this is the axial subgraph's answer, honestly scoped, not a
 general mobility analysis of the whole design.
 
@@ -259,6 +263,38 @@ def _skew(v: np.ndarray) -> np.ndarray:
 
 def _assemble(tree: SeTree) -> _System:
     members = _axial_members(tree)
+    groups = rigid_groups(tree)
+    # Rigid-group reduction (gr334788): every block of a group is one rigid
+    # body; its reference is the first grounded member (so ``fixed`` there
+    # is exact), else the first by name. ``rep_of`` maps member -> reference.
+    rep_of: dict[str, str] = {}
+    group_notes: dict[str, list[str]] = {}
+    for group in groups:
+        grounded = [name for name in group if _fixed_axes(tree, name)]
+        rep = grounded[0] if grounded else group[0]
+        for name in group:
+            rep_of[name] = rep
+        group_notes[rep] = [
+            f"rigid group {{{', '.join(group)}}} merged into one rigid body "
+            f"at '{rep}' (6 DOF; members attach at their port world positions)"
+        ]
+        if len(grounded) > 1:
+            group_notes[rep].append(
+                f"rigid group at '{rep}': objectives.fixed on {len(grounded)} "
+                "members is applied to the reference only (its translations)"
+            )
+    for row in members:
+        if (
+            row.skipped is None
+            and row.a_block in rep_of
+            and rep_of[row.a_block] == rep_of.get(row.b_block)
+        ):
+            row.skipped = (
+                "both ends on the same rigid group — internal to one rigid "
+                "body, carries no net load"
+            )
+            row.length = None
+            row.a_point = row.b_point = None
     live = [row for row in members if row.skipped is None]
     notes: list[str] = []
     if any(row.skipped for row in members):
@@ -266,15 +302,31 @@ def _assemble(tree: SeTree) -> _System:
             f"{sum(1 for r in members if r.skipped)} member(s) skipped — "
             "see the member table"
         )
-    node_names = sorted({row.a_block for row in live} | {row.b_block for row in live})
+
+    def node_of(block: str) -> str:
+        return rep_of.get(block, block)
+
+    node_names = sorted(
+        {node_of(row.a_block) for row in live} | {node_of(row.b_block) for row in live}
+    )
     j, b = len(node_names), len(live)
-    if any(tree.blocks[name].array for name in node_names):
+    for rep in node_names:
+        notes.extend(group_notes.get(rep, []))
+    if any(
+        tree.blocks[name].array for name in tree.blocks if node_of(name) in node_names
+    ):
         notes.append(
             "an endpoint block is an array — analysed at the array node's "
             "own pose; array expansion is not modelled"
         )
 
-    index = {name: i for i, name in enumerate(node_names)}
+    node_index = {name: i for i, name in enumerate(node_names)}
+    #: block -> node row; every block of a rigid group maps to its group's.
+    index = {
+        name: node_index[node_of(name)]
+        for name in tree.blocks
+        if node_of(name) in node_index
+    }
     coords = np.array(
         [tree.blocks[name].pose for name in node_names], dtype=float
     ).reshape(j, 3)
@@ -334,10 +386,8 @@ def _assemble(tree: SeTree) -> _System:
     )
 
 
-def _rigid_connects(tree: SeTree) -> list[str]:
-    """``'a.port—b.port'`` of every connect with a valid ``rigid`` joint
-    — the connects the axial-only equilibrium matrix cannot represent."""
-    out: list[str] = []
+def _valid_rigid(tree: SeTree) -> list[ConnectSpec]:
+    out: list[ConnectSpec] = []
     for conn in tree.connects:
         if not conn.joint:
             continue
@@ -346,8 +396,41 @@ def _rigid_connects(tree: SeTree) -> list[str]:
         except se_joints.JointError:
             continue
         if joint["class"] == "rigid":
-            out.append(f"{conn.a_block}.{conn.a_port}—{conn.b_block}.{conn.b_port}")
+            out.append(conn)
     return out
+
+
+def rigid_groups(tree: SeTree) -> list[list[str]]:
+    """Connected components (size ≥ 2, each sorted; list sorted) of the
+    blocks joined by valid ``rigid`` connects — each is ONE rigid body in
+    the equilibrium matrix (gr334788). Connects to a missing block join
+    nothing."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for conn in _valid_rigid(tree):
+        if conn.a_block in tree.blocks and conn.b_block in tree.blocks:
+            parent[find(conn.a_block)] = find(conn.b_block)
+    comps: dict[str, list[str]] = {}
+    for name in list(parent):
+        comps.setdefault(find(name), []).append(name)
+    return sorted(sorted(c) for c in comps.values() if len(c) > 1)
+
+
+def _rigid_connects(tree: SeTree) -> list[str]:
+    """``'a.port—b.port'`` of every valid ``rigid`` connect the group
+    reduction could NOT model (an endpoint block does not exist) — the
+    rest are merged into rigid bodies by :func:`rigid_groups`."""
+    return [
+        f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
+        for c in _valid_rigid(tree)
+        if c.a_block not in tree.blocks or c.b_block not in tree.blocks
+    ]
 
 
 def _scope_honesty_notes(tree: SeTree, node_names: list[str]) -> list[str]:
@@ -396,15 +479,15 @@ def classify(tree: SeTree) -> StabilityReport:
     system = _assemble(tree)
     members, live, notes = system.members, system.live, list(system.notes)
     node_names = system.node_names
-    notes.extend(_scope_honesty_notes(tree, node_names))
+    notes.extend(_scope_honesty_notes(tree, list(system.index)))
     rigid = _rigid_connects(tree)
     if rigid:
         notes.insert(
             0,
-            f"PARTIAL: {len(rigid)} rigid connect(s) are not in the "
-            "equilibrium matrix (no moment DOFs; gr334788) — the counts and "
-            "verdict cover the axial subgraph only and say nothing about "
-            f"what these hold together: {', '.join(rigid)}",
+            f"PARTIAL: {len(rigid)} rigid connect(s) name a block that does "
+            "not exist, so they could not be merged into a rigid body — the "
+            "counts and verdict say nothing about what these hold together: "
+            f"{', '.join(rigid)}",
         )
     j, b = len(node_names), len(live)
     if b == 0:
@@ -418,7 +501,12 @@ def classify(tree: SeTree) -> StabilityReport:
             m_internal=0,
             s=0,
             verdict="no axial members — stability analysis does not apply"
-            + (" (rigid connects are not modelled)" if rigid else ""),
+            + (
+                " (rigid connects only merge blocks into rigid bodies; no "
+                "axial member loads them)"
+                if rigid_groups(tree)
+                else ""
+            ),
             members=members,
             notes=notes,
             unmodelled_connects=rigid,
