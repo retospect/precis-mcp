@@ -1556,6 +1556,31 @@ def test_citation_export_unknown_entry_type_falls_back_to_default() -> None:
     assert _render_citation(ref, style="ris").startswith("TY  - JOUR")
 
 
+def test_citation_export_venueless_paper_is_misc_gen_generic() -> None:
+    """No journal and no matched entry_type -> @misc / GEN / Generic,
+    matching export.latex.build_bib; a journal keeps the article default."""
+    from precis.handlers._paper_format import _render_citation
+
+    for et in (None, "reference-entry"):
+        ref = _citation_ref(et)
+        ref.meta.pop("journal")
+        assert _render_citation(ref, style="bibtex").startswith("@misc{")
+        assert "journal" not in _render_citation(ref, style="bibtex")
+        assert _render_citation(ref, style="ris").startswith("TY  - GEN")
+        assert _render_citation(ref, style="endnote").startswith("%0 Generic")
+
+
+def test_citation_export_book_like_crossref_types_map_to_book() -> None:
+    from precis.handlers._paper_format import _render_citation
+
+    for et in ("reference-book", "edited-book"):
+        ref = _citation_ref(et)
+        ref.meta.pop("journal")
+        assert _render_citation(ref, style="bibtex").startswith("@book{")
+        assert _render_citation(ref, style="ris").startswith("TY  - BOOK")
+        assert _render_citation(ref, style="endnote").startswith("%0 Book")
+
+
 def test_paper_list_view_strips_jats_markup() -> None:
     """List view titles must not leak ``Cu/ZnO<sub>x</sub>``; the
     cleanup helper strips inline JATS / HTML tags. (MCP critic MINOR.)"""

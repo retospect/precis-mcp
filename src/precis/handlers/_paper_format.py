@@ -123,6 +123,8 @@ _EXPORT_TYPE_MAP: dict[str, dict[str, str]] = {
     },
     "book": {"bibtex": "book", "ris": "BOOK", "endnote": "Book"},
     "monograph": {"bibtex": "book", "ris": "BOOK", "endnote": "Book"},
+    "reference-book": {"bibtex": "book", "ris": "BOOK", "endnote": "Book"},
+    "edited-book": {"bibtex": "book", "ris": "BOOK", "endnote": "Book"},
     "report": {
         "bibtex": "techreport",
         "ris": "RPRT",
@@ -189,6 +191,9 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     doi_clean = _clean_inline_text(doi or "")
     entry_type = str(meta.get("entry_type") or "").strip()
     export_type = _EXPORT_TYPE_MAP.get(entry_type)
+    # No matched type and no venue: ``article``/``JOUR`` would claim a
+    # journal that isn't there. Match export.latex.build_bib's @misc.
+    venueless = export_type is None and not journal
 
     if style == "bibtex":
         # LaTeX-escape every scalar field that might carry a special
@@ -199,7 +204,9 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         bx_authors = " and ".join(_latex_escape(a) for a in authors)
         bx_journal = _latex_escape(journal)
         bx_doi = _latex_escape(doi_clean)
-        bx_type = export_type["bibtex"] if export_type else "article"
+        bx_type = (
+            export_type["bibtex"] if export_type else "misc" if venueless else "article"
+        )
         lines = [f"@{bx_type}{{{slug},"]
         if bx_title:
             lines.append(f"  title = {{{bx_title}}},")
@@ -217,7 +224,7 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         return "\n".join(lines) + "\n"
 
     if style == "ris":
-        ris_type = export_type["ris"] if export_type else "JOUR"
+        ris_type = export_type["ris"] if export_type else "GEN" if venueless else "JOUR"
         out = [f"TY  - {ris_type}"]
         if title:
             out.append(f"TI  - {title}")
@@ -233,7 +240,13 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         return "\n".join(out)
 
     # endnote (subset)
-    endnote_type = export_type["endnote"] if export_type else "Journal Article"
+    endnote_type = (
+        export_type["endnote"]
+        if export_type
+        else "Generic"
+        if venueless
+        else "Journal Article"
+    )
     out = [f"%0 {endnote_type}"]
     if title:
         out.append(f"%T {title}")
