@@ -202,7 +202,7 @@ two results bear directly on the build:
   Doc bug fixed: the NJP paper is now its own entry **[S30]** (`pa449642`)
   in `spec.md` rather than a "Related" note under [S29]. The Miller/
   Terrones/Terrones *Carbon* 96 (2016) giant-schwarzites paper is split
-  out as **[S31]** but still has no `pa` id — import or drop it.
+  out as **[S31]**, stubbed as `pa479164` (2026-10-11; body pending fetch).
 
 ### C216 asymmetric unit — still unverified
 

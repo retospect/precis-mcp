@@ -76,15 +76,6 @@ Item 1 of the gripe (pa5837) is already repaired.
 Who: agent-code; the sweep first, gates after its false-positive rate is
 measured.
 
-### 6. hexfold spec source S31 is a TODO (gr450122)
-
-`src/hexfold/spec.md` source [S31], Miller/Terrones, *Carbon* 2016
-(doi:10.1016/j.carbon.2015.10.040), is marked TODO: not in the paper store.
-Fix direction: import the DOI, or drop S31 before any spec claim cites it.
-Small.
-
-Who: agent-code.
-
 ## Prod data repairs
 
 Writes to prod; each is read-first, then a targeted edit. Items depending on

@@ -1574,7 +1574,7 @@ DOI is in the store (imported the same day; books carry ISBNs only).
 - **[S28]** T. Lenosky, X. Gonze, M. Teter, V. Elser, "Energetics of negatively curved graphitic carbon," *Nature* 355 (1992) 333–335. doi:10.1038/355333a0. **`pa343410`**
 - **[S29]** V. R. Coluci, D. S. Galvão, A. Jorio, "Geometric and electronic structure of carbon nanotube networks: 'super'-carbon nanotubes," *Nanotechnology* 17 (2006) 617–621. doi:10.1088/0957-4484/17/3/001. **`pa343411`** (cited in `pa181896`).
 - **[S30]** H. Terrones, M. Terrones, "Curved nanostructured materials," *New J. Phys.* 5 (2003) 126. doi:10.1088/1367-2630/5/1/126. **`pa449642`** (cited in `pa181896`). Periodic cells, P/D/G nets, schwarzites (spec §28.3).
-- **[S31]** D. C. Miller, M. Terrones, H. Terrones, "Mechanical properties of hypothetical graphene foams: giant schwarzites," *Carbon* 96 (2016) 1191–1199. doi:10.1016/j.carbon.2015.10.040 (cited in `pa181896`). **TODO: not yet in the paper store (no `pa` id); import or drop before any spec claim cites it.**
+- **[S31]** D. C. Miller, M. Terrones, H. Terrones, "Mechanical properties of hypothetical graphene foams: giant schwarzites," *Carbon* 96 (2016) 1191–1199. doi:10.1016/j.carbon.2015.10.040 (cited in `pa181896`). `pa479164` (stub minted 2026-10-11, PDF fetch queued; no spec claim cites it until the body lands).
 
 Source needed: the term **"bond surplus"** (charge e − 6 per ring) as a
 named formulation. The counting itself is cited to Euler and [S4, S5];
