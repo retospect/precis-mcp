@@ -1102,6 +1102,19 @@ class DraftHandler(Handler):
                 at=at,
             )
 
+        # A structure view figure: meta={'view': {...}} names the structure;
+        # the image is rendered server-side at export/view time.
+        if chunk_kind == "figure" and isinstance(meta, dict) and "view" in meta:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
+            return self._add_view_figure(
+                slug=slug,
+                ref_id=ref.id,
+                caption=text or caption,
+                view=meta["view"],
+                at=at,
+            )
+
         # A computed figure (graph): render code + plots links, image deferred
         # to the render pass. text= is the caption.
         if chunk_kind == "figure" and (render is not None or plots is not None):
@@ -1420,6 +1433,73 @@ class DraftHandler(Handler):
         self.sync_draft_links(ref_id)
         return Response(
             body=f"added figure {chunk.dc} [{org}] to {slug} ({len(raw)} bytes)"
+        )
+
+    def _add_view_figure(
+        self,
+        *,
+        slug: str,
+        ref_id: int,
+        caption: str | None,
+        view: Any,
+        at: dict[str, Any] | None,
+    ) -> Response:
+        """Add a *structure view* figure (se-view-figures §2): ``view`` is
+        ``{'source': 'structure:<slug>', 'camera': {az/el/…}, 'style': {…},
+        'refine': 0|1|2}``. Only the recipe is stored; the stick-figure PNG is
+        rendered through viz3d at export/view time (placeholder until then) and
+        re-rendered when the structure's geometry changes. ``origin='original'``."""
+        from precis.render.figure import VIEW_MAX_ATOMS, view_recipe
+
+        nxt = (
+            "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
+            "meta={'view': {'source': 'structure:<slug>', "
+            "'camera': {'azimuth_deg': 30, 'elevation_deg': 15}}})"
+        )
+        if caption is None or not str(caption).strip():
+            raise BadInput("a figure requires text= (the caption)", next=nxt)
+        if not isinstance(view, dict):
+            raise BadInput("meta['view'] must be an object", next=nxt)
+        kind, _, src_slug = str(view.get("source") or "").partition(":")
+        src_slug = src_slug.strip()
+        if kind != "structure" or not src_slug:
+            raise BadInput(
+                "meta['view']['source'] must be 'structure:<slug>'", next=nxt
+            )
+        sref = self.store.get_ref(kind="structure", id=src_slug)
+        if sref is None:
+            raise NotFound(f"structure {src_slug!r} not found")
+        try:
+            recipe = view_recipe(
+                src_slug, view.get("camera"), view.get("style"), view.get("refine", 2)
+            )
+        except ValueError as exc:
+            raise BadInput(str(exc), next=nxt) from exc
+        scene, _handles = self.store.structure_load(sref.id)
+        if len(scene.atoms) > VIEW_MAX_ATOMS:
+            raise BadInput(
+                f"structure {src_slug!r} has {len(scene.atoms)} atoms; a view "
+                f"figure is capped at {VIEW_MAX_ATOMS}",
+                next="render a smaller structure (a fragment or sub-block)",
+            )
+        chunk = self.store.drafts.add_figure(
+            ref_id=ref_id,
+            caption=str(caption),
+            origin="original",
+            image=_PLACEHOLDER_PNG,  # deferred — rendered at export/view time
+            mime="image/png",
+            at=at,
+            figure_meta={"render_pending": True},
+        )
+        self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
+        self.sync_draft_links(ref_id)
+        self._attribute_touch([chunk.chunk_id])
+        return Response(
+            body=(
+                f"added structure view figure {chunk.dc} to {slug} "
+                f"(structure:{src_slug}); "
+                "image renders on first export/view — render pending"
+            )
         )
 
     def _add_graph_figure(

@@ -2723,6 +2723,34 @@ class DraftStore(_AbbrevMixin):
             "input_shas": [str(render.get("src"))] + [str(r[2]) for r in data_rows],
         }
 
+    def figure_render_recipe(self, figure_chunk_id: int) -> dict[str, Any] | None:
+        """The figure chunk's ``meta.render`` recipe dict (any kind), or None."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'render' FROM chunks "
+                "WHERE chunk_id = %s AND chunk_kind = 'figure'",
+                (figure_chunk_id,),
+            ).fetchone()
+        recipe = row[0] if row else None
+        return dict(recipe) if isinstance(recipe, dict) else None
+
+    def stamp_render_fields(
+        self,
+        figure_chunk_id: int,
+        fields: dict[str, Any],
+        *,
+        drop: tuple[str, ...] = (),
+    ) -> None:
+        """Merge ``fields`` into ``meta.render`` (after removing ``drop``
+        keys) — view-figure stamps: cached_key / source_version / failed."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE chunks SET meta = jsonb_set(meta, '{render}', "
+                "((meta->'render') - %s::text[]) || %s::jsonb, true) "
+                "WHERE chunk_id = %s AND jsonb_typeof(meta->'render') = 'object'",
+                (list(drop), Jsonb(fields), figure_chunk_id),
+            )
+
     def stamp_render_key(self, figure_chunk_id: int, cached_key: str) -> None:
         """Record a freshly-rendered figure's invalidation key at
         ``meta.render.cached_key`` — a later mark-stale pass
