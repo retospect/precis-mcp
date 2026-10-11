@@ -838,8 +838,8 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                 title=_first_line(r[1]),
                 detail=(
                     f"parked {hours:.0f}h behind {tag} — a hard failure, a "
-                    f"streak-exhaustion past its one auto-decompose attempt "
-                    f"(gripe 168886 tier 2), or a decompose tick still "
+                    f"streak-exhaustion past its one auto-decompose attempt, "
+                    f"or a decompose tick still "
                     f"queued/running behind a busy dispatch backlog; check "
                     f"the job's job_result / job_event chunks or "
                     f"view='attention' for the recovery options"

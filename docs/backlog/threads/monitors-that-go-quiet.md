@@ -148,9 +148,8 @@ gr346534, soft-deleted)
    `health_digest` check on the log, because the DB node has no tick of
    its own. It must be timeout-guarded against the NFS hang in item 2.
 6. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
-   gr472019, gr474610, gr475405 and gr476100). Alert sources outside
-   watchdog/nursery re-raise against dead trackers and are hand-filed as
-   "no live tracker" gripes. It ranks below 1–5 because the alerts still
+   gr472019 and gr476100; the router tracker binding shipped, what is left
+   is the OTS batch 7 re-stamp and the quest_tick search-dispatch bug). It ranks below 1–5 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
 
 ## Horizon

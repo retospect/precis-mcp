@@ -1794,6 +1794,7 @@ _ROUTER_CLASS: dict[str, str] = {
     "coherence": "config-drift",
     "discovery": "pipeline-stuck",
     "nursery-backlog": "backlog-nondraining",
+    "tracked-source": "tracked-source",
 }
 _ROUTER_DEFAULT_CLASS = "outcome"
 
@@ -1844,6 +1845,25 @@ _NURSERY_BACKLOG_FP = "backlog"
 _NURSERY_BACKLOG_GROUP = "nursery-backlog"
 #: Slow-rot self-heal budget before a non-draining nursery backlog gripes.
 _NURSERY_BACKLOG_BUDGET_HOURS = 24.0
+
+#: Registry of non-watchdog alert sources that get a find-or-file tracker
+#: gripe per ``(source, fingerprint)`` — source → self-heal budget hours.
+#: Adding a source is one entry here, not a router branch. The marker scan
+#: counts only live (non-retired, non-terminal) gripes, so a tracker that
+#: was soft-deleted is simply not found and the next eval re-binds the
+#: still-open alert to a fresh one; repeats dedup on the marker.
+#: ``mode`` is ``"per-fingerprint"`` (one tracker per fingerprint — e.g.
+#: one per OTS batch) or ``"aggregate"`` (one tracker per source, listing
+#: the live fingerprints; closes only when every fingerprint has cleared —
+#: e.g. N blocked quests are one gripe, not N).
+_TRACKED_SOURCES: dict[str, tuple[float, str]] = {
+    "nanopub_ots": (6.0, "per-fingerprint"),
+    "quest_tick": (6.0, "aggregate"),
+}
+#: Marker fingerprint of an aggregate-mode tracker (one per source).
+_TRACKED_AGG_FP = "all"
+#: Synthetic router group for tracked-source gripes (drives class/nudge).
+_TRACKED_GROUP = "tracked-source"
 
 
 def _router_class(group: str) -> str:
@@ -1907,6 +1927,13 @@ def _router_nudge(store: Store, cls: str, fingerprint: str) -> str:
             "fix. The count is in the gripe body; nursery auto-resolves "
             "each item as it's fixed and this gripe auto-closes when the "
             "category fully clears."
+        )
+    if cls == "tracked-source":
+        return (
+            "this alert source has no other owner — read the alert "
+            "(get(kind='alert', id='<source>/<fingerprint>')) for the "
+            "cause. Repeat raises dedup onto this gripe, and it auto-closes "
+            "when the alert clears."
         )
     return (
         f"pulse-probe outcome {fingerprint!r} missed its freshness window — "
@@ -2034,7 +2061,8 @@ def _file_router_gripe(
         f"Class: {cls}. {nudge}\n"
         "This gripe auto-closes when the check returns fresh (health_digest router)."
     )
-    gripe_title = f"[watchdog] {source}/{fingerprint}: {title}"
+    tag = "alert:" + source if group == _TRACKED_GROUP else "watchdog"
+    gripe_title = f"[{tag}] {source}/{fingerprint}: {title}"
     if len(gripe_title) > 200:
         gripe_title = gripe_title[:197].rstrip() + "…"
     with store.tx() as conn:
@@ -2092,11 +2120,12 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert' AND r.retired_at IS NULL
                AND (r.alert_source LIKE 'watchdog:%%'
+                    OR r.alert_source = ANY(%s)
                     OR r.alert_source = ANY(%s))
                AND r.alert_source IS NOT NULL AND r.fingerprint IS NOT NULL
                AND t.namespace = 'OPEN' AND t.value = %s
             """,
-            (list(_NURSERY_BACKLOG_SOURCES), STATE_OPEN),
+            (list(_NURSERY_BACKLOG_SOURCES), list(_TRACKED_SOURCES), STATE_OPEN),
         ).fetchall()
 
     marker_gripes = _open_marker_gripes(store)
@@ -2110,6 +2139,8 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
     # gripe below.
     live_conditions: set[tuple[str, str]] = set()
     nursery_agg: dict[str, dict[str, Any]] = {}
+    # aggregate-mode tracked sources: source -> [(created_at, fingerprint)]
+    tracked_agg: dict[str, list[tuple[datetime, str]]] = {}
     for _rid, source, fp, created_at, _title, _detail, _severity, total in alert_rows:
         source = str(source)
         fp = str(fp)
@@ -2124,6 +2155,9 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
                 created_at is not None and created_at < agg["oldest"]
             ):
                 agg["oldest"] = created_at
+        elif _TRACKED_SOURCES.get(source, (0.0, ""))[1] == "aggregate":
+            live_conditions.add((source, _TRACKED_AGG_FP))
+            tracked_agg.setdefault(source, []).append((created_at, fp))
         else:
             live_conditions.add((source, fp))
 
@@ -2165,15 +2199,25 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
         # below, after this watchdog loop.
         if source in _NURSERY_BACKLOG_SOURCES:
             continue
-        group = source.removeprefix("watchdog:")
-        budget = _router_budget_hours(fingerprint, group, severity or _WARN)
+        if source in tracked_agg:
+            continue  # aggregate mode — filed once per source, below
+        budget: float | None
+        if source in _TRACKED_SOURCES:
+            group = _TRACKED_GROUP
+            budget = _TRACKED_SOURCES[source][0]
+        else:
+            group = source.removeprefix("watchdog:")
+            budget = _router_budget_hours(fingerprint, group, severity or _WARN)
         if budget is None:
             continue
         age = _hours_since(created_at)
         if age is None or age <= budget:
             continue
+        routed_key = (
+            (source, fingerprint) if group == _TRACKED_GROUP else (group, fingerprint)
+        )
         if (source, fingerprint) in marker_gripes:
-            routed.add((group, fingerprint))
+            routed.add(routed_key)
             continue
         if filed >= _ROUTER_FLOOD_CAP:
             log.warning(
@@ -2205,7 +2249,45 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
             )
             continue
         filed += 1
-        routed.add((group, fingerprint))
+        routed.add(routed_key)
+
+    # Aggregate-mode tracked sources: ONE tracker per source, listing the
+    # live fingerprints; closes (auto-close sweep above) only when none
+    # of its alerts is open any more.
+    for source, items in tracked_agg.items():
+        budget = _TRACKED_SOURCES[source][0]
+        oldest = min(c for c, _ in items if c is not None)
+        age = _hours_since(oldest)
+        if age is None or age <= budget:
+            continue
+        if (source, _TRACKED_AGG_FP) in marker_gripes:
+            routed.add((source, _TRACKED_AGG_FP))
+            continue
+        if filed >= _ROUTER_FLOOD_CAP:
+            log.warning(
+                "health_digest: router flood cap (%d) hit — %s held for next eval",
+                _ROUTER_FLOOD_CAP,
+                source,
+            )
+            continue
+        fps = sorted(fp for _, fp in items)
+        try:
+            _file_router_gripe(
+                store,
+                source=source,
+                fingerprint=_TRACKED_AGG_FP,
+                group=_TRACKED_GROUP,
+                title=f"{len(fps)} open alert(s) from {source}",
+                detail="Live fingerprints when filed:\n"
+                + "\n".join(f"- {fp}" for fp in fps),
+                created_at=oldest,
+                budget_hours=budget,
+            )
+        except Exception:
+            log.exception("health_digest: router failed to file gripe for %s", source)
+            continue
+        filed += 1
+        routed.add((source, _TRACKED_AGG_FP))
 
     # Nursery backlog aggregates: ONE marker gripe per non-draining
     # category, never per ref — the exact per-leaf noise this design
