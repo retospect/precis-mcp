@@ -33,6 +33,7 @@ from .defects import (
     glyph_bond,
     glyph_footprint,
     run_length,
+    vid_key,
 )
 from .extent import snap_extents
 from .fullerene import C60Data
@@ -1117,7 +1118,7 @@ def _assemble(
             )
         regions[inst] = sorted(region)
         deg = patch.degrees()
-        for e in sorted(patch.edges, key=lambda e: sorted(map(str, e))):
+        for e in sorted(patch.edges, key=lambda e: sorted(map(vid_key, e))):
             a, b = tuple(e)
             oi, oj = ords[(key, a)], ords[(key, b)]
             bonds.append((min(oi, oj), max(oi, oj), 1))
@@ -1287,7 +1288,7 @@ def _sort_rims(
     largest rim (outer boundary) first, then holes by min vertex id."""
     if kind == "tube":
         return sorted(rims, key=lambda rt: _rim_cell(patch, rt[0]))
-    return sorted(rims, key=lambda rt: (-len(rt[0]), sorted(map(str, rt[0]))[0]))
+    return sorted(rims, key=lambda rt: (-len(rt[0]), sorted(map(vid_key, rt[0]))[0]))
 
 
 def _port_name_normal(
@@ -2624,7 +2625,7 @@ def _hole_rim_after(patch: Patch, old_rim: frozenset[Vid]) -> frozenset[Vid]:
     for rim, _t in rims:
         rc = np.mean([patch.flatpos[v] for v in rim], axis=0)
         scored.append((float(np.linalg.norm(rc - cen)), frozenset(rim)))
-    return min(scored, key=lambda t: (t[0], sorted(map(str, t[1]))))[1]
+    return min(scored, key=lambda t: (t[0], sorted(map(vid_key, t[1]))))[1]
 
 
 def _record_collar(spec: Spec, ci: int, defs: list[Defect]) -> Spec:
@@ -2763,7 +2764,7 @@ def _cap_patch(lat: Lattice, n: int, m: int) -> Patch | None:
                 if len(bnd) != n_dangling:
                     continue
                 fs = frozenset(cand)
-                if best is None or sorted(map(str, fs)) < sorted(map(str, best)):
+                if best is None or sorted(map(vid_key, fs)) < sorted(map(vid_key, best)):
                     best = fs
     if best is None:
         return None
