@@ -53,11 +53,15 @@ Superseding a stub with a fetched PDF does not carry the stub's
 title/doi/authors onto the surviving ref, and a PDF that bundles several
 articles is ingested whole under one title. pa207748 holds nine
 helium/superfluid chunks from a different article. Fix direction: the
-supersede path inherits title/doi/authors from the stub; flag (or trim)
+supersede path inherits title/doi/authors from the stub; detect
 multi-article PDFs when chunk-level title/topic clusters split.
 
-Who: agent-code for the inheritance; needs-Reto: flag versus trim for
-multi-article PDFs (trimming deletes append-only body chunks).
+RULED (Reto 2026-10-11): multi-article scans are tagged `multi-article`
+rather than split or trimmed (body chunks are append-only). Tagged so far:
+pa44468, pa42559, pa207748. Follow-up: the title/body sweep detector (item
+5) applies the same tag.
+
+Who: agent-code.
 
 ### 5. No title/body mismatch sweep; downstream gates blind to it (gr264184)
 
@@ -95,11 +99,10 @@ the code part are marked.
 - **pa42567** (gr348665): title/body mismatch. Compare pa4815 (likely the
   true holder of one side) before deciding which row keeps which.
 - **pa207748** (gr353777): nine helium/superfluid chunks belong to a foreign
-  article. Body chunks are append-only (DELETE + INSERT only); split them
-  out through the supersede path, not an UPDATE.
-- **pa44468** (gr249575): title "thalidomide defects", chunks are HRTEM
-  peapod text. Find the true title from the body, retitle, and re-check any
-  grounding edges that relied on the old title.
+  article. Ruled: tag `multi-article`, no split or trim (done).
+- **pa44468** (gr249575): scan of four unrelated Nature articles (title is
+  correct for the first); pa42559 is a second ingest of the same scan.
+  Ruled: tag both `multi-article`, no split or trim (done).
 - **Dup and misfiled rows** (gr356743): pa204955 and pa210358 are
   duplicates (merge); pa1873 is a separate preprint of pa1604 (link, do not
   merge); pa3063 is not a paper (retire or retype); pa209931 needs its

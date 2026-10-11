@@ -106,7 +106,8 @@ machinery; sweep se/nm op docstrings + skills examples to the
 canonical form; fixture sweep for authored pose literals. Natural
 bundle: ship as one "interface explicitness" round together with
 gr336352 (MCP-wide angle explicitness — calc's deg/rad triple
-convention, pcb `rot` self-naming). SEQUENCE AFTER the prompt-surface audit fixes land (they touch
+convention, pcb `rot` self-naming). RULED (Reto 2026-10-11): the explicit
+angle-unit change ships bundled with the pose-vector work, not alone. SEQUENCE AFTER the prompt-surface audit fixes land (they touch
 the same hint machinery/files).
 
 ## Angle units across every MCP surface (gr336352)
