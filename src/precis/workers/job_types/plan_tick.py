@@ -741,6 +741,10 @@ def _tick_env_overlay(
     * the agentlog id (``agentlog.ENV_VAR``) — so draft chunks this tick writes /
       moves attribute back to the run (a ``touched`` link).
     * ``PRECIS_KINDS_DISABLED`` — the draft-bound prose-file kind-gate.
+    * ``PRECIS_PYTHON_ROOTS`` — ``main:<PRECIS_FIX_REPO_DIR>`` when the worker
+      has a repo checkout and the operator set no roots, so the python kind
+      loads and a ``memory-review`` todo can be checked against the code
+      (gr477865). Read-only index; no shell is granted.
     """
     from precis import agentlog
 
@@ -752,8 +756,25 @@ def _tick_env_overlay(
         overlay["PRECIS_WORKSPACE"] = workspace.path
     if agentlog_id is not None:
         overlay[agentlog.ENV_VAR] = str(agentlog_id)
+    _python_roots_from_fix_repo(overlay)
     _disable_prose_file_kind(store, parent_ref_id, overlay)
     return overlay
+
+
+def _python_roots_from_fix_repo(overlay: dict[str, str]) -> None:
+    """Point the tick's python kind at the worker's repo checkout.
+
+    The worker that runs plan_tick already holds a checkout for fix_gripe
+    (``PRECIS_FIX_REPO_DIR``) but never exported it as ``PRECIS_PYTHON_ROOTS``,
+    so the python kind was deferred in the tick's MCP server and repo-dev
+    ``memory-review`` todos could not be verified (gr477865). An operator-set
+    ``PRECIS_PYTHON_ROOTS`` wins; an unset/missing dir is a no-op.
+    """
+    if os.environ.get("PRECIS_PYTHON_ROOTS", "").strip():
+        return
+    repo = os.environ.get("PRECIS_FIX_REPO_DIR", "").strip()
+    if repo and os.path.isdir(repo):
+        overlay["PRECIS_PYTHON_ROOTS"] = f"main:{repo}"
 
 
 def _draft_prose_kind_gate(store: Store, parent_ref_id: int) -> tuple[str, str] | None:

@@ -22,17 +22,7 @@ anything over the `thresholds.md` limits); every other write passes.
 
 Who: agent-code, S. Files: `scripts/hooks/guard-prod-psql.py`.
 
-## 2. plan_tick has no repo checkout (gr477865)
-
-plan_tick agents (`claude -p`) have no `PRECIS_PYTHON_ROOTS` and no worktree,
-so they cannot check repo-dev memory-review todos against the code. The
-options from the gripe are: map a read-only checkout into the lane, route
-repo-touching todos to a lane that has one, or tag them `waiting-for:reto`.
-
-Related: gr456287 / [worktree-path-guard-false-positives.md](worktree-path-guard-false-positives.md),
-the other high-frequency prompt-friction source.
-
-## 3. Session hooks reject read-only commands and cost a process per call (gr343750)
+## 2. Session hooks reject read-only commands and cost a process per call (gr343750)
 
 Isolation and pretool hooks refuse many read-only shell commands as "too
 complex to verify" (pipelines, `for` loops, computed values), so agents
@@ -53,6 +43,3 @@ Who: agent-code, M.
   session-start cost is recorded in the commit body.
 - An approved non-destructive prod write runs without a prompt, and a
   `DELETE` without a `WHERE` still asks.
-- A repo-dev memory-review todo is either checked against the code by its
-  lane or visibly parked for Reto. It is no longer re-ticked without
-  progress.

@@ -548,6 +548,42 @@ def test_tick_env_overlay_core_context() -> None:
     assert overlay[agentlog.ENV_VAR] == "7"
 
 
+def _overlay() -> dict[str, str]:
+    return pt._tick_env_overlay(
+        store=object(),
+        parent_ref_id=1,
+        model="sonnet",
+        agentlog_id=None,
+        workspace=None,
+    )
+
+
+def test_tick_env_overlay_python_roots_from_fix_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("PRECIS_PYTHON_ROOTS", raising=False)
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path))
+    assert _overlay()["PRECIS_PYTHON_ROOTS"] == f"main:{tmp_path}"
+
+
+def test_tick_env_overlay_python_roots_operator_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PRECIS_PYTHON_ROOTS", "x:/srv/x")
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path))
+    assert "PRECIS_PYTHON_ROOTS" not in _overlay()
+
+
+def test_tick_env_overlay_python_roots_missing_dir_noop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("PRECIS_PYTHON_ROOTS", raising=False)
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path / "nope"))
+    assert "PRECIS_PYTHON_ROOTS" not in _overlay()
+    monkeypatch.delenv("PRECIS_FIX_REPO_DIR")
+    assert "PRECIS_PYTHON_ROOTS" not in _overlay()
+
+
 def test_disable_prose_file_kind_gates_tex(monkeypatch: pytest.MonkeyPatch) -> None:
     import precis.workers.planner_prompt as planner_prompt
 
