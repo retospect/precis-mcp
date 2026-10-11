@@ -17,11 +17,17 @@ separately; the repairs do not depend on the code except where noted.
 
 ### 1. ALL-CAPS titles (gr353794)
 
-103 live titles are ALL-CAPS (80 when filed). Fix direction: repair casing
-from the registry record (Crossref/S2 title) in the enrich pass, backfill
-the existing 103, and brace-protect capitalised tokens in the BibTeX export
-so the repaired casing survives LaTeX styles. Owners
-`src/precis/workers/paper_meta_enrich.py`, `src/precis/export/`.
+The enrich pass now repairs casing from the Crossref title for DOI papers
+that enrich once (`registry_recase`; old string kept in `meta.title_raw`).
+Still open: (a) backfill — already-visited rows carry `authors_resolved_at`
+and are never re-selected, so the ~103 existing ALL-CAPS titles need a
+one-off re-run of `enrich_paper` (prod-side, human-gated); (b) brace-protect
+capitalised tokens ({DFT}, {CO$_2$}) in the BibTeX export
+(`src/precis/export/latex.py` `_bib_text`) so the casing survives LaTeX
+styles; (c) an all-caps-titles count in the doctor report (live papers with
+title = upper(title), length > 25, and how many lack a DOI); (d) document
+the behaviour in skill `precis-paper-help`; (e) flag substantive
+registry/local title mismatches for a human (currently only left alone).
 
 Who: agent-code.
 

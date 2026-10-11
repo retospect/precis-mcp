@@ -775,3 +775,69 @@ class TestPlaceholderTitleFill:
         assert outcome is not None
         assert outcome.title_filled is None
         assert _ref(store, rid).title == PLACEHOLDER_TITLE
+
+
+_CAPS = "DFT STUDY OF CO2 ADSORPTION ON NACL AND TIO2 SURFACES"
+_MIXED = "DFT Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
+
+
+class TestAllCapsTitleRecase:
+    @pytest.mark.parametrize(
+        ("local", "registry", "expected"),
+        [
+            (_CAPS, _MIXED, _MIXED),
+            (_CAPS, _CAPS, None),  # registry also shouts: nothing to learn
+            (_CAPS, "A completely different title about something else", None),
+            (_MIXED, _MIXED.lower(), None),  # local not all caps
+            ("DFT OF CO2", "DFT of CO2", None),  # too short: leave alone
+            (None, _MIXED, None),
+            (_CAPS, None, None),
+        ],
+    )
+    def test_registry_recase(
+        self, local: str | None, registry: str | None, expected: str | None
+    ) -> None:
+        assert paper_meta_enrich.registry_recase(local, registry) == expected
+
+    def test_markup_registry_title_matches_after_normalisation(self) -> None:
+        reg = "<i>DFT</i> Study of CO2 Adsorption on NaCl and TiO2 Surfaces"
+        assert paper_meta_enrich.registry_recase(_CAPS, reg) == reg
+
+    def _run(self, store: Store, *, verified: bool, registry: str) -> Any:
+        rid = _paper(store, slug="caps1", title=_CAPS, doi="10.1234/x")
+        if verified:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE refs SET human_verified_at = now() WHERE ref_id = %s",
+                    (rid,),
+                )
+                conn.commit()
+        msg = _crossref_msg()
+        msg["title"] = [registry]
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/x",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        return outcome, _ref(store, rid)
+
+    def test_enrich_recases_and_keeps_raw(self, store: Store) -> None:
+        outcome, ref = self._run(store, verified=False, registry=_MIXED)
+        assert outcome.title_recased == _MIXED
+        assert ref.title == _MIXED
+        assert (ref.meta or {})["title_raw"] == _CAPS
+
+    def test_enrich_leaves_substantively_different_title(self, store: Store) -> None:
+        outcome, ref = self._run(
+            store, verified=False, registry="Totally unrelated heading text here"
+        )
+        assert outcome.title_recased is None
+        assert ref.title == _CAPS
+        assert "title_raw" not in (ref.meta or {})
+
+    def test_enrich_never_touches_human_verified(self, store: Store) -> None:
+        outcome, ref = self._run(store, verified=True, registry=_MIXED)
+        assert outcome.title_recased is None
+        assert ref.title == _CAPS

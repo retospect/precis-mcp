@@ -89,6 +89,7 @@ is the acceptable cost.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -136,9 +137,47 @@ class EnrichOutcome:
     extra_identifiers: int = 0
     orcid_links: int = 0
     title_filled: str | None = None
+    title_recased: str | None = None
     year_filled: int | None = None
     skipped_authors: bool = False
     cards_rebuilt: bool = False
+
+
+#: Shortest all-caps title the recase repair considers (gr353794); below
+#: this a title is more likely an acronym or formula than a shouted heading.
+_ALLCAPS_MIN_LEN = 25
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _title_key(title: str) -> str:
+    """Case-, whitespace-, punctuation- and markup-insensitive title key."""
+    return " ".join(re.sub(r"[\W_]+", " ", _TAG_RE.sub("", title)).casefold().split())
+
+
+def registry_recase(local: str | None, registry: str | None) -> str | None:
+    """The registry title when it is ``local`` with only the casing wrong.
+
+    Never a heuristic case-fixer (it mangles CO2/NaCl/pH): the registry's
+    own string is the only source of casing. Applies only when ``local`` is
+    ALL CAPS (``local == local.upper()``, longer than
+    :data:`_ALLCAPS_MIN_LEN`), the registry string is *not* itself all caps,
+    and the two agree after :func:`_title_key` normalisation. A substantive
+    difference returns ``None`` (left for a human).
+
+        >>> registry_recase("DFT STUDY OF CO2 ON NACL SURFACES", "DFT Study of CO2 on NaCl Surfaces")
+        'DFT Study of CO2 on NaCl Surfaces'
+        >>> registry_recase("DFT STUDY OF CO2 ON NACL SURFACES", "Something else entirely here") is None
+        True
+    """
+    local = (local or "").strip()
+    registry = (registry or "").strip()
+    if not local or not registry or len(local) <= _ALLCAPS_MIN_LEN:
+        return None
+    if local != local.upper() or registry == registry.upper():
+        return None
+    if _title_key(local) != _title_key(registry):
+        return None
+    return registry
 
 
 def _orcid_lookup(msg: dict[str, Any]) -> dict[tuple[str, str], str]:
@@ -443,6 +482,14 @@ def enrich_paper(
         if norm.get("title") and is_placeholder_title(ref.title):
             new_title = str(norm["title"]).strip() or None
             outcome.title_filled = new_title
+        elif not verified:
+            # ALL-CAPS title (gr353794): the registry's casing wins; keep
+            # the old string in meta.title_raw. Human-verified rows frozen.
+            recased = registry_recase(ref.title, norm.get("title"))
+            if recased is not None:
+                new_title = recased
+                outcome.title_recased = recased
+                meta_patch["title_raw"] = ref.title
         if norm.get("year") and ref.year is None:
             new_year = int(norm["year"])
             outcome.year_filled = new_year
