@@ -32,15 +32,12 @@ worker's plist and live env), and da14331f7 — the stuck-seed repair now keys
 on the candidate's newest T_agg tree ahead of the latest aggregate job (the
 older succeeded neb aggregate had masked the 9 qu164903 (NO→NH3 on Pd(111))
 verify trees, 23 of 27 seeds failed at wall 5400 in September). **Dogfood
-pending:** the first post-deploy qu164903 tick (06:46:30Z; quest ticks
-stalled fleet-wide 00:12Z–06:46Z, gr465967) ran only its llm/apply slices;
-the compute slice (the only caller of `harvest_measures`) waits on the
-gateway's sparse coordinator passes. The fix's SQL returns a row on prod for
-the stuck candidates, and nothing else in the branch blocks it (gr465963,
-corrected). Next: once the compute slice runs, the 23 failed seeds re-mint
-with `resources.wall_seconds=28800` + `cpuset` and `quest_seed_infra_retries=1`
-is stamped; then confirm the child runs under `taskset` on castor/pollux. If
-nothing mints, check `PRECIS_SUSPENDED_JOB_TYPES` and the harvest note. Check by hand on resume: `chem-scratch/verify_seeds.sql` (session watch dies with the session; no agents running).
+confirmed 2026-10-11 (gr465963):** the compute slice ran; all 9 qu164903 verify
+candidates carry `quest_seed_infra_retries=1` (stamped 10-08/10-10, 322478
+since 09-07), and autocatpath_seed jobs keep minting (newest 479080 queued
+2026-10-11 14:42Z). The 06:46Z "no dispatch" report was premature: that tick
+ran only the llm/apply slices. Open: confirm the child runs under `taskset`
+on castor/pollux, and that the 23 re-minted seeds complete.
 Unchecked:
 whether the verify content key moved since 09-24 (uv.lock changed
 10-01/10-02); if it did, the re-dispatch mints fresh trees and supersedes the
