@@ -669,6 +669,22 @@ _ELSEVIER_FETCH_SOURCE = "fetcher:elsevier"
 #: a guessed "normal" floor.
 _ELSEVIER_TRUNCATION_MIN_CHUNKS = 15
 _ELSEVIER_TRUNCATION_MIN_PAYLOAD_BYTES = 100_000
+#: gr465468 — both stuck refs (463425, 464484) were genuine 1- and 2-page
+#: entitlement-preview PDFs (``pdfs.page_count``), chunked correctly; no
+#: parser defect. At or below this many pages the thin chunk count is the
+#: preview itself, not an extraction failure.
+_ELSEVIER_PREVIEW_MAX_PAGES = 2
+
+
+def _pdf_page_count(pdf: Path) -> int | None:
+    """Page count of ``pdf``, or ``None`` when it can't be read."""
+    try:
+        import fitz  # PyMuPDF; a paper-extra, imported lazily like elsewhere.
+
+        with fitz.open(pdf) as doc:
+            return int(doc.page_count)
+    except Exception:
+        return None
 
 
 def _stamp_source_url(
@@ -732,13 +748,29 @@ def _check_elsevier_truncation(
         result.chunks_written,
         size_bytes,
     )
+    pages = _pdf_page_count(pdf)
     title = f"Elsevier fetch under-chunked (ref_id={result.ref_id})"
+    if pages is not None and pages <= _ELSEVIER_PREVIEW_MAX_PAGES:
+        verdict = (
+            f"The PDF has {pages} page(s): an entitlement-limited preview, "
+            "not a chunker defect. Re-fetch for the full article "
+            "(docs/runbooks/elsevier-preview-pdf-remediation.md)."
+        )
+    elif pages is not None:
+        verdict = (
+            f"The PDF has {pages} pages, so this is NOT a one-page preview: "
+            "suspect extraction (Marker/fitz) on this payload."
+        )
+    else:
+        verdict = (
+            "Page count unreadable; inspect the payload to tell a preview "
+            "from an extraction defect."
+        )
     detail = (
         f"fetcher:elsevier produced only {result.chunks_written} "
         f"chunks from a {size_bytes}-byte cached payload "
         f"(paper_id={result.paper_id!r}, cite_key={result.cite_key!r}"
-        f"). Looks like an entitlement-limited preview PDF rather "
-        "than the full article body — see gr162364/gr162363."
+        f"). {verdict} See gr162364/gr465468."
     )
     fingerprint = f"elsevier-truncation:{result.ref_id}"
     try:
