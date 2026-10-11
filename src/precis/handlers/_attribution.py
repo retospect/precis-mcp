@@ -69,7 +69,14 @@ from precis.utils.mentions import (
     resolve_handle_ref,
     resolve_handle_target,
 )
-from precis.utils.numerics import _UNITS_RE_PART, numeric_spans
+from precis.utils.numerics import (
+    _RANGE_RE,
+    _list_heads,
+    _split_token,
+    _table_quantities,
+    normalize_spellings,
+    numeric_spans,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -122,7 +129,7 @@ _EVIDENCE_CACHE_MAX = 512
 #: documents). Every other kind is checked against its chunk text.
 _NUMERICS_ONLY_KINDS = frozenset({"paper", "patent"})
 
-#: Units the ``numerics`` column cannot see: PDF-derived text writes micro as
+#: Units the ``numerics`` column of chunks ingested before gr478127 cannot see: PDF text writes micro as
 #: ``$\mu$ m`` or the Greek letter, which :data:`precis.utils.numerics._UNITS`
 #: does not tokenise, so a paper's numerics never hold "2 µm" however often
 #: the paper says it. A claim in these units is unverifiable against
@@ -147,22 +154,6 @@ _TEMP_CUE_RE = re.compile(
 )
 _TEMP_CUE_CHARS = 20
 
-#: A list sharing one trailing unit, read backwards from the unit-bearing
-#: member: "0.44 and 0.26 eV", "1, 2 and 3 nm", "0.1, 0.2 mm".
-_LIST_HEAD_RE = re.compile(
-    r"(?<![\w.])(-?\d+(?:\.\d+)?)(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)$"
-)
-_LIST_HEAD_CHARS = 40
-
-#: Evidence spellings the tokenizer misses: "2,000 p.p.m." is "2000 ppm".
-#: Both forms are read (the ``numerics`` column holds only the raw one).
-_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}\b)")
-_PPM_RE = re.compile(r"\bp\.p\.m\.?")
-#: PDF math: ``$1.78±0.11$ Å`` — drop the ``$`` and read the ``±`` as a
-#: two-member list so 1.78 takes the unit too.
-_MATH_DOLLAR_RE = re.compile(r"\$")
-_PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
-
 #: A pinpoint written in prose right after a cite: "paper:x (chunks ~97–98:
 #: …)", "paper:x (chunk ~15, …)", "paper:x (~151, ~157)" — read as the
 #: ``~97..98`` / ``~15`` / ``~151`` the cite itself could have carried.
@@ -172,36 +163,6 @@ _PROSE_PINPOINT_RE = re.compile(
 
 #: ``~a..b`` chunk ranges are read whole, capped at this many chunks.
 _RANGE_MAX_CHUNKS = 40
-
-#: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
-#: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
-_HEADER_UNIT_RE = re.compile(rf"[\[(]\s*({_UNITS_RE_PART})\s*[\])]")
-_CELL_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
-
-_NUMBER_PART_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
-
-#: "10-20 nm", "10–20 nm", "10 to 20 nm": a range sharing one trailing unit.
-_RANGE_RE = re.compile(
-    r"(?<![\w.])(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)"
-    rf"\s*({_UNITS_RE_PART})(?!\w)"
-)
-
-#: Spelling variants of one unit that numerics._UNITS lists separately. No
-#: conversion: A (ampere) is deliberately not Å.
-_UNIT_CANON = {
-    "um": "µm",
-    "uA": "µA",
-    "uM": "µM",
-    "ug": "µg",
-    "us": "µs",
-    "μm": "µm",  # Greek mu (U+03BC), not the micro sign (U+00B5)
-    "μA": "µA",
-    "μM": "µM",
-    "μg": "µg",
-    "μs": "µs",
-    "cm−1": "cm-1",
-    "Angstrom": "Å",
-}
 
 
 @functools.cache
@@ -280,62 +241,6 @@ def _artifact(text: str, tok: str, s: int, e: int) -> bool:
     )
 
 
-def _list_heads(text: str, spans: list[tuple[str, int, int]]) -> list[str]:
-    """Earlier members of a unit-sharing list, as "number unit" tokens:
-    "0.44 and 0.26 eV" yields "0.44 eV" for the span "0.26 eV"."""
-    out: list[str] = []
-    for tok, s, _e in spans:
-        _number, unit = _split_token(tok)
-        if not unit:
-            continue
-        sep = "" if unit == "%" else " "
-        at = s
-        while True:
-            m = _LIST_HEAD_RE.search(text, max(0, at - _LIST_HEAD_CHARS), at)
-            if m is None:
-                break
-            out.append(f"{m.group(1)}{sep}{unit}")
-            at = m.start(1)
-    return out
-
-
-def _table_quantities(text: str) -> list[str]:
-    """Cells of a markdown table paired with the unit their header names:
-    header ``Pore aperture [Å]`` over cell ``2.6`` yields "2.6 Å"; header
-    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa"."""
-    out: list[str] = []
-    header: list[list[str]] | None = None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("|"):
-            header = None
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if header is None:
-            header = [_HEADER_UNIT_RE.findall(c) for c in cells]
-            continue
-        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
-            continue
-        for units, cell in zip(header, cells, strict=False):
-            if not units:
-                continue
-            parts = cell.split("/") if len(units) > 1 else [cell]
-            for unit, part in zip(units, parts, strict=False):
-                if _CELL_NUMBER_RE.fullmatch(part.strip()):
-                    unit = _UNIT_CANON.get(unit, unit)
-                    out.append(f"{part.strip()}{'' if unit == '%' else ' '}{unit}")
-    return out
-
-
-def _split_token(token: str) -> tuple[str, str]:
-    m = _NUMBER_PART_RE.match(token)
-    if m is None:
-        return token, ""
-    return m.group(0), _UNIT_CANON.get(
-        token[m.end() :].strip(), token[m.end() :].strip()
-    )
-
-
 def _runs(text: str) -> list[str]:
     rw = _reword()
     return rw._DIGIT_RUN_RE.findall(rw._canon_grounding(text))
@@ -353,8 +258,7 @@ def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
     header's unit."""
     units: set[tuple[str, str]] = set()
     tokens: list[str] = []
-    norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
-    norm = _PLUS_MINUS_RE.sub(" and ", _MATH_DOLLAR_RE.sub("", norm))
+    norm = normalize_spellings(text)
     for variant in {text, norm}:
         spans = _quantities(variant)
         tokens += [tok for tok, _s, _e in spans]

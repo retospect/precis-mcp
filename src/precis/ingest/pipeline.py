@@ -47,7 +47,7 @@ from precis.ingest.semantic_scholar import get_paper_by_id
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.authors import normalize_authors
 from precis.utils.boilerplate import ChunkClass, classify_chunks
-from precis.utils.numerics import extract_numerics
+from precis.utils.numerics import extract_numerics_wide
 
 log = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
         # "0.3 V" / "1670 cm-1" detected in the chunk text. GIN-
         # indexed downstream for cheap value lookups. See
         # :mod:`precis.utils.numerics` for the recognized unit set.
-        numerics = extract_numerics(text)
+        numerics = extract_numerics_wide(text)
         chunks.append(
             ChunkToWrite(
                 ord=ord_counter,

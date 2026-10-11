@@ -127,6 +127,113 @@ _NUMERIC_RE = re.compile(
 )
 
 
+#: A list sharing one trailing unit, read backwards from the unit-bearing
+#: member: "0.44 and 0.26 eV", "1, 2 and 3 nm", "0.1, 0.2 mm".
+_LIST_HEAD_RE = re.compile(
+    r"(?<![\w.])(-?\d+(?:\.\d+)?)(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)$"
+)
+_LIST_HEAD_CHARS = 40
+
+#: Evidence spellings the tokenizer misses: "2,000 p.p.m." is "2000 ppm".
+#: Both forms are read (the ``numerics`` column holds only the raw one).
+_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}\b)")
+_PPM_RE = re.compile(r"\bp\.p\.m\.?")
+#: PDF math: ``$1.78±0.11$ Å`` — drop the ``$`` and read the ``±`` as a
+#: two-member list so 1.78 takes the unit too.
+_MATH_DOLLAR_RE = re.compile(r"\$")
+_PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
+#: PDF micro: ``$\mu$ m`` / ``\mu m`` / Greek ``μm`` all read as ``µm`` (U+00B5).
+_TEX_MU_RE = re.compile(r"\$?\\mu\$?\s*(?=[mAMgs]\b)")
+
+
+#: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
+#: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
+_HEADER_UNIT_RE = re.compile(rf"[\[(]\s*({_UNITS_RE_PART})\s*[\])]")
+_CELL_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+_NUMBER_PART_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+
+#: "10-20 nm", "10–20 nm", "10 to 20 nm": a range sharing one trailing unit.
+_RANGE_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)"
+    rf"\s*({_UNITS_RE_PART})(?!\w)"
+)
+
+
+#: Spelling variants of one unit that numerics._UNITS lists separately. No
+#: conversion: A (ampere) is deliberately not Å.
+_UNIT_CANON = {
+    "um": "µm",
+    "uA": "µA",
+    "uM": "µM",
+    "ug": "µg",
+    "us": "µs",
+    "μm": "µm",  # Greek mu (U+03BC), not the micro sign (U+00B5)
+    "μA": "µA",
+    "μM": "µM",
+    "μg": "µg",
+    "μs": "µs",
+    "cm−1": "cm-1",
+    "Angstrom": "Å",
+}
+
+
+def _list_heads(text: str, spans: list[tuple[str, int, int]]) -> list[str]:
+    """Earlier members of a unit-sharing list, as "number unit" tokens:
+    "0.44 and 0.26 eV" yields "0.44 eV" for the span "0.26 eV"."""
+    out: list[str] = []
+    for tok, s, _e in spans:
+        _number, unit = _split_token(tok)
+        if not unit:
+            continue
+        sep = "" if unit == "%" else " "
+        at = s
+        while True:
+            m = _LIST_HEAD_RE.search(text, max(0, at - _LIST_HEAD_CHARS), at)
+            if m is None:
+                break
+            out.append(f"{m.group(1)}{sep}{unit}")
+            at = m.start(1)
+    return out
+
+
+def _table_quantities(text: str) -> list[str]:
+    """Cells of a markdown table paired with the unit their header names:
+    header ``Pore aperture [Å]`` over cell ``2.6`` yields "2.6 Å"; header
+    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa"."""
+    out: list[str] = []
+    header: list[list[str]] | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            header = None
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if header is None:
+            header = [_HEADER_UNIT_RE.findall(c) for c in cells]
+            continue
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+            continue
+        for units, cell in zip(header, cells, strict=False):
+            if not units:
+                continue
+            parts = cell.split("/") if len(units) > 1 else [cell]
+            for unit, part in zip(units, parts, strict=False):
+                if _CELL_NUMBER_RE.fullmatch(part.strip()):
+                    unit = _UNIT_CANON.get(unit, unit)
+                    out.append(f"{part.strip()}{'' if unit == '%' else ' '}{unit}")
+    return out
+
+
+def _split_token(token: str) -> tuple[str, str]:
+    m = _NUMBER_PART_RE.match(token)
+    if m is None:
+        return token, ""
+    return m.group(0), _UNIT_CANON.get(
+        token[m.end() :].strip(), token[m.end() :].strip()
+    )
+
+
 def extract_numerics(text: str) -> list[str]:
     """Return ``["<number> <unit>", …]`` for every recognized token.
 
@@ -172,4 +279,46 @@ def numeric_spans(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
-__all__ = ["extract_numerics", "numeric_spans"]
+def normalize_spellings(text: str) -> str:
+    """PDF number spellings the tokenizer misses, rewritten to the plain
+    form: "2,000 p.p.m." → "2000 ppm", "$1.78±0.11$ Å" → "1.78 and 0.11 Å"
+    (the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm"."""
+    norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
+    norm = _PLUS_MINUS_RE.sub(
+        " and ", _MATH_DOLLAR_RE.sub("", _TEX_MU_RE.sub("µ", norm))
+    )
+    return norm.replace("μ", "µ")  # Greek mu (U+03BC) → micro sign (U+00B5)
+
+
+def extract_numerics_wide(text: str) -> list[str]:
+    """:func:`extract_numerics` plus the readings the memory attribution gate
+    needs from a document-level cite: the raw and :func:`normalize_spellings`
+    forms, earlier members of a unit-sharing list ("0.44 and 0.26 eV"),
+    range endpoints ("10-20 nm" → "10 nm"), and table cells that take the
+    unit from their header. This is what ingest stores in ``chunks.numerics``."""
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for variant in (text, normalize_spellings(text)):
+        spans = numeric_spans(variant)
+        toks = [t for t, _s, _e in spans]
+        toks += _list_heads(variant, spans)
+        for r in _RANGE_RE.finditer(variant):
+            unit = _UNIT_CANON.get(r.group(3), r.group(3))
+            sep = "" if unit == "%" else " "
+            toks += [f"{r.group(1)}{sep}{unit}", f"{r.group(2)}{sep}{unit}"]
+        toks += _table_quantities(variant)
+        for t in toks:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+    return out
+
+
+__all__ = [
+    "extract_numerics",
+    "extract_numerics_wide",
+    "normalize_spellings",
+    "numeric_spans",
+]

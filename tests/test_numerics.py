@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.utils.numerics import extract_numerics
+from precis.utils.numerics import extract_numerics, extract_numerics_wide
 
 # ── trivial ─────────────────────────────────────────────────────────
 
@@ -112,3 +112,30 @@ class TestEdgeCases:
         # "Python 3.11" must NOT extract "3.11 K" or anything weird.
         out = extract_numerics("requires Python 3.11 to run")
         assert out == []
+
+
+class TestExtractNumericsWide:
+    """Spellings PDF text uses that the plain extractor misses (gr478127)."""
+
+    def test_superset_of_plain(self):
+        t = "gap of 1.523 eV at 12% and 300 K"
+        assert set(extract_numerics(t)) <= set(extract_numerics_wide(t))
+
+    @pytest.mark.parametrize(
+        ("text", "want"),
+        [
+            ("0.44 and 0.26 eV", "0.44 eV"),
+            ("from 1.169 to 1.182 Å", "1.169 Å"),
+            ("2,000 and 6,000 p.p.m.", "2000 ppm"),
+            ("$1.78±0.11$ Å", "1.78 Å"),
+            ("a pore of $0.5$ $\\mu$ m", "0.5 µm"),
+            ("a 2 μm film", "2 µm"),
+            ("10-20 nm wide", "10 nm"),
+            ("| Pore aperture [Å] |\n|---|\n| 2.6 |", "2.6 Å"),
+        ],
+    )
+    def test_reads(self, text, want):
+        assert want in extract_numerics_wide(text)
+
+    def test_empty(self):
+        assert extract_numerics_wide("") == []
