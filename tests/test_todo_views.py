@@ -810,7 +810,7 @@ _EXECUTOR_META = {"executor": "claude_inproc", "job_type": "diagnose_gripe"}
 def test_unminted_detector_flags_old_executor_todo_without_child(
     handler: TodoHandler, store: Store
 ) -> None:
-    from precis.handlers._todo_views import _attention_unminted
+    from precis.todo.views import _attention_unminted
 
     rid = _id_of(handler.put(text="Diagnose it", meta=_EXECUTOR_META).body)
     _age_todo(store, rid, 45)
@@ -823,8 +823,8 @@ def test_unminted_detector_flags_old_executor_todo_without_child(
 def test_unminted_detector_ignores_young_childful_and_plain_todos(
     handler: TodoHandler, store: Store
 ) -> None:
-    from precis.handlers._todo_views import _attention_unminted
     from precis.store.types import Tag
+    from precis.todo.views import _attention_unminted
 
     young = _id_of(handler.put(text="young", meta=_EXECUTOR_META).body)
     _age_todo(store, young, 5)
@@ -845,8 +845,8 @@ def test_unminted_detector_ignores_parent_waiting_on_live_child_todo(
     handler: TodoHandler, store: Store
 ) -> None:
     """Autocatpath aggregate shape: executor todo, no job, open seed todo."""
-    from precis.handlers._todo_views import _attention_unminted
     from precis.store.types import Tag
+    from precis.todo.views import _attention_unminted
 
     parent = _id_of(handler.put(text="agg", meta=_EXECUTOR_META).body)
     _age_todo(store, parent, 45)

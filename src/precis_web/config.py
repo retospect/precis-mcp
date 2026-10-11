@@ -28,7 +28,7 @@ from pathlib import Path
 _DEFAULT_CORPUS = Path.home() / "work" / "corpus"
 
 #: Source identity the web process presents to the handler guards.
-#: ``web:*`` is classified as owner by ``precis.handlers._todo_guards``
+#: ``web:*`` is classified as owner by ``precis.todo.guards``
 #: so the owner can edit strategic / tactical tiers the workers can't.
 DEFAULT_SOURCE = "web:owner"
 

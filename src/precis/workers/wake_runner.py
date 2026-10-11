@@ -458,14 +458,14 @@ def _requeue_degraded(
 
     **Bug fixed (review Finding 1): never tag the coordinator job itself.**
     ``child-failed:`` is one of ``_DOABLE_EXCLUSION_TAGS``
-    (``handlers/_todo_views.py``), and the coordinator's own claim
+    (``todo/views.py``), and the coordinator's own claim
     (``executors/coordinator.py``'s ``_claim_jobs``) passes
     ``exclude_paused=True`` — whose ``NOT EXISTS`` checks tags on the
     claimed row (``r.ref_id``) itself. Stamping ``child-failed:<id>`` on
     ``ref_id`` here would make the just-re-queued job permanently
     invisible to its own executor — a self-wedge, not a bubble. So the
     bubble tag(s) go on ``ref_id``'s own PARENT (``r.parent_id`` — the
-    standard bubble target :func:`precis.handlers._job_bubble.
+    standard bubble target :func:`precis.utils.job_bubble.
     bubble_job_failure` uses when a JOB fails; here it's the coordinator's
     own parent, not a child's, so that helper doesn't directly apply — the
     coordinator's children were never tagged as failed, they're just still

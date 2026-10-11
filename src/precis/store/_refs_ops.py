@@ -401,7 +401,7 @@ class RefsMixin:
         # ``parent_id`` (migration 0013 / todo-tree) wires the ref
         # into a hierarchical todo graph. NULL for refs not in a
         # tree. Cycle / depth / level-gradient guards run at the
-        # handler layer (see ``handlers/_todo_guards.py``) before
+        # handler layer (see ``todo/guards.py``) before
         # this insert, so the store layer trusts the caller.
         if auto_refresh_days is not None:
             insert_sql = (
@@ -1481,7 +1481,7 @@ class RefsMixin:
         ``new_parent_id=None`` detaches to a root. The self-referencing
         FK (migration 0013, ``ON DELETE SET NULL``) permits any existing
         target; cycle/depth/level guards making a move *safe* live in
-        :mod:`precis.handlers._todo_guards` and run before this is
+        :mod:`precis.todo.guards` and run before this is
         called — this is the bare column write."""
         sql = (
             "UPDATE refs SET parent_id = %s, updated_at = now() "

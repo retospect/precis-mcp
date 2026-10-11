@@ -278,7 +278,7 @@ def _flip_status(
     leave a done leaf permanently carrying the tags (gr202263).
     Returns the number of bubble tags removed (0 unless asked).
     """
-    from precis.handlers._job_bubble import remove_child_failed_tags
+    from precis.utils.job_bubble import remove_child_failed_tags
 
     target = Tag.closed("STATUS", to)
     removed = 0

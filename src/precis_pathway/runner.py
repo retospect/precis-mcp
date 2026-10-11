@@ -71,7 +71,7 @@ class ChildKilledError(RuntimeError):
     ``precis_pathway.seed_job``'s ``ctx.record_failure(...,
     open_tag="infra:child-killed")`` call
     (docs/backlog/parked-leaf-recovery.md), the generic layer that stamps
-    the tag :data:`precis.handlers._job_bubble.INFRA_FAILURE_TAGS` reads to
+    the tag :data:`precis.utils.job_bubble.INFRA_FAILURE_TAGS` reads to
     bound-retry instead of latching the parent immediately. A plain
     positive nonzero ``returncode`` WITH the result file present (an
     unhandled-but-non-fatal child exception, distinct from an environment

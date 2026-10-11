@@ -89,9 +89,9 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from precis.alerts import raise_alert, resolve_stale_alerts
-from precis.handlers._job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.store import Store
 from precis.store.types import Tag
+from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
     effective_requires,
     job_type_requires,

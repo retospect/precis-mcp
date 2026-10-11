@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import validate_relation
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.ingest.provenance import check_ref_retraction
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
@@ -55,6 +54,7 @@ from precis.taproot.claim_type import (
     register_sentence_id,
 )
 from precis.taproot.notation import lint_notation
+from precis.utils.link_tag_ops import validate_relation
 
 if TYPE_CHECKING:
     from precis.store.store import Store

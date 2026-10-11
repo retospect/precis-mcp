@@ -281,7 +281,7 @@ def test_memory_narrowing_hints(runtime: PrecisRuntime, store: Store) -> None:
 def test_families_are_a_closed_set_with_real_groups() -> None:
     from collections import Counter
 
-    from precis.handlers._skill_common import SKILL_FAMILIES
+    from precis.utils.skill_common import SKILL_FAMILIES
 
     counts = Counter(_skill_family_of(s) for s in _list_skills())
     assert set(counts) <= set(SKILL_FAMILIES), set(counts) - set(SKILL_FAMILIES)

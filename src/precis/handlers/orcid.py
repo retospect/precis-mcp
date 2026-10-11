@@ -41,14 +41,6 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Upstream
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    require_link_target,
-    require_tag_ops,
-    validate_link_mode,
-)
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     render_slug_ref_list,
@@ -61,6 +53,14 @@ from precis.store import Store
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
+)
 
 # Soft staleness TTL. A node older than this still renders (cached), but
 # carries a "may be stale — refresh" hint; the model decides whether to

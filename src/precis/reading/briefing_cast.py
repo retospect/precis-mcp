@@ -524,7 +524,7 @@ def _lane_system_activity(
 
     # "Needs you" / failed-job attention — count only, the detail is a tap away.
     try:
-        from precis.handlers import _todo_views
+        from precis.todo import views as _todo_views
 
         ask = _todo_views._attention_ask_user(store)
         failed = _todo_views._attention_child_failed(store)

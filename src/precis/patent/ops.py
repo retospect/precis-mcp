@@ -218,7 +218,7 @@ class OpsClient:
         # Split lowercased docdb slug back into the parts OPS wants.
         # We import here rather than at module scope to keep the
         # split helper next to its only caller.
-        from precis.handlers._patent_slug import parse_docdb_id
+        from precis.patent.slug import parse_docdb_id
 
         parsed = parse_docdb_id(docdb)
         client = self._client()

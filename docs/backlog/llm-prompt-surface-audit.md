@@ -53,7 +53,7 @@ verbatim here — see the commit that added this file for that; this is the
 - `handlers/cad.py` joint hints (`:1078-1079` no-joints hint, `:1107`
   prismatic-limits hint) — `limits:lo..hi` → concrete unit-suffixed
   examples (`limits:-30deg..30deg`, `limits:0mm..50mm`).
-- `workers/planner_prompt.py` vs `handlers/_draft_lint.py` temperature
+- `workers/planner_prompt.py` vs `draft/lint.py` temperature
   notation — the planner contract taught unspaced `63°C`;
   `_draft_lint.py`'s *enforced* regex behaviour (and
   `precis-notation-canon.md`, `workers/llm_summarize.py`) is actually

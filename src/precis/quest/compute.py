@@ -2948,7 +2948,7 @@ def _file_infra_gripe(
 #: hiccup that infra-kills several correlated seeds is a *fresh* event each
 #: time it recurs, independent of whatever the aggregate lane did months
 #: earlier — so the seed lane needs its own **windowed** budget (mirroring
-#: ``handlers/_job_bubble.py``'s ``_bump_orphan_retry_count``, window 6h):
+#: ``utils/job_bubble.py``'s ``_bump_orphan_retry_count``, window 6h):
 #: ``_MAX_INFRA_RETRIES`` free re-dispatches per rolling window, then one
 #: gripe, then silence until the window rolls over and a fresh failure
 #: re-arms it. One re-dispatch call re-mints EVERY currently-stuck seed
@@ -2959,7 +2959,7 @@ _SEED_INFRA_RETRY_WINDOW_HOURS = 6
 
 #: ``jsonb_set``-in-one-``UPDATE`` window read/bump for
 #: ``meta.quest_seed_infra_retries`` — same shape as
-#: ``handlers/_job_bubble.py``'s ``_BUMP_ORPHAN_RETRY_SQL``: the count resets
+#: ``utils/job_bubble.py``'s ``_BUMP_ORPHAN_RETRY_SQL``: the count resets
 #: to 1 (a fresh window) when ``quest_seed_infra_retries_window_start`` is
 #: absent or older than the window, otherwise it keeps climbing. A single
 #: atomic ``UPDATE … RETURNING`` — Postgres serialises concurrent writers on

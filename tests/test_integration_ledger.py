@@ -16,9 +16,9 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.handlers._link_tag_ops import validate_relation
 from precis.handlers.draft import DraftHandler
 from precis.store.types import Tag
+from precis.utils.link_tag_ops import validate_relation
 
 DISPOSITIONS = ["cited-in", "corroborates", "superseded-in", "off-topic-for"]
 

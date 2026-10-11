@@ -1215,7 +1215,7 @@ def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | No
 
 
 #: ``claimed-by:`` lease constants (shared with the exclusion clause in
-#: :mod:`precis.handlers._todo_views` and the expiry stamp in
+#: :mod:`precis.todo.views` and the expiry stamp in
 #: :meth:`TodoHandler._after_tag_mutation`).
 CLAIM_PREFIX = "claimed-by:"
 CLAIM_TTL_HOURS = 4

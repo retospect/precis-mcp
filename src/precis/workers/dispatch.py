@@ -52,13 +52,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from precis.handlers._todo_views import (
-    _hard_block_clause,
-    _replan_bypass_clause,
-)
 from precis.store import Store
 from precis.store._todo_sql import _doable_exclusion_clause
 from precis.store.types import Tag
+from precis.todo.views import (
+    _hard_block_clause,
+    _replan_bypass_clause,
+)
 from precis.utils.ref_tree import deleted_in_ancestry
 from precis.workers import planner_guardrails
 from precis.workers.executors import (
@@ -288,7 +288,7 @@ def _halt_bad_dispatch(
     executor) warning ~40k times/day/host.
 
     Tagging ``halt:bad-dispatch`` (an exclusion-registry tag, see
-    ``handlers/_todo_views._DOABLE_EXCLUSION_TAGS``) drops the parent
+    ``todo/views._DOABLE_EXCLUSION_TAGS``) drops the parent
     from candidate enumeration: warn once, surface in the halt /
     attention view, and resume by removing the tag once the meta is
     fixed. The tag is written on the dispatch tx's own ``conn`` while it

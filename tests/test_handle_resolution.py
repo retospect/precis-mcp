@@ -194,7 +194,7 @@ def test_block_emitter_computes_chunk_handle() -> None:
 
 
 def test_parse_link_target_accepts_record_handle(store: Store) -> None:
-    from precis.handlers._link_target import parse_link_target
+    from precis.utils.link_target import parse_link_target
 
     ref = store.insert_ref(kind="memory", slug=None, title="link me")
     h = handle_registry.format_handle("memory", ref.id)  # 'me<id>'
@@ -205,7 +205,7 @@ def test_parse_link_target_accepts_record_handle(store: Store) -> None:
 
 
 def test_parse_link_target_accepts_chunk_handle(store: Store) -> None:
-    from precis.handlers._link_target import parse_link_target
+    from precis.utils.link_target import parse_link_target
 
     ref = store.insert_ref(kind="paper", slug="uh36-link-chunk", title="p")
     chunk_id = _insert_chunk(store, ref.id, ord_=2)
@@ -217,7 +217,7 @@ def test_parse_link_target_accepts_chunk_handle(store: Store) -> None:
 
 def test_parse_link_target_unresolvable_handle_is_not_found(store: Store) -> None:
     from precis.errors import NotFound
-    from precis.handlers._link_target import parse_link_target
+    from precis.utils.link_target import parse_link_target
 
     with pytest.raises(NotFound):
         parse_link_target("me999999", store=store)  # well-formed, no such ref
@@ -226,7 +226,7 @@ def test_parse_link_target_unresolvable_handle_is_not_found(store: Store) -> Non
 def test_parse_link_target_legacy_kindslug_still_works(store: Store) -> None:
     # The canonical kind:slug form keeps working (its ':' defeats the
     # handle parse, so it falls through to the legacy grammar).
-    from precis.handlers._link_target import parse_link_target
+    from precis.utils.link_target import parse_link_target
 
     ref = store.insert_ref(kind="memory", slug=None, title="legacy")
     tgt = parse_link_target(f"memory:{ref.id}", store=store)

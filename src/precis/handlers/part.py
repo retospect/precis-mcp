@@ -25,7 +25,7 @@ first use:
   still there.
 - Mint doors: the add-mode generic link doors (``apply_link_ops``,
   ``NumericRefHandler.link``) through
-  :func:`~precis.handlers._link_target.mint_lazy_link_target`.
+  :func:`~precis.utils.link_target.mint_lazy_link_target`.
   ``parse_link_target`` never mints, because it also serves unlink,
   ``like=`` and put-time ``link=``; its ``NotFound`` for an unminted part
   names ``link()``.

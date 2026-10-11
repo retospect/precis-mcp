@@ -321,7 +321,7 @@ def test_ingest_plan_is_immutable_dataclass() -> None:
         file_path=Path("/tmp/x.md"),
         file_sha256="abc",
         frontmatter=__import__(
-            "precis.handlers._skill_common", fromlist=["SkillFrontmatter"]
+            "precis.utils.skill_common", fromlist=["SkillFrontmatter"]
         ).SkillFrontmatter(),
         chunks=(),
         tags=(),

@@ -402,8 +402,8 @@ def _kill_and_terminalize(
                 ref_id,
                 exc_info=True,
             )
-    from precis.handlers._job_bubble import bubble_job_failure
     from precis.store import Tag
+    from precis.utils.job_bubble import bubble_job_failure
 
     gpu_reset = _maybe_reset_gpu_after_kill(meta)
     with store.pool.connection() as conn:

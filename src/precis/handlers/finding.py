@@ -101,8 +101,6 @@ from precis.handlers import (
     _finding_nanopub,
 )
 from precis.handlers._finding_common import fetch_ref_any_kind
-from precis.handlers._link_tag_ops import apply_tag_ops
-from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.ingest.glyph_health import glyph_caveat
@@ -112,6 +110,8 @@ from precis.store.types import SIGNED_FINDING_STATES, ChunkInsert, Ref, Tag
 from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import apply_tag_ops
+from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 

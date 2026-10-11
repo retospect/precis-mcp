@@ -973,7 +973,7 @@ def test_bubble_helper_tags_parent_on_job_failure(
     handler: TodoHandler, store: Store
 ) -> None:
     """The bubble helper tags the parent todo ``child-failed:<job_id>``."""
-    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.utils.job_bubble import bubble_job_failure
 
     r = handler.put(text="Parent")
     rid = id_of(r.body)
@@ -987,7 +987,7 @@ def test_bubble_helper_tags_parent_on_job_failure(
 
 def test_bubble_helper_noop_for_orphan_job(store: Store) -> None:
     """A job without parent_id (legacy) doesn't crash the bubble."""
-    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.utils.job_bubble import bubble_job_failure
 
     job = store.insert_ref(kind="job", slug=None, title="orphan", meta={})
     # Should not raise.
@@ -1002,8 +1002,8 @@ def test_infra_retry_bump_rolls_back_with_callers_transaction(
     job-status write — a caller-side rollback (the status write "didn't
     happen") must roll the counter increment back with it, not leave it
     surviving on an independent connection."""
-    from precis.handlers._job_bubble import bubble_job_failure
     from precis.store.types import Tag
+    from precis.utils.job_bubble import bubble_job_failure
 
     r = handler.put(text="parent")
     rid = id_of(r.body)
@@ -1032,8 +1032,8 @@ def test_infra_retry_bump_commits_with_callers_transaction(
 ) -> None:
     """The positive case of the rollback test above: a clean exit of the
     caller's shared transaction commits the bump exactly once."""
-    from precis.handlers._job_bubble import bubble_job_failure
     from precis.store.types import Tag
+    from precis.utils.job_bubble import bubble_job_failure
 
     r = handler.put(text="parent")
     rid = id_of(r.body)
@@ -1128,8 +1128,8 @@ def test_content_failure_latches_immediately_and_stays_blocked_past_infra_window
     window (``ORPHAN_RETRY_WINDOW_HOURS``) has fully elapsed, the parent
     must STILL be excluded from dispatch candidacy — a blind timer-based
     "unlatch after N hours" would wrongly re-arm a genuinely broken task."""
-    from precis.handlers._job_bubble import ORPHAN_RETRY_WINDOW_HOURS
     from precis.handlers.job import JobHandler
+    from precis.utils.job_bubble import ORPHAN_RETRY_WINDOW_HOURS
     from precis.workers.dispatch import _candidate_parent_ids
 
     job_handler = JobHandler(hub=Hub(store=store, embedder=None))
@@ -1196,8 +1196,8 @@ def test_infra_child_killed_does_not_latch_under_the_retry_cap(
     ``ORPHAN_RETRY_CAP`` it does NOT latch ``child-failed:`` on the
     parent. Mirrors
     ``test_infra_retry_bump_commits_with_callers_transaction``."""
-    from precis.handlers._job_bubble import bubble_job_failure
     from precis.store.types import Tag
+    from precis.utils.job_bubble import bubble_job_failure
 
     r = handler.put(text="parent")
     rid = id_of(r.body)
@@ -1225,8 +1225,8 @@ def test_infra_child_killed_latches_past_the_cap(
     """Repeated ``infra:child-killed`` failures on the same parent, past
     ``ORPHAN_RETRY_CAP``, DO latch — the existing orphan-retry cap is the
     single bound, regardless of which infra tag triggered it."""
-    from precis.handlers._job_bubble import ORPHAN_RETRY_CAP, bubble_job_failure
     from precis.store.types import Tag
+    from precis.utils.job_bubble import ORPHAN_RETRY_CAP, bubble_job_failure
 
     r = handler.put(text="repeatedly child-killed parent")
     rid = id_of(r.body)

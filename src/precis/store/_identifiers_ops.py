@@ -616,7 +616,7 @@ class IdentifiersMixin:
 
         Used both to stamp a fresh ``cites`` edge
         (``handlers/draft.py::sync_draft_links``) and to detect drift on
-        an existing one (``handlers/_draft_lint.py::find_drifted_cites``)
+        an existing one (``draft/lint.py::find_drifted_cites``)
         — both need "the version right now", not "a version". Missing
         ids (no ``pub_id`` yet — not citable) are simply absent from the
         result.

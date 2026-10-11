@@ -1222,9 +1222,9 @@ def record_failure(
     file — ``precis_pathway.seed_job``'s ``infra:child-killed``) reaches for
     instead of duplicating the tag-then-fail dance itself. Written inside
     the SAME transaction that drives ``STATUS:failed`` and calls
-    :func:`~precis.handlers._job_bubble.bubble_job_failure` below, so a tag
+    :func:`~precis.utils.job_bubble.bubble_job_failure` below, so a tag
     value that's also a member of
-    ``precis.handlers._job_bubble.INFRA_FAILURE_TAGS`` is guaranteed visible
+    ``precis.utils.job_bubble.INFRA_FAILURE_TAGS`` is guaranteed visible
     to the bubble's infra-classification read — enabling the same bounded
     auto-retry a lease-expiry orphan gets, rather than an immediate latch.
 
@@ -1265,7 +1265,7 @@ def record_failure(
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
         # Slice-5 failure bubble.
-        from precis.handlers._job_bubble import bubble_job_failure
+        from precis.utils.job_bubble import bubble_job_failure
 
         bubble_job_failure(store, ref_id, conn=conn)
         conn.commit()
@@ -1352,7 +1352,7 @@ def poison_guard(
     append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
     set_meta(conn, ref_id, failure_class="infra")
     set_status(store, ref_id, FAILED, conn=conn)
-    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.utils.job_bubble import bubble_job_failure
 
     bubble_job_failure(store, ref_id, conn=conn)
     return True

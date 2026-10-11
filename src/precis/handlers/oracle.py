@@ -47,14 +47,6 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    require_link_target,
-    require_tag_ops,
-    validate_link_mode,
-)
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
@@ -64,6 +56,14 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, ChunkRow, Ref
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query, query_vec_for
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.oracle_lens import draw_lens_entry
 from precis.utils.search_header import format_search_headline

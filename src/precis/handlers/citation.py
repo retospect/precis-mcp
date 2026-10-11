@@ -54,14 +54,14 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._numeric_ref import NumericRefHandler
-from precis.handlers._patent_family import family_representative
-from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY
+from precis.patent.family import family_representative
+from precis.patent.ingest import FAMILY_STUB_META_KEY
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import Ref
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import apply_tag_ops
 
 
 class CitationHandler(NumericRefHandler):
@@ -285,7 +285,7 @@ class CitationHandler(NumericRefHandler):
         target = None
         relation_slug = rel or "cites"
         if link is not None:
-            from precis.handlers._link_target import parse_link_target
+            from precis.utils.link_target import parse_link_target
 
             target = parse_link_target(link, store=self.store)
 

@@ -24,10 +24,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_tag_ops import validate_link_mode
-from precis.handlers._link_target import parse_link_target
 from precis.response import Response
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import validate_link_mode
+from precis.utils.link_target import parse_link_target
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store

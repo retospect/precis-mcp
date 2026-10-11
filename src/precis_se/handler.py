@@ -2013,14 +2013,14 @@ class SeHandler(Handler):
         the ref graph). The reserved virtual ``rel='parent'`` is folder
         placement — a ``refs.parent_id`` write, never a stored link.
         ``view='links'`` renders the graph both directions."""
-        from precis.handlers._link_tag_ops import (
+        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
+        from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+        from precis.utils.link_tag_ops import (
             apply_link_ops,
             format_link_tag_ack,
             require_link_target,
             validate_link_mode,
         )
-        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
-        from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 
         if rel == RESERVED_PARENT_REL:
             ref = resolve_live_slug_ref(self.store, kind="se", id=str(id).strip())

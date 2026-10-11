@@ -31,11 +31,11 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_tag_ops import apply_link_ops
 from precis.handlers.paper import PaperHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils.edit_resolve import normalize_dry_run
+from precis.utils.link_tag_ops import apply_link_ops
 
 # Reader views a datasheet supports — paper's enum minus the bibliographic
 # citation-export formats (a datasheet is cited as a part's evidence, not a

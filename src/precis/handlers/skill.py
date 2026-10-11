@@ -54,14 +54,6 @@ from urllib.parse import urlparse
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
-from precis.handlers._skill_common import (
-    VALID_TAGS,
-    WIKILINK_RE,
-    SkillFrontmatter,
-    kind_label,
-    parse_frontmatter,
-    skill_family,
-)
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.skill_index import (
@@ -72,6 +64,14 @@ from precis.skill_index import (
     chunk_by_h2,
 )
 from precis.store import _refs_ops
+from precis.utils.skill_common import (
+    VALID_TAGS,
+    WIKILINK_RE,
+    SkillFrontmatter,
+    kind_label,
+    parse_frontmatter,
+    skill_family,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store

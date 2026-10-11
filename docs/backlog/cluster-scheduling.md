@@ -878,7 +878,7 @@ problem, with its own policy —
 - New: user-activity signal write path (MCP/asa touchpoint or manual
   toggle) + small helper module for the picker.
 - New: block-reason registry module (item 8) —
-  `handlers/_todo_views.py` (doable exclusion + attention view),
+  `todo/views.py` (doable exclusion + attention view),
   `workers/nursery.py` (stuck-doable reasons) become consumers.
 - Docs: `state-map.md` todo-tree/guardrails sections;
   `cluster-scheduling.md` cross-reference (this is its law-3/law-1

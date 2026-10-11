@@ -4,7 +4,7 @@ Carries:
 
 * :mod:`.parse` — minimal cron parser + ``every:`` shorthand
   translator. Single point of truth for write-time validation
-  (called from ``handlers/_todo_guards``) and tick expansion (called
+  (called from ``todo/guards``) and tick expansion (called
   from :mod:`.worker`).
 * :mod:`.seed` — idempotent Watches umbrella seeder used by both the
   worker's first-run path and the handler's recurring-root default.

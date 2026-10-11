@@ -17,7 +17,7 @@ shape with four first-class extensions:
    top tiers via the ``meta.rotation_root`` / ``meta.worker_mintable``
    facet gradient (§M facet normalization, migration 0102 — replaces the
    old ``level:strategic|tactical`` tags); the guards in
-   :mod:`precis.handlers._todo_guards` enforce who can write what.
+   :mod:`precis.todo.guards` enforce who can write what.
 
 3. **Views** — search views ``roots``, ``projects``, ``strategic``,
    ``doable``, ``waiting``, ``blocked``, ``ask-user``, ``attention``,
@@ -25,7 +25,7 @@ shape with four first-class extensions:
    paused+auto-timeout union), ``doing``, ``done`` (the
    :class:`TodoView` closed vocabulary; the :data:`_TREE_SEARCH_VIEWS`
    dispatch table maps each to a renderer in
-   :mod:`precis.handlers._todo_views`), plus ``view='tree'`` on ``get``.
+   :mod:`precis.todo.views`), plus ``view='tree'`` on ``get``.
    ``projects`` lists strategic roots that own a ``meta.workspace``;
    ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
    and halted todos.
@@ -61,8 +61,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers import _comment_timeline as tl
-from precis.handlers import _todo_guards as guards
-from precis.handlers import _todo_views as views
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
@@ -72,6 +70,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
+from precis.todo import guards, views
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import (
     EditOp,
@@ -722,11 +721,11 @@ class TodoHandler(NumericRefHandler):
         # through. We can't just call super() because the base class
         # doesn't accept ``parent_id``; rewriting the body keeps the
         # tx boundary intact.
-        from precis.handlers._link_tag_ops import (
+        from precis.utils.link_tag_ops import (
             guard_taxon_hierarchy,
             validate_relation,
         )
-        from precis.handlers._link_target import parse_link_target
+        from precis.utils.link_target import parse_link_target
 
         if text is None or not text.strip():
             raise BadInput(
@@ -1343,8 +1342,8 @@ class TodoHandler(NumericRefHandler):
 
     def _reparent(self, *, id: str | int, target: str | None, mode: str) -> Response:
         """Apply a ``rel='parent'`` move/detach with full tree guards."""
-        from precis.handlers._link_tag_ops import validate_link_mode
-        from precis.handlers._link_target import parse_link_target
+        from precis.utils.link_tag_ops import validate_link_mode
+        from precis.utils.link_target import parse_link_target
 
         validate_link_mode(mode)
         child_id = self._coerce_id(id)

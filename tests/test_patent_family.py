@@ -8,7 +8,7 @@ care how a patent ref got there.
 
 from __future__ import annotations
 
-from precis.handlers._patent_family import family_members, family_representative
+from precis.patent.family import family_members, family_representative
 from precis.store import Store
 
 

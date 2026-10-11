@@ -34,16 +34,16 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import (
-    guard_taxon_hierarchy,
-    validate_relation,
-)
-from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ChunkInsert
+from precis.utils.link_tag_ops import (
+    guard_taxon_hierarchy,
+    validate_relation,
+)
+from precis.utils.link_target import parse_link_target
 from precis.utils.next_block import render_next_section
 
 # Transports we accept on a target=. v1: discord only. The validator

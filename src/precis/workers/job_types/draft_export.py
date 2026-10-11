@@ -210,7 +210,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # Unstamped (pre-pin) cites are unknown, not drift, and never block —
     # ``find_drifted_cites`` already excludes them from its ``drifted``
     # list.
-    from precis.handlers._draft_lint import find_drifted_cites
+    from precis.draft.lint import find_drifted_cites
 
     drifted, _unstamped = find_drifted_cites(ctx.store, ref.id)
     if drifted:

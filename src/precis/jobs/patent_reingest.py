@@ -39,14 +39,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY, ingest_patent
-from precis.handlers._patent_ops import OpsClientProto
-from precis.handlers._patent_slug import parse_docdb_id
 from precis.jobs.patent_watch import (
     DEFAULT_FAIR_USE_LIMIT_GB,
     _gb_to_bytes,
     compute_rolling_fair_use_bytes,
 )
+from precis.patent.ingest import FAMILY_STUB_META_KEY, ingest_patent
+from precis.patent.ops import OpsClientProto
+from precis.patent.slug import parse_docdb_id
 
 if TYPE_CHECKING:
     from precis.embedder import Embedder

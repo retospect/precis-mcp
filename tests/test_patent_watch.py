@@ -20,12 +20,12 @@ import pytest
 
 from precis.embedder import MockEmbedder
 from precis.handlers import _patent_watch_db as watch_db
-from precis.handlers._patent_ops import FakeOpsClient
 from precis.jobs.patent_watch import (
     DEFAULT_FAIR_USE_LIMIT_GB,
     compute_rolling_fair_use_bytes,
     run_one_pass,
 )
+from precis.patent.ops import FakeOpsClient
 from precis.store import Store
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"

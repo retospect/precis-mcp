@@ -31,11 +31,11 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.protocol import Handler
 from precis.response import Response
 from precis.store import Store
 from precis.utils import handle_registry
+from precis.utils.link_target import LinkTarget, parse_link_target
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")

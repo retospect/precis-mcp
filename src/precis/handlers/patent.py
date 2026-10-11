@@ -29,21 +29,21 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers._patent_cql import build_cql
-from precis.handlers._patent_ingest import (
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.patent.ingest import (
     AWAITING_FULLTEXT_TAG,
     FULLTEXT_UNAVAILABLE_TAG,
     ingest_patent,
 )
-from precis.handlers._patent_ops import (
+from precis.patent.ops import (
     OpsAuthError,
     OpsClientProto,
     OpsError,
     OpsHttpError,
     OpsQuotaError,
 )
-from precis.handlers._patent_slug import looks_like_docdb, parse_docdb_id
-from precis.handlers._patent_xml import OpsHit, parse_search_response
-from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.patent.slug import looks_like_docdb, parse_docdb_id
+from precis.patent.xml import OpsHit, parse_search_response
 from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
@@ -176,7 +176,7 @@ class PatentHandler(Handler):
 
         from precis import secrets as _secrets
         from precis.config import patent_raw_root
-        from precis.handlers._patent_ops import OpsClient
+        from precis.patent.ops import OpsClient
 
         try:
             key = _secrets.get_secret("EPO_OPS_CLIENT_KEY")

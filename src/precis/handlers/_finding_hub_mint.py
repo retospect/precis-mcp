@@ -64,7 +64,6 @@ from typing import TYPE_CHECKING, Any
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, Unsupported, Upstream
-from precis.handlers._link_tag_ops import validate_relation
 from precis.response import Response
 from precis.store.types import ActorSlug, Tag
 from precis.taproot import authoring
@@ -87,6 +86,7 @@ from precis.taproot.hub import (
     run_retraction_checks,
 )
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import validate_relation
 
 if TYPE_CHECKING:
     from precis.store.store import Store

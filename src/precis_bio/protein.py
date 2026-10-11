@@ -202,7 +202,7 @@ class ProteinHandler(Handler):
 
         requester_id = _as_int_or_none(requested_by)
         if requester_id is not None:
-            from precis.handlers import _todo_guards as todo_guards
+            from precis.todo import guards as todo_guards
 
             todo_guards.check_parent_exists(self.store, requester_id)
 

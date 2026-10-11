@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from precis.embedder import MockEmbedder
-from precis.handlers._patent_ingest import ingest_patent
-from precis.handlers._patent_ops import FakeOpsClient
 from precis.jobs.patent_reingest import run_reingest_pass
+from precis.patent.ingest import ingest_patent
+from precis.patent.ops import FakeOpsClient
 from precis.store import Store
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"

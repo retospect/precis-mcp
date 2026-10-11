@@ -12,7 +12,7 @@ pillar: quests
 > decisions.
 
 Shipped portion: see the `workers/patent_digest.py` and
-`handlers/_patent_claims.py` module docstrings; full proposal + slice
+`patent/claims.py` module docstrings; full proposal + slice
 ledger in git history. Live: claim-chunk marking at ingest
 (`view='claims'`/`'description'`), `doc_type=patent` as a first-class
 `Workspace` field, the comprehensive claims-digest working set

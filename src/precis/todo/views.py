@@ -18,12 +18,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._todo_guards import todo_root_sql
 from precis.response import Response
 from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _DOABLE_EXCLUSION_TAGS,
     _doable_exclusion_clause,
 )
+from precis.todo.guards import todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 

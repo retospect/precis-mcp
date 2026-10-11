@@ -497,7 +497,7 @@ class Ref:
     # Migration 0013 / todo-tree. NULL for refs not in a tree (everything
     # but todo branches/leaves today). Self-referencing FK with ON DELETE
     # SET NULL — orphaned children survive parent deletion. Cycle / depth
-    # / level-gradient guards live in ``handlers/_todo_guards.py`` and run
+    # / level-gradient guards live in ``todo/guards.py`` and run
     # at write time.
     parent_id: int | None = None
     # Migration 0014 / Slice 4 priority column. 1..10 inclusive. NULL =

@@ -42,7 +42,6 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from precis.handlers._skill_common import parse_frontmatter
 from precis.utils.prompt import (
     AssemblyContext,
     Block,
@@ -55,6 +54,7 @@ from precis.utils.prompt import (
     section_review_block,
     tools_table,
 )
+from precis.utils.skill_common import parse_frontmatter
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -312,7 +312,7 @@ move the work forward by exactly one of these output shapes:
    symbol. Never use a superscript, the single-character `℃`, or LaTeX
    (`^\\circ`, `\\degree`, `\\textdegree`) — and don't spell it out as
    "63 degrees Celsius". (Same rule the draft write-path lint enforces —
-   see `handlers/_draft_lint.py::temperature_form_hint`.)
+   see `draft/lint.py::temperature_form_hint`.)
 
 3. **Cite by paper-chunk handle.** When a claim rests on a source,
    write the supporting chunk's **bare handle** inline in your prose:
@@ -1799,7 +1799,7 @@ def _m_identity(ctx: AssemblyContext) -> str:
 
 def _m_ancestry(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
-    from precis.handlers._todo_views import _ancestor_chain
+    from precis.todo.views import _ancestor_chain
 
     chain = _ancestor_chain(ctx.store, ctx.ref_id)
     return _render_ancestry_toon(chain, leaf_id=ctx.ref_id)

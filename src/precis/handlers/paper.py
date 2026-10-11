@@ -34,14 +34,6 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    apply_tag_ops,
-    format_link_tag_ack,
-    require_link_target,
-    require_tag_ops,
-    validate_link_mode,
-)
 from precis.handlers._paper_format import (
     _clean_inline_text,
     _format_authors,
@@ -82,6 +74,14 @@ from precis.utils.authors import (
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    apply_tag_ops,
+    format_link_tag_ack,
+    require_link_target,
+    require_tag_ops,
+    validate_link_mode,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt

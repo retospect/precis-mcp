@@ -35,9 +35,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from precis.handlers import _patent_watch_db as watch_db
-from precis.handlers._patent_ingest import ingest_patent
-from precis.handlers._patent_ops import OpsClientProto, OpsError
-from precis.handlers._patent_xml import OpsHit, parse_search_response
+from precis.patent.ingest import ingest_patent
+from precis.patent.ops import OpsClientProto, OpsError
+from precis.patent.xml import OpsHit, parse_search_response
 
 if TYPE_CHECKING:
     from precis.embedder import Embedder

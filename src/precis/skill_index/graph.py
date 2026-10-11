@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from precis.handlers._skill_common import (
+from precis.utils.skill_common import (
     extract_wikilinks,
     parse_frontmatter,
     skill_family,

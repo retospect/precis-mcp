@@ -32,7 +32,6 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.handlers._skill_common import parse_frontmatter
 from precis.handlers.calc import CalcHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.paper import PaperHandler
@@ -42,6 +41,7 @@ from precis.handlers.skill import (
 )
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store, Tag
+from precis.utils.skill_common import parse_frontmatter
 from tests.conftest import id_of
 
 # ── helpers ────────────────────────────────────────────────────────

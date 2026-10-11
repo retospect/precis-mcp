@@ -7,7 +7,7 @@ refs↔refs ``links`` edge as its relation. A disposition edge is always
 ``dst_ref_id``=dossier), with an optional section anchor as
 ``dst_chunk_id`` (the section heading chunk a caller targets via the
 standard ``draft:<slug>~<selector>`` grammar — see
-``handlers/_link_target.py``). The four disposition relations
+``utils/link_target.py``). The four disposition relations
 (``cited-in`` / ``corroborates`` / ``superseded-in`` / ``off-topic-for``,
 migration 0085) are asymmetric with **no** inverse, so dossier→papers
 traversal is a plain inbound query, not ``links_for``'s inverse-mirror

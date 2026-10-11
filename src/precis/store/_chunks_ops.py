@@ -2270,7 +2270,7 @@ class ChunkStore:
         caller *why* the handle failed to resolve — a typo naming nothing
         (``None``) versus a real chunk whose source has since been retired
         (a tombstone). The draft write-path gate
-        (``handlers/_draft_lint.newly_unresolvable_tokens``) uses exactly
+        (``draft/lint.newly_unresolvable_tokens``) uses exactly
         that split to hard-refuse the former while leaving the latter
         advisory."""
         with self.pool.connection() as conn:

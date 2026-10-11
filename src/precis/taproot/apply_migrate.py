@@ -87,7 +87,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import validate_relation
 from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     CanonicalClaim,
@@ -108,6 +107,7 @@ from precis.taproot.hub import (
     mint_hub,
     run_retraction_checks,
 )
+from precis.utils.link_tag_ops import validate_relation
 
 if TYPE_CHECKING:
     from precis.store.store import Store

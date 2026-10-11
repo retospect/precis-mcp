@@ -1040,7 +1040,7 @@ def test_shared_runtime_put_keeps_creation_fields_request_local(
     monkeypatch: pytest.MonkeyPatch,
     second_fails: bool,
 ) -> None:
-    from precis.handlers import _link_target
+    from precis.utils import link_target as _link_target
 
     runtime = runtime_with_store
     target = id_of(runtime.dispatch("put", {"kind": "memory", "text": "target"}))

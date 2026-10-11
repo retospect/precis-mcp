@@ -214,7 +214,7 @@ def test_strategic_root_placed_in_folder_stays_a_root(
     ref = store.get_ref(kind="todo", id=root)
     assert ref is not None and ref.parent_id == fid
     # still a strategic root for the views
-    from precis.handlers._todo_views import render_roots
+    from precis.todo.views import render_roots
 
     assert "Build the platform." in render_roots(store).body
     # and the folder shows it as content

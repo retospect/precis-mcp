@@ -116,7 +116,6 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
-from precis.handlers._job_bubble import INFRA_FAILURE_TAGS
 from precis.quest.allocator import active_quest_ids, cool_stalled
 from precis.quest.compute import (
     _TIER_NEB,
@@ -126,6 +125,7 @@ from precis.quest.compute import (
 )
 from precis.quest.tick import quest_loop_enabled
 from precis.utils.env import env_int
+from precis.utils.job_bubble import INFRA_FAILURE_TAGS
 from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
 
 if TYPE_CHECKING:
@@ -202,7 +202,7 @@ _ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
 #: Open tags on a ``STATUS:failed`` job that mark it infra-class — the
 #: compute never really ran, so the failure says nothing about the material —
 #: rather than a genuine content-class result. :data:`INFRA_FAILURE_TAGS`
-#: (``precis.handlers._job_bubble``) is the bounded-retry classification the
+#: (``precis.utils.job_bubble``) is the bounded-retry classification the
 #: rest of the codebase uses; since gr210536 it carries the sweeper's
 #: ``reaped:dead-node-*`` tags too, so the local widening this alias used to
 #: do is gone — the alias stays for the name's local legibility.

@@ -298,7 +298,7 @@ class TestPerplexityLinkTagOps:
 
 class TestApplyLinkOpsDisputesContradicts:
     def test_contradicts_rejected_between_two_findings(self, store: Store) -> None:
-        from precis.handlers._link_tag_ops import apply_link_ops
+        from precis.utils.link_tag_ops import apply_link_ops
 
         a = store.insert_ref(kind="finding", slug=None, title="a plain finding").id
         b = store.insert_ref(kind="finding", slug=None, title="another finding").id
@@ -309,7 +309,7 @@ class TestApplyLinkOpsDisputesContradicts:
         assert store.links_for(a, direction="out") == []
 
     def test_contradicts_still_allowed_between_two_memories(self, store: Store) -> None:
-        from precis.handlers._link_tag_ops import apply_link_ops
+        from precis.utils.link_tag_ops import apply_link_ops
 
         a = store.insert_ref(kind="memory", slug=None, title="memory a").id
         b = store.insert_ref(kind="memory", slug=None, title="memory b").id
@@ -323,9 +323,9 @@ class TestApplyLinkOpsDisputesContradicts:
     def test_disputes_between_two_claim_hubs_delegates_to_link_claims(
         self, store: Store
     ) -> None:
-        from precis.handlers._link_tag_ops import apply_link_ops
         from precis.taproot.canon import CanonicalClaim
         from precis.taproot.hub import mint_hub
+        from precis.utils.link_tag_ops import apply_link_ops
 
         a = mint_hub(
             store, CanonicalClaim(sentence="Claim A holds under condition X.", scope={})
@@ -355,9 +355,9 @@ class TestApplyLinkOpsDisputesContradicts:
         """A non-claim-hub endpoint (e.g. paper->hub, the shape
         ``reattach_as_disputes`` also writes) falls through to the plain
         write — claim-hub delegation is only for a claim-hub pair."""
-        from precis.handlers._link_tag_ops import apply_link_ops
         from precis.taproot.canon import CanonicalClaim
         from precis.taproot.hub import mint_hub
+        from precis.utils.link_tag_ops import apply_link_ops
 
         paper_id = _seed_paper(store, "review2026")
         hub_id = mint_hub(

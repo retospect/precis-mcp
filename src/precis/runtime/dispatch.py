@@ -1145,7 +1145,7 @@ class DispatchMixin(RuntimeShape):
         ref_id = int(resolved.ref_id) if resolved is not None else None
         if ref_id is None:
             try:
-                from precis.handlers._link_target import parse_link_target
+                from precis.utils.link_target import parse_link_target
 
                 ref_id = parse_link_target(raw, store=store).ref_id
             except PrecisError:

@@ -123,7 +123,7 @@ def _seed_patent_block(
 ) -> tuple[int, int]:
     """Mint a patent with one embedded body chunk carrying ``block_meta``
     (the ``patent_block`` section marker minted by
-    ``handlers/_patent_claims.py`` — ``"description"`` or ``"claim"``).
+    ``patent/claims.py`` — ``"description"`` or ``"claim"``).
     Returns ``(ref_id, chunk_id)``."""
     ref = store.insert_ref(
         kind="patent", slug=cite_key, title=f"Test patent {cite_key}", meta={}

@@ -21,17 +21,17 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qsl
 
 from precis.errors import BadInput
-from precis.handlers import _todo_guards as todo_guards
-from precis.handlers._link_tag_ops import (
-    guard_taxon_hierarchy,
-    validate_relation,
-)
-from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import Ref
+from precis.todo import guards as todo_guards
+from precis.utils.link_tag_ops import (
+    guard_taxon_hierarchy,
+    validate_relation,
+)
+from precis.utils.link_target import parse_link_target
 from precis.utils.next_block import render_next_section
 from precis.utils.timeutil import as_utc
 from precis.workers.executors import (
@@ -935,14 +935,14 @@ class JobHandler(NumericRefHandler):
         ``model`` (optional) swaps the parent's ``meta.llm_tier`` before
         clearing the bubble, so the re-minted tick runs on a different
         tier. Closed-vocab (``opus``/``sonnet``/``haiku``) — validated by
-        :func:`precis.handlers._todo_guards.check_llm_tier_meta`. Only
+        :func:`precis.todo.guards.check_llm_tier_meta`. Only
         valid on an LLM-planner todo (one that already has
         ``meta.llm_tier`` set); a code-path executor job has no model
         knob.
 
         ``select`` (optional) is the structured ``meta.llm_select`` sibling
          — placement/thinking/effort/temperature — validated by
-        :func:`~precis.handlers._todo_guards.check_llm_select_meta` and
+        :func:`~precis.todo.guards.check_llm_select_meta` and
         written onto the parent alongside ``llm_tier`` when a ``model``
         change also lands. When ``model`` is given but ``select`` isn't,
         the parent's existing ``meta.llm_select`` (if any) is left
@@ -965,7 +965,7 @@ class JobHandler(NumericRefHandler):
                 next="wait for the job to reach a terminal state, or delete it",
             )
 
-        from precis.handlers._job_bubble import _lookup_parent
+        from precis.utils.job_bubble import _lookup_parent
 
         parent_id, parent_kind = _lookup_parent(self.store, job_id, conn=None)
         if parent_id is None or parent_kind != "todo":
@@ -1085,7 +1085,7 @@ class JobHandler(NumericRefHandler):
         """
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         if add and any(a == "STATUS:failed" for a in add):
-            from precis.handlers._job_bubble import bubble_job_failure
+            from precis.utils.job_bubble import bubble_job_failure
 
             job_id = self._coerce_id(id)
             bubble_job_failure(self.store, job_id)

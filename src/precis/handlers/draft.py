@@ -35,17 +35,11 @@ from datetime import UTC
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
+from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import toon
-from precis.handlers import _draft_lint
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
-from precis.handlers._link_tag_ops import (
-    apply_link_ops,
-    format_link_tag_ack,
-    require_link_target,
-    validate_link_mode,
-)
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
@@ -57,6 +51,12 @@ from precis.utils import draft_regex, handle_registry
 from precis.utils.authors import to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 from precis.utils.table_data import (
     find_replace_cells,
     normalize_table,
@@ -3286,7 +3286,7 @@ class DraftHandler(Handler):
 
     def _cited_paper_ref_ids(self, chunks: list[Any]) -> list[int]:
         """Every paper/patent cite token in the draft
-        (:func:`~precis.handlers._draft_lint.find_paper_cite_tokens`, one
+        (:func:`~precis.draft.lint.find_paper_cite_tokens`, one
         pass per chunk), resolved to its target ``ref_id``, in mention
         order with repeats kept (a paper cited twice appears twice).
         Shared by :meth:`_taproot_hub_scoreboard` (which counts cited
@@ -3358,12 +3358,12 @@ class DraftHandler(Handler):
     def _hygiene_drift_lines(self, ref_id: int, *, limit: int | None) -> list[str]:
         """The fourth hygiene check (docs/backlog/cite-pins-hub-version.md):
         ``cites`` edges whose pinned hub version has moved on since the
-        citing prose was written — :func:`~precis.handlers._draft_lint.
+        citing prose was written — :func:`~precis.draft.lint.
         find_drifted_cites`. One ``⚠`` line per drifted cite, each naming
         the citing ``dc<id>`` and quoting both statements — ``was "<old>",
         now "<new>"`` — so a reader doesn't need a second pass to see what
         changed. An edge stamped before the title pin existed carries a
-        pub_id but no title (:attr:`~precis.handlers._draft_lint.
+        pub_id but no title (:attr:`~precis.draft.lint.
         DriftedCite.stamped_title` is ``None``): that degrades to "old
         statement not recorded", never a crash and never a claimed-empty
         old title.
@@ -3705,19 +3705,19 @@ class DraftHandler(Handler):
     # reach into directly.
     def _dangling_finding_tokens(self, text: str) -> list[str]:
         """The ``finding #slug`` markers in ``text`` that resolve to no live
-        finding ref. See :func:`~precis.handlers._draft_lint.
+        finding ref. See :func:`~precis.draft.lint.
         dangling_finding_tokens`."""
         return _draft_lint.dangling_finding_tokens(self.store, text)
 
     def _dangling_chunk_tokens(self, text: str) -> list[str]:
         """The ``[<handle>]`` references in ``text`` that resolve to
-        nothing. See :func:`~precis.handlers._draft_lint.
+        nothing. See :func:`~precis.draft.lint.
         dangling_chunk_tokens`."""
         return _draft_lint.dangling_chunk_tokens(self.store, text)
 
     def _tombstone_chunk_tokens(self, text: str) -> list[tuple[str, int]]:
         """``[<handle>]`` references naming a real ref that has been
-        soft-deleted (gr265228). See :func:`~precis.handlers._draft_lint.
+        soft-deleted (gr265228). See :func:`~precis.draft.lint.
         tombstone_chunk_tokens` — reported distinctly from
         ``_dangling_chunk_tokens``' "resolves to nothing at all"."""
         return _draft_lint.tombstone_chunk_tokens(self.store, text)
@@ -3726,7 +3726,7 @@ class DraftHandler(Handler):
         self, new_text: str, old_text: str
     ) -> tuple[list[str], list[str]]:
         """``(newly-broken chunk-ref tokens, newly-broken finding slugs)``.
-        See :func:`~precis.handlers._draft_lint.newly_dangling` — the
+        See :func:`~precis.draft.lint.newly_dangling` — the
         shared core of the inline-editor validation gate
         (``docs/backlog/draft-inline-editor.md``)."""
         return _draft_lint.newly_dangling(self.store, new_text, old_text)

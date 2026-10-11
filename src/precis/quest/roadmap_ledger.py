@@ -22,7 +22,7 @@ the body acts on and the tick stamps deeds against:
 
 Pure compute + render: no LLM calls, no store writes, and no dossier import.
 Malformed stored values (the write guards in ``handlers/quest.py`` /
-``handlers/_todo_guards.py`` make them rare, not impossible) are skipped, so
+``todo/guards.py`` make them rare, not impossible) are skipped, so
 a render never crashes on one bad row.
 
 **Which rung "closes" an axis** when several produce the same key — the

@@ -35,7 +35,7 @@ for three cases, which this module refuses to resolve:
 2. **Live child todos.** Even for a deterministic parent, a succeeded
    child job does not mean the work is finished while sibling child
    todos are still open. This mirrors the manual ``STATUS:done``
-   guardrail (``handlers/_todo_guards.check_status_done_artifact``),
+   guardrail (``todo/guards.check_status_done_artifact``),
    which the auto-resolver bypasses by writing the tag directly.
 
 3. **Recurring watches** (``meta.schedule`` set). A schedule-driven watch

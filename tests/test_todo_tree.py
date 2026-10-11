@@ -62,7 +62,7 @@ def test_self_parent_is_rejected_via_cycle_guard(handler: TodoHandler) -> None:
     # Direct self-reference is the trivial cycle. We can't create
     # a ref pointing at itself in one put, but we can simulate the
     # re-parent path via the underlying guard.
-    from precis.handlers import _todo_guards as g
+    from precis.todo import guards as g
 
     a = handler.put(text="A")
     a_id = _id_of(a.body)
@@ -71,7 +71,7 @@ def test_self_parent_is_rejected_via_cycle_guard(handler: TodoHandler) -> None:
 
 
 def test_cycle_via_ancestor_rejects(handler: TodoHandler) -> None:
-    from precis.handlers import _todo_guards as g
+    from precis.todo import guards as g
 
     a = handler.put(text="A")
     a_id = _id_of(a.body)
@@ -120,7 +120,7 @@ def test_worker_cannot_create_strategic(
 
 
 def test_has_auto_run_signal_detects_each_form() -> None:
-    from precis.handlers import _todo_guards as g
+    from precis.todo import guards as g
 
     assert g.has_auto_run_signal(None, {"llm_tier": "opus"})
     assert g.has_auto_run_signal(["executor:fetch"], None)
@@ -130,7 +130,7 @@ def test_has_auto_run_signal_detects_each_form() -> None:
 
 
 def test_strategic_lacks_auto_run_predicate() -> None:
-    from precis.handlers import _todo_guards as g
+    from precis.todo import guards as g
 
     # strategic with no signal → flagged
     assert g.strategic_lacks_auto_run({"rotation_root": True}, None)

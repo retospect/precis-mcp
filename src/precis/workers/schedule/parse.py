@@ -29,7 +29,7 @@ the default, matching the old cron one-shot default) or is silently marked
 expired (``False``).
 
 This module is the **single point of truth** for both write-time
-validation (called from ``handlers/_todo_guards``) and tick
+validation (called from ``todo/guards``) and tick
 expansion (called from ``workers/schedule/worker``).
 """
 

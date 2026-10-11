@@ -24,15 +24,15 @@ from pathlib import Path
 import pytest
 
 from precis.embedder import MockEmbedder
-from precis.handlers._patent_ingest import (
+from precis.jobs.patent_fulltext_sweep import (
+    run_fulltext_sweep,
+)
+from precis.patent.ingest import (
     AWAITING_FULLTEXT_TAG,
     FULLTEXT_UNAVAILABLE_TAG,
     ingest_patent,
 )
-from precis.handlers._patent_ops import FakeOpsClient
-from precis.jobs.patent_fulltext_sweep import (
-    run_fulltext_sweep,
-)
+from precis.patent.ops import FakeOpsClient
 from precis.store import Store
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"

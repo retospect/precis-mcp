@@ -46,10 +46,10 @@ from datetime import UTC, datetime
 from datetime import timedelta as _timedelta
 from typing import TYPE_CHECKING, Any
 
-from precis.handlers._patent_ingest import (
+from precis.patent.ingest import (
     AWAITING_FULLTEXT_TAG as _AWAITING_TAG,
 )
-from precis.handlers._patent_ingest import (
+from precis.patent.ingest import (
     FULLTEXT_UNAVAILABLE_TAG as _UNAVAILABLE_TAG,
 )
 from precis.store import Tag

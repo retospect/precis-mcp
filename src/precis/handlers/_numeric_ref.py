@@ -38,7 +38,13 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._eye import is_eye_view
-from precis.handlers._link_tag_ops import (
+from precis.handlers._tag_redirect import redirect_long_tag_values
+from precis.protocol import Handler, KindSpec
+from precis.response import Response
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Link, Ref, Tag
+from precis.utils import handle_registry
+from precis.utils.embed_query import query_vec_for
+from precis.utils.link_tag_ops import (
     check_relation_constraints,
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
@@ -47,13 +53,7 @@ from precis.handlers._link_tag_ops import (
     validate_link_mode,
     validate_relation,
 )
-from precis.handlers._link_target import mint_lazy_link_target, parse_link_target
-from precis.handlers._tag_redirect import redirect_long_tag_values
-from precis.protocol import Handler, KindSpec
-from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, Link, Ref, Tag
-from precis.utils import handle_registry
-from precis.utils.embed_query import query_vec_for
+from precis.utils.link_target import mint_lazy_link_target, parse_link_target
 from precis.utils.next_block import render_next_section
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_header import format_search_headline

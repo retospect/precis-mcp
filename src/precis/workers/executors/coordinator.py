@@ -25,7 +25,7 @@ Differences from ``claude_inproc``:
   unbounded.
 - The claim SQL excludes ``ask-user:*`` / ``halt:*``
   open-namespace exclusion tags via the existing
-  :func:`precis.handlers._todo_views._doable_exclusion_clause`
+  :func:`precis.todo.views._doable_exclusion_clause`
   helper. Pause-for-human use the same tagging convention
   Hermes / asa-bot already render in the attention view.
 - The dispatcher path is ``spec.dispatch(ctx, spec)`` only —

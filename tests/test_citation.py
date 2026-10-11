@@ -336,7 +336,7 @@ class TestPatentSource:
         assert "paper" in str(excinfo.value)
 
     def test_stub_patent_source_rejected_naming_representative(self, store) -> None:
-        from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY
+        from precis.patent.ingest import FAMILY_STUB_META_KEY
 
         store.insert_ref(
             kind="patent",

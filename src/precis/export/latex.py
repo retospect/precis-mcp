@@ -460,7 +460,7 @@ def lint_math_spans(text: str) -> list[str]:
     """Advisory complaints about the ``$…$`` spans in ``text`` that this
     exporter would DEMOTE to escaped literal prose rather than render as
     math, plus any stray unpaired ``$``. Shared with the draft write-path
-    lint (``handlers/_draft_lint.math_form_hint``) so an authoring agent
+    lint (``draft/lint.math_form_hint``) so an authoring agent
     hears about a broken span in the ``put``/``edit`` response instead of
     from a failed export hours later — and so the lint and the exporter's
     own demotion predicates (:func:`_math_braces_balanced`,

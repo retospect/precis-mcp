@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.handlers import _draft_lint
+from precis.draft import lint as _draft_lint
 from precis.handlers.draft import DraftHandler
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub, refine_claim_sentence

@@ -13,13 +13,13 @@ import pytest
 
 from precis.embedder import MockEmbedder
 from precis.errors import NotFound
-from precis.handlers._patent_ingest import (
+from precis.patent.ingest import (
     PatentIngestResult,
     _year_from_publication_date,
     ingest_patent,
 )
-from precis.handlers._patent_ops import FakeOpsClient
-from precis.handlers._patent_slug import parse_docdb_id
+from precis.patent.ops import FakeOpsClient
+from precis.patent.slug import parse_docdb_id
 from precis.store import Store
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"

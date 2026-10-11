@@ -1,12 +1,12 @@
 """Unit tests for the patent claim-structure heuristic (slice 1).
 
 See ``docs/backlog/patent-authoring-loop.md`` and
-``src/precis/handlers/_patent_claims.py``.
+``src/precis/patent/claims.py``.
 """
 
 from __future__ import annotations
 
-from precis.handlers._patent_claims import (
+from precis.patent.claims import (
     DESCRIPTION_BLOCK_META,
     claim_block_meta,
     classify_claim,

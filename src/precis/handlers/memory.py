@@ -440,11 +440,11 @@ class MemoryHandler(NumericRefHandler):
         # `memory_body` chunk (not `refs.title`) and the header gets a short
         # title. The body chunk picks up embeddings + keywords from the
         # standard workers automatically — no `card_combined` card.
-        from precis.handlers._link_tag_ops import (
+        from precis.utils.link_tag_ops import (
             guard_taxon_hierarchy,
             validate_relation,
         )
-        from precis.handlers._link_target import parse_link_target
+        from precis.utils.link_target import parse_link_target
 
         if text is None or not text.strip():
             raise BadInput(

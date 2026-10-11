@@ -14,7 +14,7 @@ tests complete, gate-green except the two fixes below; ship in flight.
 If this session died mid-ship, re-run `scripts/ship --mutate` from that
 worktree (idempotent) and then `scripts/deploy`. What landed there:
 write-path `math_form_hint` + hard `BadInput` on newly-introduced
-unresolvable `[…]` refs (`handlers/_draft_lint.py` /
+unresolvable `[…]` refs (`draft/lint.py` /
 `handlers/draft.py`, gated at put / edit-text / edit-find / `sub=`),
 docx math parity via the shared `_MATH` + `_math_braces_balanced` /
 `_math_plausible` imports, `utils/authors.py::_scrub_name` at both

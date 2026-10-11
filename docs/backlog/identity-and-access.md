@@ -67,7 +67,7 @@ Already a deprecated alias for `ask-user`; prod carries **zero**
 `asking-reto` rows, so removal needs no data migration. Sites
 (comments / SQL / enum):
 
-- `handlers/_todo_views.py` (≈8 sites: the `("asking-reto","asking-reto:")`
+- `todo/views.py` (≈8 sites: the `("asking-reto","asking-reto:")`
   prefix tuple, the `render_asking_reto` matcher, 3 `OR value LIKE
   'asking-reto:%'` clauses, doc comments)
 - `handlers/todo.py` (`TodoView.ASKING_RETO` enum member + its
@@ -315,7 +315,7 @@ per human.
 #### Principals — root workers vs user-originated agents
 
 Extend the `PRECIS_SOURCE` owner-vs-worker classification
-(`handlers/_todo_guards.py`) into a structured principal
+(`todo/guards.py`) into a structured principal
 (`authority: system|user`, `user: <login|null>`):
 
 1. **System workers, mechanical passes** (embed, classify, nursery, chunk
@@ -384,7 +384,7 @@ Extend the `PRECIS_SOURCE` owner-vs-worker classification
 - Schema: new tables `users`, `shares`; `refs.owner_id` (+ backfill).
 - `src/precis/protocol.py` (`KindSpec`), `store/_tag_filter.py` sibling
   module, `store/_blocks_ops.py`, `store/_refs_ops.py`,
-  `tools/core.py::_dispatch`, `handlers/_todo_guards.py`,
+  `tools/core.py::_dispatch`, `todo/guards.py`,
   `runtime/factory.py` (viewer context), `store/pool.py` (per-tx GUC).
 - `precis_web/app.py` (+middleware), `precis/cli/web.py`, worker claim
   loop (`workers/`), synthesis passes (owner inheritance).

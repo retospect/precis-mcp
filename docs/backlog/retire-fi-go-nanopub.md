@@ -48,7 +48,7 @@ closer to gripes).
      row in state ≥ `reviewed` (the `nanopub.overview` query is the
      dashboard — no new build);
   2. prose coverage: `[fi<id>]` handles remaining in live drafts
-     (draft-lint counter, `handlers/_draft_lint.py`).
+     (draft-lint counter, `draft/lint.py`).
   Migration bar is `reviewed` (frozen string), NOT `signed` — signing
   is human-paced (attesting key by design) and proceeds
   opportunistically; requiring it would hostage the sweep's tail to a
@@ -80,7 +80,7 @@ closer to gripes).
 ## Target + blast radius
 `src/precis/nanopub/gates.py` (style gate), export cite resolution
 (`src/precis/export/latex.py` + `_trust_marks.py` sibling helper),
-draft lint (`src/precis/handlers/_draft_lint.py`), `nanopub.overview`,
+draft lint (`src/precis/draft/lint.py`), `nanopub.overview`,
 the migration sweep as a CLI verb or job type. Wide but staged; no
 schema change expected (publish rows exist, 0129/0130 shipped).
 

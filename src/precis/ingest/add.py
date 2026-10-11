@@ -1757,7 +1757,7 @@ def _apply_extra_tags(
     # Deferred import — ``precis.handlers`` pulls in the dispatch
     # graph; we keep the ingest module importable without it for
     # the bare-install path (``precis migrate`` / ``precis serve``).
-    from precis.handlers._link_tag_ops import apply_tag_ops
+    from precis.utils.link_tag_ops import apply_tag_ops
 
     try:
         apply_tag_ops(

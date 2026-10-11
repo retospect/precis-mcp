@@ -64,8 +64,8 @@ the job.
 | `view='log'` | `paper.py::PaperHandler.get` (log branch) | `get(kind='paper', id='<slug>', view='log')` | Ingest/edit audit trail for the paper. |
 | `view='links'` | `paper.py::PaperHandler.get` (links branch) | `get(kind='paper', id='<slug>', view='links')` | Outbound + inbound link graph for the paper ref. |
 | Chunk-range read | `paper.py::PaperHandler._render_chunks` | `get(kind='paper', id='<slug>~lo..hi')` | Verbatim body text for a chunk range — the actual source text, not a summary. |
-| Todo search-side views | `src/precis/handlers/_todo_views.py::render_roots` / `render_projects` / `render_strategic` / `render_doable` / `render_waiting` / `render_blocked` / `render_ask_user` / `render_attention` (dispatch table keyed on `src/precis/handlers/todo.py::TodoView` enum) | `search(kind='todo', view='roots'\|'projects'\|'strategic'\|'doable'\|'waiting'\|'blocked'\|'ask-user'\|'attention')` | Each is a different cut of the todo tree — strategic dashboard, project rollup, unblocked-work queue, parked-on-a-human queue, etc. `doable` is the one an autonomous planner should be able to act on with zero round-trips. |
-| Todo `view='tree'` | `src/precis/handlers/_todo_views.py::render_tree` (dispatched from `todo.py::TodoHandler.get`) | `get(kind='todo', id=N, view='tree')` | Full subtree rollup under one root — children + status. |
+| Todo search-side views | `src/precis/todo/views.py::render_roots` / `render_projects` / `render_strategic` / `render_doable` / `render_waiting` / `render_blocked` / `render_ask_user` / `render_attention` (dispatch table keyed on `src/precis/handlers/todo.py::TodoView` enum) | `search(kind='todo', view='roots'\|'projects'\|'strategic'\|'doable'\|'waiting'\|'blocked'\|'ask-user'\|'attention')` | Each is a different cut of the todo tree — strategic dashboard, project rollup, unblocked-work queue, parked-on-a-human queue, etc. `doable` is the one an autonomous planner should be able to act on with zero round-trips. |
+| Todo `view='tree'` | `src/precis/todo/views.py::render_tree` (dispatched from `todo.py::TodoHandler.get`) | `get(kind='todo', id=N, view='tree')` | Full subtree rollup under one root — children + status. |
 | Quest `view='tree'`/`'gaps'`/`'dossier'`/`'frontier'`/`'leaderboard'` | `src/precis/handlers/quest.py::QuestHandler.get` (per-view branches) | `get(kind='quest', id=N, view='tree'\|'gaps'\|'dossier'\|'frontier'\|'leaderboard')` | Servers+deed-ledger+health rollup; the focused exploration queue; the living research synthesis; the Pareto-frontier summary; the same frontier as a TOON design table. |
 | Quest list views `id='/gaps'`/`'/active'`/`'/dormant'`/`'/abandoned'` | `src/precis/handlers/quest.py::QuestHandler.get` (path-view branch) | `get(kind='quest', id='/gaps')` | Corpus-wide exploration queue / lifecycle-filtered quest list. |
 | Draft `view='toc'`/`'wordcount'`/`'backfill'`/`'links'` | `src/precis/handlers/draft.py::DraftHandler.get` | `get(kind='draft', id='<slug>', view='toc'\|'wordcount'\|'backfill'\|'links')` | Heading skeleton; per-section word counts vs. targets; source-backfill workspace for one heading; link graph. |
@@ -184,7 +184,7 @@ The runnable capture/score procedure lives in `scripts/context-audit/`
 
 Round-2 agent-facing render bugs, precisely root-caused, unfixed:
 - Attention view drops a halted todo's reason —
-  `src/precis/handlers/_todo_views.py::render_attention` builds h['reasons']
+  `src/precis/todo/views.py::render_attention` builds h['reasons']
   from halt:<reason> tags but only prints id+title (the sibling child-failed
   loop shows its reason). test: a halt-tagged leaf shows the reason inline.
 - Cross-kind / view='keywords' TOON tables drop the universal handle for
