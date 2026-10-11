@@ -178,11 +178,15 @@ def _passages_by_paper(chunks: list[dict[str, Any]]) -> dict[str, list[dict]]:
 
 
 @router.get("/claim/{head}", response_class=HTMLResponse)
-async def claim_view(request: Request, head: str) -> HTMLResponse:
+def claim_view(request: Request, head: str) -> HTMLResponse:
     """The claim hub's one page: the sentence, the ★ print set, the fuller
     corroborating/contradicting evidence, and — when the store carries the
     nanopub mixin — the review-and-sign section (state, DAG, approve/sign
-    action)."""
+    action).
+
+    Plain ``def`` (run in the threadpool): the context build does blocking
+    DB and LLM-judge calls, which as ``async def`` stalled the event loop
+    and every other request with it (gr473425)."""
     ctx = claim_page_context(get_store(request), head, embedder=get_embedder(request))
     # htmx-aware (the ``flags.py`` pattern): the /nanopub workbench swaps
     # this claim straight into its review pane, so an htmx request gets the

@@ -125,8 +125,8 @@ def _index_context(request: Request) -> dict[str, Any]:
             cited = overview.draft_cited_hub_ids(store, draft_ref_id)
             draft_filter = {"ref_id": draft_ref_id, "label": f"dr{draft_ref_id}"}
 
-    roots = overview.hub_tree(store)
     rows = overview.hub_rows(store)
+    roots = overview.hub_tree(store, rows=rows)
     if cited is not None:
         # Tally over the DISPLAYED set (pruned subtrees), not the literal
         # cite targets: a cited composite's conjunct atoms are real sign

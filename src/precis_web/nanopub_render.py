@@ -23,11 +23,13 @@ without a routes-module import cycle back the other way.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from precis.errors import Upstream
@@ -271,17 +273,33 @@ def _nearest_claims(
     except Upstream:
         return [], "nearest claims unavailable (embedder unavailable; retry shortly)"
     others = [c for c in candidates if c.hub_ref_id != hub_ref_id][:k]
+    # Judge the neighbours concurrently: each verdict is one ~10 s cloud
+    # `claude -p` round trip, and k of them one after another made the
+    # claim pane (and, via the blocked event loop, the whole /nanopub
+    # page) take ~40-50 s (gr473425). Each task gets its own contextvars
+    # copy so the router keeps the session attribution, as in
+    # ``canon.judge_candidates``.
+    verdicts: list[Any] = []
+    if others:
+        with ThreadPoolExecutor(
+            max_workers=len(others), thread_name_prefix="nearest-judge"
+        ) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, judge_fn, sentence, c.claim)
+                for c in others
+            ]
+            verdicts = [f.result() for f in futures]
     rows = [
         {
             "hub_ref_id": c.hub_ref_id,
             "handle": handle_registry.format_handle("finding", c.hub_ref_id),
             "claim": c.claim,
             "distance": c.distance,
-            "verdict": (v := judge_fn(sentence, c.claim))["verdict"],
+            "verdict": v["verdict"],
             "confidence": v["confidence"],
             "can_merge": own_mergeable,
         }
-        for c in others
+        for c, v in zip(others, verdicts, strict=True)
     ]
     return rows, None
 

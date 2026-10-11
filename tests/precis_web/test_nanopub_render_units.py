@@ -776,6 +776,36 @@ def test_nearest_claims_excludes_self_and_shapes_rows() -> None:
     assert row["can_merge"] is True
 
 
+def test_nearest_claims_judges_neighbours_concurrently() -> None:
+    """gr473425: k serial ~10 s judge calls made the claim pane take ~40 s.
+    A 3-party barrier only releases when all three judges run at once (a
+    serial loop times out → BrokenBarrierError), and row order must still
+    follow candidate order."""
+    from precis.taproot.canon import MergeCandidate
+
+    barrier = threading.Barrier(3, timeout=5)
+
+    def _judge(a, b):
+        barrier.wait()
+        return {"verdict": "different", "confidence": 0.1, "rationale": b}
+
+    rows, note = _nearest_claims(
+        object(),
+        1,
+        "sentence",
+        None,
+        embedder=object(),
+        nearest_fn=lambda *a, **k: [
+            MergeCandidate(hub_ref_id=i, claim=f"c{i}", distance=0.1 * i)
+            for i in (2, 3, 4)
+        ],
+        judge_fn=_judge,
+        own_mergeable=True,
+    )
+    assert note is None
+    assert [r["hub_ref_id"] for r in rows] == [2, 3, 4]
+
+
 def test_nearest_claims_can_merge_follows_own_mergeable() -> None:
     from precis.taproot.canon import MergeCandidate
 
