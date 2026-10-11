@@ -101,6 +101,7 @@ from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
 from precis.pcb import layer_lock as pcb_layer_lock
+from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
@@ -3411,21 +3412,47 @@ class PcbHandler(Handler):
         for r in rows:
             key = route_summary_status(r["status"], r.get("note"))
             counts[key] = counts.get(key, 0) + 1
+        try:
+            lengths = self._net_length_ratios(ref_id)
+        except Exception:  # diagnostic column only; never break route-status
+            log.warning("route-status len_ratio failed ref=%s", ref_id, exc_info=True)
+            lengths = {}
         table_rows = [
             {
                 "net": r["name"],
                 "class": r["net_class"] or "—",
                 "domain": r["domain"] or "electrical",
                 "status": r["status"] + (f" ({r['note']})" if r.get("note") else ""),
+                "len_ratio": lengths.get(r["name"], "—"),
             }
             for r in rows
         ]
-        return Response(
-            body=f"# route status — {format_route_summary(counts)}\n"
-            + render_agent_table(
-                table_rows, schema=["net", "class", "domain", "status"]
-            )
+        schema = ["net", "class", "domain", "status"]
+        if lengths:
+            schema.append("len_ratio")
+        body = f"# route status — {format_route_summary(counts)}\n" + (
+            render_agent_table(table_rows, schema=schema)
         )
+        if lengths:
+            body += (
+                "\nlen_ratio = routed track mm / pad-to-pad spanning-tree mm "
+                "(~1 = direct; large = detour, gr451277)"
+            )
+        return Response(body=body)
+
+    def _net_length_ratios(self, ref_id: int) -> dict[str, str]:
+        """``{net: 'N.NN'}`` routed-length ratio for nets with routed copper
+        (:func:`precis.pcb.length_ratio.net_lengths`); empty when the board
+        has none."""
+        board = self.store.pcb_load(ref_id)["board"]
+        if board is None:
+            return {}
+        copper = self.store.pcb_copper_list(int(board["board_id"]))
+        if not any(c.get("ctype") == "track" for c in copper):
+            return {}
+        layers = [str(layer.get("name")) for layer in board["stackup"]]
+        found = pcb_length_ratio.net_lengths(copper, self._drc_pads(ref_id, layers))
+        return {n: f"{v.ratio:.2f}" for n, v in found.items() if v.ratio is not None}
 
     def _render_congestion(self, ref_id: int) -> Response:
         """The latest ``op='route'`` run's congestion digest — per-gap
