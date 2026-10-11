@@ -163,11 +163,20 @@ def _deadline_epoch(meta: dict[str, Any]) -> float:
     at all — so an undeclared-budget job still gets SOME bound rather than
     an unbounded poll.
     """
+    return time.time() + _wall_bound_seconds(meta)
+
+
+def _wall_bound_seconds(meta: dict[str, Any]) -> int:
+    """Wall-clock bound (seconds) for one job: declared
+    ``resources.wall_seconds`` plus :data:`_LEASE_MARGIN_S`, or the lease
+    horizon when the job declares none. Shared by the detached deadline
+    (:func:`_deadline_epoch`) and the legacy blocking-dispatch cutoff
+    (:func:`_dispatch_bounded`)."""
     resources = (meta.get("params") or {}).get("resources") or {}
     wall = int(resources.get("wall_seconds", 0) or 0)
     if wall:
-        return time.time() + wall + _LEASE_MARGIN_S
-    return time.time() + _lease_seconds(meta)
+        return wall + _LEASE_MARGIN_S
+    return _lease_seconds(meta)
 
 
 #: Job_type names already warned-about this process (§H piece 4): the
@@ -312,8 +321,12 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                 failed += 1
                 continue
             ctx = _build_dispatch_context(store, ref_id, title, meta)
-            _run_one(ctx)
-            ok += 1
+            if _run_one(ctx):
+                # Blocking dispatch cut off at its wall-clock bound: the
+                # job was failed by ``_dispatch_bounded``.
+                failed += 1
+            else:
+                ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
             log.warning("ssh_node: job %d raised: %s", ref_id, exc, exc_info=True)
@@ -509,7 +522,7 @@ def _poll_one(ctx: DispatchContext) -> bool:
     return terminal
 
 
-def _run_one(ctx: DispatchContext) -> None:
+def _run_one(ctx: DispatchContext) -> bool:
     """Dispatch one claimed job — detached submit (§H piece 4, preferred)
     when the job_type exposes ``submit``/``poll``, else the legacy
     blocking ``dispatch`` (deprecated, gr187627).
@@ -527,7 +540,7 @@ def _run_one(ctx: DispatchContext) -> None:
             gripe_rollback=None,
             failure_class="infra",
         )
-        return
+        return False
     spec = get_job_type(str(job_type_name))
     if spec is None:
         _record_failure(
@@ -537,7 +550,7 @@ def _run_one(ctx: DispatchContext) -> None:
             gripe_rollback=None,
             failure_class="infra",
         )
-        return
+        return False
 
     # Cooperative cancel before doing remote work.
     with store.pool.connection() as conn:
@@ -551,7 +564,7 @@ def _run_one(ctx: DispatchContext) -> None:
             )
             _set_status(store, ref_id, _CANCELLED, conn=conn)
             conn.commit()
-            return
+            return False
 
     if spec.submit is not None and spec.poll is not None:
         # gr191673: commit a submit-INTENT marker before launching the
@@ -588,7 +601,7 @@ def _run_one(ctx: DispatchContext) -> None:
                 submit_started_at=None,
             )
             conn.commit()
-        return
+        return False
 
     if spec.dispatch is None:
         _record_failure(
@@ -599,7 +612,7 @@ def _run_one(ctx: DispatchContext) -> None:
             gripe_rollback=None,
             failure_class="infra",
         )
-        return
+        return False
 
     if spec.name not in _warned_legacy_job_types:
         _warned_legacy_job_types.add(spec.name)
@@ -612,7 +625,118 @@ def _run_one(ctx: DispatchContext) -> None:
             spec.name,
         )
 
-    spec.dispatch(ctx, spec)
+    return _dispatch_bounded(ctx, spec)
+
+
+def _dispatch_bounded(ctx: DispatchContext, spec: Any) -> bool:
+    """Run the legacy blocking ``spec.dispatch`` under an outer wall-clock
+    bound (gr336604). Without it a hung dispatch (no submit/poll, nothing
+    observing ``kill_requested``) holds the worker pass for hours.
+
+    The dispatch runs on a daemon thread; on expiry the job is failed
+    (``failure_class="timeout"``) and the pass moves on. A Python thread
+    cannot be killed, and a legacy dispatch has no handle for
+    ``spec.kill``, so the hung thread (and any remote process it spawned)
+    is abandoned, not reaped — the log line names the job so an operator
+    can find the orphan.
+
+    Returns ``True`` if the dispatch timed out and the job was failed here,
+    ``False`` if it finished (or raised, which propagates) in time."""
+    import dataclasses
+    import threading
+
+    bound = _wall_bound_seconds(ctx.meta)
+    outcome: dict[str, BaseException] = {}
+    abandoned = threading.Event()
+
+    def _warn_ignored(name: str) -> None:
+        log.warning(
+            "ssh_node: job %d: abandoned dispatch thread called ctx.%s "
+            "after the wall-clock bound fired; ignored (gr336604)",
+            ctx.ref_id,
+            name,
+        )
+
+    def _guard(name: str, fn: Any, blocked: Any = None) -> Any:
+        def _wrapped(*a: Any, **k: Any) -> Any:
+            if abandoned.is_set():
+                _warn_ignored(name)
+                return blocked
+            return fn(*a, **k)
+
+        return _wrapped
+
+    # Closures each open their own pool connection (see
+    # ``_build_dispatch_context``), so the thread shares no connection or
+    # transaction with the pass loop; the guard only silences job writes
+    # once the bound has fired. ``ctx.store`` itself is deliberately NOT
+    # guarded: a plugin writing through the raw store handle bypasses this.
+    from precis.workers.executors._context import DispatchContext as _Ctx
+
+    class _GuardedCtx(_Ctx):
+        def spawn_child(self, *a: Any, **k: Any) -> Any:
+            if abandoned.is_set():
+                _warn_ignored("spawn_child")
+                return None
+            return super().spawn_child(*a, **k)
+
+    gctx = _GuardedCtx(
+        **{
+            **{f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)},
+            "set_status": _guard("set_status", ctx.set_status),
+            "append_chunk": _guard("append_chunk", ctx.append_chunk),
+            "set_meta": _guard("set_meta", ctx.set_meta),
+            "record_failure": _guard("record_failure", ctx.record_failure),
+            "renew_lease": (
+                _guard("renew_lease", ctx.renew_lease, blocked=False)
+                if ctx.renew_lease is not None
+                else None
+            ),
+        }
+    )
+
+    def _target() -> None:
+        try:
+            spec.dispatch(gctx, spec)
+        except BaseException as exc:  # re-raised in the caller below
+            outcome["exc"] = exc
+
+    worker = threading.Thread(
+        target=_target, name=f"ssh_node-dispatch-{ctx.ref_id}", daemon=True
+    )
+    worker.start()
+    worker.join(bound)
+    # Set BEFORE re-checking liveness: a thread finishing in the gap is
+    # then treated as finished, and one still running can no longer write.
+    abandoned.set()
+    if worker.is_alive():
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+                (ctx.ref_id,),
+            ).fetchone()
+        if row is not None and row[0] != _RUNNING:
+            # Reached a terminal state itself just before the guard closed.
+            return False
+        reason = (
+            f"runner: blocking dispatch of job_type {spec.name!r} exceeded "
+            f"its {bound}s wall-clock bound (gr336604) — failing the job; "
+            "the dispatch thread and any remote process it started are NOT "
+            "killed (legacy dispatch has no kill handle) and may be orphaned"
+        )
+        log.error("ssh_node: job %d: %s", ctx.ref_id, reason)
+        _record_failure(
+            ctx.store,
+            ctx.ref_id,
+            reason,
+            gripe_rollback=None,
+            failure_class="timeout",
+        )
+        return True
+    if "exc" in outcome:
+        raise outcome["exc"]
+    return False
 
 
 __all__ = ["run_ssh_node_pass"]

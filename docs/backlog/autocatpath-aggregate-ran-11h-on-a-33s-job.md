@@ -133,9 +133,12 @@ Three actions:
 1. Ops: stop the legacy blocking `autocatpath_aggregate` job 449981 (the
    cancel in "What happened" may not have stuck; check its state) so it cannot
    be re-claimed after a bounce.
-2. Code: an outer timeout, or a submit/poll shape, for `job_ssh_node`'s
-   blocking dispatch (see "The structural gap behind it").
+2. Code: the outer wall-clock timeout on `ssh_node`'s blocking dispatch has
+   shipped (fails the job at `resources.wall_seconds` + margin; the hung
+   thread and any remote process are abandoned, not killed). Still open:
+   convert `struct_relax` / `autocatpath_aggregate` to submit/poll so the
+   remote process is killable (see "The structural gap behind it").
 3. Ops: confirm castor worker RSS stays flat over a day after both. Then
    decide whether pollux needs its own watch (RSS and heartbeat age).
 
-Who: ops for 1 and 3, agent-code for 2 (M).
+Who: ops for 1 and 3, agent-code for the submit/poll conversion (M).
