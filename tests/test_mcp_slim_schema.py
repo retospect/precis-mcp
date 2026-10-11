@@ -123,7 +123,7 @@ def test_title_on_a_text_kind_points_at_text(mcp_runtime: None) -> None:
     (Fable dogfood 2026-10-08)."""
     out = _call("put", {"kind": "todo", "title": "x"})
     assert "[error:BadInput]" in out, out
-    assert "todo takes the title in text=" in out, out
+    assert "todo: the title is the first line of text=" in out, out
     assert "text: " not in out, out
 
 

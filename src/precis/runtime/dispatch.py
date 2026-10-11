@@ -2017,7 +2017,7 @@ class DispatchMixin(RuntimeShape):
                     type(handler), verb, {k for k in accepted_top if k not in core}
                 )
                 hint = (
-                    f" — {kind} takes the title in text="
+                    f" — {kind}: the title is the first line of text="
                     if "title" in unknown_top and "text" in accepted_top
                     else ""
                 )
@@ -2611,6 +2611,34 @@ class DispatchMixin(RuntimeShape):
         args["id"] = str(pk) + suffix
         return True
 
+    def _infer_batch_kind(self, args: dict[str, Any], idents: Any) -> None:
+        """``get(id=['pc1', 'pc2'])`` with no ``kind=``: infer the kind per
+        handle via the single-id path. One shared kind → that kind's batch
+        get with the rewritten public ids; mixed kinds → ``BadInput``
+        naming them. Items that don't self-identify leave the call as is."""
+        if args.get("kind") is not None or not idents:
+            return
+        if not all(isinstance(i, str) for i in idents):
+            return
+        kinds: list[str] = []
+        rewritten: list[str] = []
+        for ident in idents:
+            sub: dict[str, Any] = {"id": ident}
+            self._maybe_split_prefixed_id(sub)
+            if sub.get("kind") is None:
+                return
+            kinds.append(sub["kind"])
+            rewritten.append(sub["id"])
+        distinct = sorted(set(kinds))
+        if len(distinct) > 1:
+            raise BadInput(
+                f"id= list mixes kinds {distinct!r}; one batch needs one kind",
+                next="split into one call per kind, e.g. "
+                + ", ".join(f"get(kind={k!r}, id=[...])" for k in distinct),
+            )
+        args["kind"] = distinct[0]
+        args["id"] = rewritten
+
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
         """D1: extract a self-identifying kind from ``id=`` into
         ``args['kind']``.
@@ -2629,6 +2657,9 @@ class DispatchMixin(RuntimeShape):
         Anything else passes through unchanged.
         """
         ident = args.get("id")
+        if isinstance(ident, (list, tuple)):
+            self._infer_batch_kind(args, ident)
+            return
         if not isinstance(ident, str):
             return
         # Address sigil (``¶`` draft chunk, ``§`` paper citation) is

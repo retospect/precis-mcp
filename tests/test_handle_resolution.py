@@ -80,6 +80,33 @@ def test_surface_get_by_handle_routes_like_explicit_kind(
     assert via_handle == via_explicit
 
 
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_handle_list_infers_shared_kind(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    refs = [store.insert_ref(kind="memory", slug=None, title=f"b{i}") for i in range(2)]
+    hs = [handle_registry.format_handle("memory", r.id) for r in refs]
+    via_handles = runtime_with_store.dispatch("get", {"id": hs})
+    via_explicit = runtime_with_store.dispatch(
+        "get", {"kind": "memory", "id": [str(r.id) for r in refs]}
+    )
+    assert via_handles == via_explicit
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_handle_list_mixed_kinds_refused(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    m = store.insert_ref(kind="memory", slug=None, title="m")
+    other = store.insert_ref(kind="todo", slug=None, title="t")
+    hs = [
+        handle_registry.format_handle("memory", m.id),
+        handle_registry.format_handle("todo", other.id),
+    ]
+    out = runtime_with_store.dispatch("get", {"id": hs})
+    assert "mixes kinds" in out and "memory" in out and "todo" in out, out
+
+
 # --- chunk handles (universal handles — computed from chunk_id) -------------------
 
 
