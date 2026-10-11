@@ -290,6 +290,12 @@ parent's. **An SI ref cites as its parent:** a search hit in SI text reads
 exports as the parent's citation. `get(id=<parent>)` lists its SI refs;
 `get(id=<SI>)` names its parent. To attach an SI PDF by hand, drop it in the
 inbox with a sidecar `role: supplement` and `ref_id` = the parent's ref id.
+To supply the PDF for a wanted stub by hand, drop it in the inbox named by
+the stub's handle: `pa<id>.pdf` or `pa<id>-<anything>.pdf` (e.g.
+`pa343399-hedberg1987.pdf`). It folds into that stub, keeping its metadata,
+instead of minting a twin. A handle that names a paper which already has a
+body, a retired ref or a non-paper is ignored and the file ingests as a new
+paper.
 To declare an existing record as an SI after the fact, run
 `edit(kind="paper", id="<si handle>", mode="replace",
 args={"supplement_of": "<parent slug or paN>"})`; it refuses when the record

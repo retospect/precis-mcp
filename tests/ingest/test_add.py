@@ -666,6 +666,88 @@ class TestSidecarFold:
         assert result.inserted is True
         assert result.ref_id != dead.id
 
+    @pytest.mark.parametrize("suffix", ["", "-hedberg1987"])
+    def test_handle_named_drop_folds_into_stub(self, store, tmp_path: Path, suffix):
+        """gr479094: ``pa<id>.pdf`` / ``pa<id>-x.pdf`` with no sidecar and no
+        id dedup folds into that wanted stub instead of minting a twin."""
+        stub = store.insert_ref(kind="paper", slug="hedberg87", title="Wanted stub")
+        pdf = tmp_path / f"pa{stub.id}{suffix}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 handle" + suffix.encode())
+        sha = hashlib.sha256(b"%PDF-1.4 handle" + suffix.encode()).hexdigest()
+        poor = _fixture_paper(
+            paper_id="hpid" + str(len(suffix)), doi=None, pdf_sha256=sha
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=poor):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert result is not None
+        assert result.inserted is False
+        assert result.ref_id == stub.id
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256, title FROM refs WHERE ref_id=%s", (stub.id,)
+            ).fetchone()
+        assert row[0] == sha
+        assert row[1] == "Wanted stub"
+
+    def test_handle_named_drop_on_bodied_ref_falls_back(self, store, tmp_path: Path):
+        """Handle naming a paper that already has a body is not a stub:
+        normal insert, the existing paper is untouched."""
+        sha0 = hashlib.sha256(b"%PDF-1.4 first").hexdigest()
+        first = tmp_path / "first.pdf"
+        first.write_bytes(b"%PDF-1.4 first")
+        with patch(
+            "precis.ingest.pipeline.extract_paper",
+            return_value=_fixture_paper(
+                paper_id="bodied1", doi="10.1/b1", pdf_sha256=sha0
+            ),
+        ):
+            owner = precis_add(PdfInput(pdf_path=first), store=store)
+        assert owner is not None
+        pdf = tmp_path / f"pa{owner.ref_id}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 second")
+        sha = hashlib.sha256(b"%PDF-1.4 second").hexdigest()
+        other = _fixture_paper(paper_id="bodied2", doi="10.1/b2", pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=other):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert result is not None
+        assert result.inserted is True
+        assert result.ref_id != owner.ref_id
+        with store.pool.connection() as conn:
+            assert (
+                conn.execute(
+                    "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", (owner.ref_id,)
+                ).fetchone()[0]
+                == sha0
+            )
+
+    def test_handle_named_drop_wrong_kind_not_folded(self, store, tmp_path: Path):
+        draft = store.insert_ref(kind="draft", slug="mydraft", title="a draft")
+        pdf = tmp_path / f"pa{draft.id}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 wk")
+        sha = hashlib.sha256(b"%PDF-1.4 wk").hexdigest()
+        paper = _fixture_paper(paper_id="wkpid", doi="10.1/wk", pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert result is not None
+        assert result.inserted is True
+        assert result.ref_id != draft.id
+        with store.pool.connection() as conn:
+            assert (
+                conn.execute(
+                    "SELECT retired_at FROM refs WHERE ref_id=%s", (draft.id,)
+                ).fetchone()[0]
+                is None
+            )
+
+    def test_handle_stem_parse(self):
+        from precis.ingest.add import _handle_stem_ref_id
+
+        assert _handle_stem_ref_id("pa343399") == 343399
+        assert _handle_stem_ref_id("PA12-x y") == 12
+        assert _handle_stem_ref_id("pa") is None
+        assert _handle_stem_ref_id("pa12x") is None
+        assert _handle_stem_ref_id("xpa12") is None
+
     def test_new_ref_branch_folds_orphan_stub_by_filename(self, store, tmp_path: Path):
         """Root-cause fix: the *first* ingest of a paper (a dedup miss →
         new ref) must still fold the orphan stub it was fetched for, even

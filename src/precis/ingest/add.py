@@ -26,6 +26,7 @@ actually stored, not what the pipeline freshly computed).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -475,16 +476,20 @@ def _ingest_pdf(
             content_hash=paper.content_hash,
             conn=conn,
         )
-        if existing is None and input.fold_ref_id is not None:
-            # No identifier-based dedup hit, but the OA-fetch sidecar named
-            # the stub this PDF was fetched *for*. Fold into it directly
+        fold_ref_id = input.fold_ref_id
+        if existing is None and fold_ref_id is None:
+            # Manual drop named by handle (``pa123.pdf``): same fold, no sidecar.
+            fold_ref_id = _handle_stem_ref_id(input.pdf_path.stem)
+        if existing is None and fold_ref_id is not None:
+            # No identifier-based dedup hit, but the OA-fetch sidecar (or a
+            # ``pa<id>`` filename) named the stub this PDF was fetched *for*. Fold into it directly
             # (promote in place) rather than minting a duplicate — the
             # deterministic, filename-independent path that survives the
             # multi-host inbox race. Guarded to a *live metadata-only stub*
             # of the same kind, so a stale / already-upgraded / soft-deleted
             # target falls through to a normal insert.
             existing = _valid_fold_stub(
-                input.fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
+                fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
             )
             if existing is not None:
                 log.info(
@@ -492,6 +497,14 @@ def _ingest_pdf(
                     "(no id dedup hit; keeping stub metadata)",
                     input.pdf_path.name,
                     existing,
+                )
+            elif input.fold_ref_id is None:
+                log.warning(
+                    "precis_add: %s names handle ref_id=%s but it is not a "
+                    "valid fold stub (retired, wrong kind, has a body, or DOI "
+                    "mismatch); ingesting as a new ref",
+                    input.pdf_path.name,
+                    fold_ref_id,
                 )
         if existing is not None:
             # Existing ref hit — never re-insert, but always (a) register
@@ -813,6 +826,20 @@ def _doi_conflicts(fetched_doi: str | None, ref_id: int, *, conn: Any) -> str | 
     return journal[0]
 
 
+_HANDLE_STEM_RE = re.compile(r"pa(\d+)(?:-.*)?", re.IGNORECASE | re.DOTALL)
+
+
+def _handle_stem_ref_id(stem: str) -> int | None:
+    """``pa<digits>`` / ``pa<digits>-<anything>`` filename stem -> ref_id.
+
+    The ``pa<id>`` handle is what every surface shows, so a human drops a
+    PDF for a wanted stub under that name. Pure parse; callers still gate
+    the result through :func:`_valid_fold_stub`.
+    """
+    m = _HANDLE_STEM_RE.fullmatch(stem.strip())
+    return int(m.group(1)) if m else None
+
+
 def _valid_fold_stub(
     ref_id: int, *, kind: str, conn: Any, doi: str | None = None
 ) -> int | None:
@@ -973,6 +1000,21 @@ def _reconcile_orphan_stub(
         """,
         (stem, survivor_ref_id),
     ).fetchone()
+    if row is None:
+        handle_ref = _handle_stem_ref_id(stem)
+        if handle_ref is not None and handle_ref != survivor_ref_id:
+            handle_stub = _valid_fold_stub(handle_ref, kind="paper", conn=conn)
+            if handle_stub is not None:
+                row = (handle_stub,)
+            else:
+                log.warning(
+                    "precis_add: stem=%r names ref_id=%s but it is not a valid "
+                    "fold stub (retired, wrong kind or has a body) — not "
+                    "reconciled (survivor ref_id=%s)",
+                    stem,
+                    handle_ref,
+                    survivor_ref_id,
+                )
     if row is None:
         _warn_skipped_cite_key_match(conn, stem=stem, exclude_ref_id=survivor_ref_id)
         return None
