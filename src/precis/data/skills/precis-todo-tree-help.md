@@ -254,8 +254,8 @@ edit(
 tag(kind="todo", id=42, remove=["ask-user:which-format"])  # copy the exact tag; bare may be "ask-user"
 ```
 
-Replace the complete `body=` with the existing details plus the answer;
-only `mode='replace'` is supported. Record the answer before removing the
+Replace the complete `body=` with the existing details plus the answer, or
+change one span with `mode='find-replace'` / `'insert'` (`find=`, `text=`). Record the answer before removing the
 ask-user tag, which releases the human-reply wait.
 
 ## Waiting, blocked, and asks

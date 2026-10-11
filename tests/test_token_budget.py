@@ -206,11 +206,15 @@ def test_tools_list_under_byte_budget() -> None:
     advertise a slim core set and kind-specific kwargs ride ``args={...}``
     (``precis.tools.mcp_slim``). Measured 12921 B; cap is ~5% above. New
     kwargs belong in ``args``, not in the advertised schema.
+
+    2026-10-11: cap raised 13568 → 13824 B for ``delete(args=...)`` (the
+    args bag itself; hides gripe/todo comments) and one put-description
+    line on appending comments (gr478557). Measured 13748 B.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 13568, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 13.25 KB). "
+    assert size < 13824, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 13.5 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

@@ -68,14 +68,17 @@ def test_put_with_existing_id_rejects_instead_of_duplicating(
     """``put(id=<existing>)`` used to silently mint a new row — ``id``
     was accepted in the signature but never forwarded to the base
     ``put``'s own rejection, so ``_reject_mutating_put`` never saw it.
-    It must now raise, naming ``edit(...mode='replace')`` as the fix."""
+    It must raise, naming ``edit(...mode='replace')`` as the fix. Text alone
+    is now the comment idiom (appends, never a new row); any other field
+    beside ``id=`` is still refused."""
     r = handler.put(text="original")
     tid = handler.store.list_refs(kind="todo", limit=1)[0].id
     before = handler.store.list_refs(kind="todo", limit=10)
     with pytest.raises(BadInput, match="put on existing todo") as ei:
-        handler.put(id=tid, text="mutate me")
+        handler.put(id=tid, text="mutate me", prio=2)
     assert "edit(kind='todo'" in (ei.value.next or "")
     assert "mode='replace'" in (ei.value.next or "")
+    assert "appended comment" in handler.put(id=tid, text="a comment").body
     after = handler.store.list_refs(kind="todo", limit=10)
     # No duplicate row was minted.
     assert len(after) == len(before)

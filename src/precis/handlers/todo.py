@@ -57,20 +57,30 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from precis.errors import BadInput, Unsupported
+from precis.handlers import _comment_timeline as tl
 from precis.handlers import _todo_guards as guards
 from precis.handlers import _todo_views as views
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._tag_redirect import redirect_long_tag_values
+from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.utils import handle_registry
+from precis.utils.edit_resolve import (
+    EditOp,
+    apply_edit,
+    format_unified_diff,
+    normalize_dry_run,
+    render_dry_run_full,
+    render_dry_run_header,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
 
@@ -83,6 +93,8 @@ if TYPE_CHECKING:
 #: (a good header already); the body is extra prose read on ``get`` and
 #: embedded + keyworded for free. Additive — most todos never set one.
 _BODY_KIND = TODO_BODY_KIND
+#: Chunk kind of an appended comment (migration 0195; the gripe_comment shape).
+_COMMENT_KIND = "todo_comment"
 
 
 class TodoView(StrEnum):
@@ -221,7 +233,11 @@ class TodoHandler(NumericRefHandler):
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
         "search": frozenset({"under"}),
+        "delete": tl.DELETE_ARGS_KEYS,
     }
+    #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
+    #: points at it, gr478557).
+    supports_comment: ClassVar[bool] = True
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="todo",
@@ -247,12 +263,13 @@ class TodoHandler(NumericRefHandler):
         id_required=False,
         note_like=True,
         placement="artifact",
-        # edit()'s only accepted mode — the top-level tools/core.py::edit
-        # signature defaults mode= to 'find-replace' (the file-kind
-        # default), so a caller that omits mode= on a todo edit still
-        # arrives here with a non-'replace' value; require_mode()
-        # reads this declaration to say so precisely (gr292913).
-        edit_modes=("replace",),
+        # 'replace' rewrites the title and/or details body; 'find-replace' /
+        # 'insert' are anchored edits of the details body (gr478556). The
+        # top-level tools/core.py::edit signature defaults mode= to
+        # 'find-replace' (the file-kind default), so a caller that omits
+        # mode= still arrives here with it; require_mode() reads this
+        # declaration (gr292913).
+        edit_modes=("replace", "find-replace", "insert"),
     )
 
     kind: ClassVar[str] = "todo"
@@ -320,6 +337,9 @@ class TodoHandler(NumericRefHandler):
                 )
             ref_id = self._coerce_id(id)
             return views.render_tree(self.store, ref_id)
+        if view == "comments":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_comments(ref, full=True))
         if view is not None and view in _TREE_GET_VIEWS:
             # Future tree-flavoured get views land here.
             raise Unsupported(
@@ -421,18 +441,33 @@ class TodoHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
-        # ``put`` is create-only on this kind (mirrors the base
-        # NumericRefHandler contract) — but unlike the base ``put``,
-        # ``id`` isn't forwarded to ``super().put()`` below (it's
-        # consumed here for the parent/tier bookkeeping instead), so
-        # the base's own id-rejection (``_reject_mutating_put``) never
-        # sees it and silently mints a duplicate row instead of
-        # rejecting the mutate-an-existing-todo shape (gr450132). Reject
-        # up front, before any of that bookkeeping runs.
+        # ``put`` creates, or (id=N + text= alone) appends a comment. ``id``
+        # isn't forwarded to ``super().put()`` below (it's consumed here for
+        # the parent/tier bookkeeping), so the base's own id-rejection never
+        # sees it and would silently mint a duplicate row for any other
+        # mutate-an-existing-todo shape (gr450132): refuse those up front.
         if id is not None:
+            # Text alone on an existing todo appends a comment (the gripe
+            # idiom). Any other put kwarg keeps the old refusal.
+            others = (
+                mode, tags, untags, link, unlink, rel, auto_refresh_days,
+                parent_id, prio, meta, body, executor, job_type, params,
+            )  # fmt: skip
+            if text is not None and text.strip() and all(o is None for o in others):
+                ref = self._resolve_live_ref(self._coerce_id(id))
+                return tl.append_comment(
+                    self.store,
+                    ref,
+                    kind=self.kind,
+                    comment_kind=_COMMENT_KIND,
+                    text=text,
+                )
             raise BadInput(
-                f"put on existing {self._sense()} id={id!r} is not supported",
+                f"put on existing {self._sense()} id={id!r} is not supported"
+                " (text= alone appends a comment; other fields are not accepted)",
                 next=(
+                    f"put(kind={self.kind!r}, id={id}, text='your comment') "
+                    "to comment, "
                     f"edit(kind={self.kind!r}, id={id}, mode='replace', "
                     "text='...'/body='...') to rewrite it, or "
                     f"tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...]) "
@@ -803,6 +838,12 @@ class TodoHandler(NumericRefHandler):
         body: str | None = None,
         meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
+        find: str | None = None,
+        before: str = "",
+        after: str = "",
+        where: str | None = None,
+        match: str = "unique",
+        nth: int | None = None,
         **_kw: Any,
     ) -> Response:
         """In-place rewrite of a todo's title and/or details body.
@@ -824,6 +865,13 @@ class TodoHandler(NumericRefHandler):
         other meta mutation still goes through ``tag(meta=...)``'s
         allowlisted promotion.
 
+        ``mode='find-replace'`` / ``'insert'`` (gr478556) edit the details
+        body in place: ``find=`` locates literal text (unique unless
+        ``match=``), ``text=`` replaces it (or goes ``where='before'|'after'``
+        it for insert); same vocabulary as memory via
+        :mod:`precis.utils.edit_resolve`. Comment chunks are never touched.
+        The title stays replace-only.
+
         ``dry_run=True`` previews the replacement without writing — the
         tool-level contract every editable kind must honour (a silent
         write on ``dry_run`` is data loss).
@@ -833,6 +881,25 @@ class TodoHandler(NumericRefHandler):
             raise BadInput(
                 "edit(kind='todo') requires id=",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
+            )
+        if mode == "insert" or (mode == "find-replace" and find is not None):
+            if meta is not None or (body is not None and body.strip()):
+                raise BadInput(
+                    f"meta=/body= are replace-only; mode={mode!r} edits the "
+                    "details body in place",
+                    next=f"edit(kind='todo', id={id}, mode='replace', body='...')",
+                )
+            return self._edit_anchored(
+                ref_id=self._coerce_id(id),
+                mode=mode,
+                find=find,
+                text=text,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                dry_run=dry_run,
             )
         # A meta-only patch rewrites no text, so mode= has nothing to select
         # and is not required. It cannot simply be validated either: the
@@ -848,6 +915,18 @@ class TodoHandler(NumericRefHandler):
         )
         if not meta_only:
             require_mode(spec=self.spec, verb="edit", mode=mode)
+            if mode != "replace":
+                # The MCP default mode is 'find-replace'; with no find= this
+                # call is a whole-text write that never chose 'replace'.
+                raise BadInput(
+                    f"mode={mode!r} requires find= (the exact text to locate)",
+                    next=(
+                        f"edit(kind='todo', id={id}, mode='find-replace', "
+                        "find='exact text', text='replacement') — or, to "
+                        f"rewrite the title/body, edit(kind='todo', id={id}, "
+                        "mode='replace', text='...'/body='...')"
+                    ),
+                )
         unset_llm_tier = False
         if meta is not None:
             if set(meta) != {"llm_tier"} or meta["llm_tier"] is not None:
@@ -935,6 +1014,117 @@ class TodoHandler(NumericRefHandler):
                 "view='log' for the full diff."
             )
         )
+
+    def _edit_anchored(
+        self,
+        *,
+        ref_id: int,
+        mode: str,
+        find: str | None,
+        text: str | None,
+        before: str,
+        after: str,
+        where: str | None,
+        match: str,
+        nth: int | None,
+        dry_run: bool | str | None,
+    ) -> Response:
+        """``mode='find-replace'`` / ``'insert'`` on the ``todo_body`` chunk.
+
+        Resolves the edit over the current body with the shared pure
+        resolver, then writes via ``replace_body_chunk`` (DELETE + INSERT,
+        ``body_replaced`` audit row) — only the ``todo_body`` chunk is
+        replaced, comment chunks are untouched. Owner-only guard and
+        ``dry_run`` apply as for ``mode='replace'``.
+        """
+        text = mask_secrets(text)
+        dry_mode = normalize_dry_run(dry_run)
+        op_kind = "edit" if mode == "find-replace" else "insert"
+        _require_find_and_text(
+            op_kind=op_kind,
+            kind=self.kind,
+            slug=str(ref_id),
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+        )
+        assert find is not None and text is not None
+        guards.check_owner_only_ref(self.store, ref_id)
+        ref = self._resolve_live_ref(ref_id)
+        old_body = self._body_text(ref)
+        if old_body is None:
+            raise BadInput(
+                f"todo id={ref.id} has no details body to edit",
+                next=(
+                    f"edit(kind='todo', id={ref.id}, mode='replace', "
+                    "body='...') sets one"
+                ),
+            )
+        label = f"{self.kind} {ref.id}"
+        op = EditOp(
+            op="edit" if op_kind == "edit" else "insert",
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=cast("Any", where),
+            match=cast("Any", match),
+            nth=nth,
+            region_label=label,
+        )
+        result = apply_edit(old_body, op)
+        new_body = result.new_buffer
+        if not new_body.strip():
+            raise BadInput(
+                f"edit would leave {label} with an empty details body",
+                next="edit with replacement text, or keep the body as is",
+            )
+        if dry_mode is not None:
+            header = render_dry_run_header(
+                region_label=label,
+                edited_spans=result.edited_spans,
+                match_policy=op.match,
+            )
+            if dry_mode == "full":
+                preview = render_dry_run_full(
+                    new_body, edited_spans=result.edited_spans, region_label=label
+                )
+            else:
+                diff = format_unified_diff(old_body, new_body, file_label=label)
+                preview = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            return Response(body="\n".join([*header, "", preview]))
+        with self.store.tx() as conn:
+            self.store.chunks.replace_body_chunk(
+                ref.id,
+                new_body,
+                chunk_kind=_BODY_KIND,
+                source=guards._caller_source(),
+                conn=conn,
+            )
+        verb = "edited" if op_kind == "edit" else "inserted into"
+        n_spans = len(result.edited_spans)
+        return Response(
+            body=(
+                f"{verb} details body of todo id={ref.id} "
+                f"({len(old_body.split())} → {len(new_body.split())} words, "
+                f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+                "view='log' for the full diff."
+            )
+        )
+
+    # ── comments: render + hide ───────────────────────────────────
+
+    def _render_comments(self, ref: Ref, *, full: bool) -> str:
+        comments = [
+            b
+            for b in self.store.chunks.list_chunks_for_ref(ref.id)
+            if b.chunk_kind == _COMMENT_KIND
+        ]
+        return tl.render_comments(ref, comments, kind=self.kind, full=full)
 
     # ── tag: gradient guard + STATUS:done event emission ──────────
 
@@ -1226,7 +1416,25 @@ class TodoHandler(NumericRefHandler):
 
     # ── delete: owner-only guard on strategic / tactical ──────────
 
-    def delete(self, *, id: str | int, **_kw: Any) -> Response:  # type: ignore[override]
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        args: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        if id is None:
+            raise BadInput(f"delete(kind={self.kind!r}) requires id=")
+        if args:
+            if "comment" not in args:
+                raise BadInput(
+                    f"unknown delete args {sorted(args)!r}",
+                    next=f"delete(kind='todo', id={id}, args={{'comment': <K>}})",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return tl.delete_comment(
+                self.store, ref, kind=self.kind, comment_kind=_COMMENT_KIND, args=args
+            )
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
         # Slice 4 footgun: refuse to delete refs that carry a
@@ -1301,6 +1509,10 @@ class TodoHandler(NumericRefHandler):
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))
+        comments = self._render_comments(ref, full=False)
+        if comments:
+            out.append("")
+            out.append(comments)
         return "\n".join(out)
 
     def _body_text(self, ref: Ref) -> str | None:

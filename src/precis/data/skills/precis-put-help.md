@@ -20,6 +20,10 @@ links on the same call. Kind-specific options go inside args={...}; an unknown k
 `edit`; flipping tags or links on an existing ref lives on `tag`
 and `link`.
 
+`put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
+one (no `args=`); older comments are shown as one-liners, `view='comments'`
+shows all.
+
 ## Jot a thought into memory
 ## Capture a quick note I want to keep
 ## How do I record something for later?

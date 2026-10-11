@@ -1973,6 +1973,14 @@ class DispatchMixin(RuntimeShape):
                         f"keys {unknown!r} not accepted by {kind}.{verb}; "
                         f"its args= keys are listed below",
                         options=accepted_kwargs,
+                        # gr478557: gripe/todo comment via id= + text=, not args=.
+                        next=(
+                            f"to comment: put(kind={kind!r}, id=N, text='...') "
+                            "with no args"
+                            if verb == "put"
+                            and getattr(handler, "supports_comment", False)
+                            else None
+                        ),
                     )
                 args.update(_coerce_extras(type(handler), verb, extras))
 

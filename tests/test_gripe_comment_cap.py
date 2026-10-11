@@ -9,7 +9,7 @@ from precis.store import Tag
 from precis.store.types import ChunkInsert
 
 
-@pytest.mark.parametrize("count", [0, 20, 55])
+@pytest.mark.parametrize("count", [0, 3, 8, 55])
 def test_comment_timeline_default_and_full(hub: Hub, count: int) -> None:
     handler = GripeHandler(hub=hub)
     handler.put(text="Synthetic timeline body")
@@ -31,15 +31,17 @@ def test_comment_timeline_default_and_full(hub: Hub, count: int) -> None:
     )
     default = handler.get(id=rid).body
     assert "Synthetic timeline body" in default
-    assert default.count("## comment ") == min(count, 20)
+    # newest 3 in full (newest first); older ones as one-liners, capped at 20
+    assert default.count("## comment ") == min(count, 3)
     for i in range(1, count + 1):
-        assert (f"fixture-comment-{i:03d}" in default) == (i > count - 20)
-    if count > 20:
-        assert "+35 more" in default
-        assert "view='comments'" in default
-        assert default.index("## comment 36") < default.index("## comment 55")
+        assert (f"fixture-comment-{i:03d}" in default) == (i > count - 23)
+    if count > 23:
+        assert "+32 older" in default
+        assert default.index("## comment 55") < default.index("## comment 53")
     else:
         assert "+" not in default
+    if count:
+        assert "view='comments'" in default
     full = handler.get(id=rid, view="comments").body
     assert full.count("## comment ") == count
     for i in range(1, count + 1):

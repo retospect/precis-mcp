@@ -19,3 +19,7 @@ pg_backup_cron_hour: "3"
 pg_backup_cron_minute: "30"
 backup_window_start_utc: "03:00"
 backup_window_end_utc: "04:20"
+
+# Nightly B2 offsite sync. Off: the offsite copy is a full NAS-disk copy
+# (td461209, Reto 2026-10-11). Set true in the overlay to re-enable.
+b2_sync_enabled: false

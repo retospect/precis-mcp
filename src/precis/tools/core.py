@@ -1286,6 +1286,7 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
+    put(kind='gripe'|'todo', id=N, text=...) appends a comment to an existing one.
     `mode=`: file kinds use 'create'; paid-import kinds use 'import';
     numeric-ref kinds omit it. `tags=`/`untags=` add/remove; `link=`/`unlink=`
     use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
@@ -1731,6 +1732,9 @@ def delete(
     # python line-range ids (…~L<a>-<b>): the sha= of the read's ``range:``
     # line; the delete lands on the lines that hash to it or refuses.
     base_sha: str | None = None,
+    # gripe/todo: args={'comment': K} hides comment K (add 'restore': True to
+    # undo); see precis-delete-help.
+    args: dict[str, Any] | None = None,
 ) -> str:
     """Delete a ref or addressed region.
 
@@ -1749,9 +1753,18 @@ def delete(
     Full reference: get(kind='skill', id='precis-delete-help'), or
     search(kind='skill', q='removing a ref') for a topical lookup.
     """
-    return _dispatch(
-        "delete", {"kind": kind, "id": id, "mode": mode, "base_sha": base_sha}
-    )
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "id": id,
+        "mode": mode,
+        "base_sha": base_sha,
+    }
+    if args:
+        reserved_err = _check_reserved_args(args, reserved=("kind", "id", "mode"))
+        if reserved_err is not None:
+            return reserved_err
+        payload["__extras__"] = dict(args)
+    return _dispatch("delete", payload)
 
 
 def tag(

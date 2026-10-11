@@ -1801,7 +1801,7 @@ class ChunkStore:
         keys on ``content_sha IS DISTINCT FROM``, unmoved by a text-only
         UPDATE) — delete cascades the derived rows, the fresh insert
         re-enters the embed+keyword queues. New chunk lands at the old
-        ord (or 0 if none existed).
+        ord (or the next free ord if none existed).
 
         Writes a ``body_replaced`` ``ref_events`` row (old+new text) for
         ``view='log'``. Returns the previous text, or ``None`` if absent.
@@ -1817,7 +1817,21 @@ class ChunkStore:
                 (ref_id, chunk_kind),
             ).fetchone()
             old_text = row[0] if row is not None else None
-            pos = int(row[1]) if row is not None else 0
+            if row is not None:
+                pos = int(row[1])
+            else:
+                # No body yet: ord 0 when free (readers such as taproot's
+                # ord=0 finding_body join expect it there), else the next
+                # free ord — a tag_overflow or comment chunk may already
+                # hold 0 (UNIQUE (ref_id, ord)).
+                nxt = c.execute(
+                    "SELECT CASE WHEN EXISTS (SELECT 1 FROM chunks "
+                    "WHERE ref_id = %s AND ord = 0) "
+                    "THEN (SELECT MAX(ord) + 1 FROM chunks "
+                    "WHERE ref_id = %s AND ord >= 0) ELSE 0 END",
+                    (ref_id, ref_id),
+                ).fetchone()
+                pos = int(nxt[0]) if nxt is not None else 0
             c.execute(
                 "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
                 (ref_id, chunk_kind),

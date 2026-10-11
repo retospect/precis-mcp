@@ -1839,6 +1839,18 @@ class NumericRefHandler(Handler):
                 ),
             ) from None
 
+    @staticmethod
+    def _batch_kinds() -> set[str]:
+        """Kind names of every loaded numeric-ref handler with ``batch_ids``."""
+        found: set[str] = set()
+        todo: list[type[NumericRefHandler]] = [NumericRefHandler]
+        while todo:
+            klass = todo.pop()
+            todo.extend(klass.__subclasses__())
+            if klass.batch_ids and getattr(klass, "kind", None):
+                found.add(klass.kind)
+        return found
+
     @classmethod
     def _coerce_ids(cls, ids: list[Any]) -> list[int]:
         """Normalise ``id=[...]`` to distinct integer ids, order kept.
@@ -1851,9 +1863,13 @@ class NumericRefHandler(Handler):
         element of another kind.
         """
         if not cls.batch_ids:
+            takers = sorted(cls._batch_kinds())
             raise BadInput(
                 f"{cls.kind} does not take id=[...]",
-                next="pass one call per ref (id= is not a list)",
+                next=(
+                    "pass one call per ref (id= is not a list); kinds that "
+                    f"take id=[...]: {', '.join(takers)}"
+                ),
             )
         if not ids:
             raise BadInput(

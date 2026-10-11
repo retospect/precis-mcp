@@ -149,9 +149,12 @@
     mode: "0750"
   become: true
 
+# Off by default (Reto 2026-10-11): the offsite copy is now a full NAS-disk
+# copy, not B2 (td461209). `absent` removes an already-installed entry.
 - name: Schedule nightly B2 offsite sync (after the 03:30 pg_dump, ~40 min runtime)
   ansible.builtin.cron:
     name: "nightly b2 offsite sync"
+    state: "{{ 'present' if b2_sync_enabled | bool else 'absent' }}"
     minute: "30"
     hour: "4"
     job: "{{ shared_mount }}/scripts/b2_sync.sh >> {{ shared_mount }}/logs/backup-b2.log 2>&1"

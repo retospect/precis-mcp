@@ -23,6 +23,8 @@ from precis.runtime import PrecisRuntime
 #: (kind, verb) for every in-repo handler verb that declares ``args``.
 PASSTHROUGH = [
     ("todo", "search"),
+    ("todo", "delete"),
+    ("gripe", "delete"),
     ("draft", "get"),
     ("pcb", "put"),
     ("pcb", "get"),
@@ -133,3 +135,15 @@ def test_se_get_keys_are_union_of_view_args() -> None:
 
     union: set[str] = set().union(*_VIEW_ARGS.values())
     assert SeHandler.ARGS_KEYS["get"] == union
+
+
+@pytest.mark.parametrize("kind", ["gripe", "todo"])
+def test_unknown_put_args_key_points_at_comment_idiom(
+    runtime_with_store: PrecisRuntime, kind: str
+) -> None:
+    """gr478557: ``args={'comment': True}`` on put names the real comment door."""
+    out = runtime_with_store.dispatch(
+        "put", {"kind": kind, "id": 1, "text": "x", "__extras__": {"comment": True}}
+    )
+    assert "[error:BadInput]" in out, out
+    assert f"to comment: put(kind='{kind}', id=N, text='...') with no args" in out, out

@@ -27,7 +27,9 @@ from precis.tools.mcp_slim import CORE_PARAMS
 #: Total advertised chars (inputSchema JSON + description) across all eight
 #: verbs. Measured 2026-10-08 after the diet (see test output on failure);
 #: the ceiling is ~5% above that. Before the diet: 30.7k (13.1k after).
-_SCHEMA_CHAR_CEILING = 13_800
+#: Raised 13.8k -> 14.0k for delete's args= (hide a gripe/todo comment) and the
+#: put-verb comment clause (measured 13971 on 2026-10-11).
+_SCHEMA_CHAR_CEILING = 14_000
 
 
 def _advertised_chars(name: str) -> int:

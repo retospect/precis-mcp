@@ -38,6 +38,19 @@ Server assigns the integer id and defaults to `STATUS:open`. Pass
 `args={'prio': N}` / `tags=` on `put` to set priority or project in one
 round-trip.
 
+## Comment on a todo
+
+```python
+put(kind="todo", id=122, text="Blocked on the dataset; ETA Friday.")
+```
+
+`text=` alone on an existing todo appends a comment (the gripe idiom); `get`
+shows the newest 3 in full, older ones as one-liners, and
+`get(kind='todo', id=122, view='comments')` shows all. Hide a stale one with
+`delete(kind='todo', id=122, args={'comment': 2})` (`'restore': True` undoes it).
+Edit the details body in place with `edit(kind='todo', id=122,
+mode='find-replace', find='old', text='new')` (or `mode='insert'`).
+
 ## See what's on my plate
 ## List my todos
 ## Show me the queue

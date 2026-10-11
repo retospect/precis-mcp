@@ -64,6 +64,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ActorSlug, ChunkInsert, Ref
+from precis.utils import handle_registry
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -237,6 +238,10 @@ class MemoryHandler(NumericRefHandler):
     search_body_chunks: ClassVar[bool] = True
     heat_salience_on_body_search: ClassVar[bool] = True
 
+    # get/tag take id=[...]; get is overridden below to render each memory in
+    # full (memories are short — the point of batching them is to read them).
+    batch_ids: ClassVar[bool] = True
+
     # Carry call-local title/argument/index fields through the base's create
     # plumbing; shared handler instances must never stage request state.
     accepts_put_meta: ClassVar[bool] = True
@@ -317,6 +322,39 @@ class MemoryHandler(NumericRefHandler):
                 ),
             )
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+        """``get(id=[...])``: each memory in full, in the order given.
+
+        Same body as a single ``get``, minus a ``Next:`` trailer per memory;
+        one trailer at the end points at the fisheye neighbourhood. A missing
+        or deleted id is a one-line block.
+        """
+        if view is not None:
+            raise BadInput(
+                f"view={view!r} does not combine with id=[...]",
+                next=f"get(kind='memory', id=<one id>, view={view!r})",
+            )
+        ref_ids = self._coerce_ids(ids)
+        blocks: list[str] = []
+        for rid in ref_ids:
+            handle = handle_registry.try_format(self.kind, rid) or str(rid)
+            try:
+                blocks.append(NumericRefHandler.get(self, id=rid).body)
+            except NotFound:
+                blocks.append(f"{handle}  not found")
+            except Gone:
+                blocks.append(f"{handle}  deleted")
+        body = f"# {len(ref_ids)} memory (batch)\n\n" + "\n\n---\n\n".join(blocks)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='memory', id={ref_ids[0]}, view='fisheye+1hop')",
+                    "read one with its linked neighbours",
+                )
+            ]
+        )
+        return Response(body=body)
 
     # ── put / create: ref (title) + memory_body chunk ───────────────
 
@@ -1060,7 +1098,7 @@ class MemoryHandler(NumericRefHandler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
         **_kw: Any,

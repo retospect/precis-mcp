@@ -12,9 +12,10 @@ Surface (see ``precis-gripe-help``):
 - ``put(kind='gripe', id=N, text=...)`` appends a ``gripe_comment``
   chunk to the existing gripe (id-present routes to append; same
   verb, no separate ``comment=`` field).
-- ``get(kind='gripe', id=N)`` composes the body + ordered comment
-  timeline (newest 20, chronologically) alongside header / tags / links.
-  ``view='comments'`` returns the full timeline; ``log`` stays audit events.
+- ``get(kind='gripe', id=N)`` composes the body + the newest 3 comments in
+  full (older ones as one-liners; policy in :mod:`_comment_timeline`)
+  alongside header / tags. ``view='comments'`` returns the full timeline;
+  ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
   the parent gripe — overriding ``NumericRefHandler.search`` which
@@ -30,17 +31,15 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from psycopg.errors import ForeignKeyViolation
-
-from precis.errors import BadInput, Unsupported, Upstream
-from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
+from precis.errors import BadInput, Unsupported
+from precis.handlers import _comment_timeline as tl
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store.types import ChunkInsert, ChunkRow, Ref
+from precis.store.types import Ref
 from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
@@ -75,6 +74,14 @@ class GripeHandler(NumericRefHandler):
         # rejected otherwise (see put()'s mode validation).
         modes=("create", "comment"),
     )
+
+    #: args= keys each verb reads out of ``args`` (gr475332).
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        "delete": tl.DELETE_ARGS_KEYS,
+    }
+    #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
+    #: points at it, gr478557).
+    supports_comment: ClassVar[bool] = True
 
     kind: ClassVar[str] = "gripe"
     sense: ClassVar[str] = "gripe"
@@ -373,51 +380,33 @@ class GripeHandler(NumericRefHandler):
         return self._render_create_ack(ref_id)
 
     def _append_comment(self, *, id: str | int, text: str) -> Response:
-        ref_id = self._coerce_id(id)
-        ref = self._resolve_live_ref(ref_id)
-        # Next pos = current chunk count (body is pos=0, comments
-        # follow). list_chunks_for_ref excludes synthetic cards
-        # (ord<0) so the count is exactly the body + comment count.
-        existing = self.store.chunks.list_chunks_for_ref(ref.id)
-        next_pos = len(existing)
-        try:
-            with self.store.tx() as conn:
-                self.store.chunks.insert_chunks(
-                    ref.id,
-                    [
-                        ChunkInsert(
-                            ord=next_pos,
-                            text=text,
-                            meta={"chunk_kind": _COMMENT_KIND},
-                        )
-                    ],
-                    conn=conn,
-                )
-        except ForeignKeyViolation as e:
-            # Most likely culprit: ``chunks.chunk_kind`` FK against
-            # ``chunk_kinds.slug`` — i.e. the ``gripe_comment`` row
-            # seeded by migration 0005 is missing on this DB. Surface
-            # as Upstream (server-side schema drift, not user error)
-            # with a copy-pasteable diagnostic so the operator knows
-            # what to check. Broad-pass finding #3.
-            raise Upstream(
-                f"could not append {_COMMENT_KIND} chunk to "
-                f"{self._sense()} id={ref.id} — likely missing "
-                f"chunk_kind seed",
-                next=[
-                    f"verify: SELECT slug FROM chunk_kinds WHERE "
-                    f"slug='{_COMMENT_KIND}'",
-                    "re-apply migration "
-                    "0005_gripe_first_class_and_jobs.sql against "
-                    "this DB if the row is absent",
-                ],
-            ) from e
-        return Response(
-            body=(
-                f"appended comment to {self._sense()} id={ref.id} "
-                f"(now {next_pos + 1} chunk{'s' if next_pos else ''} total)"
-            )
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        return tl.append_comment(
+            self.store, ref, kind=self.kind, comment_kind=_COMMENT_KIND, text=text
         )
+
+    # ── delete: soft-delete the gripe, or hide one comment ──────────
+
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        args: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        if id is None:
+            raise BadInput(f"delete(kind={self.kind!r}) requires id=")
+        if args and "comment" in args:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return tl.delete_comment(
+                self.store, ref, kind=self.kind, comment_kind=_COMMENT_KIND, args=args
+            )
+        if args:
+            raise BadInput(
+                f"unknown delete args {sorted(args)!r}",
+                next=f"delete(kind={self.kind!r}, id={id}, args={{'comment': <K>}})",
+            )
+        return super().delete(id=id, **_kw)
 
     # ── search: chunk (body + comment) search grouped by ref lives in
     # NumericRefHandler via the search_body_chunks opt-in above. We only
@@ -451,7 +440,7 @@ class GripeHandler(NumericRefHandler):
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(
-                body=self._render_timeline(ref, self.store.tags_for(ref.id), limit=None)
+                body=self._render_timeline(ref, self.store.tags_for(ref.id), full=True)
             )
         if view is not None and view not in _BASE_VIEWS:
             views = [*_BASE_VIEWS, "comments"]
@@ -463,9 +452,9 @@ class GripeHandler(NumericRefHandler):
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
-        return self._render_timeline(ref, tags, limit=DEFAULT_CHILD_ROW_CAP)
+        return self._render_timeline(ref, tags, full=False)
 
-    def _render_timeline(self, ref: Ref, tags: list[Tag], *, limit: int | None) -> str:
+    def _render_timeline(self, ref: Ref, tags: list[Tag], *, full: bool) -> str:
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         lines = [f"# {self._sense()} {ref.id}"]
         if ref.set_by:
@@ -475,22 +464,8 @@ class GripeHandler(NumericRefHandler):
         body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
         lines.extend(["", body])
         comments = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
-
-        def render(selected: list[ChunkRow], _total: int) -> str:
-            return "".join(
-                f"\n\n## comment {b.ord}\n{b.text}"
-                for b in sorted(selected, key=lambda b: b.ord)
-            )
-
-        return "\n".join(lines) + render_capped_section(
-            comments,
-            limit=limit,
-            key=lambda b: -b.ord,
-            render=render,
-            overflow=lambda n: (
-                f"\n\n+{n} more comments · get(kind='gripe', id='gr{ref.id}', view='comments')"
-            ),
-        )
+        section = tl.render_comments(ref, comments, kind=self.kind, full=full)
+        return "\n".join(lines) + (f"\n\n{section}" if section else "")
 
     def _render_create_ack(self, ref_id: int) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +

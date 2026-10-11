@@ -8,7 +8,7 @@ pillar: platform
 
 ## Resume
 
-- **Next:** Reto's three decisions (see decisions log), then step 1 below.
+- **Next:** slice 1 (request log). Decisions (a)–(c) ruled 2026-10-10.
 - **Mockup:** Figma file `wAfi74X5svrmVPSPCjjg6s`
   (https://www.figma.com/design/wAfi74X5svrmVPSPCjjg6s). Root frame
   "Home — proposed" `3:4`; Notes panel `3:261`; System-purpose panel
@@ -89,13 +89,13 @@ history — the same log feeds it), `drive-presenter-completeness.md`.
 
 ## Open questions / decisions log
 
-- (a) New **Home** page next to Drive, or restyle `/drive` in place?
-  Recommendation: new Home; Drive stays the browse page.
-- (b) Instrument first (request log, two-week baseline) or redesign first?
-  Recommendation: request log first — it is also the night-shift block's
-  data source.
-- (c) Build the general chat, and with which write guardrails? Does the
-  Discord bridge (`asa_bot`) already cover the use case?
+- (a) **Ruled (Reto 2026-10-10): new Home page**; Drive stays the browse
+  page.
+- (b) **Ruled (Reto 2026-10-10): request log first**, two-week baseline,
+  then Home.
+- (c) **Ruled (Reto 2026-10-10): build the general chat, with confirmed
+  writes** as specced in slice 3 (writes shown as a proposal, nothing
+  happens until the user confirms).
 - Open mockup gaps, not yet redrawn: Needs you should sit above Find;
   alerts and gripes are nav-only and belong in Needs you.
 - No before/after capture exists: `generate_figma_design` needs a running

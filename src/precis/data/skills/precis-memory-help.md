@@ -183,7 +183,12 @@ Any other `view=` on memory search is refused.
 ```python
 get(id="me73")  # handle — prefix infers kind=
 get(kind="memory", id=73)
+get(kind="memory", id=[73, 74])  # several, each in full, one call
 ```
+
+`id=[...]` (up to 50) renders every memory in full, separated by `---`;
+a missing id is a one-line block. For one memory with its linked
+neighbours use `view='fisheye+1hop'` on a single id.
 
 ## Link a memory to the paper or patent it came from
 ## Attach a note to a specific paper section

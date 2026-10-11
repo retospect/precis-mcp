@@ -37,6 +37,17 @@ Soft-delete only. The ref disappears from list views and search;
 the row is retained for audit. Links pointing at the soft-deleted
 ref persist — resolve via the link table if you need them.
 
+## Hide a stale comment on a gripe or todo
+
+```python
+delete(kind="gripe", id=470905, args={"comment": 7})  # hide comment 7
+delete(kind="gripe", id=470905, args={"comment": 7, "restore": True})  # undo
+```
+
+This does not delete the ref: the comment drops out of the default read (it
+stays searchable, and `view='comments'` shows it marked `[hidden]`). The body
+and comments of other refs are refused.
+
 ## Delete a chunk or section from a markdown / tex file
 ## Remove one part of a file without rewriting the whole thing
 ## How do I drop section X from this file?

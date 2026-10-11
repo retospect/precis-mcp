@@ -113,8 +113,9 @@ get(kind="gripe", id=42)
 #   tags + linked jobs
 ```
 
-`get` composes the body and newest 20 comments in creation order, with a
-withheld count when older comments exist. Read the complete conversation with
+`get` composes the body, then the newest 3 comments in full (newest first),
+then older ones as one-line gists, so the current state is never pushed off the
+page. Read every comment, oldest first, with
 `get(kind='gripe', id=42, view='comments')`. `view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
@@ -131,7 +132,10 @@ put(kind="gripe", id=42, text="only triggers when the slug has a hyphen")
 
 Putting to an *existing* gripe appends a `gripe_comment` chunk —
 same verb as create, the `id` presence routes it to append.
-There is no separate `comment=` field.
+There is no separate `comment=` field. To hide a stale comment from the
+default read (it stays searchable, and `view='comments'` shows it marked
+`[hidden]`): `delete(kind='gripe', id=42, args={'comment': 3})`; undo with
+`args={'comment': 3, 'restore': True}`. This never deletes the gripe.
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made

@@ -18,6 +18,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers._numeric_ref import BATCH_ID_CAP
 from precis.handlers.alert import AlertHandler
+from precis.handlers.anki import AnkiHandler
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.todo import TodoHandler
@@ -81,7 +82,7 @@ def test_get_batch_alert_shows_state(store: Store, hub: Hub) -> None:
 
 def test_get_batch_todo_skips_ancestry(hub: Hub) -> None:
     handler = TodoHandler(hub=hub)
-    root = handler.put(text="root todo").ref_id
+    root = id_of(handler.put(text="root todo").body)
     leaf = handler.put(text="leaf todo", parent_id=root).ref_id
     body = handler.get(id=_batch(leaf, root)).body
     assert body.index(f"td{leaf}") < body.index(f"td{root}")
@@ -112,10 +113,37 @@ def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
     assert "accepted only by get and tag on gripe" in str(err.value.next)
     with pytest.raises(BadInput, match="does not combine with id="):
         gripe.get(id=_batch(1), view="comments")
-    with pytest.raises(BadInput, match="does not take id="):
-        MemoryHandler(hub=hub).get(id=_batch(1, 2))
-    with pytest.raises(BadInput, match="does not take id=|got list"):
-        MemoryHandler(hub=hub).tag(id=two, add=["SPACE:repo-dev"])
+    with pytest.raises(BadInput, match="does not take id=") as refused:
+        AnkiHandler(hub=hub).get(id=_batch(1, 2))
+    assert "gripe" in str(refused.value.next) and "memory" in str(refused.value.next)
+    with pytest.raises(BadInput, match="got list"):
+        MemoryHandler(hub=hub).link(id=two, target="memory:3", rel="related-to")
+
+
+def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    first = id_of(handler.put(text="first memory\nlong tail line one").body)
+    second = id_of(handler.put(text="second memory\nlong tail line two").body)
+    missing = max(first, second) + 100_000
+    body = handler.get(id=_batch(second, missing, first)).body
+    assert body.startswith("# 3 memory (batch)")
+    assert body.index("long tail line two") < body.index(f"me{missing}  not found")
+    assert body.index(f"me{missing}  not found") < body.index("long tail line one")
+    assert "\n---\n" in body
+    assert body.count("Next:") == 1
+    assert f"get(kind='memory', id={second}, view='fisheye+1hop')" in body
+    with pytest.raises(BadInput, match="does not combine"):
+        handler.get(id=_batch(first, second), view="raw")
+
+
+def test_tag_batch_memory_is_one_transaction(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    ids: list[str | int] = [
+        id_of(handler.put(text=f"tag batch {i}").body) for i in range(2)
+    ]
+    body = handler.tag(id=ids, add=["batch-probe"]).body
+    assert "tagged 2 memory" in body
+    assert all("batch-probe" in _tags(handler.store, int(rid)) for rid in ids)
 
 
 def test_get_batch_through_dispatch(
