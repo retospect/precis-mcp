@@ -4,6 +4,8 @@ TTS."""
 
 from __future__ import annotations
 
+import pytest
+
 from precis.draft.verbalize import verbalize_numbers
 
 # ── ISO dates (must beat the range rule) ────────────────────────────────
@@ -220,3 +222,33 @@ def test_fraction_rule_leaves_dates_and_ratios_alone():
     assert verbalize_numbers("16/9 aspect").startswith("sixteen/nine")
     assert verbalize_numbers("7/22 date").startswith("seven/twenty-two")
     assert "ninth" not in verbalize_numbers("1/9/2026 stamp")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("£2bn", "two billion pounds"),
+        ("a £2bn deal", "a two billion pounds deal"),
+        ("£2.5bn", "two point five billion pounds"),
+        ("£300m", "three hundred million pounds"),
+        ("£5k", "five thousand pounds"),
+        ("£1", "one pound"),
+        ("£40", "forty pounds"),
+        ("€3 million", "three million euros"),
+        ("€1.5bn", "one point five billion euros"),
+        ("$2 billion", "two billion dollars"),
+        ("$1.2m", "one point two million dollars"),
+        ("$1", "one dollar"),
+        ("£2tn", "two trillion pounds"),
+    ],
+)
+def test_currency_symbols_and_scales(text, expected):
+    """gr415909: '£2bn' must read '2 billion pounds', not 'pound 2 bn'."""
+    assert verbalize_numbers(text) == expected
+
+
+def test_currency_scale_only_after_a_symbol():
+    # A bare "5m" / "2bn" with no currency symbol is not money; the scale
+    # letters are not consumed (the digit still verbalizes via the guard rules).
+    assert "pound" not in verbalize_numbers("a 5m pole")
+    assert "dollar" not in verbalize_numbers("2bn")

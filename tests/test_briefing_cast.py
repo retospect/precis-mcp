@@ -131,7 +131,7 @@ class TestPaperLane:
             for i in range(10)
         ]
         out = _render_papers(papers, total=23)
-        assert out.startswith("Papers acquired or updated (23)")
+        assert out.startswith("Papers acquired or updated by background jobs (23)")
         assert "13 more not listed here" in out  # 23 total − 10 named
         # The top papers carry a copy-me citation marker for the model.
         assert _cite_token(papers[0]) == "[[pa1000]]"
@@ -140,8 +140,17 @@ class TestPaperLane:
     def test_render_papers_falls_back_to_named_count(self) -> None:
         papers = [SimpleNamespace(id=5, title="Solo", meta={})]
         out = _render_papers(papers)  # no total → the named count
-        assert out.startswith("Papers acquired or updated (1)")
+        assert out.startswith("Papers acquired or updated by background jobs (1)")
         assert "more not listed" not in out
+
+    def test_render_papers_splits_new_from_background_updates(self) -> None:
+        # gr434185: the total counts any ref.updated_at bump (workers
+        # re-processing old papers), so the header must not read as human
+        # reads or all-new acquisitions.
+        papers = [SimpleNamespace(id=7, title="Old", meta={})]
+        out = _render_papers(papers, total=10000, new=12)
+        assert out.startswith("Papers newly acquired (12); 9988 older papers")
+        assert "background jobs (automated, not reads by you)" in out
 
 
 class TestReadingLane:

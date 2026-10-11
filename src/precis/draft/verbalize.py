@@ -114,8 +114,33 @@ _FRACTION = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?![\d/])")
 # Includes the plain hyphen and both dash flavours (en/em).
 _RANGE = re.compile(r"\b(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\b")
 
-# $1.2 / $500 / $1.2M (K/M/B scale suffix).
-_CURRENCY = re.compile(r"\$(\d+(?:\.\d+)?)([KMB])?\b")
+# $1.2 / $500 / $1.2M / £2bn / €3.5 million (symbol + optional scale). The
+# scale is a K/M/B/T letter, a bn/mn/tn abbreviation, or a spelled word; all
+# case-insensitive, but only directly after a currency symbol, so a bare "5m"
+# (metres) elsewhere is untouched.
+_CURRENCY = re.compile(
+    r"([$£€])(\d+(?:\.\d+)?)"
+    r"(?:\s?(thousand|million|billion|trillion|bn|mn|tn|[kmbt]))?\b",
+    re.IGNORECASE,
+)
+_CURRENCY_NAMES = {
+    "$": ("dollar", "dollars"),
+    "£": ("pound", "pounds"),
+    "€": ("euro", "euros"),
+}
+_CURRENCY_SCALES = {
+    "k": "thousand",
+    "thousand": "thousand",
+    "m": "million",
+    "mn": "million",
+    "million": "million",
+    "b": "billion",
+    "bn": "billion",
+    "billion": "billion",
+    "t": "trillion",
+    "tn": "trillion",
+    "trillion": "trillion",
+}
 
 # 45%
 _PERCENT = re.compile(r"\b(\d+(?:\.\d+)?)%")
@@ -217,11 +242,12 @@ def verbalize_numbers(text: str, *, lang: str = "en") -> str:
         return f"{numeric_words(m.group(1))} to {numeric_words(m.group(2))}"
 
     def _currency_repl(m: re.Match[str]) -> str:
-        amount, suffix = numeric_words(m.group(1)), m.group(2)
+        singular, plural = _CURRENCY_NAMES[m.group(1)]
+        raw, suffix = m.group(2), m.group(3)
+        amount = numeric_words(raw)
         if suffix:
-            scale = {"K": "thousand", "M": "million", "B": "billion"}[suffix]
-            return f"{amount} {scale} dollars"
-        return f"{amount} dollars"
+            return f"{amount} {_CURRENCY_SCALES[suffix.lower()]} {plural}"
+        return f"{amount} {singular if float(raw) == 1 else plural}"
 
     def _percent_repl(m: re.Match[str]) -> str:
         return f"{numeric_words(m.group(1))} percent"

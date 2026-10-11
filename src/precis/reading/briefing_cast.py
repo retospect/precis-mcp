@@ -299,14 +299,20 @@ def _cite_token(ref: Any) -> str:
     return f"[[{handle}]]" if handle else ""
 
 
-def _render_papers(papers: list[Any], *, total: int | None = None) -> str:
+def _render_papers(
+    papers: list[Any], *, total: int | None = None, new: int | None = None
+) -> str:
     """The overnight papers, rendered claim-first: the top few carry their
     abstracts (so the model can go deep), any tail is named for context.
 
     Each named paper carries its ``[[pa<id>]]`` citation marker so the model
     can cite it inline. ``total`` is the true overnight count (which may exceed
     the naming cap): the header reports it, and any un-named remainder is noted
-    so the brief never under-counts the night's reading."""
+    so the brief never under-counts the night's reading. ``new`` is how many of
+    ``total`` were created since the cutoff; the rest are older papers a
+    background job re-processed (enrichment, ranking, ...), so the header says
+    so rather than presenting the whole count as acquisitions or human reads
+    (gr434185)."""
     if not papers:
         return ""
     lines: list[str] = []
@@ -335,7 +341,30 @@ def _render_papers(papers: list[Any], *, total: int | None = None) -> str:
         if total is not None and count > shown
         else ""
     )
-    return f"Papers acquired or updated ({count}){extra}:\n" + "\n".join(lines)
+    if new is not None and total is not None:
+        bg = max(count - new, 0)
+        head = (
+            f"Papers newly acquired ({new}); {bg} older papers were updated by "
+            f"background jobs (automated, not reads by you)"
+        )
+    else:
+        head = f"Papers acquired or updated by background jobs ({count})"
+    return f"{head}{extra}:\n" + "\n".join(lines)
+
+
+def _count_new_papers_since(store: Store, cutoff: datetime) -> int | None:
+    """Papers *created* since ``cutoff`` (acquisitions only); ``None`` on error."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM refs "
+                "WHERE kind = 'paper' AND retired_at IS NULL AND created_at > %s",
+                (cutoff,),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+    except Exception:  # pragma: no cover - falls back to the unsplit header
+        log.debug("reading brief: new-paper count unavailable", exc_info=True)
+        return None
 
 
 def _count_papers_since(store: Store, cutoff: datetime) -> int:
@@ -427,7 +456,12 @@ def _lane_system_activity(
     parts: list[str] = []
 
     papers = store.list_refs(kind="paper", updated_after=cutoff, limit=_LANE_ITEM_CAP)
-    rendered_papers = _render_papers(papers, total=_count_papers_since(store, cutoff))
+    total_papers = _count_papers_since(store, cutoff)
+    rendered_papers = _render_papers(
+        papers,
+        total=total_papers,
+        new=_count_new_papers_since(store, cutoff) if total_papers else None,
+    )
     if rendered_papers:
         parts.append(rendered_papers)
         _collect(sources, papers, "cites")  # open the paper later
