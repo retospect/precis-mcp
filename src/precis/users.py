@@ -109,6 +109,9 @@ class WebUser:
     #: Canonical dashed ORCID iD, or ``None``. The identity a nanopub
     #: this person signs is attributed to — see :func:`normalize_orcid`.
     orcid: str | None = None
+    #: Numeric Discord user id (snowflake), or ``None`` — how asa_bot maps
+    #: a Discord speaker to this account. See :func:`normalize_discord_user_id`.
+    discord_user_id: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -174,6 +177,24 @@ def normalize_orcid(raw: str) -> str:
         # BadInput is the MCP envelope; the two callers here are a CLI and
         # an HTML form, both of which speak ValueError already.
         raise ValueError(str(exc)) from exc
+
+
+def normalize_discord_user_id(raw: str) -> str:
+    """Numeric Discord user id, ``""`` for empty. Raises ``ValueError``.
+
+    Digits only, 17-20 long (a 64-bit snowflake). A display name or
+    ``name#1234`` is refused on purpose: those change, the id does not.
+    Mirrors the column CHECK in ``0196_web_users_discord_user_id.sql``.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if not value.isascii() or not value.isdigit() or not 17 <= len(value) <= 20:
+        raise ValueError(
+            "a Discord user id is 17-20 digits (enable Developer Mode, "
+            "right-click your name, Copy User ID) — not a username"
+        )
+    return value
 
 
 def normalize_login(value: str) -> str:
@@ -396,6 +417,7 @@ __all__ = [
     "forget_feed_token",
     "hash_password",
     "mint_feed_token",
+    "normalize_discord_user_id",
     "normalize_login",
     "normalize_orcid",
     "recall_feed_token",

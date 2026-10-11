@@ -58,6 +58,8 @@ from shapely.geometry import Point, Polygon, box
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
+from precis.errors import BadInput
+
 Vec = tuple[float, float, float]
 
 JOINTS: tuple[str, ...] = ("finger", "straight")
@@ -66,8 +68,10 @@ JOINTS: tuple[str, ...] = ("finger", "straight")
 _MIN_WEB_T = 1.0
 
 
-class FlatpackError(ValueError):
-    """A parameter set the generator refuses — always naming the rule."""
+class FlatpackError(BadInput, ValueError):
+    """A parameter set the generator refuses — always naming the rule.
+    A :class:`~precis.errors.BadInput`, so any MCP path surfaces it as one;
+    still a ``ValueError`` for python callers."""
 
 
 def _fmt(v: float) -> str:

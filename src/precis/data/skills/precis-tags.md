@@ -162,7 +162,7 @@ the canonical list:
 | `SRC:` | `primary` / `secondary` | agent |
 | `CACHE:` | `fresh` / `stale` / `pinned` | system |
 | `WATCH:` | `hourly` / `daily` / `weekly` / `monthly` | agent (cache-backed refs) |
-| `DREAM:` | `consolidated` / `speculative` / `acquire` | dreaming worker |
+| `DREAM:` | `consolidated` / `speculative` / `acquire` | dreaming worker; `consolidated` (supersede) and `acquire` (paper stubs) are system-set -- agent `put`/`tag` of them on a memory is refused, `speculative` is writable |
 | `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
 | `AUDIT:` | `missing-citation` / `empty-stub` / `unsupported-claim` / `citation-drift` / `missing-data` / `ungrounded-number` | content-QA audit (on the anchored change-request `todo`/`finding`); on a `memory`, `ungrounded-number` is derived: a number beside a citation is not in the cited text (write-time gate; a clean rewrite clears it) |
 | `ATTEMPT:` | `open` / `active` / `tried` / `ruled-out` / `idea` | quest tick (chunk-level — on a dossier's ledger-node chunks, not refs) |
@@ -213,7 +213,7 @@ axes and suggests the lowercase rewrite.
 | `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
-| `memory` | `DREAM` (dreaming-worker provenance), `SPACE` (default `research`; a caller's `SPACE:` replaces it), `STALE` (system-set), `AUDIT` (`ungrounded-number`, set by the attribution gate) |
+| `memory` | `DREAM` (dreaming-worker provenance; `consolidated`/`acquire` system-set), `SPACE` (default `research`; a caller's `SPACE:` replaces it), `STALE` (system-set), `AUDIT` (`ungrounded-number`, set by the attribution gate) |
 | `skill` | `SPACE` |
 | `anki`, `conv`, `oracle` | _none_ — use lowercase open tags or bare flags |
 

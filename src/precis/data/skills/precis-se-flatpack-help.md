@@ -34,7 +34,11 @@ design cannot yet hold one.
 
 `flatpack_box(W, H, D, material='corrugated-3mm', t=None, shelves=[],
 joint='finger', fit=None, kerf=None, cutter_d=0, sheet=None,
-shelf_load_n=None)` — all mm except `shelf_load_n`.
+shelf_load_n=None, laser=None)` — all mm except `shelf_load_n` (newtons)
+and `laser` (below). Bad parameters raise `FlatpackError`, a `BadInput`
+(and `ValueError`) that names the rule: `shelves` must be a list of
+heights (`[22]`, not `22`); `fit` and `kerf` must be at least 0 and below
+`t`; `shelf_load_n` cannot be negative.
 An open-front box `W × H × D` (width × height × depth): two sides, top,
 bottom, back, one shelf per height in `shelves` (inside bottom to the
 shelf's underside). Every figure derives from the sheet thickness `t`
@@ -90,7 +94,16 @@ The generator emits a **sheet job** (`precis.sheet`): sheet size and
 material, ordered layers (one op each — `cut`, `score`, `engrave_vector`,
 `drill`; `engrave_raster` is reserved and refused), per-machine settings
 on a layer, shapes tied to parts. The box is one `cut` layer with each
-part's slots before its outline, in nesting order.
+part's slots before its outline, in nesting order. There is no `score`
+layer: every joint is cut through, so the box has no fold or score line
+(the exporter handles a score layer when a design adds one).
+
+The `cut` layer carries the material's laser settings (`laser=` on the
+call overrides per op and key: `laser={'cut': {'speed_mm_s': 8}}`;
+keys `power_pct`, `speed_mm_s`, `passes`). For `corrugated-3mm` the
+starting point is 100 % at 6 mm/s, one pass (score: 15 %, 120 mm/s) —
+unmeasured, tune on the first cube. Plywood carries none (CNC), so a laser
+export of it falls back to the exporter's generic defaults and says so.
 
 - `precis.sheet.svg_laser.export_laser_svg` — mm units, one `<g>` per
   layer in LightBurn's palette order with `data-power-pct`,

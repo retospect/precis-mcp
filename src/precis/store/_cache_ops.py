@@ -127,6 +127,39 @@ class CacheMixin:
         )
         return (ref, cache)
 
+    def get_cache_entry_by_ref_id(
+        self,
+        *,
+        kind: str,
+        ref_id: int,
+    ) -> tuple[Ref, CacheEntry] | None:
+        """Look up a cached ref + freshness row by ``(kind, ref_id)``.
+
+        For agents that cite a cache by its numeric ref id (memories write
+        ``websearch:170350``) rather than its slug. The ``kind`` filter keeps
+        a number from resolving to some other kind's ref.
+        """
+        sql = f"""
+            SELECT {_REFS_COLS_FOR_CACHE},
+                   cs.ref_id, cs.provider, cs.request_hash, cs.model,
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta
+            FROM cache_state cs
+            JOIN refs ON refs.ref_id = cs.ref_id
+            WHERE refs.kind = %s
+              AND refs.ref_id = %s
+              AND refs.retired_at IS NULL
+            LIMIT 1
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (kind, ref_id)).fetchone()
+        if row is None:
+            return None
+        ref = _row_to_ref(row[:_REFS_COLS_LEN])
+        cache = _row_to_cache_entry(
+            row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN]
+        )
+        return (ref, cache)
+
     def get_cache_entry_by_slug(
         self,
         *,

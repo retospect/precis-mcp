@@ -293,7 +293,11 @@ def test_switched_cable_real_nonlinear_barrier_vs_linear_affine_estimate() -> No
     )
 
     lin = probe_bistability(coords, members, rate, fl_a, fl_b, idiom, fixed)
-    assert lin.bistable  # both states are legitimate, stable linear equilibria
+    # both states are legitimate, stable linear equilibria — of two
+    # different free-length assignments, so not one structure's two wells
+    # (gr478016): the linear verdict is not bistable, the |dE| barrier
+    # number is still reported as an actuation-energy scale
+    assert not lin.bistable
     assert lin.states[0].solved and lin.states[0].stable
     assert lin.states[1].solved and lin.states[1].stable
     assert lin.barrier is not None and lin.barrier > 0.0
@@ -336,7 +340,8 @@ def test_switched_cable_monostable_case_reports_no_barrier() -> None:
     )
 
     lin = probe_bistability(coords, members, rate, fl_a, fl_b, idiom, fixed)
-    assert lin.bistable
+    assert not lin.bistable  # two structures, one equilibrium each (gr478016)
+    assert all(st.solved and st.stable for st in lin.states)
 
     nl = trace_equilibrium_branch(
         coords, members, rate, fl_a, fl_b, idiom, fixed, steps=500, max_halving=12

@@ -1538,6 +1538,11 @@ def main(
     # PRECIS_CHECKOUT_WATCHDOG, so this is a no-op everywhere else.
     start_checkout_watchdog()
     runtime = _init_runtime()
+    # A stdio server run for one asa speaker writes as that account; a
+    # network transport always stays ``agent`` (precis.acting_user).
+    from precis.acting_user import install_from_env
+
+    install_from_env(runtime.store, transport=transport)
     from precis.workers.heartbeat import start_nas_attest_thread
 
     start_nas_attest_thread(runtime.store, default_process="precis-serve")

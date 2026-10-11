@@ -741,30 +741,29 @@ def _write_digest(
     `kind='memory'` row can answer "when did this reviewer last run"
     without inspecting tags.
     """
+    from precis.dispatch import Hub
+
     today = datetime.now(UTC).date().isoformat()
     meta: dict[str, Any] = {
         f"{reviewer.meta_prefix}date": today,
         f"{reviewer.meta_prefix}cost_usd": cost_usd,
     }
-    title = (
-        body.strip() or f"{reviewer.name.replace('_', ' ').title()} {today}: (empty)"
+    text = body.strip() or f"{reviewer.name.replace('_', ' ').title()} {today}: (empty)"
+    # Same create path as an agent ``put`` (short derived title, body in the
+    # ``memory_body`` chunk) so mention autolink and the attribution audit
+    # run on digests too; ``write_system`` tags ``set_by='system'``.
+    handler = Hub(store=store).sibling("memory")
+    written: int = handler.write_system(
+        text=text,
+        tags=[
+            f"tree-review:{today}",
+            reviewer.digest_tag,
+            "user:asa",
+            "internal-thought",
+        ],
+        meta=meta,
     )
-    with store.tx() as conn:
-        ref = store.insert_ref(
-            kind="memory",
-            slug=None,
-            title=title,
-            meta=meta,
-            conn=conn,
-        )
-        for tag in (
-            Tag.open(f"tree-review:{today}"),
-            Tag.open(reviewer.digest_tag),
-            Tag.open("user:asa"),
-            Tag.open("internal-thought"),
-        ):
-            store.add_tag(ref.id, tag, set_by="system", conn=conn)
-    return int(ref.id)
+    return written
 
 
 def _mcp_config_path() -> Path | None:

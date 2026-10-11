@@ -49,6 +49,25 @@ _current: ContextVar[RevisionContext | None] = ContextVar(
 )
 
 
+#: Process-wide fallback actor for verb writes with no enclosing context
+#: (:func:`precis.runtime.dispatch._write_context`). ``None`` means the
+#: generic ``agent``. Set once at boot by :mod:`precis.acting_user`, and
+#: only by a stdio ``precis serve`` — one process per caller there, so a
+#: process value is a per-caller value. Never set on a shared server.
+_process_actor: str | None = None
+
+
+def set_process_actor(actor: str | None) -> None:
+    """Set (or clear, with ``None``) the process-wide fallback write actor."""
+    global _process_actor
+    _process_actor = actor or None
+
+
+def process_actor() -> str | None:
+    """The process-wide fallback write actor, or ``None``."""
+    return _process_actor
+
+
 def current_revision_context() -> RevisionContext | None:
     """The active context, or ``None`` outside any :func:`revision_context`."""
     return _current.get()

@@ -47,6 +47,14 @@ the bundled skills list (code-review, loop, ...), both passed via ``--settings``
 (:data:`_ASA_SETTINGS`) so the behaviour does not depend on the deployed user
 settings file alone. The Agent roster is intentional and stays; the
 environment block is not configurable.
+
+Write attribution: ``acting_user`` (the speaker's account abbrev, ``None``
+when unmapped) reaches the turn's precis writes on both lanes — as
+``PRECIS_ACTING_USER`` in the env overlay, which the deployed mcp.json passes
+to the ``precis serve`` that ``claude -p`` spawns, and as an enclosing
+``revision_context`` around the chain lane's in-process tool loop
+(:mod:`precis.acting_user`). Unmapped turns set it empty and write as
+``agent``.
 """
 
 from __future__ import annotations
@@ -64,6 +72,8 @@ from typing import Any
 from asa_bot.config import LLMConfig
 from asa_bot.llm_runtime import warm_runtime
 from asa_bot.oauth import ensure_oauth_token
+from precis.acting_user import ENV_VAR as ACTING_USER_ENV
+from precis.acting_user import actor_for
 from precis.utils.llm.router import (
     LlmRequest,
     LlmResult,
@@ -226,6 +236,38 @@ def _flag_value(argv: list[str], flag: str, default: str) -> str:
     return default
 
 
+def _turn_overlay(
+    cfg: LLMConfig, conv_slug: str, acting_user: str | None
+) -> dict[str, str]:
+    """The per-turn env overlay: config env, conv slug, speaker account.
+
+    :data:`~precis.acting_user.ENV_VAR` is always set, empty when unmapped,
+    so a value in asa's own environment never attributes another turn.
+    """
+    overlay: dict[str, str] = dict(cfg.env)
+    # Hooks read ASA_CONV_SLUG to attach a Stop-hook capture to the right
+    # conv ref (see the module docstring — an independent mechanism from the
+    # router's own llm_call_log write).
+    overlay["ASA_CONV_SLUG"] = conv_slug
+    overlay[ACTING_USER_ENV] = acting_user or ""
+    return overlay
+
+
+def _route_as(req: LlmRequest, acting_user: str | None) -> LlmResult:
+    """``route(req)`` with in-process verb writes attributed to ``acting_user``.
+
+    Runs on the chain executor's thread, so the revision context is entered
+    here rather than in the coroutine (``run_in_executor`` does not carry
+    contextvars). A ``claude_agent`` fallback rung gets the env overlay instead.
+    """
+    if not acting_user:
+        return route(req)
+    from precis.store.revision_context import revision_context
+
+    with revision_context(actor=actor_for(acting_user)):
+        return route(req)
+
+
 async def invoke(
     cfg: LLMConfig,
     system_prompt: str,
@@ -233,6 +275,7 @@ async def invoke(
     *,
     conv_slug: str,
     on_progress: Callable[..., Any] | None = None,
+    acting_user: str | None = None,
 ) -> ClaudeResult:
     """Run one claude -p turn via the router. Returns the aggregated ClaudeResult.
 
@@ -289,13 +332,10 @@ async def invoke(
             conv_slug=conv_slug,
             result=result,
             max_turns=max_turns,
+            acting_user=acting_user,
         )
 
-    # Hooks read ASA_CONV_SLUG to attach a Stop-hook capture to the right
-    # conv ref (see the module docstring — an independent mechanism from the
-    # router's own llm_call_log write below).
-    overlay: dict[str, str] = dict(cfg.env)
-    overlay["ASA_CONV_SLUG"] = conv_slug
+    overlay = _turn_overlay(cfg, conv_slug, acting_user)
     # asa_bot can run as a bare `deploy` user with no ~/.claude state, in
     # which case CLAUDE_CODE_OAUTH_TOKEN comes from the vault over asa's OWN
     # PRECIS_DATABASE_URL connection (asa_bot.secrets.reveal_secret) — NOT
@@ -373,6 +413,7 @@ async def _invoke_via_chain(
     conv_slug: str,
     result: ClaudeResult,
     max_turns: int,
+    acting_user: str | None = None,
 ) -> ClaudeResult:
     """One turn on the router's BIG placement chain (``--model local``).
 
@@ -394,8 +435,7 @@ async def _invoke_via_chain(
 
     Never raises — same contract as :func:`invoke`.
     """
-    overlay: dict[str, str] = dict(cfg.env)
-    overlay["ASA_CONV_SLUG"] = conv_slug
+    overlay = _turn_overlay(cfg, conv_slug, acting_user)
     ensure_oauth_token(overlay)
 
     req = LlmRequest(
@@ -420,7 +460,7 @@ async def _invoke_via_chain(
     try:
         await loop.run_in_executor(executor, warm_runtime)
         llm_result: LlmResult = await loop.run_in_executor(
-            executor, partial(route, req)
+            executor, partial(_route_as, req, acting_user)
         )
     except Exception:
         # Never raise out of invoke() — see its docstring's contract note.

@@ -775,3 +775,56 @@ def test_with_auth_off_the_remarkable_flag_defaults_false(
     assert r.status_code == 200
     assert captured["remarkable_paired"] is False
     assert "remarkable_fallback" not in captured
+
+
+# ── discord user id (asa_bot's account mapping) ──────────────────────
+
+SNOWFLAKE = "123456789012345678"
+
+
+def _profile(store: FakeStore, discord: str):
+    return _client(store).post(
+        "/account/profile",
+        data={"full_name": "", "email": "", "discord_user_id": discord},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+
+
+def test_profile_saves_and_clears_the_discord_user_id() -> None:
+    store = FakeStore()
+    assert _profile(store, f" {SNOWFLAKE} ").status_code == 303
+    assert store.user.discord_user_id == SNOWFLAKE
+    assert _profile(store, "").status_code == 303
+    assert store.user.discord_user_id is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["reto#1234", "12345", "1234567890123456a", "1" * 21, "１" * 18],
+)
+def test_profile_refuses_a_discord_id_that_is_not_a_snowflake(bad: str) -> None:
+    store = FakeStore()
+    r = _profile(store, bad)
+    assert r.status_code == 200
+    assert "Discord user id" in r.text
+    assert store.user.discord_user_id is None
+
+
+def test_profile_shows_a_taken_discord_id_as_a_banner_not_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeStore()
+
+    def _taken(login: str, **fields: object) -> bool:
+        raise ValueError("that Discord user id is already on another account")
+
+    monkeypatch.setattr(store, "update_web_user", _taken)
+    r = _profile(store, SNOWFLAKE)
+    assert r.status_code == 200
+    assert "already on another account" in r.text
+
+
+def test_the_page_has_a_discord_user_id_field() -> None:
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert 'name="discord_user_id"' in r.text

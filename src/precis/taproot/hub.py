@@ -2023,6 +2023,14 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
                 f"{label} ref_id={ref_id} has nanopub_publish state(s) {states} "
                 "(past 'candidate')"
             )
+    # retire_ref refuses a loser still cited by live draft chunks; surface
+    # that here so a dry run reports it and a real run refuses before any
+    # write (gr478510).
+    from precis.store._refs_ops import finding_cited_error
+
+    cited = finding_cited_error(conn, loser_ref_id)
+    if cited is not None:
+        blocked.append(str(cited.cause))
     can_merge = not blocked
     block_reason = "; ".join(blocked) if blocked else None
 
@@ -2172,6 +2180,19 @@ def _apply_merge_plan(
     store.retire_ref(plan.loser_ref_id, conn=conn)
 
 
+def _require_actor(conn: Any, set_by: str) -> None:
+    """Refuse an unknown ``set_by`` before any write, listing valid slugs
+    (gr478510: the bare FK error gave no hint)."""
+    if conn.execute("SELECT 1 FROM actors WHERE slug = %s", (set_by,)).fetchone():
+        return
+    slugs = [r[0] for r in conn.execute("SELECT slug FROM actors ORDER BY slug")]
+    raise BadInput(
+        f"set_by actor {set_by!r} does not exist (valid actors: "
+        f"{', '.join(slugs)}; see the actors table)",
+        next="pass --set-by <one of the valid actors>",
+    )
+
+
 def merge_hubs(
     store: Store,
     *,
@@ -2216,6 +2237,7 @@ def merge_hubs(
         )
 
     def _do(c: Any) -> MergePlan:
+        _require_actor(c, set_by)
         plan = _build_merge_plan(
             c, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
         )
@@ -2228,7 +2250,9 @@ def merge_hubs(
                 next=(
                     "a hub past 'candidate' in nanopub_publish has a frozen "
                     "identity -- merging it would retroactively re-identify "
-                    "a reviewed/signed/published artifact"
+                    "a reviewed/signed/published artifact; a hub still cited "
+                    "by live draft chunks needs those [fi<id>] cites "
+                    "re-pointed first"
                 ),
             )
         _apply_merge_plan(store, c, plan, set_by=set_by)

@@ -295,6 +295,26 @@ def test_numeric_slug_ref_served_free_on_retrieval(
     assert _StubClient.last_payload is None  # served from cache, no fetch
 
 
+def test_numeric_ref_id_served_free_on_retrieval(
+    websearch: WebsearchHandler, think: ThinkHandler
+) -> None:
+    """gr478483: memories cite a cache as ``websearch:<ref id>``; get() by
+    that number (str or int) resolves the ref from cache, no paid call, and
+    never crosses kinds."""
+    websearch.get(id="who is the CEO of Anthropic")
+    refs = websearch.store.list_refs(kind="websearch")
+    ref_id = refs[0].id
+    _StubClient.last_payload = None
+    for ident in (str(ref_id), ref_id):
+        resp = websearch.get(id=ident)
+        assert "Dario Amodei" in resp.body
+    assert _StubClient.last_payload is None
+    # The same number under another perplexity kind is not that kind's ref.
+    with pytest.raises(BadInput, match="bare number"):
+        think.get(id=str(ref_id))
+    assert _StubClient.last_payload is None
+
+
 def test_non_numeric_query_unaffected(websearch: WebsearchHandler) -> None:
     resp = websearch.get(id="who is the CEO of Anthropic")
     assert "Dario Amodei" in resp.body

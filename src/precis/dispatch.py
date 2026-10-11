@@ -243,6 +243,7 @@ class Hub:
         "quest": ("precis.handlers.quest", "QuestHandler"),
         "finding": ("precis.handlers.finding", "FindingHandler"),
         "conv": ("precis.handlers.conversation", "ConversationHandler"),
+        "memory": ("precis.handlers.memory", "MemoryHandler"),
     }
 
     def sibling(self, kind: str) -> Any:

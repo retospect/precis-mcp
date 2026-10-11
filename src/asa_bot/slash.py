@@ -25,6 +25,7 @@ from typing import Any
 import discord
 import yaml
 
+from asa_bot import identity
 from asa_bot import preamble as preamble_mod
 from asa_bot.config import Config
 from asa_bot.conv_slug import compute_slug
@@ -105,12 +106,7 @@ class SlashContext:
 
     @property
     def author_handle(self) -> str:
-        m = self.message
-        return (
-            f"{m.author.name}#{m.author.discriminator}"
-            if m.author.discriminator != "0"
-            else m.author.name
-        )
+        return identity.display_handle(self.message.author)
 
     async def send(
         self, content: str = "", *, file: discord.File | None = None
@@ -288,7 +284,9 @@ async def cmd_show_prompt(ctx: SlashContext) -> None:
             guild_name=guild_name,
             channel_name=channel_name,
             thread_name=thread_name,
-            author_handle=ctx.author_handle,
+            author_handle=await identity.resolve_author_handle(
+                ctx.config.precis.database_url, ctx.message.author
+            ),
             soul=ctx.soul,
             tool_hints=ctx.tool_hints,
         )

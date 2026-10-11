@@ -37,7 +37,7 @@ from typing import Any
 
 import discord
 
-from asa_bot import preamble, slash
+from asa_bot import identity, preamble, slash
 from asa_bot.briefing_buffer import BriefingBuffer
 from asa_bot.capture_shim import CaptureShim
 from asa_bot.claude_invoke import invoke as claude_invoke
@@ -180,10 +180,10 @@ class AsaBot(discord.Client):
             return
 
         # 1. Capture user turn.
-        author_handle = (
-            f"{message.author.name}#{message.author.discriminator}"
-            if message.author.discriminator != "0"
-            else message.author.name
+        # Mapped Discord id -> precis account abbrev; else display name.
+        # The abbrev (None when unmapped) also attributes the LLM's writes.
+        author_handle, account = await identity.resolve_speaker(
+            self._cfg.precis.database_url, message.author
         )
         try:
             await self._precis.call_tool(
@@ -197,6 +197,7 @@ class AsaBot(discord.Client):
                     "meta": {
                         "ts": message.created_at.astimezone(UTC).isoformat(),
                         "platform": "discord",
+                        "discord_user_id": str(message.author.id),
                         "channel_id": str(message.channel.id),
                         "guild_id": str(message.guild.id) if message.guild else "dm",
                     },
@@ -287,6 +288,7 @@ class AsaBot(discord.Client):
             user_message=message.content,
             conv_slug=slug,
             on_progress=on_progress,
+            acting_user=account,
         )
 
         # 4. Post reply (replace progress msg with final).

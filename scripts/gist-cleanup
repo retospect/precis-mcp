@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scripts/gist-cleanup — delete leaked-reasoning chunk summaries (gr478547).
+#
+# Scans chunk_summaries (summarizer='llm-v1', status='ok') on PROD through
+# scripts/prod-psql and applies the summarizer's own _reject_reason() to each
+# text. Dry run by default: prints scanned / rejected counts, a per-reason
+# breakdown and a sample. `--apply` deletes the rejected rows (one transaction
+# per batch) so the summarizer worker re-claims those chunks. chunk_summaries
+# is derived data; nothing references it (only it references chunks).
+#
+# Usage:
+#   scripts/gist-cleanup                 # dry run (read-only role)
+#   scripts/gist-cleanup --apply         # delete rejected rows
+#   scripts/gist-cleanup --sample 30 --batch 500
+#
+# Prod coordinates come from the gitignored overlay via scripts/prod-psql.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python scripts/_gist_cleanup.py "$@"

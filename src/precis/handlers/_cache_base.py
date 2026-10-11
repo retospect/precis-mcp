@@ -428,12 +428,24 @@ class CacheBackedHandler(Handler):
             query = self._coerce_query(id, q)
             key = self._canonical_key(query, literal=literal)
         except BadInput as canonical_err:
-            if isinstance(id, str) and not (isinstance(q, str) and q.strip()):
-                slug = id.strip()
+            no_q = not (isinstance(q, str) and q.strip())
+            if (isinstance(id, int) and not isinstance(id, bool) and no_q) or (
+                isinstance(id, str) and no_q
+            ):
+                slug = str(id).strip()
                 if slug:
-                    cached = self.store.get_cache_entry_by_slug(
-                        kind=self.spec.kind, slug=slug
-                    )
+                    # A bare number is first a ref id (memories cite caches
+                    # as ``websearch:170350``), then a slug that happens to
+                    # be numeric. The kind filter keeps it inside this kind.
+                    cached = None
+                    if slug.isdigit():
+                        cached = self.store.get_cache_entry_by_ref_id(
+                            kind=self.spec.kind, ref_id=int(slug)
+                        )
+                    if cached is None:
+                        cached = self.store.get_cache_entry_by_slug(
+                            kind=self.spec.kind, slug=slug
+                        )
                     if cached is not None:
                         ref, cache = cached
                         if no_fetch:

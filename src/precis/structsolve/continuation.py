@@ -32,19 +32,14 @@ element:
   Structures*, the total-Lagrangian truss element).
 
 Contrast :mod:`~precis.structsolve.complementarity`'s tangent stiffness,
-which assembles the geometric term as the *isotropic* force-density
-Laplacian ``Ω ⊗ I₃`` (every spatial direction, including the member's
-own axis, gets the same ``q = t₀/L`` contribution). That is the
-Buchholdt/Schek "cable-net" linearization at the *reference* geometry: it
-holds ``n`` fixed at ``n₀`` and, critically, evaluates the geometric term
-using the FULL identity rather than the transverse projector
-``I₃ − n₀n₀ᵀ`` — an approximation valid, and standard, exactly when
-displacements stay small enough that ``n(u) ≈ n₀``. The two forms
-provably agree in that small-displacement limit (``n(u) → n₀`` collapses
-``(I₃ − nnᵀ)`` and the extra axial term the isotropic form adds becomes
-negligible next to the elastic term, which already dominates the axial
-direction) and provably disagree once a member's direction rotates
-enough to matter — which is exactly the regime a snap-through lives in.
+which assembles the same two terms once, at the *reference* geometry:
+``n`` is held fixed at ``n₀`` (the geometric term is ``q·(I₃ − n₀n₀ᵀ)``,
+transverse only — it used the full identity until gr478014, which made
+its axial tangent ``rate + q``). That linearization is valid, and
+standard, exactly when displacements stay small enough that
+``n(u) ≈ n₀``. The two forms agree in that small-displacement limit and
+disagree once a member's direction rotates enough to matter — which is
+exactly the regime a snap-through lives in.
 This module is that disagreement, made computable.
 
 **Model.** Same axial-member vocabulary as
@@ -473,8 +468,8 @@ def _tangent_stiffness_nonlinear(
     the ``active`` member set at the CURRENT geometry implied by
     ``equilibrium``/``lengths`` — see the module docstring for the
     derivation and the contrast with
-    :mod:`~precis.structsolve.complementarity`'s isotropic, reference-
-    geometry ``Ω ⊗ I₃`` term. Assembled per-member as a dense 3x3 block
+    :mod:`~precis.structsolve.complementarity`'s reference-geometry
+    ``q·(I₃ − n₀n₀ᵀ)`` term. Assembled per-member as a dense 3x3 block
     (member counts in this module's fixtures are small; no sparsity
     exploited, matching the linear solver's own posture)."""
     k_total = np.zeros((3 * j, 3 * j))

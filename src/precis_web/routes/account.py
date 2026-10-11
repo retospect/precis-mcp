@@ -87,6 +87,7 @@ from precis.users import (
     forget_feed_token,
     hash_password,
     mint_feed_token,
+    normalize_discord_user_id,
     normalize_orcid,
     recall_feed_token,
     remember_feed_token,
@@ -265,6 +266,7 @@ async def save_profile(
     full_name: str = Form(""),
     email: str = Form(""),
     orcid: str = Form(""),
+    discord_user_id: str = Form(""),
 ) -> Response:
     """Update the profile fields. Empty clears.
 
@@ -291,6 +293,7 @@ async def save_profile(
             full_name=full_name.strip(),
             email=address,
             orcid=researcher_id,
+            discord_user_id=normalize_discord_user_id(discord_user_id),
         )
     except ValueError as exc:
         return _render(request, user=user, error=str(exc))

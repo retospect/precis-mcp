@@ -63,7 +63,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store.types import ChunkInsert, Ref
+from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -93,6 +93,29 @@ _SUPERSEDE_MAX_MERGE = 10
 
 #: Provenance tag forced onto every supersede survivor.
 _DREAM_CONSOLIDATED = Tag.closed("DREAM", "consolidated")
+# DREAM values only system code mints: ``consolidated`` (the supersede merge)
+# and ``acquire`` (paper stubs). ``speculative`` stays agent-writable -- the
+# dream agent itself marks its hunches with it through ``put``.
+_DREAM_SYSTEM_VALUES = frozenset({"consolidated", "acquire"})
+
+
+def _refuse_system_dream(tags: list[str] | None, *, verb: str) -> None:
+    for t in tags or []:
+        if not isinstance(t, str):
+            continue
+        prefix, _, value = t.partition(":")
+        if prefix == "DREAM" and value in _DREAM_SYSTEM_VALUES:
+            raise BadInput(
+                f"{verb}(kind='memory') cannot write {t!r} -- "
+                f"DREAM:{value} is system-set provenance, not author-writable",
+                next=(
+                    "DREAM:consolidated is stamped by "
+                    "supersede merges; DREAM:acquire only by paper "
+                    "stubs. Mark a low-confidence hunch with "
+                    "tags=['DREAM:speculative'] instead"
+                ),
+            )
+
 
 #: Chunk kind holding a memory's body prose (migration 0050). The prose
 #: moved off ``refs.title`` — the header is a short title, the body a chunk
@@ -337,6 +360,7 @@ class MemoryHandler(NumericRefHandler):
         # Validate the public meta allowlist before adding internal fields.
         # Automated writers cannot rephrase: mask here. Agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py) first.
+        _refuse_system_dream(tags, verb="put")
         text, title = mask_secrets(text), mask_secrets(title)
         rule, warrant = mask_secrets(rule), mask_secrets(warrant)
         create_meta = _validate_meta(meta) if meta is not None else {}
@@ -358,7 +382,10 @@ class MemoryHandler(NumericRefHandler):
             meta=create_meta,
         )
 
-    def _create(
+    def _create(self, **kw: Any) -> Response:
+        return self._create_with_id(**kw)[0]
+
+    def _create_with_id(
         self,
         *,
         text: str | None,
@@ -367,7 +394,9 @@ class MemoryHandler(NumericRefHandler):
         rel: str | None = None,
         auto_refresh_days: int | None = None,
         put_meta: dict[str, Any] | None = None,
-    ) -> Response:
+        set_by: ActorSlug = "agent",
+        system_meta: dict[str, Any] | None = None,
+    ) -> tuple[Response, int]:
         # Mirror NumericRefHandler._create, but the body prose goes into a
         # `memory_body` chunk (not `refs.title`) and the header gets a short
         # title. The body chunk picks up embeddings + keywords from the
@@ -406,13 +435,15 @@ class MemoryHandler(NumericRefHandler):
             for k in ("rule", "warrant", "hook", "type")
             if k in create_meta
         }
+        if system_meta:
+            meta.update(system_meta)
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
             all_tag_strs.extend(tags)
 
         # Attribution gate: before any write, so ``reject`` mode leaves nothing.
-        misses = self._attribution_misses(body)
+        misses = self._attribution_misses(body, reject=set_by == "agent")
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
@@ -442,7 +473,7 @@ class MemoryHandler(NumericRefHandler):
                 self.store.add_tag(
                     ref.id,
                     tag,
-                    set_by="agent",
+                    set_by=set_by,
                     replace_prefix=(tag.namespace == "closed"),
                     conn=conn,
                 )
@@ -467,11 +498,43 @@ class MemoryHandler(NumericRefHandler):
 
         agentlog.touch_from_env(self.store, chunk_ids=[b.id for b in body_blocks])
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
-        return self._with_attribution_advisory(ack, misses)
+        return self._with_attribution_advisory(ack, misses), int(ref.id)
 
     # ── attribution gate (precis.handlers._attribution) ──
 
-    def _attribution_misses(self, body: str) -> list[UngroundedNumber] | None:
+    def write_system(
+        self,
+        *,
+        text: str,
+        title: str | None = None,
+        tags: list[str] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> int:
+        """Create a memory on behalf of a system writer; return its ref id.
+
+        The same path as an agent ``put`` (title short, body in a
+        ``memory_body`` chunk, mention autolink, attribution audit), minus
+        what only makes sense for an agent: tags are stamped
+        ``set_by='system'``, ``meta`` may carry arbitrary keys (not just the
+        public allowlist), and ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject``
+        never drops the write -- an ungrounded number is still tagged
+        ``AUDIT:ungrounded-number``, the memory still lands.
+        """
+        text = mask_secrets(text) or ""
+        put_meta = {"title": mask_secrets(title).strip()} if title else None
+        _resp, ref_id = self._create_with_id(
+            text=text,
+            tags=tags,
+            link=None,
+            put_meta=put_meta,
+            set_by="system",
+            system_meta=meta,
+        )
+        return ref_id
+
+    def _attribution_misses(
+        self, body: str, *, reject: bool = True
+    ) -> list[UngroundedNumber] | None:
         """Numbers in ``body`` pinned to a citation whose text lacks them.
 
         Fails open: a lookup error never blocks a memory write and returns
@@ -484,7 +547,7 @@ class MemoryHandler(NumericRefHandler):
         except Exception:
             log.warning("memory attribution gate failed open", exc_info=True)
             return None
-        if misses and gate_mode() == "reject":
+        if misses and reject and gate_mode() == "reject":
             raise BadInput(
                 "\n".join(m.advisory() for m in misses),
                 next=(
@@ -1013,6 +1076,7 @@ class MemoryHandler(NumericRefHandler):
         mirrors how ``SRC:`` / ``CACHE:`` / ``DENSITY:`` are system-only
         elsewhere in the corpus.
         """
+        _refuse_system_dream(add, verb="tag")
         for t in (*(add or []), *(remove or [])):
             if isinstance(t, str) and t.split(":", 1)[0] == "STALE":
                 raise BadInput(

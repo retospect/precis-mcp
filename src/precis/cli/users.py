@@ -107,6 +107,15 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
 
+    p_edit.add_argument(
+        "--discord-id",
+        default=None,
+        help=(
+            "Numeric Discord user id — maps asa_bot's Discord speaker to "
+            "this account. Empty string clears it."
+        ),
+    )
+
     p_dis = s.add_parser("disable", help="Block login, keep the row.")
     p_dis.add_argument("login")
 
@@ -239,7 +248,7 @@ def _list(store: Store) -> None:
         print(
             f"{u.login:<{width}}  {u.abbrev:<6} {state:<8} "
             f"last-login {seen}  {u.full_name or ''} {u.email or ''} "
-            f"{u.orcid or ''}".rstrip()
+            f"{u.orcid or ''} {('discord:' + u.discord_user_id) if u.discord_user_id else ''}".rstrip()
         )
 
 
@@ -262,6 +271,7 @@ def _edit(args: argparse.Namespace, store: Store) -> None:
             full_name=args.name,
             email=args.email,
             orcid=args.orcid,
+            discord_user_id=args.discord_id,
         )
     except ValueError as exc:  # a mistyped ORCID iD, checksum included
         raise SystemExit(f"error: {exc}") from exc

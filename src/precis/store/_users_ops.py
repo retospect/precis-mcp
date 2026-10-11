@@ -24,14 +24,20 @@ from typing import Any
 from psycopg import Connection
 from psycopg.errors import UniqueViolation
 
-from precis.users import PasswordRecord, WebUser, normalize_login, normalize_orcid
+from precis.users import (
+    PasswordRecord,
+    WebUser,
+    normalize_discord_user_id,
+    normalize_login,
+    normalize_orcid,
+)
 
 _USER_COLS = (
     "id, login, abbrev, full_name, email, disabled_at, "
     "last_login_at, created_at, updated_at, "
     # Presence, never the digest: callers decide whether a podcast link
     # exists, and nothing outside this module needs the hash itself.
-    "(feed_token_sha256 IS NOT NULL) AS has_feed_token, orcid"
+    "(feed_token_sha256 IS NOT NULL) AS has_feed_token, orcid, discord_user_id"
 )
 
 
@@ -40,6 +46,7 @@ _USER_COLS = (
 #: ``0131_web_users.sql`` plus the partial index in ``0134``.
 _TAKEN = {
     "web_users_orcid_key": "that ORCID iD is already on another account",
+    "web_users_discord_user_id_key": "that Discord user id is already on another account",
     "web_users_abbrev_key": "that abbrev is already taken",
     "web_users_login_key": "that login is already taken",
 }
@@ -66,6 +73,7 @@ def _row_to_user(row: tuple[Any, ...]) -> WebUser:
         updated_at=row[8],
         has_feed_token=bool(row[9]),
         orcid=row[10],
+        discord_user_id=row[11],
     )
 
 
@@ -126,11 +134,28 @@ class WebUsersMixin:
         if not row:
             return None
         record = PasswordRecord(
-            password_hash=str(row[11]),
-            password_salt=str(row[12]),
-            password_algo=str(row[13]),
+            password_hash=str(row[12]),
+            password_salt=str(row[13]),
+            password_algo=str(row[14]),
         )
         return _row_to_user(row), record
+
+    def get_web_user_by_discord_id(self, discord_user_id: str) -> WebUser | None:
+        """The account that claimed this Discord user id (asa_bot's lookup).
+        Disabled accounts still resolve: ``abbrev`` stays valid for
+        attribution after the person stops logging in."""
+        sql = f"SELECT {_USER_COLS} FROM web_users WHERE discord_user_id = %s"
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (str(discord_user_id).strip(),)).fetchone()
+        return _row_to_user(row) if row else None
+
+    def get_web_user_by_abbrev(self, abbrev: str) -> WebUser | None:
+        """The account with this ``abbrev`` (:mod:`precis.acting_user`).
+        Disabled accounts still resolve, as for the Discord lookup."""
+        sql = f"SELECT {_USER_COLS} FROM web_users WHERE abbrev = %s"
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (normalize_login(abbrev),)).fetchone()
+        return _row_to_user(row) if row else None
 
     def get_web_user_by_feed_token(self, digest: str) -> WebUser | None:
         """Resolve a ``/podcast?t=`` credential by its SHA-256 digest.
@@ -212,11 +237,13 @@ class WebUsersMixin:
         full_name: str | None = None,
         email: str | None = None,
         orcid: str | None = None,
+        discord_user_id: str | None = None,
     ) -> bool:
         """Patch the display fields. ``None`` means "leave alone" — use
         the empty string to clear ``full_name`` / ``email`` / ``orcid``.
 
-        ``orcid`` is normalized (and checksum-validated) here rather than
+        ``discord_user_id`` is validated the same way (digits only, snowflake
+        length). ``orcid`` is normalized (and checksum-validated) here rather than
         trusted from the caller: the column's CHECK is shape-only, so this
         is where a mistyped iD is refused no matter which door it came
         through. Raises :class:`ValueError` on a malformed one — before
@@ -244,6 +271,9 @@ class WebUsersMixin:
         if orcid is not None:
             sets.append("orcid = %s")
             params.append(normalize_orcid(orcid) or None)
+        if discord_user_id is not None:
+            sets.append("discord_user_id = %s")
+            params.append(normalize_discord_user_id(discord_user_id) or None)
         if not sets:
             return False
         sets.append("updated_at = now()")

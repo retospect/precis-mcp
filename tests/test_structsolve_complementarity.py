@@ -297,7 +297,7 @@ def test_prism_all_ties_stay_taut_under_a_small_service_load() -> None:
 # collinear prestressed cables A-D, B-D along the x-axis contribute
 # *zero* elastic stiffness transverse to their own axis (u_y == 0 for
 # both, so rate*u_y**2 == 0) — the only y-direction stiffness they offer
-# is the geometric term 2q (q = t0/L, isotropic). A third, unprestressed
+# is the geometric term 2q (q = t0/L, transverse). A third, unprestressed
 # rod E-D running along y then reports a force driven entirely by how
 # stiff that combined y-direction is, so a sign error in the geometric
 # term changes a specific number, not just which member is active:
@@ -351,6 +351,106 @@ def test_geometric_stiffness_alone_sets_the_transverse_force() -> None:
     assert res.forces[1] == pytest.approx(t0_cable)
     assert list(res.status) == ["taut", "taut", "taut"]
     assert res.residual < 1e-9
+
+
+# ── gr478014: members installed away from their free length ─────────────
+
+
+def _z_bar(length: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # node 0 on top at z=length, node 1 anchored at the origin; only node
+    # 0's z is free (fixed: True = prescribed).
+    coords = np.array([[0.0, 0.0, length], [0.0, 0.0, 0.0]])
+    fixed = np.ones((2, 3), dtype=bool)
+    fixed[0, 2] = False
+    return coords, np.array([[0, 1]]), fixed
+
+
+@pytest.mark.parametrize(
+    "length,idiom,load",
+    [(1.2, "bidirectional", 5.0), (0.8, "tension_only", 5.0)],
+)
+def test_axial_tangent_is_the_rate_alone_off_free_length(
+    length: float, idiom: str, load: float
+) -> None:
+    # The geometric term q*(I - n n^T) has no axial part: along its own
+    # axis a bar is exactly `rate` stiff, so the solved stretch makes
+    # rate*(L + u - L0) balance the load. Rate 100, L0 1: the stretched
+    # bar (L=1.2) shortens to 1.05, the slack tie (L=0.8) is pulled out to
+    # 1.05 — both carry exactly the 5 applied.
+    coords, members, fixed = _z_bar(length)
+    loads = np.zeros((2, 3))
+    loads[0, 2] = load
+    res = solve_complementarity(
+        coords,
+        members,
+        np.array([100.0]),
+        np.array([1.0]),
+        np.array([idiom], dtype=object),
+        fixed,
+        loads,
+    )
+    assert res.displacements[0, 2] == pytest.approx(1.05 - length)
+    assert res.forces[0] == pytest.approx(5.0)
+    assert list(res.status) == ["taut"]
+
+
+def test_tie_installed_slack_and_unloaded_is_unresisted_not_taut() -> None:
+    # A tension-only tie 0.2 shorter than its free length, no load: its
+    # only "equilibrium" with the tie engaged is the one its own illegal
+    # (compressive) prestress pushed the node into. It is slack, and the
+    # node's free z is unresisted — refused, naming that coordinate.
+    coords, members, fixed = _z_bar(0.8)
+    with pytest.raises(ComplementarityError, match=r"singular.*node 0 z"):
+        solve_complementarity(
+            coords,
+            members,
+            np.array([100.0]),
+            np.array([1.0]),
+            np.array(["tension_only"], dtype=object),
+            fixed,
+        )
+
+
+def test_mechanism_verdict_names_the_unresisted_coordinate() -> None:
+    # gr478016 #2: z-rod, node 0 free in x and z, loaded in z only — the
+    # rod resists z, nothing resists x.
+    coords = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+    fixed = np.ones((2, 3), dtype=bool)
+    fixed[0, [0, 2]] = False
+    cases = np.zeros((1, 2, 3))
+    cases[0, 0, 2] = 1.0
+    rep = check_completeness(
+        coords,
+        np.array([[0, 1]]),
+        np.array([100.0]),
+        np.array([1.0]),
+        np.array(["bidirectional"], dtype=object),
+        fixed,
+        cases,
+    )
+    assert rep.cases[0].verdict == "mechanism"
+    assert "unresisted free coordinates: node 0 x)" in rep.cases[0].cause
+
+
+def test_unresisted_coordinates_list_is_capped() -> None:
+    # 14 nodes free in x on a chain of z-bars: nothing resists x anywhere,
+    # so the refusal names the first 12 and counts the rest.
+    j = 15
+    coords = np.zeros((j, 3))
+    coords[:, 2] = np.arange(j, dtype=float)
+    members = np.array([[k, k + 1] for k in range(j - 1)])
+    fixed = np.ones((j, 3), dtype=bool)
+    fixed[1:, 0] = False
+    b = members.shape[0]
+    with pytest.raises(ComplementarityError, match=r"node 12 x, \.\.\. 2 more\)"):
+        solve_complementarity(
+            coords,
+            members,
+            np.full(b, 10.0),
+            np.ones(b),
+            np.full(b, "bidirectional", dtype=object),
+            fixed,
+        )
 
 
 # ── units-agnosticism: same problem in m/N vs Å/nN, identical statuses ──
@@ -593,7 +693,12 @@ def _collinear_buckling_problem(
     return coords, members, rate, free_length, idiom, fixed
 
 
-def test_bistable_prism_reports_two_stable_equilibria_and_a_barrier() -> None:
+def test_two_prestress_levels_are_two_structures_not_bistable_barrier_kept() -> None:
+    # Two prestress levels of one prism are each a stable equilibrium of
+    # their OWN free lengths — two structures, one equilibrium each, not
+    # one structure with two (gr478016). The |dE| barrier number is still
+    # reported (both states are genuine stable equilibria) as an
+    # actuation-energy scale.
     coords, members, rate, free_length_a, idiom, fixed = _prism_problem(
         scale=1.0, rate_value=50.0, prestress_scale=10.0
     )
@@ -605,7 +710,8 @@ def test_bistable_prism_reports_two_stable_equilibria_and_a_barrier() -> None:
         coords, members, rate, free_length_a, free_length_b, idiom, fixed
     )
 
-    assert res.bistable
+    assert not res.bistable
+    assert any("different structures" in n for n in res.notes)
     state_a, state_b = res.states
     assert state_a.solved and state_a.stable
     assert state_b.solved and state_b.stable
@@ -629,6 +735,70 @@ def test_bistable_prism_reports_two_stable_equilibria_and_a_barrier() -> None:
 
     assert any(n.startswith("barrier method:") for n in res.notes)
     assert any("not a certified saddle-point energy" in n for n in res.notes)
+
+
+def test_one_bar_two_free_lengths_is_not_bistable() -> None:
+    # gr478016 repro: one bidirectional bar, free length 1.0 vs 0.9, node
+    # 0 free in z. Each assignment has exactly one equilibrium (the bar at
+    # its own free length); neither is an equilibrium of the other.
+    coords = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+    members = np.array([[0, 1]])
+    fixed = np.ones((2, 3), dtype=bool)
+    fixed[0, 2] = False
+    res = probe_bistability(
+        coords,
+        members,
+        np.array([100.0]),
+        np.array([1.0]),
+        np.array([0.9]),
+        np.array(["bidirectional"], dtype=object),
+        fixed,
+    )
+    assert all(st.solved and st.stable for st in res.states)
+    assert not res.bistable
+    assert any("neither state is an equilibrium" in n for n in res.notes)
+
+
+def test_identical_assignments_coincide_not_bistable() -> None:
+    coords, members, rate, free_length, idiom, fixed = _prism_problem(
+        scale=1.0, rate_value=50.0, prestress_scale=10.0
+    )
+    res = probe_bistability(
+        coords, members, rate, free_length, free_length.copy(), idiom, fixed
+    )
+    assert not res.bistable
+    assert any("coincide" in n for n in res.notes)
+
+
+def test_one_structure_with_two_equilibria_is_bistable() -> None:
+    # Two tension-only ties to a node free in (x, y). Under free_length_b
+    # the linearised complementarity problem admits TWO consistent active
+    # sets, both positive definite: both ties taut, or tie 0 slack with
+    # tie 1 carrying the load (found by randomized search over small
+    # unilateral problems, kept as found). Solving free_length_b from the
+    # all-active start lands on the first; free_length_a (tie 0 longer,
+    # so it starts slack) lands on the second — which is also a stable
+    # equilibrium of free_length_b. One structure, two equilibria.
+    coords = np.array([[-0.4, 0.3, 0.0], [0.4, 0.5, 0.0], [0.6, 1.4, 0.0]])
+    members = np.array([[1, 0], [2, 0]])
+    rate = np.array([3.0, 2.0])
+    fl_a = np.array([0.99, 1.25])
+    fl_b = np.array([0.66, 1.25])
+    idiom = np.array(["tension_only", "tension_only"], dtype=object)
+    fixed = np.ones((3, 3), dtype=bool)
+    fixed[0, :2] = False
+    loads = np.zeros((3, 3))
+    loads[0, :2] = [-1.0, -2.0]
+
+    res = probe_bistability(coords, members, rate, fl_a, fl_b, idiom, fixed, loads)
+
+    state_a, state_b = res.states
+    assert state_a.result is not None and state_b.result is not None
+    assert list(state_a.result.status) == ["slack", "taut"]
+    assert list(state_b.result.status) == ["taut", "taut"]
+    assert res.bistable
+    assert any("free_length_b holds both" in n for n in res.notes)
+    assert res.barrier is not None
 
 
 def test_barrier_samples_argument_controls_sample_count() -> None:

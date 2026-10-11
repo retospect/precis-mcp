@@ -38,7 +38,11 @@
    (draft/memory/websearch) attribute back via touch_from_env (a `touched`
    link). `:-` ⇒ empty when not a tick; agentlog.current_from_env treats empty
    as unset (no-op), so it's safe for asa / non-tick runs. #}
-        "PRECIS_CURRENT_AGENTLOG": "${PRECIS_CURRENT_AGENTLOG:-}"
+        "PRECIS_CURRENT_AGENTLOG": "${PRECIS_CURRENT_AGENTLOG:-}",
+{# gr478548: asa sets the Discord speaker's account abbrev per turn so this
+   stdio `serve` writes as user:<abbrev> (precis.acting_user). Empty ⇒ the
+   generic `agent` — every non-asa run and every unmapped speaker. #}
+        "PRECIS_ACTING_USER": "${PRECIS_ACTING_USER:-}"
       }
     }
   }

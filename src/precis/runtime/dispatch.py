@@ -51,7 +51,11 @@ from precis.runtime._shared import (
 from precis.runtime._shared import RuntimeShape
 from precis.runtime.under_facet import UNDER_NEXT
 from precis.store._salience import current_background_actor
-from precis.store.revision_context import current_revision_context, revision_context
+from precis.store.revision_context import (
+    current_revision_context,
+    process_actor,
+    revision_context,
+)
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -194,7 +198,9 @@ def _write_context(
 
     Reason: the caller's ``reason=``, else an enclosing context's, else
     ``"<verb>(kind='<kind>')"``. Actor: an enclosing context's (a worker
-    calling the runtime), else the background actor, else ``agent``.
+    calling the runtime), else the background actor, else the process
+    actor (a stdio server run for one speaker, :mod:`precis.acting_user`),
+    else ``agent``.
     """
     if verb not in _WRITE_VERBS:
         return contextlib.nullcontext()
@@ -203,7 +209,7 @@ def _write_context(
         reason = f"{verb}(kind={kind!r})"
     actor = None
     if outer is None or outer.actor is None:
-        actor = current_background_actor() or "agent"
+        actor = current_background_actor() or process_actor() or "agent"
     return revision_context(reason, actor=actor)
 
 

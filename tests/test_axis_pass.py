@@ -392,7 +392,7 @@ def test_applies_when_domain_in_blocks_out_of_list_value(store: Any) -> None:
 
 def test_applies_when_tags_any_gates_on_listed_tag(store: Any) -> None:
     """``move`` (the dream/memory axis) gates on
-    ``applies_when: tags_any: [DREAM:speculative, DREAM:grounded]``."""
+    ``applies_when: tags_any: [DREAM:speculative]``."""
     dream_ref = seed_ref(store, title="dream 1", kind="memory")
     seed_chunk(store, ref_id=dream_ref, text=_LONG_PARA, ord=0)
     with store.pool.connection() as conn:

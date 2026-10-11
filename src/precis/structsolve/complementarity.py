@@ -42,8 +42,14 @@ dependency):
   axis and contributes nothing transverse).
 - **Geometric** (a.k.a. stress or geometric-stiffness matrix): the
   *existing* force density ``q_k = t0_k / L_k`` of each active member,
-  assembled as the isotropic force-density Laplacian ``Ω`` Kronecker
-  the 3×3 identity. This is what lets a first-order mechanism become
+  assembled per member as ``q_k · (I₃ − n_k n_kᵀ)`` — the force-density
+  Laplacian ``Ω ⊗ I₃`` with each member's own axial part removed, the
+  standard truss geometric stiffness. The prestress resists *transverse*
+  motion only; along its own axis a member is exactly ``rate_k`` stiff,
+  so a member installed off its free length reaches the stretch
+  ``rate·(L + u − L₀)`` the load actually demands (gr478014: the full
+  identity made the axial tangent ``rate + q`` and mis-solved every
+  prestressed member's stretch). This is what lets a first-order mechanism become
   stiff once correctly prestressed — the textbook reason tensegrities
   need form-finding, not just statics — and it is why the acceptance
   fixture (d), the classic 3-strut/9-cable prism at its exact
@@ -67,7 +73,13 @@ system is re-solved; the fixed point is a self-consistent active set: no
 active member's force is illegal, and no inactive member's trial force
 wants to reactivate — exactly the complementarity condition (either the
 gap is zero and there is legally-signed force, or there is a gap and no
-force). This is the standard "member removal/reinstatement" scheme for
+force). Engagement is read off the *solved* force, never the initial
+prestress; the one tie-break (a one-sided member installed on its
+illegal sign stays engaged only if the solve puts it strictly on its
+legal sign — reaching exactly its free length is not engagement) is
+documented on :func:`_next_active_set`. A singular refusal names the
+free coordinates (``node <i> <axis>``) in the reduced stiffness's null
+space — what nothing resists. This is the standard "member removal/reinstatement" scheme for
 one-sided cable/strut elements; it is simple, needs no LCP/QP machinery,
 and its only failure modes are enumerable: (a) the active-set signature
 repeats — a cycle — refused rather than accepted at whichever iteration
@@ -105,10 +117,23 @@ teeth: a compression member's geometric stiffness can drive a
 transverse direction negative (the discrete analogue of buckling)
 while the reduced system stays perfectly invertible — solvable, but not
 a stable equilibrium (see the "non-singular but indefinite" test
-fixture). Two solved-and-stable candidates report ``bistable=True``; a
-monostable assignment (one candidate fails to solve, or solves but
-fails the second-order test) reports exactly one stable equilibrium and
-never fabricates a barrier for the other.
+fixture). ``bistable=True`` means *one structure has two equilibria*
+(gr478016): both candidates solved and are stable, the two states are
+distinct (different active set, or displacements differing by more than
+:data:`_SIGN_RTOL` of the longest member), and at least one state is
+also a stable complementary equilibrium of the *other* candidate's free
+lengths — tangent system satisfied, active set a fixed point of the sign
+rule, reduced stiffness positive definite. Two stable states that are
+each only their own assignment's equilibrium are two structures with one
+equilibrium each: ``bistable=False``, though the barrier field (below)
+is still reported as an actuation-energy scale. In this linear model a
+second equilibrium of one structure can only come from the
+complementarity problem admitting two consistent active sets; the
+geometric snap-through kind needs
+:mod:`~precis.structsolve.continuation`. A monostable assignment (one
+candidate fails to solve, or solves but fails the second-order test)
+reports exactly one stable equilibrium and never fabricates a barrier
+for the other.
 
 **The barrier estimate — the spec's open question, resolved.** Energy
 along a *linear interpolation* of free length AND of the two solved
@@ -314,7 +339,12 @@ def _tangent_stiffness(
         omega[ib, ib] += q_active[pos]
         omega[ia, ib] -= q_active[pos]
         omega[ib, ia] -= q_active[pos]
-    geometric = np.kron(omega, np.eye(3))
+    # q·(I − n nᵀ) per member: the isotropic Ω ⊗ I minus its own axial
+    # part (a_k a_kᵀ is exactly the n nᵀ block pattern of member k), so
+    # the axial tangent is the elastic rate alone — gr478014: with the
+    # full identity a member off its free length was stiffer than `rate`
+    # along its own axis by q, and the solved stretch came out wrong.
+    geometric = np.kron(omega, np.eye(3)) - a_active @ np.diag(q_active) @ a_active.T
     return elastic + geometric
 
 
@@ -346,6 +376,75 @@ def _second_order_stable(
     scale = float(np.max(np.abs(eigvals))) or 1.0
     worst = float(np.min(eigvals))
     return bool(worst > _STABILITY_RTOL * scale), worst / scale
+
+
+def _next_active_set(
+    idiom_arr: np.ndarray,
+    forces_all: np.ndarray,
+    t0: np.ndarray,
+    active: np.ndarray,
+) -> np.ndarray:
+    """One member-removal/reinstatement pass over every member (see the
+    module docstring's algorithm section), deciding engagement from the
+    *solved* force ``forces_all`` (``t0 + rate · solved elongation``).
+
+    Tie-break at zero stretch: a one-sided member whose prestress ``t0``
+    is already on its illegal sign (a tie installed shorter than its free
+    length, a strut installed longer) stays engaged only if the solve
+    puts it *strictly* on its legal sign. Reaching exactly its free
+    length is not engagement — in that solve the member's own illegal
+    prestress did the pushing (gr478014: a slack tie with no load drove
+    its node out to the tie's free length and reported itself taut). A
+    member installed at or on its legal sign keeps the plain rule (drop
+    only when strictly illegal), so an unloaded member at its free length
+    still reports engaged at zero force. The tolerance is relative to the
+    largest of the solved forces and the prestress, so a solve whose
+    forces all come out ~0 is still judged against the problem's scale."""
+    scale = float(max(np.max(np.abs(forces_all)), np.max(np.abs(t0))))
+    tol = _SIGN_RTOL * scale
+    new_active = active.copy()
+    for k in range(forces_all.shape[0]):
+        idm = idiom_arr[k]
+        if idm == "bidirectional":
+            continue
+        sign = 1.0 if idm == "tension_only" else -1.0  # legal sign of the force
+        f = sign * float(forces_all[k])
+        started_illegal = sign * float(t0[k]) < -tol
+        if active[k] and (f < -tol or (started_illegal and f <= tol)):
+            new_active[k] = False
+        elif not active[k] and f > tol:
+            new_active[k] = True
+    return new_active
+
+
+#: Cap on how many unresisted coordinates a singular-stiffness refusal
+#: names — a large mechanism mode lists its first few, then a count.
+_MAX_NAMED_COORDINATES = 12
+
+
+def _unresisted_coordinates(k_free: np.ndarray, free: np.ndarray) -> str:
+    """Name the free coordinates (``node <i> <axis>``) that take part in
+    the null space of a singular reduced stiffness ``k_free`` — the
+    directions nothing resists. A coordinate is named when its projection
+    onto the null space is at least 1e-3 of the largest such projection
+    (basis-independent: the row norm of the null-space basis), so a
+    mechanism mode spread over several nodes names all of them. Only
+    called on a non-empty ``k_free`` already found singular, so the null
+    basis has at least one (unit-norm) row."""
+    free_idx = np.flatnonzero(free)
+    _, svals, vt = np.linalg.svd(k_free)
+    smax = float(svals[0])
+    null = vt if smax == 0.0 else vt[svals <= _SINGULAR_RTOL * smax]
+    participation = np.sqrt(np.sum(null**2, axis=0))
+    peak = float(np.max(participation))
+    names = [
+        f"node {int(free_idx[pos]) // 3} {'xyz'[int(free_idx[pos]) % 3]}"
+        for pos in np.flatnonzero(participation >= 1e-3 * peak)
+    ]
+    if len(names) > _MAX_NAMED_COORDINATES:
+        extra = len(names) - _MAX_NAMED_COORDINATES
+        names = [*names[:_MAX_NAMED_COORDINATES], f"... {extra} more"]
+    return ", ".join(names)
 
 
 def solve_complementarity(
@@ -508,11 +607,13 @@ def solve_complementarity(
                 inactive_names = (
                     ", ".join(str(k) for k in range(b) if not active[k]) or "none"
                 )
+                unresisted = _unresisted_coordinates(k_free, free)
                 raise ComplementarityError(
                     f"iteration {iteration}: the active set's reduced "
                     "stiffness is singular — the load has no legal path "
                     "through the members still willing to carry it "
-                    f"(inactive members: {inactive_names}); no "
+                    f"(inactive members: {inactive_names}; unresisted "
+                    f"free coordinates: {unresisted}); no "
                     "complementary equilibrium exists for this load in "
                     "the small-displacement model"
                 )
@@ -525,24 +626,7 @@ def solve_complementarity(
         elongation = -(equilibrium.T @ d_flat)  # (b,) — every member, active or not
         forces_all = t0 + rate * elongation
 
-        scale = float(np.max(np.abs(forces_all))) if forces_all.size else 0.0
-        tol = _SIGN_RTOL * scale
-        new_active = active.copy()
-        for k in range(b):
-            idm = idiom_arr[k]
-            f = float(forces_all[k])
-            if idm == "bidirectional":
-                continue
-            illegal_active = (idm == "tension_only" and f < -tol) or (
-                idm in ("compression_only", "must_contact") and f > tol
-            )
-            wants_reactivate = (idm == "tension_only" and f > tol) or (
-                idm in ("compression_only", "must_contact") and f < -tol
-            )
-            if active[k] and illegal_active:
-                new_active[k] = False
-            elif not active[k] and wants_reactivate:
-                new_active[k] = True
+        new_active = _next_active_set(idiom_arr, forces_all, t0, active)
 
         if np.array_equal(new_active, active):
             break
@@ -618,8 +702,10 @@ class CaseCompleteness:
     #: ``must_contact`` member indices reported ``unseated`` (``unseated``
     #: verdict only; empty otherwise).
     unseated: tuple[int, ...]
-    #: The solver's refusal message for ``incomplete``/``mechanism``;
-    #: ``""`` when the case solved.
+    #: The solver's refusal message for ``incomplete`` (the sign-aware
+    #: solve's) or ``mechanism`` (the sign-blind solve's — it names the
+    #: unresisted ``node <i> <axis>`` coordinates); ``""`` when the case
+    #: solved.
     cause: str
     #: The converged sign-aware solve when there is one, else ``None``.
     result: ComplementarityResult | None
@@ -714,8 +800,13 @@ def check_completeness(
                 )
             except ComplementarityInputError:
                 raise
-            except ComplementarityError:
-                per_case.append(CaseCompleteness(n, "mechanism", (), (), cause, None))
+            except ComplementarityError as blind_exc:
+                # the sign-blind refusal is the one that names the
+                # bilateral mechanism's unresisted coordinates; the
+                # sign-aware one may have stopped at a different active set
+                per_case.append(
+                    CaseCompleteness(n, "mechanism", (), (), str(blind_exc), None)
+                )
                 continue
             scale = float(np.max(np.abs(blind.forces))) if blind.forces.size else 0.0
             tol = _SIGN_RTOL * scale
@@ -801,25 +892,30 @@ class EquilibriumStabilityResult:
 class BistabilityResult:
     """Slice-3 two-equilibria/bistability probe result
     (docs/backlog/complementarity-solver.md). ``bistable`` is True only
-    when *both* candidates solved and are second-order stable; a
-    monostable (or worse) assignment reports each state's own honest fate
-    and never fabricates a barrier for a state that is not itself a
-    stable equilibrium."""
+    when one structure has two equilibria (see the module docstring's
+    slice-3 section); a monostable (or worse) assignment reports each
+    state's own honest fate and never fabricates a barrier for a state
+    that is not itself a stable equilibrium."""
 
     #: ``(state for free_length_a, state for free_length_b)``.
     states: tuple[EquilibriumStabilityResult, EquilibriumStabilityResult]
-    #: True iff both states solved and are second-order stable.
+    #: True iff both states solved and are second-order stable, are
+    #: distinct, and at least one is also a stable equilibrium of the
+    #: other's free lengths — one structure, two equilibria.
     bistable: bool
     #: The energy-barrier estimate — see the module docstring's "barrier
-    #: estimate" section — or None when ``bistable`` is False (no
-    #: invented barrier for a non-equilibrium state).
+    #: estimate" section — whenever both states are stable equilibria
+    #: (of their own free lengths), bistable or not; None when either is
+    #: not (no invented barrier for a non-equilibrium state).
     barrier: float | None
     #: The sampled energy along the interpolation path (see ``notes`` for
     #: the method), one entry per sample; None alongside ``barrier``.
     barrier_samples: tuple[float, ...] | None
-    #: Always explains what was (or was not) computed and why — the
-    #: barrier method + its limits when ``bistable``, or which state(s)
-    #: failed and how when not.
+    #: Always explains what was (or was not) computed and why: the
+    #: verdict's reason (which assignment holds both states, or why the
+    #: two are not one structure's equilibria, or which state failed and
+    #: how), then the barrier method + its limits whenever a barrier is
+    #: reported.
     notes: tuple[str, ...] = ()
 
 
@@ -874,6 +970,63 @@ def _barrier_estimate(
     return barrier, energies_t
 
 
+def _is_stable_equilibrium_under(
+    members: np.ndarray,
+    rate: np.ndarray,
+    idiom_arr: np.ndarray,
+    lengths: np.ndarray,
+    equilibrium: np.ndarray,
+    free: np.ndarray,
+    loads_flat: np.ndarray,
+    free_length: np.ndarray,
+    state: ComplementarityResult,
+) -> bool:
+    """Is ``state`` (displacement + active set solved under some *other*
+    free-length assignment) also a stable complementary equilibrium of
+    the structure with ``free_length``? Three checks, all against that
+    structure's own prestress ``t0 = rate · (L − free_length)``: (1) the
+    tangent system ``K d = P + A t0`` holds at ``state``'s displacement
+    (residual within :data:`_SINGULAR_RTOL` of the system's scale); (2)
+    the active set is a fixed point of :func:`_next_active_set` at the
+    forces that displacement implies; (3) the reduced stiffness is
+    positive definite (:func:`_second_order_stable`)."""
+    j = equilibrium.shape[0] // 3
+    t0 = rate * (lengths - free_length)
+    d_flat = state.displacements.reshape(-1)
+    active = state.active
+    forces_all = t0 + rate * (-(equilibrium.T @ d_flat))
+    if not np.array_equal(_next_active_set(idiom_arr, forces_all, t0, active), active):
+        return False
+    k_total = _tangent_stiffness(j, members, rate, t0, lengths, equilibrium, active)
+    rhs = loads_flat + equilibrium[:, active] @ t0[active]
+    k_d = k_total @ d_flat
+    scale = float(
+        max(
+            np.max(np.abs(rhs[free]), initial=0.0),
+            np.max(np.abs(k_d[free]), initial=0.0),
+        )
+    )
+    residual = float(np.max(np.abs(rhs[free] - k_d[free]), initial=0.0))
+    if residual > _SINGULAR_RTOL * scale:
+        return False
+    stable, _ = _second_order_stable(
+        j, members, rate, t0, lengths, equilibrium, active, free
+    )
+    return stable
+
+
+def _states_distinct(
+    a: ComplementarityResult, b: ComplementarityResult, lengths: np.ndarray
+) -> bool:
+    """Two solved states are distinct when their active sets differ or
+    their displacements differ by more than :data:`_SIGN_RTOL` of the
+    longest member — scale-relative, like every other tolerance here."""
+    if not np.array_equal(a.active, b.active):
+        return True
+    gap = float(np.max(np.abs(a.displacements - b.displacements)))
+    return gap > _SIGN_RTOL * float(np.max(lengths))
+
+
 def probe_bistability(
     coords: np.ndarray,
     members: np.ndarray,
@@ -890,10 +1043,12 @@ def probe_bistability(
     """Verify two candidate free-length assignments over the *same*
     topology (``coords``/``members``/``idiom``/``fixed`` shared — in
     practice a photoswitch's ``{trans, cis}`` Δ(end-to-end) on one
-    member) each reach a stable complementary equilibrium, and — only
-    when both do — report an energy-barrier estimate between them. See
-    the module docstring for the second-order-stability check and the
-    barrier method's derivation and honesty limits. ``barrier_samples``
+    member) each reach a stable complementary equilibrium; when both do,
+    report whether they are two equilibria of *one* structure
+    (``bistable``) and an energy-barrier estimate between them. See the
+    module docstring for the bistable definition, the
+    second-order-stability check and the barrier method's derivation and
+    honesty limits. ``barrier_samples``
     (>= 2) is the number of points sampled along the interpolation
     path."""
     if barrier_samples < 2:
@@ -990,12 +1145,15 @@ def probe_bistability(
         )
 
     state_a, state_b = states
-    bistable = state_a.solved and state_a.stable and state_b.solved and state_b.stable
+    both_stable = (
+        state_a.solved and state_a.stable and state_b.solved and state_b.stable
+    )
 
+    bistable = False
     barrier: float | None = None
     barrier_samples_out: tuple[float, ...] | None = None
     notes_out: list[str] = []
-    if not bistable:
+    if not both_stable:
         failed = []
         for label, state in (("A", state_a), ("B", state_b)):
             if state.solved and state.stable:
@@ -1011,7 +1169,57 @@ def probe_bistability(
         )
     else:
         assert state_a.result is not None and state_b.result is not None
-        assert lengths is not None and equilibrium is not None
+        assert lengths is not None and equilibrium is not None and free is not None
+        loads_flat = (
+            np.zeros(3 * coords_arr.shape[0])
+            if loads is None
+            else np.asarray(loads, dtype=float).reshape(-1)
+        )
+        cross = {}
+        for label, state, other in (
+            ("A", state_a, state_b),
+            ("B", state_b, state_a),
+        ):
+            assert state.result is not None
+            cross[label] = _is_stable_equilibrium_under(
+                members_arr,
+                rate_arr,
+                idiom_arr,
+                lengths,
+                equilibrium,
+                free,
+                loads_flat,
+                other.free_length,
+                state.result,
+            )
+        distinct = _states_distinct(state_a.result, state_b.result, lengths)
+        bistable = distinct and (cross["A"] or cross["B"])
+        if bistable:
+            hosts = [
+                f"free_length_{host} holds both"
+                for label, host in (("A", "b"), ("B", "a"))
+                if cross[label]
+            ]
+            notes_out.append(
+                "bistable: the two states are distinct and "
+                + " and ".join(hosts)
+                + " as stable complementary equilibria — one structure, "
+                "two equilibria"
+            )
+        else:
+            why = (
+                "the two states coincide (same active set and displacement)"
+                if not distinct
+                else "neither state is an equilibrium of the other "
+                "free-length assignment — they are the equilibria of two "
+                "different structures, one each"
+            )
+            notes_out.append(
+                f"not bistable: both states are stable, but {why}; the "
+                "barrier field below is the energy difference between the "
+                "two assignments' own equilibria — an actuation-energy "
+                "scale, not a barrier between two wells of one structure"
+            )
         barrier, barrier_samples_out = _barrier_estimate(
             rate_arr,
             idiom_arr,

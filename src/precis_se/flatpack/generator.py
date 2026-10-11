@@ -11,7 +11,8 @@ build; this module does not compute with it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -108,14 +109,22 @@ def flatpack_box(
     cutter_d: float = 0.0,
     sheet: tuple[float, float] | None = None,
     shelf_load_n: float | None = None,
+    laser: Mapping[str, Mapping[str, float]] | None = None,
 ) -> Flatpack:
     """A ``W × H × D`` open-front box with shelves, nested on one sheet.
-    Raises :class:`FlatpackError` (a :class:`~precis_se.flatpack.nest.NestingError`
-    when the given sheet is too small)."""
+    ``laser`` overrides the material's laser starting points per op
+    (``{"cut": {"power_pct": 80, "speed_mm_s": 8}}``).
+    Raises :class:`FlatpackError` (a :class:`~precis.errors.BadInput`; a
+    :class:`~precis_se.flatpack.nest.NestingError` when the given sheet is
+    too small)."""
     mat = material_of(material)
     t_used = float(mat.t_actual if t is None else t)
     if t_used <= 0:
         raise FlatpackError(f"t must be positive, not {_fmt(t_used)}")
+    shelves = _check_params(
+        t_used, shelves=shelves, fit=fit, kerf=kerf, shelf_load_n=shelf_load_n
+    )
+    laser_settings = _laser_settings(mat, laser)
     figures = resolve_figures(mat, fit=fit, kerf=kerf, cutter_d=cutter_d)
     panels = box_panels(
         W,
@@ -146,8 +155,81 @@ def flatpack_box(
         "sheet": list(sheet) if sheet else None,
         "shelf_load_n": shelf_load_n,
     }
-    job = emit_sheet_job(panels, cut, nesting, material=mat, t=t_used, figures=figures)
+    job = emit_sheet_job(
+        panels,
+        cut,
+        nesting,
+        material=mat,
+        t=t_used,
+        figures=figures,
+        laser=laser_settings,
+    )
     return Flatpack(params, mat, t_used, figures, tuple(panels), cut, nesting, job)
+
+
+def _number(name: str, v: Any) -> float:
+    if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
+        raise FlatpackError(f"{name} must be a finite number, not {v!r}")
+    return float(v)
+
+
+def _check_params(
+    t: float,
+    *,
+    shelves: Any,
+    fit: float | None,
+    kerf: float | None,
+    shelf_load_n: float | None,
+) -> list[float]:
+    """Up-front parameter checks with clear messages; returns the shelves as
+    floats. ``fit`` and ``kerf`` are 0 ≤ x < t: a negative one shrinks the
+    slots or grows the beam backwards, and one of ``t`` or more removes a whole
+    finger."""
+    if isinstance(shelves, str | bytes) or not isinstance(shelves, Sequence):
+        raise FlatpackError(
+            "shelves must be a list of heights in mm (e.g. [22, 60]), "
+            f"not {type(shelves).__name__} {shelves!r}"
+        )
+    heights = [_number("shelves entry", h) for h in shelves]
+    for name, v in (("fit", fit), ("kerf", kerf)):
+        if v is None:
+            continue
+        x = _number(name, v)
+        if not 0 <= x < t:
+            raise FlatpackError(
+                f"{name} must be at least 0 and below the sheet thickness "
+                f"t = {_fmt(t)} mm, not {_fmt(x)} mm"
+            )
+    if shelf_load_n is not None and _number("shelf_load_n", shelf_load_n) < 0:
+        raise FlatpackError(f"shelf_load_n cannot be negative, not {shelf_load_n!r}")
+    return heights
+
+
+_LASER_KEYS = ("power_pct", "speed_mm_s", "passes")
+_LASER_OPS = ("cut", "score")
+
+
+def _laser_settings(
+    mat: Material, override: Mapping[str, Mapping[str, float]] | None
+) -> dict[str, dict[str, float]]:
+    """The material's laser starting points per op, with ``override`` merged
+    over them and validated."""
+    out = {op: dict(s) for op, s in mat.laser.items()}
+    for op, given in (override or {}).items():
+        if op not in _LASER_OPS:
+            raise FlatpackError(
+                f"laser op must be one of {', '.join(_LASER_OPS)}, not {op!r}"
+            )
+        for key, v in given.items():
+            if key not in _LASER_KEYS:
+                raise FlatpackError(
+                    f"laser setting must be one of {', '.join(_LASER_KEYS)}, "
+                    f"not {key!r}"
+                )
+            if _number(f"laser {op}.{key}", v) <= 0:
+                raise FlatpackError(f"laser {op}.{key} must be positive, not {v!r}")
+        out.setdefault(op, {}).update(given)
+    return out
 
 
 def material_of(slug: str) -> Material:
@@ -179,15 +261,22 @@ def emit_sheet_job(
     material: Material,
     t: float,
     figures: FigureEcho,
+    laser: Mapping[str, Mapping[str, float]] | None = None,
 ) -> SheetJob:
     """One ``cut`` layer with every panel's slots then outline, in nesting
-    order. No laser settings on the layer: the exporter's defaults apply and
-    its notes say so, until the material carries recorded settings."""
+    order, carrying the ``laser`` settings for ``cut`` (the material's
+    starting points unless the caller passes its own; none = the exporter's
+    generic defaults apply and its notes say so). There is no ``score``
+    layer: the box has no fold or score geometry (every joint is cut through),
+    and an empty layer would only add a phantom LightBurn colour."""
     by_id = {p.id: p for p in panels}
     w, h = nesting.sheet
+    cut_laser = (laser or {}).get("cut")
     job = SheetJob(
         Sheet(w, h, material.slug, t),
-        layers=[Layer(CUT_LAYER, "cut")],
+        layers=[
+            Layer(CUT_LAYER, "cut", {"laser": dict(cut_laser)} if cut_laser else {})
+        ],
         notes=[
             *figures.sentences(),
             f"nesting: margin and spacing {_fmt(nesting.margin)} mm; sheet "

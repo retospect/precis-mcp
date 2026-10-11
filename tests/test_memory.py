@@ -1724,3 +1724,22 @@ def test_thread_edit_hint_absent_on_non_thread_nodes(
     assert "lead line" not in out.body
     out = handler.edit(id=mid, mode="replace", text="Left: wire the hook\nzzz")
     assert "lead line" not in out.body
+
+
+def test_agent_cannot_write_system_dream_values(handler: MemoryHandler) -> None:
+    """gr478481: DREAM:consolidated / DREAM:acquire are system-minted; the
+    agent put/tag verbs refuse them. DREAM:speculative stays writable (the
+    dream agent uses it), and the system supersede path still stamps
+    consolidated."""
+    for bad in ("DREAM:consolidated", "DREAM:acquire"):
+        with pytest.raises(BadInput, match="system-set"):
+            handler.put(text="a hunch", tags=[bad])
+    resp = handler.put(text="a hunch", tags=["DREAM:speculative"])
+    mid = id_of(resp.body)
+    assert "DREAM:speculative" in {str(t) for t in handler.store.tags_for(mid)}
+    for bad in ("DREAM:consolidated", "DREAM:acquire"):
+        with pytest.raises(BadInput, match="system-set"):
+            handler.tag(id=mid, add=[bad])
+    # the system writer path is unaffected
+    sid = handler.write_system(text="sys note", tags=["DREAM:consolidated"])
+    assert "DREAM:consolidated" in {str(t) for t in handler.store.tags_for(sid)}

@@ -405,7 +405,13 @@ class _Claimed:
 # is the reaper.
 #
 # Two sources, claimed in order until the batch is full:
-#   1. FRESH    — chunks with no summary AND no claim (NOT EXISTS x2). Written
+#   1. FRESH    — chunks with no *current* summary AND no claim (NOT EXISTS x2).
+#                 "Current" = the summary's ``content_sha`` matches the chunk's:
+#                 draft chunks (and titles) are edited IN PLACE (``edit_text``
+#                 UPDATEs text + content_sha, id unchanged), so an edited chunk
+#                 keeps its old summary row unless the sha is compared (gr478547;
+#                 same rule as ``base._claim_fresh`` / the embed worker). Legacy
+#                 ``failed`` markers with a NULL sha stay terminal. Written
 #                 as NOT EXISTS so the planner index-walks chunks and stops at
 #                 LIMIT instead of seq-scanning + sorting ~1.5M rows. Split
 #                 priority (conv/draft) vs rest so the queue order needs no
@@ -425,6 +431,8 @@ _FRESH_CLAIM_SQL = """
          WHERE NOT EXISTS (
                    SELECT 1 FROM chunk_summaries cs
                     WHERE cs.chunk_id = c.chunk_id AND cs.summarizer = %(artifact)s
+                      AND (cs.content_sha IS NOT DISTINCT FROM c.content_sha
+                           OR (cs.status = 'failed' AND cs.content_sha IS NULL))
                )
            AND NOT EXISTS (
                    SELECT 1 FROM chunk_claims cl
@@ -1076,6 +1084,40 @@ _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
     "words:",
 )
 
+#: More prompt fragments (gr478547): the 'Keep BRIEF <= N words' style budget
+#: reminder and the output labels, which :func:`parse_summary` strips from a
+#: well-formed answer — so a surviving one is an echo of the prompt.
+_PROMPT_FRAGMENT_SUBSTRINGS: tuple[str, ...] = (
+    "keep brief",
+    "brief:",
+    "detail:",
+    "≤",
+    "<=",
+    f"{_BRIEF_MAX_WORDS} words",
+)
+
+#: Reasoning / chatty openers. A gist is telegraphic ("drop leading articles
+#: and pronouns"), so it never starts like this. Anchored at the start of any
+#: line of the candidate (reasoning often follows a clean-looking first line).
+_REASONING_PREAMBLE_RE = re.compile(
+    r"^\s*(?:"
+    r"let me|let's|let us|i'll|i will|i need|i should|i can|i'm going|i think|"
+    r"okay[,.! ]|ok[,.!]|sure[,.!]|alright[,.!]|hmm|wait[,.! ]|"
+    r"first[,:]|firstly|so[,:]|well[,:]|now[,:]|"
+    r"here is|here's|here are|the user|we need|we should|we have|"
+    r"looking at|analy[sz]ing|thinking|step \d"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+#: A numbered list is reasoning, not a gist: two or more "1." / "2)" lines.
+_NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
+
+#: Hard ceiling on the whole stored summary (BRIEF + DETAIL). The prompt asks
+#: for ~15 words + 1-3 terse fragments; this is generous headroom, and past it
+#: the text is reasoning run-on, not a gloss.
+_SUMMARY_MAX_CHARS = 800
+
 #: A leaked self-verification tally: "boxel(1) platform(2) ... 11 words.".
 _TALLY_RE = re.compile(r"\b\w+\(\d+\)")
 
@@ -1137,6 +1179,15 @@ def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
             return f"instruction-echo substring {needle!r}"
     if _TALLY_RE.search(candidate):
         return "digit-parenthesis tally pattern"
+    for needle in _PROMPT_FRAGMENT_SUBSTRINGS:
+        if needle in low:
+            return f"prompt-fragment echo {needle!r}"
+    if _REASONING_PREAMBLE_RE.search(candidate):
+        return "reasoning preamble"
+    if len(_NUMBERED_LINE_RE.findall(candidate)) >= 2:
+        return "numbered reasoning list"
+    if len(candidate) > _SUMMARY_MAX_CHARS:
+        return f"summary over {_SUMMARY_MAX_CHARS} chars ({len(candidate)})"
     brief = candidate.split("\n\n", 1)[0].strip()
     if len(brief) >= 2 and (
         (brief[0] == '"' and brief[-1] == '"')
@@ -1242,17 +1293,20 @@ def write_chunk_summary(
     conn.execute(
         """
         INSERT INTO chunk_summaries
-            (chunk_id, summarizer, text, prompt_hash, token_count, status)
-        VALUES (%s, %s, %s, %s, %s, 'ok')
+            (chunk_id, summarizer, text, prompt_hash, token_count, status,
+             content_sha)
+        VALUES (%s, %s, %s, %s, %s, 'ok',
+                (SELECT content_sha FROM chunks WHERE chunk_id = %s))
         ON CONFLICT (chunk_id, summarizer) DO UPDATE
            SET text = EXCLUDED.text,
                prompt_hash = EXCLUDED.prompt_hash,
                token_count = EXCLUDED.token_count,
                status = 'ok',
                last_error = NULL,
+               content_sha = EXCLUDED.content_sha,
                attempts = chunk_summaries.attempts + 1
         """,
-        (chunk_id, summarizer, text, prompt_hash, token_count),
+        (chunk_id, summarizer, text, prompt_hash, token_count, chunk_id),
     )
     conn.execute(
         "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = %s",
@@ -1302,15 +1356,18 @@ def _mark_failed(
     conn.execute(
         """
         INSERT INTO chunk_summaries
-            (chunk_id, summarizer, status, last_error, attempts)
-        VALUES (%s, %s, 'failed', %s, %s)
+            (chunk_id, summarizer, status, last_error, attempts, content_sha)
+        VALUES (%s, %s, 'failed', %s, %s,
+                (SELECT content_sha FROM chunks WHERE chunk_id = %s))
         ON CONFLICT (chunk_id, summarizer) DO UPDATE
            SET status = 'failed',
                last_error = EXCLUDED.last_error,
-               attempts = EXCLUDED.attempts
+               attempts = EXCLUDED.attempts,
+               content_sha = EXCLUDED.content_sha
          WHERE chunk_summaries.status <> 'ok'
+            OR chunk_summaries.content_sha IS DISTINCT FROM EXCLUDED.content_sha
         """,
-        (chunk_id, summarizer, err, attempts),
+        (chunk_id, summarizer, err, attempts, chunk_id),
     )
     conn.execute(
         "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = %s",

@@ -32,8 +32,10 @@ Modules:
   :func:`~precis.structsolve.complementarity.probe_bistability` takes
   two candidate free-length assignments over the same topology (e.g. a
   photoswitch's ``{trans, cis}`` states) and reports whether each is a
-  stable equilibrium plus, when both are, an advisory-tier
-  energy-barrier estimate between them.
+  stable equilibrium, whether they are two equilibria of *one*
+  structure (``bistable``), and, when both are stable, an advisory-tier
+  energy-barrier estimate between them. Skill:
+  ``get(kind='skill', id='precis-structsolve-help')``.
 - :mod:`precis.structsolve.simp` — 3D density-field SIMP (the nTop leg,
   slice 4): a voxel domain plus nodal loads and supports goes in, a
   density field with a compliance history comes out, optionally through

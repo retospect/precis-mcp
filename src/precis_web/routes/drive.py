@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
@@ -147,6 +148,30 @@ _DERIVED_KINDS: tuple[str, ...] = ("anki", "citation")
 #: whole-kind pivot (the Status page's "Refs by kind" chips) needs the
 #: complete set or its count contradicts the chip that linked here.
 _FOLDER_ANY = "*"
+
+
+def _split_kind_tokens(q: str, known_kinds: Iterable[str]) -> tuple[list[str], str]:
+    """Peel leading ``/kind`` tokens off a query (gr478511).
+
+    ``"/draft nano"`` -> ``(["draft"], "nano")``. Tokens match a known kind
+    case-insensitively, singular or plural (``/drafts``, ``/papers``). Only a
+    *leading* run is consumed; an unknown ``/word`` stops the scan and stays
+    in the free text, so paths and URLs are searched literally.
+    """
+    by_name = {kk.lower(): kk for kk in known_kinds}
+    words = q.split()
+    kinds: list[str] = []
+    i = 0
+    while i < len(words) and words[i].startswith("/") and len(words[i]) > 1:
+        tok = words[i][1:].lower()
+        hit = by_name.get(tok) or (by_name.get(tok[:-1]) if tok.endswith("s") else None)
+        if hit is None:
+            break
+        if hit not in kinds:
+            kinds.append(hit)
+        i += 1
+    return kinds, " ".join(words[i:])
+
 
 # Discovery is a content/work browsing scope, not an authorship classifier.
 _DISCOVER_EXCLUDED = frozenset(
@@ -523,6 +548,11 @@ async def index(
                 "concept",
             ]
         )
+    # ``/draft nano`` -> kind chip + free text "nano" (gr478511).
+    token_kinds, q_rest = _split_kind_tokens(q, all_kind_defs)
+    if token_kinds:
+        selected_kinds = token_kinds
+        q = q_rest
     tags = [t.strip() for t in tag if t.strip()]
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though

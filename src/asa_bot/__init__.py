@@ -22,6 +22,21 @@ and, with precis down, spools to a fallback JSONL replayed on recovery.
 Text-prefix slash commands (:mod:`asa_bot.slash`) are intercepted before any
 LLM call.
 
+**Speaker identity.** :mod:`asa_bot.identity` maps ``message.author.id`` to
+the precis account that set that numeric id on ``/account``
+(``web_users.discord_user_id``); the account ``abbrev`` becomes the conv
+``author`` and the ``user:<handle>`` memory tag. Unmapped users keep the
+Discord display name. The same abbrev attributes the turn's LLM writes
+(:mod:`precis.acting_user`): asa sets ``PRECIS_ACTING_USER`` on the
+``claude -p`` run, the deployed mcp.json passes it to the ``precis serve``
+that run spawns over stdio, and that server records its writes as
+``user:<abbrev>`` in the ``revisions`` log; the in-process chain lane gets
+the same actor through ``revision_context``. Only a stdio server honours the
+variable, so no client of the shared HTTP MCP can claim a user. Unmapped
+speakers and cron turns write as ``agent``, as do asa's own bookkeeping
+writes over the long-lived client (conv capture, the per-user placeholder
+memory), which carry the speaker in ``author`` / ``user:<handle>`` instead.
+
 **Inbound from the cluster.** :mod:`asa_bot.pg_listen` holds a dedicated
 connection ``LISTEN``ing on ``precis.cron`` (a due scheduled tick with
 ``meta.deliver``: synthesize a user message, run a turn, post the result) and

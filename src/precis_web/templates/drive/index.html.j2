@@ -117,7 +117,9 @@
       <label for="drive-query" class="block text-xs text-slate-500 mb-0.5">Search</label>
       <input id="drive-query" type="search" name="q" value="{{ q }}" autofocus
              placeholder="Search work, a handle or a DOI" @input="submitForm(1000)"
+             x-init="$el.setSelectionRange($el.value.length, $el.value.length)"
              class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+      <p class="mt-0.5 text-[11px] text-slate-400">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest; a handle or DOI jumps straight to the item.</p>
     </div>
     <div>
       <label for="drive-sort" class="block text-xs text-slate-500 mb-0.5">Sort</label>

@@ -1324,3 +1324,145 @@ def test_chunk_retired_mid_pass_is_skipped_not_failed(
             ).fetchall()
         ]
     assert ids == [kept_id]
+
+
+# ── gr478547: reasoning preambles / prompt echoes / numbered lists ──
+
+
+@pytest.mark.parametrize(
+    "leak",
+    [
+        "Let me analyze this passage. It's about cobalt catalysts.",
+        "I'll summarize: cobalt catalyst triples turnover.",
+        "Okay, the passage describes a cobalt catalyst.",
+        "First, identify the topic.\n\nThen compress it.",
+        "1. The passage is about cobalt.\n2. Keep it short.\n3. Done.",
+        'cobalt catalyst\n\nsmooth layer. Keep BRIEF ≤15 words. "smooth layer',
+        "cobalt catalyst triples turnover Keep BRIEF short",
+        "BRIEF: cobalt catalyst\nDETAIL: x BRIEF: again",
+        "cobalt catalyst triples turnover\n\nLet me check the word count.",
+    ],
+)
+def test_reject_reason_catches_reasoning_and_prompt_leaks(leak: str) -> None:
+    assert _reject_reason(leak) is not None
+
+
+def test_reject_reason_caps_total_length() -> None:
+    long_detail = "cobalt catalyst\n\n" + ", ".join(f"fragment{i}" for i in range(200))
+    assert "chars" in (_reject_reason(long_detail) or "")
+
+
+@pytest.mark.parametrize(
+    "clean",
+    [
+        "First-principles DFT screening of cobalt catalysts\n\nB3LYP, 12 systems.",
+        "Sure-footed turnover claim in acidic acetonitrile\n\n80 °C.",
+        "cobalt catalyst triples turnover\n\nReported at pH 2; unstable above 80 °C.",
+    ],
+)
+def test_reject_reason_does_not_overfire_on_clean_gists(clean: str) -> None:
+    assert _reject_reason(clean) is None
+
+
+def test_run_pass_never_stores_the_leak_when_both_attempts_leak() -> None:
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    leak = "Let me analyze this passage. It's about cobalt."
+    client = LlmClient(LlmConfig(), transport=_SequenceTransport([leak, leak]))
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result["rejected"] == 1
+    stored = [p[2] for _sql, p in conn.writes]
+    assert stored
+    assert all("Let me" not in t for t in stored)
+
+
+# ── gr478547: an edited (in-place) chunk is re-summarised (real PG) ──
+
+
+def _claimable_ids(conn: Any) -> set[int]:
+    return {
+        c.chunk_id
+        for c in claim_chunks_without_summary(conn, summarizer="llm-v1", limit=10)
+    }
+
+
+def test_edited_chunk_is_reclaimed_and_resummarised(store: Any) -> None:
+    """Draft chunks are edited IN PLACE (``edit_text``: text + content_sha
+    UPDATE, same chunk_id), so the old summary row survives. The fresh claim
+    must compare ``content_sha`` or the gist stays stale forever."""
+    from tests.workers._helpers import seed_chunks
+
+    _ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET content_sha = 'sha-v1' WHERE chunk_id = %s", (cid,)
+        )
+        write_chunk_summary(
+            conn,
+            cid,
+            summarizer="llm-v1",
+            text="old gist\n\nold detail.",
+            prompt_hash="h",
+            token_count=1,
+        )
+        conn.commit()
+        # Up to date: a summary built against sha-v1 is not re-claimed.
+        assert cid not in _claimable_ids(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT content_sha FROM chunk_summaries WHERE chunk_id = %s", (cid,)
+        ).fetchone()
+        assert row == ("sha-v1",)
+
+        # The in-place edit (what DraftStore.edit_text / a heading rename do).
+        conn.execute(
+            "UPDATE chunks SET text = %s, content_sha = 'sha-v2' WHERE chunk_id = %s",
+            (_PROSE + " Edited.", cid),
+        )
+        conn.commit()
+        assert cid in _claimable_ids(conn)
+        conn.commit()
+
+        # Re-gist overwrites the stale row and stamps the new sha.
+        write_chunk_summary(
+            conn,
+            cid,
+            summarizer="llm-v1",
+            text="new gist\n\nnew detail.",
+            prompt_hash="h",
+            token_count=1,
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT text, content_sha FROM chunk_summaries WHERE chunk_id = %s",
+            (cid,),
+        ).fetchone()
+        assert row == ("new gist\n\nnew detail.", "sha-v2")
+        assert cid not in _claimable_ids(conn)
+
+
+def test_failed_marker_is_per_sha_so_an_edit_retries(store: Any) -> None:
+    from tests.workers._helpers import seed_chunks
+
+    _ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET content_sha = 'sha-v1' WHERE chunk_id = %s", (cid,)
+        )
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact, attempts) "
+            "VALUES (%s, 'llm-v1', %s)",
+            (cid, MAX_SUMMARIZE_ATTEMPTS - 1),
+        )
+        _mark_failed(conn, cid, summarizer="llm-v1", error="boom")
+        conn.commit()
+        assert cid not in _claimable_ids(conn)
+        conn.commit()
+        conn.execute(
+            "UPDATE chunks SET text = %s, content_sha = 'sha-v2' WHERE chunk_id = %s",
+            (_PROSE + " Edited.", cid),
+        )
+        conn.commit()
+        assert cid in _claimable_ids(conn)

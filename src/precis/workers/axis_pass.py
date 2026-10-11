@@ -35,7 +35,7 @@ since a ``DOMAIN:bio`` ref satisfies the prereq but fails
 ``domain_in: [physics, materials, eng]``. ``tags_any: ["NS:value", ...]``
 requires at least one of the listed closed-prefix tags to be present:
 resolved on the (parent) ref for a **ref-level** axis (``move``, the
-dream/memory axis, gates on ``DREAM:speculative`` / ``DREAM:grounded``),
+dream/memory axis, gates on ``DREAM:speculative``),
 but on the **chunk itself** for a chunk-level axis — checked via
 ``v_chunk_tags_all`` (the chunk's own ``chunk_tags`` plus inherited
 ``ref_tags``), so a chunk axis can gate on another chunk axis's VALUE

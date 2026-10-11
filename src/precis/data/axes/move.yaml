@@ -23,7 +23,7 @@ values:
    unknown, n-a]
 default_unknown: unknown
 applies_when:
-  tags_any: ["DREAM:speculative", "DREAM:grounded"]
+  tags_any: ["DREAM:speculative"]
 cost_tier: small
 prompt: |
   Classify the *primary cognitive move* of this dream — a machine-

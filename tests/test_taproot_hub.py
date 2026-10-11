@@ -1512,6 +1512,48 @@ def test_merge_hubs_refuses_when_either_side_is_past_candidate(store: Any) -> No
     assert "reviewed" in (plan.block_reason or "")
 
 
+def test_merge_hubs_stranded_cite_refused_in_dry_run_and_writes_nothing(
+    store: Any,
+) -> None:
+    """gr478510: a loser still cited by a live draft chunk is reported by
+    the dry run and refused by a real run with zero partial writes."""
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    draft = seed_ref(store, title="a draft", kind="draft")
+    seed_chunk(store, ref_id=draft, text=f"Claim [fi{loser}] stands.")
+
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+    assert plan.can_merge is False
+    assert f"fi{loser} is still cited by 1 live chunk" in (plan.block_reason or "")
+
+    with pytest.raises(BadInput, match="still cited"):
+        merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    assert _edge(store, loser, winner) is None
+    with store.pool.connection() as conn:
+        retired_at = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (loser,)
+        ).fetchone()[0]
+    assert retired_at is None
+
+
+def test_merge_hubs_unknown_set_by_lists_valid_actors(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    unknown_actor: Any = "nobody-here"
+    for dry in (True, False):
+        with pytest.raises(BadInput, match="valid actors:.*agent") as ei:
+            merge_hubs(
+                store,
+                loser_ref_id=loser,
+                winner_ref_id=winner,
+                set_by=unknown_actor,
+                dry_run=dry,
+            )
+        assert "nobody-here" in str(ei.value.cause)
+    assert _edge(store, loser, winner) is None
+
+
 def test_merge_hubs_is_idempotent_on_rerun(store: Any) -> None:
     loser = mint_hub(store, _CLAIM)
     winner = mint_hub(store, _SHARPER_CLAIM)

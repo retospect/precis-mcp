@@ -797,3 +797,28 @@ def test_silent_empty_still_fires_even_with_mcp_config_offered(
     assert _structural_digest_count(store) == 0
     assert len(_empty_alerts(store)) == 1
     assert _tool_starved_alerts(store) == []
+
+
+def test_digest_body_is_chunk_and_runs_memory_hooks(store: Store) -> None:
+    """gr478482: the digest goes through MemoryHandler -- short title, body in
+    a ``memory_body`` chunk, mention autolink run, tags set by the system."""
+    target = store.insert_ref(kind="memory", slug=None, title="target", meta={})
+    body = "Digest headline\n\n" + ("long detail " * 40) + f"\nsee memory:{target.id}"
+    digest_id = _write_digest(store, body, cost_usd=0.2)
+    ref = store.get_ref(kind="memory", id=digest_id)
+    assert ref is not None
+    assert ref.title == "Digest headline"
+    chunks = store.chunks.list_chunks_for_ref(digest_id)
+    assert any(
+        c.chunk_kind == "memory_body" and "long detail" in c.text for c in chunks
+    )
+    out = store.links_for(digest_id, direction="out", relation="related-to")
+    assert any(getattr(link, "dst_ref_id", None) == target.id for link in out), (
+        f"mention autolink did not fire: {out!r}"
+    )
+    assert "digest:structural" in {str(t) for t in store.tags_for(digest_id)}
+    with store.pool.connection() as conn:
+        sets = conn.execute(
+            "SELECT DISTINCT set_by FROM ref_tags WHERE ref_id = %s", (digest_id,)
+        ).fetchall()
+    assert "system" in {r[0] for r in sets}

@@ -175,3 +175,19 @@ def test_roster_orders_enabled_first(store: Store) -> None:
     _make(store, login="bob", abbrev="bo")
     store.set_web_user_disabled("alice", disabled=True)
     assert [u.login for u in store.list_web_users()] == ["bob", "alice"]
+
+
+def test_discord_user_id_set_lookup_clear_and_unique(store: Store) -> None:
+    _make(store)
+    _make(store, login="ada", abbrev="al")
+    sid = "123456789012345678"
+    assert store.update_web_user("reto", discord_user_id=sid)
+    found = store.get_web_user_by_discord_id(sid)
+    assert found is not None and found.login == "reto"
+    assert found.discord_user_id == sid
+    with pytest.raises(ValueError, match="already on another account"):
+        store.update_web_user("ada", discord_user_id=sid)
+    with pytest.raises(ValueError):
+        store.update_web_user("ada", discord_user_id="not-digits")
+    assert store.update_web_user("reto", discord_user_id="")
+    assert store.get_web_user_by_discord_id(sid) is None

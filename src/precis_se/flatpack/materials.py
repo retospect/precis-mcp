@@ -12,6 +12,7 @@ echo (:func:`precis_se.flatpack.generator.resolve_figures`).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
@@ -37,6 +38,10 @@ class Material:
     E_gpa: float | None = None
     figures: dict[str, Figures] = field(default_factory=dict)
     note: str = ""
+    #: Laser starting points per sheet-job op (``cut``/``score``): keys
+    #: ``power_pct``, ``speed_mm_s``, ``passes``. Empty = not a laser material
+    #: here, so generated layers carry no laser settings.
+    laser: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
     def recorded(self, machine: str) -> Figures:
         return self.figures.get(machine, Figures())
@@ -47,6 +52,16 @@ _PLYWOOD_NOTE = (
     "birch/poplar plywood figure along the face grain."
 )
 
+#: Starting points for 3 mm single-wall cardboard on a diode laser: cut slow
+#: enough to go through, score light and fast. Not measured — tune on the
+#: first cube; the exporter's generic 10 mm/s cut default is not material-aware.
+CORRUGATED_LASER: Final = MappingProxyType(
+    {
+        "cut": MappingProxyType({"power_pct": 100, "speed_mm_s": 6, "passes": 1}),
+        "score": MappingProxyType({"power_pct": 15, "speed_mm_s": 120, "passes": 1}),
+    }
+)
+
 MATERIALS: Final = MappingProxyType(
     {
         "corrugated-3mm": Material(
@@ -55,6 +70,7 @@ MATERIALS: Final = MappingProxyType(
             t_actual=3.0,
             E_gpa=None,
             figures={"laser": Figures()},
+            laser=CORRUGATED_LASER,
             note=(
                 "Single-wall corrugated cardboard. No E: the board is markedly "
                 "stiffer along its flutes than across them, so one modulus "

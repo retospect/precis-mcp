@@ -109,9 +109,19 @@ def _refuse_if_finding_cited(conn: Connection, ref_id: int) -> None:
     prose while every census counts it done. One indexed-ish regexp
     query per delete — cheap at delete frequency.
     """
+    err = finding_cited_error(conn, ref_id)
+    if err is not None:
+        raise err
+
+
+def finding_cited_error(conn: Connection, ref_id: int) -> BadInput | None:
+    """The :class:`BadInput` :func:`_refuse_if_finding_cited` would raise,
+    or ``None`` when no live draft chunk cites ``[fi<ref_id>]``. Lets a
+    planner (``taproot merge --dry-run``) report the refusal without
+    raising or writing."""
     rows = conn.execute(_LIVE_FI_CITERS_SQL, (rf"\[fi{ref_id}\]",)).fetchall()
     if not rows:
-        return
+        return None
     citers: list[str] = []
     for chunk_id, doc_ref_id, kind in rows:
         doc = handle_registry.try_format(kind, doc_ref_id) or f"ref:{doc_ref_id}"
@@ -120,7 +130,7 @@ def _refuse_if_finding_cited(conn: Connection, ref_id: int) -> None:
     docs = sorted({int(r[1]) for r in rows})
     shown = ", ".join(citers[:10])
     truncated = "" if len(citers) <= 10 else f", … ({len(citers) - 10} more)"
-    raise BadInput(
+    return BadInput(
         f"fi{ref_id} is still cited by {len(rows)} live chunk(s) across "
         f"{len(docs)} document(s) — deleting it would strand the cite(s): "
         f"{shown}{truncated}",
