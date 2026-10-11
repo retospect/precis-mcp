@@ -271,7 +271,7 @@ def _build_rows(
     finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
     dois = store.identifiers_for_refs(list(paper_ids))
-    block_counts = {rid: store.chunks.count_chunks(rid) for rid in paper_ids}
+    block_counts = {rid: store.chunks.count_usable_chunks(rid) for rid in paper_ids}
     evidence_by_hub, evidence_unfetched = _evidence_unfetched_paper_ids(
         store, finding_ids
     )

@@ -2118,3 +2118,26 @@ def test_default_locate_proposes_table_chunk_holding_claim_numbers(monkeypatch):
     )
     assert got == table
     assert seen["proposed"] == table
+
+
+def test_plan_pa_tagged_unusable_body_is_fetch_first_like_a_stub(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A paper tagged body:partial holds chunks but no article body: its
+    whole-paper cite is classified exactly like an un-fetched stub."""
+    from precis.store.types import Tag
+
+    paper, pa = _fetched_pa(hub.live_store)
+    hub.live_store.add_tag(paper, Tag.open("body:partial"), set_by="system")
+    dc = _seed_draft_para(draft, hub, f"A landmark result [{pa}].")
+    result = plan_chunk(
+        hub.live_store,
+        embedder=None,
+        chunk_id=dc,
+        ref_level=True,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+    assert [p.action for p in result.plans] == ["stub-fetch-first"]

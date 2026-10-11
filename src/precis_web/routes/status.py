@@ -144,10 +144,29 @@ def _paper_summary(store: Store) -> dict[str, int]:
             f"  AND NOT {has_body_sql('r')})::int AS bodiless "
             "FROM refs r WHERE r.kind = 'paper' AND r.retired_at IS NULL"
         ).fetchone()
+        # Terminal flags from the partial-body / empty-extraction heals:
+        # text is held but is not a usable article body.
+        tagged = conn.execute(
+            "SELECT count(*) FILTER (WHERE t.value = 'body:partial')::int, "
+            "count(*) FILTER (WHERE t.value = 'body:needs_ocr')::int "
+            "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "JOIN refs r ON r.ref_id = rt.ref_id "
+            "WHERE t.namespace = 'OPEN' "
+            "AND t.value IN ('body:partial', 'body:needs_ocr') "
+            "AND r.kind = 'paper' AND r.retired_at IS NULL"
+        ).fetchone()
     total, held, bodiless = (
         (int(row[0]), int(row[1]), int(row[2])) if row else (0, 0, 0)
     )
-    return {"total": total, "held": held, "stub": total - held, "bodiless": bodiless}
+    partial, needs_ocr = (int(tagged[0]), int(tagged[1])) if tagged else (0, 0)
+    return {
+        "total": total,
+        "held": held,
+        "stub": total - held,
+        "bodiless": bodiless,
+        "body_partial": partial,
+        "body_needs_ocr": needs_ocr,
+    }
 
 
 def _todo_status(store: Store) -> list[dict[str, Any]]:
