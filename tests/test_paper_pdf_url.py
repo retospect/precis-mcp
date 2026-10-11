@@ -203,6 +203,34 @@ def test_pull_without_inbox_env_fails_recorded(store, serve, monkeypatch):
     assert rec["reason"] == "no_inbox"
 
 
+def test_dispatch_set_meta_does_not_collide_with_job_ref_id(store, serve, monkeypatch):
+    # The executor binds the job's ref_id positionally (claude_inproc
+    # _ctx_set_meta -> _set_meta(conn, ref_id, **fields)); a ``ref_id=``
+    # field raised TypeError on prod (r24, job 479579).
+    monkeypatch.delenv("PRECIS_WATCH_INBOX", raising=False)
+    ref_id = _stub(store)
+    written: dict[str, Any] = {}
+
+    def _set_meta(job_ref_id: int, **fields: Any) -> None:
+        written.update(fields)
+
+    class _Ctx:
+        def __init__(self) -> None:
+            self.store = store
+            self.meta = {"params": {"ref_id": ref_id, "url": _URL}}
+
+        def append_chunk(self, _kind: str, _text: str) -> None:
+            pass
+
+        def set_meta(self, **fields: Any) -> None:
+            _set_meta(999, **fields)
+
+    ctx: Any = _Ctx()
+    paper_pull._dispatch(ctx, paper_pull.SPEC)
+    assert written["paper_ref_id"] == ref_id
+    assert written["pull_reason"] == "no_inbox"
+
+
 # -- blocklist -------------------------------------------------------------
 
 

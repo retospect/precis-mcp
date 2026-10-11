@@ -281,8 +281,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"paper_pull ref {ref_id}: {record['status']}"
         + (f" ({record['reason']})" if record.get("reason") else ""),
     )
+    # Not ``ref_id=``: the executor's set_meta binds the job's own ref_id
+    # positionally, so that key collides (TypeError on prod, r24).
     ctx.set_meta(
-        ref_id=ref_id, pull_status=record["status"], pull_reason=record.get("reason")
+        paper_ref_id=ref_id,
+        pull_status=record["status"],
+        pull_reason=record.get("reason"),
     )
 
 
