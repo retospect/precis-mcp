@@ -8,6 +8,8 @@ answers:
   - how do I see whether a model has actually been good, cheap, or reliable here?
   - how do I leave a note about how a model performed?
   - what's the difference between meta.llm_tier and a specific model?
+  - why did an LLM call fail, and will retrying help (quota, rate limit, budget)?
+  - what is deferred_llm_call?
 applies-to: get/search/put (append a review)/tag/link (kind='llm')
 tags: verbs, workflow
 kinds: llm
@@ -127,6 +129,40 @@ tag(kind="llm", id="claude-opus-4-8", add=["topic:sql-migration"])
 link(kind="llm", id="claude-opus-4-8", target="memory:me812", rel="see-also")
 ```
 
+
+## Why did an LLM call fail? Quota, rate limit, retry
+## What is deferred_llm_call?
+
+Every LLM call goes through one router, which stamps each failure with a
+`reason_class` and a `retry_at` time. The class says whether waiting helps:
+
+| class | meaning | retry horizon |
+|---|---|---|
+| `quota` | Claude subscription window used up | the reset time in the notice (2 h if none) |
+| `budget` | spend cap, credit balance, HTTP 402, or the dollar breaker | 2 h |
+| `rate` | bare 429 / overloaded / 529 | 15 min (the SMALL lane retries these in-process first) |
+| `transport` | timeout, connection failure, 5xx | 30 min (also retried in-process by SMALL) |
+| `content` | the model refused or a filter fired | none: another model gets the same answer |
+
+Unrecognised wording stays unclassified and keeps the generic cool-down.
+A failover chain falls through to the next model on `quota`, `rate`,
+`budget` and `transport`, never on `content`.
+
+**Quota stamping.** Claude reports an exhausted quota as ordinary answer
+text, so the router recognises the wording ("hit your session limit ...
+resets 3pm (UTC)", "out of extra usage") when it makes up the whole reply.
+On a live `quota` failure it also writes the exhaustion into the shared
+quota snapshot, so the next Claude call pauses instead of every caller
+rediscovering the limit. Only subscription transports do this; a
+pay-per-token rung does not.
+
+**`deferred_llm_call`** is the job a synchronous surface (a web follow-up)
+queues when its call fails with `quota` or `budget`. The human's turn stays
+as the resume point, the job sleeps until `retry_at`, re-runs the saved
+request and appends the real answer to the thread. A repeat `quota` or
+`budget` failure defers again, up to 6 times; any other failure, or the
+bound, appends a `system` turn naming the failure and fails the job. A
+failure is never stored as the assistant's answer.
 
 ## See also
 
