@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** local-compute
-- **Next:** Run the latest handoff’s read-only checks: first review-pass gate timing, transaction-scoped locks after Stage A, then the Stage B before-day and proxy cutover check.
-- **Blocked by:** Follow-up deployment, Reto’s proxy cutover window and td458386 admin-console access; nothing to build until these waits clear.
+- **Next:** Collect the Stage B before-day: sample `scripts/pgb-pools POOLS` and `STATS` (`cl_waiting`, `maxwait`, `avg_wait_time`) across 24 h; there is no pgbouncer exporter, so the samples are the record. Then flip Stage B (`server_reset_query_always = 1`) in a restart window. Checked 2026-10-11: no `_LOCK_KEY` holder at all; the gate logs `precis connected after` 4.5–6.6 s on every review pass since 10-04 (under the 10 s profiling threshold), yet 1–4 structural passes a day are still tool-starved after a clean connect, so gr463517 stays open and the cause is past the gate.
+- **Blocked by:** Nothing for the before-day. pgbouncer applied 2026-10-11 12:31Z (`02-postgres.yml --tags pgbouncer`): `stats_users` live, Stage A live (`track_extra_parameters = default_transaction_read_only`), `agent_rw` reads `default_transaction_read_only = off`; first `SHOW POOLS` 55 active clients, `cl_waiting` 0. Reto’s proxy cutover window comes after Stage B.
 - **Unblocks:** Continuous MCP access for both research tracks.
 - **Acceptance:** Follow [the latest handoff](#thread-context) through BEGIN READ ONLY: gate connection line, a day without starvation, no out-of-transaction _LOCK_KEY, and backend SHA at or after 7f006bf09.
 - **Worktree:** `session-mcp-shared-server`

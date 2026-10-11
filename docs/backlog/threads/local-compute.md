@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** local-compute
-- **Next:** Build the summarise-only local chain described in [ranked work](#do-next).
-- **Blocked by:** NAS role shares await Reto’s local-compute-12 answer; model pick/vLLM slice 1 await knowledge-mesh’s km-8 task set. Check whether either blocks this slice.
+- **Next:** Read a full day of `llm_summarize` placement (`llm_call_log.placement_routed` vs `placement`, `source='llm_summarize'`) and decide whether the melchior slot's overflow share justifies more local capacity. The summarise-only chain is live: `app_settings` `llm.op.llm_summarize` written 2026-10-11 11:53:54Z (local `glm-4.7-flash`, cloud `z-ai/glm-4.7-flash` overflow). Before: 11,857 calls in 24 h, all cloud. First ~9 min after: 190 local, 688 routed local but overflowed to cloud (the slot is capacity 4). Revert: delete that row.
+- **Blocked by:** Nothing for the placement read. NAS role shares await Reto’s local-compute-12 answer; model pick/vLLM slice 1 await knowledge-mesh’s km-8 task set.
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
 - **Worktree:** `local-compute`

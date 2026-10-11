@@ -3,6 +3,7 @@ status: draft
 pillar: local-compute
 title: Dedicated local summariser — one machine slice runs chunk summarisation, cloud only as overflow
 prio: high
+snooze-until: 2026-10-12
 ---
 
 # Dedicated local summariser — one machine slice runs chunk summarisation, cloud only as overflow
@@ -55,6 +56,22 @@ id='/placement')` (the `small` tier row).
   guaranteed into backoff). Derive `derived_drain._DEFAULT_CONCURRENCY` from
   the advertised capacity rather than a hardcoded number when the local rung
   returns.
+
+## Recheck due 2026-10-12 — first full day of the live chain (td478882)
+
+The prod row `llm.op.llm_summarize` was written 2026-10-11 11:53:54Z (local
+`glm-4.7-flash` on melchior's 4-slot `llm:glm-4.7-flash`, cloud
+`z-ai/glm-4.7-flash` as overflow). Revert: delete that `app_settings` row.
+
+- Before: 11,857 summarise calls in 24 h, all cloud.
+- First 12 min, during a drain burst that began 09:00Z (77–336 calls/min):
+  local held 20–40 calls/min, its 4-slot ceiling; cloud took 70–88%.
+- Read a full day, `--ro`:
+  `SELECT placement_routed, placement, count(*) FROM llm_call_log WHERE
+  source='llm_summarize' AND ts > now()-interval '24 hours' GROUP BY 1,2;`
+- Decide: if quiet hours run mostly local and only drain bursts overflow,
+  the slice is right-sized; if overflow dominates off-burst too, raise the
+  slot (`--parallel`) or add a second local server. Then drop the snooze.
 
 ## In scope
 
