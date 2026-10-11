@@ -26,6 +26,7 @@ which axis), see `precis-tags`. This file is the verb mechanics.
 
 ```python
 tag(kind="todo", id=158, add=["STATUS:done"], remove=["STATUS:open"])
+tag(kind="alert", id=42, add=["alert-state:resolved"])  # lowercase but exclusive — drops alert-state:open
 tag(kind="paper", id="wang2020state", add=["topic:noxrr"])
 tag(kind="memory", id=42, remove=["pinned"])
 ```

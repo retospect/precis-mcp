@@ -215,6 +215,7 @@ axes and suggests the lowercase rewrite.
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
 | `memory` | `DREAM` (dreaming-worker provenance; `consolidated`/`acquire` system-set), `SPACE` (default `research`; a caller's `SPACE:` replaces it), `STALE` (system-set), `AUDIT` (`ungrounded-number`, set by the attribution gate) |
 | `skill` | `SPACE` |
+| `alert` | no closed axes, but lowercase `alert-state:` (`open`/`resolved`) is mutually exclusive: adding one value replaces the other (like `STATUS:`) |
 | `anki`, `conv`, `oracle` | _none_ — use lowercase open tags or bare flags |
 
 Free-form kinds (`memory` etc.) express the same semantics with open

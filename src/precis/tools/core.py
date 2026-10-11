@@ -1799,6 +1799,7 @@ def tag(
 
     Per-kind closed-prefix gating (summary):
     todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
+    alert: lowercase `alert-state:` open|resolved is exclusive.
     finding: unrestricted. job: STATUS (lifecycle subsets).
     memory: SPACE (DREAM/STALE are system-set).
     anki/conv: none. paper/patent: SRC+CACHE.

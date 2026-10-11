@@ -395,6 +395,20 @@ class AlertHandler(NumericRefHandler):
         would hit a unique violation. Same transaction as the tag
         writes, so the pair can't drift apart.
         """
+        # ``alert-state:`` is a mutually exclusive axis (gr479086): adding
+        # one lifecycle value drops the other, like a closed ``STATUS:``
+        # add. The tag is a lowercase open tag (the open/resolved rows are
+        # keyed on it), so the replace is done here rather than by the
+        # closed-prefix ``replace_prefix`` path. When one call adds both
+        # values the last one wins.
+        wanted = [
+            t.value
+            for t in added
+            if t.namespace == "open" and t.value in self._LIFECYCLE_TAGS
+        ]
+        if wanted:
+            for stale in self._LIFECYCLE_TAGS - {wanted[-1]}:
+                self.store.remove_tag(ref_id, Tag.open(stale), conn=conn)
         touched = {t.value for t in (*added, *removed) if t.namespace == "open"}
         if touched & self._LIFECYCLE_TAGS:
             sync_resolved_at_with_tags(conn, ref_id, resolved_by="agent")

@@ -948,3 +948,28 @@ def test_handler_health_view_without_snapshot(hub: Hub) -> None:
     assert "open alerts: none" in body
     # live freshness probes still render (they need no snapshot)
     assert "watchdog:ingest/papers_ingested" in body
+
+
+def test_tag_verb_add_resolved_replaces_open(hub: Hub, store: Store) -> None:
+    """gr479086: ``alert-state:`` is mutually exclusive — adding
+    ``resolved`` alone drops ``open`` and stamps ``resolved_at`` so the
+    unique-index slot frees (the alert leaves the open list)."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:excl", title="cond")
+    handler.tag(id=aid, add=["alert-state:resolved"])
+    assert _tags(store, aid) & {STATE_OPEN, STATE_RESOLVED} == {STATE_RESOLVED}
+    resolved_at, _meta = _lifecycle_row(store, aid)
+    assert resolved_at is not None
+    assert aid not in {a["ref_id"] for a in list_open_alerts(store)}
+    _, is_new = raise_alert(store, source="s", fingerprint="fp:excl", title="cond")
+    assert is_new is True
+
+
+def test_tag_verb_add_open_replaces_resolved(hub: Hub, store: Store) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:excl2", title="cond")
+    assert alerts_mod.resolve_alert(store, aid, resolved_by="operator") is True
+    handler.tag(id=aid, add=["alert-state:open"])
+    assert _tags(store, aid) & {STATE_OPEN, STATE_RESOLVED} == {STATE_OPEN}
+    resolved_at, _meta = _lifecycle_row(store, aid)
+    assert resolved_at is None

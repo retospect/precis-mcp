@@ -123,9 +123,12 @@ underlying fix lands), either use the **dismiss** button on the
 `/alerts` web tab or flip the tags:
 
 ```
-tag(kind='alert', id=42, add=['alert-state:resolved'],
-    remove=['alert-state:open'])
+tag(kind='alert', id=42, add=['alert-state:resolved'])
 ```
+
+`alert-state:` is a mutually exclusive axis, like `STATUS:`: adding one
+value replaces the other, so the explicit `remove=['alert-state:open']`
+is optional (and still accepted).
 
 `id=[42, 43]` resolves several alerts in one call and one transaction.
 Both paths flip the state tag *and* stamp `resolved_at` in one
