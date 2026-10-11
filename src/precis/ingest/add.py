@@ -383,6 +383,67 @@ def precis_add(
     )
 
 
+#: ``ref_events.source`` of the PDF leg's "finished without a body" journal row.
+PDF_NO_BODY_SOURCE = "ingest:pdf"
+
+
+def _note_pdf_no_body(
+    store: Store,
+    ref_id: int | None,
+    input: PdfInput,
+    paper: Any,
+    *,
+    conn: Any,
+) -> None:
+    """Journal why a PDF ingest left the ref without body text (gr453860).
+
+    The markup leg journals its outcome (:func:`_note_markup_outcome`); the
+    PDF leg used to promote a stub (``pdf_sha256`` set) and stop, so a
+    bodiless paper showed ``fetch_ok`` and then nothing. When the ref has no
+    ``ord >= 0`` chunk after this ingest, append one ``no_body`` event with
+    a reason: ``deferred_printable_only`` (Marker skipped by design for a
+    companion PDF; transient, the markup leg should land the body),
+    ``extraction_empty_fallback`` (Marker failed and the fitz fallback found
+    no text) or ``extraction_empty`` (extractor returned no body blocks).
+    ``heal:bodiless`` (:mod:`precis.ingest.paper_hygiene`) later judges the
+    terminal cases. Best-effort: never fails an otherwise good ingest.
+    """
+    if ref_id is None:
+        return
+    try:
+        from precis.store._body_predicate import has_body_sql
+
+        row = conn.execute(
+            f"SELECT {has_body_sql('r')} FROM refs r WHERE r.ref_id = %s",
+            (int(ref_id),),
+        ).fetchone()
+        if row is None or row[0]:
+            return
+        if input.printable_only:
+            reason = "deferred_printable_only"
+        elif paper.meta.get("extract_fallback_empty"):
+            reason = "extraction_empty_fallback"
+        else:
+            reason = "extraction_empty"
+        store.append_event(
+            int(ref_id),
+            source=PDF_NO_BODY_SOURCE,
+            event="no_body",
+            payload={
+                "reason": reason,
+                "file": input.pdf_path.name,
+                "pdf_sha256": paper.pdf_sha256,
+            },
+            conn=conn,
+        )
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (pdf): could not journal no_body for ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
+
+
 def _ingest_pdf(
     input: PdfInput,
     *,
@@ -455,6 +516,7 @@ def _ingest_pdf(
                 file_stem=input.pdf_path.stem,
                 conn=conn,
             )
+            _note_pdf_no_body(store, existing, input, paper, conn=conn)
             conn.commit()
             stored_kind = _lookup_kind(existing, conn=conn)
             _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
@@ -492,6 +554,7 @@ def _ingest_pdf(
             file_stem=input.pdf_path.stem,
             conn=conn,
         )
+        _note_pdf_no_body(store, result.ref_id, input, paper, conn=conn)
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)

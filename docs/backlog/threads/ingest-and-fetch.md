@@ -174,7 +174,14 @@ deploy, then the after-deploy steps below.
    anon ref 465241 instead of folding into it). Next: once batch 2
    drains, apply the policy to what is still bodiless, routing
    Pdfium-unreadable PDFs to repair. This
-   thread owns td461154 (STATUS:doing). Close it once the policy is
+   Prod 2026-10-11: 857 still bodiless; `heal:bodiless` has judged
+   preview=811, unreadable=43, extracted=10. The PDF leg now journals
+   `ingest:pdf` / `no_body` (reason `deferred_printable_only`,
+   `extraction_empty_fallback` or `extraction_empty`) at ingest time
+   (gr453860). gr464259 (body that is only references or SI, so `has_body`
+   reads true) is open: it needs a chunk-role heuristic and a re-fetch
+   policy, not yet decided.
+   This thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.

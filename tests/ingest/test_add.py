@@ -18,6 +18,7 @@ back before the probe fails loudly.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from pathlib import Path
 from typing import Any, cast
@@ -1217,3 +1218,45 @@ class TestMarkupOutcomeJournal:
                 "SELECT count(*) FROM ref_events WHERE source LIKE 'markup:%'"
             ).fetchone()[0]
         assert n == 0
+
+
+class TestPdfNoBodyJournal:
+    """gr453860: the PDF leg journals a ``no_body`` event, with a reason,
+    whenever it leaves a ref without an ``ord >= 0`` chunk."""
+
+    def _ingest(self, store, tmp_path: Path, *, printable_only: bool, with_body: bool):
+        raw = b"%PDF-1.4 nobody" + (b"1" if with_body else b"0")
+        pdf = tmp_path / "nobody.pdf"
+        pdf.write_bytes(raw)
+        sha = hashlib.sha256(raw).hexdigest()
+        stub = store.insert_ref(kind="paper", slug="nobody24", title="Stub")
+        paper = _fixture_paper(paper_id="anonnb01", doi=None, pdf_sha256=sha)
+        if not with_body:
+            paper = dataclasses.replace(
+                paper, chunks=[c for c in paper.chunks if c.ord < 0]
+            )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            precis_add(
+                PdfInput(
+                    pdf_path=pdf, fold_ref_id=stub.id, printable_only=printable_only
+                ),
+                store=store,
+            )
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT payload->>'reason' FROM ref_events "
+                "WHERE ref_id=%s AND source='ingest:pdf' AND event='no_body'",
+                (stub.id,),
+            ).fetchall()
+
+    def test_empty_extraction_journals_reason(self, store, tmp_path: Path):
+        rows = self._ingest(store, tmp_path, printable_only=False, with_body=False)
+        assert [r[0] for r in rows] == ["extraction_empty"]
+
+    def test_printable_only_journals_deferred(self, store, tmp_path: Path):
+        rows = self._ingest(store, tmp_path, printable_only=True, with_body=False)
+        assert [r[0] for r in rows] == ["deferred_printable_only"]
+
+    def test_body_present_journals_nothing(self, store, tmp_path: Path):
+        rows = self._ingest(store, tmp_path, printable_only=False, with_body=True)
+        assert rows == []
