@@ -195,6 +195,7 @@
 # un-killable by the kernel OOM killer. Layer 2: earlyoom kills the memory hog
 # early, before thrash locks us out. See docs/runbooks/oom-lockout-hardening.md.
 - name: Ensure ssh.service drop-in dir (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.file:
     path: /etc/systemd/system/ssh.service.d
@@ -203,6 +204,7 @@
   become: true
 
 - name: OOM-protect sshd — OOMScoreAdjust drop-in (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.template:
     src: ssh-oom.conf.j2
@@ -212,6 +214,7 @@
   notify: reload systemd and restart sshd linux
 
 - name: Install earlyoom (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.apt:
     name: earlyoom
@@ -221,6 +224,7 @@
   become: true
 
 - name: Configure earlyoom (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.template:
     src: earlyoom.default.j2
@@ -230,6 +234,7 @@
   notify: restart earlyoom
 
 - name: Enable + start earlyoom (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.systemd:
     name: earlyoom
@@ -261,9 +266,12 @@
   notify: reload systemd and restart precis-worker linux
 
 # ── Per-unit memory guards + memsnap (Linux, opt-in; see defaults) ─────────
+# Tag oom-guard selects just the OOM pieces (sshd OOMScoreAdjust, earlyoom,
+# memory guards, memsnap) for a host that must not get the full role.
 # cgroup MemoryHigh/Max: an mmapped model's page cache is charged to its unit,
 # so the unit thrashes itself instead of starving sshd. daemon-reload only.
 - name: Ensure precis worker memory-guard drop-in dirs (Linux)
+  tags: [oom-guard]
   when:
     - os_family == "linux"
     - unit_cfg.memory_high | string | length > 0 or unit_cfg.memory_max | string | length > 0 or unit_cfg.memory_swap_max | string | length > 0
@@ -283,6 +291,7 @@
       memory_swap_max: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_swap_max | default(precis_worker_memory_swap_max) }}"
 
 - name: Memory-guard drop-in for precis worker units (Linux)
+  tags: [oom-guard]
   when:
     - os_family == "linux"
     - unit_cfg.memory_high | string | length > 0 or unit_cfg.memory_max | string | length > 0 or unit_cfg.memory_swap_max | string | length > 0
@@ -299,6 +308,7 @@
   notify: reload systemd (hardening)
 
 - name: Ensure memory-guard drop-in dirs for hand-managed units (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.file:
     path: "/etc/systemd/system/{{ unit_cfg.name }}.d"
@@ -310,6 +320,7 @@
     loop_var: unit_cfg
 
 - name: Memory-guard drop-in for hand-managed units, no restart (Linux)
+  tags: [oom-guard]
   when: os_family == "linux"
   ansible.builtin.template:
     src: memory-guard.conf.j2
@@ -322,6 +333,7 @@
   notify: reload systemd (hardening)
 
 - name: memsnap journal snapshot script + timer (Linux, opt-in)
+  tags: [oom-guard]
   when:
     - os_family == "linux"
     - memsnap_enabled | bool
