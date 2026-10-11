@@ -37,7 +37,7 @@ from typing import Any
 
 import discord
 
-from asa_bot import identity, preamble, slash
+from asa_bot import attachments, identity, preamble, slash
 from asa_bot.briefing_buffer import BriefingBuffer
 from asa_bot.capture_shim import CaptureShim
 from asa_bot.claude_invoke import invoke as claude_invoke
@@ -75,6 +75,7 @@ class AsaBot(discord.Client):
         self._listener = listener
         self._queues: dict[str, asyncio.Queue[discord.Message]] = {}
         self._workers: dict[str, asyncio.Task[Any]] = {}
+        self._attachment_tasks: set[asyncio.Task[Any]] = set()
         self._soul: str = ""
         self._tool_hints: str = ""
         self._runtime = slash.Runtime()
@@ -105,6 +106,18 @@ class AsaBot(discord.Client):
         if message.author == self.user or message.author.bot:
             log.info("on_message: dropped (author is bot/self)")
             return
+        if (
+            self._cfg.discord.allowed_channels
+            and str(message.channel.id) not in self._cfg.discord.allowed_channels
+        ):
+            log.info("on_message: dropped (channel not in allowed_channels)")
+            return
+        if message.attachments:
+            # PDF attachments feed the paper inbox (gr434187). Runs as a
+            # task: the ingest poll can outlast the per-thread queue.
+            task = asyncio.create_task(self._ingest_attachments(message))
+            self._attachment_tasks.add(task)
+            task.add_done_callback(self._attachment_tasks.discard)
         if not (message.content or "").strip():
             # System messages (thread-created, pin-added, etc.) and
             # attachment-only messages without body text would trigger
@@ -114,12 +127,6 @@ class AsaBot(discord.Client):
             log.info(
                 "on_message: dropped (empty content — system message or attachment-only)"
             )
-            return
-        if (
-            self._cfg.discord.allowed_channels
-            and str(message.channel.id) not in self._cfg.discord.allowed_channels
-        ):
-            log.info("on_message: dropped (channel not in allowed_channels)")
             return
         # Slash commands — text-prefix style. Intercepted before the
         # claude path so they cost zero LLM tokens and don't capture
@@ -152,6 +159,29 @@ class AsaBot(discord.Client):
                 await message.add_reaction("🔄")
             except discord.HTTPException:
                 pass
+
+    async def _ingest_attachments(self, message: discord.Message) -> None:
+        """Route a message's PDF attachments into the paper ingest inbox."""
+        target = _reply_target(message)
+
+        async def send(text: str) -> None:
+            with contextlib.suppress(discord.HTTPException):
+                await target.send(mask_secrets(text))
+
+        try:
+            dsn = self._cfg.precis.database_url
+            _handle, account = await identity.resolve_speaker(dsn, message.author)
+            await attachments.handle_message_attachments(
+                message,
+                abbrev=account,
+                dsn=dsn,
+                call_tool=self._precis.call_tool,
+                send=send,
+                inbox=attachments.inbox_dir(),
+            )
+        except Exception:
+            log.exception("attachment ingest failed (msg=%s)", message.id)
+            await send("Attachment ingest failed unexpectedly; see the bot log.")
 
     async def _worker(self, slug: str, q: asyncio.Queue[discord.Message]) -> None:
         while True:
