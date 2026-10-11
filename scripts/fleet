@@ -45,7 +45,8 @@
 #   scripts/fleet queue-dir          print the review-queue directory
 #
 # Test seams: PRECIS_FLEET_TMUX_SOCKET (private tmux server, tmux -L),
-# PRECIS_FLEET_STATE (state dir), PRECIS_FLEET_REVIEWS (reviews dir),
+# PRECIS_FLEET_STATE (state dir), PRECIS_FLEET_NOTES (review-queue + reviews
+# parent, default <main checkout>/fleet-notes), PRECIS_FLEET_REVIEWS (reviews dir),
 # PRECIS_FLEET_WATCH_TICKS (watch exits after N ticks), PRECIS_FLEET_COMPACT_POLL
 # (compact's idle-poll interval, 5 s).
 set -euo pipefail
@@ -56,8 +57,11 @@ conf="$(git rev-parse --show-toplevel)/.claude/fleet"
 table="$conf/threads.tsv"
 # Outside any worktree, so a reaped tree cannot take the queue with it.
 state="${PRECIS_FLEET_STATE:-$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')}"
-queue="$state/review-queue"
-reviews="${PRECIS_FLEET_REVIEWS:-$state/reviews}"
+# Review queue and notes sit in a gitignored, non-dot dir of the main checkout:
+# file-tool writes under ~/.claude hit a "sensitive file" prompt (gr464238).
+notes="${PRECIS_FLEET_NOTES:-$root/fleet-notes}"
+queue="$notes/review-queue"
+reviews="${PRECIS_FLEET_REVIEWS:-$notes/reviews}"
 held="$state/fleet-queue"
 # The review window's model; thread windows take thread_model's.
 model="${PRECIS_FLEET_MODEL:-opus}"

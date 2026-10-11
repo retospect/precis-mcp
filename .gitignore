@@ -82,6 +82,10 @@ board*.svg
 !.claude/agents/
 !.claude/fleet/
 
+# Fleet review queue + design/review notes (scripts/fleet; outside .claude so
+# file-tool writes raise no "sensitive file" prompt).
+/fleet-notes/
+
 # Session-liveness anchor: an untracked marker a live session drops at a
 # worktree root so the auto-reaper won't cull it mid-session. Never source.
 .keep-session-alive

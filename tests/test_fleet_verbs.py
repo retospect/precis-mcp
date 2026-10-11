@@ -250,6 +250,7 @@ def fleet(tmp_path: Path) -> Iterator[Fleet]:
         "TMUX": "/dummy/socket,1,0",  # need_tmux only checks it is set
         "PRECIS_FLEET_TMUX_SOCKET": sock,
         "PRECIS_FLEET_STATE": str(state),
+        "PRECIS_FLEET_NOTES": str(state),
     }
     env.pop("TMUX_PANE", None)
     f = Fleet(repo=repo, state=state, sock=sock, env=env, calls_dir=calls_dir)
@@ -829,3 +830,20 @@ def test_up_leaves_an_existing_slug_window_alone(fleet: Fleet) -> None:
     assert cp.returncode == 0, cp.stderr
     assert "exists: alpha" in cp.stdout and "created: beta" in cp.stdout
     assert "previous output" in fleet.pane("alpha")  # not respawned
+
+
+def test_notes_default_to_a_repo_local_dir_outside_dot_claude(fleet: Fleet) -> None:
+    env = {k: v for k, v in fleet.env.items() if k != "PRECIS_FLEET_NOTES"}
+    cp = subprocess.run(
+        [str(fleet.repo / "scripts" / "fleet"), "queue-dir"],
+        cwd=fleet.repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert cp.returncode == 0, cp.stderr
+    out = cp.stdout.strip()
+    assert out == str(fleet.repo.resolve() / "fleet-notes" / "review-queue"), out
+    assert ".claude" not in out

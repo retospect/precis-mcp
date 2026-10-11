@@ -60,7 +60,7 @@ residue, then batched ops and flip steps.
 8. **backlog/coalescing-deployer-for-many-sessions-one-fleet.md** — coalesce
    deploys only if the burst still hurts after 2.
 9. **backlog/fleet-agent-friction.md** — prod-psql prompts on already-approved
-   writes, review notes under ~/.claude, plan_tick without a checkout.
+   writes, plan_tick without a checkout.
    These stall agents but corrupt nothing, so they rank below the deploy
    work.
 10. **backlog/agent-readonly-web-access.md** — an agent web credential
