@@ -214,6 +214,8 @@ def panel_context(
     slug: str,
     read_only: bool,
     rev_qs: str = "",
+    conn: Any = None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything ``_design_chat.html.j2`` renders. On a past revision
     (``read_only``) the transcript is not read at all — the panel is one
@@ -225,7 +227,7 @@ def panel_context(
         "kind": kind,
         "slug": slug,
         "read_only": read_only,
-        "conv_slug": design_turn.conv_slug(slug),
+        "conv_slug": design_turn.conv_slug(slug, kind=kind),
         "chat_url": f"{base}/chat{rev_qs}",
         "chat_apply_url": f"{base}/chat/apply",
         "chat_error": (q.get("chat_error") or "")[:_FLASH_MAX],
@@ -233,13 +235,16 @@ def panel_context(
         "chat_turn": _int_or_none(q.get("turn")),
         "turns": [],
         "pending": None,
+        "context": context,
     }
     if read_only:
         return ctx
-    turns = design_turn.transcript(store, slug)
-    applied = _applied_turns(store, kind, slug)
+    turns = design_turn.transcript(store, slug, kind=kind, conn=conn)
+    applied = _applied_turns(store, kind, slug, conn=conn)
     ctx["turns"] = [_turn_row(kind, t, applied) for t in turns]
-    pending = design_turn.pending_proposal(store, kind=kind, slug=slug, turns=turns)
+    pending = design_turn.pending_proposal(
+        store, kind=kind, slug=slug, turns=turns, conn=conn
+    )
     if pending is not None:
         ctx["pending"] = {
             **_turn_row(kind, pending, applied),
@@ -250,13 +255,21 @@ def panel_context(
     return ctx
 
 
-def _applied_turns(store: Any, kind: DesignKind, slug: str) -> dict[str, int]:
+def _applied_turns(
+    store: Any, kind: DesignKind, slug: str, *, conn: Any = None
+) -> dict[str, int]:
     """``{turn handle: rev}`` over the design's revision rows."""
-    ref = store.get_ref(kind=kind, id=slug)
+    ref = (
+        store.get_ref(kind=kind, id=slug, conn=conn)
+        if conn is not None
+        else store.get_ref(kind=kind, id=slug)
+    )
     if ref is None:
         return {}
     return {
-        r.turn: r.rev for r in design_history.list_revisions(store, ref.id) if r.turn
+        r.turn: r.rev
+        for r in design_history.list_revisions(store, ref.id, conn=conn)
+        if r.turn
     }
 
 

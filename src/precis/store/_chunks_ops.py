@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import random
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -2456,6 +2457,7 @@ class ChunkStore:
         *,
         pos_range: tuple[int, int] | None = None,
         with_embedding: bool = False,
+        conn: Connection | None = None,
     ) -> list[ChunkRow]:
         """List chunks for a ref, ordered by ord ASC.
 
@@ -2468,8 +2470,8 @@ class ChunkStore:
             params.extend([pos_range[0], pos_range[1]])
             clauses.append("c.ord BETWEEN %s AND %s")
         where = " AND ".join(clauses)
-        with self.pool.connection() as conn:
-            return _fetch_chunks(conn, where, params, with_embedding=with_embedding)
+        with nullcontext(conn) if conn is not None else self.pool.connection() as c:
+            return _fetch_chunks(c, where, params, with_embedding=with_embedding)
 
     def chunk_pages(self, ref_id: int, ords: list[int]) -> dict[int, int]:
         """Map body-chunk ``ord`` → ``page_first`` for the given ords.

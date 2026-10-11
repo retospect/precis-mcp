@@ -89,6 +89,13 @@ as copper="none". Partial updates retain that older behavior: their intentionall
 unchanged nets/outline cannot safely receive changed copper. Import and source
 copper share one transaction; neither the reader nor preview invents routing.
 
+The web selection adapter binds actual instance IDs and shown raw snapshots to
+Gerber flash targets; refdes and footprint UUID/design-local key remain separate.
+Unknown identity stays unavailable. Shared design chat proposes a single move;
+explicit Apply uses the existing handler under the bounded cache/row guard and
+rejects any generator, copper or annotation collateral. Replay-normalized IDs
+and routing hashes were refused as viewer identity because they omit those facts.
+
 Internal :mod:`~precis.pcb.snapshot` captures raw relational routing inputs and
 checkpoints for dev/test replay. Public graph/hash projections omit geometry and
 copper intentionally; generator re-expansion and authoring inference were refused

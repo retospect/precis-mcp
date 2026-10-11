@@ -122,6 +122,69 @@ def test_detail_shows_vitals_and_both_panes(pcb_client, runtime_with_store) -> N
     assert "/pcb/web_pcb/schematic.svg" in r.text
 
 
+def test_detail_title_uses_the_captured_read_transaction(
+    pcb_client, runtime_with_store, monkeypatch
+) -> None:
+    from precis_web.routes import pcb
+
+    slug = "web_title_snapshot"
+    _seed(runtime_with_store, slug=slug)
+    store = runtime_with_store.hub.store
+    resolve = pcb.resolve_live_slug_ref
+
+    def resolve_then_change_title(*args, **kwargs):
+        ref = resolve(*args, **kwargs)
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE refs SET title=%s WHERE ref_id=%s",
+                ("Title committed before the view snapshot", ref.id),
+            )
+        return ref
+
+    monkeypatch.setattr(pcb, "resolve_live_slug_ref", resolve_then_change_title)
+    response = pcb_client.get(f"/pcb/{slug}")
+    assert response.status_code == 200
+    assert "Title committed before the view snapshot" in response.text
+
+
+def test_bare_pcb_reader_stays_read_only_and_refuses_chat_before_model(
+    pcb_client, runtime_with_store, monkeypatch
+) -> None:
+    import json
+
+    from precis_web import design_turn, pcb_design
+
+    store = runtime_with_store.hub.store
+    ref = store.insert_ref(kind="pcb", slug="web_empty_ref", title="Empty PCB")
+    monkeypatch.setattr(
+        design_turn,
+        "_router_call",
+        lambda _: pytest.fail("empty reader must refuse before model generation"),
+    )
+    assert pcb_client.get("/pcb/web_empty_ref").status_code == 200
+    assert pcb_client.get("/pcb/web_empty_ref/board.svg").status_code == 200
+    with store.pcb_view_tx() as conn:
+        view = pcb_design.capture_view(store, ref, conn=conn)
+    assert view.instances == []
+    assert (
+        pcb_client.get(
+            "/pcb/web_empty_ref/board.svg", params={"shown": view.token}
+        ).status_code
+        == 200
+    )
+    assert (
+        pcb_client.post(
+            "/pcb/web_empty_ref/chat",
+            data={"message": "move", "context": json.dumps(view.context)},
+        ).status_code
+        == 409
+    )
+    with store.tx() as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM pcb_boards WHERE ref_id=%s", (ref.id,)
+        ).fetchone() == (0,)
+
+
 def test_schematic_renders_before_any_placement(pcb_client, runtime_with_store) -> None:
     _seed(runtime_with_store, slug="web_schem")
     r = pcb_client.get("/pcb/web_schem/schematic.svg")
@@ -357,3 +420,175 @@ def test_view_notes_empty_points_at_the_board_page(
         .body
     )
     assert "none yet" in body and "/pcb/<slug>" in body
+
+
+def test_pcb_selection_chat_explicit_apply_and_readonly_history(
+    pcb_client, runtime_with_store, monkeypatch
+):
+    import json
+    from pathlib import Path
+
+    from precis.design import history
+    from precis.dispatch import Hub
+    from precis.handlers.pcb import PcbHandler
+    from precis_web import design_turn, pcb_design
+
+    store = runtime_with_store.hub.live_store
+    hub = Hub(store=store)
+    slug = "browser_selection_fixture"
+    PcbHandler(hub=hub).put(
+        id=slug,
+        args={
+            "components": [
+                {
+                    "refdes": rd,
+                    "label": "resistor",
+                    "footprint": "local-R",
+                    "pins": [{"name": "1", "pad": "1"}],
+                }
+                for rd in ("R1", "R2")
+            ],
+            "nets": [{"name": "SIG"}],
+            "connections": [],
+            "footprints": [
+                {
+                    "name": "local-R",
+                    "pads": [
+                        {
+                            "number": "1",
+                            "x": 0,
+                            "y": 0,
+                            "w": 0.6,
+                            "h": 0.6,
+                            "shape": "rect",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id=slug)
+    store.pcb_move_instance(ref.id, "R1", x=10, y=10, rot=0)
+    store.pcb_move_instance(ref.id, "R2", x=20, y=10, rot=0)
+    with store.pcb_view_tx() as conn:
+        view = pcb_design.capture_view(store, ref, conn=conn)
+    context = {**view.context, "selected": [view.instances[0]]}
+    calls = []
+
+    def model(_):
+        calls.append(True)
+        return json.dumps(
+            {
+                "ops": [{"op": "move", "refdes": "R1", "fixed": "xy"}],
+                "rationale": "lock",
+            }
+        )
+
+    monkeypatch.setattr(design_turn, "_router_call", lambda _: model)
+    html = pcb_client.get(f"/pcb/{slug}")
+    assert html.status_code == 200
+    assert "pcb-selection-manifest" in html.text
+    assert "PCB changes always require explicit Apply" in html.text
+    svg = pcb_client.get(f"/pcb/{slug}/board.svg", params={"shown": view.token})
+    assert svg.status_code == 200
+    assert "data-pcb-instance" in svg.text
+    assert pcb_client.get(f"/pcb/{slug}/board.svg?shown=stale").status_code == 409
+    assert calls == []
+    out = pcb_client.post(
+        f"/pcb/{slug}/chat",
+        data={"message": "lock resistor", "context": json.dumps(context)},
+        follow_redirects=False,
+    )
+    assert out.status_code == 303
+    assert len(calls) == 1
+    assert history.list_revisions(store, ref.id) == []
+    proposed = pcb_client.get(f"/pcb/{slug}")
+    assert "Apply as a new revision" in proposed.text
+    assert 'name="ops"' not in proposed.text
+    turn = design_turn.pending_proposal(store, kind="pcb", slug=slug)
+    assert turn is not None
+    # Save only fixture browser inputs outside the shipping payload.
+    artifacts = Path(".scratch/selection.local/browser-fixture")
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "index.html").write_text(proposed.text, encoding="utf-8")
+    (artifacts / "board.svg").write_text(svg.text, encoding="utf-8")
+    (artifacts / "context.json").write_text(json.dumps(context), encoding="utf-8")
+    bad = pcb_client.post(
+        f"/pcb/{slug}/chat/apply",
+        data={"turn": turn.handle, "shown": view.token, "ops": "[]"},
+    )
+    assert bad.status_code == 400
+    applied = pcb_client.post(
+        f"/pcb/{slug}/chat/apply",
+        data={"turn": turn.handle, "shown": view.token},
+        follow_redirects=False,
+    )
+    assert applied.status_code == 303
+    duplicate = pcb_client.post(
+        f"/pcb/{slug}/chat/apply", data={"turn": turn.handle, "shown": view.token}
+    )
+    assert duplicate.status_code == 409
+    assert len(history.list_revisions(store, ref.id)) == 1
+    with store.pcb_view_tx() as conn:
+        updated = pcb_design.capture_view(store, ref, conn=conn)
+    ctx2 = {**updated.context, "selected": [updated.instances[0]]}
+    monkeypatch.setattr(
+        design_turn,
+        "_router_call",
+        lambda _: (
+            lambda _: json.dumps(
+                {
+                    "ops": [{"op": "move", "refdes": "R1", "fixed": "both"}],
+                    "rationale": "all",
+                }
+            )
+        ),
+    )
+    second = pcb_client.post(
+        f"/pcb/{slug}/chat",
+        data={"message": "lock rotation too", "context": json.dumps(ctx2)},
+    )
+    assert second.status_code == 200
+    turn2 = design_turn.pending_proposal(store, kind="pcb", slug=slug)
+    assert turn2 is not None
+    assert (
+        pcb_client.post(
+            f"/pcb/{slug}/chat/apply",
+            data={"turn": turn2.handle, "shown": updated.token},
+        ).status_code
+        == 200
+    )
+    old = pcb_client.get(f"/pcb/{slug}?rev=1")
+    assert old.status_code == 200
+    assert "read-only summary" in old.text
+    assert "pcb-board-object" not in old.text
+    assert "design-chat-form" not in old.text
+    stale_send = pcb_client.post(
+        f"/pcb/{slug}/chat", data={"message": "lock", "context": json.dumps(context)}
+    )
+    assert stale_send.status_code == 409
+
+
+@pytest.mark.parametrize("path", ["/pcb/fixture/chat", "/pcb/fixture/chat/apply"])
+def test_pcb_post_auth_and_cross_origin_refused_before_handler(
+    runtime_with_store, tmp_path, path, monkeypatch
+):
+    secured = TestClient(
+        create_app(
+            runtime=runtime_with_store,
+            web_config=WebConfig(corpus_dir=tmp_path, auth_required=True),
+        )
+    )
+    # No user/model/board writer is involved: the shared middleware owns refusal.
+    assert (
+        secured.post(
+            path, headers={"Origin": "https://foreign.example"}, data={}
+        ).status_code
+        == 403
+    )
+    # The fresh fixture has no enabled roster: this is intentionally503.
+    assert secured.post(path, data={}).status_code == 503
+    monkeypatch.setattr(
+        runtime_with_store.hub.live_store, "count_web_users", lambda **_: 1
+    )
+    assert secured.post(path, data={}).status_code == 401

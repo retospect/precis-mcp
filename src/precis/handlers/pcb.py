@@ -4402,7 +4402,13 @@ class PcbHandler(Handler):
             )
         return Response(body=body)
 
-    def _render_fab_svg(self, ref_id: int, slug: str) -> Response:
+    def _render_fab_svg(
+        self,
+        ref_id: int,
+        slug: str,
+        *,
+        selection_manifest: dict[str, Any] | None = None,
+    ) -> Response:
         """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
         layer selector.
 
@@ -4497,7 +4503,9 @@ class PcbHandler(Handler):
         # a fab; looking at one is exactly how you notice it is a bound.
         files = pcb_gerber.export_fab(model, name=slug, allow_synthesized=True)
         try:
-            body = gerber_view.render_fab_svg(files, title=slug)
+            body = gerber_view.render_fab_svg(
+                files, title=slug, selection_manifest=selection_manifest
+            )
             # **A dropped fiducial or title block must not be invisible on the
             # surface a human INSPECTS the board with.** This path used to
             # discard these: a silently-missing title block looked identical

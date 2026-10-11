@@ -62,7 +62,7 @@
     });
   }
 
-  var obj = document.getElementById("pcb-board");
+  var obj = document.getElementById("pcb-board-object");
   if (obj) {
     obj.addEventListener("load", function () {
       try {

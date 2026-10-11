@@ -1,5 +1,6 @@
 {% extends "base.html.j2" %}
 {% from "_drive_back.html.j2" import drive_back %}
+{% from "_design_chat.html.j2" import design_chat %}
 {% block title %}{{ title }} — PCB{% endblock %}
 {% block content %}
 
@@ -24,6 +25,24 @@
   {% endif %}
 </div>
 
+{% if read_only %}
+<div id="pcb-history-summary" class="rounded border p-3">
+  <h2>Recorded revision {{ rev }} — read-only summary</h2>
+  <pre>{{ revision_summary | tojson(indent=2) }}</pre>
+  <a href="/pcb/{{ slug | urlencode }}">Current board</a>
+</div>
+{% else %}
+<script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances} | tojson }}</script>
+<div id="pcb-selection-panel" class="rounded border p-3 mb-3">
+  <h2 class="text-sm font-semibold">Component instance</h2>
+  <p id="pcb-selection-status" role="status">Select a component instance.</p>
+  <label>Instance <select id="pcb-instance-choice"><option value="">Select…</option>
+    {% for item in pcb_instances %}<option value="{{ item.instance_id }}">{{ item.refdes }} · instance {{ item.instance_id }}</option>{% endfor %}
+  </select></label>
+  <pre id="pcb-selection-identity"></pre>
+  <button type="button" id="pcb-copy-footprint" disabled>Copy footprint identity</button>
+  <button type="button" id="pcb-deselect">Deselect</button>
+</div>
 {# object, not img: the board SVG's layer-toggle legend is scripted, and
    scripts only run when the SVG is its own document. #}
 <div class="mb-6 rounded border border-slate-200 bg-white p-2">
@@ -31,7 +50,7 @@
     <span class="font-normal text-xs text-slate-400">click a pad, part or track to drop its handle into the argument below</span>
   </h2>
   <div class="overflow-auto">
-    <object id="pcb-board" type="image/svg+xml" data="/pcb/{{ slug }}/board.svg"
+    <object id="pcb-board-object" type="image/svg+xml" data="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}"
             class="min-w-full">
       board render unavailable
     </object>
@@ -71,4 +90,7 @@
   </div>
 </div>
 
+<script src="/static/pcb-selection.js" defer></script>
+{% endif %}
+{{ design_chat(chat, rev, rev_current) }}
 {% endblock %}

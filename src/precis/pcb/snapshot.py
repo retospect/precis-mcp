@@ -98,6 +98,20 @@ def export_query(slug: str) -> str:
     )
 
 
+def capture_raw(conn: Connection, slug: str) -> dict[str, Any]:
+    """Identity-preserving raw projection for the viewer on its own connection.
+
+    Replay alone normalizes identities and includes route-job parameters. The
+    viewer hash must bind actual rows/geometry, never a job's volatile params.
+    """
+    rows = conn.execute(export_query(slug)).fetchall()
+    if len(rows) != 1:
+        raise ValueError("expected one existing PCB slug")
+    raw = rows[0][0]
+    raw.pop("route_params", None)
+    return raw
+
+
 def _json_config(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.name

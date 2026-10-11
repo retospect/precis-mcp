@@ -12,7 +12,7 @@
 {% macro design_chat(chat, rev, rev_current) -%}
 <div id="design-chat" class="mt-6">
   <h2 class="text-sm font-semibold text-slate-700 mb-2">Design chat
-    <span class="text-xs font-normal text-slate-400">— click a {{ 'block' if chat.kind == 'se' else 'atom' }} to mention it, describe the change; pure block ops apply as a revision, everything else proposes</span>
+    <span class="text-xs font-normal text-slate-400">— click a {{ 'component instance' if chat.kind == 'pcb' else ('block' if chat.kind == 'se' else 'atom') }} to mention it, describe the change; {{ 'PCB changes always require explicit Apply' if chat.kind == 'pcb' else 'pure block ops apply as a revision, everything else proposes' }}</span>
   </h2>
 
   {% if chat.read_only %}
@@ -94,7 +94,9 @@
     </div>
     {% if chat.pending.valid %}
     <form method="post" action="{{ chat.chat_apply_url }}" class="mt-2 flex items-center gap-2">
-      <input type="hidden" name="ops" value="{{ chat.pending.ops_json }}">
+      {% if chat.kind == 'pcb' %}
+      <input type="hidden" name="shown" value="{{ chat.context.shown.snapshot }}">
+      {% else %}<input type="hidden" name="ops" value="{{ chat.pending.ops_json }}">{% endif %}
       <input type="hidden" name="turn" value="{{ chat.pending.handle }}">
       <button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Apply as a new revision</button>
       <span class="text-[10px] text-slate-400">{{ 'edits this design in place (version +1) — Fork stays a separate action' if chat.kind == 'structure' else 'writes one revision carrying this turn' }}</span>
@@ -108,14 +110,15 @@
   {# ── the input ── #}
   <form id="design-chat-form" method="post" action="{{ chat.chat_url }}" class="mt-3">
     <textarea id="design-chat-message" name="message" rows="3" required
-              placeholder="{{ 'e.g. add a block @linker between @tube and @bud' if chat.kind == 'se' else 'e.g. put an O on top of @aPd1, then measure the Pd–O distance' }}"
+              placeholder="{{ 'e.g. lock the selected resistor, or propose moving it to x=10 mm' if chat.kind == 'pcb' else ('e.g. add a block @linker between @tube and @bud' if chat.kind == 'se' else 'e.g. put an O on top of @aPd1, then measure the Pd–O distance') }}"
               class="w-full rounded border border-slate-300 px-2 py-1 text-sm"></textarea>
     <div class="mt-1 flex items-center gap-2">
+      {% if chat.kind == 'pcb' %}<input type="hidden" id="pcb-chat-context" name="context" value="">{% endif %}
       <input type="hidden" id="design-chat-handles" name="handles" value="">
       <span id="design-chat-chips" class="flex flex-wrap gap-1 text-[10px] text-slate-500"></span>
       <button class="ml-auto rounded bg-slate-800 text-white text-sm px-3 py-1 hover:bg-slate-900 whitespace-nowrap">Send ▸</button>
     </div>
-    <p class="mt-1 text-[10px] text-slate-400">One blocking turn (~30 s). The model returns typed ops only — never coordinates, never a tool call.</p>
+    <p class="mt-1 text-[10px] text-slate-400">One blocking turn (~30 s). The model returns typed ops only — {{ 'one selected instance move in mm/degrees, explicit Apply' if chat.kind == 'pcb' else 'never coordinates, never a tool call' }}.</p>
   </form>
 
   <script>

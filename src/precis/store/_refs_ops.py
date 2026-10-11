@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -1293,6 +1294,7 @@ class RefsMixin:
         kind: str,
         id: int | str,
         include_deleted: bool = False,
+        conn: Connection | None = None,
     ) -> Ref | None:
         """Look up by (kind, public id).
 
@@ -1305,16 +1307,16 @@ class RefsMixin:
             params: tuple[Any, ...] = (kind, id)
             if not include_deleted:
                 sql += " AND retired_at IS NULL"
-            with self.pool.connection() as conn:
-                row = conn.execute(sql, params).fetchone()
+            with nullcontext(conn) if conn is not None else self.pool.connection() as c:
+                row = c.execute(sql, params).fetchone()
             return _row_to_ref(row) if row is not None else None
 
         # Slug lookup. Resolve via ref_identifiers first; then fetch
         # the full ref row. Two queries beats one big JOIN here because
         # the ref_identifiers pkey lookup is the fast path; the JOIN
         # would force a hash join under cost-based planning.
-        with self.pool.connection() as conn:
-            ident_row = conn.execute(
+        with nullcontext(conn) if conn is not None else self.pool.connection() as c:
+            ident_row = c.execute(
                 "SELECT ref_id FROM ref_identifiers "
                 "WHERE id_kind = 'cite_key' AND id_value = %s",
                 (id,),
@@ -1325,7 +1327,7 @@ class RefsMixin:
             sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
             if not include_deleted:
                 sql += " AND retired_at IS NULL"
-            row = conn.execute(sql, (kind, ref_id)).fetchone()
+            row = c.execute(sql, (kind, ref_id)).fetchone()
         return _row_to_ref(row) if row is not None else None
 
     def find_paper_slug_by_doi(self, doi: str) -> str | None:

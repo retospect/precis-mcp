@@ -30,25 +30,31 @@ same data:
 Both SVG endpoints delegate to the SAME code the MCP surface serves
 (``PcbHandler.get(view='svg'|'schematic')``) rather than re-assembling
 renders here — one rule, one call site; the board picture a human sees is
-byte-identical to the one an agent pulls.
+byte-identical to the one an agent pulls by default. The opt-in shown-token
+path adds identity attributes without changing fab geometry. A read-only
+repeatable view binds page/manifest and SVG; a changed object token refuses.
+PCB proposals extend the shared chat and require canonical explicit Apply.
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.responses import Response as RawResponse
 
+from precis.design import history
 from precis.dispatch import Hub
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import argue
+from precis_web import design_chat, design_turn, pcb_design
 from precis_web.deps import get_store, templates
 
 if TYPE_CHECKING:
@@ -93,7 +99,7 @@ async def pcb_list() -> RedirectResponse:
 
 
 @router.get("/pcb/{slug}", response_class=HTMLResponse)
-async def pcb_detail(request: Request, slug: str) -> HTMLResponse:
+async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any:
     store = get_store(request)
     try:
         ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
@@ -108,13 +114,48 @@ async def pcb_detail(request: Request, slug: str) -> HTMLResponse:
             },
             status_code=404,
         )
-    ctx = {
-        "active_tab": "pcb",
-        "slug": ref.slug,
-        "title": ref.title or ref.slug,
-        **_vitals(store, ref.id),
-        **_notes_ctx(store, ref.id),
-    }
+    try:
+        with store.pcb_view_tx() as conn:
+            view = pcb_design.capture_view(store, ref, conn=conn)
+            ref = view.ref
+            read_only = rev is not None and rev != view.revision
+            summary = None
+            if read_only:
+                assert rev is not None
+                revision = history.revision(store, ref.id, rev, conn=conn)
+                if revision is None:
+                    return RawResponse(status_code=404, content="revision not recorded")
+                summary = {
+                    "revision": revision.rev,
+                    "ops": revision.ops,
+                    "turn": revision.turn,
+                    "checkpoint_id": revision.checkpoint_id,
+                }
+            ctx = {
+                "active_tab": "pcb",
+                "slug": ref.slug,
+                "title": ref.title or ref.slug,
+                **_vitals(store, ref.id),
+                **_notes_ctx(store, ref.id),
+                "pcb_context": view.context,
+                "pcb_instances": view.instances,
+                "read_only": read_only,
+                "revision_summary": summary,
+                "rev": rev or view.revision,
+                "rev_current": view.revision,
+                "chat": design_chat.panel_context(
+                    request,
+                    kind="pcb",
+                    slug=slug,
+                    read_only=read_only,
+                    conn=conn,
+                    context=view.context,
+                ),
+            }
+    except ValueError as exc:
+        return design_chat.chat_error(
+            request, kind="pcb", slug=slug, detail=str(exc), status=409
+        )
     return templates.TemplateResponse(request, "pcb/detail.html.j2", ctx)
 
 
@@ -228,21 +269,42 @@ def _svg_response(svg: str) -> RawResponse:
 
 
 @router.get("/pcb/{slug}/board.svg")
-async def pcb_board_svg(request: Request, slug: str) -> RawResponse:
+async def pcb_board_svg(
+    request: Request, slug: str, shown: str | None = None
+) -> RawResponse:
     store = get_store(request)
     try:
         ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
     except NotFound:
         return RawResponse(status_code=404, content="not found")
     try:
-        resp = _handler(store).get(id=ref.slug, view="svg", args={"level": "fab"})
+        with store.pcb_view_tx() as conn:
+            view = pcb_design.capture_view(store, ref, conn=conn)
+            if shown is not None and shown != view.token:
+                return RawResponse(status_code=409, content="shown PCB changed; reload")
+            manifest = (
+                None
+                if shown is None
+                else {
+                    "board_ref_id": ref.id,
+                    "snapshot": view.token,
+                    "instances": view.instances,
+                }
+            )
+            if manifest is None:
+                resp = _handler(store).get(
+                    id=ref.slug, view="svg", args={"level": "fab"}
+                )
+            else:
+                resp = _handler(store)._render_fab_svg(
+                    ref.id, str(ref.slug), selection_manifest=manifest
+                )
+    except ValueError as exc:
+        return RawResponse(status_code=409, content=str(exc))
     except Exception:
-        # An unplaced/unrouted design has no fab film set yet — the detail
-        # page still shows the schematic; this pane says why it is empty.
         log.debug("pcb board svg render failed for %s", slug, exc_info=True)
         return RawResponse(
-            status_code=422,
-            content="board not renderable yet (place + route it first)",
+            status_code=422, content="board not renderable yet (place + route it first)"
         )
     return _svg_response(resp.body)
 
@@ -256,3 +318,76 @@ async def pcb_schematic_svg(request: Request, slug: str) -> RawResponse:
         return RawResponse(status_code=404, content="not found")
     resp = _handler(store).get(id=ref.slug, view="schematic")
     return _svg_response(resp.body)
+
+
+@router.post("/pcb/{slug}/chat")
+async def pcb_chat(
+    request: Request,
+    slug: str,
+    message: str = Form(""),
+    context: str = Form(""),
+    rev: int | None = None,
+) -> Any:
+    if rev is not None or not message.strip() or len(context) > 16384:
+        return design_chat.chat_error(
+            request,
+            kind="pcb",
+            slug=slug,
+            detail="current selection and non-empty message required",
+            status=400,
+        )
+    try:
+        parsed = json.loads(context)
+        result = await asyncio.to_thread(
+            design_turn.run_turn,
+            design_chat.hub_for(request),
+            kind="pcb",
+            slug=slug,
+            message=message,
+            context=parsed,
+        )
+    except (ValueError, BadInput, NotFound) as exc:
+        return design_chat.chat_error(
+            request,
+            kind="pcb",
+            slug=slug,
+            detail=str(exc),
+            status=409 if not isinstance(exc, NotFound) else 404,
+        )
+    return design_chat.redirect_after("pcb", slug, result)
+
+
+@router.post("/pcb/{slug}/chat/apply")
+async def pcb_chat_apply(
+    request: Request,
+    slug: str,
+    turn: str = Form(""),
+    shown: str = Form(""),
+    rev: int | None = None,
+) -> Any:
+    form = await request.form()
+    if rev is not None or "ops" in form:
+        return design_chat.chat_error(
+            request,
+            kind="pcb",
+            slug=slug,
+            detail="Apply accepts the canonical stored proposal on current view",
+            status=400,
+        )
+    result = await asyncio.to_thread(
+        design_turn.apply_proposal,
+        design_chat.hub_for(request),
+        kind="pcb",
+        slug=slug,
+        turn=turn,
+        shown=shown,
+    )
+    if not result.applied:
+        return design_chat.chat_error(
+            request,
+            kind="pcb",
+            slug=slug,
+            detail=result.error or "Apply refused",
+            status=409,
+        )
+    return design_chat.redirect_after_apply("pcb", slug, result)

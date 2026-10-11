@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import contextvars
 import math
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from itertools import islice
@@ -448,6 +449,125 @@ class PcbMixin:
             token = _AMBIENT_CONN.set(conn)
             try:
                 yield conn
+            finally:
+                _AMBIENT_CONN.reset(token)
+
+    @contextmanager
+    def pcb_view_tx(self) -> Iterator[Connection]:
+        """Read-only repeatable view; no authoring ensure-board or cache locks."""
+        if _AMBIENT_CONN.get() is not None:
+            raise ValueError("viewer transaction must own its connection")
+        with self.tx() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            token = _AMBIENT_CONN.set(conn)
+            try:
+                yield conn
+            finally:
+                _AMBIENT_CONN.reset(token)
+
+    @contextmanager
+    def pcb_guarded_tx(
+        self,
+        ref_id: int,
+        slug: str,
+        *,
+        conv_id: int | None = None,
+        conv_slug: str | None = None,
+    ) -> Iterator[Connection]:
+        """Short guard for a single stored move, never a model/network/GET.
+
+        Cache table SHARE NOWAIT locks protect missing keys too, acquired parts
+        then part_footprints before ordered FOR UPDATE refs/bindings/parents and
+        captured leaves, including retired rows. FK key-share checks then block
+        new children. READ COMMITTED capture after these locks observes children
+        which committed while the guard waited; a prior repeatable snapshot would
+        miss them. No advisory board lock or retry coordinates other writers.
+
+        Statement/lock/idle limits are 1500/500/2000ms; application residence
+        deadline is 2s, checked before commit. Deadlock/timeout/refusal rolls back.
+        This does not preempt Python CPU: oversized or collateral moves refuse,
+        and callers record measured residence rather than infer a time guarantee.
+        """
+        from precis.pcb.snapshot import IDENTITIES, TABLES
+
+        if _AMBIENT_CONN.get() is not None:
+            raise ValueError("guard must own its transaction")
+        with self.tx() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            conn.execute("SET LOCAL lock_timeout='500ms'")
+            conn.execute("SET LOCAL statement_timeout='1500ms'")
+            conn.execute("SET LOCAL idle_in_transaction_session_timeout='2000ms'")
+            started = time.monotonic()
+            conn.execute("LOCK TABLE parts IN SHARE MODE NOWAIT")
+            conn.execute("LOCK TABLE part_footprints IN SHARE MODE NOWAIT")
+            ids = sorted({r for r in (ref_id, conv_id) if r is not None})
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id=ANY(%s) ORDER BY ref_id FOR UPDATE",
+                (ids,),
+            ).fetchall()
+            bindings = {slug: ref_id}
+            if conv_id is not None and conv_slug is not None:
+                bindings[conv_slug] = conv_id
+            rows = conn.execute(
+                "SELECT id_value,ref_id FROM ref_identifiers WHERE id_kind='cite_key' AND id_value=ANY(%s) ORDER BY id_value FOR UPDATE",
+                (sorted(bindings),),
+            ).fetchall()
+            if (
+                dict(rows) != bindings
+                or self.get_ref(kind="pcb", id=ref_id, conn=conn) is None
+            ):
+                raise ValueError("design or conversation binding changed; reload")
+            # Dependency order, not replay's ID-allocation order.
+            order: tuple[str, ...] = (
+                "pcb_boards",
+                "pcb_components",
+                "pcb_nets",
+                "pcb_instances",
+                "pcb_pins",
+            )
+            order += tuple(
+                t for t in TABLES if t not in {*order, "parts", "part_footprints"}
+            )
+            for table in order:
+                if table == "pcb_pins":
+                    where = "component_id IN (SELECT component_id FROM pcb_components WHERE ref_id=%s)"
+                elif table == "pcb_netconns":
+                    where = "net_id IN (SELECT net_id FROM pcb_nets WHERE ref_id=%s)"
+                elif table in {
+                    "pcb_routes",
+                    "pcb_planes",
+                    "pcb_pin_swaps",
+                    "pcb_copper",
+                }:
+                    where = (
+                        "board_id IN (SELECT board_id FROM pcb_boards WHERE ref_id=%s)"
+                    )
+                else:
+                    where = "ref_id=%s"
+                key = IDENTITIES.get(table, "name")
+                conn.execute(
+                    f"SELECT {key} FROM {table} WHERE {where} ORDER BY {key} FOR UPDATE",
+                    (ref_id,),
+                ).fetchall()
+            if conv_id is not None:
+                conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id=%s ORDER BY ord,chunk_id FOR UPDATE",
+                    (conv_id,),
+                ).fetchall()
+                conn.execute(
+                    "SELECT link_id FROM links WHERE src_ref_id=%s AND relation='related-to' ORDER BY link_id FOR UPDATE",
+                    (conv_id,),
+                ).fetchall()
+            for table in ("design_checkpoints", "design_revisions"):
+                conn.execute(
+                    f"SELECT id FROM {table} WHERE ref_id=%s ORDER BY id FOR UPDATE",
+                    (ref_id,),
+                ).fetchall()
+            token = _AMBIENT_CONN.set(conn)
+            try:
+                yield conn
+                if time.monotonic() - started >= 2.0:
+                    raise ValueError("move exceeded the 2s guard deadline; deferred")
             finally:
                 _AMBIENT_CONN.reset(token)
 

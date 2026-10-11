@@ -84,6 +84,10 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
 | **Nanopub publication** | `src/precis/nanopub/`, `nanopub_*` tables (0128) | reviewed claims → signed, OTS-anchored artifacts; append-only proof store; the ladder runs **both ways** — a `contradicts` edge demotes below the freeze line, alerts above it |
 
+PCB selection binds raw board snapshots and instance IDs to optional Gerber
+SVG targets. The shared web design-chat engine stores proposals in conversations;
+PCB Apply reuses the handler and design history on one guarded connection.
+
 Surfaces on top: the **MCP server** (`precis serve`, the 8 verbs — the
 product; network transports gate on `PRECIS_MCP_TOKEN`; `PRECIS_MCP_PROFILE=command`
 swaps the typed surface for one `precis(command, text=)` tool over the same

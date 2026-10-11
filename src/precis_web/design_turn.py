@@ -62,7 +62,8 @@ turn that reached the model *and got a reply* — applied, proposal,
 model transport failure writes nothing — user message, clicked handles,
 model rationale, ops, an optional ``repair:`` line (the first attempt's
 error when a repair round ran) and the ``outcome:`` tag, appended through
-``ConversationHandler.put`` with ``msg_id`` = the turn handle. Rejected
+the shared ``ConversationHandler.append_turn`` allocation with legacy
+``msg_id`` = the turn handle. Rejected
 and no-op turns were lost before 2026-09-19: two of the four first-use
 turns were informational answers the operator only saw as a flash. The turn handle stamped onto the revision row is
 ``<conv-slug>~<block ordinal>``: the address ``get(kind='conv',
@@ -72,6 +73,18 @@ cannot map back to "turn N of this design's chat" without a lookup). The
 ordinal is fixed *before* the edit so the revision row can name it; the
 block is written right after — the two are not one transaction (each
 handler owns its own), which is acceptable for a single operator.
+
+PCB is an additive binding: an exact shown instance/snapshot accompanies the
+same tool-less generation and one repair round. All PCB ops are proposals.
+Canonical Apply runs under the bounded PCB cache/row guard, committing history
+and consumption atomically. PCB transcripts use ``pcb-design-chat-<slug>``,
+whose fixed prefix cannot collide with any legacy ``design-chat-<slug>`` suffix,
+and the actual serialized append result. Typed reads, append and Apply check
+the live numeric parent link and ownership metadata; metadata-free legacy
+transcripts remain readable through their existing parent link. Generic conv
+puts retain their policy. No migration of unreleased PCB transcripts occurs;
+the legacy SE edit-before-transcript limitation
+above remains. No PCB model call holds database locks.
 
 The read side of that convention lives here too: :func:`transcript`
 parses the blocks back into :class:`TranscriptTurn` rows for the chat
@@ -87,6 +100,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -124,7 +138,7 @@ from precis_se.realize import prepare_realize
 
 log = logging.getLogger(__name__)
 
-DesignKind = Literal["se", "structure"]
+DesignKind = Literal["se", "structure", "pcb"]
 
 #: ``prompt -> reply text``. The default is the router at ``Tier.BIG``
 #: (:func:`_router_call`); tests inject a stub and never reach the router.
@@ -277,9 +291,65 @@ class TurnResult:
     repair: str | None = None
 
 
-def conv_slug(slug: str) -> str:
+def conv_slug(slug: str, *, kind: DesignKind | None = None) -> str:
     """The design's transcript ref slug — one ``conv`` per design."""
-    return f"design-chat-{slug}"
+    # No legacy slug suffix can turn the fixed design-chat- prefix into pcb-.
+    # Preserve SE/structure identities; the unreleased PCB namespace needs no migration.
+    return f"pcb-design-chat-{slug}" if kind == "pcb" else f"design-chat-{slug}"
+
+
+def _owned_conv(
+    store: Any,
+    slug: str,
+    kind: DesignKind,
+    *,
+    conn: Any = None,
+    reject: bool = False,
+    allow_empty: bool = False,
+    expected_ref_id: int | None = None,
+) -> Any:
+    """Narrow design-chat ownership, never a policy for generic conv puts.
+
+    Typed reads require the numeric parent link. Old legacy refs with no
+    ownership metadata remain readable through that link. Append may initialize
+    a metadata-owned empty conversation while holding its ordered parent locks.
+    """
+    with nullcontext(conn) if conn is not None else store.pool.connection() as c:
+        conv = store.get_ref(
+            kind="conv", id=conv_slug(slug, kind=kind), include_deleted=True, conn=c
+        )
+        if conv is None:
+            return None
+        parent = store.get_ref(kind=kind, id=slug, conn=c)
+        links = c.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id=%s AND relation='related-to' "
+            "ORDER BY dst_ref_id" + (" FOR UPDATE" if allow_empty else ""),
+            (conv.id,),
+        ).fetchall()
+        meta = conv.meta or {}
+        exact_meta = meta.get("design_kind") == kind and meta.get("design") == slug
+        legacy_meta = kind != "pcb" and (
+            meta.get("design_kind") in (None, kind)
+            and meta.get("design") in (None, slug)
+        )
+        parent_ok = parent is not None and (
+            expected_ref_id is None or parent.id == expected_ref_id
+        )
+        linked = parent_ok and links == [(parent.id,)]
+        empty = (
+            allow_empty
+            and parent_ok
+            and not links
+            and exact_meta
+            and not store.chunks.list_chunks_for_ref(conv.id, conn=c)
+        )
+        if conv.retired_at is None and (
+            (linked and (exact_meta or legacy_meta)) or empty
+        ):
+            return conv
+        if reject:
+            raise BadInput("conversation ownership mismatch; reload the design")
+        return None
 
 
 # ── digest ─────────────────────────────────────────────────────────────
@@ -401,6 +471,8 @@ def op_vocabulary(kind: DesignKind) -> str:
     (:func:`all_op_names` / :data:`precis.structure.ops._OPS`) so an op
     added to a kind shows up here by name even before its signature is
     written."""
+    if kind == "pcb":
+        return "Explicit proposal/Apply only: move{refdes,x?:mm,y?:mm,rot?:degrees,fixed?:null|xy|rot|both}. Exactly one selected instance, no other keys or changes."
     if kind == "se":
         pure = sorted(se_known_ops())
         lines = ["Auto-applied on a valid reply (pure block-tree ops):"]
@@ -415,13 +487,20 @@ def op_vocabulary(kind: DesignKind) -> str:
     return "\n".join(lines)
 
 
-def build_digest(hub: Hub, *, kind: DesignKind, slug: str) -> str:
+def build_digest(
+    hub: Hub, *, kind: DesignKind, slug: str, context: dict[str, Any] | None = None
+) -> str:
     """The text the model acts on: the design (se — tree, uids, ports,
     connects, topology, measures, notes; structure — atom/bond/marker
     tables, capped at :data:`MAX_DIGEST_ATOMS`) plus the op vocabulary."""
     store = _store_of(hub)
     ref = _design_ref(store, kind, slug)
-    body = _se_digest(store, ref) if kind == "se" else _structure_digest(store, ref)
+    if kind == "pcb":
+        from precis_web.pcb_design import digest
+
+        body = digest(store, slug, context=context)
+    else:
+        body = _se_digest(store, ref) if kind == "se" else _structure_digest(store, ref)
     return (
         f"# Current design ({kind})\n{body}\n\n# Op vocabulary\n{op_vocabulary(kind)}"
     )
@@ -532,12 +611,18 @@ def _raw_coordinate_key(value: Any, path: str = "") -> str | None:
 
 
 def roster(kind: DesignKind) -> frozenset[str]:
+    if kind == "pcb":
+        return frozenset({"move"})
     return all_op_names() if kind == "se" else frozenset(_STRUCTURE_OPS)
 
 
 def vet_ops(ops: list[dict[str, Any]], *, kind: DesignKind) -> str | None:
     """The whole-turn gate: every op name in the kind's roster and no raw
     coordinates anywhere. Returns the rejection message, or ``None``."""
+    if kind == "pcb":
+        from precis_web.pcb_design import vet_move
+
+        return vet_move(ops)
     names = roster(kind)
     for i, op in enumerate(ops):
         name = op.get("op")
@@ -675,9 +760,10 @@ def _write_transcript(
     ops: list[dict[str, Any]],
     outcome: str,
     repair: str | None = None,
-) -> None:
+    context: dict[str, Any] | None = None,
+) -> str:
     store = _store_of(hub)
-    cslug = conv_slug(str(design_ref.slug))
+    cslug = conv_slug(str(design_ref.slug), kind=kind)
     lines = [
         f"**user:** {message.strip()}",
         f"handles: {', '.join(h for h in handles if h.strip()) or '(none)'}",
@@ -702,22 +788,40 @@ def _write_transcript(
     }
     if repair is not None:
         meta["repair"] = repair
-    ConversationHandler(hub=hub).put(
-        id=cslug,
-        text=body,
-        author="design-chat",
-        msg_id=turn,
-        title=f"design chat — {kind} {design_ref.slug}",
-        meta=meta,
-        ref_meta={"design_kind": kind, "design": str(design_ref.slug)},
-    )
-    conv_ref = store.get_ref(kind="conv", id=cslug)
-    assert conv_ref is not None
-    # Idempotent on the edge: one related-to link per design, however
-    # many turns.
-    store.add_link(
-        src_ref_id=conv_ref.id, dst_ref_id=design_ref.id, relation="related-to"
-    )
+    # Shared append locks ordered design/conv refs; ownership, insertion and
+    # the numeric parent link observe one connection. No model runs here.
+    with store.tx() as conn:
+        if kind == "pcb":
+            meta["context"] = context
+
+        def validate(c: Any) -> None:
+            _owned_conv(
+                store,
+                str(design_ref.slug),
+                kind,
+                conn=c,
+                reject=True,
+                allow_empty=True,
+                expected_ref_id=design_ref.id,
+            )
+            if kind == "pcb":
+                from precis_web.pcb_design import capture_view, resolve_selection
+
+                resolve_selection(capture_view(store, design_ref, conn=c), context)
+
+        appended = ConversationHandler(hub=hub).append_turn(
+            slug=cslug,
+            body=body,
+            author="design-chat",
+            msg_id=None if kind == "pcb" else turn,
+            title=f"design chat — {kind} {design_ref.slug}",
+            meta=meta,
+            ref_meta={"design_kind": kind, "design": str(design_ref.slug)},
+            related_ref_id=design_ref.id,
+            conn=conn,
+            before_append=validate,
+        )
+        return appended.turn if kind == "pcb" else turn
 
 
 @dataclass(frozen=True)
@@ -859,14 +963,37 @@ def _parse_turn(block: Any, cslug: str) -> TranscriptTurn:
     )
 
 
-def transcript(store: Any, slug: str) -> list[TranscriptTurn]:
+def transcript(
+    store: Any, slug: str, *, kind: DesignKind | None = None, conn: Any = None
+) -> list[TranscriptTurn]:
     """The design's chat so far, oldest first — every block of
     ``design-chat-<slug>`` parsed back; ``[]`` before the first turn."""
-    cslug = conv_slug(slug)
-    ref = store.get_ref(kind="conv", id=cslug)
-    if ref is None:
+    cslug = conv_slug(slug, kind=kind)
+    ref = (
+        _owned_conv(store, slug, kind, conn=conn)
+        if kind is not None
+        else (
+            store.get_ref(kind="conv", id=cslug, conn=conn)
+            if conn is not None
+            else store.get_ref(kind="conv", id=cslug)
+        )
+    )
+    if ref is None or (kind is None and ref.meta.get("design_kind") == "pcb"):
         return []
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    blocks = (
+        store.chunks.list_chunks_for_ref(ref.id, conn=conn)
+        if conn is not None
+        else store.chunks.list_chunks_for_ref(ref.id)
+    )
+    if kind is not None:
+        blocks = [
+            b
+            for b in blocks
+            if (b.meta or {}).get("design_kind")
+            in ((kind,) if kind == "pcb" else (None, kind))
+            and (b.meta or {}).get("design")
+            in ((slug,) if kind == "pcb" else (None, slug))
+        ]
     return [_parse_turn(b, cslug) for b in blocks]
 
 
@@ -876,6 +1003,7 @@ def pending_proposal(
     kind: DesignKind,
     slug: str,
     turns: list[TranscriptTurn] | None = None,
+    conn: Any = None,
 ) -> TranscriptTurn | None:
     """The proposal awaiting a human Apply: the LAST turn that touched the
     design (rejected and no-op turns change nothing and are skipped), when
@@ -883,14 +1011,24 @@ def pending_proposal(
     its handle (Apply stamps the proposing ``turn`` onto the revision it
     writes). A later applied or proposing turn supersedes an unapplied
     one — only the newest is offered."""
-    rows = transcript(store, slug) if turns is None else turns
+    if _owned_conv(store, slug, kind, conn=conn) is None:
+        return None
+    rows = transcript(store, slug, kind=kind, conn=conn) if turns is None else turns
     last = next((t for t in reversed(rows) if not (t.rejected or t.noop)), None)
     if last is None or not last.proposal:
         return None
-    ref = store.get_ref(kind=kind, id=slug)
+    ref = (
+        store.get_ref(kind=kind, id=slug, conn=conn)
+        if conn is not None
+        else store.get_ref(kind=kind, id=slug)
+    )
     if ref is None:
         return None
-    applied = {r.turn for r in design_history.list_revisions(store, ref.id) if r.turn}
+    applied = {
+        r.turn
+        for r in design_history.list_revisions(store, ref.id, conn=conn)
+        if r.turn
+    }
     return None if last.handle in applied else last
 
 
@@ -939,7 +1077,15 @@ class _Vetted:
     stage: Literal["reply", "dry_run"] | None = None
 
 
-def _vet_reply(store: Any, ref: Any, *, kind: DesignKind, reply: str) -> _Vetted:
+def _vet_reply(
+    store: Any,
+    ref: Any,
+    *,
+    kind: DesignKind,
+    reply: str,
+    hub: Hub | None = None,
+    context: Any = None,
+) -> _Vetted:
     try:
         ops, rationale = parse_reply(reply)
     except ValueError as exc:
@@ -951,7 +1097,12 @@ def _vet_reply(store: Any, ref: Any, *, kind: DesignKind, reply: str) -> _Vetted
         return _Vetted([], rationale, rejection, "reply")
     if not ops:
         return _Vetted([], rationale)
-    if kind == "se":
+    if kind == "pcb":
+        from precis_web.pcb_design import dry_run
+
+        assert hub is not None
+        err = dry_run(hub, ref, context, ops)
+    elif kind == "se":
         tree = _load_se_tree(store, ref)
         err = dry_run_se(store, tree, ops, design_slug=str(ref.slug))
     else:
@@ -968,25 +1119,33 @@ def run_turn(
     message: str,
     handles: list[str] | None = None,
     model_call: ModelCall | None = None,
+    context: dict[str, Any] | None = None,
 ) -> TurnResult:
     """One workbench turn (module docstring for the policy). Never raises
     on a bad model reply — that is a :class:`TurnResult` with ``error``;
     a missing design or store does raise."""
     store = _store_of(hub)
     ref = _design_ref(store, kind, slug)
+    _owned_conv(store, slug, kind, reject=True)
+    if kind == "pcb":
+        from precis_web.pcb_design import view_context
+
+        context = view_context(store, slug, context)
     clicked = list(handles or [])
     prompt = build_prompt(
-        build_digest(hub, kind=kind, slug=slug),
+        build_digest(hub, kind=kind, slug=slug, context=context),
         kind=kind,
         message=message,
         handles=clicked,
     )
+    if kind == "pcb":
+        prompt += "\n# Exact shown selection\n" + json.dumps(context, sort_keys=True)
     call = model_call or _router_call(ref.id)
     try:
         reply = call(prompt)
     except Exception as exc:
         return TurnResult(applied=False, error=f"model call failed: {exc}")
-    vetted = _vet_reply(store, ref, kind=kind, reply=reply)
+    vetted = _vet_reply(store, ref, kind=kind, reply=reply, hub=hub, context=context)
     repair: str | None = None
     if vetted.error is not None:
         # The one repair round: same contract, the validator's message
@@ -998,13 +1157,16 @@ def run_turn(
             log.warning("design-chat repair call failed: %s", exc)
             repair = f"{repair} (repair call failed: {exc})"
         else:
-            vetted = _vet_reply(store, ref, kind=kind, reply=reply)
+            vetted = _vet_reply(
+                store, ref, kind=kind, reply=reply, hub=hub, context=context
+            )
     ops, rationale = vetted.ops, vetted.rationale
 
-    turn = _next_turn_handle(store, str(ref.slug))
+    turn = "" if kind == "pcb" else _next_turn_handle(store, str(ref.slug))
 
     def record(outcome: str) -> None:
-        _write_transcript(
+        nonlocal turn
+        stored_turn = _write_transcript(
             hub,
             kind=kind,
             design_ref=ref,
@@ -1015,7 +1177,10 @@ def run_turn(
             ops=ops,
             outcome=outcome,
             repair=repair,
+            context=context,
         )
+        if kind == "pcb":
+            turn = stored_turn
 
     def rejected(error: str) -> TurnResult:
         record(f"{_REJECTED_PREFIX}{error}")
@@ -1078,14 +1243,32 @@ def apply_proposal(
     *,
     kind: DesignKind,
     slug: str,
-    ops: list[dict[str, Any]],
-    turn: str | None,
+    ops: list[dict[str, Any]] | None = None,
+    turn: str | None = None,
+    shown: str | None = None,
 ) -> TurnResult:
     """The human Apply on a proposal: the same roster gate, then
     ``StructureHandler.edit`` (version in place — never ``derive``) or
     ``SeHandler.edit``, the revision stamped with the proposing ``turn``."""
+    if kind == "pcb":
+        from precis_web.pcb_design import apply_proposal as pcb_apply
+
+        if ops is not None:
+            return TurnResult(
+                applied=False,
+                error="PCB Apply accepts only the stored proposal",
+                turn=turn,
+            )
+        return pcb_apply(hub, slug, turn, shown)
+    ops = ops or []
     store = _store_of(hub)
     ref = _design_ref(store, kind, slug)
+    try:
+        _owned_conv(store, slug, kind, reject=True)
+        if turn and not turn.startswith(conv_slug(slug, kind=kind) + "~"):
+            raise BadInput("proposal conversation ownership mismatch")
+    except BadInput as exc:
+        return TurnResult(applied=False, error=str(exc), turn=turn)
     rejection = vet_ops(ops, kind=kind)
     if rejection is not None:
         return TurnResult(applied=False, error=rejection, turn=turn)

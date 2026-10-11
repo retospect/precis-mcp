@@ -86,6 +86,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from precis.pcb import argue
 from precis.utils.text import esc
@@ -654,10 +655,26 @@ def _flash_geometry(flash: Flash) -> tuple[str, str]:
     )
 
 
-def _flash_svg(flash: Flash, colour: str, title: str) -> str:
+def _selection_attrs(flash: Flash, manifest: dict[str, Any] | None) -> str:
+    if manifest is None or not flash.refdes:
+        return ""
+    matches = [r for r in manifest["instances"] if r["refdes"] == flash.refdes]
+    if len(matches) != 1:
+        return ""
+    item = matches[0]
+    return (
+        f' data-pcb-instance="{int(item["instance_id"])}"'
+        f' data-pcb-refdes="{esc(str(item["refdes"]), quote=True)}"'
+    )
+
+
+def _flash_svg(
+    flash: Flash, colour: str, title: str, manifest: dict[str, Any] | None = None
+) -> str:
     tag, attrs = _flash_geometry(flash)
     handle = _handle_attr(_flash_handle(flash))
-    return f'<{tag} {attrs} fill="{colour}"{handle}><title>{title}</title></{tag}>'
+    sel = _selection_attrs(flash, manifest)
+    return f'<{tag} {attrs} fill="{colour}"{handle}{sel}><title>{title}</title></{tag}>'
 
 
 def _flash_mask_shape(flash: Flash) -> str:
@@ -670,7 +687,9 @@ def _flash_mask_shape(flash: Flash) -> str:
     return f'<{tag} {attrs} fill="#000"/>'
 
 
-def _flash_hit_target(flash: Flash, title: str) -> str:
+def _flash_hit_target(
+    flash: Flash, title: str, manifest: dict[str, Any] | None = None
+) -> str:
     """An almost-invisible copy of one soldermask opening, painted ON TOP
     of the film (not cut into it) purely so the opening stays hoverable —
     the film itself has no per-opening ``<title>`` (it is one compound
@@ -678,8 +697,9 @@ def _flash_hit_target(flash: Flash, title: str) -> str:
     separate paths just to hang a tooltip off each one."""
     tag, attrs = _flash_geometry(flash)
     handle = _handle_attr(_flash_handle(flash))
+    sel = _selection_attrs(flash, manifest)
     return (
-        f'<{tag} {attrs} fill="#fff" fill-opacity="0.01"{handle}>'
+        f'<{tag} {attrs} fill="#fff" fill-opacity="0.01"{handle}{sel}>'
         f"<title>{title}</title></{tag}>"
     )
 
@@ -714,7 +734,11 @@ def _region_mask_shape(region: Region) -> str:
 
 
 def _mask_film_els(
-    art: LayerArt | None, layer: str, colour: str, film_ring: list[tuple[float, float]]
+    art: LayerArt | None,
+    layer: str,
+    colour: str,
+    film_ring: list[tuple[float, float]],
+    manifest: dict[str, Any] | None = None,
 ) -> list[str]:
     """A soldermask layer rendered as what it physically is — see the
     module docstring's "a film with holes" note. Openings come from
@@ -746,7 +770,9 @@ def _mask_film_els(
         f'<path d="{_path_d(film_ring, close=True)}" fill="{colour}" '
         f'fill-opacity="0.55" mask="url(#{mask_id})"/>',
     ]
-    out.extend(_flash_hit_target(f, _flash_title(layer, f)) for f in flash_openings)
+    out.extend(
+        _flash_hit_target(f, _flash_title(layer, f), manifest) for f in flash_openings
+    )
     return out
 
 
@@ -920,7 +946,11 @@ def _bounds(
 
 
 def render_fab_svg(
-    files: dict[str, str], *, title: str = "board", margin_mm: float = 2.0
+    files: dict[str, str],
+    *,
+    title: str = "board",
+    margin_mm: float = 2.0,
+    selection_manifest: dict[str, Any] | None = None,
 ) -> str:
     """An SVG of a whole fab set, one toggleable group per layer.
 
@@ -973,7 +1003,7 @@ def render_fab_svg(
         if key.endswith("_Mask"):
             # A film with holes, not the holes themselves — see the module
             # docstring's "rendered as what it physically is" note.
-            body.extend(_mask_film_els(art, key, colour, film_ring))
+            body.extend(_mask_film_els(art, key, colour, film_ring, selection_manifest))
         elif art is not None:
             body.extend(_region_els(art.regions, key, colour))
             for s in art.strokes:
@@ -984,7 +1014,9 @@ def render_fab_svg(
                     f"<title>{_stroke_title(key, s)}</title></path>"
                 )
             for f in art.flashes:
-                body.append(_flash_svg(f, colour, _flash_title(key, f)))
+                body.append(
+                    _flash_svg(f, colour, _flash_title(key, f), selection_manifest)
+                )
         # A drill is a void, not a coloured feature -- see _DRILL_FILL's
         # docstring. Rendered here, on top of the copper/mask stack (this
         # key's position in _STACK_ORDER), so it reads as a hole PUNCHED
@@ -1034,8 +1066,14 @@ def render_fab_svg(
     # the full legend.
     doc_w = _LEGEND_GUTTER_PX + vw
     doc_h = max(vh, legend_h + 8.0)
+    selection_root = ""
+    if selection_manifest is not None:
+        selection_root = (
+            f' data-pcb-board="{int(selection_manifest["board_ref_id"])}"'
+            f' data-pcb-snapshot="{esc(str(selection_manifest["snapshot"]), quote=True)}"'
+        )
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {doc_w:.1f} {doc_h:.1f}"
- width="{doc_w:.0f}" height="{doc_h:.0f}" role="img" aria-label="{esc(title, quote=True)}">
+ width="{doc_w:.0f}" height="{doc_h:.0f}" role="img"{selection_root} aria-label="{esc(title, quote=True)}">
 <title>{esc(title, quote=True)} — rendered from gerbers</title>
 <style>
   .layer.off {{ display: none; }}

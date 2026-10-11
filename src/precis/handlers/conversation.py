@@ -12,11 +12,22 @@ Capture-on-write (``put``) is intended for the chat-bridge — Hermes'
 Discord adapter calls it once per inbound user message and once per
 outbound assistant reply. ``msg_id`` makes the append idempotent so
 a bridge replay (or a retry storm) does not duplicate turns.
+
+Append uses a slug advisory lock before resolving missing conversations, then
+ordered parent locks and one connection for deduplication/MAX ordinal/insertion.
+The typed internal result names the stored turn; public put acknowledgments stay
+compatible. A shared connection prevents self-deadlocks under guarded PCB Apply.
+This does not make legacy SE edit-before-transcript atomic.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any, ClassVar
+
+from psycopg import Connection
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
@@ -27,7 +38,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, ChunkRow, Ref
 from precis.utils import handle_registry
 from precis.utils.link_tag_ops import (
     apply_link_ops,
@@ -40,6 +51,20 @@ from precis.utils.link_tag_ops import (
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+
+
+@dataclass(frozen=True)
+class AppendedTurn:
+    """Actual stored identity, rather than a predicted ordinal or Response text."""
+
+    ref: Ref
+    chunk: ChunkRow
+    created: bool
+    duplicate: bool = False
+
+    @property
+    def turn(self) -> str:
+        return f"{self.ref.slug}~{self.chunk.ord}"
 
 
 class ConversationHandler(Handler):
@@ -296,69 +321,114 @@ class ConversationHandler(Handler):
         author_s = (author or "unknown").strip() or "unknown"
         msg_id_s = str(msg_id).strip() if msg_id is not None else None
 
-        ref = self.store.get_ref(kind="conv", id=slug)
-        created = False
-        if ref is None:
-            ref_title = (title or f"conversation {slug}").strip() or slug
-            ref_meta_payload = dict(ref_meta or {})
-            if msg_id_s is not None and "first_msg_id" not in ref_meta_payload:
-                ref_meta_payload["first_msg_id"] = msg_id_s
-            ref = self.store.insert_ref(
-                kind="conv",
-                slug=slug,
-                title=ref_title,
-                meta=ref_meta_payload,
-            )
-            created = True
-
-        # Idempotency: a Discord bridge may replay the same message id
-        # after a reconnect. Cheap per-ref scan — turns counts cap in
-        # the low thousands per conv even for long threads.
-        if msg_id_s is not None:
-            existing = self.store.chunks.list_chunks_for_ref(ref.id)
-            for b in existing:
-                if (b.meta or {}).get("msg_id") == msg_id_s:
-                    handle = (
-                        handle_registry.try_format("conv", b.id, chunk=True)
-                        or f"{slug}~{b.ord}"
-                    )
-                    return Response(
-                        body=(
-                            f"{handle}: already captured (msg_id={msg_id_s!r}); no-op"
-                        )
-                    )
-            next_pos = (existing[-1].ord + 1) if existing else 0
-        else:
-            next_pos = self.store.chunks.count_chunks(ref.id)
-
-        block_meta: dict[str, Any] = dict(meta or {})
-        block_meta["author"] = author_s
-        if msg_id_s is not None:
-            block_meta["msg_id"] = msg_id_s
-        # chunk_kind tags the block as a chat turn so cross-kind
-        # search renderers can distinguish it from paper paragraphs
-        # at hit time. ``conv_message`` is the seeded vocabulary slug
-        # (0001_initial.sql line 1578).
-        block_meta.setdefault("chunk_kind", "conv_message")
-
-        inserted = self.store.chunks.insert_chunks(
-            ref.id,
-            [ChunkInsert(ord=next_pos, text=body, meta=block_meta)],
+        result = self.append_turn(
+            slug=slug,
+            body=body,
+            author=author_s,
+            msg_id=msg_id_s,
+            title=title,
+            meta=meta,
+            ref_meta=ref_meta,
         )
-        assert inserted, "insert_chunks returned no rows"
-        verb = "created + appended" if created else "appended"
         handle = (
-            handle_registry.try_format("conv", inserted[0].id, chunk=True)
-            or f"{slug}~{inserted[0].ord}"
+            handle_registry.try_format("conv", result.chunk.id, chunk=True)
+            or result.turn
         )
+        if result.duplicate:
+            return Response(
+                body=f"{handle}: already captured (msg_id={msg_id_s!r}); no-op"
+            )
+        verb = "created + appended" if result.created else "appended"
         return Response(
             body=(
-                f"{verb} {handle} "
-                f"(author={author_s!r}"
+                f"{verb} {handle} (author={author_s!r}"
                 + (f", msg_id={msg_id_s!r}" if msg_id_s else "")
                 + ")"
             )
         )
+
+    def append_turn(
+        self,
+        *,
+        slug: str,
+        body: str,
+        author: str,
+        msg_id: str | None = None,
+        title: str | None = None,
+        meta: dict[str, Any] | None = None,
+        ref_meta: dict[str, Any] | None = None,
+        related_ref_id: int | None = None,
+        conn: Connection | None = None,
+        before_append: Callable[[Connection], None] | None = None,
+    ) -> AppendedTurn:
+        """Serialize creation and allocation on one connection.
+
+        Slug advisory lock precedes resolution even when absent. Existing ref
+        locks use numeric order (including the optional design parent), then
+        cite-key bindings. PCB Apply uses the same ref/binding order after its
+        cache locks; it never takes the append slug lock. No model runs here.
+        This allocation does not repair legacy SE auto-apply before transcript.
+        """
+        with nullcontext(conn) if conn is not None else self.store.tx() as c:
+            c.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("conv-append:" + slug,),
+            )
+            ref = self.store.get_ref(kind="conv", id=slug, include_deleted=True, conn=c)
+            if ref is not None and ref.retired_at is not None:
+                raise BadInput("cannot append to a retired conversation")
+            ids = sorted(
+                {r for r in (ref.id if ref else None, related_ref_id) if r is not None}
+            )
+            c.execute(
+                "SELECT ref_id FROM refs WHERE ref_id=ANY(%s) ORDER BY ref_id FOR UPDATE",
+                (ids,),
+            ).fetchall()
+            created = ref is None
+            if ref is None:
+                payload = dict(ref_meta or {})
+                if msg_id is not None:
+                    payload.setdefault("first_msg_id", msg_id)
+                ref = self.store.insert_ref(
+                    kind="conv",
+                    slug=slug,
+                    title=(title or f"conversation {slug}").strip() or slug,
+                    meta=payload,
+                    conn=c,
+                )
+            binding = c.execute(
+                "SELECT ref_id FROM ref_identifiers WHERE id_kind='cite_key' AND id_value=%s FOR UPDATE",
+                (slug,),
+            ).fetchone()
+            if binding is None or binding[0] != ref.id:
+                raise BadInput("conversation binding changed; retry after reload")
+            current = self.store.get_ref(kind="conv", id=ref.id, conn=c)
+            if current is None:
+                raise BadInput("conversation retired during append")
+            if before_append is not None:
+                before_append(c)
+            existing = self.store.chunks.list_chunks_for_ref(ref.id, conn=c)
+            if msg_id is not None:
+                for b in existing:
+                    if (b.meta or {}).get("msg_id") == msg_id:
+                        return AppendedTurn(current, b, created, True)
+            next_pos = max((b.ord for b in existing), default=-1) + 1
+            block_meta = dict(meta or {})
+            block_meta["author"] = author
+            if msg_id is not None:
+                block_meta["msg_id"] = msg_id
+            block_meta.setdefault("chunk_kind", "conv_message")
+            inserted = self.store.chunks.insert_chunks(
+                ref.id, [ChunkInsert(ord=next_pos, text=body, meta=block_meta)], conn=c
+            )
+            if related_ref_id is not None:
+                self.store.add_link(
+                    src_ref_id=ref.id,
+                    dst_ref_id=related_ref_id,
+                    relation="related-to",
+                    conn=c,
+                )
+            return AppendedTurn(current, inserted[0], created)
 
     def tag(  # type: ignore[override]
         self,

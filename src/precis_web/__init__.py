@@ -75,6 +75,14 @@ segments), not stored length or validity. ``vault._hint`` stamps counts on
 write; legacy hints remain uncounted until replacement. Rendering never
 decrypts, backfills or prepopulates stored values.
 
+PCB component selection (``pcb_design.py``) uses exact instance IDs in
+same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat
+context and Apply. Apply commits move/history/consumption atomically; GET
+never calls a model or writes the board. Historical revisions are summaries.
+PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
+``design-chat-`` slugs; typed reads, append and Apply verify numeric parent
+links and ownership.
+
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
 (Drive, Tags, ToDo, Design); Browse ▾ (Quests, Schedules, Clusters,
 Structures, CAD, Figures, Mermaid); Attention (Needs you, Gripes, Alerts,

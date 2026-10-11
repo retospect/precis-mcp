@@ -33,6 +33,14 @@ domain sub-stores hold a core and are reached as composed properties —
 first, fully carved: draft ops exist only on the sub-store (no flat
 delegations remain on ``Store``).
 
+PCB chat guards use READ COMMITTED capture after ordered FOR UPDATE parents,
+retired rows and leaves: an earlier repeatable snapshot would miss a child that
+commits while locking waits. Short parts/footprint SHARE NOWAIT locks protect
+missing cache keys and catalogue replacement; board advisory locks cannot cover
+existing writers. Cache locks never span model calls or GET; bounded conflicts
+roll back without rebasing. Conn-aware ref/chunk reads avoid a second pooled
+connection under these locks. Conversation appends share stored ordinal allocation.
+
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
 Generated baselines provision every extension prerequisite and load the full
 seed vocabulary with a transaction-local public search path, so sealed seed
