@@ -219,6 +219,11 @@ COMMANDS: tuple[Command, ...] = (
         "Report this host's load + CPU temp to host_heartbeat.",
     ),
     _c(
+        "alertmanager-receiver",
+        "alertmanager_receiver",
+        "Receive Alertmanager webhooks and queue them to the ops channel.",
+    ),
+    _c(
         "service",
         "service",
         "Live worker run control (service_config): prio / model / clear.",

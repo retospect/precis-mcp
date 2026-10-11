@@ -1,0 +1,45 @@
+---
+# Linux monitoring node: start Prometheus, apply restarts, verify the chain.
+
+- name: Enable and start Prometheus (Linux)
+  ansible.builtin.systemd:
+    name: prometheus
+    enabled: true
+    state: started
+  become: true
+
+# Config and rules are on disk by now (main.yml); restart what changed, then
+# prove the chain.
+- name: Apply pending restarts now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the receiver
+  ansible.builtin.uri:
+    url: "http://{{ monitoring_receiver_host }}:{{ monitoring_receiver_port }}/healthz"
+  register: _monitoring_receiver_up
+  until: _monitoring_receiver_up.status == 200
+  retries: 6
+  delay: 5
+  changed_when: false
+
+# The proof the whole chain is wired: Prometheus reports the Alertmanager it
+# will notify, and has loaded rules.
+- name: Read Prometheus's Alertmanagers
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9090/api/v1/alertmanagers
+    return_content: true
+  register: _monitoring_prom_ams
+  until: _monitoring_prom_ams.json.data.activeAlertmanagers | length > 0
+  retries: 6
+  delay: 5
+  changed_when: false
+
+- name: Read Prometheus's loaded rule groups
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9090/api/v1/rules
+    return_content: true
+  register: _monitoring_prom_rules
+  until: _monitoring_prom_rules.json.data.groups | length > 0
+  retries: 6
+  delay: 5
+  changed_when: false

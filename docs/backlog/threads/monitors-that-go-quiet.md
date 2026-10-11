@@ -3,10 +3,10 @@
 ## Resume
 
 - **Pillar:** platform
-- **Next:** When released from the usage-limit hold, write the alert-delivery design note; A can start without its verdict, B waits for the orchestrator’s review.
-- **Blocked by:** Start no design, build or investigation until the orchestrator or review window says the usage limit has room; other waits are in [the latest handoff](#thread-context).
+- **Next:** Alert delivery is built (branch awaiting the orchestrator's gate); once it lands, deploy playbook 08 to the `monitoring` group and 18 to every node, then confirm a rule reaches the ops channel. Then [ranked work](#do-next).
+- **Blocked by:** Waits are in [the latest handoff](#thread-context).
 - **Unblocks:** Alerts that reach the user when shared infrastructure fails.
-- **Acceptance:** Use [ranked work](#do-next): receiver auth/address, grouping, node placement and an end-to-end rule test without paging Reto are reviewed before B.
+- **Acceptance:** Prometheus on the monitoring node reports an Alertmanager and loaded rules (`/api/v1/alertmanagers`, `/api/v1/rules`), and a test alert posted to the receiver shows in the ops channel.
 - **Worktree:** `monitors-that-go-quiet`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -27,80 +27,39 @@ had never once reached. On 2026-10-02 the NAS probe stopped attesting only its
 own interpreter: each NAS-touching process now attests itself (built,
 awaiting deploy). What remains is one signal that lies by omission, a worker
 host no detector can see, and (found 2026-10-04) that no Prometheus alert rule
-is evaluated anywhere, so every one of them is silent (Do-next 1). The last held decision closed 2026-09-30: `ship --quick`
+was evaluated anywhere, so every one of them was silent (built 2026-10-11: rules, Alertmanager and a loopback receiver into the ops channel; awaiting deploy). The last held decision closed 2026-09-30: `ship --quick`
 warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 "a day or two", and never refuses on an age it could not look up. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-04 (reopened for the alert-delivery job, Do-next 1); 2026-10-03 (round-3 dogfood PASS: diagnose job 464662 on 929107f3 ledgered cost_usd 0.21, 8 turns, input_tokens set; td464074 closed); 2026-10-03 (round-2 dogfood: diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (NAS attestation built on Reto's option-1 ruling); 2026-10-02 (stranded-branch work finished and deployed); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-04 (reopened for the alert-delivery job; built 2026-10-11, awaiting deploy); 2026-10-03 (round-3 dogfood PASS: diagnose job 464662 on 929107f3 ledgered cost_usd 0.21, 8 turns, input_tokens set; td464074 closed); 2026-10-03 (round-2 dogfood: diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (NAS attestation built on Reto's option-1 ruling); 2026-10-02 (stranded-branch work finished and deployed); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
-**Resume (2026-10-04, reopened for one job, then paused on the usage limit):**
-- Reopened by the orchestrator for Do-next 1 (Reto's rulings below). The
-  account sits at 95% of its weekly limit until 2026-10-09 05:00Z, so this
-  session only wrote the job down. Start nothing (no design note, no build,
-  no investigation) until the orchestrator or the review window says the
-  limit has room.
-- First step when released: the design note `reviews/monitors-that-go-quiet.md`
-  (receiver auth and address, Alertmanager grouping, which node runs what,
-  how a rule is tested end to end without paging Reto). The orchestrator
-  gives a verdict before B is built; A can start without it.
+**Resume (2026-10-11, alert delivery built):**
+- Built: `precis alertmanager-receiver` (loopback webhook, queues one ops
+  message per Alertmanager group), the Linux path of the `monitoring` role
+  (Prometheus config with `rule_files` + `alerting`, Alertmanager, receiver
+  unit, end-to-end API checks), and the `monitoring` inventory group in
+  playbook 08. Nothing is deployed. Activation needs the orchestrator: add a
+  Linux node to `monitoring` in the private inventory, put
+  `PRECIS_OPS_ALERT_TARGET` in `precis_shared_env`, run playbooks 18 then 08
+  there (08 keeps a backup of the hand-edited `prometheus.yml`; diff its scrape
+  jobs first, because a new always-down target fires NodeDown).
+- Accepted trade-off (Reto 2026-10-04): these alerts are silent while Postgres
+  or asa_bot is down, PostgresDown included.
 - Done and verified on prod earlier: the doctor filer fix (tick 464516), the
   diagnose_gripe cost ledger (job 464662).
 - Waiting on others: the review session's resend of dedupe items 1 and 2
-  (Do-next 2); the orchestrator's round for the NFS-hang branch (Do-next 3).
-- Later, no outside wait: the attributability-journal design note (Do-next 4),
-  then Do-next 5 once it is ruled ready.
+  (Do-next 1); the orchestrator's round for the NFS-hang branch (Do-next 2),
+  whose `*Hung`/`*Absent` rules join the rendered set when it lands.
+- Later, no outside wait: the attributability-journal design note (Do-next 3),
+  then Do-next 4 once it is ruled ready.
 
 ## Do next
 
-1. **Make the Prometheus alert rules fire and reach Reto** (gr465126; approved
-   2026-10-04; review items organizer-alerting-1 and -2, both in the review
-   queue's `answered/`). Today nothing evaluates a rule: every rule in
-   `deploy/roles/monitoring/templates/alert_rules.yml.j2` (PostgresDown, the
-   hung-NFS rules, the three Docker-disk rules) is dead.
-   - **Rulings.** (1) Prometheus rules plus Alertmanager; Prometheus's config
-     may come under Ansible; node_exporter YES on the two Linux nodes.
-     (2) Delivery is the bot path, not a Discord webhook: Alertmanager
-     `webhook_configs` posts to a small receiver in precis, which queues each
-     alert through `queue_ops_message`, and asa_bot posts it to the existing
-     #systems-notifications channel (`PRECIS_OPS_ALERT_TARGET`). No new
-     channel, no webhook, no new vault secret. (3) Accepted trade-off: these
-     alerts are silent while Postgres or asa_bot is down, PostgresDown
-     included. The runbook says so; nothing is built around it.
-   - **Facts as the organizer found them (read-only, unverified by this
-     thread; check before relying).** One Prometheus runs on one Linux node
-     from the distro package, config hand-edited (last 2026-08-14), no
-     `rule_files`, no `alerting:` block, no Alertmanager; the rules API
-     returns 0 rules. Four targets scrape, including the big Mac, so
-     `precis_colima_docker_fs_up` is already live. The monitoring role is
-     macOS-only (brew paths) and the inventory has no `monitoring` group, so
-     `deploy/playbooks/08-monitoring.yml` matches no host and must NOT be run
-     anywhere as it stands: on the Prometheus node it would write files
-     Prometheus never reads. node_exporter is missing on the two Linux nodes.
-   - **Scope, about three builds.** A: the receiver in precis, an
-     authenticated or tailnet-only HTTP endpoint that takes Alertmanager's
-     webhook JSON, queues one ops message per alert group (firing and
-     resolved), and de-duplicates repeats; DB-backed tests; plain land.
-     B: a Linux-node variant of the monitoring role with an inventory group:
-     Prometheus config rendered by Ansible with `rule_files` and the
-     existing rules, Alertmanager with the one webhook receiver pointing at
-     A, sensible grouping and repeat interval. C: node_exporter on the two
-     Linux nodes, scraped. Do-next 3's `*Hung`/`*Absent` rules should join
-     the rendered rule set when that branch lands.
-   - **Rules of engagement.** Deploy-role changes (B, C) go to the
-     orchestrator's gate: commit on a branch, name branch and tip, mark
-     `scripts/round eta`; the orchestrator lands them and runs the
-     playbooks. This thread runs no ansible against the cluster and
-     deploys nothing. The repo is public: no node hostnames, tailnet or LAN
-     addresses, or vault values; hosts are inventory groups and variables.
-     Questions for Reto go to the review queue, not to the orchestrator.
-   - **Order.** Design note first, with a verdict from the orchestrator
-     before B is built.
-
-2. **Stop filing tracked asks as Reto todos** (Reto 2026-10-03, this
+1. **Stop filing tracked asks as Reto todos** (Reto 2026-10-03, this
    thread's top item). The doctor filed 217 of the 264 open
    `waiting-for:reto` todos (parent td347578); its prompt told it to list
    "a gripe you filed or annotated" as an ask. `convert_needs_a_human` now
@@ -124,7 +83,7 @@ gr346534, soft-deleted)
    them at source. The dedupe agent closes existing duplicates; this
    thread does not. Of its two hand-offs, td455178 and
    td345821 are both closed (caspar runs no daemons by design).
-3. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
+2. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
    share has hung on every client since 2026-09-30, and the only rule
    (`avail_bytes == 0`) cannot fire on a hang. Branch
    `worktree-agent-a8ce270a39be79437` @ `2443c04d` adds `*Hung`
@@ -135,21 +94,21 @@ gr346534, soft-deleted)
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-4. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+3. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
-5. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
+4. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
    orchestrator; draft, do not build yet). The nightly B2 sync failed on
    every run for 7 weeks into a log nobody reads. The fix is a
    `health_digest` check on the log, because the DB node has no tick of
    its own. It must be timeout-guarded against the NFS hang in item 2.
-6. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
+5. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
    gr472019 and gr476100; the router tracker binding shipped, what is left
-   is the OTS batch 7 re-stamp and the quest_tick search-dispatch bug). It ranks below 1–5 because the alerts still
+   is the OTS batch 7 re-stamp and the quest_tick search-dispatch bug). It ranks below 1–4 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
 
 ## Horizon
@@ -162,14 +121,14 @@ gr346534, soft-deleted)
    `worker_logs` prunes (around 2026-10-09, after which the evidence is gone).
    Ruled 2026-10-11 (Reto): such identities may keep claiming; record an
    attribution event per claim instead of refusing.
-   Left on the Horizon only as a pointer — Do-next 4 is the narrow read-only
+   Left on the Horizon only as a pointer — Do-next 3 is the narrow read-only
    slice of it and is still this thread's.
 2. **backlog/alert-failure-id-registry.md** — the registry, `/rules`
    catalogue and idle-aware health panel shipped 2026-10-09; "did host-dark
    fire, for which host" is addressable by id. Left, per the file: the
    `acked_until` TTL, `/status` onto the panel, call-site constants.
 3. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
-   the condition registry; Do-next 4 exists because a host has no
+   the condition registry; Do-next 3 exists because a host has no
    durable identity separating "ephemeral by design" from "vanished", so
    attributability-by-container is a slice here. Last: largest, no
    independently shippable piece touching this thread.

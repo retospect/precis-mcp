@@ -113,3 +113,12 @@ all:
     precis_anki_sync:
       hosts:
         node-gateway:
+
+    # The ONE node that evaluates Prometheus alert rules and routes them
+    # (playbook 08). Must be a Linux node that also ran playbook 20 (the
+    # alert receiver runs from /opt/precis/venv); never the DB node. Empty or
+    # absent = no rule is evaluated anywhere, so every alert rule is dead.
+    # PRECIS_OPS_ALERT_TARGET must be in precis_shared_env for the receiver.
+    monitoring:
+      hosts:
+        node-gpu:

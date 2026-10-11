@@ -1,5 +1,6 @@
 ---
-# Prometheus + Grafana + exporters on the data node
+# Prometheus + Grafana + exporters (macOS, brew), or Prometheus + Alertmanager
+# + the precis webhook receiver (Linux, apt/systemd — tasks/linux.yml).
 
 - name: Install monitoring stack (macOS)
   when: os_family == "darwin"
@@ -19,30 +20,46 @@
   become: false
   failed_when: false
 
+- name: Linux monitoring node (Prometheus rules + Alertmanager + receiver)
+  when: os_family == "linux"
+  ansible.builtin.include_tasks: linux.yml
+
 - name: Ensure Prometheus config directory
   ansible.builtin.file:
-    path: /usr/local/etc/prometheus
+    path: "{{ monitoring_config_dir }}"
     state: directory
     mode: "0755"
   become: true
 
-- name: Deploy Prometheus config
-  ansible.builtin.template:
-    src: prometheus.yml.j2
-    dest: /usr/local/etc/prometheus/prometheus.yml
-    mode: "0644"
-  become: true
-  notify: restart prometheus
-
+# Linux: the rules go first and the config is checked after both are on disk,
+# so a bad edit fails the play before the restart handler runs.
 - name: Deploy alert rules
   ansible.builtin.template:
     src: alert_rules.yml.j2
-    dest: /usr/local/etc/prometheus/alert_rules.yml
+    dest: "{{ monitoring_config_dir }}/alert_rules.yml"
     mode: "0644"
+    validate: "{{ 'promtool check rules %s' if os_family == 'linux' else omit }}"
   become: true
   notify: restart prometheus
 
+# `backup: true` keeps the hand-edited config this replaces on the Linux node.
+- name: Deploy Prometheus config
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ monitoring_config_dir }}/prometheus.yml"
+    mode: "0644"
+    backup: "{{ os_family == 'linux' }}"
+  become: true
+  notify: restart prometheus
+
+- name: Check Prometheus config and the rules it loads (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: "promtool check config {{ monitoring_config_dir }}/prometheus.yml"
+  become: true
+  changed_when: false
+
 - name: Ensure Grafana config directories
+  when: os_family == "darwin"
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -54,6 +71,7 @@
     - /usr/local/etc/grafana/provisioning/datasources
 
 - name: Deploy Grafana datasource
+  when: os_family == "darwin"
   ansible.builtin.template:
     src: grafana_datasource.yml.j2
     dest: /usr/local/etc/grafana/provisioning/datasources/prometheus.yml
@@ -74,3 +92,7 @@
     - node_exporter
     - grafana
   changed_when: false
+
+- name: Start and verify the Linux monitoring chain
+  when: os_family == "linux"
+  ansible.builtin.include_tasks: linux_verify.yml

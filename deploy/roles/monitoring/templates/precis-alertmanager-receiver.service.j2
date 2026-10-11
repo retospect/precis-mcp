@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Alertmanager webhook -> ops channel (queue_ops_message -> asa_bot).
+# Loopback-only and unauthenticated by design; the CLI refuses a routable bind.
+
+[Unit]
+Description=precis Alertmanager webhook receiver
+After=network-online.target prometheus-alertmanager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ monitoring_receiver_user }}
+Group={{ monitoring_receiver_user }}
+WorkingDirectory=/tmp
+Environment=PATH={{ monitoring_receiver_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PGPASSFILE={{ monitoring_receiver_pgpass }}
+Environment=PRECIS_DATABASE_URL={{ monitoring_receiver_dsn }}
+# PRECIS_OPS_ALERT_TARGET rides in the shared env; without it the receiver
+# answers 503 and Alertmanager keeps retrying, so a missing target is loud.
+{% for env_key, env_val in (precis_shared_env | default({}) | combine(precis_identity_env | default({}))).items() %}
+Environment={{ env_key }}={{ env_val }}
+{% endfor %}
+
+ExecStart={{ monitoring_receiver_venv }}/bin/precis alertmanager-receiver \
+  --host {{ monitoring_receiver_host }} --port {{ monitoring_receiver_port }}
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
