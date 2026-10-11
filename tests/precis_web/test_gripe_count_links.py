@@ -58,3 +58,28 @@ def test_empty_exact_status_names_selected_status(
     assert "No gripes with status open." in response.text
     assert "No live gripes." not in response.text
     assert "fixture-populated-triaged" not in response.text
+
+
+def test_live_view_renders_each_status_as_a_collapsible_panel(
+    store: Any, client: Any, monkeypatch: Any
+) -> None:
+    """Every live status is its own <details> panel, collapsed in the live
+    view so all headers and counts show at the top; a single-status view
+    opens its one panel."""
+    from precis_web.routes import gripes
+
+    for state in ["open", "triaged", "in_review"]:
+        with store.tx() as conn:
+            ref = store.insert_ref(
+                kind="gripe", slug=None, title=f"fixture-panel-{state}", conn=conn
+            )
+            store.add_tag(ref.id, Tag.closed("STATUS", state), conn=conn)
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    live = client.get("/gripes").text
+    for state in ["open", "triaged", "in_review"]:
+        assert f'<details class="mb-3 group" data-status="{state}">' in live
+        assert f"fixture-panel-{state}" in live
+
+    triaged = client.get("/gripes?status=triaged").text
+    assert '<details class="mb-3 group" data-status="triaged" open>' in triaged

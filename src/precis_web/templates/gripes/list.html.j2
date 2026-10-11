@@ -67,15 +67,20 @@
   </div>
 {% endif %}
 
+{# One collapsible panel per status. The live view starts collapsed so
+   every status header (and its count) sits at the top of the page — a
+   long open section used to push triaged/in_review below the fold. A
+   single-status view has one panel, so it starts open. #}
 {% for g in groups %}
-<section class="mb-5">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+<details class="mb-3 group" data-status="{{ g.status }}"{% if status != 'live' %} open{% endif %}>
+  <summary class="cursor-pointer select-none text-sm font-semibold text-slate-700 py-1 flex items-center gap-2">
+    <span class="text-slate-400 transition group-open:rotate-90">&#9656;</span>
     <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ g.badge }}">
       {{ g.status }}
     </span>
     <span class="text-slate-400 font-normal">{{ g.count }}</span>
-  </h2>
-  <div class="overflow-hidden rounded-md border border-slate-200">
+  </summary>
+  <div class="mt-2 overflow-hidden rounded-md border border-slate-200">
     <table class="w-full text-sm">
       <tbody>
         {% for gr in g.gripes %}
@@ -96,7 +101,7 @@
       </tbody>
     </table>
   </div>
-</section>
+</details>
 {% endfor %}
 
 {% endblock %}
