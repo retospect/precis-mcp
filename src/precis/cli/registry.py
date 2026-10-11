@@ -200,7 +200,7 @@ COMMANDS: tuple[Command, ...] = (
     _c("repl", "repl", "Interactive shell over the seven-verb tool surface."),
     _c("web", "web", "Run the precis web UI (FastAPI; requires the [web] extra)."),
     _c("cron", "cron", "Cron operations — tick the scheduled-task scanner."),
-    _c("cast", "cast", "Compose/schedule the daily audio casts."),
+    _c("cast", "cast", "Compose/schedule the weekly audio casts."),
     _c("quest", "quest", "Quest layer — strivings above the work."),
     _c(
         "classify",
