@@ -90,6 +90,29 @@ def test_fetch_cap_and_error_isolation(store) -> None:
     del refs
 
 
+def test_edit_sets_source_url_validated(store) -> None:
+    import pytest
+
+    from precis.dispatch import Hub
+    from precis.errors import BadInput
+    from precis.handlers.cfp import CfpHandler
+
+    ref = _cfp(store, url=None)
+    h = CfpHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput):
+        h.edit(id=ref.id, args={"source_url": "ftp://x/y"})
+    assert "source_url" not in store.get_ref(kind="cfp", id=ref.id).meta
+    ack = h.edit(id=ref.id, args={"source_url": "https://example.org/call"})
+    assert "source_url=https://example.org/call" in ack.body
+    assert store.get_ref(kind="cfp", id=ref.id).meta["source_url"] == (
+        "https://example.org/call"
+    )
+    # with another field: both applied
+    h.edit(id=ref.id, year=2027, args={"source_url": "https://example.org/b"})
+    got = store.get_ref(kind="cfp", id=ref.id)
+    assert got.year == 2027 and got.meta["source_url"] == "https://example.org/b"
+
+
 def test_cadence_registered_weekly() -> None:
     cad = next(c for c in CADENCES if c.name == "cfp_watch")
     assert 7 * 24 * 3600 <= cad.interval_s < 8 * 24 * 3600

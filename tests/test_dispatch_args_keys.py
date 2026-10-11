@@ -32,6 +32,7 @@ PASSTHROUGH = [
     ("component", "put"),
     ("component", "get"),
     ("quest", "get"),
+    ("paper", "edit"),
     ("structure", "put"),
     ("structure", "edit"),
     ("structure", "get"),

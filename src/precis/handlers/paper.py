@@ -266,6 +266,8 @@ class PaperHandler(Handler):
     stores_opaque_text: ClassVar[bool] = True
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
         "put": frozenset({"pdf_url"}),
+        # edit takes ``args`` only for subclass hooks (_edit_args); none here.
+        "edit": frozenset(),
     }
 
     stamps_recall = True
@@ -1230,6 +1232,13 @@ class PaperHandler(Handler):
         _slug, ref_id = self._resolve_paper_slug(id)
         return ref_id
 
+    def _edit_args(
+        self, ref_id: int, args: dict[str, Any] | None, *, dry: bool
+    ) -> list[str]:
+        """Subclass hook: apply kind-specific ``edit(args=...)`` keys, return
+        the change labels. Papers take none."""
+        return []
+
     def edit(  # type: ignore[override]
         self,
         *,
@@ -1244,6 +1253,7 @@ class PaperHandler(Handler):
         entry_type: str | None = None,
         supplement_of: str | None = None,
         dry_run: bool | str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Repair a paper's bibliographic metadata.
@@ -1295,6 +1305,7 @@ class PaperHandler(Handler):
         """
         dry_mode = normalize_dry_run(dry_run)
         ref_id = self._resolve_paper_ref_id(id)
+        extra_changes = self._edit_args(ref_id, args, dry=bool(dry_mode))
         if supplement_of is not None and str(supplement_of).strip():
             if any(
                 v is not None
@@ -1347,6 +1358,11 @@ class PaperHandler(Handler):
             and not doi_clear
             and not arxiv_clear
         ):
+            if extra_changes:
+                return Response(
+                    body=f"updated {self.spec.kind} id={ref_id}: "
+                    f"{', '.join(extra_changes)}."
+                )
             raise BadInput(
                 f"edit(kind='{self.spec.kind}') needs at least one field to change",
                 next=(
@@ -1436,6 +1452,7 @@ class PaperHandler(Handler):
         if new_authors:
             changed.append(f"authors({len(new_authors)})")
         changed.extend(meta_patch.keys())
+        changed.extend(extra_changes)
         changed_str = ", ".join(changed) if changed else "no change"
         body = f"updated {self.spec.kind} id={ref_id}: {changed_str}."
         if doi_edit_check is not None:

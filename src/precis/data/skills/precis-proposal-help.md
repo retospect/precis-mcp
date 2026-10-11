@@ -116,8 +116,9 @@ text hash and any dates on deadline/submission/opens lines are compared
 with the last snapshot in `meta.cfp_watch`; a change raises an open
 `cfp_watch` alert (`search(kind='alert')`, subject = the cfp) and keeps
 the last 5 changes in `meta.cfp_watch.history`. The first check only
-records a baseline. Needs `meta.source_url` on the cfp; a tagged cfp
-without one is skipped (URL intake for cfp is not built yet). At most 25
+records a baseline. Set the page with
+`edit(kind='cfp', id='<slug>', args={'source_url': 'https://…'})` (http or
+https); a tagged cfp without one is skipped. At most 25
 fetches per run.
 
 ## Why a CFP is its own kind (not a paper)
