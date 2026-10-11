@@ -24,9 +24,6 @@ Reading-brief + nidra casts are live; these polish/feature follow-ups remain.
 - Add a cluster-status lane (Reto want; today only open-alerts leak in).
 - Hygiene: `meta.no_index` and/or retention GC for daily cast drafts; remove
   leftover test drafts (cast-nidra-test-546c21, nidra-test-546c21).
-- TTS normalization: decide whether casts keep authoring TTS-friendly text
-  ("Mof", "thousandfivehundred") or write normally and pipe through a
-  code/LLM filter; is there a chemistry-to-IPA helper? (Reto)
 Owner `src/precis/reading/`, `src/precis/workers/cast_audio.py`.
 
 ## TTS render is collateral damage of any worker restart

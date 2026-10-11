@@ -252,3 +252,98 @@ def test_currency_scale_only_after_a_symbol():
     # letters are not consumed (the digit still verbalizes via the guard rules).
     assert "pound" not in verbalize_numbers("a 5m pole")
     assert "dollar" not in verbalize_numbers("2bn")
+
+
+# ── abbreviations + temporal anchoring (gr415909) ────────────────────────
+
+from datetime import date
+
+from precis.draft.verbalize import (
+    anchor_temporal,
+    expand_abbreviations,
+    verbalize_text,
+)
+
+_SAT = date(2026, 10, 11)  # a Sunday
+
+
+def test_known_letters_entry():
+    assert expand_abbreviations("We ran DFT on it.") == "We ran D F T on it."
+
+
+def test_word_entry_uses_respelling():
+    assert expand_abbreviations("NASA and a MOSFET") == "Nasa and a Mosfet"
+
+
+@pytest.mark.parametrize(
+    ("raw", "spoken"),
+    [
+        ("e.g. gold", "for example gold"),
+        ("Smith et al. found", "Smith and colleagues found"),
+        ("A vs. B", "A versus B"),
+        ("approx. five", "approximately five"),
+    ],
+)
+def test_expansions(raw, spoken):
+    assert expand_abbreviations(raw) == spoken
+
+
+def test_unknown_caps_default_to_letters():
+    assert expand_abbreviations("the QCM sensor") == "the Q C M sensor"
+
+
+def test_formulas_mixed_case_and_designators_untouched():
+    for s in ("MoS2 and WSe2", "GPT-4 and COVID-19", "iPhone", "World War II"):
+        assert expand_abbreviations(s) == s
+
+
+def test_shouted_heading_not_spelled():
+    assert expand_abbreviations("BREAKING NEWS today") == "BREAKING NEWS today"
+
+
+def test_abbreviations_english_only():
+    assert expand_abbreviations("DFT", lang="ja") == "DFT"
+
+
+def test_today_and_neighbours():
+    assert (
+        anchor_temporal("Done today.", _SAT)
+        == "Done on Sunday the eleventh of October."
+    )
+    assert anchor_temporal("Yesterday it ran.", _SAT) == (
+        "On Saturday the tenth of October it ran."
+    )
+    assert anchor_temporal("see you tomorrow", _SAT) == (
+        "see you on Monday the twelfth of October"
+    )
+
+
+def test_preposition_not_doubled_with_on():
+    assert anchor_temporal("since yesterday", _SAT) == (
+        "since Saturday the tenth of October"
+    )
+
+
+def test_weeks_anchor_to_monday():
+    assert anchor_temporal("This week we", _SAT) == (
+        "The week of Monday the fifth of October we"
+    )
+    assert anchor_temporal("in last week's run", _SAT) == "in last week's run"
+    assert anchor_temporal("last week we", _SAT) == (
+        "the week of Monday the twenty-eighth of September we"
+    )
+
+
+def test_no_date_leaves_text_unchanged():
+    s = "today, yesterday, this week"
+    assert anchor_temporal(s, None) == s
+    assert verbalize_text(s) == s
+
+
+def test_possessive_untouched():
+    assert anchor_temporal("today's news", _SAT) == "today's news"
+
+
+def test_verbalize_text_pipeline_no_digits():
+    out = verbalize_text("DFT today, 2 samples", episode_date=_SAT)
+    assert out == "D F T on Sunday the eleventh of October, two samples"

@@ -26,7 +26,7 @@ import logging
 import subprocess
 import tempfile
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -155,12 +155,18 @@ def run_briefing_audio(
         return {**empty, "reason": "no-unnarrated-briefing"}
 
     text = _briefing_text(store, ref.id)
-    segments = markdown_segments(text, voice=voice, lang=lang)
+    date_tag = str((ref.meta or {}).get("date") or now.date().isoformat())
+    try:
+        episode_date = date.fromisoformat(date_tag)
+    except ValueError:
+        episode_date = None
+    segments = markdown_segments(
+        text, voice=voice, lang=lang, episode_date=episode_date
+    )
     if not segments:
         return {**empty, "ref_id": ref.id, "reason": "empty-briefing"}
 
     do_publish = publish and podcast_dir is not None
-    date_tag = str((ref.meta or {}).get("date") or now.date().isoformat())
     render_kw: dict[str, Any] = {} if encode is None else {"encode": encode}
     with tempfile.TemporaryDirectory() as td:
         out_path = Path(td) / f"briefing-{date_tag}.mp3"

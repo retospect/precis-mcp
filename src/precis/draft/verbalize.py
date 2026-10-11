@@ -21,8 +21,12 @@ a model, like the rest of :mod:`precis.draft.narrate`.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
+from datetime import date, timedelta
+from functools import lru_cache
+from importlib import resources
 
 from num2words import num2words
 
@@ -282,4 +286,142 @@ def verbalize_numbers(text: str, *, lang: str = "en") -> str:
     return t
 
 
-__all__ = ["verbalize_numbers"]
+# ── abbreviations (data: precis/data/tts_lexicon.json) ──────────────────────
+
+
+@lru_cache(maxsize=1)
+def _lexicon() -> dict[str, dict]:
+    """The packaged abbreviation table: ``letters`` (set), ``words``
+    (token -> respelling), ``expand`` (surface -> spoken phrase)."""
+    raw = json.loads(
+        resources.files("precis.data")
+        .joinpath("tts_lexicon.json")
+        .read_text(encoding="utf-8")
+    )
+    return {
+        "letters": {k: True for k in raw["letters"]},
+        "words": dict(raw["words"]),
+        "expand": dict(raw["expand"]),
+    }
+
+
+# Roman numerals read as numerals ("World War II"), never as letters.
+_ROMAN = re.compile(r"^[IVXLCDM]+$")
+# An all-caps token of 2-6 letters standing alone (no digit/hyphen/underscore
+# glued on: GPT-4, COVID-19, MOF-74 keep their own handling).
+_CAPS_TOKEN = re.compile(r"(?<![\w-])[A-Z]{2,6}(?![\w-])")
+
+
+def _spell(token: str) -> str:
+    return " ".join(token)
+
+
+def expand_abbreviations(text: str, *, lang: str = "en") -> str:
+    """Rewrite abbreviations for speech per the packaged lexicon: expansions
+    ("e.g." -> "for example"), word readings ("NASA" -> "Nasa") and letter
+    spelling ("DFT" -> "D F T"). Unknown all-caps tokens of 2-6 letters
+    default to letters unless they sit in a run of capitalised words (a
+    shouted heading reads as words, not as initials). Chemical formulas and
+    mixed-case tokens (MoS2, WSe2) are never touched. English only."""
+    if _num2words_lang(lang) is None:
+        return text
+    lex = _lexicon()
+    expand = lex["expand"]
+    if expand:
+        alts = "|".join(re.escape(k) for k in sorted(expand, key=len, reverse=True))
+        pat = re.compile(rf"(?<![\w.])(?:{alts})(?!\w)")
+        text = pat.sub(lambda m: expand[m.group(0)], text)
+
+    def _caps(m: re.Match[str]) -> str:
+        tok = m.group(0)
+        if tok in lex["words"]:
+            return lex["words"][tok]
+        if tok in lex["letters"]:
+            return _spell(tok)
+        if _ROMAN.match(tok):
+            return tok
+        before = m.string[: m.start()].rstrip(" ")
+        after = m.string[m.end() :].lstrip(" ")
+        prev_w = re.search(r"([A-Za-z]+)$", before)
+        next_w = re.match(r"([A-Za-z]+)", after)
+        for w in (prev_w, next_w):
+            if w and len(w.group(1)) >= 2 and w.group(1).isupper():
+                return tok
+        return _spell(tok)
+
+    return _CAPS_TOKEN.sub(_caps, text)
+
+
+# ── temporal phrases anchored to the episode date ───────────────────────────
+
+_WEEKDAYS = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+_PREPS = r"(?:since|until|till|by|from|before|after|through|to|in|during|over|for)"
+_TEMPORAL = re.compile(
+    rf"(?:(?P<prep>\b{_PREPS})\s+)?"
+    r"\b(?P<phrase>today|yesterday|tomorrow|this week|last week)\b(?![\'’]s)",
+    re.IGNORECASE,
+)
+
+
+def anchor_temporal(text: str, episode_date: date | None, *, lang: str = "en") -> str:
+    """Rewrite relative time words to absolute dates for an episode heard
+    later than it was written: "today" -> "on Saturday the eleventh of
+    October", "last week" -> "the week of Monday the twenty-ninth of
+    September". Possessives ("today's") are left alone. With no
+    ``episode_date`` (or a non-English ``lang``) the text is unchanged."""
+    if episode_date is None or _num2words_lang(lang) is None:
+        return text
+    n2w = _num2words_lang(lang)
+
+    def day(d: date) -> str:
+        ordinal = _clean(str(num2words(d.day, lang=n2w, to="ordinal")))
+        return f"{_WEEKDAYS[d.weekday()]} the {ordinal} of {_MONTHS[d.month]}"
+
+    monday = episode_date - timedelta(days=episode_date.weekday())
+
+    def _repl(m: re.Match[str]) -> str:
+        phrase = m.group("phrase").lower()
+        prep = m.group("prep")
+        if phrase.endswith("week"):
+            anchor = monday - timedelta(days=7 if phrase == "last week" else 0)
+            body = f"the week of {day(anchor)}"
+            lead = prep
+        else:
+            delta = {"today": 0, "yesterday": -1, "tomorrow": 1}[phrase]
+            body = day(episode_date + timedelta(days=delta))
+            # "since yesterday" keeps its preposition; a bare adverb needs "on".
+            lead = prep if prep else "on"
+        out = f"{lead} {body}" if lead else body
+        # Keep the capital of a sentence-initial "Today".
+        if not prep and m.group(0)[0].isupper():
+            out = out[0].upper() + out[1:]
+        return out
+
+    return _TEMPORAL.sub(_repl, text)
+
+
+def verbalize_text(
+    text: str, *, lang: str = "en", episode_date: date | None = None
+) -> str:
+    """The full TTS-time pass: abbreviations, then temporal anchoring (when
+    ``episode_date`` is known), then numbers — in that order so the words
+    those steps emit are final and the date digits-free text is not re-read."""
+    t = expand_abbreviations(text, lang=lang)
+    t = anchor_temporal(t, episode_date, lang=lang)
+    return verbalize_numbers(t, lang=lang)
+
+
+__all__ = [
+    "anchor_temporal",
+    "expand_abbreviations",
+    "verbalize_numbers",
+    "verbalize_text",
+]

@@ -15,11 +15,12 @@ layer reads three things off a draft and never writes back:
   → "zinc nitrate hexahydrate", ``MOF-74`` → "MOF 74") *after* the lexicon so
   a user override of a specific formula's surface form wins. Once
   :func:`split_by_script` has settled a span's language, its numerals are
-  spelled out deterministically (:func:`precis.draft.verbalize.verbalize_numbers`)
-  so the draft can keep "1,000" on the page while the synth hears "one
+  spelled out deterministically (:func:`precis.draft.verbalize.verbalize_text`:
+  abbreviations per ``data/tts_lexicon.json``, relative dates anchored to
+  ``episode_date`` when given, then numbers) so the draft can keep "1,000" on the page while the synth hears "one
   thousand" — Kokoro/espeak mispronounces raw digit strings otherwise; this
   also spells out the bare designator number ``chem_speak`` leaves behind
-  (``MOF 74`` → "MOF seventy-four").
+  (``MOF 74`` → "Mof seventy-four").
 - **how special words sound** — an optional pronunciation **lexicon**
   (``surface → respelling``), the abbrev-class feature: keep the prose clean
   and fix "precis", arXiv, names, jargon out-of-band.
@@ -34,10 +35,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from precis.draft.chem_speak import speak_chemistry
-from precis.draft.verbalize import verbalize_numbers
+from precis.draft.verbalize import verbalize_text
 
 # Chunk kinds skipped for the ear (v1): structural containers, and
 # figures/tables/code/glossary that don't read aloud as prose.
@@ -357,6 +359,7 @@ def markdown_segments(
     cjk_voice: str | None = None,
     cjk_lang: str | None = None,
     kana_voice: str | None = None,
+    episode_date: date | None = None,
 ) -> list[NarrationSegment]:
     """Split markdown prose into speakable narration segments — one per block,
     and one per *list item* inside a list block.
@@ -388,7 +391,9 @@ def markdown_segments(
             cjk_lang=cjk_lang,
             kana_voice=kana_voice,
         ):
-            seg_text = verbalize_numbers(seg_text, lang=seg_lang)
+            seg_text = verbalize_text(
+                seg_text, lang=seg_lang, episode_date=episode_date
+            )
             if not _HAS_VOICE.search(seg_text):
                 continue
             segments.append(
@@ -457,6 +462,7 @@ def render_narration(
     default_voice: str,
     default_lang: str,
     lexicon: dict[str, str] | None = None,
+    episode_date: date | None = None,
 ) -> list[NarrationSegment]:
     """Walk a draft in reading order → the voice score.
 
@@ -482,7 +488,9 @@ def render_narration(
             cjk_lang=meta.get("cjk_lang"),
             kana_voice=meta.get("kana_voice"),
         ):
-            seg_text = verbalize_numbers(seg_text, lang=seg_lang)
+            seg_text = verbalize_text(
+                seg_text, lang=seg_lang, episode_date=episode_date
+            )
             if not _HAS_VOICE.search(seg_text):
                 continue
             segments.append(

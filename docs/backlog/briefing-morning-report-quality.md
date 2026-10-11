@@ -46,16 +46,11 @@ Moved to [dft-lint-per-quest-type.md](dft-lint-per-quest-type.md).
 
 ## 6. TTS reads raw text (gr415909)
 
-Currency and magnitude expansion ("£2bn" to "two billion pounds") shipped in
-`src/precis/draft/verbalize.py`. Still open: an abbreviation lexicon
-(letters versus word versus table; gr415909 says discuss first), temporal
-phrases anchored to the episode date ("today", "last week" are wrong for an
-episode listened to later), and annotation (pronunciation/emphasis hint)
-preprocessing. Share the lexicon with the phonetics DB of section 3. See also
-the TTS-normalisation question in [cast-followups.md](cast-followups.md);
-decide there whether casts author TTS-friendly text or filter afterwards
-before building more.
+Decided 2026-10-11 (Reto): filter after authoring (casts stay readable
+prose, `verbalize_text` runs at TTS time); abbreviation lexicon is the plain
+data file `src/precis/data/tts_lexicon.json`, which the phonetics DB of
+section 3 can share. Currency, abbreviations and episode-date anchoring
+shipped in `src/precis/draft/verbalize.py`.
 
-Who: agent-code for the preprocessor; needs-Reto: filter-after versus
-author-friendly (the open cast-followups question), and the abbreviation
-reading policy.
+Still open: annotation (pronunciation/emphasis hint) preprocessing. Needs an
+example of the intended markup from Reto before anything is built.

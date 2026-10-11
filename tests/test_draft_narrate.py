@@ -268,8 +268,8 @@ def test_markdown_segments_one_segment_per_list_item_with_terminal_period():
     assert [s.kind for s in segs] == ["para", "item", "item", "item", "item"]
     assert [s.text for s in segs] == [
         "What the government is actually doing:",
-        "Visas denied to Palestinian officials ahead of the UN General Assembly.",
-        "The US will allow an Iran delegation to attend.",
+        "Visas denied to Palestinian officials ahead of the U N General Assembly.",
+        "The U S will allow an Iran delegation to attend.",
         "Courts: a sentence was handed down, and another too. "
         "a continuation line stays with its item.",
         "Numbered items split the same way.",
@@ -504,3 +504,15 @@ def test_render_narration_splits_mixed_chunk_and_respects_meta_cjk():
     assert ("hello", "af_heart", "en-us") in triples
     # Han-only 世界 follows the chunk's cjk meta override.
     assert ("世界", "zf_xiaoxiao", "cmn") in triples
+
+
+def test_markdown_segments_threads_episode_date():
+    from datetime import date
+
+    segs = markdown_segments(
+        "The DFT run finished today.",
+        voice="af_heart",
+        lang="en-us",
+        episode_date=date(2026, 10, 11),
+    )
+    assert segs[0].text == "The D F T run finished on Sunday the eleventh of October."

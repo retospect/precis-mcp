@@ -26,7 +26,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -187,6 +187,7 @@ def _news_lead_in(
     date_tag: str,
     voice: str,
     default_lang: str,
+    episode_date: date | None = None,
 ) -> list[Any]:
     """Prepend today's news wire — read in the brief's own voice — ahead of the
     reading cast's segments, so the two compose as one ~30-minute morning
@@ -225,7 +226,9 @@ def _news_lead_in(
         return segments
     news_segments = [
         replace(seg, gap_after=_NEWS_LEAD_IN_PAUSE_S)
-        for seg in markdown_segments(news_body, voice=voice, lang=default_lang)
+        for seg in markdown_segments(
+            news_body, voice=voice, lang=default_lang, episode_date=episode_date
+        )
     ]
     log.info(
         "cast_audio: news lead-in prepended %d segment(s) (~%d chars) from "
@@ -237,6 +240,15 @@ def _news_lead_in(
         len(segments),
     )
     return [*news_segments, *segments]
+
+
+def _episode_date(date_tag: str) -> date | None:
+    """The cast's ``YYYY-MM-DD`` date tag as a date; ``None`` if it isn't one
+    (relative time words are then left as written)."""
+    try:
+        return date.fromisoformat(date_tag)
+    except ValueError:
+        return None
 
 
 def narrate_cast_ref(
@@ -282,14 +294,25 @@ def narrate_cast_ref(
     date_tag = str(meta.get("date") or now.date().isoformat())
 
     lexicon = resolve_lexicon(ref, personal=load_personal_lexicon())
+    episode_date = _episode_date(date_tag)
     segments = render_narration(
-        store, ref, default_voice=voice, default_lang=default_lang, lexicon=lexicon
+        store,
+        ref,
+        default_voice=voice,
+        default_lang=default_lang,
+        lexicon=lexicon,
+        episode_date=episode_date,
     )
     if cast == "reading" and profile is not None:
         # Combined morning episode: the full news wire (same voice), then the
         # personal brief — one episode, no separate news audio (Workstream B).
         segments = _news_lead_in(
-            store, segments, date_tag=date_tag, voice=voice, default_lang=default_lang
+            store,
+            segments,
+            date_tag=date_tag,
+            voice=voice,
+            default_lang=default_lang,
+            episode_date=episode_date,
         )
     if not segments:
         # Nothing speakable — back off so we don't reselect this draft every tick.

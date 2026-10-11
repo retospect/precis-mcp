@@ -166,7 +166,7 @@ def test_render_narration_applies_chem_transform():
         store, _Ref(), default_voice="af_heart", default_lang="en-us"
     )
     assert segs[0].text == (
-        "The MOF seventy-four sample was soaked in zinc nitrate hexahydrate."
+        "The Mof seventy-four sample was soaked in zinc nitrate hexahydrate."
     )
 
 
@@ -178,5 +178,5 @@ def test_markdown_segments_applies_chem_transform():
     )
     assert segs[0].text == (
         "Synthesized using zinc nitrate hexahydrate and calcined "
-        "MOF seventy-four crystals."
+        "Mof seventy-four crystals."
     )

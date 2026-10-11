@@ -1,0 +1,34 @@
+{
+  "_doc": "TTS abbreviation lexicon (precis.draft.verbalize). letters: spelled out letter by letter. words: read as a word, value is the respelling the synthesizer gets. expand: replaced by the spoken phrase (matched case-sensitively, trailing dots included). Unknown all-caps tokens of 2-6 letters default to letters; mixed-case tokens and chemical formulas are never touched. Plain data so the phonetics DB can share it.",
+  "letters": [
+    "DFT", "DNA", "RNA", "PCR", "AI", "ML", "LLM", "GPU", "CPU", "API",
+    "USB", "LED", "XRD", "XPS", "STM", "AFM", "TEM", "SEM", "NMR", "UV",
+    "IR", "PDF", "URL", "CEO", "HPC", "SQL", "RAM", "OLED", "MRI", "FPGA"
+  ],
+  "words": {
+    "NASA": "Nasa",
+    "MOSFET": "Mosfet",
+    "MOF": "Mof",
+    "ZIF": "Zif",
+    "LASER": "laser",
+    "SCUBA": "scuba",
+    "CERN": "Cern",
+    "NATO": "Nato",
+    "OPEC": "Opec",
+    "CMOS": "see moss",
+    "RADAR": "radar"
+  },
+  "expand": {
+    "e.g.": "for example",
+    "i.e.": "that is",
+    "et al.": "and colleagues",
+    "vs.": "versus",
+    "approx.": "approximately",
+    "etc.": "and so on",
+    "cf.": "compare",
+    "Fig.": "figure",
+    "Eq.": "equation",
+    "Dr.": "Doctor",
+    "ca.": "about"
+  }
+}
