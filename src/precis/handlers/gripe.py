@@ -164,8 +164,8 @@ class GripeHandler(NumericRefHandler):
                     f"appending a comment to {self._sense()} id={id!r} requires text=",
                     next=(f"put(kind={self.kind!r}, id={id}, text='your comment')"),
                 )
-            # Tags / links are not accepted on the append path — they
-            # belong on tag() / link() against the existing ref.
+            # Tags are not accepted on the append path — they belong on
+            # tag() against the existing ref.
             if tags is not None or untags is not None:
                 raise BadInput(
                     "tags=/untags= are not accepted when appending a "
@@ -174,16 +174,16 @@ class GripeHandler(NumericRefHandler):
                         f"use tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...])"
                     ),
                 )
-            if link is not None or unlink is not None or rel is not None:
-                raise BadInput(
-                    "link=/unlink=/rel= are not accepted when appending "
-                    f"a {self._sense()} comment",
-                    next=(
-                        f"use link(kind={self.kind!r}, id={id}, "
-                        "target=..., mode='add'|'remove')"
-                    ),
-                )
-            return self._append_comment(id=id, text=text)
+            # link=/unlink=/rel= ride along: comment + edge in one transaction
+            # (a duplicate-close is one put, not reject + re-put + link()).
+            return self._append_then_link(
+                lambda: self._append_comment(id=id, text=text),
+                id=id,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                what=f"{self._sense()} comment",
+            )
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
         # per-call slot (the todo pending-slot pattern — the base put's
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;

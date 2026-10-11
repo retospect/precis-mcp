@@ -1,24 +1,16 @@
 ---
 status: idea
-title: Gripe and todo threads — one-call comment+link, fast /gripes page
+title: Gripe and todo threads — fast /gripes page
 pillar: platform
 ---
 
-# Gripe and todo threads — link in one call, fast web page
+# Gripe and todo threads — fast web page
 
-Bundled in the 2026-10-10 gripe triage. Head+tail comment render (gr472988)
-and the todo comment append path (gr472987) shipped in b9f44519f. What is
-left is one MCP-call ergonomics bug and the slow web page.
+Bundled in the 2026-10-10 gripe triage. Head+tail comment render (gr472988),
+the todo comment append path (gr472987) and one-put comment+link
+(gr472989) shipped. What is left is the slow web page.
 
-## 1. Comment and link in one put (gr472989)
-
-`put(kind='gripe', id=N, text=…, link=…, rel=…)` rejects the call, so
-closing a duplicate takes three calls. `src/precis/handlers/gripe.py` raises
-on `link=`/`rel=` together with `text=`, with a comment saying why. Apply the
-comment, then the link. The quest logbook append rejects the same
-combination; fix both.
-
-## 2. Web /gripes page (bugs, fix alongside)
+## 1. Web /gripes page (bugs, fix alongside)
 
 - gr477858: `/gripes` loads very slowly. Profiled 2026-10-11: the route
   renders no comments and runs one list query (18 ms on prod, plan clean);
@@ -32,7 +24,6 @@ combination; fix both.
 
 ## Acceptance
 
-- A duplicate-close is one `put` and one `tag`.
 - `/gripes` loads in under 1 s on prod, and its header totals match the
   nav chip.
 

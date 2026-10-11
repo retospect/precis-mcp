@@ -619,28 +619,28 @@ class QuestHandler(NumericRefHandler):
                         "entry='observation')"
                     ),
                 )
-            # Tags / links / mode belong on tag() / link() against the ref,
-            # not the append path.
+            # Tags / mode belong on tag() against the ref, not the append
+            # path; link=/unlink=/rel= ride along in one transaction.
             if tags is not None or untags is not None:
                 raise BadInput(
                     "tags=/untags= are not accepted when appending a logbook entry",
                     next=f"use tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...])",
-                )
-            if link is not None or unlink is not None or rel is not None:
-                raise BadInput(
-                    "link=/unlink=/rel= are not accepted when appending a "
-                    "logbook entry",
-                    next=(
-                        f"use link(kind={self.kind!r}, id={id}, target='kind:id', "
-                        "rel='serves', mode='add')"
-                    ),
                 )
             if mode is not None:
                 raise BadInput(
                     f"mode= is not accepted on {self._sense()} put",
                     next=f"delete(kind={self.kind!r}, id={id})",
                 )
-            return self._append_log(id=id, text=text, entry=entry, by=by, cost=cost)
+            return self._append_then_link(
+                lambda: self._append_log(
+                    id=id, text=text, entry=entry, by=by, cost=cost
+                ),
+                id=id,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                what="logbook entry",
+            )
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
         # per-call slot (the todo / gripe pending-slot pattern). The
         # ``PRIO:`` tag alias keeps working; the explicit kwarg wins.

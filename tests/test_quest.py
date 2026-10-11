@@ -111,18 +111,28 @@ class TestLogbook:
         else:  # pragma: no cover - guard
             raise AssertionError("unknown entry type should be rejected")
 
-    def test_append_rejects_link_and_tags(self, store: Any) -> None:
+    def test_append_rejects_tags(self, store: Any) -> None:
         from precis.errors import BadInput
 
         h = _handler(store)
         qid = _created_id(h.put(text="Some striving"))
-        for kwargs in ({"tags": ["x"]}, {"link": "paper:1", "rel": "serves"}):
-            try:
-                h.put(id=qid, text="entry", **kwargs)
-            except BadInput:
-                pass
-            else:  # pragma: no cover - guard
-                raise AssertionError(f"append should reject {kwargs}")
+        try:
+            h.put(id=qid, text="entry", tags=["x"])
+        except BadInput:
+            pass
+        else:  # pragma: no cover - guard
+            raise AssertionError("append should reject tags=")
+
+    def test_append_with_link_does_both(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="Some striving"))
+        other = _created_id(h.put(text="Another striving"))
+        resp = h.put(id=qid, text="entry", link=f"quest:{other}", rel="serves")
+        assert "logged" in resp.body and "linked" in resp.body
+        assert "entry" in h.get(id=qid, view="tree").body
+        assert any(
+            link.dst_ref_id == other for link in h.store.links_for(qid, direction="out")
+        )
 
 
 class TestEdit:

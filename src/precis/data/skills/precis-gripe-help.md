@@ -137,6 +137,12 @@ default read (it stays searchable, and `view='comments'` shows it marked
 `[hidden]`): `delete(kind='gripe', id=42, args={'comment': 3})`; undo with
 `args={'comment': 3, 'restore': True}`. This never deletes the gripe.
 
+A comment can carry an edge in the same call, in one transaction (a bad
+target or `rel=` writes nothing): closing a duplicate is
+`put(kind='gripe', id=42, text='dup of gr7', link='gripe:7', rel='superseded-by')`
+then `tag(kind='gripe', id=42, add=['STATUS:wontfix'])`. `tags=`/`prio=` are
+still refused on a comment — use `tag()`.
+
 ## Correct or refine an earlier comment
 ## Take back a comment I made
 

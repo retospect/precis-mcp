@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -1493,6 +1494,45 @@ class NumericRefHandler(Handler):
         link to the target at that selector.
         """
         return self._link(id=id, target=target, mode=mode, rel=rel)
+
+    def _append_then_link(
+        self,
+        append: Callable[[], Response],
+        *,
+        id: str | int,
+        link: str | None,
+        unlink: str | None,
+        rel: str | None,
+        what: str,
+    ) -> Response:
+        """Run ``append`` (a comment / logbook write) and the ``link=`` /
+        ``unlink=`` edge edit in ONE transaction; the reply says both happened.
+
+        With neither ``link=`` nor ``unlink=`` this is just ``append()``.
+        The link runs first inside the unit so a bad target / rel raises
+        before anything is committed; a failure on either side rolls back
+        both (``store.atomic``).
+        """
+        if link is None and unlink is None:
+            if rel is not None:
+                raise BadInput(
+                    f"rel= needs link= (or unlink=) when appending a {what}",
+                    next=f"put(kind={self.kind!r}, id={id}, text=..., "
+                    "link='kind:id', rel='...')",
+                )
+            return append()
+        if link is not None and unlink is not None:
+            raise BadInput(
+                f"link= and unlink= together are not accepted when appending a {what}",
+                next=f"pass one of them, or use link(kind={self.kind!r}, id={id}, ...)",
+            )
+        with self.store.atomic():
+            if link is not None:
+                linked = self._link(id=id, target=link, mode="add", rel=rel)
+            else:
+                linked = self._link(id=id, target=unlink, mode="remove", rel=rel)
+            appended = append()
+        return Response(body=f"{appended.body}\nAlso {linked.body}")
 
     def _link(
         self,
