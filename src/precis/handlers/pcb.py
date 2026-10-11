@@ -108,7 +108,7 @@ from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
-from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.capabilities import CapabilityRow, capability_for, coating_extent_mm
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import place_points, rotate_offset
 from precis.pcb.rules import NetRules, resolve_net_rules
@@ -3930,6 +3930,17 @@ class PcbHandler(Handler):
                 )
                 for h in ir.mounting_holes
             ],
+        )
+        # Parylene-coater size (gr414481): drc.py knows no components, so
+        # the EWOD gate (an `ewod_pad_array` generator) is decided here.
+        findings += pcb_drc.check_coating_extent(
+            outline,
+            ewod_components=[
+                str(n)
+                for n, g in self.store.pcb_generators_for(ref_id).items()
+                if g.get("generator") == "ewod_pad_array"
+            ],
+            extent_mm=coating_extent_mm(),
         )
         board_id = int(board["board_id"])
         # Read the previous run BEFORE writing this one — it is what this

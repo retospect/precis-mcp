@@ -540,3 +540,21 @@ def test_a_pin_with_no_via_stays_on_the_plain_gap_class(pcb):
     nets_by_name = {n["name"]: n for n in pcb.store.pcb_graph(ref.id)["nets"]}
     assert nets_by_name["ARR1_R0C1"]["net_class"] == "ewod_ARR1"
     assert nets_by_name["ARR1_R0C0"]["net_class"] == "ewod_ARR1_escape"
+
+
+# ── parylene-coater extent (gr414481) ───────────────────────────────────
+def test_drc_warns_coating_extent_unknown_on_an_ewod_board(pcb, monkeypatch):
+    monkeypatch.setattr("precis.handlers.pcb.coating_extent_mm", lambda: None)
+    pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
+    body = pcb.get(id="ewod-gen-1", view="drc").body
+    assert "coating_extent_unknown" in body
+    assert "ARR1" in body
+
+
+def test_drc_with_a_configured_coating_extent_drops_the_unknown_warning(
+    pcb, monkeypatch
+):
+    monkeypatch.setattr("precis.handlers.pcb.coating_extent_mm", lambda: (500.0, 500.0))
+    pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
+    body = pcb.get(id="ewod-gen-1", view="drc").body
+    assert "coating_extent_unknown" not in body

@@ -2337,3 +2337,32 @@ def test_silk_printability_stroke_and_height_findings_get_distinct_keys():
         ({"refdes": "U1", "kind": "refdes", "height_mm": 0.5},),
     )
     assert drc.finding_key(stroke) != drc.finding_key(height)
+
+
+# ── coating extent (gr414481) ───────────────────────────────────────────
+_OUT = [[0, 0], [50, 0], [50, 20], [0, 20]]
+
+
+def test_coating_extent_no_ewod_is_silent():
+    assert drc.check_coating_extent(_OUT, ewod_components=[], extent_mm=None) == []
+    assert drc.check_coating_extent(_OUT, ewod_components=[], extent_mm=(1, 1)) == []
+
+
+def test_coating_extent_unknown_warns_naming_the_component():
+    (f,) = drc.check_coating_extent(_OUT, ewod_components=["ARR1"], extent_mm=None)
+    assert (f.rule, f.severity) == ("coating_extent_unknown", "warn")
+    assert "ARR1" in f.detail and "NOT" in f.detail
+
+
+def test_coating_extent_exceeded_errors_with_negative_margin():
+    (f,) = drc.check_coating_extent(_OUT, ewod_components=["A"], extent_mm=(40, 40))
+    assert (f.rule, f.severity) == ("coating_extent_exceeded", "error")
+    assert f.margin_mm == pytest.approx(-10.0)
+
+
+def test_coating_extent_fits_either_orientation_and_skips_no_outline():
+    # 50x20 board fits a 20x50 coater only rotated.
+    assert (
+        drc.check_coating_extent(_OUT, ewod_components=["A"], extent_mm=(20, 50)) == []
+    )
+    assert drc.check_coating_extent(None, ewod_components=["A"], extent_mm=(1, 1)) == []

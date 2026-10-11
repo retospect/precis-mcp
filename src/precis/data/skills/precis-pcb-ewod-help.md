@@ -156,3 +156,12 @@ plaza vias, so prefer the default.
 get(kind="skill", id="precis-pcb-help")  # netlist/placement/route surface the array's pins plug into
 get(kind="skill", id="precis-pcb-route-help")  # op='route' -- escapes route like any other net once placed
 ```
+
+## Parylene coater size
+
+`view='drc'` on a board with an `ewod_pad_array` warns
+`coating_extent_unknown` until the coater's max board width/height is
+configured (`coating_extent_mm` in `pcb_capabilities.json`): until then the
+board size has NOT been screened against the coating step. Once set, an
+outline larger than the coater (either orientation) is an error,
+`coating_extent_exceeded`. Boards without an EWOD array get neither.

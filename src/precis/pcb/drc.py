@@ -2839,6 +2839,70 @@ def run_geometric_drc(
     return findings
 
 
+def check_coating_extent(
+    outline: Sequence[Sequence[float]] | None,
+    *,
+    ewod_components: Sequence[str],
+    extent_mm: tuple[float, float] | None,
+) -> list[DrcFinding]:
+    """Parylene-coater size check, EWOD boards only (gr414481).
+
+    Only a board carrying an ``ewod_pad_array`` is coated, so
+    ``ewod_components`` (the generator component names) empty means no
+    finding either way. ``extent_mm`` is
+    :func:`precis.pcb.capabilities.coating_extent_mm`; ``None`` is UNKNOWN,
+    never "no limit", so it yields a ``warn`` that the board size has NOT
+    been screened. With a limit, the outline bounding box must fit in either
+    orientation, else an ``error`` whose ``margin_mm`` is the (negative)
+    smaller per-axis overshoot. No outline -> nothing to measure.
+    """
+    if not ewod_components:
+        return []
+    names = ", ".join(sorted(ewod_components))
+    objs = tuple({"component": n} for n in sorted(ewod_components))
+    if extent_mm is None:
+        return [
+            DrcFinding(
+                rule="coating_extent_unknown",
+                severity="warn",
+                where="board",
+                detail=(
+                    f"EWOD component(s) {names}: the parylene coater's max "
+                    "board width/height is not configured, so the board size "
+                    "has NOT been screened against the coating step. Supply "
+                    "the coater's size (fill coating_extent_mm in "
+                    "pcb_capabilities.json)."
+                ),
+                objects=objs,
+            )
+        ]
+    if not outline:
+        return []
+    xs = [float(pt[0]) for pt in outline]
+    ys = [float(pt[1]) for pt in outline]
+    w, h = max(xs) - min(xs), max(ys) - min(ys)
+    mw, mh = extent_mm
+    over_direct = max(w - mw, h - mh)
+    over_rot = max(w - mh, h - mw)
+    over = min(over_direct, over_rot)
+    if over <= 0:
+        return []
+    return [
+        DrcFinding(
+            rule="coating_extent_exceeded",
+            severity="error",
+            where="board",
+            detail=(
+                f"board outline {w:.2f} x {h:.2f}mm exceeds the coater's "
+                f"{mw:g} x {mh:g}mm (either orientation) by {over:.2f}mm; "
+                f"EWOD component(s) {names} need the parylene step."
+            ),
+            objects=objs,
+            margin_mm=-over,
+        )
+    ]
+
+
 def run_placement_drc(
     model: dict[str, Any],
     *,
