@@ -184,6 +184,15 @@ instead — tags the ref `paper-meta:title-mismatch`, records the withheld
 any stored DOI that caused the mismatch. Never touches a ref with
 `human_verified_at` set.
 
+ALL-CAPS titles (journals that print titles in capitals) are repaired by
+the paper-meta enrich worker, not by agents: for a DOI paper whose stored
+title is all caps, the Crossref title replaces it when the two agree apart
+from casing, and the old string is kept as `meta.title_raw`. Registry casing
+wins; `human_verified_at` freezes a title; a substantively different
+registry title is left alone. Papers without a DOI stay manual — fix them on
+the Meta tab. Do not hand-normalise titles. BibTeX export brace-protects
+acronym/formula tokens (`{DFT}`, `{CO2}`) so styles don't lowercase them.
+
 ## Resolving a duplicate ref
 ## `already belongs to ref id=N` — what now?
 ## An identifier collision blocked my edit — how do I fix it?

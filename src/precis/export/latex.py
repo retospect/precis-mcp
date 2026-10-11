@@ -2572,7 +2572,7 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
         ids.append(pref.id)
     aliases = store.identifiers_for_refs(ids) if ids else {}
     for slug, pref in ref_by_slug.items():
-        fields = [f"  title = {{{_bib_text(pref.title or slug)}}}"]
+        fields = [f"  title = {{{_bib_text(pref.title or slug, protect=True)}}}"]
         authors = _encode_unicode(_bibtex_authors(pref.authors))
         pmeta = pref.meta or {}
         editors = _encode_unicode(_bibtex_authors(pmeta.get("editors")))
@@ -2721,13 +2721,28 @@ _BIB_TAG_CMD = {
 }
 
 
-def _bib_text(text: str) -> str:
+_BIB_PROTECT = re.compile(r"[A-Za-z0-9]+")
+
+
+def _needs_case_protection(word: str) -> bool:
+    """True for acronym/formula tokens a bibliography style must not
+    lowercase: an internal capital (``DFT``, ``NaCl``, ``pH``) or a digit
+    alongside a capital (``CO2``, ``TiO2``). Plain words (``Study``,
+    ``2020``) and a lone leading capital are left to the style."""
+    has_digit = any(c.isdigit() for c in word)
+    has_upper = any(c.isupper() for c in word)
+    return any(c.isupper() for c in word[1:]) or (has_digit and has_upper)
+
+
+def _bib_text(text: str, *, protect: bool = False) -> str:
     """A bibliography title / journal string → LaTeX. Crossref-style
     inline HTML (``<sub>``, ``<sup>``, ``<i>``/``<em>``, ``<scp>``,
     ``<b>``) becomes the matching text command, any other tag is
     stripped, HTML entities are decoded, ``$…$`` math passes through
     verbatim, and BibTeX case-protection braces outside math are
-    dropped (escaped they would print literally)."""
+    dropped (escaped they would print literally). ``protect=True`` (titles)
+    then re-brace acronym/formula tokens outside math and tags
+    (``{DFT}``, ``{CO2}``) so biblatex/BibTeX sentence-casing keeps them."""
     stash: list[str] = []
 
     def _keep(rendered: str) -> str:
@@ -2751,6 +2766,15 @@ def _bib_text(text: str) -> str:
 
     s = _BIB_TAG.sub(_tag, s)
     s = html.unescape(s).replace("{", "").replace("}", "")
+    if protect:
+        s = _BIB_PROTECT.sub(
+            lambda m: (
+                _keep("{" + m.group(0) + "}")
+                if _needs_case_protection(m.group(0))
+                else m.group(0)
+            ),
+            s,
+        )
     s = _tex(s)
     for _ in range(len(stash) + 1):
         s, n = re.subn(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], s)

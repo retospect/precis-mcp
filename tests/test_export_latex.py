@@ -1645,6 +1645,40 @@ def test_build_bib_escapes_garbage_author_names() -> None:
     assert stripped.count("{") == stripped.count("}")
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "DFT study of CO2 on NaCl and TiO2",
+            "{DFT} study of {CO2} on {NaCl} and {TiO2}",
+        ),
+        ("Effect of pH on Graphene 2020", "Effect of {pH} on Graphene 2020"),
+        # existing case-protection braces are not doubled
+        ("A {DFT} study of {CO2}", "A {DFT} study of {CO2}"),
+        # math passes through; <sub> markup is not protected inside
+        ("CO<sub>2</sub> and $E_{g}$", "{CO}\\textsubscript{2} and $E_{g}$"),
+    ],
+)
+def test_bib_text_protect_brace_wraps_acronyms(raw: str, expected: str) -> None:
+    assert latex._bib_text(raw, protect=True) == expected
+
+
+def test_bib_text_unprotected_by_default() -> None:
+    assert latex._bib_text("DFT of CO2") == "DFT of CO2"
+
+
+def test_build_bib_title_is_case_protected() -> None:
+    store = _BibStore(
+        {
+            ("paper", "caps1"): _bibref(
+                1, "caps1", "paper", title="DFT Study of CO2 on NaCl", year=2020
+            )
+        }
+    )
+    bib = latex.build_bib(store, ["caps1"], [])
+    assert "title = {{DFT} Study of {CO2} on {NaCl}}" in bib
+
+
 def test_build_bib_emits_datasheet_entry_not_stub() -> None:
     """A cited datasheet resolves to a real ``@manual`` bib entry (gr52396) —
     not the 'missing source' auto-stub — so the bibliography lists it."""
@@ -1663,7 +1697,7 @@ def test_build_bib_emits_datasheet_entry_not_stub() -> None:
     warnings: list[str] = []
     bib = latex.build_bib(store, ["stm32f4"], warnings)
     assert "@manual{stm32f4," in bib
-    assert "STM32F4 Reference Manual" in bib
+    assert "{STM32F4} Reference Manual" in bib
     assert "author = {STMicroelectronics}" in bib
     assert "howpublished = {Datasheet}" in bib
     assert "missing source" not in bib
