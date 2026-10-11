@@ -32,10 +32,10 @@ _RENDER_VARS: dict[str, object] = {
 }
 
 
-def _render() -> str:
+def _render(**extra: object) -> str:
     env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
     template = env.from_string(_TEMPLATE.read_text(encoding="utf-8"))
-    return template.render(**_RENDER_VARS)
+    return template.render(**_RENDER_VARS, **extra)
 
 
 def test_template_renders_to_valid_json() -> None:
@@ -79,6 +79,22 @@ def test_rendered_precis_env_has_a_compensating_auth_channel() -> None:
     # deliberate, reviewed decision rather than a silent drop.
     assert not dsn_has_inline_password
     assert pgpassfile == "/home/deploy/.pgpass"
+
+
+def test_python_roots_passes_through_unless_pinned() -> None:
+    """gr477865: unset/empty ``precis_python_roots`` must NOT pin the stdio
+    server's PRECIS_PYTHON_ROOTS to "" (that shadowed plan_tick's per-tick
+    overlay); it renders the ``${VAR:-}`` pass-through. A set var is kept."""
+    import json
+
+    def roots(**extra: object) -> str:
+        env = json.loads(_render(**extra))["mcpServers"]["precis"]["env"]
+        return env["PRECIS_PYTHON_ROOTS"]
+
+    passthrough = "${PRECIS_PYTHON_ROOTS:-}"
+    assert roots() == passthrough
+    assert roots(precis_python_roots="") == passthrough
+    assert roots(precis_python_roots="main:/srv/repo") == "main:/srv/repo"
 
 
 def test_rendered_pgpassfile_is_not_blank() -> None:

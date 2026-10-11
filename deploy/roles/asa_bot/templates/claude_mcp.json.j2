@@ -30,7 +30,12 @@
            anyway (registry reads PRECIS_-prefixed names): dead weight. #}
         "PRECIS_PATENT_RAW_ROOT": "{{ precis_patent_raw_root | default('') }}",
         "PRECIS_ROOT": "{{ precis_root | default('') }}",
-        "PRECIS_PYTHON_ROOTS": "{{ precis_python_roots | default('') }}",
+{# gr477865: a stdio MCP server gets ONLY this env block, so a literal ""
+   here pinned python-kind roots empty and plan_tick's per-tick
+   PRECIS_PYTHON_ROOTS overlay never reached `serve`. Unset/empty role var ⇒
+   `${VAR:-}` pass-through (empty when the parent has none, so asa — whose
+   env never sets it — still gets no code access); a set var is pinned. #}
+        "PRECIS_PYTHON_ROOTS": "{{ precis_python_roots if precis_python_roots | default('') else '${PRECIS_PYTHON_ROOTS:-}' }}",
         "PRECIS_STARTUP_SKILLS": "{{ precis_startup_skills | default('') }}",
 {# Claude Code gives a stdio MCP server ONLY this env block, NOT the parent
    `claude -p` env — so a per-run var must be an explicit ${VAR} pass-through
