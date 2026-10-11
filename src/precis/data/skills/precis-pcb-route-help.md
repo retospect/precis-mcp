@@ -294,6 +294,9 @@ easy to miss from the tool surface alone:
   run. The settled swap persists exactly as before (`pcb_pin_swaps`,
   `source: 'derived'`) — only the FEED was missing; the persistence and
   re-application path was already real.
+  Assignment scoring is crossings first, wire length second: among
+  assignments with the same crossing count the shorter total Manhattan
+  wire to the far terminals wins; a crossing always outweighs any length.
 - **`ROTATE` is cost-neutral too**, for the same structural reason as
   `SIDE_FLIP` — no term reads `inst_rot`. `op='move'`'s `rot=` still
   writes a real rotation to the database (useful for footprint/courtyard

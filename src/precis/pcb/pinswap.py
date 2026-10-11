@@ -259,24 +259,26 @@ def total_group_crossings(ir: PcbIR, group: PinSwapGroup) -> int:
 # ── the cost matrix + min-cost bipartite matching ────────────────────────
 
 
-#: Length-aware cost (gr469871, backlog pcb-escape-and-driver-chain fix A):
-#: one straight-line crossing is priced as this many mm of Manhattan wire.
-CROSSING_PENALTY_MM = 2.0
-
-
 def build_cost_matrix(
-    ir: PcbIR, group: PinSwapGroup, *, length_aware: bool = False
+    ir: PcbIR, group: PinSwapGroup, *, length_aware: bool = True
 ) -> tuple[list[int], list[list[float]]] | None:
-    """``(movable_pins, cost)`` where ``cost[i][j]`` is the crossing count
-    if the net currently at ``movable_pins[i]`` moved to ``movable_pins[j]``
-    while every OTHER pin (movable or background) stays at its CURRENT
-    position (module docstring's linearization). With ``length_aware``
-    (opt-in; default unchanged) the cell instead scores the Manhattan
-    distance from the candidate pad to each of the net's far terminals plus
-    :data:`CROSSING_PENALTY_MM` per crossing, so equal-crossing assignments
-    are ranked by wire length. ``None`` when there is
-    nothing to evaluate: fewer than two non-excluded pins, or the instance
-    has no L3 position yet (nothing to measure)."""
+    """``(movable_pins, cost)`` where ``cost[i][j]`` scores the net
+    currently at ``movable_pins[i]`` moving to ``movable_pins[j]`` while
+    every OTHER pin (movable or background) stays at its CURRENT position
+    (module docstring's linearization).
+
+    Crossings are the primary term; with ``length_aware`` (default, gr469871)
+    wire length is a strictly secondary one: ``cost = W * crossings +
+    length`` where ``length`` is the Manhattan distance from the candidate
+    pad to each of the net's far terminals and ``W`` exceeds the longest
+    total wire any assignment could have (the sum over rows of the row's
+    largest length, so derived from the board's actual extent). One
+    crossing therefore outweighs every possible length difference between
+    whole assignments -- lexicographic (crossings, length) -- and length
+    only breaks ties among equal-crossing assignments. ``length_aware=False``
+    restores the bare crossing count. ``None`` when there is nothing to
+    evaluate: fewer than two non-excluded pins, or the instance has no L3
+    position yet (nothing to measure)."""
     movable = [p for p in group.pins if p not in group.excluded]
     if len(movable) < 2:
         return None
@@ -292,7 +294,8 @@ def build_cost_matrix(
         for far in fars
     ]
     n = len(movable)
-    cost = [[0.0] * n for _ in range(n)]
+    crossings = [[0] * n for _ in range(n)]
+    lengths = [[0.0] * n for _ in range(n)]
     for i, src_pin in enumerate(movable):
         fars = edges.get(src_pin, [])
         if not fars:
@@ -305,18 +308,19 @@ def build_cost_matrix(
             others_fixed.extend((near, far) for far in edges.get(other_pin, ()))
         for j, dst_pin in enumerate(movable):
             dst_pos = _pin_pos(inst_x, inst_y, group, dst_pin)
-            total = 0
-            length = 0.0
             for far in fars:
-                if length_aware:
-                    length += abs(far[0] - dst_pos[0]) + abs(far[1] - dst_pos[1])
+                lengths[i][j] += abs(far[0] - dst_pos[0]) + abs(far[1] - dst_pos[1])
                 for near, ofar in others_fixed:
                     if segments_cross(dst_pos, far, near, ofar):
-                        total += 1
-            cost[i][j] = (
-                length + CROSSING_PENALTY_MM * total if length_aware else float(total)
-            )
-    return movable, cost
+                        crossings[i][j] += 1
+    if not length_aware:
+        return movable, [[float(c) for c in row] for row in crossings]
+    # Any whole assignment's total length is <= this bound, so W > bound
+    # makes a single crossing dominate every length difference.
+    weight = 1.0 + sum(max(row) for row in lengths)
+    return movable, [
+        [weight * crossings[i][j] + lengths[i][j] for j in range(n)] for i in range(n)
+    ]
 
 
 def _hungarian(cost: list[list[float]]) -> list[int]:
@@ -395,7 +399,7 @@ def _cycles(perm: list[int]) -> list[list[int]]:
 
 
 def propose_reassignment(
-    ir: PcbIR, group: PinSwapGroup, *, length_aware: bool = False
+    ir: PcbIR, group: PinSwapGroup, *, length_aware: bool = True
 ) -> tuple[tuple[int, int], ...] | None:
     """The pin-swap move generator's core: solve the min-cost bipartite
     matching, decompose the winning permutation into pairwise
@@ -413,7 +417,9 @@ def propose_reassignment(
     identity_cost = sum(cost[i][i] for i in range(n))
     assign = _hungarian(cost)
     matched_cost = sum(cost[i][assign[i]] for i in range(n))
-    if matched_cost >= identity_cost:
+    # Relative epsilon: equal-crossing, equal-length assignments differ by
+    # float noise only and must not read as an improvement.
+    if matched_cost >= identity_cost - 1e-9 * max(1.0, abs(identity_cost)):
         return None
     pairs: list[tuple[int, int]] = []
     for cyc in _cycles(assign):
@@ -551,7 +557,6 @@ def propose_radial_assignment(
 
 
 __all__ = [
-    "CROSSING_PENALTY_MM",
     "PinSwapGroup",
     "build_cost_matrix",
     "group_from_pads",
