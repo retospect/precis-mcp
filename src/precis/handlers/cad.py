@@ -904,6 +904,7 @@ class CadHandler(Handler):
             f"{self._interference_note(design, built)}"
             f"{self._connectivity_note(design, built)}"
             f"{self._payload_note(spec)}"
+            f"{self._units_note(spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
@@ -963,8 +964,17 @@ class CadHandler(Handler):
             f"{self._interference_note(design, built)}"
             f"{self._connectivity_note(design, built)}"
             f"{self._payload_note(spec)}"
+            f"{self._units_note(spec)}"
         )
         return Response(body=head + "\n" + self._tree_table(spec, handles))
+
+    @staticmethod
+    def _units_note(spec: SceneSpec) -> str:
+        """Advisory lines for awkward-mantissa quantities (gr336344) —
+        warn-only; the design was saved exactly as authored."""
+        if not spec.warnings:
+            return ""
+        return "\n⚠ units: " + "; ".join(spec.warnings)
 
     def _sync_contains(self, ref_id: int, spec: SceneSpec) -> None:
         """Mirror the design's ``use`` lines as ``contains`` links

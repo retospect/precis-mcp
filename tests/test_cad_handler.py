@@ -796,3 +796,11 @@ def test_instance_name_weld_flags_an_air_weld_with_min_gap(cad):
     )
     assert "⚠ weld s1 ↔ s3 declared but the parts are" in resp.body
     assert "20 mm apart" in resp.body
+
+
+def test_put_surfaces_awkward_mantissa_warning(cad):
+    resp = cad.put(id="tiny", text="plate add cyl:r0.000000003mh12mm")
+    assert "created" in resp.body  # warn, never deny
+    assert "⚠ units:" in resp.body and "3 nm" in resp.body
+    quiet = cad.put(id="ok", text="plate add cyl:r3mmh12mm")
+    assert "⚠ units:" not in quiet.body

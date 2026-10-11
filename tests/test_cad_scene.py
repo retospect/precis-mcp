@@ -345,3 +345,14 @@ def test_weld_round_trips_after_mates_joints_couples() -> None:
     # weld comes after the gear/belt coupling
     assert out.index("gear a1 to a2") < out.index("weld a1 post")
     assert parse_source(out) == spec
+
+
+def test_parse_source_warns_on_awkward_mantissa_without_blocking():
+    spec = parse_source("plate add cyl:r0.000000003mh12mm")
+    assert len(spec.nodes) == 1  # still parsed
+    assert any("3 nm" in w and "prefer" in w for w in spec.warnings)
+
+
+def test_parse_source_silent_on_well_formed_and_zero():
+    spec = parse_source("plate add cyl:r3mmh12mm @0mm,0mm,0mm")
+    assert spec.warnings == []

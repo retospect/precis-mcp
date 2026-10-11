@@ -31,7 +31,8 @@ Accepted input forms (broadly accepting):
 Ergonomic carve-outs: a bare `0` component is always legal (zero
 needs no unit); e-notation mantissas are fine in every form
 (`[3e-9, 0, 0] m` ≡ `[3, 0, 0] nm` — Reto 2026-09-12; the
-shipped awkward-mantissa advisory — `parse_quantity(warnings=[...])` —
+shipped awkward-mantissa advisory — `parse_quantity(warnings=[...])`,
+surfaced on cad put/derive as `⚠ units:` via `SceneSpec.warnings` —
 nudges toward the neat prefix, warn-only). Mixing form 1
 and form 2 in one vector (some components united, others bare-nonzero
 relying on a trailing unit) rejects.

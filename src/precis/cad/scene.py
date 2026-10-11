@@ -130,6 +130,7 @@ import logging
 import math
 import re
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypedDict
 
@@ -429,6 +430,10 @@ class SceneSpec:
     components: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=lambda: {"units": "mm"})
     field_loader: FieldLoader | None = field(default=None, compare=False, repr=False)
+    #: Advisory strings from the strict parse (awkward-mantissa quantities,
+    #: gr336344) — runtime only, never persisted or compared; the handler
+    #: surfaces them on the put/derive reply.
+    warnings: list[str] = field(default_factory=list, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -886,6 +891,11 @@ def resolve_weld_group(
     return out
 
 
+#: Advisory sink for the strict parse in flight (set by :func:`parse_source`;
+#: ``None`` outside it, so direct helper callers see no behaviour change).
+_WARN_SINK: ContextVar[list[str] | None] = ContextVar("scene_warn_sink", default=None)
+
+
 def _length(num: str, unit: str | None, arg_name: str) -> float:
     """One boundary-mode length token → SI metres. ``unit`` is the regex's
     optional unit-suffix group — ``None`` raises the structured
@@ -893,7 +903,9 @@ def _length(num: str, unit: str | None, arg_name: str) -> float:
     exponent-slip guard), never a generic parse error."""
     if not unit:
         raise UnitRequiredError(float(num), "length", arg_name=arg_name)
-    return parse_quantity(f"{num}{unit}", "length", arg_name=arg_name)
+    return parse_quantity(
+        f"{num}{unit}", "length", arg_name=arg_name, warnings=_WARN_SINK.get()
+    )
 
 
 def _angle(num: str, unit: str | None, arg_name: str) -> float:
@@ -902,7 +914,9 @@ def _angle(num: str, unit: str | None, arg_name: str) -> float:
     flavoured (the decisions log's angle ruling)."""
     if not unit:
         raise UnitRequiredError(float(num), "angle", arg_name=arg_name)
-    return parse_quantity(f"{num}{unit}", "angle", arg_name=arg_name)
+    return parse_quantity(
+        f"{num}{unit}", "angle", arg_name=arg_name, warnings=_WARN_SINK.get()
+    )
 
 
 def _parse_placement(
@@ -950,7 +964,21 @@ def _parse_placement(
 
 
 def parse_source(text: str) -> SceneSpec:
-    """Parse the line-based design language into a :class:`SceneSpec`."""
+    """Parse the line-based design language into a :class:`SceneSpec`.
+
+    Awkward-mantissa advisories (``0.000000003m`` → "parsed as 3 nm")
+    land on ``spec.warnings``; parsing is otherwise unchanged."""
+    sink: list[str] = []
+    token = _WARN_SINK.set(sink)
+    try:
+        spec = _parse_source(text)
+    finally:
+        _WARN_SINK.reset(token)
+    spec.warnings = list(dict.fromkeys(sink))
+    return spec
+
+
+def _parse_source(text: str) -> SceneSpec:
     spec = SceneSpec()
     current = "part"
     seen_components: list[str] = []
@@ -1137,7 +1165,7 @@ def parse_source(text: str) -> SceneSpec:
                     "design, whose dim namespace is not this one; use "
                     "unit-suffixed literal numbers, e.g. 'cyl:r3mmh12mm'"
                 )
-            pl_spec = parse(plconfig, require_units=True)
+            pl_spec = parse(plconfig, require_units=True, warnings=_WARN_SINK.get())
             build(pl_spec)
             plconfig = format_spec(pl_spec)  # canonicalise for storage
             if pl_spec.alias == "chamfer" and plop == "add":
@@ -1397,7 +1425,7 @@ def parse_source(text: str) -> SceneSpec:
             # `config` is always canonical/storage-mode text, never the
             # author's unit-suffixed source (which the canonical/storage
             # parse mode used on every reload could not re-parse).
-            node_spec = parse(config, require_units=True)
+            node_spec = parse(config, require_units=True, warnings=_WARN_SINK.get())
             if node_spec.alias != FIELD_ALIAS:
                 build(node_spec)  # a field builds only through its loader
             alias = node_spec.alias
