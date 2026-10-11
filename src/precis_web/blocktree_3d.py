@@ -1085,11 +1085,7 @@ def pose_spread(tree: Tree[BlockNode, Connect]) -> float:
     return diag if diag > 0.0 else 1.0
 
 
-# ── mermaid topology (linked selection with the 3D view) ────────────────
-
-
-def _mermaid_escape(text: str) -> str:
-    return text.replace('"', "'").replace("[", "(").replace("]", ")")
+# ── topology cloud nodes (linked selection with the 3D view) ────────────
 
 
 @dataclass
@@ -1155,8 +1151,7 @@ def topology_nodes(
 
     ``parent`` is the nearest ancestor that is ITSELF shown (not merely
     the stored parent): a block whose parent is collapsed out of the plan
-    is a root of the drawn cloud, matching what
-    :func:`mermaid_topology`'s subgraph nesting shows and what the 3D
+    is a root of the drawn cloud, matching what the 3D
     assembly tree renders. Blocks with no uid, or with no rendered
     geometry (absent from ``primary_path`` — :func:`build_shapes_node`
     dropped them as undrawable), are omitted: the panel shows what the
@@ -1202,15 +1197,14 @@ class Scene3D:
     """The full bundle a ``scene3d.json`` response hands the client: the
     vendored viewer's own ``shapes`` tree, plus the side data (module
     docstring) the client's own JS glue needs — connectivity metadata for
-    the linked-selection recolour and the mermaid<->3D id correspondence,
-    per-path explode offsets, the mermaid source itself, and (gr340030)
+    the linked-selection recolour and the topology-node<->3D id correspondence,
+    per-path explode offsets, and (gr340030)
     the display ``scale`` factor the client's scale-bar overlay divides
     back out to recover real SI metres."""
 
     shapes: dict[str, Any]
     connections: list[ConnLine]
     explode: dict[str, Vec3f]
-    mermaid: str
     #: gr340030 — the SAME :func:`scene_scale` multiplier already baked
     #: into every emitted coordinate above, carried through so the client
     #: can invert it: real SI metres = a displayed length / ``scale``. The
@@ -1218,8 +1212,7 @@ class Scene3D:
     #: nothing server-side needs it back.
     scale: float
     #: The topology panel's own node list (:func:`topology_nodes`) — the
-    #: force-directed cloud's input. ``mermaid`` above stays for one
-    #: release as the no-JS/render-failure fallback.
+    #: force-directed cloud's input — the only topology panel.
     nodes: list[TopoNode] = field(default_factory=list)
     #: The doubled self-leaf paths for every block that has both its own
     #: geometry and visible children (:class:`Assembly3D`'s own field
@@ -1243,7 +1236,7 @@ def build_scene(
     """Assemble the whole round-2a bundle for one render pass — the
     ``Shapes`` tree (assembly + a ``connections`` sibling group carrying
     the drawn links), the connectivity metadata, the explode
-    offsets, and the linked mermaid topology graph.
+    offsets, and the topology node list.
 
     The root's own ``id`` is derived from ``root_name`` via
     :func:`_root_path`, never accepted as a separate argument — module
@@ -1327,69 +1320,12 @@ def build_scene(
         "parts": parts,
     }
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
-    mermaid = mermaid_topology(plan, uid_by_name, lines, kids)
     nodes = topology_nodes(tree, plan, uid_by_name, kids, assembly.primary_path)
     return Scene3D(
         shapes=shapes,
         connections=lines,
         explode=offsets,
-        mermaid=mermaid,
         scale=scale,
         nodes=nodes,
         container_paths=list(assembly.container_paths),
     )
-
-
-def mermaid_topology(
-    plan: VisiblePlan,
-    uid_by_name: dict[str, int],
-    lines: list[ConnLine],
-    kids: dict[str, list[str]],
-) -> str:
-    """``graph LR`` source for the visible blocks + their drawn connects,
-    edges labelled by joint/bond kind (spec §5.8 comment 5(c)). Node ids
-    are ``B<block_uid>`` — the SAME uid the 3D leaf paths end in, so the
-    client's mermaid<->3D selection link needs no separate lookup table
-    either.
-
-    Hierarchical (Reto 2026-09-14): a shown block whose children are also
-    shown (an *opened* interior block — ``plan_visibility`` walks children
-    only for non-collapsed parents) renders as a nested ``subgraph``
-    rather than a plain node, so the diagram mirrors the block tree.
-    Collapsed parents keep their box semantics: their children are not in
-    ``plan.shown``, so they stay ordinary nodes, and a flat design is
-    byte-identical to the pre-hierarchy output. Edges may target a
-    subgraph id — mermaid allows that, and it keeps the ``B<id>`` scheme
-    uniform."""
-    shown = plan.shown
-    lines_out = ["graph LR"]
-
-    def emit(name: str, depth: int) -> None:
-        bid = uid_by_name.get(name)
-        pad = "  " * depth
-        shown_kids = [k for k in sorted(kids.get(name, [])) if k in shown]
-        if bid is None:
-            # No uid for the wrapper (mirrors the old per-node skip) —
-            # its shown children must still appear, one level up.
-            for k in shown_kids:
-                emit(k, depth)
-            return
-        if shown_kids:
-            lines_out.append(f'{pad}subgraph B{bid}["{_mermaid_escape(name)}"]')
-            for k in shown_kids:
-                emit(k, depth + 1)
-            lines_out.append(f"{pad}end")
-        else:
-            lines_out.append(f'{pad}B{bid}["{_mermaid_escape(name)}"]')
-
-    parent_of = {k: p for p, ks in kids.items() for k in ks}
-    for name in sorted(shown):
-        if parent_of.get(name) not in shown:
-            emit(name, 1)
-    for conn in lines:
-        a_id = uid_by_name.get(conn.a_name)
-        b_id = uid_by_name.get(conn.b_name)
-        if a_id is None or b_id is None:
-            continue
-        lines_out.append(f'  B{a_id} -- "{_mermaid_escape(conn.label)}" --- B{b_id}')
-    return "\n".join(lines_out)

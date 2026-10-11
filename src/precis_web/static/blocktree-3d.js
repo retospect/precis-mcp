@@ -3,7 +3,7 @@
 // §5.8). Server side builds the whole bundle
 // (precis_web.blocktree_3d.build_scene, served as scene3d.json); this
 // file only wires the vendored three-cad-viewer to it and links the
-// mermaid topology panel — no geometry/traversal logic lives here.
+// topology panel — no geometry/traversal logic lives here.
 //
 // Vertex/edge/face/solid picking, three-state visibility, and the
 // hierarchical assembly tree are all native to the vendored viewer —
@@ -39,7 +39,7 @@
 // block did I click"). A plain DOUBLE-CLICK pick, in contrast, is
 // always on and reports `{path, name}` — the full leaf id with no
 // extra tool state — so double-click is this reader's selection
-// gesture for the connectivity/mermaid propagation below.
+// gesture for the connectivity/topology propagation below.
 import {
   Display,
   Viewer,
@@ -103,7 +103,7 @@ function isolateSubtree(root, name) {
   return prune(root);
 }
 
-// A mermaid node id is `B<block_uid>` (blocktree_3d.mermaid_topology) —
+// A topology node id is `B<block_uid>` (blocktree_3d.topology_nodes) —
 // the SAME stable uid every block node in `data.shapes` now carries as
 // its own explicit `uid` FIELD (viewer-toggles fix,
 // precis_web/blocktree_3d.py's module docstring: `id` is a NAME path —
@@ -382,7 +382,7 @@ function _fitShellHeight(shellEl) {
 // documented fallback for exactly this case; :data:`_SCALE_BAR_MIN_MS`
 // caps it at a few reads per second, cheap enough to run for the page's
 // whole lifetime (this reader has no explicit teardown path either, same
-// as the mermaid/explode/connections wiring above).
+// as the topology/explode/connections wiring above).
 const _SCALE_BAR_MIN_MS = 150;
 //: Aim for a bar this many CSS pixels wide before snapping its world
 //: length to a round 1/2/5×10^n value — purely a "looks reasonable"
@@ -513,7 +513,7 @@ function _startScaleBar(viewer, viewerEl, sceneScale) {
   }
 
   // No explicit teardown — this reader has no lifecycle beyond the page
-  // itself (same as the mermaid/explode/connections wiring above), so the
+  // itself (same as the topology/explode/connections wiring above), so the
   // loop just runs for as long as the page does.
   function tick(now) {
     requestAnimationFrame(tick);
@@ -930,7 +930,6 @@ function _checkPathInvariant(viewer, shapes) {
 
 export async function blocktreeViewer3D({
   viewerEl,
-  mermaidEl,
   topologyEl,
   explodeButton,
   connectionsToggle,
@@ -989,18 +988,6 @@ export async function blocktreeViewer3D({
   exportEls,
   exportName,
 }) {
-  // gr338976 — disable mermaid's startOnLoad auto-run BEFORE the first
-  // await: the vendored bundle defaults startOnLoad:true and runs on the
-  // window 'load' event, which fires while the (slow) scene fetch is in
-  // flight, renders the placeholder, and stamps data-processed — turning
-  // the post-fetch run() below into a silent skip.
-  if (window.mermaid) {
-    window.mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      theme: "default",
-    });
-  }
   const progress = _makeProgress(progressEl);
   if (progress) progress.set("scene", "loading design…");
   //: The revision on screen (gr458084): what the page's own URLs carry
@@ -1042,11 +1029,9 @@ export async function blocktreeViewer3D({
   }
 
   // ── topology panel ──────────────────────────────────────────────────
-  // The force-directed cloud is the panel (spec slice 1 —
-  // docs/backlog/se-topology-cloud-and-surface-notes.md); the mermaid
-  // `graph LR` remains ONLY as the fallback when the cloud can't run or
-  // the server sent no node list (an older/partial scene payload), and
-  // dies a release after the cloud proves out.
+  // The force-directed cloud is the only panel (spec slice 1 —
+  // docs/backlog/se-topology-cloud-and-surface-notes.md); when it can't
+  // run or the server sent no node list, the panel is hidden.
   let cloud = null;
   if (topologyEl && Array.isArray(data.nodes) && data.nodes.length) {
     try {
@@ -1064,56 +1049,15 @@ export async function blocktreeViewer3D({
           if (path) selectPath(path);
         },
       });
-      if (mermaidEl && mermaidEl.parentElement) {
-        mermaidEl.parentElement.classList.add("hidden");
-      }
     } catch (err) {
       console.error("blocktree-3d: topology cloud failed", err);
       cloud = null;
     }
   }
   if (!cloud && topologyEl) topologyEl.classList.add("hidden");
-  if (!cloud && mermaidEl) {
-    if (mermaidEl.parentElement) mermaidEl.parentElement.classList.remove("hidden");
-    mermaidEl.textContent = data.mermaid || "graph LR";
-    if (window.mermaid) {
-      try {
-        // gr338976 — if the auto-run still won a race (initialize above
-        // came too late for this load), run() would skip a stamped
-        // element; clearing the stamp makes this render unconditional.
-        mermaidEl.removeAttribute("data-processed");
-        await window.mermaid.run({ nodes: [mermaidEl] });
-      } catch (err) {
-        // A bad mermaid render must never take down the 3D panel next
-        // to it — degrade to the raw graph source, honestly.
-        console.error("blocktree-3d: mermaid render failed", err);
-      }
-    }
-  }
 
-  let lastMermaidNode = null;
   function highlightTopologyNode(blockId) {
-    if (cloud) {
-      cloud.highlight(`B${blockId}`);
-      return;
-    }
-    if (!mermaidEl) return;
-    if (lastMermaidNode) {
-      lastMermaidNode
-        .querySelectorAll("rect,polygon,circle,ellipse")
-        .forEach((el) => {
-          el.style.stroke = "";
-          el.style.strokeWidth = "";
-        });
-      lastMermaidNode = null;
-    }
-    const g = mermaidEl.querySelector(`[id^="flowchart-B${blockId}-"]`);
-    if (!g) return;
-    g.querySelectorAll("rect,polygon,circle,ellipse").forEach((el) => {
-      el.style.stroke = HIGHLIGHT_COLOUR;
-      el.style.strokeWidth = "3px";
-    });
-    lastMermaidNode = g;
+    if (cloud) cloud.highlight(`B${blockId}`);
   }
 
   // ── 3D viewer ────────────────────────────────────────────────────────
@@ -1394,7 +1338,7 @@ export async function blocktreeViewer3D({
     repaint();
     // The path's own last segment is now the block's NAME (viewer-toggles
     // fix, precis_web/blocktree_3d.py's module docstring — id is a "/"-
-    // joined name chain), not its uid, so the mermaid/topology-cloud node
+    // joined name chain), not its uid, so the topology-cloud node
     // id (`B<uid>`) has to come off the part's own `uid` field instead of
     // being parsed back out of the path.
     const part = findPart(data.shapes, primaryPath);
@@ -2112,18 +2056,6 @@ export async function blocktreeViewer3D({
       );
     });
   });
-
-  // mermaid -> 3D linked selection (the other direction).
-  if (mermaidEl) {
-    mermaidEl.addEventListener("click", (ev) => {
-      const g = ev.target.closest('[id^="flowchart-B"]');
-      if (!g) return;
-      const m = /^flowchart-B(\d+)-/.exec(g.id);
-      if (!m) return;
-      const path = findPathByUid(data.shapes, m[1]);
-      if (path) selectPath(path);
-    });
-  }
 
   // ── explode: spread from the assembly centre, per axis ──────────────
   // Deliberately NOT the vendored viewer's own `setExplode()` (one uniform

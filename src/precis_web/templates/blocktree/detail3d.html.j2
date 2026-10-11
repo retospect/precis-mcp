@@ -169,7 +169,7 @@
     <p class="text-[11px] text-slate-400 mt-1">
       Drag to rotate · scroll to zoom · click a feature to select (vertex/edge/face/solid filter in the tree panel) ·
       <b>explode</b> pulls parts apart along their drawn attachment directions · selecting a block also highlights its
-      drawn connections and the linked mermaid node.
+      drawn connections and the linked topology node.
       {% if rev_explicit and has_record %}Blocks added or changed at revision {{ rev }} are tinted amber.{% endif %}
     </p>
 
@@ -233,11 +233,6 @@
       Blocks settle where their connects pull them · drag a node to pin it, double-click to release ·
       hover a node or link for detail · click a node to select it in the 3D view.
     </p>
-    <!-- Fallback only: rendered when the cloud can't run (spec slice 1 —
-         one release, then this dies). -->
-    <div id="bt3d-mermaid-wrap" class="rounded-lg border border-slate-200 bg-white p-2 overflow-auto hidden" style="height: 520px;">
-      <pre class="mermaid" id="bt3d-mermaid">graph LR</pre>
-    </div>
   </div>
 </div>
 
@@ -271,7 +266,7 @@
 <script type="importmap">
 {"imports": {"three": "/static/three-r184/three.module.min.js"}}
 </script>
-{# Start the scene and atom fetches before mermaid and the module bundle
+{# Start the scene and atom fetches before the module bundle
    load (~0.6 s on Reto's Safari reading, se-3d-viewer-6); blocktree-3d.js
    takes these responses when the URLs match (_takePrefetch). The no-op
    catch keeps a failed fetch from logging as unhandled before the module
@@ -309,12 +304,10 @@
   })();
 </script>
 {% endif %}
-<script src="/static/mermaid/mermaid.min.js"></script>
 <script type="module">
   import { blocktreeViewer3D } from "/static/blocktree-3d.js";
   blocktreeViewer3D({
     viewerEl: document.getElementById("bt3d-viewer"),
-    mermaidEl: document.getElementById("bt3d-mermaid"),
     topologyEl: document.getElementById("bt3d-topology"),
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),

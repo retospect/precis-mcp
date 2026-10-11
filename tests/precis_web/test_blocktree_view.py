@@ -647,7 +647,6 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     assert len(body["connections"]) == 1
     conn = body["connections"][0]
     assert {conn["a_name"], conn["b_name"]} == {"hub", "rim"}
-    assert "B" in body["mermaid"] and "graph LR" in body["mermaid"]
     assert isinstance(body["explode"], dict) and body["explode"]
     # gr340030 — the scale-bar overlay's own conversion factor; this
     # fixture's metre-scale design is already inside the working range, so
@@ -804,20 +803,19 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
 
 
 def test_scene3d_carries_topology_nodes(blocktree_client, runtime_with_store) -> None:
-    """The cloud replaces the mermaid panel, so ``scene3d.json`` must
-    carry the nodes as DATA (ids, parents, detail), not only as a
-    ``graph LR`` string."""
+    """The cloud is the topology panel, so ``scene3d.json`` must carry
+    the nodes as DATA (ids, parents, detail)."""
     _seed_se(runtime_with_store)
     r = blocktree_client.get("/se/unicycle_web/scene3d.json")
     assert r.status_code == 200
     body = r.json()
     nodes = {n["name"]: n for n in body["nodes"]}
     assert {"hub", "rim", "fork", "fork_arm", "fork_tip"} <= set(nodes)
-    # ids use the SAME B<uid> scheme the mermaid source uses, so the
-    # client's id<->3D-path correspondence is unchanged.
+    assert "mermaid" not in body
+    # ids use the B<uid> scheme, so the client's id<->3D-path
+    # correspondence holds.
     for n in nodes.values():
         assert n["id"].startswith("B")
-        assert f"{n['id']}[" in body["mermaid"] or f'{n["id"]}["' in body["mermaid"]
     # containment is carried, so the cloud can draw an opened parent's hull
     assert nodes["fork_arm"]["parent"] == nodes["fork"]["id"]
     assert nodes["fork"]["parent"] is None
@@ -1019,7 +1017,7 @@ def test_se_block_findings_and_subject_parsing() -> None:
     assert "undeclared_interpenetration" in {f["rule"] for f in buckets["fork_left"]}
 
 
-def test_view3d_page_mounts_the_cloud_with_mermaid_as_fallback(
+def test_view3d_page_mounts_the_cloud_without_mermaid(
     blocktree_client, runtime_with_store
 ) -> None:
     _seed_se(runtime_with_store)
@@ -1027,11 +1025,9 @@ def test_view3d_page_mounts_the_cloud_with_mermaid_as_fallback(
     assert r.status_code == 200
     assert 'id="bt3d-topology"' in r.text
     assert 'topologyEl: document.getElementById("bt3d-topology")' in r.text
-    # the mermaid pre survives one release as the fallback, but starts hidden
-    wrap = next(
-        line for line in r.text.splitlines() if 'id="bt3d-mermaid-wrap"' in line
-    )
-    assert "hidden" in wrap
+    # gr341482 — the mermaid fallback is retired: no wrap, no script.
+    assert "bt3d-mermaid" not in r.text
+    assert "mermaid.min.js" not in r.text
 
 
 # ── comment-on-selection → interview note (slice 2 of
