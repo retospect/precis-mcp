@@ -157,6 +157,12 @@ _HUB_ID_RE = re.compile(r"claim hub fi(\d+)")
 
 _LOG_KIND = "quest_log"
 
+#: Rung statuses that no longer count as "open" on a key.
+_WONT_DO_STATUSES = ledger._DEAD_STATUSES
+_CLOSED_RUNG_STATUSES = ledger.DONE_STATUSES | ledger._DEAD_STATUSES
+#: Prefix of the root-logbook observation naming the parked axes.
+_PARKED_NOTE = "all remaining axes parked: "
+
 
 # ── role selection ────────────────────────────────────────────────────
 
@@ -271,22 +277,72 @@ def _benign_capability(capabilities: list[Ref]) -> Ref | None:
     return None
 
 
+def _parked_reason(
+    row: ledger.LedgerRow,
+    rungs: list[ledger.Rung],
+    hist: ledger.SupplyHistory,
+) -> str | None:
+    """Why an unmet (capability, key) row is PARKED — skipped by the role
+    ladder — or ``None``. Derived from the logbook and the rungs, no stored
+    state, so a supply landing (history restarts) or a new open rung unparks
+    it by itself.
+
+    * supply role (no cited supply): outside search exhausted (a
+      ``supply_not_found_outside`` entry) and no open rung on the key. The
+      outside-FAILED bound does not park: a 429/outage says nothing about the
+      literature, and parking would never retry it.
+    * bridge role (a cited supply): every rung on the key was closed
+      won't-do and none is open (the human declined the bridge).
+    """
+    if row.state != ledger.STATE_UNMET or row.demanded is None:
+        return None
+    on_key = [r for r in rungs if _rung_touches(r, row.capability, row.key)]
+    if any(r.status not in _CLOSED_RUNG_STATUSES for r in on_key):
+        return None
+    if row.best_supply is None:
+        # The one-off verdict entries (logged by the supply tick that saw the
+        # bound hit) are the record; the tick that logs one still runs.
+        if hist.not_found_queries is not None:
+            return "not found outside"
+        return None
+    if on_key and all(r.status in _WONT_DO_STATUSES for r in on_key):
+        return "bridge rungs declined"
+    return None
+
+
+def _rung_touches(rung: ledger.Rung, capability: str, key: str) -> bool:
+    """The rung promises ``(capability, key)`` in its ``produces``."""
+    for e in _rung_entries(rung.ref, "produces"):
+        if e.get("capability") == capability and e.get("key") == key:
+            return True
+    return False
+
+
 def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
     """Pick this tick's role from the root's gap set — a pure graph read.
 
     ``None`` when ``quest_id`` is not a live roadmap root, has no capability
-    servers, or every axis is met/dead-ended/in flight (nothing to act on —
-    the tick is then dry by construction).
+    servers, or every axis is met/dead-ended/in flight/parked (nothing to
+    act on).
     """
+    return _select_role(store, quest_id)[0]
+
+
+def roadmap_parked(store: Store, quest_id: int) -> list[str]:
+    """``["qu<id>.<key> (<reason>)", …]`` for the axes the ladder skipped."""
+    return _select_role(store, quest_id)[1]
+
+
+def _select_role(store: Store, quest_id: int) -> tuple[RoleChoice | None, list[str]]:
     root = _is_roadmap_root(store, quest_id)
     if root is None:
-        return None
+        return None, []
     servers = _live_servers(store, quest_id)
     capabilities = [r for r in servers if ledger.is_capability_quest(r)][
         : ledger.LEDGER_MAX_CAPABILITIES
     ]
     if not capabilities:
-        return None
+        return None, []
     rows = ledger.compute_ledger_for(store, capabilities)
     consumers = _consumer_counts([r.ref for r in _rungs_under(store, capabilities)])
     order = {
@@ -320,6 +376,25 @@ def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
             capability_statement=row.capability_statement or row.capability_title,
         )
 
+    # Parked rows (exhausted search / declined bridge, nothing open) are
+    # skipped so the tick moves on to the next capability instead of
+    # re-searching a dead axis forever.
+    rungs_by_cap = ledger.rungs_for(store, [c.id for c in capabilities])
+    hist_cache: dict[tuple[int, str], ledger.SupplyHistory] = {}
+    parked: dict[tuple[str, str], str] = {}
+    for _i, row in ranked:
+        if row.state != ledger.STATE_UNMET or row.demanded is None:
+            continue
+        cid = id_of_cap[row.capability]
+        hist = hist_cache.setdefault(
+            (cid, row.key), ledger.supply_history(store, cid, row.key)
+        )
+        why = _parked_reason(row, rungs_by_cap.get(cid, []), hist)
+        if why is not None:
+            parked[(row.capability, row.key)] = why
+    parked_list = [f"{c}.{k} ({w})" for (c, k), w in parked.items()]
+    ranked = [t for t in ranked if (t[1].capability, t[1].key) not in parked]
+
     # 1. bridge — unmet with a cited supply to compare against.
     for _i, row in ranked:
         if (
@@ -333,7 +408,7 @@ def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
                 f"{row.best_supply:g} — {row.capability_title}",
                 handle=row.capability,
             )
-            return _choice(ROLE_BRIDGE, row, gap)
+            return _choice(ROLE_BRIDGE, row, gap), parked_list
     # 2. supply — demand present, nothing cited yet.
     for _i, row in ranked:
         if (
@@ -350,7 +425,7 @@ def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
                 ),
                 handle=row.capability,
             )
-            return _choice(ROLE_SUPPLY, row, gap)
+            return _choice(ROLE_SUPPLY, row, gap), parked_list
     # 3. demand — an axis nobody has put a number on.
     for _i, row in ranked:
         if row.demanded is None:
@@ -359,8 +434,8 @@ def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
                 detail=f"{row.key}: no demand set — {row.capability_title}",
                 handle=row.capability,
             )
-            return _choice(ROLE_DEMAND, row, gap)
-    return None
+            return _choice(ROLE_DEMAND, row, gap), parked_list
+    return None, parked_list
 
 
 # ── prompts ───────────────────────────────────────────────────────────
@@ -1586,7 +1661,7 @@ def roadmap_tick(
     if root is None:
         return {"ok": False, "error": "not_a_roadmap_root", "role": None, "gap": None}
 
-    choice = roadmap_role(store, quest_id)
+    choice, parked = _select_role(store, quest_id)
     start_sig = ledger.ledger_signature(ledger.compute_ledger(store, quest_id))
     # The deed baseline is the PREVIOUS pinned ledger chunk (so a rung a
     # human completed between ticks lands its deed here); on the very first
@@ -1612,6 +1687,8 @@ def roadmap_tick(
         delta = ledger_improvements(before_sig, rows)
         deeds = stamp_deeds(store, quest_id, rows, delta)
         update_capability_ledger_chunk(store, quest_id, rows)
+        if parked:
+            _note_parked(store, quest_id, parked)
         return {
             "ok": True,
             "applied": True,
@@ -1619,7 +1696,11 @@ def roadmap_tick(
             "gap": None,
             "ledger_delta": {k: list(v) for k, v in delta.items()},
             "improved": bool(delta),
-            "dry": not delta and ledger.ledger_signature(rows) == start_sig,
+            # Parked axes are a quiet rest, not a dry one: nothing was
+            # tried, so it must not feed the dry-rest / blocked alert.
+            "dry": not parked
+            and not delta
+            and ledger.ledger_signature(rows) == start_sig,
             "gap_count": [gaps_before, len(quest_gaps(store, quest_id))],
             "deeds": deeds,
             "note": "no capability axis needs demand, supply or a bridge",
@@ -1688,6 +1769,19 @@ def roadmap_tick(
     }
 
 
+def _note_parked(store: Store, root_id: int, parked: list[str]) -> None:
+    """One root-logbook observation listing the parked axes, deduped against
+    the latest such entry (an unchanged list is not re-logged)."""
+    text = _PARKED_NOTE + "; ".join(sorted(parked))
+    last: str | None = None
+    for b in store.chunks.list_chunks_for_ref(root_id):
+        if b.chunk_kind == _LOG_KIND and (b.text or "").find(_PARKED_NOTE) >= 0:
+            last = b.text or ""
+    if last is not None and text in last:
+        return
+    append_entry(store, root_id, text=text, entry_type="observation", by="agent")
+
+
 def render_role_report(result: dict[str, Any]) -> str:
     """The CLI's ``--dry-run`` print: role, gap, then the assembled prompt."""
     gap = result.get("gap") or {}
@@ -1716,6 +1810,7 @@ __all__ = [
     "ledger_improvements",
     "previous_ledger_signature",
     "render_role_report",
+    "roadmap_parked",
     "roadmap_role",
     "roadmap_tick",
     "role_tier",

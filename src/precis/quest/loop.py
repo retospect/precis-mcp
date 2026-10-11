@@ -1108,6 +1108,76 @@ def _reconcile_stale_computing_pathways(store: Store) -> int:
         return 0
 
 
+_DRY_REST_ALERT_SOURCE = "quest_tick"
+
+
+def _dry_rest_alert_fingerprint(quest_id: int) -> str:
+    """Dedup key of the "blocked on missing input" alert (see ``_register_dry_rest``)."""
+    return f"quest:dry-rest/{quest_id}"
+
+
+def resolve_dry_rest_alert(store: Store, quest_id: int) -> bool:
+    """Resolve the quest's open dry-rest ("blocked on missing input") alert.
+
+    Called when the quest stops being blocked (``consecutive_dry_rests`` reset
+    to 0). Scoped to this quest's fingerprint — other quests' alerts are
+    untouched. Idempotent: ``False`` (no-op) when no open alert. Never raises.
+    """
+    try:
+        from precis.alerts import resolve_alert_by_fingerprint
+
+        return resolve_alert_by_fingerprint(
+            store,
+            source=_DRY_REST_ALERT_SOURCE,
+            fingerprint=_dry_rest_alert_fingerprint(quest_id),
+            resolved_by="quest_tick",
+        )
+    except Exception:
+        log.exception("resolve_dry_rest_alert: failed for quest %s", quest_id)
+        return False
+
+
+def resolve_inactive_dry_rest_alerts(store: Store) -> int:
+    """Resolve open dry-rest alerts whose quest is no longer ``STATUS:active``.
+
+    Covers every route out of active (cooled by ``cool_stalled``, tagged
+    dormant/abandoned by hand) without hooking each: swept once per
+    reconcile pass. Returns the number resolved. Never raises.
+    """
+    try:
+        prefix = _dry_rest_alert_fingerprint(0).rsplit("/", 1)[0] + "/"
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT COALESCE(r.fingerprint, r.meta->>'fingerprint')
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'alert'
+                   AND r.retired_at IS NULL
+                   AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
+                   AND t.namespace = 'OPEN'
+                   AND t.value = 'alert-state:open'
+                """,
+                (_DRY_REST_ALERT_SOURCE,),
+            ).fetchall()
+        active = set(active_quest_ids(store))
+        n = 0
+        for (fp,) in rows:
+            if not fp or not fp.startswith(prefix):
+                continue
+            try:
+                qid = int(fp[len(prefix) :])
+            except ValueError:
+                continue
+            if qid not in active and resolve_dry_rest_alert(store, qid):
+                n += 1
+        return n
+    except Exception:
+        log.exception("resolve_inactive_dry_rest_alerts: sweep failed")
+        return 0
+
+
 def reconcile_quest_loops(
     store: Store, *, enabled: bool | None = None, hub: Any = None
 ) -> dict[str, Any]:
@@ -1164,6 +1234,7 @@ def reconcile_quest_loops(
         }
 
     cooled = cool_stalled(store)
+    resolve_inactive_dry_rest_alerts(store)
     grace_s = _orphan_grace_s()
     base_s = env_int(_FAIL_BACKOFF_BASE_ENV, _DEFAULT_FAIL_BACKOFF_BASE_S, lo=0)
     max_s = env_int(_FAIL_BACKOFF_MAX_ENV, _DEFAULT_FAIL_BACKOFF_MAX_S, lo=0)

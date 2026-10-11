@@ -1023,6 +1023,61 @@ class TestDryRestCooldownAndEscalation:
 # ── Orphaned pathway stub sweep (PART A) ─────────────────────────────────
 
 
+class TestDryRestAlertLifecycle:
+    """The "blocked on missing input" alert resolves when the quest unblocks."""
+
+    def _blocked(self, store: Store, monkeypatch: Any) -> int:
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "1")
+        q = _mk_quest(store, "A striving")
+        _set_status(store, q, "active")
+        from precis.workers.job_types import quest_tick as qt
+
+        qt._register_dry_rest(store, q)
+        assert self._sev(store, q) == "warn"
+        return q
+
+    @staticmethod
+    def _sev(store: Store, q: int) -> str | None:
+        from precis.alerts import open_alert_severity
+
+        return open_alert_severity(
+            store, source="quest_tick", fingerprint=f"quest:dry-rest/{q}"
+        )
+
+    def test_resolves_on_counter_reset_only_for_that_quest(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        from precis.workers.job_types import quest_tick as qt
+
+        a = self._blocked(store, monkeypatch)
+        b = self._blocked(store, monkeypatch)
+        qt._reset_dry_rest_counter(store, a)
+        assert self._sev(store, a) is None
+        assert self._sev(store, b) == "warn"
+        # idempotent / no-op with no open alert
+        assert loop_mod.resolve_dry_rest_alert(store, a) is False
+
+    def test_sweep_resolves_when_quest_not_active(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        a = self._blocked(store, monkeypatch)
+        b = self._blocked(store, monkeypatch)
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [b])
+        assert loop_mod.resolve_inactive_dry_rest_alerts(store) == 1
+        assert self._sev(store, a) is None
+        assert self._sev(store, b) == "warn"
+        assert loop_mod.resolve_inactive_dry_rest_alerts(store) == 0
+
+    def test_reconcile_sweeps_dormant_quest_alert(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = self._blocked(store, monkeypatch)
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [])
+        loop_mod.reconcile_quest_loops(store, enabled=True)
+        assert self._sev(store, q) is None
+
+
 def _pathway_meta(store: Store, pathway_id: int) -> dict[str, Any]:
     with store.pool.connection() as conn:
         row = conn.execute(

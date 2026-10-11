@@ -489,6 +489,11 @@ def _reset_dry_rest_counter(store: Store, quest_id: int) -> None:
         store.update_ref(quest_id, meta_patch={"consecutive_dry_rests": 0})
     except Exception:
         log.exception("_reset_dry_rest_counter: failed to reset quest %s", quest_id)
+        return
+    # No longer blocked: close the "blocked on missing input" alert too.
+    from precis.quest.loop import resolve_dry_rest_alert
+
+    resolve_dry_rest_alert(store, quest_id)
 
 
 def _register_dry_rest(store: Store, quest_id: int) -> int:

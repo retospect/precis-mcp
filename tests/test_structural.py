@@ -705,6 +705,88 @@ def test_pass_using_precis_tool_writes_digest_no_starvation_alert(
     assert _tool_starved_alerts(store) == []
 
 
+def test_connected_precis_with_zero_calls_writes_digest_no_alert(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """gr463517: init shows precis connected with tools registered; the model
+    simply didn't need them (data was inlined) ⇒ digest written, no alert."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="No structural issues found this pass.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=1,
+        tool_calls=0,
+        raw_stdout=_stream(
+            {
+                "type": "system",
+                "subtype": "init",
+                "mcp_servers": [{"name": "precis", "status": "connected"}],
+                "tools": ["Read", "ToolSearch", "mcp__precis__search"],
+            }
+        ),
+    )
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (1, 0)
+    assert _structural_digest_count(store) == 1
+    assert _tool_starved_alerts(store) == []
+
+
+def test_no_init_event_zero_calls_is_still_starved(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A definitive zero with no init event cannot prove connection ⇒ alert."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="No structural issues found this pass.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=1,
+        tool_calls=1,
+        raw_stdout=_stream(_assistant_tool_use("Read")),
+    )
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (0, 1)
+    assert _structural_digest_count(store) == 0
+    assert len(_tool_starved_alerts(store)) == 1
+
+
+def test_connected_but_no_precis_tools_registered_is_starved(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="No structural issues found this pass.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=1,
+        tool_calls=0,
+        raw_stdout=_stream(
+            {
+                "type": "system",
+                "subtype": "init",
+                "mcp_servers": [{"name": "precis", "status": "connected"}],
+                "tools": ["Read"],
+            }
+        ),
+    )
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (0, 1)
+    assert len(_tool_starved_alerts(store)) == 1
+
+
 def test_tool_starved_check_needs_mcp_config_offered(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

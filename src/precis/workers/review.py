@@ -347,6 +347,14 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         )
         _raise_tool_starved_alert(store, reviewer, evidence=evidence)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
+    if mcp_config is not None and _mcp_precis_tool_calls(res) == 0:
+        # Reached only when _is_tool_starved cleared it: precis connected,
+        # model chose not to call it (gr463517) — legitimate, keep digest.
+        log.info(
+            "review[%s]: connected, 0 precis calls — writing digest; %s",
+            reviewer.name,
+            _tool_starved_evidence(res),
+        )
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
     # The FULL assembled prompt INPUT, the twin of the
     # ``meta.transcript`` output capture on a plan_tick job ref — reviewers
@@ -532,12 +540,35 @@ def _is_tool_starved(res: LlmResult, mcp_config: Path | None) -> bool:
     ``mcp__precis__*`` call count — ``None`` (a transport that can't report a
     stream trace) never trips it, same never-a-false-zero discipline as
     :func:`_is_silent_empty`.
+
+    Connected-but-unused is NOT starved (gr463517): reviewers like structural
+    inline live data in the prompt and only say "drill in with the precis MCP
+    tool if needed", so zero precis calls is legitimate when the stream's
+    ``init`` event shows the ``precis`` server ``connected`` (and, when the
+    event reports tools, ``mcp__precis__*`` tools registered > 0). Still
+    starved on: no init event, no servers listed, ``precis`` missing or not
+    ``connected`` (failed/pending), or zero precis tools registered.
     """
     if mcp_config is None:
         return False
     if not (res.text or "").strip():
         return False
-    return _mcp_precis_tool_calls(res) == 0
+    if _mcp_precis_tool_calls(res) != 0:
+        return False
+    return not _precis_connected(res)
+
+
+def _precis_connected(res: LlmResult) -> bool:
+    """True iff the init event proves precis was connected with tools (gr463517)."""
+    from precis.utils.claude_agent import stream_init_tools, stream_mcp_server_status
+
+    servers = stream_mcp_server_status(res.raw_text or "")
+    if not servers or servers.get("precis") != "connected":
+        return False
+    tools = stream_init_tools(res.raw_text or "")
+    if tools is not None and not any(t.startswith("mcp__precis__") for t in tools):
+        return False
+    return True
 
 
 def _empty_alert_source(reviewer: Reviewer) -> str:

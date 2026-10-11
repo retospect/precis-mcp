@@ -22,7 +22,7 @@ from precis.handlers.todo import TodoHandler
 from precis.quest import roadmap_ledger as ledger
 from precis.quest import roadmap_tick as rt
 from precis.quest.dossier import dossier_ref_id
-from precis.quest.gaps import quest_gaps
+from precis.quest.gaps import Gap, quest_gaps
 from precis.quest.logbook import append_entry
 from precis.quest.search import AcquiringSearch, QueryReport
 from precis.quest.weave_tick import mark_roadmap_quest
@@ -285,6 +285,122 @@ class TestRoadmapRole:
         assert rt.role_tier("supply") == "big"
         assert rt.role_tier("bridge") == "frontier"
         assert rt.role_tier(None) == "big"
+
+
+class TestParkedAxes:
+    """An exhausted (capability, key) is skipped by the role ladder instead
+    of being re-searched forever; parking is derived from logbook + rungs."""
+
+    @staticmethod
+    def _log(store: Any, cap: int, meta_key: str, payload: dict[str, Any]) -> None:
+        append_entry(
+            store,
+            cap,
+            text="x",
+            entry_type="observation",
+            by="agent",
+            extra_meta={meta_key: payload},
+        )
+
+    def _exhaust(self, store: Any, cap: int) -> None:
+        for q in ("a", "b"):
+            self._log(
+                store,
+                cap,
+                "supply_outcome",
+                {"key": KEY, "dry": True, "external": True, "queries": [q]},
+            )
+        self._log(
+            store, cap, "supply_not_found_outside", {"key": KEY, "queries": ["a", "b"]}
+        )
+
+    def _second_cap(self, store: Any, root: int) -> int:
+        h = _quests(store)
+        cap2 = _qid(h.put(text="Capability: force"))
+        h.edit(
+            id=cap2,
+            meta={
+                "quest_body": "roadmap",
+                "rubric_objectives": [{"key": "force_pn", "sense": "max"}],
+                "demand": {
+                    "force_pn": {"value": 10.0, "source": "se:x", "reason": "r"}
+                },
+            },
+        )
+        store.add_link(src_ref_id=cap2, dst_ref_id=root, relation="serves")
+        return cap2
+
+    def test_exhausted_supply_key_skipped_for_next_capability(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        cap2 = self._second_cap(store, root)
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.capability_id == cap
+        self._exhaust(store, cap)
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None
+        assert (choice.role, choice.capability_id) == ("supply", cap2)
+        assert rt.roadmap_parked(store, root) == [f"qu{cap}.{KEY} (not found outside)"]
+
+    def test_recorded_not_found_entry_parks_too(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        self._log(store, cap, "supply_not_found_outside", {"key": KEY, "queries": []})
+        assert rt.roadmap_role(store, root) is None
+
+    def test_open_rung_on_key_keeps_it_unparked(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        self._exhaust(store, cap)
+        assert rt.roadmap_role(store, root) is None
+        make_rung(store, cap, value=9.0, status=None)  # open, promises 9 (> 2)
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.role == "supply"
+
+    def test_wont_do_rungs_with_none_open_park_a_bridge_row(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        cap2 = self._second_cap(store, root)
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.role == "bridge"
+        assert choice.capability_id == cap
+        make_rung(store, cap, value=3.0, status="won't-do")
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None
+        assert (choice.role, choice.capability_id) == ("supply", cap2)
+        assert rt.roadmap_parked(store, root) == [
+            f"qu{cap}.{KEY} (bridge rungs declined)"
+        ]
+        # a new open rung unparks it
+        make_rung(store, cap, value=3.0, status=None, title="rung: retry")
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.capability_id == cap
+
+    def test_new_supply_unparks(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        self._exhaust(store, cap)
+        assert rt.roadmap_role(store, root) is None
+        # a supply tick that wrote restarts the history
+        self._log(
+            store,
+            cap,
+            "supply_outcome",
+            {"key": KEY, "dry": False, "external": True, "queries": ["c"]},
+        )
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.role == "supply"
+
+    def test_all_parked_is_a_quiet_rest_logged_once(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        self._exhaust(store, cap)
+        client = ScriptedClient()
+        for _ in range(2):
+            result = rt.roadmap_tick(_hub(store), client, root)
+            assert result["ok"] and result["role"] is None
+            assert result["dry"] is False and result["improved"] is False
+        assert client.prompts == []
+        notes = [
+            b.text
+            for b in _entries(store, root, "observation")
+            if "axes parked" in b.text
+        ]
+        assert len(notes) == 1 and f"qu{cap}.{KEY}" in notes[0]
 
 
 # ── AC1: demand role, dry run ─────────────────────────────────────────
@@ -699,11 +815,28 @@ class TestSupplyEscalation:
             "; not found outside (2 queries)"
         )
 
-        # tick 5: still dry, still not escalating, no second verdict entry.
-        self._dry_tick(store, root, fn, "q5")
-        assert fn.seen[-1] is False
+        # tick 5: the axis is now parked — nothing to search, no second verdict.
+        result = rt.roadmap_tick(_hub(store), ScriptedClient(), root, search_fn=fn)
+        assert result["role"] is None and result["dry"] is False
+        assert fn.seen == [False, True, True, False]
         assert len(_supply_metas(store, cap, "supply_not_found_outside")) == 1
 
+        # A supply landing elsewhere (non-dry outcome) unparks the axis.
+        append_entry(
+            store,
+            cap,
+            text="landed",
+            entry_type="observation",
+            by="agent",
+            extra_meta={
+                "supply_outcome": {
+                    "key": KEY,
+                    "dry": False,
+                    "external": False,
+                    "queries": [],
+                }
+            },
+        )
         # tick 6: a tick that writes a supply resets the streak and the verdict.
         paper = seed_paper(
             store,
@@ -750,7 +883,7 @@ class TestSupplyEscalation:
 
         # A failed outside search never reaches the two-tick "not found
         # outside" verdict, however many there are.
-        for q in ("q3", "q4", "q5"):
+        for q in ("q3", "q4"):
             self._dry_tick(store, root, fn, q)
         assert ledger.supply_history(store, cap, KEY).ext_dry == 0
         assert _supply_metas(store, cap, "supply_not_found_outside") == []
@@ -794,15 +927,31 @@ class TestSupplyEscalation:
         )
         assert ledger.outside_failed_note(store, cap, "other") == ""
 
-        # Later dry ticks stay local-first and do not log again; the stop
-        # claims nothing about the literature.
+        # The stop does NOT park the axis (a 429 says nothing about the
+        # literature): later ticks stay local-first, no second entry.
+        assert rt.roadmap_parked(store, root) == []
         self._dry_tick(store, root, fn, "q5")
-        self._dry_tick(store, root, fn, "q6")
-        assert fn.seen == [False, True, True, False, False, False]
+        assert fn.seen == [False, True, True, False, False]
         assert len(_supply_metas(store, cap, "supply_outside_failed")) == 1
         assert _supply_metas(store, cap, "supply_not_found_outside") == []
         assert "not found outside" not in _unmet_gap_detail(store, root)
 
+        # A supply landing elsewhere (non-dry outcome) unparks the axis.
+        append_entry(
+            store,
+            cap,
+            text="landed",
+            entry_type="observation",
+            by="agent",
+            extra_meta={
+                "supply_outcome": {
+                    "key": KEY,
+                    "dry": False,
+                    "external": False,
+                    "queries": [],
+                }
+            },
+        )
         # A tick that writes a supply clears the stop and the failure count.
         paper = seed_paper(
             store,
@@ -1094,9 +1243,31 @@ class TestBridgeRole:
         # the gap, so no bridge role; force one by ruling the rung out and
         # replaying the same title — the near-dup gate refuses the twin.
         _todos(store).tag(id=rid, add=["STATUS:won't-do"])
-        assert rt.roadmap_role(store, root).role == "bridge"  # type: ignore[union-attr]
-        result2 = rt.roadmap_tick(_hub(store), ScriptedClient(reply), root)
-        assert result2["ok"] and result2.get("near_dup_of") == rid
+        # every rung on the key is now won't-do: the axis is parked (not
+        # re-bridged); drive the bridge directly to keep the near-dup gate.
+        assert rt.roadmap_role(store, root) is None
+        (row,) = ledger.compute_ledger(store, root)
+        choice = rt.RoleChoice(
+            role="bridge",
+            capability_id=cap,
+            capability=row.capability,
+            capability_title=row.capability_title,
+            key=KEY,
+            sense="min",
+            unit="nm",
+            demanded=2.0,
+            best_supply=6.0,
+            best_supply_evidence=("fi42",),
+            gap=Gap(kind="unmet-capability", detail="x", handle=row.capability),
+        )
+        result2 = rt._run_bridge(
+            _hub(store),
+            ScriptedClient(reply),
+            store.get_ref(kind="quest", id=root),
+            choice,
+            "prompt",
+        )
+        assert result2.get("near_dup_of") == rid
         assert _rungs_on(store, cap) == [rid]
 
     def test_rung_with_uncited_better_number_is_refused(self, store: Any) -> None:
