@@ -603,3 +603,83 @@ def test_unknown_view_still_enumerates_logs_as_an_option(jobs: JobHandler) -> No
     with pytest.raises(Unsupported) as excinfo:
         jobs.get(id="/bogus-view-name")
     assert "logs" in (excinfo.value.options or [])
+
+
+# ── /logs?job= : window anchored on a job ───────────────────────────
+
+
+def _seed_run_job(store: Store, *, host: str, minutes_ago: float) -> int:
+    started = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="anchored job",
+        meta={
+            "job_type": "fake",
+            "executor": "coordinator",
+            "lease_host": host,
+            "started_at": started.isoformat(),
+            "wall_seconds": 600,
+        },
+    )
+    return int(ref.id)
+
+
+def test_logs_job_window_filters_time_and_host(jobs: JobHandler, store: Store) -> None:
+    # job ran from 120 to 110 minutes ago (window: 125..105 min ago)
+    job_id = _seed_run_job(store, host="melchior", minutes_ago=120)
+    for msg, host, hours in [
+        ("inside window", "melchior", 115 / 60),
+        ("too early", "melchior", 3.0),
+        ("too late", "melchior", 1.0),
+        ("other host", "caspar", 115 / 60),
+    ]:
+        _insert_log(store, message=msg, host=host, hours_ago=hours)
+
+    resp = jobs.get(id=f"/logs?job=jo{job_id}")
+
+    assert "inside window" in resp.body
+    assert "too early" not in resp.body
+    assert "too late" not in resp.body
+    assert "other host" not in resp.body
+    assert "since= ignored" in resp.body
+    # explicit host= overrides the job's host; bare numeric id accepted
+    other = jobs.get(id=f"/logs?job={job_id}&host=caspar")
+    assert "other host" in other.body
+    assert "inside window" not in other.body
+
+
+def test_logs_job_window_follows_last_reclaim(jobs: JobHandler, store: Store) -> None:
+    # first claim 180 min ago; reclaimed 60 min ago and ran 10 min from there
+    started = datetime.now(UTC) - timedelta(minutes=180)
+    reclaimed = datetime.now(UTC) - timedelta(minutes=60)
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="reclaimed job",
+        meta={
+            "job_type": "fake",
+            "executor": "coordinator",
+            "lease_host": "melchior",
+            "started_at": started.isoformat(),
+            "wall_seconds": 600,
+            "reclaims": [{"at": reclaimed.isoformat(), "why": "expiry"}],
+        },
+    )
+    _insert_log(store, message="final attempt", host="melchior", hours_ago=55 / 60)
+
+    resp = jobs.get(id=f"/logs?job=jo{ref.id}")
+
+    assert "final attempt" in resp.body
+
+
+def test_logs_job_unknown_raises(jobs: JobHandler) -> None:
+    with pytest.raises(BadInput) as exc:
+        jobs.get(id="/logs?job=jo99999999")
+    assert exc.value.next
+
+
+def test_logs_job_never_claimed_raises(jobs: JobHandler, store: Store) -> None:
+    ref = store.insert_ref(kind="job", slug=None, title="queued", meta={})
+    with pytest.raises(BadInput, match="never claimed"):
+        jobs.get(id=f"/logs?job={ref.id}")

@@ -556,7 +556,9 @@ class JobHandler(NumericRefHandler):
         defaulting to WARNING so a bare ``id='/logs'`` reads as "what's
         currently wrong" rather than a full firehose. ``since=`` is
         hours, capped at a week so a stray huge value can't seq-scan the
-        whole table.
+        whole table. ``job=<id>`` (``jo123`` or ``123``) replaces the
+        ``since=`` cutoff with the job's run window ±5 min and, unless
+        ``host=`` is given, restricts to the host that claimed it.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
 
@@ -613,6 +615,17 @@ class JobHandler(NumericRefHandler):
             "cutoff": cutoff,
             "levels": allowed_levels,
         }
+        job_raw = (params.get("job") or "").strip() or None
+        window: tuple[int, datetime, datetime, str | None] | None = None
+        if job_raw:
+            window = self._job_log_window(job_raw)
+            _, win_start, win_end, job_host = window
+            where[0] = "ts BETWEEN %(win_start)s AND %(win_end)s"
+            del sql_params["cutoff"]
+            sql_params["win_start"] = win_start
+            sql_params["win_end"] = win_end
+            if host is None:
+                host = job_host
         if handler:
             where.append(
                 "(pass = %(handler)s OR logger = %(handler)s "
@@ -648,10 +661,19 @@ class JobHandler(NumericRefHandler):
                 {**sql_params, "limit": limit},
             ).fetchall()
 
-        filter_bits = [
-            f"since={since_hours}h (cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})",
-            f"level>={level}",
-        ]
+        if window is not None:
+            fmt = "%Y-%m-%dT%H:%M:%SZ"
+            filter_bits = [
+                f"job=jo{window[0]} window {window[1].strftime(fmt)}.."
+                f"{window[2].strftime(fmt)} (since= ignored)",
+                f"level>={level}",
+            ]
+        else:
+            filter_bits = [
+                f"since={since_hours}h "
+                f"(cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})",
+                f"level>={level}",
+            ]
         if handler:
             filter_bits.append(f"handler={handler!r}")
         if host:
@@ -698,6 +720,61 @@ class JobHandler(NumericRefHandler):
         lines.append("")
         lines.append(f"{len(rows)} rows shown of {total} matching")
         return Response(body="\n".join(lines))
+
+    def _job_log_window(self, raw: str) -> tuple[int, datetime, datetime, str | None]:
+        """Resolve ``job=`` to ``(job_id, start-5min, end+5min, lease_host)``.
+
+        Start is ``meta.started_at`` (first claim; ``created_at`` for a
+        claimed job that predates the stamp). End is the last attempt's start
+        (newest ``meta.reclaims`` entry, else start) + ``wall_seconds`` when
+        recorded, else ``updated_at`` for a terminal job, else now.
+        """
+        hint = "job=jo<N> — a job id from search(kind='job') (jo123 or 123)"
+        digits = raw[2:] if raw.lower().startswith("jo") else raw
+        try:
+            job_id = int(digits)
+        except ValueError as exc:
+            raise BadInput(f"job={raw!r} is not a job id", next=hint) from exc
+        ref = self.store.get_ref(kind=self.kind, id=job_id)
+        if ref is None:
+            raise BadInput(f"job={raw!r} not found", next=hint)
+        meta = ref.meta or {}
+        started: datetime | None = None
+        raw_started = meta.get("started_at")
+        if isinstance(raw_started, str):
+            started = as_utc(raw_started)
+        if started is None:
+            if not meta.get("lease_host"):
+                raise BadInput(
+                    f"job jo{job_id} was never claimed — no worker logs exist for it",
+                    next=f"get(kind='job', id={job_id}) to check its status",
+                )
+            started = as_utc(ref.created_at)
+        if started is None:
+            raise BadInput(f"job jo{job_id} has no usable start time", next=hint)
+        # A reclaimed job keeps its first started_at; the last attempt
+        # begins at the newest meta.reclaims[].at, so measure from there.
+        now = datetime.now(UTC)
+        last_start = started
+        for rec in meta.get("reclaims") or []:
+            at = as_utc(rec.get("at")) if isinstance(rec, dict) else None
+            if at is not None and at > last_start:
+                last_start = at
+        wall = meta.get("wall_seconds")
+        if isinstance(wall, int | float) and 0 < wall <= _LOGS_MAX_SINCE_HOURS * 3600:
+            end = last_start + timedelta(seconds=float(wall))
+        elif _status_of(self.store.tags_for(ref.id)) in _TERMINAL_STATUSES:
+            end = max(as_utc(ref.updated_at) or now, last_start)
+        else:
+            end = now
+        pad = timedelta(minutes=5)
+        lease_host = meta.get("lease_host")
+        return (
+            job_id,
+            started - pad,
+            end + pad,
+            str(lease_host) if lease_host else None,
+        )
 
     # ── put: validated submit ───────────────────────────────────────
 
