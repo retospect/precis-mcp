@@ -5842,28 +5842,29 @@ def test_needs_you_ask_context_citations_are_clickable(client, monkeypatch) -> N
     assert 'href="/r/todo/789"' in resp.text
 
 
-def test_needs_you_renders_proposed_hypotheses(client, monkeypatch) -> None:
-    """Agent-proposed hypotheses are the third thing that genuinely waits on
-    a person: approve and sign are human doors by design, so a prepared,
-    gate-checked conjecture sits in the queue until someone rules on it."""
+def test_needs_you_excludes_proposed_hypotheses(client, runtime, monkeypatch) -> None:
+    """Reto 2026-10-11: proposed hypotheses are not "needs you" — they stay
+    on the claim workbench. The page neither lists them nor counts them,
+    and the page/badge never query the ``hypothesis-proposed`` tag."""
+    from precis.handlers._finding_hypothesis import PROPOSED_TAG
     from precis_web.routes import needs_you as needs_you_mod
 
-    monkeypatch.setattr(
-        needs_you_mod,
-        "_load_proposed",
-        lambda store, **kw: (
-            [{"id": 9182, "title": "Raman observes a G-band shift in nanobud films."}],
-            1,
-        ),
-    )
+    assert not hasattr(needs_you_mod, "_load_proposed")
+    store = runtime.store
+    seen: list[list[str] | None] = []
+    for name in ("count_refs", "list_refs"):
+        orig = getattr(store, name)
+
+        def spy(*a, _orig=orig, **kw):
+            seen.append(kw.get("tags"))
+            return _orig(*a, **kw)
+
+        monkeypatch.setattr(store, name, spy)
     resp = client.get("/needs-you")
     assert resp.status_code == 200
-    assert "Proposed hypotheses" in resp.text
-    assert "fi9182" in resp.text
-    assert "Raman observes a G-band shift" in resp.text
-    # Each row deep-links to the claim page, where the approve form arrives
-    # pre-filled from the parked payload.
-    assert 'href="/claim/fi9182"' in resp.text
+    assert "Proposed hypotheses" not in resp.text
+    assert "proposed" not in resp.text.split("<h1", 1)[1].split("</div>", 1)[0]
+    assert all(PROPOSED_TAG not in (t or []) for t in seen)
 
 
 def test_nav_badge_counts_on_every_page(client) -> None:
