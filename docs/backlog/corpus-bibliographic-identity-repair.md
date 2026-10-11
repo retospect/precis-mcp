@@ -40,6 +40,10 @@ rather than split or trimmed (body chunks are append-only). Tagged so far:
 pa44468, pa42559, pa207748. Follow-up: the title/body sweep detector (item
 5) applies the same tag.
 
+Shipped (gr463414): `link` onto a claim hub from a `multi-article` paper
+returns an advisory to confirm the passage's article. Nanopub assembly is
+pure over frozen input with no paper refs, so no refusal there.
+
 Who: agent-code.
 
 ### 5. No title/body mismatch sweep; downstream gates blind to it (gr264184)

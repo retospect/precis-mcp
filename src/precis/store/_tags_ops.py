@@ -311,6 +311,15 @@ class TagsMixin:
             ).fetchone()
         return row is not None
 
+    def is_multi_article(self, ref_id: int) -> bool:
+        """True when the paper ref carries the open ``multi-article`` tag.
+
+        One stored body holds several articles (gr463414; ruled 2026-10-11:
+        tagged, never split or trimmed). Mint-time guards use it to warn
+        that a cited chunk may belong to the neighbouring article.
+        """
+        return self.has_tag(ref_id, "OPEN", "multi-article")
+
     def ref_tag_values(
         self,
         ref_ids: list[int],

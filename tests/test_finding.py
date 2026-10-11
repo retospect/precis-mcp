@@ -1723,6 +1723,20 @@ class TestLinkTaprootRouting:
             ).fetchone()
         assert reverse is None
 
+    def test_multi_article_target_adds_advisory(self, store) -> None:
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        plain = _seed_paper(store, cite_key="plainpaper")
+        multi = _seed_paper(store, cite_key="multipaper")
+        from precis.store.types import Tag
+
+        store.add_tag(multi, Tag.open("multi-article"))
+        h = _make_handler(store)
+        out = h.link(id=f"fi{hub_id}", target=f"pa{plain}", rel="corroborates")
+        assert "multi-article" not in out.body
+        out = h.link(id=f"fi{hub_id}", target=f"pa{multi}", rel="corroborates")
+        assert "evidence attached" in out.body
+        assert "advisory" in out.body and "multi-article" in out.body
+
     def test_corroborates_ref_level_target_grounds_whole_paper(self, store) -> None:
         hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
         paper = _seed_paper(store, cite_key="wholepaper")

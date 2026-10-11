@@ -100,7 +100,10 @@ from precis.handlers import (
     _finding_judgments,
     _finding_nanopub,
 )
-from precis.handlers._finding_common import fetch_ref_any_kind
+from precis.handlers._finding_common import (
+    fetch_ref_any_kind,
+    multi_article_advisory,
+)
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.ingest.glyph_health import glyph_caveat
@@ -726,6 +729,7 @@ class FindingHandler(NumericRefHandler):
                             f"evidence attached: {tgt} --{rel}--> "
                             f"fi{hub_ref_id} (originator split derived at read "
                             f"time — get(id='fi{hub_ref_id}', view='evidence'))"
+                            + multi_article_advisory(self.store, resolved.ref_id, tgt)
                         )
                     )
                 # rel == 'refines'
