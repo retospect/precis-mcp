@@ -925,6 +925,37 @@ def test_no_result_ignores_adjectival_and_gerund_forms() -> None:
     assert not _has_no_result("These molecules have well-characterised switching.")
 
 
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        # fi190995: evidence verb + mode token pass the grammar gate, yet
+        # the object names a quantity axis, not a result.
+        "Raman measurements reveal the vibrational signatures of carbon "
+        "nanobuds as a function of temperature.",
+        "In situ XRD tracks the structural evolution of the framework versus pressure.",
+        "Calculations map the dependence of the band gap on strain.",
+    ],
+)
+def test_no_result_hits_quantity_axis_object(sentence: str) -> None:
+    assert _has_no_result(sentence)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Raman measurements show the G-band thermal coefficient of nanobuds "
+        "is -0.0273 cm-1 K-1, larger than in pristine nanotubes.",
+        "Raman measurements reveal the vibrational signatures of carbon "
+        "nanobuds shift to lower frequency with temperature.",
+        "XPS reveals the nature of the C-C bond to be covalent.",
+        "Calculations show the dependence of the band gap on strain is linear.",
+        "DFT shows the band gap narrows under strain.",
+    ],
+)
+def test_no_result_silent_on_axis_object_with_result(sentence: str) -> None:
+    assert not _has_no_result(sentence)
+
+
 def test_no_result_ignores_noun_probes_and_studies() -> None:
     assert not _has_no_result("Fluorescent probes label the membrane.")
     assert not _has_no_result("Prior studies of the membrane label it.")

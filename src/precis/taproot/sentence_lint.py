@@ -412,21 +412,58 @@ _RESULT_DIRECTION_RE = re.compile(
 
 _DIGIT_RE = re.compile(r"\d")
 
+#: Evidence verb whose object names a quantity axis instead of a result:
+#: "reveal the vibrational signatures of X", "map the dependence of X",
+#: "track the evolution of X" (fi190995 shape). The controlled evidence
+#: verb makes the grammar gate pass, so the study-verb trigger above never
+#: sees these. Up to three modifiers may sit between article and head noun.
+_AXIS_OBJECT_RE = re.compile(
+    r"\b(?:reveal|show|map|track|trace|captur|elucidat|monitor|record|"
+    r"follow)\w*\s+(?:the\s+)?(?:[\w-]+\s+){0,3}?"
+    r"(?:signatures?|behaviou?rs?|propert(?:y|ies)|dependen(?:ce|cy|cies)|"
+    r"evolution|dynamics|response|nature|role|effects?|influence|impact|"
+    r"features?|characteristics)\s+of\b",
+    re.IGNORECASE,
+)
+
+#: Axis phrases ("as a function of Y", "versus Y") that, after an axis
+#: object, name the swept variable rather than a comparison result.
+_AXIS_PHRASE_RE = re.compile(
+    r"\b(?:as\s+a\s+function\s+of|versus|vs\.?|with\s+respect\s+to)\b",
+    re.IGNORECASE,
+)
+
+#: A copula or "to be" after the axis object states what the axis showed
+#: ("reveal the nature of the bond to be covalent").
+_AXIS_VERDICT_RE = re.compile(r"\b(?:is|are|was|were|to\s+be)\b", re.IGNORECASE)
+
+
+def _has_result_signal(text: str) -> bool:
+    return bool(
+        _DIGIT_RE.search(text)
+        or _RESULT_DIRECTION_RE.search(text)
+        or _EVIDENCE_VERB_RE.search(text)
+    )
+
 
 def _no_result_hit(sentence: str) -> re.Match[str] | None:
-    """The study-class verb in ``sentence`` when nothing else in it states a
-    result -- no digit (quantity), no direction/comparison/outcome word, no
-    controlled evidence verb -- else ``None``. The verb is only the trigger;
-    the result signals decide, and they are generous on purpose (advisory
-    lint: a miss costs nothing, a false alarm costs reviewer attention)."""
+    """The study-class verb (or the quantity-axis evidence phrase) in
+    ``sentence`` when nothing else in it states a result -- no digit
+    (quantity), no direction/comparison/outcome word, no controlled
+    evidence verb -- else ``None``. The trigger only nominates; the result
+    signals decide, and they are generous on purpose (advisory lint: a miss
+    costs nothing, a false alarm costs reviewer attention)."""
     m = _STUDY_VERB_RE.search(sentence)
+    if m is not None:
+        return None if _has_result_signal(sentence) else m
+    m = _AXIS_OBJECT_RE.search(sentence)
     if m is None:
         return None
-    if (
-        _DIGIT_RE.search(sentence)
-        or _RESULT_DIRECTION_RE.search(sentence)
-        or _EVIDENCE_VERB_RE.search(sentence)
-    ):
+    # The trigger's own verb is an evidence verb and its head noun may be a
+    # direction stem ("dependence"); judge only the rest of the sentence.
+    rest = sentence[: m.start()] + " " + sentence[m.end() :]
+    rest = _AXIS_PHRASE_RE.sub(" ", rest)
+    if _has_result_signal(rest) or _AXIS_VERDICT_RE.search(sentence[m.end() :]):
         return None
     return m
 
@@ -1249,8 +1286,8 @@ def lint_claim_sentence(
     if m:
         warnings.append(
             f"no-result: {m.group(0)!r} found with no quantity, direction "
-            "or comparison -- a sentence that says something was studied "
-            "states no finding; name what was found (a value, an increase/"
+            "or comparison -- a sentence that says something was studied, "
+            "or names only what was measured, states no finding; name what was found (a value, an increase/"
             "decrease, a comparison). Advisory only."
         )
 
