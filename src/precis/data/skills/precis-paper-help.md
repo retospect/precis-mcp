@@ -10,6 +10,8 @@ answers:
   - how do I find where a paper mentions a specific exact term?
   - how do I filter papers by publication year?
   - how do I search inside one paper for a passage?
+  - how do I get a paper whose DOI isn't indexed yet?
+  - how do I resolve a journal/volume/page/year citation to a paper?
 applies-to: get/search/tag/link (kind='paper')
 status: active
 tags: [addressing, workflow]
@@ -35,10 +37,32 @@ get(kind="paper", id="10.1038/nature10352", view="abstract")  # DOI + view = kwa
 get(kind="paper", id="10.1038/nature10352", view="toc")
 ```
 
-The handle is the thing to keep. The DOI is a *fetch key* — once the
-paper is held, `pa<id>` is its canonical address. DOI suffixes can
-contain `/`, so DOI + view needs the `view=` kwarg — the `id/view`
-path form is ambiguous.
+The handle is the thing to keep. The DOI is a *lookup key* for papers
+already held — once the paper is held, `pa<id>` is its canonical address.
+DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg — the
+`id/view` path form is ambiguous.
+
+## The DOI isn't indexed yet — how do I get the paper?
+
+`get` never fetches. A DOI that is not held answers "not ingested" and
+names the next call: `put` mints a stub and the fetch worker pulls an
+open-access PDF on its next pass.
+
+```python
+put(kind="paper", doi="10.1126/sciadv.aeh2779")  # mint stub, queue fetch
+get(kind="paper", id="10.1126/sciadv.aeh2779")  # works once it is held
+```
+
+## I only have a citation string (journal, volume, page, year)
+
+```python
+put(kind="paper", citation="Phys. Rev. B 47, 558 (1993)")
+```
+
+The string goes to Crossref's bibliographic query. Exactly one record
+matching every part of it (year, volume, first page, journal) is stubbed
+by its DOI. Anything weaker returns candidates with a `conf=` score and
+mints nothing; pick one and `put(kind="paper", doi="<its DOI>")`.
 
 ## How do I get a paper's handle?
 
@@ -49,7 +73,7 @@ author + year + title; search for the paper and copy the handle:
 
 ```python
 search(kind="paper", q="<author or topic>")  # → rows carry pa<id>/pc<id>
-get(kind="paper", id="<DOI>")  # DOI → fetches the paper, then use its handle
+get(kind="paper", id="<DOI>")  # DOI of a held paper → its overview; read the handle
 ```
 
 ## Find a paper by topic

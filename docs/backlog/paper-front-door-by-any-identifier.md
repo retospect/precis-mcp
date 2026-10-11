@@ -1,38 +1,15 @@
 ---
 status: idea
 pillar: memory-graph
-title: Get or ingest a paper from any handle a human has — citation string, un-indexed DOI, Discord attachment
+title: Ingest a paper from a Discord attachment
 ---
 
-# Paper front door by any identifier
+# Paper front door: Discord attachment
 
-Bundled in the 2026-10-11 gripe triage. A human holds a paper as a citation
-string, a DOI, or a PDF in hand. Each should reach a paper ref without the
-agent hand-assembling it.
+Left from the 2026-10-11 gripe triage (citation string and un-indexed DOI
+shipped: `put(kind='paper', citation=…)`, `precis-paper-help`).
 
-## 1. Classic citation string to DOI (gr437652)
-
-`get`/stub of a paper from "journal vol page year" (e.g. *Phys. Rev. B 47,
-558 (1993)*) has no resolver. Fix direction: parse the string, query the
-Crossref works API with journal, volume, first page and year through
-`safe_get`, accept a single unambiguous hit, and feed the DOI to the normal
-`paper` get/stub path. Ambiguous or empty results return the candidates, not
-a guess. Owner `src/precis/handlers/paper.py` (+ a small Crossref helper next
-to the existing Crossref callers).
-
-Who: agent-code.
-
-## 2. Get a paper by an un-indexed DOI (gr414666)
-
-The skill says `get(kind='paper', id=<DOI>)` fetches a DOI that is not yet
-indexed; the gripe reports it did not. Verify first on
-`10.1126/sciadv.aeh2779`: if the call mints/fetches the paper, close the
-gripe; if not, fix `src/precis/handlers/paper.py` so it does, or correct the
-skill text in `src/precis/data/skills/`.
-
-Who: agent-code (S, verify then fix or close).
-
-## 3. Attach a PDF in Discord for ingestion (gr434187)
+## Attach a PDF in Discord for ingestion (gr434187)
 
 `src/asa_bot/` has no attachment handling, so a PDF posted in Discord cannot
 reach the ingest pipeline. Needs a design first: which channel/identity may

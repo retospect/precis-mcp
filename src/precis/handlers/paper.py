@@ -338,6 +338,7 @@ class PaperHandler(Handler):
         verify: bool = True,
         id: str | int | None = None,
         mode: str | None = None,
+        citation: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Mint a paper **stub** — the agent-facing "I want this paper".
@@ -354,6 +355,11 @@ class PaperHandler(Handler):
             put(kind='paper', doi='10.1038/nature10352')
             put(kind='paper', arxiv='2401.00001', title='…')
             put(kind='paper', title='…')   # title-only backlog stub
+            put(kind='paper', citation='Phys. Rev. B 47, 558 (1993)')
+
+        ``citation=`` resolves a classic journal/volume/page/year string via
+        Crossref ``query.bibliographic``: one full-confidence hit is stubbed
+        by its DOI; otherwise the scored candidates come back, nothing minted.
 
         This is a thin adapter over :meth:`acquire` — it folds the
         ``doi=`` / ``arxiv=`` conveniences into the canonical
@@ -383,6 +389,22 @@ class PaperHandler(Handler):
                 next="precis add FILE.pdf",
             )
         ident = identifier.strip() if identifier and identifier.strip() else None
+        if (
+            ident is None
+            and not (doi and doi.strip())
+            and citation
+            and citation.strip()
+        ):
+            from precis.ingest import crossref_citation as _cc
+
+            cands = _cc.resolve_citation(
+                citation.strip(),
+                settings.get_str("contact.crossref_mailto") or "",
+            )
+            hit = _cc.pick_unambiguous(cands)
+            if hit is None:
+                return Response(body=_render_citation_candidates(citation, cands))
+            doi = hit["doi"]
         if ident is None:
             if doi and doi.strip():
                 ident = f"doi:{doi.strip()}"
@@ -391,7 +413,7 @@ class PaperHandler(Handler):
         if ident is None and not (title and title.strip()):
             raise BadInput(
                 "put(kind='paper') mints a stub - pass doi=, arxiv=, "
-                "identifier= (doi:/arxiv:/s2:), or title=",
+                "identifier= (doi:/arxiv:/s2:), citation=, or title=",
                 next="put(kind='paper', doi='10.1038/nature10352')",
             )
         return self.acquire(
@@ -3020,6 +3042,32 @@ def _is_journal_template_heading(title: str) -> bool:
     if raw.isupper() and raw.isalpha() and " " not in raw and 2 <= len(raw) <= 8:
         return True
     return False
+
+
+def _render_citation_candidates(citation: str, cands: list[dict[str, Any]]) -> str:
+    """Candidate list for a citation string that did not resolve to exactly
+    one full-confidence DOI. Nothing was minted."""
+    if not cands:
+        return (
+            f"No Crossref match for citation {citation!r}; nothing minted. "
+            "Try the title: search(kind='semanticscholar', q='<title>')."
+        )
+    lines = [
+        f"No single confident match for citation {citation!r}; nothing "
+        "minted. Candidates (confidence 0-1):"
+    ]
+    for c in cands:
+        lines.append(
+            f"- doi:{c['doi']}  conf={c['confidence']:.2f}  "
+            f"{c['first_author'] or '?'} {c['year'] or '?'} — "
+            f"{c['journal']} {c['volume'] or ''} {c['page'] or ''} — "
+            f"{c['title']}"
+        )
+    lines.append(
+        f"Pick one: put(kind='paper', doi='{cands[0]['doi']}')  "
+        "(substitute the right DOI)"
+    )
+    return "\n".join(lines)
 
 
 def _maybe_resolve_doi(store: Store, raw: str) -> str:
