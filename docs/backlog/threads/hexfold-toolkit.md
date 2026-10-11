@@ -561,8 +561,10 @@ removed as met — the transport move it waited on happened 09-29)
      design call, not a one-liner.
    - Second, larger slice: the `EnvKey` extent field, shared with
      gr457997.
-8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
-   cap fuse. Independent of everything above, and it caps how far any
+8. **gr346966** — stick-rung seam-adjacent angles on cap fuses. Re-measured
+   2026-10-11: flat (6k,0) lids now within tolerance (max 3.3°); the (5,5)
+   C60-hemisphere cap (examples/capped_tube.hx) is worse than filed, 27
+   angles past tolerance spanning 75–154°. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
 

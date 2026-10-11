@@ -206,9 +206,7 @@ se-machine-design's `backlog/se-region-property-layer.md`.
    captures; publishable figures out of the same scene.
 7. **backlog/se-feasibility-and-cost.md** — the far end the arc serves;
    waits on 3 and 4.
-8. **gr450675** — atomic↔smooth view slider with scaffold-deviation
-   coloring; a feature request, not blocking anything above.
-9. **gr341482** — retire the mermaid `graph LR` topology-panel fallback
+8. **gr341482** — retire the mermaid `graph LR` topology-panel fallback
     once the force-directed node cloud (already shipped) proves out in
     prod; cleanup, waits on production mileage rather than code.
 
