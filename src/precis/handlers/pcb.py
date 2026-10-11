@@ -307,6 +307,10 @@ class _DrcRun(NamedTuple):
 _DRC_GONE_SHOWN = 40
 
 
+#: ``view='drc'`` adds a severity x rule tally line from this many findings.
+_DRC_SUMMARY_MIN = 10
+
+
 def _drc_delta_line(delta: pcb_drc.FindingDelta) -> str:
     """The honest-count line under the DRC head: new / still (worse) /
     gone against the previous run, each counted separately and NEVER
@@ -1979,7 +1983,7 @@ class PcbHandler(Handler):
         if view == "planes":
             return self._render_planes(ref_id)
         if view == "drc":
-            return self._render_drc(ref_id)
+            return self._render_drc(ref_id, args)
         if view == "svg":
             return self._render_svg(ref_id, args)
         if view == "capability":
@@ -3568,7 +3572,7 @@ class PcbHandler(Handler):
             )
         )
 
-    def _render_drc(self, ref_id: int) -> Response:
+    def _render_drc(self, ref_id: int, args: dict[str, Any] | None = None) -> Response:
         """Geometric DRC (pcb-guided-place-route Slice 8, :mod:`precis.pcb.
         drc`) — the L5 check. Superseded ``eyes.drc_lite`` (graph-shape
         sanity only, no geometry); the graph-feasibility half of DRC
@@ -3611,7 +3615,22 @@ class PcbHandler(Handler):
         read back — see :meth:`Store.pcb_drc_findings_latest`'s own
         docstring for why a persisted-then-read DRC result makes "no rows"
         and "no problems" the same value, the exact trap a silk census
-        computed here (not on write) avoids."""
+        computed here (not on write) avoids.
+
+        ``args={'severity'?: 'error'|'warn', 'rule'?: 'a'|'a,b'}`` filter
+        the TABLE only (gr477797); the header counts stay board-wide so a
+        filtered page is never read as a clean board. Rows sort errors
+        first (stable within a severity, so run order is kept). Past
+        ``_DRC_SUMMARY_MIN`` findings a ``by rule:`` line gives the
+        severity x rule counts."""
+        args = args or {}
+        severity = str(args.get("severity") or "").strip().lower()
+        if severity and severity not in ("error", "warn"):
+            raise BadInput(
+                f"view='drc' args.severity={severity!r} not recognized",
+                options=["error", "warn"],
+            )
+        rules = {r.strip() for r in str(args.get("rule") or "").split(",") if r.strip()}
         design = self.store.pcb_load(ref_id)
         if design["board"] is None:
             return Response(
@@ -3646,6 +3665,35 @@ class PcbHandler(Handler):
         gone = _drc_gone_block(delta)
         if not findings:
             return Response(body=head + "\n— no findings ✓" + gone)
+        if len(findings) >= _DRC_SUMMARY_MIN:
+            tally: dict[tuple[str, str], int] = {}
+            for f in findings:
+                tally[(f.rule, f.severity)] = tally.get((f.rule, f.severity), 0) + 1
+            head += "\nby rule: " + ", ".join(
+                f"{rule} {n} {sev}"
+                for (rule, sev), n in sorted(
+                    tally.items(), key=lambda kv: (kv[0][1] != "error", -kv[1], kv[0])
+                )
+            )
+        all_rules = {f.rule for f in findings}
+        if rules - all_rules:
+            raise BadInput(
+                f"view='drc' args.rule={sorted(rules - all_rules)!r} matches "
+                "no finding in this run",
+                options=sorted(all_rules),
+            )
+        shown = [
+            f
+            for f in findings
+            if (not severity or f.severity == severity)
+            and (not rules or f.rule in rules)
+        ]
+        if len(shown) != len(findings):
+            head += f"\nfiltered: showing {len(shown)} of {len(findings)} finding(s)"
+        if not shown:
+            return Response(body=head + "\n— no findings match the filter" + gone)
+        shown.sort(key=lambda f: f.severity != "error")
+        findings = shown
         rows = [
             {
                 "id": pcb_drc.finding_key(f),

@@ -3174,3 +3174,53 @@ def test_drc_clean_run_is_recorded_as_a_verdict_not_an_absence(pcb, store):
     _run, rows = store.pcb_drc_findings_latest(ref.id)
     assert rows
     assert f"vs run clean-ru: {len(rows)} new, 0 still, 0 gone" in body
+
+
+def _stub_drc_run(pcb, monkeypatch, findings):
+    from precis.handlers import pcb as pcb_handler
+
+    pcb.put(id="sensor-node", args=_DESIGN)
+    run = pcb_handler._DrcRun(
+        "abcdef0123", findings, False, pcb_drc.FindingDelta(previous_run_id=None)
+    )
+    monkeypatch.setattr(pcb, "_drc_run", lambda ref_id, design: run)
+
+
+def _tsv_rows(body):
+    return [ln.split("\t") for ln in body.splitlines() if "\t" in ln][1:]
+
+
+def test_drc_view_filters_by_severity_and_rule_and_sorts_errors_first(pcb, monkeypatch):
+    """gr477797: errors sort before warnings; ``args.severity`` / ``args.rule``
+    narrow the table while the header keeps board-wide counts."""
+    F = pcb_drc.DrcFinding
+    findings = [
+        F("courtyard_overlap", "warn", "a", "w1"),
+        F("clearance", "error", "b", "e1"),
+        F("courtyard_overlap", "warn", "c", "w2"),
+        F("unrouted", "error", "d", "e2"),
+        *[F("silk_clip", "warn", f"s{i}", "x") for i in range(8)],
+    ]
+    _stub_drc_run(pcb, monkeypatch, findings)
+    full = pcb.get(id="sensor-node", view="drc").body
+    sev = [r[1] for r in _tsv_rows(full)]
+    assert sev == ["error"] * 2 + ["warn"] * 10, sev
+    assert "# DRC — run abcdef01 — 2 error(s), 10 warn(s)" in full.splitlines()[0]
+    assert "by rule: " in full and "silk_clip 8 warn" in full
+
+    only_err = pcb.get(id="sensor-node", view="drc", args={"severity": "error"}).body
+    assert only_err.splitlines()[0] == full.splitlines()[0]  # counts unchanged
+    assert "filtered: showing 2 of 12" in only_err
+    assert [r[1] for r in _tsv_rows(only_err)] == ["error", "error"]
+
+    by_rule = pcb.get(id="sensor-node", view="drc", args={"rule": "clearance,unrouted"})
+    assert sorted(r[2] for r in _tsv_rows(by_rule.body)) == ["clearance", "unrouted"]
+    both = pcb.get(
+        id="sensor-node", view="drc", args={"rule": "silk_clip", "severity": "error"}
+    )
+    assert "no findings match the filter" in both.body
+
+    with pytest.raises(BadInput):
+        pcb.get(id="sensor-node", view="drc", args={"severity": "fatal"})
+    with pytest.raises(BadInput):
+        pcb.get(id="sensor-node", view="drc", args={"rule": "no_such_rule"})

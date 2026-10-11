@@ -512,6 +512,13 @@ rather than calling everything new. Findings persist in
 (the lifetime start — surviving a clean run in between, so "broken again"
 reads `new` while keeping its original first-seen).
 
+Rows list errors before warnings. With 10 or more findings the head adds a
+`by rule:` tally (rule, count, severity). Narrow the table with
+`args={'severity': 'error'|'warn', 'rule': 'via_pad_keepout'}` (`rule` takes
+a comma list; an unknown rule or severity is refused with the valid
+options). The head counts stay board-wide and a `filtered: showing N of M`
+line says the table is cut.
+
 ## Find a design — `search`
 
 ```python
