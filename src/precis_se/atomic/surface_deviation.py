@@ -173,6 +173,22 @@ def render_surface_deviation(
                 header
                 + "\n\nunknown: generated target map overflow; supply an explicit target"
             )
+    h_caps = 0
+    if not explicit:
+        # Reto 2026-10-10 (gr470905): stored-mode scoring is carbon only; the
+        # receipt digest still binds every live row (done in stored_target).
+        elements = snapshot.get("elements")
+        if elements is None:
+            return header + "\n\nunknown: stored element column missing"
+        if len(elements) != len(points):
+            return header + "\n\nunknown: stored element column is malformed"
+        keep = np.array(
+            [str(e).strip().upper() not in {"H", "D"} for e in elements], dtype=bool
+        )
+        h_caps = int((~keep).sum())
+        points = points[keep]
+        if not len(points):
+            return header + "\n\nunknown: no non-hydrogen atoms to score"
     try:
         # All authored pieces here are lines/arcs; S1's analytic path is exact,
         # and ds affects only catenoids (not accepted by authored_meridian).
@@ -198,6 +214,7 @@ def render_surface_deviation(
                 + f"\n\nunknown: stored target evaluation unavailable: {exc}; supply an explicit target"
             )
         raise BadInput(f"authored target: {exc}") from exc
+    h_line = f"\nH caps excluded: {h_caps}" if not explicit else ""
     table = [{"region": name, **values} for name, values in rows.items()]
     return (
         header
@@ -206,6 +223,8 @@ def render_surface_deviation(
         + target_label
         + "\n"
         + alignment
-        + "\njudge: precis_surface.deviation.surface_distance + summary (existing S1); distances in Å; no bar/stability verdict\n\n"
+        + "\njudge: precis_surface.deviation.surface_distance + summary (existing S1); distances in Å; no bar/stability verdict"
+        + h_line
+        + "\n\n"
         + render_agent_table(table, schema=["region", "atoms", "mean", "p95", "max"])
     )

@@ -290,6 +290,7 @@ def receipt_fixture(
         "has_lattice": True,
         "fractional": [cell.cart_to_frac(p).tolist() for p in framed],
         "atom_ids": [11, 12, 13, 14],
+        "elements": ["C"] * 4,
     }
     snapshot["generated"] = {
         "generator": "hexfold_scene",
@@ -1044,3 +1045,32 @@ def test_legacy_loader_can_mix_same_version_but_snapshot_does_not() -> None:
     assert (np.asarray(coherent["fractional"]) @ np.asarray(coherent["lattice"]))[
         0, 2
     ] == pytest.approx(0.7)
+
+
+def test_public_get_stored_target_scores_carbon_only_and_reports_h_caps(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fn, store = public_get
+    snapshot, features, points = receipt_fixture("open")
+    # Elements are not part of the digest: it binds all four live rows.
+    snapshot["elements"] = ["C", "C", "H", "H"]
+    monkeypatch.setattr(
+        store, "structure_positions_snapshot", lambda _id: copy.deepcopy(snapshot)
+    )
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "H caps excluded: 2" in body.splitlines()
+    distances, owners = surface_distance(points[:2], features, ds=1)
+    expected = summary(distances, owners, features)
+    rows = {
+        parts[0]: parts
+        for line in body.splitlines()
+        if (parts := line.split("\t"))[0] in expected
+    }
+    assert sum(int(r[1]) for r in rows.values()) == 2
+    for name, row in expected.items():
+        assert int(rows[name][1]) == row["atoms"]
+        assert [float(v) for v in rows[name][2:]] == pytest.approx(
+            [row[k] for k in ("mean", "p95", "max")], abs=1e-12
+        )
