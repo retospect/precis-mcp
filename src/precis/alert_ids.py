@@ -420,6 +420,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         ),
     ),
     _nursery(
+        "unattributed-claimant",
+        "unattributed-claimant:{host}",
+        "A non-fleet identity (container id, no host heartbeat) claimed work.",
+        severity="warn",
+        triage=(
+            "Find who launched a worker under that identity; set "
+            "PRECIS_HOST_NAME on legitimate workers, stop the rest."
+        ),
+    ),
+    _nursery(
         "dispatch-stall",
         "dispatch-stall",
         "The single agent-profile executor stopped claiming — planner dark.",
