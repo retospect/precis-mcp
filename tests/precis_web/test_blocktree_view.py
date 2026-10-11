@@ -153,6 +153,21 @@ def test_stability_tier_tripwire_is_warn_not_error() -> None:
     assert _stability_tier(se_stability.TRIPWIRE_LINE) == "warn"
 
 
+def test_stability_line_partial_is_warn_with_count() -> None:
+    from precis_se.stability import StabilityReport
+    from precis_web.routes.blocktree_view import _stability_line
+
+    kw: dict[str, Any] = dict(
+        j=2, b=1, c=0, rank=1, m=0, rb_dim=0, m_internal=0, s=0, verdict="rigid"
+    )
+    clean = StabilityReport(**kw)
+    assert _stability_line(clean) == ("stability: rigid", "ok")
+    partial = StabilityReport(**kw, unmodelled_connects=["hub.pin—rim.pin"])
+    line, tier = _stability_line(partial)
+    assert tier == "warn"
+    assert line == ("stability: rigid (partial: 1 rigid connect(s) not modelled)")
+
+
 def test_stability_tier_rigid_and_prestress_and_no_members_are_ok() -> None:
     from precis_web.routes.blocktree_view import _stability_tier
 
