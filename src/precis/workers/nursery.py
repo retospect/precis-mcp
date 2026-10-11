@@ -376,6 +376,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Symptom]]], ...] = (
     ("dead-worker", lambda s: _detect_dead_workers(s)),
     ("nas-denied", lambda s: _detect_nas_denied(s)),
     ("host-dark", lambda s: _detect_host_dark(s)),
+    ("unattributed-claimant", lambda s: _detect_unattributed_claimants(s)),
     ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
     ("embed-lane-stalled", lambda s: _detect_embed_lane_stalled(s)),
     ("lane-skipping", lambda s: _detect_lane_skipping(s)),
@@ -1731,6 +1732,65 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
                 fingerprint_key=f"host-dark:{host}",
                 title=f"{host} host_heartbeat silent {silent:.1f}h",
                 detail=_host_dark_detail(str(host), silent, platform),
+            )
+        )
+    return out
+
+
+#: Look-back for :func:`_detect_unattributed_claimants`; kept under the
+#: ``worker_logs`` retention default (30d) so the alert outlives the pass
+#: that first saw the claim by weeks, not hours.
+UNATTRIBUTED_CLAIM_WINDOW_DAYS = 25
+
+
+def _detect_unattributed_claimants(store: Store) -> list[Symptom]:
+    """A non-fleet identity claimed work (gr458458) — one alert per identity.
+
+    Separate from :func:`_detect_host_dark`, which deliberately ignores
+    ephemeral ids for *darkness*. Here an identity is non-fleet when it
+    wrote a ``claimed=N`` (N>0) pass line and is either a 12-hex container
+    id or has no non-ephemeral ``host_heartbeat`` row. The first such line
+    in the window names the first pass/process it touched and when;
+    ``worker_logs`` carries no job ref, so that line is the closest
+    attribution that exists. Fingerprint is per identity, so repeat claims
+    only bump ``seen_count``.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (wl.host)
+                   wl.host, wl.ts, wl.process, wl.pass, wl.message
+              FROM worker_logs wl
+             WHERE wl.ts > now() - (%(days)s || ' days')::interval
+               AND wl.message ~ 'claimed=[1-9]'
+               AND (
+                    wl.host ~ '^[0-9a-f]{12}$'
+                    OR NOT EXISTS (
+                        SELECT 1 FROM host_heartbeat hh
+                         WHERE hh.host = wl.host
+                           AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
+                    )
+               )
+             ORDER BY wl.host, wl.ts ASC
+             LIMIT 50
+            """,
+            {"days": UNATTRIBUTED_CLAIM_WINDOW_DAYS},
+        ).fetchall()
+    out: list[Symptom] = []
+    for host, ts, process, pass_, message in rows:
+        out.append(
+            Symptom(
+                category="unattributed-claimant",
+                ref_id=None,
+                fingerprint_key=f"unattributed-claimant:{host}",
+                title=f"non-fleet identity {host} claimed work",
+                detail=(
+                    f"{host} is not a registered fleet host (container id or no "
+                    f"host_heartbeat row) but claimed work. First seen "
+                    f"{ts:%Y-%m-%dT%H:%MZ}: process={process} pass={pass_} "
+                    f"line={str(message)[:120]!r}. Find who launched it; set "
+                    "PRECIS_HOST_NAME on legitimate workers."
+                ),
             )
         )
     return out

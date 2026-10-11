@@ -70,6 +70,7 @@ from precis.workers.nursery import (
     _detect_stale_claims,
     _detect_stalled_recurrings,
     _detect_stuck_doable,
+    _detect_unattributed_claimants,
     _detect_worker_restart_storms,
     _kind_roster_regressions,
     _restart_storm_detail,
@@ -2397,3 +2398,56 @@ def test_kind_shrinkage_alerts_already_open_are_resolved_by_the_next_pass(
         a for a in list_open_alerts(store) if a["source"] == "nursery:kind-shrinkage"
     ] == []
     assert result.ok >= 1  # counted as resolved, not as raised
+
+
+def _seed_claim_log(store: Store, host: str, *, minutes_ago: float, line: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, pass, level, logger, message) "
+            "VALUES (now() - (%s || ' minutes')::interval, %s, 'precis-worker', "
+            "'nursery', 'INFO', 'precis.workers.runner', %s)",
+            (minutes_ago, host, line),
+        )
+        conn.commit()
+
+
+def test_unattributed_claimant_flags_container_id_once_with_first_claim(
+    store: Store,
+) -> None:
+    """gr458458: a 12-hex identity that claimed work alerts, naming its
+    earliest claim; the fingerprint is per identity (repeat claims = 1 hit)."""
+    host = uuid4().hex[:12]
+    _seed_claim_log(store, host, minutes_ago=60, line="nursery claimed=0 ok=0")
+    _seed_claim_log(store, host, minutes_ago=50, line="nursery claimed=53 ok=0")
+    _seed_claim_log(store, host, minutes_ago=10, line="nursery claimed=9 ok=0")
+
+    hits = [
+        f
+        for f in _detect_unattributed_claimants(store)
+        if f.fingerprint_key == f"unattributed-claimant:{host}"
+    ]
+    assert len(hits) == 1
+    assert "claimed=53" in hits[0].detail  # first claim, not the idle or later one
+    assert "process=precis-worker pass=nursery" in hits[0].detail
+
+
+def test_unattributed_claimant_skips_registered_fleet_host(store: Store) -> None:
+    stranger, fleet, eph = _host(), _host(), _host()
+    for h in (stranger, fleet, eph):
+        _seed_claim_log(store, h, minutes_ago=5, line="x claimed=2 ok=2")
+    _seed_heartbeat(store, fleet)
+    _seed_heartbeat(store, eph, meta={"ephemeral": True})
+
+    keys = {f.fingerprint_key for f in _detect_unattributed_claimants(store)}
+    assert f"unattributed-claimant:{stranger}" in keys
+    assert f"unattributed-claimant:{eph}" in keys  # ephemeral stamp != registered
+    assert f"unattributed-claimant:{fleet}" not in keys
+
+
+def test_unattributed_claimant_ignores_non_claiming_container(store: Store) -> None:
+    host = uuid4().hex[:12]
+    _seed_claim_log(store, host, minutes_ago=5, line="nursery claimed=0 ok=0")
+    assert not any(
+        f.fingerprint_key == f"unattributed-claimant:{host}"
+        for f in _detect_unattributed_claimants(store)
+    )
