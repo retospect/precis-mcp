@@ -54,3 +54,62 @@ def test_carbonyl_and_nitrile() -> None:
         s.atoms[lb] = Atom(lb, el, np.zeros(3))
     s.bonds += [Bond("c1", "o1", order=2.0), Bond("c2", "n1", order=3.0)]
     assert fragment_names(s) == ["carbonyl (C=O)", "nitrile (cyano, C#N)"]
+
+
+def _azobenzene_geometry(lattice: float = 40.0, z: float = 0.0) -> Scene:
+    """Bondless trans-azobenzene (24 atoms, planar, textbook distances)."""
+    s = Scene(cell=Cell(np.diag([lattice] * 3), pbc=(True, True, True)))
+    pts: list[tuple[str, np.ndarray]] = []
+
+    def ring(center: np.ndarray, start_deg: float) -> np.ndarray:
+        ipso = None
+        for k in range(6):
+            ang = np.deg2rad(start_deg + 60 * k)
+            u = np.array([np.cos(ang), np.sin(ang), 0.0])
+            pts.append(("C", center + 1.40 * u))
+            if k == 0:
+                ipso = center + 1.40 * u
+            else:
+                pts.append(("H", center + 2.49 * u))
+        assert ipso is not None
+        return ipso
+
+    ipso_a = ring(np.zeros(3), 0.0)
+    n1 = ipso_a + np.array([1.43, 0.0, 0.0])
+    n2 = n1 + 1.25 * np.array([np.cos(np.deg2rad(60)), np.sin(np.deg2rad(60)), 0.0])
+    pts += [("N", n1), ("N", n2)]
+    ring(n2 + np.array([1.43 + 1.40, 0.0, 0.0]), 180.0)
+    assert len(pts) == 24
+    shift = np.array([lattice / 2, lattice / 2, z])
+    for i, (el, xyz) in enumerate(pts):
+        frac = s.cell.cart_to_frac(xyz + shift)
+        s.atoms[f"x{i}"] = Atom(f"x{i}", el, frac)
+    return s
+
+
+def test_bondless_azobenzene_perceives_groups() -> None:
+    s = _azobenzene_geometry()
+    assert not s.bonds
+    names = " ".join(fragment_names(s))
+    assert "azo" in names and "diazene" in names and "phenyl" in names
+    assert "diazene" in card_text("azobenzene", s)
+    assert not s.bonds  # perception never writes back
+
+
+def test_azobenzene_on_gold_slab_no_metal_bonds() -> None:
+    from precis.structure.fragment_names import _perceive_bonds
+
+    s = _azobenzene_geometry(lattice=40.0, z=10.0)
+    k = 0
+    for ix in range(8):
+        for iy in range(8):
+            for iz in range(3):
+                xyz = np.array([ix * 2.88, iy * 2.88, iz * 2.35])
+                s.atoms[f"au{k}"] = Atom(f"au{k}", "Au", s.cell.cart_to_frac(xyz))
+                k += 1
+    perceived = _perceive_bonds(s)
+    assert perceived and not any(
+        b.i.startswith("au") or b.j.startswith("au") for b in perceived
+    )
+    names = " ".join(fragment_names(s))
+    assert "diazene" in names and "phenyl" in names
