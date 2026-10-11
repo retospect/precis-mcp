@@ -352,6 +352,10 @@ task set.
 12. **gr458727** — the capacity-idle monitor ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned with
     `backlog/graph-maintenance-queue.md` (Ruled 2026-10-01, `INDEX.md`).
+    Half shipped: `get(kind='job', id='/throughput')` reports claims and
+    outcomes per host/process plus queue depth by executor. Still open: GPU
+    busy fraction and queue depth per tier in `host_heartbeat_log`, and the
+    `precis stats --utilization` row.
 13. **backlog/local-coder-batch-harness.md** — idea (Reto 2026-10-04); last
     because it needs the standing castor server and has no quality number.
 

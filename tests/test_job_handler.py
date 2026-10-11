@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,7 +23,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers import job as job_mod
 from precis.handlers.job import JobHandler
-from precis.store import Store
+from precis.store import Store, Tag
 
 
 @pytest.fixture
@@ -520,6 +522,77 @@ def test_limit_zero_raises_badinput(jobs: JobHandler) -> None:
 
 
 # ── list-view registration ─────────────────────────────────────────
+
+
+# -- '/throughput': is the fleet working or idle (gr458727) -----------------
+
+
+def _seed_throughput_job(
+    store: Store,
+    *,
+    host: str | None,
+    status: str,
+    started_hours_ago: float | None = None,
+    executor: str = "coordinator",
+) -> None:
+    meta: dict[str, Any] = {"job_type": "fake", "executor": executor}
+    if host is not None:
+        meta["lease_host"] = host
+        meta["lease_process"] = "precis-worker"
+    if started_hours_ago is not None:
+        started = datetime.now(UTC) - timedelta(hours=started_hours_ago)
+        meta["started_at"] = started.isoformat()
+    ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    if started_hours_ago is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - (%s || ' hours')::interval "
+                "WHERE ref_id = %s",
+                (started_hours_ago, ref.id),
+            )
+            conn.commit()
+
+
+def test_throughput_counts_claims_outcomes_and_queue(
+    jobs: JobHandler, store: Store
+) -> None:
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=1)
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=2)
+    _seed_throughput_job(store, host="castor", status="failed", started_hours_ago=3)
+    _seed_throughput_job(store, host="melchior", status="running", started_hours_ago=1)
+    _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    # Finished before the window: counted nowhere.
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
+
+    body = jobs.get(id="/throughput").body
+
+    assert "castor precis-worker claimed=3 succeeded=2 failed=1 running=0" in body
+    assert "melchior precis-worker claimed=1 succeeded=0 failed=0 running=1" in body
+    assert "4 claim(s) across 2 host/process row(s)." in body
+    assert "queued now by executor: ssh_node=1" in body
+
+
+def test_throughput_window_widens(jobs: JobHandler, store: Store) -> None:
+    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
+    assert "castor" not in jobs.get(id="/throughput").body
+    assert "castor precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
+
+
+def test_throughput_lists_heartbeating_host_with_no_claims(
+    jobs: JobHandler, store: Store
+) -> None:
+    store.record_heartbeat("idle-box", load1=0.1)
+
+    body = jobs.get(id="/throughput").body
+
+    assert "idle-box (heartbeating) claimed=0" in body
+    assert "queued now by executor: none" in body
+
+
+def test_throughput_rejects_bad_window(jobs: JobHandler) -> None:
+    with pytest.raises(BadInput):
+        jobs.get(id="/throughput?since=0")
 
 
 def test_logs_is_a_supported_list_view(jobs: JobHandler) -> None:

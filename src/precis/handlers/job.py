@@ -249,7 +249,7 @@ class JobHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "logs", "builds")
+        return ("recent", "logs", "builds", "throughput")
 
     def get(
         self,
@@ -284,7 +284,118 @@ class JobHandler(NumericRefHandler):
         if view == "builds" or view.startswith("builds?"):
             _, _, query_string = view.partition("?")
             return self._render_builds_view(query_string)
+        if view == "throughput" or view.startswith("throughput?"):
+            _, _, query_string = view.partition("?")
+            return self._render_throughput_view(query_string)
         return super()._list_view(view)
+
+    def _render_throughput_view(self, query_string: str) -> Response:
+        """``id='/throughput?since=<hrs>'`` — is the fleet working or idle?
+
+        The nursery's detectors all answer "is work stuck?"; silence from
+        them reads the same for a flat-out fleet and one doing nothing
+        (gr458727). This view is the measurement, read-only, no alerting
+        (idle is often the correct state). One row per ``(host, process)``
+        from the lease stamps: ``claimed`` (first claim inside the window),
+        ``succeeded`` / ``failed`` (terminal and last touched inside the
+        window), ``running`` now. A trailer gives the current queue depth by
+        executor, so "idle" is read next to "and there was nothing to do".
+        Heartbeating hosts with no claim in the window are listed as
+        ``claimed=0``.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        since_hours = _parse_logs_int(
+            params.get("since"),
+            default=_BUILDS_DEFAULT_SINCE_HOURS,
+            field="since",
+            example="since=24 (default) — hours to look back, max 168",
+        )
+        if since_hours <= 0:
+            raise BadInput(
+                f"since={since_hours} must be a positive number of hours",
+                next="since=24 (default) — hours to look back, max 168",
+            )
+        since_hours = min(since_hours, _LOGS_MAX_SINCE_HOURS)
+        cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH j AS (
+                  SELECT COALESCE(r.meta->>'lease_host', '?')    AS host,
+                         COALESCE(r.meta->>'lease_process', '?') AS process,
+                         (r.meta->>'started_at')::timestamptz    AS started,
+                         r.updated_at                            AS touched,
+                         (SELECT t.value FROM ref_tags rt
+                            JOIN tags t ON t.tag_id = rt.tag_id
+                           WHERE rt.ref_id = r.ref_id
+                             AND t.namespace = 'STATUS' LIMIT 1)  AS status
+                    FROM refs r
+                   WHERE r.kind = 'job' AND r.meta ? 'lease_host'
+                )
+                SELECT host, process,
+                       count(*) FILTER (WHERE started >= %(cutoff)s),
+                       count(*) FILTER (WHERE status = 'succeeded'
+                                         AND touched >= %(cutoff)s),
+                       count(*) FILTER (WHERE status = 'failed'
+                                         AND touched >= %(cutoff)s),
+                       count(*) FILTER (WHERE status = 'running'),
+                       max(started)
+                  FROM j
+                 GROUP BY 1, 2
+                HAVING count(*) FILTER (WHERE started >= %(cutoff)s
+                                           OR touched >= %(cutoff)s
+                                           OR status = 'running') > 0
+                 ORDER BY 1, 2
+                """,
+                {"cutoff": cutoff},
+            ).fetchall()
+            queued = conn.execute(
+                """
+                SELECT COALESCE(r.meta->>'executor', '?'), count(*)
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'job' AND t.namespace = 'STATUS'
+                   AND t.value = 'queued'
+                 GROUP BY 1 ORDER BY 1
+                """
+            ).fetchall()
+            beating = conn.execute(
+                "SELECT host FROM host_heartbeat WHERE ts >= %s ORDER BY host",
+                (cutoff,),
+            ).fetchall()
+
+        lines = [
+            f"# fleet throughput — from job lease stamps, since={since_hours}h "
+            f"(cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})",
+            "# claimed = first claim in window; succeeded/failed = terminal and "
+            "last touched in window; running = now",
+            "",
+        ]
+        seen_hosts = {str(r[0]) for r in rows}
+        for host, process, claimed, ok, failed, running, last in rows:
+            last_s = as_utc(last)
+            lines.append(
+                f"{host} {process} claimed={claimed} succeeded={ok} "
+                f"failed={failed} running={running} last_claim="
+                + (last_s.strftime("%Y-%m-%dT%H:%M:%SZ") if last_s else "-")
+            )
+        silent = [str(h[0]) for h in beating if str(h[0]) not in seen_hosts]
+        for host in silent:
+            lines.append(f"{host} (heartbeating) claimed=0 — no job activity")
+        if not rows and not silent:
+            lines.append("no job activity and no heartbeating host in this window")
+        total = sum(int(r[2]) for r in rows)
+        lines.append("")
+        lines.append(f"{total} claim(s) across {len(rows)} host/process row(s).")
+        depth = ", ".join(f"{e}={n}" for e, n in queued) or "none"
+        lines.append(f"queued now by executor: {depth}")
+        lines.append(
+            "Idle beside an empty queue is healthy; idle beside queued work "
+            "is the fault. Measurement only: no alert reads this."
+        )
+        return Response(body="\n".join(lines))
 
     def _render_builds_view(
         self, query_string: str, *, sha: str | None = None
