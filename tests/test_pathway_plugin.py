@@ -133,11 +133,47 @@ class _FakeCtx:
         self.meta_updates.update(fields)
 
 
+_RUN_CACHE: dict[str, PathwayArtifact] = {}
+_REAL_RUN = runner.run_pathway_from_yaml
+
+
+def _cached_run(yaml_text: str) -> PathwayArtifact:
+    """`runner.run_pathway_from_yaml`, computed once per distinct config for the
+    whole module and handed back as a deep copy (gr346717). Tests that assert on
+    views/summaries of a computed artifact share one real EMT run instead of
+    paying ~1 min each; `test_runner_emt_smoke_and_determinism` and the
+    seed fan-out/subprocess tests still run the pipeline for real."""
+    if yaml_text not in _RUN_CACHE:
+        _RUN_CACHE[yaml_text] = _REAL_RUN(yaml_text)
+    return copy.deepcopy(_RUN_CACHE[yaml_text])
+
+
+# Tests that keep the genuine, uncached pipeline end to end (the rest share
+# `_cached_run` via the autouse fixture below).
+_REAL_EMT_TESTS = frozenset(
+    {"test_runner_emt_smoke_and_determinism", "test_handler_roundtrip"}
+)
+
+
+@pytest.fixture(autouse=True)
+def _share_emt_runs(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """`PathwayHandler.put` computes in-process via `runner.run_pathway_from_yaml`
+    (always EMT). Serve it from the module cache so the view/put tests don't each
+    re-run the pipeline; the opt-out tests above stay real."""
+    if request.node.name in _REAL_EMT_TESTS:
+        return
+
+    def _cached(text: str, **_kw: Any) -> PathwayArtifact:
+        return _cached_run(text)
+
+    monkeypatch.setattr(runner, "run_pathway_from_yaml", _cached)
+
+
 # ─────────────────────────── pure runner: autocatpath-only, no DB ──────────
 
 
 def test_runner_emt_smoke_and_determinism() -> None:
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _REAL_RUN(SMOKE)
     r = art["results_json"]
     assert r["backend"] == "emt"
     assert r["nodes"] and r["edges"], "network produced no states/steps"
@@ -146,7 +182,7 @@ def test_runner_emt_smoke_and_determinism() -> None:
     # every state's relaxed geometry is harvested for slice-1 ingest
     assert set(art["structures_extxyz"]) == set(r["nodes"])
     # deterministic content address for an unchanged config
-    assert runner.run_pathway_from_yaml(SMOKE)["content_key"] == art["content_key"]
+    assert _REAL_RUN(SMOKE)["content_key"] == art["content_key"]
 
 
 # ─────────────────────── §B-1 seed fan-out: pure runner ────────────────────
@@ -240,7 +276,7 @@ def test_run_kinetics_missing_module_sets_kinetics_error(
     still succeeds."""
     from autocatpath import __version__ as engine_version
 
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     monkeypatch.setattr(runner, "_import_kinetics", lambda: None)
     runner.run_kinetics(art["config"], art)
     assert (
@@ -258,7 +294,7 @@ def test_run_kinetics_success_folds_solve_result_onto_results_json(
     result folded onto ``results_json["kinetics"]`` verbatim, keyed off the
     SAME ``nodes``/``edges``/``score.activity.span_eV`` the aggregate just
     produced."""
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     canned = {"tof": 4.2e-3, "product": "NO3", "drc": {"X_RC": {"NO->NO2": 0.9}}}
     calls: dict[str, Any] = {}
 
@@ -287,7 +323,7 @@ def test_run_kinetics_solve_exception_sets_kinetics_error_never_raises(
     """Kinetics is a diagnostic bonus riding on a successful aggregate, never
     load-bearing for it: ANY exception the solve raises lands as
     ``kinetics_error`` — ``run_kinetics`` itself never raises."""
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
 
     class _FakeKinetics:
         @staticmethod
@@ -311,7 +347,7 @@ def test_summarize_passes_through_che_electro_scalars() -> None:
     promoted onto the scalar summary / job meta."""
     from precis_pathway._dispatch_common import summarize
 
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     art = {
         **art,
         "results_json": {
@@ -349,7 +385,7 @@ def test_summarize_gates_che_route_scalars_on_barrier_blockers() -> None:
     ``P_side`` keeps its own engine-side gate and passes through."""
     from precis_pathway._dispatch_common import summarize
 
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     blocked = {
         "U_L": -0.105,
         "U_opt": -41.5,
@@ -415,7 +451,7 @@ def test_summarize_gates_che_route_scalars_on_barrier_blockers() -> None:
 def test_summarize_stamps_a_non_null_p_side() -> None:
     from precis_pathway._dispatch_common import summarize
 
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     art = {**art, "results_json": {**art["results_json"], "P_side": 0.12}}
     assert summarize(art)["P_side"] == 0.12
 
@@ -639,7 +675,7 @@ def test_summarize_folds_in_kinetics_scalars() -> None:
     selectivity, off a real computed artifact's `results_json`."""
     from precis_pathway._dispatch_common import summarize
 
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     art = {
         **art,
         "results_json": {**art["results_json"], "kinetics": {"tof": 10.0}},
@@ -674,7 +710,7 @@ def test_content_key_discriminates_config() -> None:
 
 def test_chem_safe_yaml_keeps_NO_a_string() -> None:
     # YAML 1.1 would coerce bare NO -> False; autocatpath's loader must not.
-    art = runner.run_pathway_from_yaml(SMOKE)
+    art = _cached_run(SMOKE)
     assert art["config"]["substrate"] == "NO"
 
 
@@ -698,14 +734,14 @@ def test_network_topology_and_mermaid_no_compute() -> None:
     assert "Intermediates" in txt and "Elementary steps" in txt
 
     # a computed run renders with energies + barriers
-    gmer = graph_to_mermaid(runner.run_pathway_from_yaml(SMOKE)["graph_json"])
+    gmer = graph_to_mermaid(_cached_run(SMOKE)["graph_json"])
     assert "Ea" in gmer and "eV" in gmer
 
 
 def test_analysis_over_computed_graph() -> None:
     from precis.utils import reaction_graph as analysis
 
-    art = runner.run_pathway_from_yaml(BRANCH)
+    art = _cached_run(BRANCH)
     g, res = art["graph_json"], art["results_json"]
     root, target = analysis.roots(g, res)
     assert root in {n["id"] for n in g["nodes"]}  # root is a real node, not the label
@@ -749,7 +785,7 @@ def test_toon_views_and_aligned_compare() -> None:
     from precis.utils import reaction_graph as analysis
     from precis_pathway import toon_views
 
-    a1 = runner.run_pathway_from_yaml(BRANCH)
+    a1 = _cached_run(BRANCH)
     meta = {
         "graph": a1["graph_json"],
         "results": a1["results_json"],
@@ -761,7 +797,7 @@ def test_toon_views_and_aligned_compare() -> None:
     assert "rate-limiting" in ana and "barriers (descending)" in ana
 
     # aligned interleaved compare: two candidates sharing the branching network
-    a2 = runner.run_pathway_from_yaml(BRANCH.replace("element: Pd", "element: Pt"))
+    a2 = _cached_run(BRANCH.replace("element: Pd", "element: Pt"))
 
     def _cand(slug: str, art: PathwayArtifact, el: str) -> dict:
         g, res = art["graph_json"], art["results_json"]
@@ -780,7 +816,7 @@ def test_intermediates_and_steps_surface_structure_handles() -> None:
     # straight to get(kind='structure', id=..., view='atom').
     from precis_pathway import toon_views
 
-    art = runner.run_pathway_from_yaml(BRANCH)
+    art = _cached_run(BRANCH)
     states = art["results_json"]["pathway"]
     assert len(states) >= 2
 
