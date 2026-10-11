@@ -160,12 +160,16 @@ removed as met — the transport move it waited on happened 09-29)
          tether is not in the `.hx` text and figs/render_hero.py's
          untethered build cannot reproduce it. A prod `hexfold` generate
          still relaxes untethered until S4b.
-       - The (24,0) pill variant waits on gr464358 (the k=10 frustum is
-         seeded onto the sheet). Hole cells that hit gr464341's fuse
-         phase are refused, so a layout change may need a cell moved.
+       - The (24,0) pill variant is unblocked: gr464358's frustum was
+         seeded mirrored (fixed 2026-10-11, no seed pair under 1.2 Å for
+         k = 4..16, n = 6..24); re-run `plan_foot(24, 8.0)`. Hole cells
+         that hit gr464341's fuse phase are refused, so a layout change
+         may need a cell moved.
        - Reto picked pill12. The pillar's fused (6,0)→C60 neck opens under
          MACE-MP and GFN2-xTB (gr464391), so it can only be shown as a
-         stick model.
+         stick model. Those runs used a mirror-registered neck seed
+         (gr464358: stick left 9 pairs at 1.04–1.2 Å, now none under
+         1.8 Å). Next: re-run hexfold-corner/s4_xtb.py on the new neck.
        - The bonded alternative passes both relaxers as an isolated
          pillar: a (12,0) tube with a lid and the C60 as a sidewall [2+2]
          bud (scripts in hexfold-corner/s4_lid_check.py).
@@ -254,8 +258,7 @@ removed as met — the transport move it waited on happened 09-29)
          mints tethered scenes, about 35 s, synchronous.
          - It reports `scene.bar` and `scene.top.joint` WARNs, also in the
            provenance; the stored record keeps `scene` and `plan`.
-         - `plan_foot` rows with ERROR findings no longer meet, so the
-           (24,0) R=8 k=10 cell now misses (gr464358).
+         - `plan_foot` rows with ERROR findings no longer meet.
          - `hexfold` output is unchanged, pinned by the golden test.
          - Next: a prod dogfood of the pill12 scene after the round
            deploys, read back with `view='block'`.
@@ -352,23 +355,19 @@ removed as met — the transport move it waited on happened 09-29)
        is the correct report. The example comment and
        `test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves`'s
        docstring now say so.
-     - **gr462075** `flanged_doughnut`: every seed pair under 0.7 Å
-       (22, min 0.15 Å) lies among the 24 atoms of the `outer` k=3 seam.
-       Seam atoms are seeded at their rim neighbours' mean, and the three rims they average over (`top.in`,
-       `bottom.in`, `flange.hole`) are placed up to 11.45 Å apart by the
-       known part-graph cycle residual
-       (`test_example_seeds_have_no_long_crossing_bonds`' 11.7 bound). So
-       the root is that residual, not the seam seeding: re-seeding the
-       seam would only hide it. That is a `place_graph` item and needs a
-       design note of its own.
-     - **gr462075** `flanged_doughnut` (+`_oh`): seed 89, 0.15 Å.
-     - **gr459812** `sheet_pill_bump`: seed 66, 0.49 Å. `capped_tube` and
-       `capped_tube_da_neck` seed clean (≥ 1.47 Å) and only stick
-       crushes them, so they belong to the spring check below, not here.
-       A curved rim seeding its seam mirrored on the *fuse* path is the
-       same symptom the menu path had. Measure whether the cause is the
-       same; if it is, note that a tube cannot simply be reflected,
-       because it is chiral.
+     - **gr462075** `flanged_doughnut` (+`_oh`): gr464358's fix (2026-10-11)
+       registered the flange to the seam's index-to-index pairing: seed
+       pairs under 0.7 Å 22 → 0, stick pairs under 1.0 Å 69 → 13 (min
+       0.27 → 0.40 Å), max seam crossing bond 11.45 → 10.79 Å. Left: the
+       two rigid flat washers' outer rims sit ~10 Å apart (the wall is
+       between them), and the authored seam phase k=0 is not the best
+       (k=17 seeds the flange edge at 2.17 Å). A `place_graph` / curved
+       washer seed item; needs a design note of its own.
+     - **gr459812** `sheet_pill_bump`, `capped_tube`,
+       `capped_tube_da_neck`: fixed by gr464358 (2026-10-11), the fuse
+       path's mirror. Stick pairs under 1.8 Å 32 → 3 (min 0.90 → 1.65 Å),
+       36 → 0, 48 → 0. A chiral tube is never reflected
+       (`place.mirror_refused`).
    - **Then the springs, before any `K_REP` change.** Where the seed is
      fine and stick compresses the junction (buds, DA/DB necks, capped
      tubes), angle deviations stay at 47–61°. Check the rest angle and

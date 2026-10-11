@@ -3453,6 +3453,147 @@ def _bond_transform(
     return r, t
 
 
+def _rim_sign(pos: np.ndarray, dang: tuple[int, ...], inst_c: np.ndarray) -> int:
+    """+1 when a non-flat rim's dangling list winds positively about its
+    outward normal (:func:`_frame`), -1 when negatively."""
+    c, n = _frame(pos, dang, inst_c)
+    d = pos[list(dang)] - c
+    area = np.cross(d, np.roll(d, -1, axis=0)).sum(axis=0)
+    return 1 if float(area @ n) > 0.0 else -1
+
+
+def _fuse_parity(
+    pos: np.ndarray,
+    inst_ords: dict[str, list[int]],
+    inst_of: dict[int, str],
+    flat: set[str],
+    rigid: set[str],
+    spec_inst: dict[str, Instance],
+    fuse_frames: list[
+        tuple[str, tuple[int, ...], str, tuple[int, ...], int, bool, bool]
+    ],
+    origin: str,
+    findings: list[Finding],
+) -> dict[str, int]:
+    """Give every rim-fused instance the handedness its fuses need: reflect
+    the non-flat seeds that need it in place on ``pos``, and return the
+    sign (+1/-1) each flat instance's winding normal takes (gr464358).
+
+    :func:`_fuse_transform` pairs ``P[i]`` with ``Q[(k-i) mod n]`` by a
+    proper rotation, which reaches that pairing only when the two lists
+    wind the same way about their own outward normals.  A flat instance
+    has no outward side of its own, so its rims take the
+    :func:`_winding_normal` (sign -1 by construction) and a flip of that
+    normal is its free mirror.  A non-flat rim's sign is fixed by its seed;
+    when a fuse's two signs differ, one side is the mirror image of the
+    embedding the pairing describes, and the fit registers it mirrored: one
+    pair at a bond length, the opposite pair a rim diameter away.  Measured
+    before this pass: the ``cap(6k,0)`` frustum with three heptagons (its
+    disclination lift folds onto the face its rims wind against) seeded
+    8-38 A sheet crossing bonds for k = 8..16 and three atoms 0.09 A onto
+    sheet atoms at k = 10; ``fullerene(C60) - hexagon`` fused to a (6,0)
+    tube seeded its neck at 3.5/4.6 A mean/max crossing bonds, which
+    ``stick`` closed into nine pairs at 1.04-1.2 A; ``cap(5,5)`` on a
+    (5,5) tube 4.4/6.3 A.
+
+    Parities are propagated over the fuse graph (``eps_b = eps_a * s_p *
+    s_q``) per connected component, then the component's overall sign is
+    the one that mirrors no ``rigid`` instance, then keeps ``origin`` (a
+    sheet origin's face decides which way every feature grows: a scene's
+    pillars along -z), then mirrors the fewest non-flat ones.  A non-flat
+    instance with parity -1 is
+    reflected about its centroid through z: for a seed lifted off a flat
+    lattice layout that keeps the layout and moves the lift to the other
+    face; the closed-form seeds (C60 and the ``cap(5,5)`` cut from it) are
+    achiral.  ``rigid`` holds the instances that must not be mirrored (a
+    chiral tube is the other hand mirrored; a menu-attached cage was placed
+    by :func:`_kabsch_lands_inward`): one that would need it is left as
+    seeded with ``place.mirror_refused``, as is a component whose fuse
+    cycle disagrees with itself.
+    """
+    adj: dict[str, list[tuple[str, int, str]]] = {}
+    for pn, p_dang, qn, q_dang, _k, _real, kabsch in fuse_frames:
+        ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
+        if kabsch or ia == ib:
+            continue
+        s_p = -1 if ia in flat else _rim_sign(pos, p_dang, pos[inst_ords[ia]].mean(0))
+        s_q = -1 if ib in flat else _rim_sign(pos, q_dang, pos[inst_ords[ib]].mean(0))
+        adj.setdefault(ia, []).append((ib, s_p * s_q, f"{pn}/{qn}"))
+        adj.setdefault(ib, []).append((ia, s_p * s_q, f"{pn}/{qn}"))
+    eps: dict[str, int] = {}
+    for start in sorted(adj, key=lambda x: (x != origin, x)):
+        if start in eps:
+            continue
+        rel = {start: 1}
+        queue = [start]
+        clash: str | None = None
+        while queue:
+            cur = queue.pop(0)
+            for nxt, prod, label in adj[cur]:
+                want = rel[cur] * prod
+                if nxt not in rel:
+                    rel[nxt] = want
+                    queue.append(nxt)
+                elif rel[nxt] != want and clash is None:
+                    clash = label
+        if clash is not None:
+            findings.append(
+                Finding(
+                    "place.mirror_refused",
+                    Severity.WARN,
+                    f"{start}'s fused part graph has no consistent "
+                    f"handedness (the cycle through {clash} disagrees); "
+                    "its parts are placed off the first fuse reaching them",
+                    where=start,
+                )
+            )
+
+        def cost(g: int, rel: dict[str, int] = rel) -> tuple[int, int, int]:
+            mirrored = [x for x, r in rel.items() if g * r < 0]
+            return (
+                sum(x in rigid for x in mirrored),
+                int(origin in mirrored),
+                sum(x not in flat for x in mirrored),
+            )
+
+        g = min((1, -1), key=cost)
+        for x, r in rel.items():
+            eps[x] = g * r
+    for inst, e in sorted(eps.items()):
+        if e > 0 or inst in flat:
+            continue
+        si = spec_inst.get(inst)
+        span = si.span if si else None
+        if inst in rigid:
+            findings.append(
+                Finding(
+                    "place.mirror_refused",
+                    Severity.WARN,
+                    f"{inst}: its fused rims need its seed mirrored, but "
+                    "its mirror is not the same part (a chiral tube's "
+                    "other hand, or a menu-placed cage); left as seeded",
+                    where=inst,
+                    span=span,
+                )
+            )
+            continue
+        idx = inst_ords[inst]
+        cz = float(pos[idx, 2].mean())
+        pos[idx, 2] = 2.0 * cz - pos[idx, 2]
+        findings.append(
+            Finding(
+                "place.mirrored",
+                Severity.INFO,
+                f"{inst}'s seed reflected through z: its rims wound against "
+                "the fuses pairing them, so the fit would have registered "
+                "it mirrored",
+                where=inst,
+                span=span,
+            )
+        )
+    return {x: e for x, e in eps.items() if x in flat}
+
+
 def _place_seeds(
     spec: Spec,
     net: Net,
@@ -3525,10 +3666,31 @@ def _place_seeds(
 
     inst_cent = {k_: pos[v].mean(axis=0) for k_, v in inst_ords.items()}
     flat = _flat_normals(pos, inst_ords, sigma)
+    spec_inst = {inst.name: inst for inst in spec.instances}
+    origin = spec.origin or net.atoms[0].instance
+    # parts whose mirror is a different part: a chiral tube, and a cage
+    # placed by a menu attach (decided below, by _kabsch_lands_inward)
+    rigid = {inst_of[d[0]] for f in fuse_frames if f[6] for d in (f[1], f[3])}
+    for name, si in spec_inst.items():
+        nm = [_param(si, x, "0").strip() for x in ("0", "1")]
+        if si.kind == "tube" and nm[0] != nm[1] and "0" not in nm:
+            rigid.add(name)
+    flat_eps = _fuse_parity(
+        pos,
+        inst_ords,
+        inst_of,
+        flat,
+        rigid,
+        spec_inst,
+        fuse_frames,
+        origin,
+        findings,
+    )
     # the face a bud belongs on, for each flat instance fused through a rim
     bud_side = _flat_bud_sides(
         pos, flat, inst_ords, inst_of, fuse_frames, net.ports, findings
     )
+    bud_side = {k_: v * flat_eps.get(k_, 1) for k_, v in bud_side.items()}
     authored = _authored_faces(spec, flat, inst_ords, pos, bud_side, findings)
 
     def side_of(host: str, bud: str) -> np.ndarray | None:
@@ -3544,7 +3706,6 @@ def _place_seeds(
     # silently swapped for its enantiomer.  The decision is made once per
     # cage, off its first menu frame; every frame is then re-checked, so
     # a cage bridging two hosts that still lands inward on one is reported.
-    spec_inst = {inst.name: inst for inst in spec.instances}
     menu_frames: list[tuple[str, str, tuple[int, ...], tuple[int, ...], int]] = []
     for _pn, p_dang, _qn, q_dang, k, _real, kabsch in fuse_frames:
         if not kabsch:
@@ -3633,11 +3794,11 @@ def _place_seeds(
     # centroid sign reads the ±0.1 sigma seed perturbation), so it is taken
     # from the rim's own winding instead: ``_fuse_transform``'s pairing
     # ``P[i] <-> Q[(k-i) mod n]`` is only rigid-reachable when both
-    # dangling lists wind the same way about their normals, and every
-    # non-flat rim's list winds negatively about its outward normal
-    # (measured over every hexfold/examples fuse, 2026-10-01). Signing the
-    # flat rim to wind negatively too puts its partner on the side the
-    # topology demands; the hole and outer rims of one washer then come
+    # dangling lists wind the same way about their normals.  Signing the
+    # flat rim to wind negatively, times the parity _fuse_parity gave its
+    # instance (-1 where the non-flat partner winds positively, gr464358),
+    # puts its partner on the side the topology demands; the hole and
+    # outer rims of one washer then come
     # out opposite on their own (the annulus traverses them in opposite
     # senses). The earlier "hole rim's centroid sign is reliable" rule
     # held for a hex(1) hole only -- a hex(2)/hex(3) washer read the wrong
@@ -3645,7 +3806,7 @@ def _place_seeds(
     def _flat_sign(inst: str, dang: tuple[int, ...]) -> np.ndarray | None:
         if inst not in flat:
             return None
-        return _winding_normal(pos, dang)
+        return flat_eps.get(inst, 1) * _winding_normal(pos, dang)
 
     for pn, p_dang, qn, q_dang, k, real, kabsch in fuse_frames:
         ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
@@ -3712,7 +3873,6 @@ def _place_seeds(
         )
         add(ib, ia, r2, t2, True)
 
-    origin = spec.origin or net.atoms[0].instance
     placed: dict[str, tuple[np.ndarray, np.ndarray]] = {
         origin: (np.eye(3), np.zeros(3))
     }
@@ -4681,6 +4841,13 @@ def _apply_connects(
         # seam-linked instance (root-caused 2026-09-28 item 2: with no
         # fuse_frames edge at all, an origin that only touches a seam left
         # the whole spec unplaced).
+        #
+        # A fuse_frames entry pairs P[i] with Q[(phase - i) mod n], the
+        # rim0-rim1 pairing above.  A later pair is bonded index to index
+        # (rim_j[m] and rim_j+1[m] share seam atom (k - m)), so its Q list
+        # goes in reversed, Q'[x] = Q[-x mod n], to make that the pairing
+        # the transform fits.  Passed as is, it registered rim j+1 mirrored
+        # (gr462075: flanged_doughnut's flange ran against top and bottom).
         for j in range(krim - 1):
             phase = seam.k if j == 0 else 0
             seam_registry_edges.append(
@@ -4691,12 +4858,15 @@ def _apply_connects(
                     n,
                 )
             )
+            q_dang = resolved[j + 1].dangling
+            if j > 0:
+                q_dang = tuple(q_dang[(-x) % n] for x in range(n))
             fuse_frames.append(
                 (
                     resolved[j].name,
                     resolved[j].dangling,
                     resolved[j + 1].name,
-                    resolved[j + 1].dangling,
+                    q_dang,
                     phase,
                     False,
                     False,

@@ -153,8 +153,9 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
     - clash_min 1.05 Å;
     - every foot inside the bars, with fillet max ≤ 0.17 Å, bonds
       1.367–1.485 Å and pyramidalisation ≤ 10.7°.
-  - The (24,0) R = 5 pill meets every bar after the relax, but its k = 10
-    frustum is seeded onto the sheet (3 × `geom.seed_overlap`, gr464358).
+  - The (24,0) R = 5 pill met every bar after the relax but its k = 10
+    frustum was seeded onto the sheet (3 × `geom.seed_overlap`); the
+    seed was mirror-registered, fixed 2026-10-11 (gr464358). Re-run it.
   - Tops are reported, not barred (`ScenePlan.tops`). A free (6,0) + C60
     neck is about 60° pyramidalised on its own. The tube's last 4 bonds
     below a ball relax untethered: holding them to the cylinder folds the
