@@ -81,8 +81,12 @@ case "$DB" in
         # 127.0.0.1. Also swap the DSN user to agent_ro — pgbouncer rejects
         # the PGOPTIONS read-only startup param (see header); the ro role's
         # grants enforce read-only server-side instead. pgpass supplies
-        # agent_ro's password (no inline creds in the stored DSN).
-        export PRECIS_DATABASE_URL="$(sed -e 's#@host.docker.internal:#@127.0.0.1:#' -e 's#://agent_rw@#://agent_ro@#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
+        # agent_ro's password.
+        # precis_web.readonly_dsn parses the DSN structurally, forces
+        # agent_ro, and verifies current_user + no INSERT on kinds on a real
+        # connection; it exits non-zero (set -e aborts) otherwise.
+        RO_DSN="$(uv run --extra web python -m precis_web.readonly_dsn "$HOME/.secrets/pw/PRECIS_DATABASE_URL")" || exit 1
+        export PRECIS_DATABASE_URL="$RO_DSN"
         unset PGOPTIONS  # would FATAL through pgbouncer
         export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
         echo "guide-web: prod tunnel DSN as agent_ro (grants-enforced read-only), :${PORT}" >&2

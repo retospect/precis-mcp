@@ -50,7 +50,11 @@ def create_app(
             app.state.runtime = build_runtime()
             owns_runtime = True
         nas_stop = threading.Event()
-        if owns_runtime:
+        # PRECIS_MCP_READ_ONLY=1 (scripts/guide-web): the attestation
+        # thread UPDATEs host_heartbeat, so it must not run (gr461387).
+        from precis.dispatch import _read_only_env_override
+
+        if owns_runtime and not _read_only_env_override():
             from precis.workers.heartbeat import start_nas_attest_thread
 
             start_nas_attest_thread(
