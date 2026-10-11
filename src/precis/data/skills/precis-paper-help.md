@@ -256,9 +256,8 @@ put(kind="paper", id="smith2023", args={"pdf_url": "https://host/paper.pdf"})
 Queues a `paper_pull` job: a worker fetches the URL (SSRF-guarded, 50 MB cap,
 `%PDF` required) and drops it in the ingest inbox with a sidecar naming this
 stub (`source='agent_url'`, `url`), so the normal ingest attaches the body.
-Refused up front for a non-paper, a paper that already has a body, and a
-reference-only paper (PDF attached, no body: replacing a body is not
-supported). Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
+Refused up front for a non-paper and a paper that already has a body; a
+bodiless paper holding a preview PDF is accepted. Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
 it after `fetch_oa` failed and you know a legal open copy (repository, author
 page, preprint); `fetch_oa` already covers OA via DOI. Shadow libraries
 (Sci-Hub, LibGen, Z-Library, Anna's Archive and kin) are refused at put time

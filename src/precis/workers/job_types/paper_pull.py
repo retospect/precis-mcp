@@ -161,24 +161,19 @@ def target_problem(store: Store, ref_id: int) -> str | None:
     put (immediate refusal) and the job (state may have moved)."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT r.kind, r.pdf_sha256 IS NOT NULL, "
-            f"{has_body_sql('r')} FROM refs r "
+            f"SELECT r.kind, {has_body_sql('r')} FROM refs r "
             "WHERE r.ref_id = %s AND r.retired_at IS NULL",
             (ref_id,),
         ).fetchone()
     if row is None:
         return "is not a live ref"
-    kind, has_pdf, has_body = row
+    kind, has_body = row
     if kind != "paper":
         return f"is a {kind}, not a paper"
     if has_body:
         return "already has a body (chunks); pdf_url only feeds body-less stubs"
-    if has_pdf:
-        return (
-            "is reference-only (a PDF is already attached, no body); the "
-            "ingest fold promotes only stubs without a PDF, so a replacement "
-            "would mint a duplicate paper - replacing a body is not supported"
-        )
+    # A bodiless ref that already holds a PDF (e.g. a 1-page preview) is a
+    # valid sidecar fold target since 5d95cb2fc (gr465474).
     return None
 
 

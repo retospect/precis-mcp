@@ -143,10 +143,11 @@ def test_put_refuses_bodied_stub(paper, store):
     assert _jobs(store) == []
 
 
-def test_put_refuses_reference_only(paper, store):
+def test_put_accepts_bodiless_ref_holding_a_pdf(paper, store):
+    # A preview PDF with no body is refetchable: the sidecar fold accepts it.
     ref_id = _stub(store, pdf=True)
-    with pytest.raises(BadInput, match="reference-only"):
-        paper.put(id=ref_id, args={"pdf_url": _URL})
+    paper.put(id=ref_id, args={"pdf_url": _URL})
+    assert len(_jobs(store)) == 1
 
 
 def test_put_refuses_non_http_url(paper, store):
