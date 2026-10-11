@@ -67,8 +67,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -80,6 +81,7 @@ from precis.ingest.cards import rewrite_cards
 from precis.ingest.db_writer import PaperToWrite, register_aliases_and_maybe_upgrade
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
+from precis.store.types import Tag
 from precis.utils.authors import author_display, author_names, is_junk_author_name
 
 if TYPE_CHECKING:
@@ -584,6 +586,13 @@ def requeue_front_matter_only_papers(
 #: source) so ``view='log'`` and the stats split read it unambiguously.
 BODILESS_HEAL_SOURCE = "heal:bodiless"
 
+#: Open tag on a ref whose text could not be extracted even after a retry
+#: (scanned / image-only, or the extractor returns nothing). Marker already
+#: OCRs internally and there is no separate OCR engine, so this is the
+#: terminal "needs an OCR/repair pass by an operator" flag; the heal never
+#: retries a flagged (ref, sha).
+NEEDS_OCR_TAG = "body:needs_ocr"
+
 #: Fetch legs whose ``fetch_ok`` means "Elsevier's Article Retrieval API
 #: answered" — for a non-entitled DOI that is a well-formed one-page
 #: preview, and re-running Marker over it would turn a bodiless paper into
@@ -630,6 +639,10 @@ class BodilessOutcome:
     * ``unreadable`` — the PDF does not open, has no pages, has no text
       layer, or the extractor returned no body; ``reason`` says which
       (journalled).
+    * ``extract_retry`` — the extractor returned no body chunks the first
+      time; journalled once so the next pass re-runs it (a transient Marker
+      failure is possible). The second empty result is ``unreadable`` +
+      :data:`NEEDS_OCR_TAG`; never a third attempt.
     * ``readable`` — dry-run only: would be extracted.
     * ``deferred`` — readable, but this pass's extraction cap is spent or
       the file lives on another node; retried next pass (not journalled).
@@ -641,6 +654,9 @@ class BodilessOutcome:
     reason: str = ""
     chunks_written: int = 0
     path: str | None = None
+    #: Terminal text-less verdict: Marker (which OCRs internally) has had its
+    #: retry and found nothing, so the ref is tagged :data:`NEEDS_OCR_TAG`.
+    needs_ocr: bool = False
 
     def line(self) -> str:
         bits = [f"ref_id={self.ref_id}", self.outcome]
@@ -660,6 +676,7 @@ class _BodilessCandidate:
     cite_keys: tuple[str, ...]
     last_fetch_source: str | None
     paper_id: str
+    empty_retries: int = 0
 
 
 def _bodiless_candidates(
@@ -674,7 +691,12 @@ def _bodiless_candidates(
                lf.source AS last_fetch_source,
                (SELECT pid.id_value FROM ref_identifiers pid
                  WHERE pid.ref_id = r.ref_id AND pid.id_kind = 'paper_id'
-                 LIMIT 1) AS paper_id
+                 LIMIT 1) AS paper_id,
+               (SELECT count(*) FROM ref_events x
+                 WHERE x.ref_id = r.ref_id AND x.source = %s
+                   AND x.event = 'extract_retry'
+                   AND x.payload->>'pdf_sha256' = r.pdf_sha256::text
+               ) AS empty_retries
           FROM refs r
           LEFT JOIN pdfs p ON p.pdf_sha256 = r.pdf_sha256
           LEFT JOIN ref_identifiers ri
@@ -692,15 +714,27 @@ def _bodiless_candidates(
            AND NOT EXISTS (
                  SELECT 1 FROM ref_events j
                   WHERE j.ref_id = r.ref_id AND j.source = %s
+                    AND j.event <> 'extract_retry'
                     AND j.payload->>'pdf_sha256' = r.pdf_sha256::text
                )
          GROUP BY r.ref_id, r.pdf_sha256, r.title, p.storage_path, lf.source
          ORDER BY r.ref_id
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(sql, (BODILESS_HEAL_SOURCE,)).fetchall()
+        rows = conn.execute(
+            sql, (BODILESS_HEAL_SOURCE, BODILESS_HEAL_SOURCE)
+        ).fetchall()
     out: list[_BodilessCandidate] = []
-    for ref_id, sha, title, storage_path, cite_keys, last_src, paper_id in rows:
+    for (
+        ref_id,
+        sha,
+        title,
+        storage_path,
+        cite_keys,
+        last_src,
+        paper_id,
+        retries,
+    ) in rows:
         # The slug is one of the ``cite_key`` identifiers (v2: ``refs.slug``
         # is gone), so the aggregate already carries it.
         keys = sorted(k for k in (cite_keys or ()) if k)
@@ -713,6 +747,7 @@ def _bodiless_candidates(
                 cite_keys=tuple(keys),
                 last_fetch_source=last_src,
                 paper_id=str(paper_id) if paper_id else f"ref{int(ref_id)}",
+                empty_retries=int(retries or 0),
             )
         )
     if limit:
@@ -753,6 +788,8 @@ def _journal_bodiless(
         payload["path"] = outcome.path
     if outcome.outcome == "extracted":
         payload["chunks"] = outcome.chunks_written
+    if outcome.needs_ocr:
+        payload["route"] = "ocr"
     store.append_event(
         cand.ref_id,
         source=BODILESS_HEAL_SOURCE,
@@ -834,6 +871,10 @@ def heal_bodiless_pdfs(
             return
         with store.tx() as conn:
             _journal_bodiless(store, cand, out, conn=conn)
+            if out.needs_ocr:
+                store.add_tag(
+                    cand.ref_id, Tag.open(NEEDS_OCR_TAG), set_by="system", conn=conn
+                )
 
     for cand in candidates:
         rid, sha = cand.ref_id, cand.pdf_sha256
@@ -901,6 +942,7 @@ def heal_bodiless_pdfs(
                     "unreadable",
                     reason=f"scanned: {pages} page(s), no text layer",
                     path=str(path),
+                    needs_ocr=True,
                 ),
             )
             continue
@@ -960,9 +1002,28 @@ def heal_bodiless_pdfs(
             fb = body.meta.get("extract_fallback_reason")
             if fb:
                 reason += f" (fallback: {str(fb)[:120]})"
+            if cand.empty_retries < 1:
+                # First empty result: a transient Marker failure is possible,
+                # so journal a retry marker and let the next pass run the
+                # extractor once more. Bounded: the marker is counted per
+                # (ref, sha), so a second empty result is terminal.
+                _settle(
+                    cand,
+                    BodilessOutcome(
+                        rid, sha, "extract_retry", reason=reason, path=str(path)
+                    ),
+                )
+                continue
             _settle(
                 cand,
-                BodilessOutcome(rid, sha, "unreadable", reason=reason, path=str(path)),
+                BodilessOutcome(
+                    rid,
+                    sha,
+                    "unreadable",
+                    reason=f"{reason}; empty after retry, flagged for OCR",
+                    path=str(path),
+                    needs_ocr=True,
+                ),
             )
             continue
 
@@ -1018,6 +1079,281 @@ def heal_bodiless_pdfs(
             ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
         )
     return outcomes
+
+
+# ---------------------------------------------------------------------------
+# Partial bodies — held text that is only references / SI (gr464259)
+# ---------------------------------------------------------------------------
+
+#: ``ref_events.source`` of the partial-body verdicts. Events: ``refetch_queued``
+#: (the ref's one re-fetch, payload carries the sha it was queued at),
+#: ``terminal`` (stop; payload ``reason``). A ``terminal`` row excludes the ref
+#: from every later pass, so the whole flow is at most one re-fetch.
+PARTIAL_BODY_SOURCE = "heal:partial_body"
+
+#: Open tag a ``terminal`` verdict puts on the ref so read-for-question
+#: gates and operators can see "the held text is not the article body".
+PARTIAL_BODY_TAG = "body:partial"
+
+#: Share of a paper's body chunks that must be references or SI to call it
+#: partial (Reto 2026-10-11: >= 90%).
+PARTIAL_BODY_MIN_FRACTION = 0.9
+
+#: A re-fetch is judged only this long after its ``fetch_ok`` (the watcher
+#: ingests asynchronously), and abandoned if no fetch happens within the
+#: timeout (no OA copy of the main article).
+_PARTIAL_JUDGE_GRACE = timedelta(hours=6)
+_PARTIAL_REFETCH_TIMEOUT = timedelta(days=7)
+
+_SI_MARKER_RE = re.compile(
+    r"supporting\s+information|supplementary\s+(?:information|material|data)"
+    r"|electronic\s+supplementary|\b(?:figure|fig\.|table|scheme)\s+S\d+\b",
+    re.IGNORECASE,
+)
+_MAIN_HEADING_RE = re.compile(
+    r"^\W*(?:\d+[.)]?\s*|[IVX]+\.\s*)?"
+    r"(?:introduction|results?(?:\s+and\s+discussion)?|discussion|conclusions?)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class PartialBodyVerdict:
+    fraction: float
+    kind: str  # "references" | "si" | "references+si"
+    body_chunks: int
+
+
+def classify_partial_body(
+    chunks: Sequence[tuple[str, str, Sequence[str] | None]],
+) -> PartialBodyVerdict | None:
+    """Pure classifier over a paper's body chunks ``(chunk_kind, text,
+    section_path)`` in ``ord`` order. Returns a verdict when at least
+    :data:`PARTIAL_BODY_MIN_FRACTION` of them are bibliography or SI.
+
+    A chunk is *references* when its kind says so. SI is judged per document
+    first: the opening chunks carry an SI marker ("Supporting Information",
+    "Figure S3", ...) and no chunk has an Introduction / Results /
+    Discussion / Conclusion heading, so every non-reference chunk is SI. A
+    document that fails that test still counts the individual chunks whose
+    own opening text carries an SI marker.
+    """
+    n = len(chunks)
+    if n == 0:
+        return None
+    refs = sum(1 for kind, _, _ in chunks if kind == "references")
+    rest = [(t, sp) for kind, t, sp in chunks if kind != "references"]
+
+    def _marked(text: str, sp: Sequence[str] | None) -> bool:
+        return bool(_SI_MARKER_RE.search(text[:600] + " " + " ".join(sp or ())))
+
+    def _main_heading(text: str, sp: Sequence[str] | None) -> bool:
+        first = text.lstrip().splitlines()[0] if text.strip() else ""
+        return any(_MAIN_HEADING_RE.match(h) for h in (*(sp or ()), first))
+
+    si_doc = (
+        bool(rest)
+        and any(_marked(t, sp) for t, sp in rest[:3])
+        and not any(_main_heading(t, sp) for t, sp in rest)
+    )
+    si = len(rest) if si_doc else sum(1 for t, sp in rest if _marked(t[:300], sp))
+    frac = (refs + si) / n
+    if frac < PARTIAL_BODY_MIN_FRACTION:
+        return None
+    kind = "references+si" if refs and si else ("references" if refs else "si")
+    return PartialBodyVerdict(fraction=round(frac, 3), kind=kind, body_chunks=n)
+
+
+@dataclass(frozen=True)
+class PartialBodyOutcome:
+    """One paper's step in :func:`heal_partial_body_papers`: ``refetch_queued``,
+    ``terminal`` (flagged :data:`PARTIAL_BODY_TAG`, never touched again) or
+    ``pending`` (re-fetch in flight, nothing done)."""
+
+    ref_id: int
+    outcome: str
+    reason: str = ""
+    fraction: float = 0.0
+
+    def line(self) -> str:
+        bits = [f"ref_id={self.ref_id}", self.outcome, f"{self.fraction:.0%}"]
+        if self.reason:
+            bits.append(f"({self.reason})")
+        return "  ".join(bits)
+
+
+def heal_partial_body_papers(
+    store: Store, *, dry_run: bool = True, limit: int | None = None
+) -> list[PartialBodyOutcome]:
+    """Bounded heal for papers whose held text is >= 90% references / SI.
+
+    Per ref, at most ONE automatic re-fetch of the main article, reusing the
+    ``meta.markup_refetch`` pin machinery of
+    :func:`requeue_front_matter_only_papers` (the fetch claim admits a pinned
+    ref despite its PDF; ``register_aliases_and_maybe_upgrade`` replaces the
+    body only if the new one grows past its guard, and clears the pin
+    either way):
+
+    1. First sight: journal ``refetch_queued`` (``heal:partial_body``), clear
+       the fetch backoff, stamp the pin, ``prio=1``.
+    2. Later passes, while the ref is *still* partial: wait while the
+       re-fetch is in flight; once it landed (a ``fetch_ok`` newer than the
+       queue event by the judge grace) or the 7-day timeout passed, journal
+       ``terminal`` with reason ``same_file`` (byte-identical re-fetch; the
+       ingest fast path skipped it), ``still_partial`` or
+       ``refetch_unavailable``, drop any leftover pin and tag the ref
+       :data:`PARTIAL_BODY_TAG`.
+    3. A ``terminal`` row excludes the ref from every future pass. A ref
+       that became healthy is simply no longer a candidate.
+
+    Dry run reports what would happen and writes nothing. Idempotent: a
+    second pass over unchanged state does nothing.
+    """
+    sql = """
+        SELECT r.ref_id, r.pdf_sha256, (r.meta ? 'markup_refetch') AS pinned
+          FROM refs r
+         WHERE r.kind = 'paper' AND r.retired_at IS NULL
+           AND r.pdf_sha256 IS NOT NULL
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_events t
+                  WHERE t.ref_id = r.ref_id AND t.source = %s
+                    AND t.event = 'terminal')
+           AND (
+                 (SELECT count(*) FILTER (WHERE c.chunk_kind = 'references') * 2
+                         >= count(*)
+                    FROM chunks c WHERE c.ref_id = r.ref_id AND c.ord >= 0
+                  HAVING count(*) > 0)
+              OR EXISTS (SELECT 1 FROM chunks c
+                          WHERE c.ref_id = r.ref_id AND c.ord BETWEEN 0 AND 2
+                            AND c.text ~* %s)
+           )
+         ORDER BY r.ref_id
+    """
+    with store.pool.connection() as conn:
+        # Postgres ARE spells a word boundary ``\y`` (``\b`` is backspace).
+        si_pg = _SI_MARKER_RE.pattern.replace(r"\b", r"\y")
+        cands = conn.execute(sql, (PARTIAL_BODY_SOURCE, si_pg)).fetchall()
+    out: list[PartialBodyOutcome] = []
+    now = datetime.now(UTC)
+    for rid, sha, pinned in cands:
+        rid = int(rid)
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_kind, text, section_path FROM chunks "
+                "WHERE ref_id = %s AND ord >= 0 ORDER BY ord",
+                (rid,),
+            ).fetchall()
+            queued = conn.execute(
+                "SELECT ts, payload FROM ref_events WHERE ref_id = %s "
+                "AND source = %s AND event = 'refetch_queued' "
+                "ORDER BY event_id LIMIT 1",
+                (rid, PARTIAL_BODY_SOURCE),
+            ).fetchone()
+            fetched_at = None
+            if queued is not None:
+                fetched_row = conn.execute(
+                    "SELECT min(ts) FROM ref_events WHERE ref_id = %s "
+                    "AND starts_with(source, 'fetcher:') AND event = 'fetch_ok' "
+                    "AND ts > %s",
+                    (rid, queued[0]),
+                ).fetchone()
+                fetched_at = fetched_row[0] if fetched_row else None
+        verdict = classify_partial_body([(str(k), str(t), sp) for k, t, sp in rows])
+        if verdict is None:
+            continue
+        sha = str(sha).strip()
+
+        if queued is None:
+            if pinned:
+                continue  # someone else's re-fetch is in flight; don't stack
+            if not dry_run:
+                _queue_partial_refetch(store, rid, sha, verdict)
+            out.append(
+                PartialBodyOutcome(
+                    rid, "refetch_queued", verdict.kind, verdict.fraction
+                )
+            )
+        else:
+            queued_ts, queued_payload = queued
+            reason: str | None = None
+            if fetched_at is not None and now - fetched_at >= _PARTIAL_JUDGE_GRACE:
+                same = (queued_payload or {}).get("pdf_sha256") == sha
+                reason = "same_file" if same else "still_partial"
+            elif fetched_at is None and now - queued_ts >= _PARTIAL_REFETCH_TIMEOUT:
+                reason = "refetch_unavailable"
+            if reason is None:
+                out.append(
+                    PartialBodyOutcome(
+                        rid, "pending", "re-fetch in flight", verdict.fraction
+                    )
+                )
+                continue
+            if not dry_run:
+                with store.tx() as conn:
+                    conn.execute(
+                        "UPDATE refs SET meta = meta - 'markup_refetch' "
+                        "WHERE ref_id = %s",
+                        (rid,),
+                    )
+                    store.append_event(
+                        rid,
+                        source=PARTIAL_BODY_SOURCE,
+                        event="terminal",
+                        payload={
+                            "reason": reason,
+                            "pdf_sha256": sha,
+                            "fraction": verdict.fraction,
+                            "kind": verdict.kind,
+                        },
+                        conn=conn,
+                    )
+                    store.add_tag(
+                        rid, Tag.open(PARTIAL_BODY_TAG), set_by="system", conn=conn
+                    )
+            out.append(PartialBodyOutcome(rid, "terminal", reason, verdict.fraction))
+        if limit and len(out) >= limit:
+            break
+    if out and not dry_run:
+        log.info("paper_hygiene: partial-body %d ref(s) acted on", len(out))
+    return out
+
+
+def _queue_partial_refetch(
+    store: Store, ref_id: int, sha: str, verdict: PartialBodyVerdict
+) -> None:
+    with store.tx() as conn:
+        conn.execute(
+            "DELETE FROM ref_events WHERE ref_id = %s AND source LIKE 'fetcher:%%'",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE refs SET prio = 1, meta = meta || %s WHERE ref_id = %s",
+            (
+                Jsonb(
+                    {
+                        "prio_by": "acquire",
+                        "markup_refetch": {
+                            "at": datetime.now(UTC).isoformat(),
+                            "reason": f"partial body ({verdict.kind})",
+                            "body_chunks": verdict.body_chunks,
+                        },
+                    }
+                ),
+                ref_id,
+            ),
+        )
+        store.append_event(
+            ref_id,
+            source=PARTIAL_BODY_SOURCE,
+            event="refetch_queued",
+            payload={
+                "pdf_sha256": sha,
+                "fraction": verdict.fraction,
+                "kind": verdict.kind,
+                "body_chunks": verdict.body_chunks,
+            },
+            conn=conn,
+        )
 
 
 # ---------------------------------------------------------------------------

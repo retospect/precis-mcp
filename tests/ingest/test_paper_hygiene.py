@@ -741,6 +741,16 @@ def _heal_events(store: Store, ref_id: int) -> list[tuple[str, dict[str, Any]]]:
     return [(str(r[0]), dict(r[1] or {})) for r in rows]
 
 
+def _tags(store: Store, ref_id: int) -> set[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s",
+            (ref_id,),
+        ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
 def _body_count(store: Store, ref_id: int) -> int:
     return store.chunks.count_chunks(ref_id)
 
@@ -855,6 +865,7 @@ class TestHealBodilessPdfs:
         )
         assert [(o.ref_id, o.outcome) for o in out] == [(rid, "unreadable")]
         assert out[0].reason.startswith("scanned:")
+        assert "body:needs_ocr" in _tags(store, rid)
 
     def test_extracts_readable_pdf_and_journals_chunks(
         self, store: Store, tmp_path: Any
@@ -907,12 +918,54 @@ class TestHealBodilessPdfs:
                 meta={"extract_used_fallback": True, "extract_fallback_reason": "boom"},
             )
 
+        # Pass 1: retry marker only (transient Marker failure is possible).
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=nothing
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extract_retry")]
+        assert not _tags(store, rid)
+        # Pass 2: still empty -> terminal, flagged for OCR.
         out = heal_bodiless_pdfs(
             store, corpus_dirs=(tmp_path,), dry_run=False, extractor=nothing
         )
         assert [(o.ref_id, o.outcome) for o in out] == [(rid, "unreadable")]
         assert "no body chunks" in out[0].reason and "boom" in out[0].reason
+        assert out[0].needs_ocr
+        assert "body:needs_ocr" in _tags(store, rid)
+        assert [e[0] for e in _heal_events(store, rid)] == [
+            "extract_retry",
+            "unreadable",
+        ]
+        assert _heal_events(store, rid)[1][1]["route"] == "ocr"
+        # Pass 3: bounded, nothing more happens.
+        assert (
+            heal_bodiless_pdfs(
+                store, corpus_dirs=(tmp_path,), dry_run=False, extractor=nothing
+            )
+            == []
+        )
         assert _body_count(store, rid) == 0
+
+    def test_empty_then_body_on_retry_heals(self, store: Store, tmp_path: Any) -> None:
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "flaky.pdf"
+        _write_pdf(pdf, text="Some text the probe sees.")
+        rid, _ = _bodiless_paper(store, slug="bl-flaky", storage_path=str(pdf))
+        heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extractor=lambda p, pid: _fake_body(0),
+        )
+        out = heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extractor=lambda p, pid: _fake_body(3),
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extracted")]
+        assert not _tags(store, rid)
 
     def test_dry_run_probes_but_writes_nothing(
         self, store: Store, tmp_path: Any
@@ -1089,3 +1142,172 @@ class TestRaiseJunkTitlePapers:
         self._old(store, slug="stub24", title=PLACEHOLDER_TITLE, doi="10.1234/z")
         store.insert_ref(kind="paper", slug="young24", title="__")
         assert raise_junk_title_papers(store, dry_run=True) == []
+
+
+# ── partial bodies: references / SI only (gr464259) ──────────────
+
+
+def _kind_chunk(
+    store: Store, ref_id: int, ord_: int, text: str, kind: str = "paragraph"
+) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, %s, %s)",
+                (ref_id, ord_, kind, text),
+            )
+
+
+def _partial_paper(store: Store, slug: str, *, si: bool = False) -> int:
+    rid = _paper(store, slug=slug, title=f"Paper {slug}")
+    _stamp_pdf(store, rid, f"{rid:064d}")
+    if si:
+        _kind_chunk(store, rid, 0, "Supporting Information for the rotary motors")
+        for i in range(1, 10):
+            _kind_chunk(store, rid, i, f"General experimental NMR data {i}.")
+    else:
+        _kind_chunk(store, rid, 0, "Abstract of the structure.")
+        for i in range(1, 12):
+            _kind_chunk(store, rid, i, f"[{i}] Some citation.", kind="references")
+    return rid
+
+
+def _partial_events(store: Store, rid: int) -> list[tuple[str, dict[str, Any]]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT event, payload FROM ref_events WHERE ref_id=%s "
+            "AND source='heal:partial_body' ORDER BY event_id",
+            (rid,),
+        ).fetchall()
+    return [(str(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def _age_event(store: Store, rid: int, event: str, hours: float) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "UPDATE ref_events SET ts = now() - make_interval(hours => %s) "
+                "WHERE ref_id=%s AND event=%s",
+                (hours, rid, event),
+            )
+
+
+class TestClassifyPartialBody:
+    def test_references_dominant(self) -> None:
+        from precis.ingest.paper_hygiene import classify_partial_body
+
+        chunks = [("paragraph", "Abstract.", None)] + [
+            ("references", f"[{i}] x", None) for i in range(27)
+        ]
+        v = classify_partial_body(chunks)
+        assert v is not None and v.kind == "references" and v.fraction >= 0.9
+
+    def test_si_document(self) -> None:
+        from precis.ingest.paper_hygiene import classify_partial_body
+
+        chunks = [("paragraph", "Supporting Information", None)] + [
+            ("paragraph", f"NMR data {i}", None) for i in range(17)
+        ]
+        v = classify_partial_body(chunks)
+        assert v is not None and v.kind == "si"
+
+    def test_real_article_is_not_partial(self) -> None:
+        from precis.ingest.paper_hygiene import classify_partial_body
+
+        chunks = (
+            [("paragraph", "# Introduction\nWe study.", None)]
+            + [("paragraph", f"Result {i}.", None) for i in range(10)]
+            + [("references", f"[{i}] x", None) for i in range(10)]
+        )
+        assert classify_partial_body(chunks) is None
+
+    def test_si_with_main_heading_is_not_si_doc(self) -> None:
+        from precis.ingest.paper_hygiene import classify_partial_body
+
+        chunks = [
+            ("paragraph", "Supporting Information", None),
+            ("paragraph", "# Results\nThe rate is 3 MHz.", None),
+        ] + [("paragraph", f"Body {i}", None) for i in range(10)]
+        assert classify_partial_body(chunks) is None
+
+
+class TestHealPartialBody:
+    def test_queues_one_refetch_then_terminal_flag_and_never_again(
+        self, store: Store
+    ) -> None:
+        from precis.ingest.paper_hygiene import heal_partial_body_papers
+
+        rid = _partial_paper(store, "pb-refs")
+        _fetch_event(store, rid, "fetch_ok", hours_ago=48)
+
+        # Dry run writes nothing.
+        dry = heal_partial_body_papers(store, dry_run=True)
+        assert [(o.ref_id, o.outcome) for o in dry] == [(rid, "refetch_queued")]
+        assert _partial_events(store, rid) == []
+
+        out = heal_partial_body_papers(store, dry_run=False)
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "refetch_queued")]
+        assert [e[0] for e in _partial_events(store, rid)] == ["refetch_queued"]
+        meta = _meta(store, rid)
+        assert "markup_refetch" in meta and meta["prio_by"] == "acquire"
+        assert _fetcher_event_count(store, rid) == 0  # backoff cleared
+
+        # Second pass, re-fetch still in flight: no second queueing.
+        again = heal_partial_body_papers(store, dry_run=False)
+        assert [(o.ref_id, o.outcome) for o in again] == [(rid, "pending")]
+        assert [e[0] for e in _partial_events(store, rid)] == ["refetch_queued"]
+
+        # The re-fetch ran (byte-identical: same sha, pin never consumed).
+        _age_event(store, rid, "refetch_queued", 30)
+        _fetch_event(store, rid, "fetch_ok", hours_ago=7)
+        done = heal_partial_body_papers(store, dry_run=False)
+        assert [(o.ref_id, o.outcome, o.reason) for o in done] == [
+            (rid, "terminal", "same_file")
+        ]
+        assert "body:partial" in _tags(store, rid)
+        assert "markup_refetch" not in _meta(store, rid)
+        assert [e[0] for e in _partial_events(store, rid)] == [
+            "refetch_queued",
+            "terminal",
+        ]
+
+        # Cap: terminal is final, later passes do nothing and never re-queue.
+        assert heal_partial_body_papers(store, dry_run=False) == []
+        assert "markup_refetch" not in _meta(store, rid)
+        assert len(_partial_events(store, rid)) == 2
+
+    def test_new_file_still_partial_is_terminal(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import heal_partial_body_papers
+
+        rid = _partial_paper(store, "pb-new", si=True)
+        heal_partial_body_papers(store, dry_run=False)
+        _stamp_pdf(store, rid, "e" * 64)  # re-fetch landed a different file
+        _age_event(store, rid, "refetch_queued", 30)
+        _fetch_event(store, rid, "fetch_ok", hours_ago=7)
+        out = heal_partial_body_papers(store, dry_run=False)
+        assert [(o.outcome, o.reason) for o in out] == [("terminal", "still_partial")]
+        assert "body:partial" in _tags(store, rid)
+
+    def test_no_fetch_within_timeout_is_terminal(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import heal_partial_body_papers
+
+        rid = _partial_paper(store, "pb-timeout")
+        heal_partial_body_papers(store, dry_run=False)
+        _age_event(store, rid, "refetch_queued", 24 * 8)
+        out = heal_partial_body_papers(store, dry_run=False)
+        assert [(o.outcome, o.reason) for o in out] == [
+            ("terminal", "refetch_unavailable")
+        ]
+        assert "body:partial" in _tags(store, rid)
+
+    def test_healed_paper_is_left_alone(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import heal_partial_body_papers
+
+        rid = _partial_paper(store, "pb-healed")
+        heal_partial_body_papers(store, dry_run=False)
+        for i in range(20, 60):
+            _kind_chunk(store, rid, i, f"Main text paragraph {i}.")
+        _fetch_event(store, rid, "fetch_ok", hours_ago=7)
+        assert heal_partial_body_papers(store, dry_run=False) == []
+        assert "body:partial" not in _tags(store, rid)

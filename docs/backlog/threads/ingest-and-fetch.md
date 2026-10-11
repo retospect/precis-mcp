@@ -178,9 +178,17 @@ deploy, then the after-deploy steps below.
    preview=811, unreadable=43, extracted=10. The PDF leg now journals
    `ingest:pdf` / `no_body` (reason `deferred_printable_only`,
    `extraction_empty_fallback` or `extraction_empty`) at ingest time
-   (gr453860). gr464259 (body that is only references or SI, so `has_body`
-   reads true) is open: it needs a chunk-role heuristic and a re-fetch
-   policy, not yet decided.
+   (gr453860). Reto 2026-10-11, both in `paper_hygiene` and run by
+   `paper_reconcile`: (a) gr464259 — a body that is >= 90% references/SI
+   (`heal_partial_body_papers`) gets ONE re-fetch via the
+   `markup_refetch` pin (`heal:partial_body` `refetch_queued`); judged 6h
+   after the next `fetch_ok`, or after 7 days with none, it becomes
+   `terminal` (`same_file` / `still_partial` / `refetch_unavailable`),
+   tagged `body:partial`, and is never queued again. (b) empty extraction —
+   `heal:bodiless` `extract_retry` once, then `unreadable` + tag
+   `body:needs_ocr` (also for scanned PDFs). No OCR engine exists beyond
+   Marker, so that tag is the OCR route. Left: show both tag counts on
+   /status and make the read-for-question gates skip tagged refs.
    This thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in

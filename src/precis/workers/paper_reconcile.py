@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 import psycopg
 
@@ -121,6 +122,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 collapse_superseded_chains,
                 heal_bodiless_pdfs,
                 heal_drifted_cards,
+                heal_partial_body_papers,
                 metadata_hygiene_stats,
                 migrate_dangling_paper_links,
                 raise_junk_title_papers,
@@ -142,7 +144,13 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 limit=limit,
                 extract_limit=bodiless_extract_per_pass(),
             )
-            bodiless_judged = [o for o in bodiless if o.outcome != "deferred"]
+            bodiless_judged: list[Any] = [
+                o for o in bodiless if o.outcome != "deferred"
+            ]
+            # Partial bodies (gr464259): at most one re-fetch per ref, then
+            # a terminal ``body:partial`` flag; SQL-only, no model run.
+            partial = heal_partial_body_papers(store, dry_run=False, limit=limit)
+            bodiless_judged += [o for o in partial if o.outcome != "pending"]
             # Junk titles automation can't fix go to the owner's queue
             # (gr477964); idempotent, so the daily pass never re-files.
             # Capped per pass so a backlog trickles into the queue
