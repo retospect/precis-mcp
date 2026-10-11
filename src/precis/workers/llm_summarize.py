@@ -1079,7 +1079,6 @@ _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
     "something like",
     "count words",
     "count the words",
-    "words:",
 )
 
 #: Contract phrases that are also ordinary prose ("at most 3 layers", "a
@@ -1087,7 +1086,9 @@ _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = (
 #: nouns. The 2026-10-11 prod dry run of scripts/gist-cleanup showed the bare
 #: substrings flagging thousands of clean scientific gists.
 _INSTRUCTION_ECHO_RE = re.compile(
-    r"at most \d+ words|self-contained (?:gist|clause|summary)",
+    r"at most \d+ words|self-contained (?:gist|clause|summary)|"
+    # "words: 11" is a tally; "keywords:" / "key words:" is content.
+    r"(?<!key)(?<!key )\bwords:",
     re.IGNORECASE,
 )
 
@@ -1113,7 +1114,7 @@ _REASONING_PREAMBLE_RE = re.compile(
     r"okay[,.! ]|ok[,.!]|sure[,.!]|alright[,.!]|hmm|wait[,.! ]|"
     r"first[,:]|firstly|"
     r"here is|here's|here are|the user|we need|we should|we have|"
-    r"looking at|step \d"
+    r"looking at"
     r")",
     re.IGNORECASE | re.MULTILINE,
 )

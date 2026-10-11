@@ -1366,6 +1366,11 @@ def test_reject_reason_caps_total_length() -> None:
         "gap closes for x ≤ 0.3\n\nvalid for T <= 40 K.",
         "self-contained microfluidic device\n\nat most 3 layers bonded.",
         "Analyzing grain boundaries by EBSD\n\n12 samples.",
+        # Second dry run (2026-10-11): algorithm steps and keyword lists.
+        "step 3 selects reaction via KMC, evolves system, repeats",
+        "methanol C–H bond breaking controls rate\n\nstep 8 irreversible.",
+        "DFT error small on eV scale\n\nKeywords: density-functional, benchmark.",
+        "DFT error small on eV scale\n\nkey words: DFT, benchmark.",
     ],
 )
 def test_reject_reason_does_not_overfire_on_clean_gists(clean: str) -> None:
