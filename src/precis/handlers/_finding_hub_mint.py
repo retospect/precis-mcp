@@ -59,11 +59,13 @@ and surfacing it here only invited an agent to try citing it directly.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, Unsupported, Upstream
+from precis.handlers._finding_common import multi_article_advisory
 from precis.response import Response
 from precis.store.types import ActorSlug, Tag
 from precis.taproot import authoring
@@ -113,7 +115,57 @@ def put_hub(
     merge_confirm_fn: MergeConfirmFn = merge_confirm,
 ) -> Response:
     """``supporters=`` hub-mint, gated by the semantic dedup cascade — see
-    the module docstring for the branching contract."""
+    the module docstring for the branching contract. Appends the
+    ``multi-article`` advisory (gr463414) for any supporter whose paper is
+    tagged so; the write has already succeeded by then."""
+    resp = _put_hub(
+        store,
+        sentence=sentence,
+        scope=scope,
+        supporters=supporters,
+        set_by=set_by,
+        dedup=dedup,
+        embedder=embedder,
+        block_fn=block_fn,
+        judge_fn=judge_fn,
+        merge_confirm_fn=merge_confirm_fn,
+    )
+    advisory = _multi_article_advisories(store, supporters)
+    if not advisory:
+        return resp
+    return replace(resp, body=resp.body + advisory)
+
+
+def _multi_article_advisories(store: Store, supporters: list[dict[str, Any]]) -> str:
+    """Advisory lines for supporters citing a ``multi-article`` paper — one
+    per distinct paper, resolved the way ``link`` does (a ``pc<id>`` chunk
+    resolves to its owning paper). Best-effort: unresolvable supporters
+    were already handled by the write, so they add nothing here."""
+    resolved, _errors = authoring.resolve_supporters(store, supporters)
+    seen: set[int] = set()
+    out = ""
+    for sup in resolved:
+        pid = sup["paper_ref_id"]
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out += multi_article_advisory(store, pid, str(sup["paper"]))
+    return out
+
+
+def _put_hub(
+    store: Store,
+    *,
+    sentence: str,
+    scope: dict[str, Any],
+    supporters: list[dict[str, Any]],
+    set_by: ActorSlug,
+    dedup: bool,
+    embedder: Any,
+    block_fn: BlockFn,
+    judge_fn: JudgeFn,
+    merge_confirm_fn: MergeConfirmFn,
+) -> Response:
     claim = CanonicalClaim(sentence=sentence, scope=dict(scope or {}))
 
     if not dedup:

@@ -25,7 +25,7 @@ from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers import _finding_hub_mint
 from precis.handlers.finding import FindingHandler
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import (
     CanonicalClaim,
     MergeCandidate,
@@ -253,6 +253,32 @@ class TestPutHubCascadeAttach:
                 (paper, existing_hub),
             ).fetchone()
         assert row is not None
+
+    def test_multi_article_chunk_supporter_adds_advisory(self, store) -> None:
+        existing_sentence = "Pd/C catalyzes Suzuki coupling."
+        existing_hub = mint_hub(
+            store, CanonicalClaim(sentence=existing_sentence, scope={})
+        )
+        paper = _seed_paper(store, cite_key="multipaper")
+        store.add_tag(paper, Tag.open("multi-article"))
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+            ).fetchone()[0]
+
+        resp = _finding_hub_mint.put_hub(
+            store,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            scope={},
+            supporters=[{"paper": f"pc{chunk_id}"}],
+            embedder=object(),
+            block_fn=_block_hit(existing_hub, existing_sentence),
+            judge_fn=lambda a, b: _verdict("same", 0.95),
+        )
+
+        assert "converged onto" in resp.body
+        assert "advisory" in resp.body and "multi-article" in resp.body
+        assert f"pc{chunk_id}" in resp.body
 
     def test_attach_bad_supporter_raises_and_writes_nothing(self, store) -> None:
         existing_sentence = "Pd/C catalyzes Suzuki coupling."
