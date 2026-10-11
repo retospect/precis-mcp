@@ -578,20 +578,34 @@ se needs a `profiles` capability pre-populated with the metric T-slot
 extrusion series (20/30/40/45, larger 60/80), so a part references
 series + section (`2020`, `4080`) instead of re-entering slot width,
 channel dims, centre bore and hardware each time. The number that governs
-joining is slot width, not series number: 30 and 40 share the 8 mm slot
-(nuts/brackets cross over); 45/60 move to 10 mm.
+joining is the vendor's slot designation, not the series number.
 
-| Series | Common sections | Slot | Channel W×D | Bore | Hardware |
-|---|---|---|---|---|---|
-| 20 | 2020, 2040, 2060 | 6.0 | 8.0 × 4.6 | ⌀4.2–5.0 | M4/M5 T-nuts, M5/M6 end tap |
-| 30 | 3030, 3060 | 8.0 | 11.0 × 6.2 | ⌀6.8 | M6 T-nuts, M8 end tap |
-| 40 | 4040, 4080, 8080 | 8.0 | 11.0 × 6.2 | ⌀6.8 | M6/M8 |
-| 45 | 4545, 4590 | 10.0 | 14.0 × 7.8 | ⌀8.5 | M8/M10 T-bolts |
+The gripe's series table (slot 6/8/8/10 for 20/30/40/45) is a rule of
+thumb, not data. Checked 2026-10-11 (perplexity-reasoning:478807): no DIN/ISO
+standard fixes T-slot geometry. Slot width, channel, bore, wall, section
+properties and matching T-nut are per manufacturer and per profile variant:
+a 40×40 exists with 8 mm (I-type) and 10 mm (B-type) slots, and B-type nuts
+do not seat in I-type slots. EN 12020 covers extrusion tolerances only.
 
-Fits the existing `profile` category and the `stock-cut/profile` tier
-above; the new part is the pre-populated series data and the
-section-reference lookup (verify nominal values against a datasheet
-before seeding).
+So seed per manufacturer part, not per series. Record shape: manufacturer,
+part number, slot type (B/I) and slot width, channel W×D, bore and end tap,
+area, Ix/Iy/It, kg/m, matching T-nut/T-bolt threads, source URL and date.
+Sources (none offers CSV or an API; all are proprietary catalogs, so store
+the numbers and the URL, never redistribute the PDFs or CAD):
+
+- MISUMI HFS product pages: HTML tables with area, mass, Ix/Iy, plus CAD.
+  The easiest to extract.
+- item Industrietechnik (item24.com) profile pages: area, Ix/Iy/It, kg/m
+  per variant (light/standard/E), CAD.
+- Bosch Rexroth aluminium profile kit catalog PDF: slot 6/8/10 drawings and
+  the fastener catalog (slot and thread are separate selections).
+- Motedis CAD database: STEP downloads named by B/I type and slot width —
+  use to measure channel geometry where the catalog omits it.
+- MiniTec, Kanya, 80/20 metric: catalogs and STEP via their portals.
+
+First slice: one vendor (MISUMI HFS5/HFS6/HFS8 for 20/30/40) end to end,
+with the part number as the reference a design uses.
+
 Who: agent-code.
 
 ## Deferred, named so they are not re-derived
