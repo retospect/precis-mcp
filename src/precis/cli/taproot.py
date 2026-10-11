@@ -983,6 +983,7 @@ def _run_backfill(args: argparse.Namespace) -> None:
     from precis.errors import BadInput
     from precis.runtime import build_runtime
     from precis.taproot.backfill import apply_chunk, plan_chunk
+    from precis.taproot.canon import MintCap
 
     cfg = load_config()
     dsn = resolve_dsn(args.database_url)
@@ -1009,6 +1010,7 @@ def _run_backfill(args: argparse.Namespace) -> None:
         chunk_ids = _resolve_backfill_chunks(store, args)
         draft_handler = runtime.hub.handler_for("draft") if args.apply else None
         ref_level = getattr(args, "ref_level", False)
+        mint_cap = MintCap()  # one per run: per-chunk hub cap spans all chunks
         for cid in chunk_ids:
             if args.apply:
                 results.append(
@@ -1019,6 +1021,7 @@ def _run_backfill(args: argparse.Namespace) -> None:
                         cid,
                         set_by=args.set_by,
                         ref_level=ref_level,
+                        mint_cap=mint_cap,
                     )
                 )
             else:

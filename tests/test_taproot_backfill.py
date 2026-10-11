@@ -2141,3 +2141,42 @@ def test_plan_pa_tagged_unusable_body_is_fetch_first_like_a_stub(
         merge_confirm_fn=_never_called,
     )
     assert [p.action for p in result.plans] == ["stub-fetch-first"]
+
+
+def test_apply_chunk_mint_cap_refuses_over_mining_one_chunk(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr204874: a second paragraph citing the same pc may not mint past the
+    cap; a different pc in the same run is unaffected (happy path)."""
+    from precis.taproot.canon import MintCap
+
+    cap = MintCap(limit=1)
+    _paper, pc = _pc_of(hub.live_store)
+    _paper2, pc2 = _pc_of(hub.live_store, paper_title="other paper")
+
+    def _run(text: str, claim: str, draft_id: str):
+        dc = _seed_draft_para(draft, hub, text, draft_id=draft_id)
+        return apply_chunk(
+            hub.live_store,
+            embedder=None,
+            draft_handler=draft,
+            chunk_id=dc,
+            extract_fn=_extract_const(claim),
+            block_fn=_block_none,
+            judge_fn=_never_called,
+            merge_confirm_fn=_never_called,
+            mint_cap=cap,
+        )
+
+    first = _run(
+        f"Ribbons are semiconducting [{pc}].", "Ribbons are semiconducting.", "d1"
+    )
+    assert first.plans[0].action == "new"
+
+    second = _run(f"Ribbons have a gap [{pc}].", "Ribbons have a finite gap.", "d2")
+    assert second.plans[0].action == "mint-capped"
+    assert second.plans[0].hub_ref_id is None
+    assert second.rewritten_text is None
+
+    other = _run(f"Tubes are metallic [{pc2}].", "Tubes are metallic.", "d3")
+    assert other.plans[0].action == "new"

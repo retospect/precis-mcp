@@ -155,13 +155,16 @@ general; the corruption is specific to this entry in this paper.
 
 Bundled in the 2026-10-11 gripe triage. A single review-article paragraph
 became several claim hubs, each grounded on the same proxy passage. Asks
-(a) and (b), covered by `extract_claim` (ec03854c), shipped. Remaining:
+(a) and (b) shipped in `extract_claim` (ec03854c); the proxy-deferral
+rejection (`canon.is_proxy_deferral`) and the per-chunk mint cap
+(`canon.MintCap`, wired in `backfill.apply_chunk`) shipped after. Remaining:
 
-- Reject proxy-grounded claims at extraction time in
-  `src/precis/taproot/canon.py` (the passage defers to cited work instead of
-  evidencing the claim).
-- A per-chunk mint cap: one source chunk may seed at most N hubs in a run.
 - Audit the ~1,346 existing hubs for same-chunk multi-mint; merge or retire
   the duplicates (prod data; read-only audit first).
+- Known gaps in the shipped gates: the mint cap covers only
+  `backfill.apply_chunk`; chase (`authoring.py`), `apply_migrate` and the
+  hypothesis handler mint uncapped. The proxy detector is regex-only and
+  misses paraphrased deferrals ("has been widely studied [3]", "Recent work
+  on X [5-9]").
 
-Who: agent-code for the rejection and cap; ops for the audit and repair.
+Who: ops for the audit and repair.

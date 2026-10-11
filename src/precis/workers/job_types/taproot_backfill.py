@@ -83,6 +83,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     from precis.errors import BadInput, NotFound
     from precis.handlers.draft import DraftHandler
     from precis.taproot.backfill import apply_chunk
+    from precis.taproot.canon import MintCap
     from precis.utils import draft_regex
 
     params = (ctx.meta or {}).get("params") or {}
@@ -112,6 +113,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     done_ids: list[int] = list((ctx.meta or {}).get("done_chunk_ids") or [])
     done_set = set(done_ids)
+
+    # One cap across the whole run so a source chunk cited by many draft
+    # paragraphs cannot seed unbounded hubs (gr204874).
+    mint_cap = MintCap()
 
     n_scanned = 0
     n_converted = 0
@@ -153,6 +158,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 c.chunk_id,
                 set_by="agent",
                 ref_level=ref_level,
+                mint_cap=mint_cap,
             )
         except Exception as exc:
             n_failed += 1
