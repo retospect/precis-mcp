@@ -88,6 +88,7 @@ is the acceptable cost.
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 from collections.abc import Callable
@@ -149,9 +150,14 @@ _ALLCAPS_MIN_LEN = 25
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
+def _clean_title(title: str) -> str:
+    """Unescape HTML entities (``&amp;``, ``&lt;i&gt;``) and strip inline tags."""
+    return " ".join(_TAG_RE.sub("", html.unescape(title)).split())
+
+
 def _title_key(title: str) -> str:
     """Case-, whitespace-, punctuation- and markup-insensitive title key."""
-    return " ".join(re.sub(r"[\W_]+", " ", _TAG_RE.sub("", title)).casefold().split())
+    return " ".join(re.sub(r"[\W_]+", " ", _clean_title(title)).casefold().split())
 
 
 def registry_recase(local: str | None, registry: str | None) -> str | None:
@@ -170,7 +176,7 @@ def registry_recase(local: str | None, registry: str | None) -> str | None:
         True
     """
     local = (local or "").strip()
-    registry = (registry or "").strip()
+    registry = _clean_title(registry or "")
     if not local or not registry or len(local) <= _ALLCAPS_MIN_LEN:
         return None
     if local != local.upper() or registry == registry.upper():
