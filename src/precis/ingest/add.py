@@ -323,6 +323,17 @@ def precis_add(
             # signal that re-dropping a known PDF under a different
             # ``tagging/`` dir should merge tags additively (rather than
             # silently no-op'ing because the sha is known).
+            # A file named ``pa<id>`` whose bytes match a different live ref:
+            # the named stub wins (the twin merges into it), gr479362.
+            with store.pool.connection() as conn:
+                existing_ref_id = _fold_into_named_stub(
+                    store,
+                    matched_ref_id=existing_ref_id,
+                    file_stem=input.pdf_path.stem,
+                    pdf_path=input.pdf_path,
+                    conn=conn,
+                )
+                conn.commit()
             _apply_extra_tags(store, "paper", existing_ref_id, input.extra_tags)
             # A byte-identical re-fetch hits here before Marker runs; still
             # fold any orphan stub the fetch was for so it stops
@@ -492,7 +503,15 @@ def _ingest_pdf(
             existing = _valid_fold_stub(
                 fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
             )
-            if existing is not None:
+            if (
+                existing is not None
+                and input.fold_ref_id is None
+                and not _named_stub_identity_ok(existing, input.pdf_path, conn=conn)
+            ):
+                # Handle-named but a different paper (e.g. one that only
+                # cites the stub's): ingest as a fresh ref, never fold.
+                existing = None
+            elif existing is not None:
                 log.info(
                     "precis_add: folding %s into sidecar stub ref_id=%s "
                     "(no id dedup hit; keeping stub metadata)",
@@ -520,6 +539,17 @@ def _ingest_pdf(
             chunks_written = register_aliases_and_maybe_upgrade(
                 existing, paper, conn=conn
             )
+            # A ``pa<id>``-named file that de-duped against a different live
+            # ref: the named stub wins; the twin merges into it (gr479362).
+            # Only when the stub wasn't already the dedup target above.
+            if input.fold_ref_id is None:
+                existing = _fold_into_named_stub(
+                    store,
+                    matched_ref_id=existing,
+                    file_stem=input.pdf_path.stem,
+                    pdf_path=input.pdf_path,
+                    conn=conn,
+                )
             # If this PDF de-duped against a DIFFERENT ref than the stub
             # it was fetched for, fold that orphan stub into the survivor
             # now so it stops re-qualifying for OA fetch forever (the
@@ -968,6 +998,118 @@ def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> b
     return title_overlap(stub_title, "\n".join(parts)) >= need
 
 
+def _named_stub_identity_ok(stub_id: int, pdf_path: Path, *, conn: Any) -> bool:
+    """Does the PDF look like the paper ``stub_id`` is? (gr479094 wrong fold.)
+
+    A ``pa<id>`` filename is a human claim, not proof: a PDF that merely
+    cites the stub's paper (Megaro 2017 vs Howell-Midha 1994) was folded into
+    it. Runs the pdf_url door's gate, ``paper_pull.check_pdf`` (stub DOI in
+    the first pages, or enough title words). Only an ``identity_mismatch``
+    refuses; unreadable / short files and stubs with nothing to compare
+    (``unchecked``) pass, since this gate is identity, not preview detection.
+    """
+    from precis.ingest.pdf_identity import identity_verdict, read_leading_pages
+
+    row = conn.execute(
+        "SELECT coalesce(title, ''), coalesce(meta->>'entry_type', '') "
+        "FROM refs WHERE ref_id = %s",
+        (stub_id,),
+    ).fetchone()
+    doi_row = conn.execute(
+        "SELECT id_value FROM ref_identifiers "
+        "WHERE ref_id = %s AND id_kind = 'doi' ORDER BY id_value LIMIT 1",
+        (stub_id,),
+    ).fetchone()
+    try:
+        _, texts = read_leading_pages(pdf_path)
+    except Exception:  # unreadable: nothing to compare, don't block
+        return True
+    verdict, detail = identity_verdict(
+        texts,
+        title=str(row[0]) if row else "",
+        doi=str(doi_row[0]) if doi_row else None,
+    )
+    if verdict == "mismatch":
+        log.warning(
+            "precis_add: %s is named for stub ref_id=%s but its text does "
+            "not match that paper (%s) — not folding, stub left live",
+            pdf_path.name,
+            stub_id,
+            detail,
+        )
+        return False
+    return True
+
+
+def _fold_into_named_stub(
+    store: Store,
+    *,
+    matched_ref_id: int,
+    file_stem: str,
+    pdf_path: Path,
+    conn: Any,
+) -> int:
+    """Make the ``pa<id>`` stub a filename names win over a dedup-matched twin.
+
+    The PDF's hash/identity matched ``matched_ref_id`` (a live twin), but the
+    human named the file after a wanted stub: that handle must not be
+    retired (gr479362). When the stem names a live, same-kind, bodiless stub
+    other than the twin and the stub's title corroborates the twin
+    (:func:`_stub_title_corroborated`, the gr264748 guard), merge the twin
+    INTO the stub with :func:`precis.ingest.dedup.merge_duplicate`, which
+    hands the twin's body, PDF and content ids to the stub. Returns the ref
+    the caller should treat as the ingest's result: the stub on a merge,
+    else ``matched_ref_id`` (no handle in the stem, an invalid stub, or a
+    refusal, which is logged naming the twin; both refs stay live).
+    """
+    from precis.ingest.dedup import merge_duplicate
+
+    handle_ref = _handle_stem_ref_id(file_stem.strip().lower())
+    if handle_ref is None or handle_ref == matched_ref_id:
+        return matched_ref_id
+    if _lookup_kind(matched_ref_id, conn=conn) != "paper":
+        return matched_ref_id
+    stub_id = _valid_fold_stub(handle_ref, kind="paper", conn=conn)
+    if stub_id is None:
+        log.warning(
+            "precis_add: stem=%r names ref_id=%s but it is not a valid fold "
+            "stub (retired, wrong kind or has a body) — not merged (twin "
+            "ref_id=%s)",
+            file_stem,
+            handle_ref,
+            matched_ref_id,
+        )
+        return matched_ref_id
+    if not _named_stub_identity_ok(stub_id, pdf_path, conn=conn):
+        return matched_ref_id
+    if not _stub_title_corroborated(conn, stub_id, matched_ref_id):
+        log.warning(
+            "precis_add: not folding twin ref_id=%s into named stub ref_id=%s "
+            "(stem=%r): stub title shares no distinctive tokens with the "
+            "twin's title/leading body — both left live",
+            matched_ref_id,
+            stub_id,
+            file_stem,
+        )
+        return matched_ref_id
+    merge_duplicate(
+        store,
+        survivor_ref_id=stub_id,
+        duplicate_ref_id=matched_ref_id,
+        source="ingest:dedup",
+        reason="named-stub-wins",
+        conn=conn,
+    )
+    log.info(
+        "precis_add: %r names stub ref_id=%s; merged dedup-matched twin "
+        "ref_id=%s into it (stub keeps its handle)",
+        file_stem,
+        stub_id,
+        matched_ref_id,
+    )
+    return stub_id
+
+
 def _reconcile_orphan_stub(
     store: Store,
     *,
@@ -1036,21 +1178,8 @@ def _reconcile_orphan_stub(
         """,
         (stem, survivor_ref_id),
     ).fetchone()
-    if row is None:
-        handle_ref = _handle_stem_ref_id(stem)
-        if handle_ref is not None and handle_ref != survivor_ref_id:
-            handle_stub = _valid_fold_stub(handle_ref, kind="paper", conn=conn)
-            if handle_stub is not None:
-                row = (handle_stub,)
-            else:
-                log.warning(
-                    "precis_add: stem=%r names ref_id=%s but it is not a valid "
-                    "fold stub (retired, wrong kind or has a body) — not "
-                    "reconciled (survivor ref_id=%s)",
-                    stem,
-                    handle_ref,
-                    survivor_ref_id,
-                )
+    # A ``pa<id>`` stem is NOT handled here: the human named that ref, so it
+    # must survive — see :func:`_fold_into_named_stub` (gr479362).
     if row is None:
         _warn_skipped_cite_key_match(conn, stem=stem, exclude_ref_id=survivor_ref_id)
         return None

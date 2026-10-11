@@ -245,7 +245,16 @@ soft-deletes the rest with a `supersedes` edge. If the pair shares no
 `pdf_sha256`/DOI-case/title-similarity signal, there's no targeted
 single-pair door either — call `merge_duplicate(survivor_ref_id=…,
 duplicate_ref_id=…, ...)` directly inside a transaction via the prod
-one-off CLI recipe; survivor = the ref that actually holds chunks/body.
+one-off CLI recipe. Pick the survivor you want to keep (usually the one
+whose handle/identifiers people use): a bodiless survivor now takes the
+duplicate's body, PDF (`pdf_sha256`) and content ids (`content_hash`, and
+`paper_id`/`pub_id` when it has none), so a wanted stub can survive a merge
+with a bodied twin. Chunks are re-inserted on the survivor and deleted from
+the duplicate; embeddings are re-filled by the worker. A survivor that
+already has a body keeps it and the duplicate's body stays behind. An inbox
+file named `pa<id>.pdf` follows the same rule: if its bytes match a
+different live twin, the twin merges into `pa<id>` (when titles corroborate),
+never the reverse.
 
 ## I found a legal PDF for a body-less stub — how do I attach it?
 

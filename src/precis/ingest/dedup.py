@@ -45,8 +45,118 @@ log = logging.getLogger(__name__)
 #: the survivor on a merge. Content-derived ids (cite_key, paper_id,
 #: pub_id, pdf_sha256, content_hash) stay on the retired ref — they
 #: describe *that* artifact, and leaving them avoids a unique-constraint
-#: fight with the survivor's own content ids.
+#: fight with the survivor's own content ids — unless the survivor takes
+#: the duplicate's body/PDF (:func:`_move_body_to_survivor`).
 _MIGRATABLE_ID_KINDS = ("doi", "arxiv", "s2", "pubmed", "openalex", "mag", "dblp")
+
+#: Content-derived identifier kinds that follow the PDF / body to the survivor.
+_PDF_ID_KINDS = ("pdf_sha256", "content_hash")
+#: Single-valued per ref (the ``refs_v`` view reads them as scalar
+#: subqueries), so they move only onto a survivor that holds none.
+_SINGLE_ID_KINDS = ("paper_id", "pub_id")
+
+
+def _move_body_to_survivor(
+    store: Store,
+    *,
+    survivor_ref_id: int,
+    duplicate_ref_id: int,
+    source: str,
+    conn: Any,
+) -> list[str]:
+    """Move the duplicate's body and/or PDF onto a survivor that lacks them.
+
+    Returns what moved (``"body"``, ``"pdf"``); empty when the survivor
+    already holds whatever the duplicate has (the ordinary merge).
+
+    * **body**: survivor has no ``ord >= 0`` chunk and the duplicate does.
+      Body chunks are append-only, so each is INSERTed on the survivor and
+      the duplicate's DELETEd (never UPDATEd). Embeddings, summaries and
+      keywords are left to the workers (ingest never fills them); the
+      duplicate's cards (``ord < 0``) stay behind, the survivor keeps its own.
+    * **pdf**: survivor has no ``pdf_sha256`` and the duplicate does:
+      ``refs.pdf_sha256/pdf_pages/pdf_role`` move (the ``pdfs`` row and its
+      stored file are keyed by sha, so the file follows the sha).
+    * Either move carries the content identifiers (``pdf_sha256``,
+      ``content_hash``, and ``paper_id``/``pub_id`` when the survivor has
+      none) so a re-ingest of the file probes onto the survivor.
+    """
+    rows = conn.execute(
+        "SELECT ref_id, pdf_sha256, pdf_pages, pdf_role, meta, "
+        f"       {has_body_sql('r')} "
+        "  FROM refs r WHERE ref_id = ANY(%s) FOR NO KEY UPDATE",
+        ([survivor_ref_id, duplicate_ref_id],),
+    ).fetchall()
+    by_id = {int(r[0]): r for r in rows}
+    sv, du = by_id.get(survivor_ref_id), by_id.get(duplicate_ref_id)
+    if sv is None or du is None:
+        return []
+    move_body = bool(du[5]) and not sv[5]
+    move_pdf = du[1] is not None and sv[1] is None
+    moved: list[str] = []
+    if not (move_body or move_pdf):
+        return moved
+
+    if move_pdf:
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = NULL, updated_at = now() WHERE ref_id = %s",
+            (duplicate_ref_id,),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, pdf_pages = %s, "
+            "pdf_role = COALESCE(%s, pdf_role), updated_at = now() "
+            "WHERE ref_id = %s",
+            (du[1], du[2], du[3], survivor_ref_id),
+        )
+        moved.append("pdf")
+
+    if move_body:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "  section_path, page_first, page_last, token_count, meta, numerics) "
+            "SELECT %s, set_by, ord, chunk_kind, text, section_path, "
+            "       page_first, page_last, token_count, meta, numerics "
+            "  FROM chunks WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL "
+            " ORDER BY ord",
+            (survivor_ref_id, duplicate_ref_id),
+        )
+        conn.execute(
+            "DELETE FROM chunks WHERE ref_id = %s AND ord >= 0",
+            (duplicate_ref_id,),
+        )
+        # The extraction-describing meta keys belong to the body they describe.
+        from precis.ingest.db_writer import _BODY_OWNED_META_KEYS, _merge_ingest_meta
+
+        dmeta = du[4] if isinstance(du[4], dict) else {}
+        _merge_ingest_meta(
+            survivor_ref_id,
+            {k: v for k, v in dmeta.items() if k in _BODY_OWNED_META_KEYS},
+            conn=conn,
+        )
+        moved.append("body")
+
+    held = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT id_kind FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = ANY(%s)",
+            (survivor_ref_id, list(_SINGLE_ID_KINDS)),
+        )
+    }
+    kinds = list(_PDF_ID_KINDS) + [k for k in _SINGLE_ID_KINDS if k not in held]
+    conn.execute(
+        "UPDATE ref_identifiers SET ref_id = %s "
+        "WHERE ref_id = %s AND id_kind = ANY(%s)",
+        (survivor_ref_id, duplicate_ref_id, kinds),
+    )
+    store.append_event(
+        survivor_ref_id,
+        source=source,
+        event="body_moved_from_duplicate",
+        payload={"duplicate_ref_id": duplicate_ref_id, "moved": moved},
+        conn=conn,
+    )
+    return moved
 
 
 def inherit_missing_identity(
@@ -131,7 +241,10 @@ def merge_duplicate(
 
     Migrates external identifiers + links to the survivor, records the
     ``supersedes`` edge + ``meta.superseded_by`` + audit events, and
-    soft-deletes the duplicate. Mirrors
+    soft-deletes the duplicate. When the survivor lacks a body and/or PDF
+    that the duplicate holds, those move too
+    (:func:`_move_body_to_survivor`, gr479362); a survivor that already has
+    them keeps them and the duplicate's stay behind. Mirrors
     :func:`precis.ingest.add._reconcile_orphan_stub`.
     """
     if survivor_ref_id == duplicate_ref_id:
@@ -157,6 +270,14 @@ def merge_duplicate(
         "UPDATE ref_identifiers SET ref_id = %s "
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
         (survivor_ref_id, duplicate_ref_id, list(_MIGRATABLE_ID_KINDS)),
+    )
+    # (a2) Body / PDF → a survivor that lacks them (gr479362).
+    moved = _move_body_to_survivor(
+        store,
+        survivor_ref_id=survivor_ref_id,
+        duplicate_ref_id=duplicate_ref_id,
+        source=source,
+        conn=conn,
     )
     # (b) Graph edges → survivor (self-loops + dup rows dropped internally).
     store.migrate_links(duplicate_ref_id, survivor_ref_id, conn=conn)
@@ -195,7 +316,11 @@ def merge_duplicate(
         survivor_ref_id,
         source=source,
         event="duplicate_merged",
-        payload={"duplicate_ref_id": duplicate_ref_id, "reason": reason},
+        payload={
+            "duplicate_ref_id": duplicate_ref_id,
+            "reason": reason,
+            **({"moved": moved} if moved else {}),
+        },
         conn=conn,
     )
     store.append_event(
