@@ -20,9 +20,11 @@ claim stamp and ``si_fetch.deadline_retries`` incremented — so the next pass
 re-claims it; after ``MAX_DEADLINE_RETRIES`` (3) the misses stand as recorded.
 The same re-arm (same counter and cap, which therefore covers both causes)
 applies when no PDF was queued and a miss is a transient network error
-(``error:ConnectTimeout`` and kin, ``download_timeout``): a host-side blip must
-not burn the paper's one check. ``cloudflare_403``, HTTP 4xx and ``cap`` never
-re-arm.
+(``error:ConnectTimeout`` and kin, ``download_timeout``), spaced at least
+``TRANSIENT_RETRY_SPACING`` apart via ``si_fetch.not_before`` (claim filter): a
+host-side blip must not burn the paper's one check. ``cloudflare_403``, HTTP 4xx and ``cap`` never
+re-arm. A check whose only blocking misses are such transient network errors
+is logged as ``si_error`` (not ``si_blocked``, which means a publisher wall).
 
 The event source is ``si_fetch``, deliberately NOT ``fetcher:*``: those
 sources arm the stub claim's retry window / backoff (``claim_stubs_to_fetch``),
@@ -40,6 +42,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +74,9 @@ MAX_SI_PDFS_PER_PARENT = 8
 SI_PASS_DEADLINE_S = 120.0
 #: Re-arms (budget-cut or transient-network) per request before the misses stand.
 MAX_DEADLINE_RETRIES = 3
+#: Minimum spacing between a transient-network re-arm and the next claim, so
+#: the retries span an outage instead of burning in consecutive passes.
+TRANSIENT_RETRY_SPACING = timedelta(hours=6)
 
 #: Exception names (``error:<name>`` miss reasons) that mark a transient
 #: network failure worth re-arming an otherwise empty check for.
@@ -106,7 +112,8 @@ def claim_si_parents(
     since that request. ``FOR UPDATE SKIP LOCKED``; the claim stamps
     ``si_checked_at`` immediately (same transaction), so a crash mid-pass or a
     second worker never re-runs the same request — a fresh request re-arms it.
-    Explicit ``fetch-si`` requests (no ``si_fetch.trigger``) go before
+    Web-UI requests (``by = 'web'``, a human click) go first (gripe 477802);
+    explicit ``fetch-si`` requests (no ``si_fetch.trigger``) go before
     attention-queued ones, then oldest request first.
     """
     rows = conn.execute(
@@ -123,12 +130,15 @@ def claim_si_parents(
            AND r.meta ? 'si_fetch'
            AND (r.meta->>'si_checked_at' IS NULL
                 OR r.meta->>'si_checked_at' < r.meta->'si_fetch'->>'requested_at')
-         ORDER BY (r.meta->'si_fetch'->>'trigger' IS NOT NULL),
+           AND (r.meta->'si_fetch'->>'not_before' IS NULL
+                OR r.meta->'si_fetch'->>'not_before' <= %s)
+         ORDER BY (r.meta->'si_fetch'->>'by' IS DISTINCT FROM 'web'),
+                  (r.meta->'si_fetch'->>'trigger' IS NOT NULL),
                   r.meta->'si_fetch'->>'requested_at', r.ref_id
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
-        (limit,),
+        (utc_stamp(), limit),
     ).fetchall()
     parents = [
         SiParent(
@@ -167,26 +177,38 @@ def _download_reason(exc: BaseException) -> str:
     return f"error:{type(exc).__name__}"
 
 
-def _rearm(conn: Connection, ref_id: int) -> int | None:
+def _rearm(conn: Connection, ref_id: int, *, spaced: bool = False) -> int | None:
     """Re-arm a budget-cut parent: bump ``si_fetch.requested_at`` to a fresh
     stamp (later than the claim's ``si_checked_at``) and count the retry.
     Returns the new ``deadline_retries``, or ``None`` when the cap is reached
-    (nothing changed) or the parent carries no ``si_fetch``."""
+    (nothing changed) or the parent carries no ``si_fetch``. ``spaced`` (a
+    transient network failure) also sets ``si_fetch.not_before`` to
+    ``TRANSIENT_RETRY_SPACING`` ahead, which the claim honours; a budget-cut
+    re-arm clears it and retries on the next pass."""
+    not_before = (
+        (datetime.now(UTC) + TRANSIENT_RETRY_SPACING)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+        if spaced
+        else None
+    )
     row = conn.execute(
         """
         UPDATE refs
            SET meta = jsonb_set(
                  meta, '{si_fetch}',
-                 (meta->'si_fetch') || jsonb_build_object(
+                 ((meta->'si_fetch') - 'not_before') || jsonb_strip_nulls(
+                   jsonb_build_object(
                    'requested_at', %s::text,
+                   'not_before', %s::text,
                    'deadline_retries',
-                   COALESCE((meta->'si_fetch'->>'deadline_retries')::int, 0) + 1))
+                   COALESCE((meta->'si_fetch'->>'deadline_retries')::int, 0) + 1)))
          WHERE ref_id = %s
            AND jsonb_exists(meta, 'si_fetch')
            AND COALESCE((meta->'si_fetch'->>'deadline_retries')::int, 0) < %s
         RETURNING (meta->'si_fetch'->>'deadline_retries')::int
         """,
-        (utc_stamp(), ref_id, MAX_DEADLINE_RETRIES),
+        (utc_stamp(), not_before, ref_id, MAX_DEADLINE_RETRIES),
     ).fetchone()
     return int(row[0]) if row else None
 
@@ -321,10 +343,11 @@ def _fetch_one_parent(
             "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
             (Jsonb(patch), parent.ref_id),
         )
-        if any(m["reason"] == "deadline" for m in misses) or (
-            not queued and any(_is_transient(m["reason"]) for m in misses)
-        ):
-            retries = _rearm(conn, parent.ref_id)
+        deadline_cut = any(m["reason"] == "deadline" for m in misses)
+        transient = not queued and any(_is_transient(m["reason"]) for m in misses)
+        if deadline_cut or transient:
+            # A budget cut retries next pass; a pure network failure waits.
+            retries = _rearm(conn, parent.ref_id, spaced=transient and not deadline_cut)
         conn.commit()
     if queued:
         event = "si_found"
@@ -333,9 +356,22 @@ def _fetch_one_parent(
         or m["reason"] in ("download_timeout", "not_pdf")
         for m in misses
     ):
-        # Something we could not see or get (challenge, 403, timeout, 5xx):
-        # distinct from a clean "this paper has no SI".
-        event = "si_blocked"
+        # Something we could not see or get. A wall (challenge, 403, 5xx,
+        # non-PDF, a non-network exception) is ``si_blocked``; when every such
+        # miss is a transient network failure it is ``si_error`` (retried),
+        # not a publisher block.
+        event = (
+            "si_error"
+            if all(
+                _is_transient(m["reason"])
+                for m in misses
+                if m["reason"].startswith(
+                    ("cloudflare", "http_403", "http_5", "error:")
+                )
+                or m["reason"] in ("download_timeout", "not_pdf")
+            )
+            else "si_blocked"
+        )
     else:
         event = "si_found" if cands else "si_none"
     store.append_event(

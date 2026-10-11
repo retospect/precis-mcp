@@ -123,6 +123,25 @@ def test_claim_orders_explicit_before_attention(store) -> None:
     assert [p.ref_id for p in got] == [exp, att_old, att_new]
 
 
+def test_claim_orders_web_requests_first(store) -> None:
+    old = _seed(store, slug="old1")
+    new_web = _seed(store, slug="web1", doi=DOI + "w")
+    for rid, at, by in (
+        (old, "2026-01-01T00:00:00.000000Z", "walker"),
+        (new_web, "2026-06-01T00:00:00.000000Z", "web"),
+    ):
+        _sql(
+            store,
+            "UPDATE refs SET meta = meta || jsonb_build_object('si_fetch', %s::jsonb) "
+            "WHERE ref_id = %s",
+            (Jsonb({"requested_at": at, "by": by}), rid),
+        )
+    with store.pool.connection() as conn:
+        got = si_fetch.claim_si_parents(conn, limit=2)
+        conn.commit()
+    assert [p.ref_id for p in got] == [new_web, old]
+
+
 def test_many_dedupes_and_returns_counts(store) -> None:
     from precis.store.si_links import queue_si_on_attention_many
 

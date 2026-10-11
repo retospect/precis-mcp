@@ -63,6 +63,16 @@ prune_local() {
   # Legacy plain-SQL gz dumps from the pre-2026-05 era — purge on same cadence.
   find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -name "cluster_*.sql.gz" \
     -mtime "+${LOCAL_RETENTION_DAYS}" -delete 2>/dev/null || true
+  # A pg_dump killed by SIGKILL/reboot never ran the EXIT trap and leaves an
+  # incomplete dir (no toc.dat) that the age prune above keeps for days,
+  # eating the MIN_FREE_GB guard (gripe 466216). -mmin +360 spares a dump
+  # running right now; the current LOCAL_DUMP_DIR is never touched.
+  find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -type d -name "precis_prod_*" \
+    -mmin +360 ! -path "${LOCAL_DUMP_DIR}" \
+    ! -exec test -e {}/toc.dat \; -exec rm -rf {} + 2>/dev/null || true
+  # Same for stale NAS tar partials from a killed archive step.
+  find "${NAS_BACKUP_DIR}" -maxdepth 1 -name "precis_prod_*.tar.zst.partial.*" \
+    -mmin +360 -delete 2>/dev/null || true
 }
 
 # pg_dump --format=directory writes straight to the FINAL path, so a mid-run

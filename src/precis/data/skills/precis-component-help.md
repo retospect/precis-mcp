@@ -239,7 +239,7 @@ do speak to availability, and they are different kinds of fact:
   M14×55 offline, and that `q=` weighs *after* fit;
 - `get(kind='component', id=<slug>, view='stock')` shows that tier **and**
   asks a supplier for a live in-stock number, when one is configured
-  (fasteners use descriptive thread/length/family keywords; hand-entered
+  (fasteners use family words plus a compact size, e.g. `socket head cap screw M4X12`; hand-entered
   rows use their MPN when no designation is recorded)
   (`precis.supply`; Digi-Key, Farnell and Mouser — configure supplier
   credentials on the web `/secrets` page). With no credentials it
@@ -251,9 +251,14 @@ lists dated Digi-Key roots; `id=<category id>` walks children/counts and
 leaf parameter IDs; `q='M4'` narrows names/value labels. This is separate
 from the local `categories` registry. Filter a stock read with
 `args={'category_id':572,'parameters':{'<parameter id>':['<value id>']}}`;
-copy IDs from the returned options. Known fastener series apply their
-mapped category and metric thread/length filters automatically; missing
-filter values are explicit errors. Quote descriptions/confidence remain
+copy IDs from the returned options. Known screw series try, in order: (1) a
+parametric search on the metric thread/length filters with the family words
+(sent as `ParameterFilterRequest` only - Digi-Key rejects it next to a
+top-level category on a parent category such as 572, and that 400 just falls
+through); (2) keyword `<family> M4X12` in the category; (3) keyword
+`<family> M4`, keeping hits whose description contains `M4X12`, else the hits
+labelled `[near match, not M4X12]`. All are keyword confidence. Nut series
+search by keyword (`hex nut M4`) with no category. Quote descriptions/confidence remain
 visible; filters do not establish grade/finish equivalence.
 
 The dimension specs a mint writes (`outer_diameter`, `inner_diameter`,

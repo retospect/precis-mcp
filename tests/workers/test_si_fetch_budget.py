@@ -323,6 +323,17 @@ def test_late_claim_records_deadline_miss_and_event_on_every_retry(
         assert events[-1][1].get("rearmed", False) is (n <= 3)
 
 
+def _release_spacing(store, pid: int) -> None:
+    """Pretend the transient-retry spacing elapsed."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{si_fetch}', "
+            "(meta->'si_fetch') - 'not_before') WHERE ref_id = %s",
+            (pid,),
+        )
+        conn.commit()
+
+
 def test_connect_timeout_with_nothing_queued_rearms(store, tmp_path) -> None:
     pid = _seed(store)
     _flag(store, pid, "2026-10-03T10:00:00.000000Z")
@@ -333,6 +344,7 @@ def test_connect_timeout_with_nothing_queued_rearms(store, tmp_path) -> None:
     assert meta["si_fetch"]["deadline_retries"] == 1
     assert meta["si_fetch"]["requested_at"] > meta["si_checked_at"]
     assert _events(store, pid)[0][1]["rearmed"] is True
+    _release_spacing(store, pid)
     again = si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)
     assert again["claimed"] == 1
 
@@ -377,10 +389,63 @@ def test_retry_cap_holds_across_mixed_deadline_and_network(store, tmp_path) -> N
     _flag(store, pid, "2026-10-03T10:00:00.000000Z")
     flaky = _flaky("ReadTimeout")
     for n, deadline_s in ((1, -1.0), (2, 600.0), (3, -1.0)):
+        _release_spacing(store, pid)
         res = si_fetch.run_si_pass(store, tmp_path, fetch=flaky, deadline_s=deadline_s)
         assert res["claimed"] == 1
         assert _meta(store, pid)["si_fetch"]["deadline_retries"] == n
+    _release_spacing(store, pid)
     res = si_fetch.run_si_pass(store, tmp_path, fetch=flaky)
     assert res["claimed"] == 1  # 4th claim: misses stand
     assert _meta(store, pid)["si_fetch"]["deadline_retries"] == 3
     assert si_fetch.run_si_pass(store, tmp_path, fetch=flaky)["claimed"] == 0
+
+
+def test_network_failure_logs_si_error_not_si_blocked(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    si_fetch.run_si_pass(store, tmp_path, fetch=_flaky("ConnectTimeout"))
+    assert [e[0] for e in _events(store, pid)] == ["si_error"]
+
+
+def test_network_failure_plus_wall_stays_si_blocked(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+
+    def mixed(url: str) -> HttpResult:
+        if "figshare" in url:
+            return HttpResult(403, headers={"cf-mitigated": "challenge"})
+        raise _raising("ConnectTimeout")
+
+    si_fetch.run_si_pass(store, tmp_path, fetch=mixed)
+    assert [e[0] for e in _events(store, pid)] == ["si_blocked"]
+
+
+def test_transient_rearm_is_spaced_six_hours(store, tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    si_fetch.run_si_pass(store, tmp_path, fetch=_flaky("ConnectTimeout"))
+    nb = _meta(store, pid)["si_fetch"]["not_before"]
+    delta = datetime.fromisoformat(nb) - datetime.now(UTC)
+    assert timedelta(hours=6) == si_fetch.TRANSIENT_RETRY_SPACING
+    assert timedelta(hours=5, minutes=55) < delta <= timedelta(hours=6)
+    # the very next pass must not re-claim it
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 0
+    # once the spacing has elapsed it is claimable again
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{si_fetch,not_before}', "
+            "to_jsonb(%s::text)) WHERE ref_id = %s",
+            (past, pid),
+        )
+        conn.commit()
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 1
+
+
+def test_deadline_rearm_is_not_spaced(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    si_fetch.run_si_pass(store, tmp_path, fetch=_no_si, deadline_s=-1.0)
+    assert "not_before" not in _meta(store, pid)["si_fetch"]

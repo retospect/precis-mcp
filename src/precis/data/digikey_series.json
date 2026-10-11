@@ -7,6 +7,10 @@
       "category_id": 572,
       "name": "Screws, Bolts",
       "source": "https://www.digikey.com/en/products/filter/screws-bolts/572",
+      "keywords": {
+        "iso-4762": "socket head cap screw",
+        "iso-7380": "button head"
+      },
       "series": [
         "iso-4762",
         "iso-4017",
@@ -23,6 +27,10 @@
     {
       "category_id": 573,
       "name": "Nuts",
+      "stock_category": false,
+      "keywords": {
+        "iso-4032": "hex nut"
+      },
       "source": "https://www.digikey.com/en/products/filter/nuts/573",
       "series": [
         "iso-4032",

@@ -636,9 +636,9 @@ class TestStockView:
     @pytest.mark.parametrize(
         ("series", "size", "expected"),
         [
-            ("iso-4762", "M4x12", "M4 x 12mm socket head cap screw"),
-            ("iso-7380", "M3x8", "M3 x 8mm socket button head screw"),
-            ("iso-4032", "M4", "M4 hexagon nut"),
+            ("iso-4762", "M4x12", "socket head cap screw M4X12"),
+            ("iso-7380", "M3x8", "button head M3X8"),
+            ("iso-4032", "M4", "hex nut M4"),
         ],
     )
     def test_fastener_keyword_uses_series_dimensions_and_family(

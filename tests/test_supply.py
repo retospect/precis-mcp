@@ -304,3 +304,57 @@ class TestDigiKeyParsing:
         adapter.search("a")
         adapter.search("b")
         assert tokens == 1
+
+
+def _quote_with_bodies(monkeypatch, token_resp, search_resp, **kwargs):
+    monkeypatch.setenv("PRECIS_DIGIKEY_CLIENT_ID", "private-client")
+    monkeypatch.setenv("PRECIS_DIGIKEY_CLIENT_SECRET", "private-secret")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return token_resp if "oauth2" in str(request.url) else search_resp
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        monkeypatch.setattr(base, "adapters", lambda: [DigiKeyAdapter()])
+        return base.quote("ISO 4762 M4x12", **kwargs)
+
+
+def test_search_400_problem_detail_and_filters_in_line(monkeypatch) -> None:
+    token = httpx.Response(200, json={"access_token": "t", "expires_in": 600})
+    search = httpx.Response(
+        400,
+        json={
+            "title": "Bad Request",
+            "errors": {"ParameterId": ["is   not\nvalid"]},
+        },
+    )
+    result = _quote_with_bodies(
+        monkeypatch, token, search, category_id=572, parameters={"7": ["a"]}
+    )
+    line = result.outcomes[0].line()
+    assert "HTTP 400 at search" in line
+    assert "category 572, parameters={'7': ['a']}" in line
+    assert "— ParameterId: is not valid" in line
+
+
+def test_token_error_body_not_echoed(monkeypatch) -> None:
+    token = httpx.Response(401, json={"detail": "leaky-token-body"})
+    result = _quote_with_bodies(monkeypatch, token, httpx.Response(200, json={}))
+    outcome = result.outcomes[0]
+    assert outcome.error == "HTTP 401 at token"
+    assert "leaky-token-body" not in outcome.line() + repr(result)
+
+
+def test_error_detail_non_json_falls_back_to_collapsed_text() -> None:
+    from precis.supply.digikey import _error_detail
+
+    text = "  gateway\n\t  down  " + "x" * 400
+    detail = _error_detail(httpx.Response(400, text=text))
+    assert detail == " ".join(text.split())[:200]
+    assert len(detail) == 200 and detail.startswith("gateway down xxx")
+
+
+def test_error_detail_non_dict_json_is_empty() -> None:
+    from precis.supply.digikey import _error_detail
+
+    assert _error_detail(httpx.Response(400, json=["a", "b"])) == ""

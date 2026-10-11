@@ -58,6 +58,36 @@ class CategorySnapshot:
 _TOKEN_SKEW_S = 60.0
 
 _TIMEOUT_S = 3.0
+#: Parametric / empty-keyword category queries scan the whole category and
+#: were observed to exceed the default; give them room.
+_PARAMETRIC_TIMEOUT_S = 60.0
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """Short validation message from a 4xx body; body text only, no request data."""
+
+    def squash(text: str, cap: int) -> str:
+        return " ".join(text.split())[:cap]
+
+    try:
+        body = response.json()
+    except ValueError:
+        return squash(response.text, 200)
+    if not isinstance(body, dict):
+        return ""
+    parts: list[str] = []
+    errors = body.get("errors")
+    if isinstance(errors, dict):
+        parts.extend(
+            f"{field}: {'; '.join(map(str, msgs)) if isinstance(msgs, list) else msgs}"
+            for field, msgs in errors.items()
+        )
+    for key in ("detail", "ErrorDetails", "ErrorMessage", "title"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+            break
+    return squash(" | ".join(parts), 300)
 
 
 class DigiKeyAdapter:
@@ -172,8 +202,11 @@ class DigiKeyAdapter:
             "Limit": max(1, min(int(limit), 50)),
         }
         if category_id is not None:
-            filters: dict[str, Any] = {"CategoryFilter": [{"Id": str(category_id)}]}
+            filters: dict[str, Any] = {}
             if parameters:
+                # Digi-Key rejects a top-level CategoryFilter alongside a
+                # ParameterFilterRequest on a parent category ("Parametric
+                # Filtering Not Support at Parent Category Level").
                 filters["ParameterFilterRequest"] = {
                     "CategoryFilter": {"Id": str(category_id)},
                     "ParameterFilters": [
@@ -184,12 +217,16 @@ class DigiKeyAdapter:
                         for key, values in parameters.items()
                     ],
                 }
+            else:
+                filters["CategoryFilter"] = [{"Id": str(category_id)}]
             body["FilterOptionsRequest"] = filters
         response = httpx.post(
             _SEARCH_URL,
             json=body,
             headers=self._headers(currency=currency),
-            timeout=_TIMEOUT_S,
+            timeout=_PARAMETRIC_TIMEOUT_S
+            if parameters or (category_id is not None and not designation)
+            else _TIMEOUT_S,
         )
         self._check_status(response, "search")
         payload: dict[str, Any] = response.json()
@@ -371,7 +408,12 @@ class DigiKeyAdapter:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise SupplierError(stage, response.status_code) from exc
+            detail = (
+                _error_detail(response)
+                if stage != "token" and 400 <= response.status_code < 500
+                else ""
+            )
+            raise SupplierError(stage, response.status_code, detail) from exc
 
     @staticmethod
     def _one(

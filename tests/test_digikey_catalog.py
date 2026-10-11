@@ -104,7 +104,6 @@ def test_keyword_filter_wire_shape(adapter, monkeypatch):
             "Keywords": "socket cap",
             "Limit": 5,
             "FilterOptionsRequest": {
-                "CategoryFilter": [{"Id": "572"}],
                 "ParameterFilterRequest": {
                     "CategoryFilter": {"Id": "572"},
                     "ParameterFilters": [
@@ -200,12 +199,19 @@ def test_mapped_stock_resolves_options_and_applies_thread_length(
             SimpleNamespace(id="fixture", meta={"series": "iso-4762", "size": "M4x12"}),
             args=args,
         )
-    assert len(bodies) == 2
+    # options, parametric, keyword, near-match (all empty here)
+    assert len(bodies) == 4
     assert bodies[0]["FilterOptionsRequest"]["CategoryFilter"] == [{"Id": "572"}]
-    assert bodies[1]["FilterOptionsRequest"]["ParameterFilterRequest"][
-        "ParameterFilters"
-    ][0]["FilterValues"] == [{"Id": "m4"}]
-    assert "parameters={'77': ['m4'], '88': ['12']}" in response.body
+    param = bodies[1]["FilterOptionsRequest"]
+    assert "CategoryFilter" not in param
+    assert param["ParameterFilterRequest"]["ParameterFilters"][0]["FilterValues"] == [
+        {"Id": "m4"}
+    ]
+    assert bodies[1]["Keywords"] == "socket head cap screw"
+    assert bodies[2]["Keywords"] == "socket head cap screw M4X12"
+    assert "ParameterFilterRequest" not in bodies[2]["FilterOptionsRequest"]
+    assert bodies[3]["Keywords"] == "socket head cap screw M4"
+    assert "category 572" in response.body
 
 
 def test_series_mapping_sources_and_unverified_family():
@@ -253,3 +259,196 @@ def test_supplier_navigation_roots_children_query_and_bad_id(adapter, monkeypatc
         assert "Hardware > Screws, Bolts" in body and "90" in body
         with pytest.raises(BadInput):
             handler.get(view="supplier-categories", id="component-slug")
+
+
+def _product(desc, mpn="P1"):
+    return {
+        "ManufacturerProductNumber": mpn,
+        "Description": {"ProductDescription": desc},
+        "QuantityAvailable": 5,
+        "ProductVariations": [{"DigiKeyProductNumber": mpn + "-ND"}],
+    }
+
+
+def _ladder_quote(adapter, monkeypatch, responder, **kwargs):
+    monkeypatch.setattr(base, "adapters", lambda: [adapter])
+    bodies = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        return responder(body)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        result = base.quote(
+            "socket head cap screw M4X12",
+            category_id=572,
+            parameters={"77": ["m4"]},
+            ladder={
+                "family": "socket head cap screw",
+                "thread": "M4",
+                "size": "M4X12",
+            },
+            **kwargs,
+        )
+    return result, bodies
+
+
+def test_ladder_falls_through_parent_category_400(adapter, monkeypatch):
+    def respond(body):
+        if "ParameterFilterRequest" in body.get("FilterOptionsRequest", {}):
+            return httpx.Response(
+                400,
+                json={
+                    "detail": "Parametric Filtering Not Support at Parent Category Level."
+                },
+            )
+        return httpx.Response(200, json={"Products": [_product("SCREW,CAP (M4X12)")]})
+
+    result, bodies = _ladder_quote(adapter, monkeypatch, respond)
+    assert len(bodies) == 2 and bodies[1]["Keywords"] == "socket head cap screw M4X12"
+    assert result.outcomes[0].error is None and result.outcomes[0].count == 1
+    assert result.quotes[0].match_confidence == "keyword"
+    assert result.outcomes[0].parameters is None
+
+
+def test_ladder_near_match_labelled_and_exact_filtered(adapter, monkeypatch):
+    def respond(body):
+        if body["Keywords"] == "socket head cap screw M4":
+            return httpx.Response(
+                200,
+                json={
+                    "Products": [
+                        _product("SCREW (M4X16)", "A"),
+                        _product("SCREW (M4X12)", "B"),
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"Products": []})
+
+    result, _ = _ladder_quote(adapter, monkeypatch, respond)
+    assert [q.sku for q in result.quotes] == ["B-ND"]
+
+    result, _ = _ladder_quote(
+        adapter,
+        monkeypatch,
+        lambda body: httpx.Response(
+            200,
+            json={"Products": [_product("SCREW (M4X16)")]}
+            if body["Keywords"] == "socket head cap screw M4"
+            else {"Products": []},
+        ),
+    )
+    assert result.quotes[0].description.startswith("[near match, not M4X12]")
+    assert result.quotes[0].match_confidence == "keyword"
+
+
+def test_nut_series_sends_no_category(adapter, monkeypatch):
+    monkeypatch.setattr(base, "adapters", lambda: [adapter])
+    bodies = []
+
+    def handle(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"Products": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        stub: Any = SimpleNamespace()
+        handler = ComponentHandler(hub=Hub(store=stub))
+        handler._render_stock(
+            SimpleNamespace(id="n", meta={"series": "iso-4032", "size": "M4"}),
+            args=None,
+        )
+    assert len(bodies) == 1
+    assert bodies[0]["Keywords"] == "hex nut M4"
+    assert "FilterOptionsRequest" not in bodies[0]
+
+
+_LADDER = {"family": "socket head cap screw", "thread": "M4", "size": "M4X12"}
+
+
+def _criteria_quote(adapter, monkeypatch, responder, *, ladder, fastener):
+    """quote() with ``criteria`` (no explicit parameters) and a stubbed filter lookup."""
+    monkeypatch.setattr(base, "adapters", lambda: [adapter])
+    monkeypatch.setattr(adapter, "fastener_parameters", fastener)
+    bodies = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        return responder(body)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        result = base.quote(
+            "socket head cap screw M4X12",
+            category_id=572,
+            criteria={"thread": "M4"},
+            ladder=ladder,
+        )
+    return result, bodies
+
+
+def _unavailable(*_a, **_k):
+    raise FilterUnavailable("no such filter")
+
+
+@pytest.mark.parametrize("status", [500, 403])
+def test_ladder_parametric_non_400_reraises(adapter, monkeypatch, status):
+    def respond(body):
+        if "ParameterFilterRequest" in body.get("FilterOptionsRequest", {}):
+            return httpx.Response(status, json={"detail": "boom"})
+        return httpx.Response(200, json={"Products": [_product("SCREW (M4X12)")]})
+
+    result, bodies = _ladder_quote(adapter, monkeypatch, respond)
+    assert len(bodies) == 1  # no keyword rung attempted
+    assert result.quotes == []
+    assert f"HTTP {status} at search" in result.outcomes[0].error
+
+
+def test_ladder_parametric_hit_returns_selected_without_keyword_rungs(
+    adapter, monkeypatch
+):
+    result, bodies = _ladder_quote(
+        adapter,
+        monkeypatch,
+        lambda body: httpx.Response(
+            200, json={"Products": [_product("SCREW (M4X12)")]}
+        ),
+    )
+    assert len(bodies) == 1
+    assert "ParameterFilterRequest" in bodies[0]["FilterOptionsRequest"]
+    assert result.outcomes[0].count == 1
+    assert result.outcomes[0].parameters == {"77": ["m4"]}
+
+
+def test_quote_filter_unavailable_with_ladder_falls_to_keyword(adapter, monkeypatch):
+    result, bodies = _criteria_quote(
+        adapter,
+        monkeypatch,
+        lambda body: httpx.Response(
+            200, json={"Products": [_product("SCREW (M4X12)")]}
+        ),
+        ladder=_LADDER,
+        fastener=_unavailable,
+    )
+    assert len(bodies) == 1
+    assert "ParameterFilterRequest" not in bodies[0].get("FilterOptionsRequest", {})
+    assert bodies[0]["Keywords"] == "socket head cap screw M4X12"
+    assert result.outcomes[0].error is None and result.outcomes[0].count == 1
+    assert result.outcomes[0].parameters is None
+
+
+def test_quote_filter_unavailable_without_ladder_becomes_outcome_error(
+    adapter, monkeypatch
+):
+    result, bodies = _criteria_quote(
+        adapter,
+        monkeypatch,
+        lambda body: httpx.Response(200, json={"Products": []}),
+        ladder=None,
+        fastener=_unavailable,
+    )
+    assert bodies == [] and result.quotes == []
+    assert result.outcomes[0].error == "no such filter"

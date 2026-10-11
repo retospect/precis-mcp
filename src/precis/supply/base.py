@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -22,9 +22,10 @@ log = logging.getLogger(__name__)
 class SupplierError(RuntimeError):
     """Safe adapter diagnostic; never includes request or credential data."""
 
-    def __init__(self, stage: str, status: int) -> None:
+    def __init__(self, stage: str, status: int, detail: str = "") -> None:
         self.stage = stage
         self.status = status
+        self.detail = detail
         super().__init__(f"HTTP {status} at {stage}")
 
 
@@ -38,17 +39,22 @@ class SupplierOutcome:
     error: str | None = None
     category_id: int | None = None
     parameters: dict[str, list[str]] | None = None
+    detail: str = ""
 
     def line(self) -> str:
-        if self.error is not None:
-            return f"{self.supplier}: {self.error} for keyword {self.keyword!r}"
-        count = (
-            "0 products with stock data" if self.count == 0 else f"{self.count} quotes"
-        )
         filters = (
             f" · category {self.category_id}, parameters={self.parameters or {}}"
             if self.category_id
             else ""
+        )
+        if self.error is not None:
+            tail = f" — {self.detail}" if self.detail else ""
+            return (
+                f"{self.supplier}: {self.error} for keyword "
+                f"{self.keyword!r}{filters}{tail}"
+            )
+        count = (
+            "0 products with stock data" if self.count == 0 else f"{self.count} quotes"
         )
         return f"{self.supplier}: {count} for keyword {self.keyword!r}{filters}"
 
@@ -163,6 +169,52 @@ def unavailable_reason() -> str | None:
     return "; ".join(reasons)
 
 
+def _digikey_ladder(
+    adapter: Any,
+    designation: str,
+    limit: int,
+    category_id: int,
+    selected: dict[str, list[str]] | None,
+    ladder: dict[str, str],
+) -> tuple[list[StockQuote], dict[str, list[str]] | None]:
+    """Digi-Key fastener rungs; returns ``(quotes, parameters actually used)``.
+
+    1. parametric (``ParameterFilterRequest`` only) + family words — Digi-Key
+       refuses it with a 400 on a parent category, which falls through;
+    2. keyword ``designation`` ("<family> M4X12") inside the category;
+    3. keyword "<family> M4" keeping descriptions that contain the size
+       token, else the unfiltered hits labelled as near matches.
+    """
+    if selected:
+        try:
+            found = adapter.search(
+                ladder["family"],
+                limit=limit,
+                category_id=category_id,
+                parameters=selected,
+            )
+        except SupplierError as exc:
+            if exc.status != 400:
+                raise
+        else:
+            if found:
+                return found, selected
+    found = adapter.search(designation, limit=limit, category_id=category_id)
+    if found:
+        return found, None
+    wide = adapter.search(
+        f"{ladder['family']} {ladder['thread']}", limit=50, category_id=category_id
+    )
+    needle = ladder["size"].casefold()
+    exact = [q for q in wide if needle in q.description.casefold()]
+    if exact:
+        return exact[:limit], None
+    return [
+        replace(q, description=f"[near match, not {ladder['size']}] {q.description}")
+        for q in wide[:limit]
+    ], None
+
+
 def quote(
     designation: str,
     *,
@@ -170,6 +222,7 @@ def quote(
     category_id: int | None = None,
     parameters: dict[str, list[str]] | None = None,
     criteria: dict[str, Any] | None = None,
+    ladder: dict[str, str] | None = None,
 ) -> QuoteResult:
     """Ask every configured supplier, best-stocked first.
 
@@ -177,6 +230,9 @@ def quote(
     cannot establish catalogue absence, and must not hide other suppliers.
     Exception messages may contain request credentials; only typed adapter
     errors or exception class names are returned/logged.
+
+    ``ladder`` (``family``/``thread``/``size``) turns the Digi-Key lookup
+    into parametric → keyword → near-match rungs; see :func:`_digikey_ladder`.
     """
     out: list[StockQuote] = []
     outcomes: list[SupplierOutcome] = []
@@ -209,13 +265,22 @@ def quote(
                     )
                     continue
                 if selected is None and criteria:
-                    selected = adapter.fastener_parameters(category_id, **criteria)
-                found = adapter.search(
-                    designation,
-                    limit=limit,
-                    category_id=category_id,
-                    parameters=selected,
-                )
+                    try:
+                        selected = adapter.fastener_parameters(category_id, **criteria)
+                    except FilterUnavailable:
+                        if not ladder:
+                            raise
+                if ladder:
+                    found, selected = _digikey_ladder(
+                        adapter, designation, limit, category_id, selected, ladder
+                    )
+                else:
+                    found = adapter.search(
+                        designation,
+                        limit=limit,
+                        category_id=category_id,
+                        parameters=selected,
+                    )
             else:
                 found = adapter.search(designation, limit=limit)
             out.extend(found)
@@ -234,7 +299,16 @@ def quote(
                 if isinstance(exc, (SupplierError, FilterUnavailable))
                 else type(exc).__name__
             )
-            outcomes.append(SupplierOutcome(adapter.name, designation, error=error))
+            outcomes.append(
+                SupplierOutcome(
+                    adapter.name,
+                    designation,
+                    error=error,
+                    category_id=category_id,
+                    parameters=selected,
+                    detail=exc.detail if isinstance(exc, SupplierError) else "",
+                )
+            )
             log.warning("supplier %s: %s", adapter.name, error)
     preference = [
         part.strip().upper().replace("UK", "GB")

@@ -446,3 +446,17 @@ def test_deploy_override_flag_proceeds_inside_window(deploy_fx: DeployFixture) -
     assert r.returncode == 0, r.stdout + r.stderr
     assert "NOTE: --ignore-backup-window" in r.stdout
     assert deploy_fx.ansible_called() == {"ansible", "ansible-playbook"}
+
+
+def test_prune_local_sweeps_incomplete_dump_dirs_and_nas_partials() -> None:
+    """A killed pg_dump leaves a toc.dat-less dir; prune_local must reclaim it
+    (and stale NAS partials) without touching a running or current dump
+    (gripe 466216)."""
+    tpl = (REPO_ROOT / "deploy/roles/backups/templates/pg_backup.sh.j2").read_text(
+        encoding="utf-8"
+    )
+    body = tpl.split("prune_local() {", 1)[1].split("\n}\n", 1)[0]
+    assert "-mmin +360" in body
+    assert '! -path "${LOCAL_DUMP_DIR}"' in body
+    assert "! -exec test -e {}/toc.dat" in body
+    assert "precis_prod_*.tar.zst.partial.*" in body

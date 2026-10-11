@@ -231,7 +231,7 @@ reason}` — e.g. `cloudflare_403` when the publisher answers with a
 challenge: that is a recorded miss, never retried around), `si_skipped`
 (non-PDF files: zip/xlsx/cif/docx are not ingested; `reason='non_pdf'`
 and the source URL are retained and shown on the paper overview/Meta tab), and one `si_found` /
-`si_none` / `si_blocked` row in `get(id=..., view='log')`. A paper with no
+`si_none` / `si_blocked` (publisher wall) / `si_error` (network failure, retried) row in `get(id=..., view='log')`. A paper with no
 SI is checked once and not re-checked until you call it again; a check cut
 short by the pass time budget (`deadline` miss), or one that queued nothing
 because of a transient network failure (connect/read timeout), retries on the

@@ -449,7 +449,7 @@ class PaperHandler(Handler):
                 "fetch worker discovers it on its next tick; each SI PDF found "
                 "becomes its own paper ref linked to this one and cites as it. "
                 "The outcome lands on the paper "
-                "(get(id=..., view='log'): si_found / si_none / si_blocked)."
+                "(get(id=..., view='log'): si_found / si_none / si_blocked / si_error)."
             )
         )
 

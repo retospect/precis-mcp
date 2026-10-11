@@ -1313,11 +1313,15 @@ class ComponentHandler(ValueEntityHandler):
             family = srs.name.lower().split(",", 1)[0]
             if family.startswith("hexagon socket "):
                 family = family.removeprefix("hexagon ")
-            dimension = f"{thread} x {length:g}mm" if length is not None else thread
-            query = f"{dimension} {family}"
             mapping = series_mapping(srs.series_id)
-            if mapping and not filters:
+            family = (mapping or {}).get("keywords", {}).get(srs.series_id, family)
+            # Digi-Key descriptions read "SCREW,CAP,SOCKET HEAD (M4X12)":
+            # compact size token, family words, no "mm".
+            token = f"{thread}X{length:g}" if length is not None else thread
+            query = f"{family} {token}"
+            if mapping and not filters and mapping.get("stock_category", True):
                 filters["category_id"] = mapping["category_id"]
+                filters["ladder"] = {"family": family, "thread": thread, "size": token}
                 filters["criteria"] = {
                     "thread": thread,
                     "pitch": row.specs.get("thread_pitch"),
