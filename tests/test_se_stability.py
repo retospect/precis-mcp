@@ -1046,3 +1046,97 @@ def test_single_offset_bar_leaves_two_rotation_mechanisms() -> None:
     report = se_stability.classify(tree)
     assert report.m == 2
     assert "mobile" in report.verdict
+
+
+def test_stress_matrix_matches_finite_difference_hessian() -> None:
+    """``_stress_matrix`` is the Hessian of the prestress energy
+    ``Σ t·L(x)`` plus ``Σ q·g gᵀ`` (``g = ∇L``: the parallel component
+    the first-order-mechanism test drops anyway). Central differences over
+    the full DOF vector (rotations by exact Rodrigues), two prestressed
+    bars into one offset-port body that is also a rotated block."""
+    tree = apply_ops(
+        SeTree(),
+        [
+            {
+                "op": "add_block",
+                "name": "body",
+                "pose": [0.1, 0.2, -0.1],
+                "rot": [0.3, -0.4, 0.5],
+            },
+            {"op": "add_port", "block": "body", "name": "p", "pose": [0.2, 0.1, 0.3]},
+            {"op": "add_port", "block": "body", "name": "q", "pose": [-0.3, 0.2, 0.1]},
+            {"op": "add_block", "name": "w1", "pose": [1.5, 0.3, 0.2]},
+            {"op": "add_port", "block": "w1", "name": "pin"},
+            {"op": "add_block", "name": "w2", "pose": [-0.4, 1.7, 0.5]},
+            {"op": "add_port", "block": "w2", "name": "pin"},
+            {
+                "op": "connect",
+                "a": "body.p",
+                "b": "w1.pin",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+            {
+                "op": "connect",
+                "a": "w2.pin",
+                "b": "body.q",
+                "joint": {"class": "axial", "params": dict(_ROD)},
+            },
+        ],
+    )
+    system = se_stability._assemble(tree)
+    assert system.dof[system.index["body"]] == 6
+    state = np.array([2.0, 3.0])
+    k_mat = se_stability._stress_matrix(system, state)
+
+    def points(x: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+        row = system.live[k]
+        out = []
+        for node, arm, pt in (
+            (row.a_block, system.arms[k][0], row.a_point),
+            (row.b_block, system.arms[k][1], row.b_point),
+        ):
+            i = system.index[node]
+            r0 = int(system.start[i])
+            p = system.coords[i] + arm + x[r0 : r0 + 3]
+            if system.dof[i] == 6:
+                th = x[r0 + 3 : r0 + 6]
+                ang = float(np.linalg.norm(th))
+                if ang > 0.0:
+                    kx = se_stability._skew(th / ang)
+                    rot = np.eye(3) + math.sin(ang) * kx + (1 - math.cos(ang)) * kx @ kx
+                    p = system.coords[i] + rot @ arm + x[r0 : r0 + 3]
+            out.append(p)
+        return out[0], out[1]
+
+    def length(x: np.ndarray, k: int) -> float:
+        a, b = points(x, k)
+        return float(np.linalg.norm(b - a))
+
+    def energy(x: np.ndarray) -> float:
+        return sum(float(state[k]) * length(x, k) for k in range(2))
+
+    n, h = system.n, 1e-4
+    x0 = np.zeros(n)
+    hess = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            ei, ej = np.eye(n)[i] * h, np.eye(n)[j] * h
+            hess[i, j] = (
+                energy(x0 + ei + ej)
+                - energy(x0 + ei - ej)
+                - energy(x0 - ei + ej)
+                + energy(x0 - ei - ej)
+            ) / (4 * h * h)
+    parallel = np.zeros((n, n))
+    for k in range(2):
+        g = np.array(
+            [
+                (length(x0 + np.eye(n)[i] * h, k) - length(x0 - np.eye(n)[i] * h, k))
+                / (2 * h)
+                for i in range(n)
+            ]
+        )
+        parallel += float(state[k]) / float(system.lengths[k]) * np.outer(g, g)
+    expected = hess + parallel
+    err = float(np.max(np.abs(k_mat - expected))) / float(np.max(np.abs(expected)))
+    assert err < 1e-6, err
