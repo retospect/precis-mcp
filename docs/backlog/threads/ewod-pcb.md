@@ -329,10 +329,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 11. **gr414481** — EWOD boards need a second max-extent check for parylene
     coating, separate from the fab/manufacturing size cap; feeds gr451662's
     adhesive-layer extent.
-12. **gr338660** — the ewod-oil route-platform-constraint screen has no
-    reagent-economy axis (distinct-reagent count vs reservoir budget,
-    reaction-type diversity, longest unpurified run); waits on 9
-    (ewod-oil-constraint-grounding), the file this screen lives beside.
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
 14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +

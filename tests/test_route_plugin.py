@@ -1258,3 +1258,46 @@ def test_one_finding_reported_once_not_per_spelling() -> None:
     )
     chroma = [f for f in flags if "chromatography" in f or "column" in f]
     assert len(chroma) == 1, flags
+
+
+def _economy_graph(n_reagents: int, templates: list[str | None]) -> RouteGraph:
+    """A linear chain: step i makes P{i} from P{i+1} plus one fresh reagent."""
+    steps = []
+    for i, t in enumerate(templates, start=1):
+        nxt = f"P{i + 1}" if i < len(templates) else "SEED"
+        steps.append(
+            RouteStep(
+                id=i,
+                product=f"P{i}",
+                reactants=[nxt, f"R{i % n_reagents}"],
+                template_id=t,
+                conditions="water, 25 °C",
+            )
+        )
+    return RouteGraph(target="P1", engine="stub", engine_version="0", steps=steps)
+
+
+def test_route_economy_counts_reagents_types_and_run() -> None:
+    from precis_chem.constraints import route_economy
+
+    eco = route_economy(_economy_graph(3, ["a", "a", "b", None]))
+    # Leaves: SEED + R0..R2 (P* are intermediates, claim no reservoir).
+    assert eco.reagents == ("R0", "R1", "R2", "SEED")
+    assert eco.reaction_types == ("a", "b")
+    assert eco.untyped_steps == 1
+    assert eco.longest_run == 4
+
+
+def test_economy_advisory_flags_budget_and_run_in_render() -> None:
+    from precis_chem.constraints import EWOD_OIL, screen_route
+
+    big = screen_route(_economy_graph(10, ["a"] * 10), ["ewod-oil"]).render()
+    assert f"of {EWOD_OIL.reservoir_budget} reservoirs" in big
+    assert "⚠ ewod-oil: reagent economy — 11 distinct" in big, big
+    assert "⚠ ewod-oil: longest unpurified run — 10" in big, big
+    small = screen_route(_economy_graph(2, ["a", "a"]), ["ewod-oil"]).render()
+    assert "· ewod-oil: reagent economy — 3 distinct" in small, small
+    assert "⚠ ewod-oil: reagent economy" not in small
+    assert "· ewod-oil: longest unpurified run — 2" in small
+    # Unconstrained route: no economy block.
+    assert "reagent economy" not in _economy_graph(2, ["a"]).render()
