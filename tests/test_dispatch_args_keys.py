@@ -147,3 +147,23 @@ def test_unknown_put_args_key_points_at_comment_idiom(
     )
     assert "[error:BadInput]" in out, out
     assert f"to comment: put(kind='{kind}', id=N, text='...') with no args" in out, out
+
+
+@pytest.mark.parametrize(
+    ("kind", "verb", "params"),
+    [
+        ("memory", "put", {"text": "x"}),
+        ("anki", "put", {"text": "x"}),
+        ("gripe", "search", {"q": "x"}),
+        ("gripe", "delete", {"id": 1}),
+    ],
+)
+def test_unknown_args_key_no_comment_hint_off_comment_door(
+    runtime_with_store: PrecisRuntime, kind: str, verb: str, params: dict
+) -> None:
+    """The 'to comment:' hint is only for put on a supports_comment kind."""
+    out = runtime_with_store.dispatch(
+        verb, {"kind": kind, **params, "__extras__": {"bogus_key": True}}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "to comment:" not in out, out

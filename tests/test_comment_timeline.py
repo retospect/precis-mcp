@@ -3,6 +3,8 @@ unknown-args hint, and todo details-body find-replace/insert."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -197,3 +199,12 @@ def test_find_replace_requires_body_and_find(todo: TodoHandler) -> None:
 
 def test_todo_spec_edit_modes() -> None:
     assert TodoHandler.spec.edit_modes == ("replace", "find-replace", "insert")
+
+
+def test_hidden_comments_ignores_non_int_and_bool() -> None:
+    from types import SimpleNamespace
+
+    from precis.handlers._comment_timeline import hidden_comments
+
+    ref: Any = SimpleNamespace(meta={"hidden_comments": [2, True, "3"]})
+    assert hidden_comments(ref) == {2}

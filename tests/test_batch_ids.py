@@ -116,6 +116,7 @@ def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
     with pytest.raises(BadInput, match="does not take id=") as refused:
         AnkiHandler(hub=hub).get(id=_batch(1, 2))
     assert "gripe" in str(refused.value.next) and "memory" in str(refused.value.next)
+    assert "anki" not in str(refused.value.next)
     with pytest.raises(BadInput, match="got list"):
         MemoryHandler(hub=hub).link(id=two, target="memory:3", rel="related-to")
 
