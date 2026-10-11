@@ -148,11 +148,7 @@
         {# `tagline` (precis.workers.hub_tagline): the visible np-title
            text when the hub has a 3-6 word human handle set — full title
            stays in `title=` (hover). Absent → exactly the old render. #}
-        <span class="np-title text-sm leading-snug" title="{{ n.row.title }}">{{ n.row.tagline or n.row.title }}</span>
-        {% if n.row.trusty_uri %}
-        <span class="font-mono text-xs text-slate-400 shrink-0"
-              title="{{ n.row.trusty_uri }}">{{ n.row.trusty_uri.rsplit('/', 1)[-1][:14] }}…</span>
-        {% endif %}
+        <span class="np-title text-sm leading-snug min-w-[12rem]" title="{{ n.row.title }}">{{ n.row.tagline or n.row.title }}</span>
         {% if n.row.drifted %}<span class="text-xs text-amber-600 shrink-0 cursor-help"
               title="The live hub title no longer matches the frozen approved sentence — signing is blocked; reopen and re-approve, or revert the edit.">drifted</span>{% endif %}
       </summary>

@@ -177,7 +177,19 @@
      path, hover = emphasize, click = select+fade the rest, Esc = clear.
      Mirrors the autocatpath HTML export's legend-as-buttons interaction. #}
   <div id="pw-path-legend" class="flex flex-wrap items-center gap-1 mb-1"></div>
+  {# what is selected right now (state and/or isolated path) — filled by
+     updateSelectionReadout; a click used to scroll the page to the table
+     with nothing on the diagram saying what it had picked. #}
+  <div id="pw-selection" class="mb-1 min-h-[1.25rem] text-[11px] text-slate-600" aria-live="polite"></div>
   <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-sky-200 bg-slate-50 p-1"></div>
+  <p id="pw-diagram-key" class="mt-1 text-[10px] leading-snug text-slate-500">
+    <b>Key:</b>
+    thick bar = a state's free-energy level (hover for value; shaded band = &plusmn;1&sigma;);
+    curve = a reaction step, peak height = barrier E<sub>a</sub>;
+    small arrow = a proton+electron (+H&#8314;+e&#8315;) feed onto the product level;
+    <span style="color:#d9534f" class="font-semibold">red</span> bar / &#9888; = low confidence (hover for why);
+    every other colour = the root&rarr;leaf path that owns it (buttons above; same colour on bars, curves and arrows).
+  </p>
   {% elif status_banner %}
   {# No graph yet — a clear state banner (the orphaned-pathway-stub sweep,
      precis.quest.loop._reconcile_orphaned_pathways, moves a dead
@@ -929,6 +941,40 @@
   let currentU = 0;
   const forkProbs = V.diagram ? computeForkProbabilities(V.diagram) : {};
 
+  // Tooltip for a state-level bar: what it is, its energy, and (when
+  // flagged) WHY it is untrusted.
+  function levelTip(nd, reason) {
+    const sd = nd.energy_std || 0;
+    let t = `state ${nd.id} \u2014 free-energy level`;
+    if (nd.rel_energy != null) {
+      t += ` ${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}`
+        + (sd > 1e-6 ? ` \u00b1${sd.toFixed(2)}` : '') + ' eV';
+    }
+    if (nd.n_H != null) { t += `; n_H=${nd.n_H}`; }
+    if (reason) { t += `\n\u26a0 ${reason}`; }
+    return t + '\nclick to select';
+  }
+
+  // The graph payload only carries a boolean ``low_confidence`` per node, so
+  // the reason is assembled from what the client does know: the per-state
+  // warnings, the energy spread, and any flagged link touching the state.
+  function lowConfidenceReason(nd) {
+    const bits = [];
+    ((V.stateWarnings || {})[nd.id] || []).forEach((w) => bits.push(w.text));
+    const sd = nd.energy_std || 0;
+    if (sd > 1e-6) { bits.push(`energy spread \u00b1${sd.toFixed(2)} eV across the sampled geometries`); }
+    const links = ((V.diagram || {}).links || []).filter(
+      (e) => e.low_confidence && (e.source === nd.id || e.target === nd.id));
+    if (links.length) {
+      bits.push('adjacent step flagged low-confidence: '
+        + links.map((e) => `${e.source}\u2192${e.target}`).join(', '));
+    }
+    if (nd.low_confidence && !bits.length) {
+      bits.push('flagged low-confidence by the barrier computation (no finer reason recorded)');
+    }
+    return 'low confidence \u2014 ' + bits.join('; ');
+  }
+
   function renderDiagram() {
     const g = V.diagram;
     const el = document.getElementById('pw-diagram');
@@ -1128,7 +1174,7 @@
       // points; re-scaling x here would double-apply xScale.
       const curvePts = humpPoints(x0, geo.src.rel_energy, x1, geo.tgt.rel_energy, peakY);
       const curve = curvePts.map(([x, y]) => `${x},${py(y)}`).join(' ');
-      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2" style="cursor:pointer"/>`);
+      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2" style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${geo.barrier > 1e-3 ? `, Ea=${geo.barrier.toFixed(2)} eV` : ''}\nclick to isolate its path`)}</title></polyline>`);
       // shoulder — the X+H level (its energy is real) as a small tick at
       // the hump's foot, joined to X by a thin solid drop; clickable like a
       // level, and it moves with U like any other n_H-carrying node.
@@ -1219,18 +1265,15 @@
         parts.push(`<rect class="pw-sdband"${pAttr(nodePaths[id])} x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
           + `fill="${color}" opacity="0.15"/>`);
       }
-      parts.push(`<line${pAttr(nodePaths[id])} x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`);
       const warned = !!(nd.low_confidence || badWarn);
+      const reason = warned ? lowConfidenceReason(nd) : '';
+      parts.push(`<line${pAttr(nodePaths[id])} x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"><title>${esc(levelTip(nd, reason))}</title></line>`);
       const lab = sd > 1e-6 ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : `${nd.id}`;
       // Tooltip (item 2) — the same joined warning text the States-list
       // row's own title="..." already carries (V.stateWarnings); a
       // low_confidence node with no per-state warning entry falls back to a
       // generic note rather than an empty <title>.
-      let title = null;
-      if (warned) {
-        const texts = (V.stateWarnings[id] || []).map((w) => w.text);
-        title = texts.length ? texts.join('; ') : 'low confidence';
-      }
+      const title = warned ? reason : null;
       labelQueue.push({
         x: (x0 + x1) / 2, y: y - 8, anchorX: (x0 + x1) / 2, anchorY: y,
         text: lab + (warned ? ' ⚠' : ''), fontSize: 8, color, bold: true, title,
@@ -1243,7 +1286,7 @@
       // was actually clickable.
       const bandHalf = 14;
       parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${y - bandHalf}" width="${x1 - x0}" height="${bandHalf * 2}" `
-        + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
+        + `fill="transparent" stroke="none" style="cursor:pointer"><title>${esc(levelTip(nd, reason))}</title></rect>`);
     });
 
     // ── hydrogenation arrows — one per step that takes a proton+electron: a
@@ -1266,7 +1309,14 @@
     });
     Object.keys(arrowCols).forEach((k) => {
       const col = arrowCols[k].slice().sort((a, b) => a.tipY - b.tipY);
-      col.forEach((ha, i) => { ha.shared = col.length > 1; ha.labelled = i === 0; });
+      // Label every arrow that has room (tips >= 11px apart); a crowded one
+      // still carries the same text as a hover <title>.
+      let lastTip = -Infinity;
+      col.forEach((ha, i) => {
+        ha.shared = col.length > 1;
+        ha.labelled = (i === 0) || (ha.tipY - lastTip >= 11);
+        if (ha.labelled) { lastTip = ha.tipY; }
+      });
     });
     hydroArrows.forEach((ha) => {
       if (ha.skip) { return; }
@@ -1283,8 +1333,9 @@
         + `<line x1="${tailX}" y1="${tailY}" x2="${bx}" y2="${by}" stroke="${ha.color}" stroke-width="1.2"/>`
         + `<polygon points="${tipX},${tipY} ${bx + nx * headHalf},${by + ny * headHalf} ${bx - nx * headHalf},${by - ny * headHalf}" fill="${ha.color}"/>`
         + (ha.labelled
-          ? `<text class="pw-hydro-label" x="${tailX}" y="${tailY - 3}" font-size="8" fill="${ha.shared ? '#64748b' : ha.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(ha.text)}</text>`
+          ? `<text class="pw-hydro-label" x="${tailX}" y="${tailY - 3}" font-size="8" fill="${ha.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(ha.text)}</text>`
           : '')
+        + `<title>${esc(`${ha.text} feeds ${ha.step.src} \u2192 ${ha.step.tgt}`)}</title>`
         + `</g>`);
     });
 
@@ -1385,6 +1436,7 @@
       b.classList.toggle('ring-sky-400', on);
       b.classList.toggle('bg-sky-50', on);
     });
+    updateSelectionReadout();
   }
 
   function togglePathSelection(pi) {
@@ -1401,6 +1453,7 @@
       b.type = 'button';
       b.className = 'pw-path-btn flex items-center gap-1.5 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100';
       b.dataset.path = String(pi);
+      b.title = `Path to ${path[path.length - 1]} \u2014 its bars, curves and arrows share this colour. Hover to preview, click to isolate.`;
       b.setAttribute('aria-pressed', 'false');
       const color = PATH_COLORS[pi % PATH_COLORS.length];
       b.innerHTML = `<span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${color}"></span>&rarr; ${esc(path[path.length - 1])}`;
@@ -1428,7 +1481,41 @@
   // always present" + AC1's "every state node is clickable". ──
   let selected = null;
 
-  function highlightState(id) {
+  // Scroll a state row into view INSIDE the state list only. The old
+  // scrollIntoView call also scrolled the page down to the table, and (as
+  // setU re-ran highlightState on every slider tick) yanked the page away
+  // from the U slider mid-drag.
+  function scrollRowInList(row) {
+    const list = document.getElementById('pw-state-list');
+    if (!list) { return; }
+    const r = row.getBoundingClientRect(), l = list.getBoundingClientRect();
+    if (r.top < l.top) { list.scrollTop -= (l.top - r.top); }
+    else if (r.bottom > l.bottom) { list.scrollTop += (r.bottom - l.bottom); }
+  }
+
+  function updateSelectionReadout() {
+    const host = document.getElementById('pw-selection');
+    if (!host) { return; }
+    const bits = [];
+    if (selected) {
+      const nd = ((V.diagram || {}).nodes || []).find((n) => n.id === selected);
+      let t = `state <b class="font-mono">${esc(selected)}</b>`;
+      if (nd && nd.rel_energy != null) {
+        t += ` at ${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)} eV`;
+      }
+      bits.push('Selected ' + t + ' (outlined in the diagram, highlighted in the States list)');
+    }
+    if (selectedPath != null) {
+      const paths = (V.diagram && V.diagram.paths) || [];
+      const path = paths[selectedPath];
+      if (path) {
+        bits.push(`Path isolated: <b class="font-mono">&rarr; ${esc(path[path.length - 1])}</b> (Esc clears)`);
+      }
+    }
+    host.innerHTML = bits.join(' &middot; ');
+  }
+
+  function highlightState(id, scroll) {
     document.querySelectorAll('.pw-state-node').forEach((row) => {
       const on = row.getAttribute('data-state') === id;
       // Unified highlight tokens (item 5) — same light-blue family as the
@@ -1437,7 +1524,7 @@
       row.classList.toggle('border-sky-200', on);
       row.classList.toggle('ring-1', on);
       row.classList.toggle('ring-sky-200', on);
-      if (on) { row.scrollIntoView({ block: 'nearest' }); }
+      if (on && scroll) { scrollRowInList(row); }
     });
     // Selected-state column background (item 5) — the full-plot-height
     // rect drawn behind everything (see renderDiagram's colbg pre-pass),
@@ -1452,6 +1539,7 @@
       n.setAttribute('stroke', n.getAttribute('data-state') === id ? '#0284c7' : 'none');
       n.setAttribute('stroke-width', '2');
     });
+    updateSelectionReadout();
   }
 
   function renderMeasuresPanel(id) {
@@ -1633,7 +1721,7 @@
   function showState(id) {
     if (!V.stateIds.includes(id)) { return; }
     selected = id;
-    highlightState(id);
+    highlightState(id, true);
     renderMeasuresPanel(id);
 
     const emptyMsg = document.getElementById('pw-mol-empty');

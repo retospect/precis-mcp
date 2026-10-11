@@ -627,7 +627,13 @@ def test_pathway_detail_state_tracking_and_detail_refresh_js_present(
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "refreshDetail(" in resp.text
-    assert "scrollIntoView" in resp.text
+    assert "scrollRowInList" in resp.text
+    # the slider re-render must not scroll the page (highlightState scrolls
+    # only when asked to), and the selection is echoed above the diagram
+    assert "row.scrollIntoView" not in resp.text
+    assert 'id="pw-selection"' in resp.text
+    assert 'id="pw-diagram-key"' in resp.text
+    assert "lowConfidenceReason" in resp.text
     assert '"r_cov"' in resp.text
 
 
@@ -2153,7 +2159,7 @@ _HYDRO_ARROW_RE = (
     r'<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)"[^>]*/>'
     r'<polygon points="([\d.-]+),([\d.-]+) [^"]*"[^>]*/>'
     r'(?:<text class="pw-hydro-label" x="([\d.-]+)" y="([\d.-]+)" [^>]*fill="([^"]*)"'
-    r"[^>]*>([^<]*)</text>)?</g>"
+    r"[^>]*>([^<]*)</text>)?(?:<title>[^<]*</title>)?</g>"
 )
 
 
@@ -2164,8 +2170,8 @@ def test_pathway_hydrogenation_arrow_tip_lands_on_fed_level_from_upper_right(
     """Each hydrogenation step's arrow enters at an angle from the upper
     right: the head's tip vertex sits on the PRODUCT level bar it feeds (x
     inside the bar, y on the bar) and the tail is right of and above it.
-    Arrows sharing an x-column (NH/OH, NH2/H2O) carry ONE slate label, on
-    the top arrow's tail; a lone arrow keeps its path-coloured label."""
+    Arrows sharing an x-column (NH/OH, NH2/H2O) are each labelled when their
+    tips are >= 11px apart."""
     _seed_parked(runtime, _parked_graph())
     svg = _render_diagram_svg(tmp_path, client.get("/refs/pathway/171696").text)
     bars = _level_bars(svg)
@@ -2189,12 +2195,12 @@ def test_pathway_hydrogenation_arrow_tip_lands_on_fed_level_from_upper_right(
         if lx:
             assert float(lx) == tail[0] and float(ly) < tail[1]
             assert text == "+H⁺+e⁻"
-    # shared columns: OH (-0.4) is above NH (-0.5), NH2 (-0.6) above H2O (-0.7)
+    # every arrow with room is labelled (gr478861: not all were), in its own
+    # path colour; only a pile-up (tips < 11px apart) falls back to the <title>
     labelled = [g[0] for g in groups if g[7]]
-    assert labelled == ["NH2", "NH3", "OH"]  # one per column, none on NH / H2O
-    for top in ("OH", "NH2"):
-        assert by_to[top][9] == "#64748b"
-    assert by_to["NH3"][9] != "#64748b"
+    assert labelled == ["NH", "NH2", "NH3", "OH", "H2O"]
+    assert all(g[9] != "#64748b" for g in groups)
+    assert svg.count("feeds ") >= len(groups)  # hover title on each arrow
 
 
 @_needs_node

@@ -1032,6 +1032,10 @@ video {
   min-height: 0px;
 }
 
+.min-h-\[1\.25rem\] {
+  min-height: 1.25rem;
+}
+
 .min-h-\[12rem\] {
   min-height: 12rem;
 }
@@ -1210,6 +1214,10 @@ video {
 
 .min-w-\[1\.1rem\] {
   min-width: 1.1rem;
+}
+
+.min-w-\[12rem\] {
+  min-width: 12rem;
 }
 
 .min-w-\[16rem\] {
