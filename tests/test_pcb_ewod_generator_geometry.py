@@ -601,3 +601,53 @@ def test_net_islands_reads_a_genuinely_touching_diagonal_escape_as_connected():
         f"connectivity._pad_primitives has regressed to the inscribed-disk pad "
         f"model: {sorted(falsely_split)[:5]}"
     )
+
+
+def test_net_islands_splits_a_diagonal_neck_shortened_off_its_electrode():
+    """The failure direction of the sibling test above (gr449483 Slice 1
+    accept b): the SAME dogfood-sized model, with exactly one diagonal
+    escape's neck pulled back along its own run by one ``stub_width`` — its
+    round end cap then sits ``stub_width/2`` clear of the electrode's
+    corner — must read as split, and only that net. This is the verdict
+    ``pcb_route`` now turns into ``failed (disconnected)``; a checker that
+    passed this would let a neck stopping in bare laminate read
+    ``realized``."""
+    import math
+
+    from precis.pcb import connectivity, padplace
+    from precis.store._pcb_ops import _normalize_local_footprint_pad
+
+    name = "ARR"
+    exp = G.expand(
+        "ewod_pad_array", name, {"grid": [8, 8], "drive_voltage_v": 250, "pitch": 2.25}
+    )
+    raw_pads = exp.footprints[0]["pads"]
+    placed, _drills = padplace.place_footprint_pads(
+        [_normalize_local_footprint_pad(p) for p in raw_pads],
+        {"x": 0.0, "y": 0.0, "rot": 0.0},
+        layers=["F.Cu"],
+        pin_to_net={p["pin"]: f"{name}_{p['pin']}" for p in raw_pads},
+    )
+    flat_copper = [
+        {"ctype": c["ctype"], "layer": c["layer"], "net": c["net"], **c["geom"]}
+        for c in exp.copper
+    ]
+    victim = next(
+        i
+        for i, c in enumerate(flat_copper)
+        if c["ctype"] == "track" and _diag_direction(c["segments"][0]) is not None
+    )
+    track = flat_copper[victim]
+    seg = track["segments"][0]
+    (ax, ay), (vx, vy) = seg["start"], seg["end"]
+    run = math.hypot(vx - ax, vy - ay)
+    pull = float(track["width_mm"])
+    start = [ax + (vx - ax) / run * pull, ay + (vy - ay) / run * pull]
+    flat_copper[victim] = {
+        **track,
+        "segments": [{"shape": "line", "start": start, "end": [vx, vy]}],
+    }
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": flat_copper, "pads": placed}
+    flagged = {island.net: island for island in connectivity.net_islands(model)}
+    assert set(flagged) == {track["net"]}, sorted(flagged)
+    assert flagged[track["net"]].components == 2

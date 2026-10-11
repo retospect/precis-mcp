@@ -475,6 +475,31 @@ def test_min_clearance_stays_within_the_known_gap_across_grid_sizes(grid, varian
     _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
 
 
+def test_dogfood_sizing_neck_tracks_clear_every_foreign_electrode():
+    """gr449483's second defect, re-measured at the sizing prod ran it on:
+    ``track[ARR1_RxCy] <-> pad[ARR1_<neighbour>] on F.Cu, -0.025`` (0.065mm
+    against the 0.090mm JLC floor) was the dominant error class of DRC run
+    b13770b5. Every sweep above runs DEFAULT sizing; ``ewod-dogfood-2`` runs
+    250V at 2.25mm pitch with a merged RESV pad
+    (``tests/test_pcb_ewod_dogfood.py``'s ``_design``), so the class is
+    pinned GONE at exactly that sizing — neck tracks and vias included, with
+    no net-class override to hide behind (the override only moves the WARN
+    tier; the ERROR floor is ``jlc_min``)."""
+    _, model = _ewod_model(
+        grid=[8, 8],
+        drive_voltage_v=250,
+        pitch=2.25,
+        pad_sizes=[{"name": "RESV", "cells": [[0, 0], [0, 1]]}],
+    )
+    assert any(c["ctype"] == "track" for c in model["copper"])
+    errors = [
+        f
+        for f in drc.check_clearance(model, _CAP4)
+        if f.rule == "clearance" and f.severity == "error"
+    ]
+    _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
+
+
 # ── plaza via annular ring ────────────────────────────────────────────────
 
 

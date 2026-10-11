@@ -1187,6 +1187,28 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     assert "(pads-only DRC — no routed copper yet)" not in drc.body
     assert "error(s)" in drc.body
 
+    # gr449483: route-status and DRC's `connectivity` rule must agree, as a
+    # SET identity on the same run — a count match could hide one realized
+    # split net traded against one failed whole one. Prod measured 13
+    # realized electrode nets with copper in 2-3 pieces before the route
+    # job asked the checker itself.
+    _run_id, drc_rows = store.pcb_drc_findings_latest(ref.id)
+    split_by_drc = {
+        str(obj["net"])
+        for f in drc_rows
+        if f["rule"] == "connectivity"
+        for obj in f["objects"] or []
+    }
+    realized_all = {n for n, s in status_by_net.items() if s == "realized"}
+    assert not realized_all & split_by_drc, (
+        "route-status reads realized for net(s) view='drc' finds in pieces: "
+        f"{sorted(realized_all & split_by_drc)}"
+    )
+    assert set(realized_escapes) == set(escape_nets) - split_by_drc, (
+        "escape nets connectivity calls whole but route-status does not read "
+        f"realized: {sorted(set(escape_nets) - split_by_drc - set(realized_escapes))}"
+    )
+
     # (4) **No routed copper crosses an unclaimed land** (gr451276).
     # Reto's own words: "no wire can route thru it, even if it is nc". An
     # unclaimed footprint pad carries no net (`net: ""`) but is real

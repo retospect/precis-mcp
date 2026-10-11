@@ -69,7 +69,9 @@ put(kind="pcb", id="sensor-node", args={"op": "route", "iters": 3000, "seed": 0}
   (same job, same params) — carries a deprecation note in its response;
   will be removed in a future release. Use `op='place'` directly.
 
-After a route job lands, check the result:
+## Check a route job's result
+
+After a route job lands:
 
 ```python
 get(kind="pcb", id="sensor-node", view="route-status")  # per-net: unrouted|sketched|realized|failed
@@ -77,11 +79,15 @@ get(kind="pcb", id="sensor-node", view="congestion")     # the run's over-capaci
 ```
 
 A net only ever reads `'realized'` when it is **actually clean** — no
-residual same-layer crossing, no over-capacity gap. A `'failed'` net's
-`pcb_routes.fail` names the blocking participants (the same "fail legibly"
-discipline as everywhere else in this kind): a same-layer crossing names
-the other net it crosses; a congestion failure names the gap size, its
-capacity, and how many strands wanted through it.
+residual same-layer crossing, no over-capacity gap, and its pads plus
+fixed and routed copper form **one connected piece** (the same check
+`view='drc'`'s `connectivity` rule runs, so the two views agree). A
+`'failed'` net's `pcb_routes.fail` names the blocking participants (the
+same "fail legibly" discipline as everywhere else in this kind): a
+same-layer crossing names the other net it crosses; a congestion failure
+names the gap size, its capacity, and how many strands wanted through it;
+a `disconnected` failure gives the piece count and one witness point per
+piece.
 
 **The route job itself fails when any net is not realized.** Its copper,
 per-net statuses and summary are still written first, so the partial board

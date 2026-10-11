@@ -15,8 +15,12 @@ straight-line sweep at L3, :func:`precis.pcb.geom.segments_cross`, mirrors
 means zero routed crossings) and no over-capacity gap the realizer flagged
 it in — both PLACEMENT-time chord estimates, so both are applied only to a
 net the maze router left without copper; a routed net's copper is the proof
-(the gap warning still reaches the job summary). Both failure modes name the
-blocking participants in
+(the gap warning still reaches the job summary) — and its pads, fixed and
+routed copper form ONE connected component
+(:func:`precis.pcb.session.split_nets`, the same
+:func:`precis.pcb.connectivity.net_islands` view='drc''s ``connectivity``
+rule runs; gr449483), else it fails ``disconnected``. Every failure mode
+names its blocking participants or witnesses in
 ``pcb_routes.fail`` (backlog: "fail legibly") rather than just flipping a
 bit — this is what lets ``route_complete`` (the gate evaluator) stay a
 cheap status read instead of re-deriving any of this itself. A dangling
@@ -66,7 +70,8 @@ log = logging.getLogger(__name__)
 # 3 = finer clearance-derived occupancy grid cap (faithful replay net+1).
 # 4 = restore global grid baseline after reference/fab seed regressions.
 # 5 = connected-via distance assignment as the route warm start.
-CODE_VERSION = 5
+# 6 = a split net fails `disconnected` instead of reading `realized`.
+CODE_VERSION = 6
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -656,6 +661,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             net_voltages=_graph_net_voltages(graph),
         )
         rres, drc_fail = pcb_session.strip_drc_violating_nets(ir, rres, routed_findings)
+        # Connectivity over the copper that will actually be written (the
+        # STRIPPED `rres` plus fixed copper and pads), by the same checker
+        # view='drc' runs (gr449483: 13 nets read `realized` here while
+        # that check found their copper in 2-3 pieces). Inside the
+        # fail-closed block for the same reason as the legality gate: a
+        # status this job cannot vouch for is not written.
+        split = pcb_session.split_nets(
+            ir, rres, footprints=footprints, fixed_copper=fixed_copper
+        )
     except Exception as exc:
         log.exception("pcb_route: post-route DRC gate raised; writing nothing")
         gate_failure = (
@@ -779,7 +793,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     member_counts = net_member_counts(ir)
     stackup = ir.stackup
     rows: dict[str, dict[str, Any]] = {}
-    n_realized = n_failed = n_dangling = 0
+    n_realized = n_failed = n_dangling = n_disconnected = 0
     for net_id in range(ir.n_nets):
         net_name = str(ir.net_name[net_id])
         entry = sketch.get(net_name)
@@ -830,6 +844,33 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             + unstitched_fail.get(net_name, [])
             + drc_fail.get(net_name, [])
         )
+        # The last rung, and only for a net that would otherwise read
+        # `realized`: its copper must be ONE piece. A net that already
+        # failed for a named reason (unrouted, DRC-stripped) is split as a
+        # CONSEQUENCE of that reason — saying "disconnected" too would report
+        # one defect under two names (`net_islands`' own docstring).
+        island = split.get(net_name)
+        if (
+            not problems
+            and island is not None
+            and (net_id in routed_nets or int(ir.net_plane_layers[net_id]) != 0)
+        ):
+            n_disconnected += 1
+            problems = [
+                {
+                    "kind": "disconnected",
+                    "reason": "disconnected",
+                    "components": island.components,
+                    "message": (
+                        f"copper is in {island.components} disconnected pieces; "
+                        "witnesses (one point per piece): "
+                        + "; ".join(
+                            f"({x:.3f},{y:.3f}) on {layer}"
+                            for x, y, layer in island.witnesses[:6]
+                        )
+                    ),
+                }
+            ]
         note = None
         if problems:
             status = "failed"
@@ -1011,7 +1052,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{len(rres.warnings)} congestion warning(s), "
         f"{len(pin_swap_overrides)} pin swap(s) settled, "
         f"{n_placement_errors} pre-route DRC error(s), "
-        f"{len(drc_fail)} net(s) stripped by post-route DRC"
+        f"{len(drc_fail)} net(s) stripped by post-route DRC, "
+        f"{n_disconnected} net(s) failed as disconnected copper"
         f"{pin_swap_summary}\n\n" + digest_toon(result),
     )
     # Reto's ruling (2026-10-01): "it's no good if the wires are not there.

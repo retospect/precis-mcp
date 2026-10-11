@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from precis.pcb.capabilities import CapabilityRow
+    from precis.pcb.connectivity import NetIslands
     from precis.pcb.drc import DrcFinding
     from precis.pcb.realize import RealizeResult
     from precis.pcb.rules import NetRules
@@ -996,6 +997,63 @@ def router_copper_conflicts(
     return out
 
 
+def _routed_model(
+    ir: pcb_ir.PcbIR,
+    rres: RealizeResult,
+    *,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Pads + authored fixed copper + the router's own copper (``rres``),
+    quantized the way :func:`precis.pcb.realize.to_gerber_model` quantizes
+    it — the ONE board model both post-route gates judge
+    (:func:`routed_drc_findings`, :func:`split_nets`), so legality and
+    connectivity are asked of the same copper the fab receives."""
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    return pcb_realize._quantized(
+        {
+            "layers": layers,
+            "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+            "copper": [
+                *({**row, "net": row.get("net") or ""} for row in (fixed_copper or [])),
+                *pcb_realize.result_copper_rows(rres, ir, layers, derived=True),
+            ],
+            "drills": [
+                {
+                    "x": h.x,
+                    "y": h.y,
+                    "dia_mm": h.drill_mm,
+                    "plated": bool(h.plated),
+                }
+                for h in ir.mounting_holes
+            ],
+        }
+    )
+
+
+def split_nets(
+    ir: pcb_ir.PcbIR,
+    rres: RealizeResult,
+    *,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
+) -> dict[str, NetIslands]:
+    """``{net_name: NetIslands}`` for every net whose pads + fixed + routed
+    copper is in more than one piece — :func:`precis.pcb.connectivity.
+    net_islands`, the checker ``view='drc'``'s ``connectivity`` rule runs,
+    over :func:`_routed_model`'s board (gr449483: ``route-status`` read
+    ``realized`` on nets that check then failed; asking the same checker
+    here is what keeps the two views from disagreeing). Called by the route
+    JOB, never by :mod:`precis.pcb.realize` — the producer must not decide
+    when to stop by asking its own checker (that module's docstring)."""
+    from precis.pcb.connectivity import net_islands
+
+    model = _routed_model(ir, rres, footprints=footprints, fixed_copper=fixed_copper)
+    return {island.net: island for island in net_islands(model)}
+
+
 def routed_drc_findings(
     ir: pcb_ir.PcbIR,
     rres: RealizeResult,
@@ -1021,28 +1079,8 @@ def routed_drc_findings(
     not validity — the invariant's split) and not courtyard/silk/outline
     containment (placement, gated by :func:`placement_drc_findings`)."""
     from precis.pcb import drc as pcb_drc
-    from precis.pcb import realize as pcb_realize
 
-    layers = [str(layer.get("name")) for layer in ir.stackup]
-    model = pcb_realize._quantized(
-        {
-            "layers": layers,
-            "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
-            "copper": [
-                *({**row, "net": row.get("net") or ""} for row in (fixed_copper or [])),
-                *pcb_realize.result_copper_rows(rres, ir, layers, derived=True),
-            ],
-            "drills": [
-                {
-                    "x": h.x,
-                    "y": h.y,
-                    "dia_mm": h.drill_mm,
-                    "plated": bool(h.plated),
-                }
-                for h in ir.mounting_holes
-            ],
-        }
-    )
+    model = _routed_model(ir, rres, footprints=footprints, fixed_copper=fixed_copper)
     rules: list[tuple[str, Callable[[], list[DrcFinding]]]] = [
         (
             "clearance",
