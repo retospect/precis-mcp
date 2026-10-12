@@ -435,14 +435,25 @@ removed as met — the transport move it waited on happened 09-29)
      is the cause, fix it there and leave the repulsion constant alone.
      (The cap-seam angle case, gr346966, was a mirrored seed, not the
      springs: fixed by fdf058da1, every cap seam now within 3.3°.)
-   - **Only then `K_REP`.** Measured for the C1 review: at 1.0 the bud
-     minima rise to 1.58–1.75 Å, clean specs are unchanged, but strain
-     moves into bonds and `sheet_sw` regresses. Adopting it needs a
-     relaxer version stamped on stored results and the catalogue's
-     measured rows regenerated in the same commit. Sweep the non-bud
-     prod structures before it lands. Until then
-     `test_nanobud_menu_seed_has_no_stick_clash` holds [9-6]/[8-7] to
-     1.0 Å, not 1.8 (W2, partial).
+   - **`K_REP`: shipped (hexfold 0.3.5, gr459567 junction squeeze).**
+     `stick._K_REP` 0.1 → 2.0 and `_REP_CUT` 1.3 → 1.4 (1.99 Å), and
+     the repulsion now skips every pair within two bonds (rim 1-3 pairs
+     sit in no ring, so no chord spring excluded them). The rest-angle
+     check this item asked for was done: capping each vertex's
+     ideal-angle sum at 360° made the junction worse (19 pairs, angles
+     to 83°), so the springs are not the cause. Opening the pairs to
+     1.8 Å costs about 0.1 Å of bond stretch for any constants (swept k
+     0.1–8, cut 1.3–1.7). Every shipped example, old → new (pairs under
+     1.8 Å / worst bond): nanobud_87 14 → 0 / 0.33 → 0.54, nanobud_96
+     14 → 0 / 0.30 → 0.40, flanged_doughnut 146 → 0 / 0.32 → 0.29,
+     sheet_pill_bump 3 → 0; the skill's tube(10,10)+C60 [9-6] and the
+     pillar bud 0 pairs at 0.40; every other example and angle maximum
+     unchanged (tube55 included). Worse: `tube_ring_closure` (gr462074,
+     already tangled) 180 pairs / 0.49 Å → 106 / 1.39 Å, worst bond
+     0.51 → 0.98 Å. The planner table was regenerated and the goldens
+     re-pinned in the same commit. Not done: sweep the stored non-bud
+     prod structures (they carry the old relaxer's coordinates until
+     regenerated).
    - **Per-element-pair clash bar (W3): shipped 2026-10-07.**
      `Profile.clash_pair_A` (default H–H 1.5 Å) overrides `clash_A` for
      a listed pair; `geom.clash` names the elements and the bar it

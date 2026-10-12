@@ -35,8 +35,21 @@ _ITERS = 3000
 _DT = 0.05
 _K_BOND = 1.0
 _K_ANGLE = 0.5
-_K_REP = 0.1
-_REP_CUT = 1.3
+#: Soft non-bonded repulsion: force k*(cut - r) on pairs more than two bonds
+#: apart closer than cut*sigma = 1.99 A at sigma 1.42.  The old 0.1 / 1.3
+#: (1.85 A) left bud/host junction pairs at 1.2-1.75 A, which ``geom.clash``
+#: reports and ``se structure validate`` counts as extra neighbours
+#: (over_valence, gr459567).  At 2.0 / 1.4 the skill's tube(10,10) + C60
+#: [9-6], nanobud_87/96 and the hexa-nanobud pillar have no pair under 1.8 A.
+#: The price is a frustrated junction bond stretched further (worst bond
+#: +0.29 -> +0.40 A, [8-7] +0.33 -> +0.54 A); angles, tube55 and the other
+#: non-junction examples are unchanged.  Not the rest angles: capping each vertex's
+#: ideal-angle sum at 360 deg made the junction worse (19 pairs, 83 deg).
+#: Opening the pairs to 1.8 A needs about 0.1 A of bond stretch whatever the
+#: constants (swept k 0.1-8, cut 1.3-1.7); stiffer or
+#: wider settings only add strain (cut 1.7: worst bond +0.5 to +0.7 A).
+_K_REP = 2.0
+_REP_CUT = 1.4
 _REFRESH = 20  # repulsion candidate-pair rebuild period (deterministic)
 _REP_MARGIN = 2.0  # candidate pairs within _REP_MARGIN*_REP_CUT*sigma
 _TETHER_EVERY = 25  # iterations between surface-foot refreshes
@@ -152,6 +165,16 @@ def stick_relax_pinned(
     sj = springs[:, 1].astype(np.int64)
     bonded[si, sj] = True
     bonded[sj, si] = True
+    # 1-3 pairs on a rim sit in no ring, so no chord spring excluded them
+    # from the repulsion: two neighbours of one atom are never repelled
+    nbrs: list[list[int]] = [[] for _ in range(n)]
+    for a, b in bonds.tolist():
+        nbrs[a].append(b)
+        nbrs[b].append(a)
+    for ns in nbrs:
+        if len(ns) > 1:
+            ix = np.array(ns)
+            bonded[np.ix_(ix, ix)] = True
     srest = springs[:, 2]
 
     # lazy: keeps numba out of `import hexfold`

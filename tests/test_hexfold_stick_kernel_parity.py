@@ -21,8 +21,8 @@ _ITERS = 3000
 _DT = 0.05
 _K_BOND = 1.0
 _K_ANGLE = 0.5
-_K_REP = 0.1
-_REP_CUT = 1.3
+_K_REP = 2.0
+_REP_CUT = 1.4
 _REFRESH = 20
 _REP_MARGIN = 2.0
 
@@ -57,6 +57,10 @@ def _ref_relax(pos, bonds, brest, springs, sigma, *, iters=_ITERS, movable=None)
     sj = springs[:, 1].astype(np.int64)
     bonded[si, sj] = True
     bonded[sj, si] = True
+    # two neighbours of one atom are never repelled (1-3 pairs)
+    adj = np.zeros((n, n))
+    adj[bonds[:, 0], bonds[:, 1]] = adj[bonds[:, 1], bonds[:, 0]] = 1.0
+    bonded |= (adj @ adj) > 0
     srest = springs[:, 2]
 
     pairs = _ref_rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sigma)

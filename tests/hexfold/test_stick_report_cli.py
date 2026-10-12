@@ -140,7 +140,9 @@ def test_geometry_angle_dev_sp3_uses_tetrahedral_ideal() -> None:
     # a bond across two small sheets drives both endpoints to 4 bonds
     # (hyb="sp3"); their ring-corner angle spring is now the sp3 ideal,
     # not the hexagon ring ideal.
-    text = "hexfold 0.2\nh: sheet(6,6)\nf: sheet(6,6)\nh/(2,2,A) --bond--> f/(2,2,A)\n"
+    # sheet(4,4): the findings list is capped at ten, and on larger sheets
+    # the edge corners crowd the sp3 vertices out of it
+    text = "hexfold 0.2\nh: sheet(4,4)\nf: sheet(4,4)\nh/(1,1,A) --bond--> f/(1,1,A)\n"
     net = build(text, strict=False)
     sp3 = {a.ord for a in net.atoms if a.hyb == "sp3"}
     assert sp3

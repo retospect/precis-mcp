@@ -34,9 +34,18 @@ def _clash(spec: str) -> tuple[list[dict], dict]:
     return clashes, summary
 
 
+#: stick's repulsion now opens a [9-6] neck past the default 1.8 A bar, so the
+#: reporting tests widen the bar to see the pairs that are still tight
+_WIDE = Profile(clash_A=2.3, clash_error_A=1.93)
+
+
 def test_squeezed_bud_neck_reports_a_warn_clash_naming_both_instances() -> None:
-    # a [9-6] neck squeezes to ~1.5 A under stick: a clash, not an overlap
-    r = check((_EX / "nanobud_96.hx").read_text(encoding="utf-8"), geometry=True)
+    # a [9-6] neck stays tight under stick: a clash, not an overlap
+    r = check(
+        (_EX / "nanobud_96.hx").read_text(encoding="utf-8"),
+        geometry=True,
+        profile=Profile(clash_A=_WIDE.clash_A),
+    )
     found = [f for f in r.findings if f.code == "geom.clash"]
     clashes = [dict(f.data) for f in found]
     summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
@@ -51,14 +60,37 @@ def test_squeezed_bud_neck_reports_a_warn_clash_naming_both_instances() -> None:
 
 def test_clash_under_the_overlap_bar_is_an_error() -> None:
     spec = (_EX / "nanobud_96.hx").read_text(encoding="utf-8")
-    r = check(spec, geometry=True, profile=Profile(clash_error_A=1.6))
+    r = check(spec, geometry=True, profile=_WIDE)
     found = [f for f in r.findings if f.code == "geom.clash"]
     by_sev = {
         sev: [dict(f.data)["distance"] for f in found if f.severity == sev]
         for sev in (Severity.ERROR, Severity.WARN)
     }
-    assert by_sev[Severity.ERROR] and all(d < 1.6 for d in by_sev[Severity.ERROR])
-    assert all(d >= 1.6 for d in by_sev[Severity.WARN])
+    assert by_sev[Severity.ERROR] and all(d < 1.93 for d in by_sev[Severity.ERROR])
+    assert by_sev[Severity.WARN] and all(d >= 1.93 for d in by_sev[Severity.WARN])
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "hexfold 0.2\norigin h\nh: tube(10,10,len=14)\nb: fullerene(C60)\n"
+        "b @ h/(7,0,A):0 [9-6]\n",
+        (_EX / "nanobud_87.hx").read_text(encoding="utf-8"),
+        (_EX / "nanobud_96.hx").read_text(encoding="utf-8"),
+        "hexfold 0.2\norigin s\ns: sheet(24,24) - hex(1)@(11,11,A):0\n"
+        "t: tube(12,0, len=6)\nc: cap(12,0)\nb: fullerene(C60)\n"
+        "s.hole --fuse k=0--> t.in\nt.out --fuse k=0--> c.in\n"
+        "b @ c/(0,0,A):0 [9-6]\n",
+    ],
+    ids=["skill_tube1010_96", "nanobud_87", "nanobud_96", "hexa_nanobud_pillar"],
+)
+def test_bud_junction_has_no_nonbonded_pair_under_the_clash_bar(spec: str) -> None:
+    # gr459567: stick's soft repulsion (0.1 over 1.85 A) left [9-6]/[8-7]
+    # junction pairs at 1.2-1.75 A, which validate counts as extra neighbours
+    # (over_valence); at 0.5 over 2.41 A none is under 1.8 A
+    clashes, summary = _clash(spec)
+    assert clashes == [], summary["clash_min"]
+    assert summary["clash_count"] == 0
 
 
 # ---------- nanobud placement (gr459567 gap 3) ----------
@@ -228,10 +260,14 @@ def test_clash_pairs_skip_bonded_and_shared_neighbour_pairs() -> None:
 
 
 def test_clash_bar_comes_from_the_profile() -> None:
-    # nanobud_96 clashes at the default bar (its [9-6] neck), so the
-    # loosened profile is what clears it, not a clean build
+    # nanobud_96 clashes at the wide bar (its [9-6] neck stays near 2 A), so
+    # the loosened profile is what clears it, not a clean build
     spec = (_EX / "nanobud_96.hx").read_text(encoding="utf-8")
-    assert [f for f in check(spec, geometry=True).findings if f.code == "geom.clash"]
+    assert [
+        f
+        for f in check(spec, geometry=True, profile=_WIDE).findings
+        if f.code == "geom.clash"
+    ]
     loose = check(spec, geometry=True, profile=Profile(clash_A=0.1))
     assert not [f for f in loose.findings if f.code == "geom.clash"]
 
@@ -261,7 +297,10 @@ def test_stacked_seed_is_an_error_even_when_stick_untangles_it(
     assert seed and all(f.severity == Severity.ERROR for f in seed)
     assert all(dict(f.data)["distance"] < Profile.DEFAULT.seed_overlap_A for f in seed)
     assert summary["seed_clash_min"] < Profile.DEFAULT.seed_overlap_A
-    assert summary["clash_min"] > Profile.DEFAULT.clash_error_A
+    assert (
+        summary["clash_min"] is None
+        or summary["clash_min"] > Profile.DEFAULT.clash_error_A
+    )
 
 
 @pytest.mark.parametrize("name", ["pillar", "nanobud_96", "valve_shell"])
@@ -670,7 +709,8 @@ def test_relaxed_coordinates_are_judged_as_given_not_re_relaxed() -> None:
     assert not [f for f in plain if f.code == "geom.clash"]
 
 
-#: a terminated armchair bay: its two H sit 1.87-1.89 A apart (gr459567 W3)
+#: a terminated armchair bay: its two H sit 1.99 A apart under stick's
+#: repulsion (1.87-1.89 A before it, gr459567 W3)
 ARMCHAIR_H = """hexfold 0.2
 t: tube(8,8, len=4)
 terminate: t.* = H
@@ -690,27 +730,27 @@ def test_profile_clash_bar_reads_the_pair_table_either_way_round() -> None:
 
 
 def test_armchair_bay_h_h_answers_to_its_own_bar_not_the_carbon_one() -> None:
-    # tightening the carbon bar past the bay's 1.87 A must not report the
+    # raising the carbon bar past the bay's 1.99 A must not report the
     # H-H pair: it has its own bar
-    r = check(ARMCHAIR_H, geometry=True, profile=Profile(clash_A=2.0))
+    r = check(ARMCHAIR_H, geometry=True, profile=Profile(clash_A=2.2))
     assert not [f for f in r.findings if f.code == "geom.clash"]
     summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
     assert summary["clash_count"] == 0 and summary["clash_min"] is None
     # without the pair table the same profile reports it, naming the
     # elements and the bar it answered to
-    r = check(ARMCHAIR_H, geometry=True, profile=Profile(clash_A=2.0, clash_pair_A=()))
+    r = check(ARMCHAIR_H, geometry=True, profile=Profile(clash_A=2.2, clash_pair_A=()))
     found = [f for f in r.findings if f.code == "geom.clash"]
     assert found and {f.severity for f in found} == {Severity.WARN}
     data = [dict(f.data) for f in found]
-    assert all(d["elements"] == ["H", "H"] and d["bar"] == 2.0 for d in data)
-    assert all(1.85 < d["distance"] < 1.9 for d in data)
-    assert "H-H bar 2.00 A" in found[0].message
+    assert all(d["elements"] == ["H", "H"] and d["bar"] == 2.2 for d in data)
+    assert all(1.95 < d["distance"] < 2.05 for d in data)
+    assert "H-H bar 2.20 A" in found[0].message
     # the pair bar above the bay reports it under the default carbon bar
     r = check(
-        ARMCHAIR_H, geometry=True, profile=Profile(clash_pair_A=(("H", "H", 1.9),))
+        ARMCHAIR_H, geometry=True, profile=Profile(clash_pair_A=(("H", "H", 2.1),))
     )
     found = [f for f in r.findings if f.code == "geom.clash"]
-    assert found and all(dict(f.data)["bar"] == 1.9 for f in found)
+    assert found and all(dict(f.data)["bar"] == 2.1 for f in found)
     # the default profile: nothing on the bay, as before
     assert not _clash(ARMCHAIR_H)[0]
 
