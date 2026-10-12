@@ -146,12 +146,28 @@ def test_geometry_angle_dev_sp3_uses_tetrahedral_ideal() -> None:
     net = build(text, strict=False)
     sp3 = {a.ord for a in net.atoms if a.hyb == "sp3"}
     assert sp3
+    # the springs hold every sp3 ring corner near tetrahedral (since 0.3.6
+    # within 1 deg, so the corners no longer surface as findings) ...
+    pos = stick(net)
+    for ring in net.rings:
+        for k, v in enumerate(ring):
+            if v not in sp3:
+                continue
+            u = pos[ring[k - 1]] - pos[v]
+            w = pos[ring[(k + 1) % len(ring)]] - pos[v]
+            cos = float(u @ w) / float(np.linalg.norm(u) * np.linalg.norm(w))
+            assert abs(np.degrees(np.arccos(cos)) - 109.5) < 3.0
+    # ... and check judges them against it: against a ring ideal their
+    # ~10 deg deviation would top the list
     rep = check(text, geometry=True, profile=Profile(angle_tol_deg=1.0))
     ang = [f for f in rep.findings if f.code == "geom.angle.dev"]
+    assert ang
     sp3_findings = [f for f in ang if f.where and int(f.where) in sp3]
-    assert sp3_findings
-    # every sp3-vertex finding uses the tetrahedral ideal, never a ring ideal
-    assert {dict(f.data)["ideal_deg"] for f in sp3_findings} == {109.5}
+    assert {dict(f.data)["ideal_deg"] for f in sp3_findings} <= {109.5}
+    assert (
+        max(abs(dict(f.data)["angle_deg"] - dict(f.data)["ideal_deg"]) for f in ang)
+        < 5.0
+    )
 
 
 def test_geometry_cap_and_suppressed() -> None:

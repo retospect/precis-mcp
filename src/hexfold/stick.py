@@ -84,7 +84,8 @@ def _spectral_seed(net: Net) -> np.ndarray:
 
 def _angle_springs(net: Net) -> list[tuple[int, int, float]]:
     """Chord springs enforcing the ideal interior angle at each ring vertex
-    (ring ideal for sp2, the sp3 tetrahedral angle at an sp3 vertex)."""
+    (ring ideal for sp2, the sp3 tetrahedral angle at an sp3 vertex), and
+    the sp2 angle at a one-bond lattice atom's neighbour."""
     sig = net.lattice.sigma_A
     hyb = {a.ord: a.hyb for a in net.atoms}
     out = []
@@ -95,6 +96,22 @@ def _angle_springs(net: Net) -> list[tuple[int, int, float]]:
             ideal = math.radians(ideal_angle_deg(n, hyb.get(v, "")))
             chord = 2.0 * sig * math.sin(ideal / 2.0)
             out.append((ring[(i - 1) % n], ring[(i + 1) % n], chord))
+    # A lattice atom with one bond sits in no ring, so nothing above holds
+    # its angle; once the repulsion stopped seeing 1-3 pairs (0.3.5) cone5's
+    # dangling rim carbons folded to 41 deg, 0.99 A from their neighbour's
+    # other neighbour (gr479847).  Spring each such atom to its neighbour's
+    # other neighbours at the sp2 chord.
+    lat_el = set(net.lattice.elements)
+    nbrs: dict[int, list[int]] = {}
+    for i, j, _ in net.bonds:
+        nbrs.setdefault(i, []).append(j)
+        nbrs.setdefault(j, []).append(i)
+    chord_sp2 = 2.0 * sig * math.sin(math.radians(120.0) / 2.0)
+    for a in sorted(nbrs):
+        if len(nbrs[a]) != 1 or net.atoms[a].element not in lat_el:
+            continue
+        ctr = nbrs[a][0]
+        out.extend((a, x, chord_sp2) for x in nbrs[ctr] if x != a)
     return out
 
 

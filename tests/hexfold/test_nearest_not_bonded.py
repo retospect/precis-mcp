@@ -16,10 +16,8 @@ from hexfold.stick import stick_info
 
 _EX = Path(__file__).resolve().parents[2] / "hexfold" / "examples"
 
-#: tangled by construction (gr462074) or regressed by 5c692aad3's 1-3
-#: repulsion exclusion (cone5's degree-1 rim atom folds onto its neighbour's
-#: other neighbour, 0.99 A); everything else must pass
-_FAILING = {"tube_ring_closure", "cone5"}
+#: tangled by construction (gr462074); everything else must pass
+_FAILING = {"tube_ring_closure"}
 
 _JUNCTIONS = {
     "skill_tube1010_96": (
@@ -103,11 +101,28 @@ def test_tangled_ring_closure_is_an_error_naming_both_atoms() -> None:
     assert worst == pytest.approx(summary["nnb_margin"], abs=2e-3)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="5c692aad3 stopped repelling 1-3 pairs; cone5's degree-1 rim atom "
-    "460 folds to 0.99 A of atom 497 (gr479847)",
-)
-def test_cone5_rim_atom_keeps_its_angle_open() -> None:
-    found, _ = _report((_EX / "cone5.hx").read_text(encoding="utf-8"))
-    assert found == []
+def test_cone5_rim_atoms_keep_their_angle_open() -> None:
+    # gr479847: 0.3.5 stopped repelling 1-3 pairs and cone5's one-bond rim
+    # carbons, held by no ring spring, folded to 41 deg (atom 460 0.99 A
+    # from 497); a chord spring per one-bond atom holds them near sp2
+    spec = (_EX / "cone5.hx").read_text(encoding="utf-8")
+    found, _ = _report(spec)
+    assert found == [], [f.message for f in found]
+    net = build(spec, strict=False)
+    pos = np.asarray(stick_info(net)[0])
+    nbrs: dict[int, list[int]] = {}
+    for i, j, _o in net.bonds:
+        nbrs.setdefault(i, []).append(j)
+        nbrs.setdefault(j, []).append(i)
+    angles = []
+    for a, ns in nbrs.items():
+        if len(ns) != 1:
+            continue
+        ctr = ns[0]
+        for x in nbrs[ctr]:
+            if x != a:
+                u, w = pos[a] - pos[ctr], pos[x] - pos[ctr]
+                cos = float(u @ w) / float(np.linalg.norm(u) * np.linalg.norm(w))
+                angles.append(float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))))
+    assert len(angles) >= 14
+    assert min(angles) > 100.0, min(angles)  # measured 108.7 deg

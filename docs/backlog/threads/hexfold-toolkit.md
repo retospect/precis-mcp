@@ -453,10 +453,10 @@ removed as met — the transport move it waited on happened 09-29)
      0.51 → 0.98 Å. The planner table was regenerated and the goldens
      re-pinned in the same commit. Not done: sweep the stored non-bud
      prod structures (they carry the old relaxer's coordinates until
-     regenerated). Regression (gr479847): the 1-3 exclusion lets
-     cone5's degree-1 rim atom 460 fold to 0.99 Å of 497 (no angle
-     spring holds it); found by `geom.nearest_not_bonded`, strict xfail
-     in tests/hexfold/test_nearest_not_bonded.py.
+     regenerated). Its regression, gr479847 (cone5's one-bond rim atoms,
+     in no ring, folded to 41° once the 1-3 repulsion went), was fixed in
+     0.3.6: `_angle_springs` adds an sp2 chord spring per one-bond lattice
+     atom (cone5 worst 108.7°; sheet corners 119.9 → 120.0°).
    - **`geom.nearest_not_bonded` (Reto's DRC): shipped 2026-10-12.** ERROR
      when an atom's nearest non-bonded atom (1-3 included) is no farther
      than its nearest bond. The 0.3.5 junctions pass it (pillar bud margin
