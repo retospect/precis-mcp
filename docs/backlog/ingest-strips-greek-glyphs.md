@@ -290,12 +290,23 @@ whose outlines are not in the table yet. A confidence-gated VLM pass over the
 rendered region is the fallback for what fingerprinting cannot resolve, and is
 not built until step 4 measures how much that is.
 
-1. Seed the outline table (a data file) from the two confirmed scars:
-   `AdvP7DA6` `/m` → μ (pa494), `AdvP4C4E51` `/C22` → μ and `AdvP0004` → ≤
-   (pa47024). Each entry names its source font and paper.
-2. Resolver: for each flagged (font, code), fingerprint the outline. A hit
-   yields the true codepoint; a miss is recorded on `meta['glyph_health']`
-   (font name, code, outline hash) so the table grows from real misses.
+1. Seed the outline table `src/precis/data/glyph_outlines.json` from the
+   two confirmed scars: `AdvP7DA6` `/m` → μ (pa494), `AdvP4C4E51` `/C22` →
+   μ and `AdvP0004` → ≤ (pa47024). Each entry names its source font and
+   paper. **Open:** the file ships empty. The hashes need those two PDFs,
+   which only a corpus-mounting node holds; once the resolver is deployed,
+   their `meta['glyph_health']['recovery']['misses']` carry the hashes.
+2. Resolver — **shipped** (gr228652): `ingest/glyph_outline.py`, called
+   from `glyph_health.analyze_pdf` (so ingest and `backfill-glyph-health`
+   both run it). For each flagged simple font (Type1, CFF, TrueType;
+   Type0 skipped) it draws the suspect codes' outlines with fontTools,
+   normalises them (hints dropped, translated to the origin, 1000-unit em,
+   names ignored) and hashes them (`o1:` scheme). Mode a checks only the
+   codes whose `/ToUnicode` echoes a one-letter glyph name; mode b and
+   symbolic-no-ToUnicode fonts check every encoded code. The result is
+   `glyph_health['recovery']`: `resolved` (font, code, glyph, `emits`,
+   `char`) and `misses` (same, with `outline` instead of `char`; capped
+   at 32).
 3. Repair as a backfill first: re-extract with the resolved code → codepoint
    map, replace body chunks DELETE + INSERT through a registered synthesis
    pass, re-run the embedding/summary cascade. Move it to ingest time once

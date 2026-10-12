@@ -4003,6 +4003,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "fastapi" },
+    { name = "fonttools" },
     { name = "habanero" },
     { name = "jinja2" },
     { name = "markdown-it-py" },
@@ -4055,6 +4056,7 @@ guide = [
     { name = "pillow" },
 ]
 paper = [
+    { name = "fonttools" },
     { name = "habanero" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
     { name = "pymupdf" },
@@ -4113,6 +4115,7 @@ requires-dist = [
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
     { name = "feedparser", specifier = ">=6.0" },
+    { name = "fonttools", marker = "extra == 'paper'", specifier = ">=4.40" },
     { name = "ftfy", specifier = ">=6.3" },
     { name = "habanero", marker = "extra == 'paper'", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.27" },

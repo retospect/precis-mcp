@@ -293,6 +293,9 @@ paper = [
                             # fitz.open via the OA cascade so we keep
                             # the floor tight.
     "rapidfuzz>=3.0",       # title/author fuzzy match in verify_metadata
+    "fonttools>=4.40",      # embedded-font outlines for glyph recovery
+                            # (ingest/glyph_outline.py, gr228652); also
+                            # pulled in by matplotlib.
     "habanero>=2.0",        # CrossRef REST client
     "semanticscholar>=0.8", # Semantic Scholar REST client
     # NOTE: ``tenacity`` moved to the core ``dependencies`` block — its
@@ -852,6 +855,8 @@ module = [
     "epo_ops",
     "epo_ops.*",
     "fitz",
+    "fontTools",  # no py.typed marker (ingest/glyph_outline.py)
+    "fontTools.*",
     "gpaw",
     "gpaw.*",
     "habanero",

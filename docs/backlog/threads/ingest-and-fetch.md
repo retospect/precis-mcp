@@ -114,6 +114,11 @@ deploy, then the after-deploy steps below.
    - Report each signal's precision with its interval.
    - If the orphan signal is below 80%, gate the banner on the font tell
      or an orphan-count threshold, and keep the flag stored.
+   - Recovery (Reto 2026-10-11, outline fingerprinting first, superseding
+     the 10-02 detection-only ruling): the resolver shipped 2026-10-12
+     (`ingest/glyph_outline.py`; writes `glyph_health['recovery']`). The
+     outline table is still empty. Next: seed it from pa494/pa47024, then
+     the step-3 repair backfill (see the file's §Recovery).
    - The result goes to Reto as a release look-at item either way. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
 3. **gr453860** / td461154 — 947 papers have a PDF and no body. Measured

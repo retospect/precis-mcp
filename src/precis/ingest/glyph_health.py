@@ -30,8 +30,11 @@ Every text-level detector tried in the backlog was a base-rate failure
 **font-level** tests plus cheap supporting counts — not heuristics over
 the stored text.
 
-Read side: nothing recovers the text (detection only, by ruling), so every
-surface that shows a flagged paper's content carries a caveat. The single
+Recovery: :mod:`precis.ingest.glyph_outline` fingerprints each flagged
+glyph's embedded outline against a table of known outlines and records the
+result under ``glyph_health['recovery']`` (``resolved``: code, emitted char,
+true char; ``misses``: outline hash). Nothing rewrites the stored text yet,
+so every surface that shows a flagged paper's content carries a caveat. The single
 shared predicate :func:`glyph_suspected` and the one caveat sentence
 :func:`glyph_caveat` live here, next to the record they interpret, and are
 used by the paper views' banner, the finding view's ``source caveats:``
@@ -193,6 +196,8 @@ def _is_positional_glyph_name(name: str) -> bool:
 # ---------------------------------------------------------------------------
 #
 # ``font_info`` is a plain dict describing one embedded font, keyed:
+#   xref, subtype : int, str     PDF object + font subtype (for recovery)
+#   base_encoding : str          named /Encoding or /BaseEncoding (optional)
 #   basefont      : str          BaseFont name incl. any subset prefix
 #   has_tounicode : bool         a /ToUnicode stream is present
 #   has_encoding  : bool         an /Encoding (name or dict) is present
@@ -387,6 +392,7 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
     orphan_spans = 0
     raw_c0 = 0
     font_error: str | None = None
+    recovery: dict[str, Any] = {}
 
     try:
         import fitz  # PyMuPDF; a paper-extra, imported lazily like elsewhere.
@@ -406,6 +412,7 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
                         fonts.append(_font_info(doc, font))
                 except Exception as exc:  # one bad page must not sink the record
                     log.debug("glyph_health: page scan failed: %s", exc)
+            recovery = _recover(doc, fonts)
     except ImportError:
         font_error = "pymupdf (fitz) unavailable"
     except Exception as exc:  # unparseable / encrypted PDF, etc.
@@ -419,7 +426,7 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
     # the engine is missing or the document would not parse.
     c0 = raw_c0 if font_error is None else count_c0_controls(extracted_text)
 
-    return summarize(
+    record = summarize(
         fonts=fonts,
         c0_controls=c0,
         greek_chars=count_greek_chars(extracted_text),
@@ -427,6 +434,20 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
         orphan_spans=orphan_spans,
         font_error=font_error,
     )
+    if record["suspected"] and (recovery.get("resolved") or recovery.get("misses")):
+        record["recovery"] = recovery
+    return record
+
+
+def _recover(doc: Any, fonts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Outline-fingerprint the flagged fonts (gr228652 recovery); never raises."""
+    try:
+        from precis.ingest.glyph_outline import resolve_document
+
+        return resolve_document(doc, fonts, classify_font)
+    except Exception as exc:
+        log.debug("glyph_health: outline recovery failed: %s", exc)
+        return {}
 
 
 def _font_info(doc: Any, font: tuple[Any, ...]) -> dict[str, Any]:
@@ -442,6 +463,8 @@ def _font_info(doc: Any, font: tuple[Any, ...]) -> dict[str, Any]:
     encoding = font[5] if len(font) > 5 else ""
 
     info: dict[str, Any] = {
+        "xref": xref,
+        "subtype": font[2] if len(font) > 2 else None,
         "basefont": basefont,
         "has_tounicode": False,
         "has_encoding": bool(encoding),
@@ -467,8 +490,24 @@ def _font_info(doc: Any, font: tuple[Any, ...]) -> dict[str, Any]:
         except Exception:
             pass
 
+    # /Encoding is a name, an inline dict, or a reference to a dict; the
+    # dict carries /BaseEncoding and /Differences.
+    enc_obj = obj
+    named = re.search(r"/Encoding\s*/(\w+)", obj)
+    ref = re.search(r"/Encoding\s+(\d+)\s+\d+\s+R", obj)
+    if named:
+        info["base_encoding"] = named.group(1)
+    elif ref:
+        try:
+            enc_obj = doc.xref_object(int(ref.group(1)), compressed=True)
+        except Exception:
+            enc_obj = ""
+    base_match = re.search(r"/BaseEncoding\s*/(\w+)", enc_obj)
+    if base_match:
+        info["base_encoding"] = base_match.group(1)
+
     # /Differences: [ 34 /C22 35 /C23 ... ] — parse the name run.
-    diff_match = re.search(r"/Differences\s*\[([^\]]*)\]", obj)
+    diff_match = re.search(r"/Differences\s*\[([^\]]*)\]", enc_obj)
     if diff_match:
         info["differences"] = _parse_differences(diff_match.group(1))
 
