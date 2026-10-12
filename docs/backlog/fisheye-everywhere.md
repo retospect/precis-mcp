@@ -45,6 +45,20 @@ ring group. The `focus` verb and render→act loop stay in
    from the quest's chunks; a quest needs a one-chunk gist for the eye,
    the same way a finding has its claim.
 
+## Navigation (2026-10-06) — dive in, back out
+
+Reto, 2026-10-06: a graph viewer where one can "conveniently dive into
+the graph and back out again". The human navigation surface is
+`web-graph-navigation.md` (status ready, Reto's rulings of 2026-10-06:
+focus page `/graph/<kind>/<id>` beside the reader, cookie-held trail,
+caps). Its slices 7–9 carry what that ask added — zoom-out to a container
+via `refeye.py::UP_RELATIONS`, the came-from slot, peek and the keyboard
+map. `/eye/<handle>` here stays the text ladder: it links to the
+`/graph/` page of the same handle and back, and `UP_RELATIONS` (defined
+there) also gives this page its one "up" link. Edge editing is
+`eye-link-editor.md`, blocked by `web-graph-navigation`. A trail or
+keyboard layer is not duplicated here.
+
 ## Explicitly NOT in scope
 
 - Measures, numeric-conflict rules, `quest_mesh`, the extraction landing
