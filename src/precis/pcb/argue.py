@@ -14,7 +14,12 @@ grammar onto its elements as ``data-handle``) both lean on it.
 ``pcb_instances.refdes``; ``U_TEMP.3`` / ``ARR1.R3C4`` is refdes + pin
 (a generated array cell is an ordinary ``refdes.pin`` row — no separate
 notation); ``net:HV_RAIL`` is ``pcb_nets.name``; ``feature:outline`` is
-a ``pcb_features.ftype``. :data:`HANDLE_RE` is the tokenizer that picks
+a ``pcb_features.ftype``. A via, silkscreen label, outline segment or
+fiducial has no database name; its handle is the board viewer's selection
+key verbatim (``via:<x>:<y>``, ``silk:<layer>:<role>:<refdes>``,
+``outline:<index>``, ``fiducial:<ordinal>`` — :mod:`precis.pcb.selectables`)
+and resolves against the live selection catalogue the caller passes as
+``objects``. :data:`HANDLE_RE` is the tokenizer that picks
 candidate handles out of free text; :func:`resolve` decides which of
 them name something on the board. The rule the two sides share: a token
 that resolves is a handle, a token that doesn't is just a word ("DRC",
@@ -48,8 +53,11 @@ from typing import Any
 #: whitespace (net names carry ``/``, ``+``, ``-``); bare forms are an
 #: identifier with an optional ``.pin`` suffix.
 HANDLE_RE = re.compile(
-    r"(?<![\w.:])(?:net:\S+|feature:[A-Za-z_]+|[A-Za-z_][\w-]*(?:\.[\w-]+)?)"
+    r"(?<![\w.:])(?:(?:via|silk|outline|fiducial):\S+|net:\S+|feature:[A-Za-z_]+|[A-Za-z_][\w-]*(?:\.[\w-]+)?)"
 )
+
+#: Selection-catalogue key prefixes that double as handles (no database name).
+OBJECT_PREFIXES = ("via", "silk", "outline", "fiducial")
 
 #: Valid ``feature:`` suffixes — ``pcb_features.ftype``'s vocabulary.
 FEATURE_TYPES = ("mounting_hole", "fiducial", "testpoint", "keepout", "outline")
@@ -82,6 +90,11 @@ def feature_handle(ftype: str) -> str:
     return f"feature:{ftype}"
 
 
+def is_object_handle(h: str) -> bool:
+    # A selectable board object's handle is its catalogue key, verbatim.
+    return h.partition(":")[0] in OBJECT_PREFIXES and ":" in h
+
+
 def candidates(text: str) -> list[str]:
     """Every token in ``text`` that *could* be a handle, in order, deduped.
     Trailing sentence punctuation is not part of a handle."""
@@ -94,9 +107,11 @@ def candidates(text: str) -> list[str]:
 
 
 def classify(handle: str, valid: dict[str, Any]) -> str | None:
-    """``part`` | ``pin`` | ``net`` | ``feature`` for a handle that names
+    """``part`` | ``pin`` | ``net`` | ``feature`` | ``object`` for a handle that names
     something in ``valid`` (:meth:`Store.pcb_handles`'s shape), else
     ``None``."""
+    if is_object_handle(handle):
+        return "object" if handle in (valid.get("objects") or {}) else None
     if handle.startswith("net:"):
         return "net" if handle[4:] in valid["nets"] else None
     if handle.startswith("feature:"):
@@ -112,27 +127,39 @@ def classify(handle: str, valid: dict[str, Any]) -> str | None:
 def all_handles(valid: dict[str, Any]) -> dict[str, list[str]]:
     """The full valid-handle roster, by class — what a rejected submit is
     answered with."""
-    return {
+    out = {
         "parts": list(valid["parts"]),
         "pins": [pad_handle(r, p) for r, pins in valid["pins"].items() for p in pins],
         "nets": [net_handle(n) for n in valid["nets"]],
         "features": [feature_handle(f) for f in valid["features"]],
     }
+    if valid.get("objects"):
+        out["objects"] = sorted(valid["objects"])
+    return out
 
 
 def resolve(
-    store: Any, ref_id: int, handles: list[str]
+    store: Any,
+    ref_id: int,
+    handles: list[str],
+    objects: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[Resolved], list[str]]:
     """``(resolved, unknown)`` for ``handles`` against the live board.
+    ``objects`` is the selection catalogue (key -> identity) that object
+    handles resolve against; without it they are unknown.
     Each resolved entry carries the context :func:`ask` quotes to the
     model; ``unknown`` keeps the caller's order."""
     valid = store.pcb_handles(ref_id)
+    if objects is not None:
+        valid["objects"] = objects
     resolved: list[Resolved] = []
     unknown: list[str] = []
     for h in handles:
         kind = classify(h, valid)
         if kind is None:
             unknown.append(h)
+        elif kind == "object":
+            resolved.append(Resolved(h, kind, dict(valid["objects"][h])))
         elif kind == "part":
             resolved.append(Resolved(h, kind, _part_context(store, ref_id, h)))
         elif kind == "pin":
@@ -153,10 +180,17 @@ def resolve(
     return resolved, unknown
 
 
-def handles_in(text: str, store: Any, ref_id: int) -> list[str]:
+def handles_in(
+    text: str,
+    store: Any,
+    ref_id: int,
+    objects: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
     """The handles ``text`` names: every candidate token that resolves.
     Unresolvable tokens are prose and silently dropped."""
     valid = store.pcb_handles(ref_id)
+    if objects is not None:
+        valid["objects"] = objects
     return [h for h in candidates(text) if classify(h, valid) is not None]
 
 
@@ -191,7 +225,9 @@ _PROMPT = """\
 You are reviewing a printed-circuit-board design named {title!r} with a \
 human who is arguing with it. The human names parts, pads and nets by \
 HANDLE: REFDES (a part), REFDES.PIN (one pad), net:NAME (a net), \
-feature:TYPE (board features). Every handle in the argument is listed \
+feature:TYPE (board features), and the board viewer's selection keys for \
+objects with no name: via:X:Y (a VIA), silk:LAYER:ROLE:REFDES (a SILK \
+label), outline:N (an OUTLINE segment), fiducial:N (a FIDUCIAL). Every handle in the argument is listed \
 below with what the design database says about it. Rely on that context \
 and the vitals; do not invent parts, pins, nets or numbers that are not \
 in it.
@@ -271,6 +307,7 @@ def note_name(kind: str, text: str, taken: set[str]) -> str:
 __all__ = [
     "FEATURE_TYPES",
     "HANDLE_RE",
+    "OBJECT_PREFIXES",
     "Resolved",
     "all_handles",
     "ask",
@@ -279,6 +316,7 @@ __all__ = [
     "dangling",
     "feature_handle",
     "handles_in",
+    "is_object_handle",
     "net_handle",
     "note_name",
     "pad_handle",

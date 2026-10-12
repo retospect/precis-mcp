@@ -84,6 +84,17 @@
   const matchesRoot = () => svgDoc && svgDoc.documentElement &&
     svgDoc.documentElement.dataset.pcbBoard === String(manifest.context.board.ref_id) &&
     svgDoc.documentElement.dataset.pcbSnapshot === manifest.context.shown.snapshot;
+  // The argue-box handle of an object; same naming as gerber_view._object_handle.
+  const handleOf = (o) => {
+    switch (o.kind) {
+      case 'instance': return o.refdes || null;
+      case 'pad':
+        return o.refdes && o.pin ? `${o.refdes}.${o.pin}` : (o.net ? `net:${o.net}` : null);
+      case 'net': return o.name ? `net:${o.name}` : null;
+      case 'via': case 'silk': case 'outline': case 'fiducial': return o.key || null;
+      default: return null;
+    }
+  };
   const select = (key) => {
     clear();
     if (!bound || !matchesRoot()) { clear('Shown board changed or is unavailable. Reload to select.'); return; }
@@ -104,6 +115,8 @@
       ? `Selected ${o.refdes}. Changes require a proposal and explicit Apply.`
       : `Selected ${label(o)}. Other objects are discussion-only; select the component to propose a move.`;
     highlight(key);
+    const handle = handleOf(o);
+    if (handle) document.dispatchEvent(new CustomEvent('pcb-selection-attach', {detail: {handle}}));
   };
   // Catalogue = the SVG's own object list, with the page manifest's instance
   // identities (which carry the footprint) required to agree with it.

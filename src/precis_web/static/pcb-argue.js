@@ -57,10 +57,17 @@
     if (!doc || doc.__pcbArgueWired) return;
     doc.__pcbArgueWired = true;
     doc.addEventListener("click", function (ev) {
+      // pcb-selection.js owns the click when it bound this document; it
+      // announces the handle via pcb-selection-attach (never insert twice).
+      if (doc.__pcbSelectionWired) return;
       var h = handleAt(doc, ev);
       if (h) insertHandle(h);
     });
   }
+
+  document.addEventListener("pcb-selection-attach", function (ev) {
+    if (ev.detail && ev.detail.handle) insertHandle(ev.detail.handle);
+  });
 
   var obj = document.getElementById("pcb-board-object");
   if (obj) {

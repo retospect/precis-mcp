@@ -136,7 +136,7 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
                 "slug": ref.slug,
                 "title": ref.title or ref.slug,
                 **_vitals(store, ref.id),
-                **_notes_ctx(store, ref.id),
+                **_notes_ctx(store, ref, conn),
                 "pcb_context": view.context,
                 "pcb_instances": view.instances,
                 "read_only": read_only,
@@ -159,11 +159,37 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
     return templates.TemplateResponse(request, "pcb/detail.html.j2", ctx)
 
 
-def _notes_ctx(store: Store, ref_id: int) -> dict[str, Any]:
+def _board_objects(
+    store: Store, ref: Any, conn: Any = None
+) -> dict[str, dict[str, Any]]:
+    """``{key: identity}`` for the via/silk/outline/fiducial objects of the
+    current board — the handles :mod:`precis.pcb.argue` resolves against.
+    ``{}`` when the board is not renderable (object handles then read as
+    unknown on submit, dangling on read)."""
+
+    def _catalogue(c: Any) -> list[dict[str, Any]]:
+        view = pcb_design.capture_view(store, ref, conn=c)
+        return pcb_design.selection_objects(store, view)
+
+    try:
+        if conn is not None:
+            objs = _catalogue(conn)
+        else:
+            with store.pcb_view_tx() as c:
+                objs = _catalogue(c)
+    except ValueError:
+        return {}
+    return {o["key"]: o for o in objs if o.get("kind") in argue.OBJECT_PREFIXES}
+
+
+def _notes_ctx(store: Store, ref: Any, conn: Any = None) -> dict[str, Any]:
     """The argument ledger as the notes partial renders it: questions in
     order, each with its answers, dangling anchors reported per note."""
+    ref_id = ref.id
     notes = store.pcb_notes_list(ref_id)
     valid = store.pcb_handles(ref_id)
+    if any(argue.is_object_handle(h) for n in notes for h in n["about"]):
+        valid["objects"] = _board_objects(store, ref, conn)
     for n in notes:
         n["dangling"] = set(argue.dangling(n["about"], valid))
     by_re: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
@@ -198,20 +224,31 @@ async def pcb_note_save(request: Request, slug: str) -> JSONResponse:
     clicked = [h.strip() for h in raw if h.strip()]
 
     def _save() -> dict[str, Any]:
-        resolved, unknown = argue.resolve(store, ref.id, clicked)
+        # The board catalogue is computed only when an object handle is in play.
+        objects: dict[str, dict[str, Any]] | None = None
+        if any(argue.is_object_handle(h) for h in clicked + argue.candidates(text)):
+            objects = _board_objects(store, ref)
+        resolved, unknown = argue.resolve(store, ref.id, clicked, objects)
         if unknown:
+            valid = store.pcb_handles(ref.id)
+            if objects is not None:
+                valid["objects"] = objects
             return {
                 "status": 400,
                 "error": "unknown handle(s): " + ", ".join(unknown),
                 "unknown": unknown,
-                "valid": argue.all_handles(store.pcb_handles(ref.id)),
+                "valid": argue.all_handles(valid),
             }
         # The handles the sentence names: clicked first, then any typed by
         # hand that resolve — one list, the user's order, no duplicates.
         about = list(clicked)
-        about += [h for h in argue.handles_in(text, store, ref.id) if h not in about]
+        about += [
+            h for h in argue.handles_in(text, store, ref.id, objects) if h not in about
+        ]
         known = {r.handle for r in resolved}
-        extra, _ = argue.resolve(store, ref.id, [h for h in about if h not in known])
+        extra, _ = argue.resolve(
+            store, ref.id, [h for h in about if h not in known], objects
+        )
         resolved.extend(extra)
         taken = {n["name"] for n in store.pcb_notes_list(ref.id)}
         q_name = argue.note_name("question", text, taken)
@@ -255,7 +292,7 @@ async def pcb_note_save(request: Request, slug: str) -> JSONResponse:
     if status != 200:
         return JSONResponse(result, status_code=status)
     html = templates.get_template("pcb/_notes.html.j2").render(
-        request=request, slug=ref.slug, **_notes_ctx(store, ref.id)
+        request=request, slug=ref.slug, **_notes_ctx(store, ref)
     )
     return JSONResponse({**result, "html": html})
 
