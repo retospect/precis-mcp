@@ -39,6 +39,7 @@ from precis.identity import (
     normalize_arxiv,
     normalize_doi,
 )
+from precis.ingest.article_spread import trim_to_article
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.lookup import lookup_doi
 from precis.ingest.marker import extract_blocks_marker
@@ -348,7 +349,9 @@ class BodyExtraction:
     offline kinds); ``meta`` the body-owned ``refs.meta`` keys
     (``glyph_health`` when suspected, ``extract_used_fallback`` /
     ``extract_fallback_reason`` / ``extract_fallback_empty`` when the fitz
-    fallback ran — see :func:`extract_body`). ``page_first`` /
+    fallback ran — see :func:`extract_body`). ``spread`` is the
+    multi-article audit (:meth:`SpreadTrim.audit`) when the PDF carried
+    more than one article, else ``None``. ``page_first`` /
     ``page_last`` / ``page_count`` summarise the pages blocks landed on.
     """
 
@@ -358,6 +361,7 @@ class BodyExtraction:
     page_first: int | None
     page_last: int | None
     page_count: int
+    spread: dict[str, Any] | None = None
 
     @property
     def content_hash(self) -> str | None:
@@ -372,6 +376,8 @@ def extract_body(
     *,
     marker_timeout_s: float | None = None,
     pdf_bytes: bytes | None = None,
+    target_title: str = "",
+    target_doi: str | None = None,
 ) -> BodyExtraction:
     """Run the body leg of :func:`extract_paper` alone: Marker → blocks →
     mojibake repair → body chunks (+ reference re-tagging), with the
@@ -383,6 +389,11 @@ def extract_body(
     must not re-run the online metadata cascade. ``pdf_bytes`` lets a
     caller that has already read the file skip a second read; it is only
     used for the page count behind ``extract_fallback_empty``.
+
+    ``target_title`` / ``target_doi`` name the article this PDF is for. On a
+    multi-article page spread only that article's blocks become chunks
+    (:func:`precis.ingest.article_spread.trim_to_article`, gr463414); the
+    cut is reported on ``spread`` for the caller to journal.
     """
     # gr236139 — mutated by extract_blocks_marker iff it took the fitz
     # fallback branch; that's the only signal that survives a fallback
@@ -404,9 +415,12 @@ def extract_body(
         glyph_health=glyph_health_info,
     )
     blocks = _repair_mojibake(blocks)
+    # Page stats stay on the whole PDF: a trimmed spread is not a preview.
+    pages = [p for b in blocks if (p := b.get("page")) is not None]
+    spread = trim_to_article(blocks, title=target_title, doi=target_doi)
+    blocks = spread.blocks
     body_chunks = _blocks_to_chunks(blocks)
     body_chunks = _retag_references(body_chunks)
-    pages = [p for b in blocks if (p := b.get("page")) is not None]
 
     meta: dict[str, Any] = {}
     if glyph_health_info.get("suspected"):
@@ -442,6 +456,7 @@ def extract_body(
         page_first=min(pages) if pages else None,
         page_last=max(pages) if pages else None,
         page_count=len({p for p in pages if p is not None}) if pages else 0,
+        spread=spread.audit(),
     )
 
 
@@ -452,6 +467,8 @@ def extract_paper(
     printable_only: bool = False,
     marker_timeout_s: float | None = None,
     kind: str = "paper",
+    target_title: str = "",
+    target_doi: str | None = None,
 ) -> PaperToWrite:
     """Build a :class:`PaperToWrite` from a local PDF.
 
@@ -478,6 +495,11 @@ def extract_paper(
     ``marker_timeout_s`` is forwarded to :func:`extract_blocks_marker`
     (P2-3 hang guard) — see its docstring. ``None`` (the default)
     preserves the original in-process, unguarded Marker call.
+
+    ``target_title`` / ``target_doi`` name the article the file was fetched
+    for (the stub a sidecar or ``pa<id>`` filename folds into); they win over
+    the extracted metadata when :func:`extract_body` keeps one article of a
+    multi-article page spread. The audit lands on ``meta["article_spread"]``.
 
     ``kind`` is the stored kind. A non-bibliographic kind (``cfp``) skips
     the Crossref / Semantic Scholar lookups (``online=False``) and, when no
@@ -526,7 +548,12 @@ def extract_paper(
         body_meta: dict[str, Any] = {}
     else:
         body = extract_body(
-            pdf_path, paper_id, marker_timeout_s=marker_timeout_s, pdf_bytes=pdf_bytes
+            pdf_path,
+            paper_id,
+            marker_timeout_s=marker_timeout_s,
+            pdf_bytes=pdf_bytes,
+            target_title=target_title or metadata.title or "",
+            target_doi=target_doi or doi,
         )
         blocks = body.blocks
         if not metadata.title and not online:
@@ -544,7 +571,9 @@ def extract_paper(
         pdf_pages_last = body.page_last
         page_count = body.page_count
         content_hash = body.content_hash
-        body_meta = body.meta
+        body_meta = dict(body.meta)
+        if body.spread is not None:
+            body_meta["article_spread"] = body.spread
 
     provider = _PROVIDER_MAP.get(metadata.doi_provenance, "embedded")
 

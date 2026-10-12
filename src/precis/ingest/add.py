@@ -47,6 +47,7 @@ from precis.ingest.pres import (
     write_pres,
 )
 from precis.store import Store
+from precis.store.types import Tag
 
 log = logging.getLogger(__name__)
 
@@ -457,6 +458,88 @@ def _note_pdf_no_body(
         )
 
 
+#: ``ref_events.source`` of the multi-article page-spread journal row.
+ARTICLE_SPREAD_SOURCE = "ingest:spread"
+#: Open tag on a paper whose stored body still holds several articles.
+MULTI_ARTICLE_TAG = "multi-article"
+
+
+def _fold_target_identity(input: PdfInput, *, store: Store) -> tuple[str, str | None]:
+    """Title and DOI of the stub this PDF was fetched for, else ``("", None)``.
+
+    The sidecar ``fold_ref_id`` or a ``pa<id>`` filename names the article
+    the file is for; :func:`precis.ingest.pipeline.extract_body` keeps that
+    article from a multi-article page spread (gr463414). A placeholder title
+    is no evidence, so it falls back to the extracted metadata.
+    """
+    from precis.utils.title_body import is_placeholder_title
+
+    ref_id = input.fold_ref_id or _handle_stem_ref_id(input.pdf_path.stem)
+    if ref_id is None:
+        return "", None
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT r.title,
+                       (SELECT min(id_value) FROM ref_identifiers
+                         WHERE ref_id = r.ref_id AND id_kind = 'doi')
+                  FROM refs r
+                 WHERE r.ref_id = %s AND r.retired_at IS NULL
+                """,
+                (int(ref_id),),
+            ).fetchone()
+    except Exception as exc:  # pragma: no cover - a hint, never fatal
+        log.warning("precis_add (pdf): fold target ref_id=%s unread: %s", ref_id, exc)
+        return "", None
+    if row is None:
+        return "", None
+    title = str(row[0] or "")
+    return ("" if is_placeholder_title(title) else title), row[1]
+
+
+def _note_article_spread(
+    store: Store,
+    ref_id: int | None,
+    spread: dict[str, Any] | None,
+    input: PdfInput,
+    *,
+    conn: Any,
+) -> None:
+    """Journal a multi-article page spread found at extraction (gr463414).
+
+    ``trimmed``: the body kept one article; the payload names the kept and
+    cut block/page ranges with their heads so the cut is auditable.
+    ``ambiguous``: several articles and no confident title/DOI match, so the
+    whole body was kept and the paper is tagged ``multi-article`` (finding
+    links onto it then carry the advisory). A ``trimmed`` result with
+    ``residual`` (an unconfirmed boundary stayed in the kept span) is tagged
+    too. Best-effort, like
+    :func:`_note_pdf_no_body`.
+    """
+    if ref_id is None or not spread:
+        return
+    try:
+        verdict = str(spread.get("verdict") or "")
+        store.append_event(
+            int(ref_id),
+            source=ARTICLE_SPREAD_SOURCE,
+            event=verdict,
+            payload={**spread, "file": input.pdf_path.name},
+            conn=conn,
+        )
+        if verdict == "ambiguous" or spread.get("residual"):
+            store.add_tag(
+                int(ref_id), Tag.open(MULTI_ARTICLE_TAG), set_by="system", conn=conn
+            )
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (pdf): could not journal article spread for ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
+
+
 def _ingest_pdf(
     input: PdfInput,
     *,
@@ -468,13 +551,22 @@ def _ingest_pdf(
     marker_timeout_s: float | None = None,
 ) -> IngestResult:
     """Run the slow path for a PdfInput, assuming the claim is held."""
+    target_title, target_doi = _fold_target_identity(input, store=store)
     paper = _build_paper(
         input,
         use_pdf2doi=use_pdf2doi,
         crossref_mailto=crossref_mailto,
         s2_api_key=s2_api_key,
         marker_timeout_s=marker_timeout_s,
+        target_title=target_title,
+        target_doi=target_doi,
     )
+    # Journalled as a ref_event below, not stored on refs.meta.
+    spread = paper.meta.get("article_spread")
+    if spread is not None:
+        paper = replace(
+            paper, meta={k: v for k, v in paper.meta.items() if k != "article_spread"}
+        )
 
     with store.pool.connection() as conn:
         existing = probe_existing(
@@ -561,6 +653,8 @@ def _ingest_pdf(
                 conn=conn,
             )
             _note_pdf_no_body(store, existing, input, paper, conn=conn)
+            if chunks_written:
+                _note_article_spread(store, existing, spread, input, conn=conn)
             conn.commit()
             stored_kind = _lookup_kind(existing, conn=conn)
             _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
@@ -599,6 +693,8 @@ def _ingest_pdf(
             conn=conn,
         )
         _note_pdf_no_body(store, result.ref_id, input, paper, conn=conn)
+        if result.chunks_written:
+            _note_article_spread(store, result.ref_id, spread, input, conn=conn)
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
@@ -1822,6 +1918,8 @@ def _build_paper(
     crossref_mailto: str,
     s2_api_key: str,
     marker_timeout_s: float | None = None,
+    target_title: str = "",
+    target_doi: str | None = None,
 ) -> PaperToWrite:
     """Dispatch on the input variant and run the matching pipeline producer.
 
@@ -1847,6 +1945,8 @@ def _build_paper(
             printable_only=input.printable_only,
             marker_timeout_s=marker_timeout_s,
             kind=input.as_kind,
+            target_title=target_title,
+            target_doi=target_doi,
         )
         # DRY: the identical pipeline lands the doc under whichever kind
         # the caller asked for (``paper`` default, ``cfp`` for the

@@ -42,7 +42,11 @@ pa44468, pa42559, pa207748. Follow-up: the title/body sweep detector (item
 
 Shipped (gr463414): `link` onto a claim hub from a `multi-article` paper
 returns an advisory to confirm the passage's article. Nanopub assembly is
-pure over frozen input with no paper refs, so no refusal there.
+pure over frozen input with no paper refs, so no refusal there. New PDF
+ingests now trim a page spread to the target article before chunks are
+written (`precis.ingest.article_spread`, `ingest:spread` ref_event), and
+tag `multi-article` when the match is ambiguous. Open: the bodiless heal
+passes no target title; existing rows change only on a re-extract.
 
 Who: agent-code.
 

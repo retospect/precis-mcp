@@ -37,6 +37,20 @@ Hygiene: pysbd sentence splitting in the chunker fallback chain
 (:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
 ``marker._clean_text``.
 
+Multi-article page spreads (gr463414): before Marker blocks become chunks,
+:mod:`precis.ingest.article_spread` splits a spread into articles on
+end/start evidence and keeps the one matching the target title or DOI. The
+target is the fold stub's identity, else the extracted metadata. Stored
+chunks are never trimmed: they are append-only, and the 2026-10-11 ruling
+tags them instead. ``precis_add`` journals a ``trimmed`` / ``ambiguous``
+``ingest:spread`` ref_event. Every cut needs a boundary plus independent
+confirmation, so ordinary papers stay whole. An ambiguous spread keeps the
+whole body and gets the ``multi-article`` tag, which finding links read as
+an advisory. So does a trim that left an unconfirmed boundary inside the
+kept span.
+The bodiless heal (:mod:`precis.ingest.paper_hygiene`) passes no target
+yet, so a spread it heals is neither trimmed nor journalled.
+
 Every ingest/edit author writer funnels through
 :func:`precis.utils.authors.normalize_authors` (the canonical
 ``{given, family}`` shape) rather than an ad hoc ``{"name"}`` wrap, and
