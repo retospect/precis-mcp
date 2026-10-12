@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Read-only inode census for a quota-limited tree (Lustre project space, NAS, home).
+
+Walks one directory once and reports where the file count (inodes) sits:
+top directories at a chosen depth, how old the files are, and which of the
+usual inode hogs are present (Python environments, package caches, git
+object stores, __pycache__, node_modules). It never deletes, moves or
+touches anything; it only reads directory entries and stat data.
+
+Usage (on the login node, with only the standard python3):
+
+    python3 inode-census /path/to/project            # depth 2, top 25
+    python3 inode-census /path/to/project -d 3 -n 40
+    python3 inode-census /path/to/project --stale-days 90
+
+Copy this single file to the node; it has no dependencies. Output is plain
+text you can paste back. Decide deletions by hand from the report.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from collections import Counter, defaultdict
+
+# Directory names that are almost always a loose environment or a cache.
+# Each hit is counted once for the whole subtree under it.
+HOG_NAMES = {
+    "site-packages": "python env",
+    ".venv": "python env",
+    "venv": "python env",
+    "conda": "conda env",
+    "miniconda3": "conda env",
+    "anaconda3": "conda env",
+    "envs": "conda env",
+    "pkgs": "conda pkgs cache",
+    "__pycache__": "pycache",
+    ".cache": "cache dir",
+    "pip": "pip cache",
+    "uv": "uv cache",
+    "huggingface": "hf cache",
+    "torch": "torch cache",
+    "node_modules": "node_modules",
+    ".git": "git store",
+    "objects": "git objects",
+    "build": "build tree",
+    "_build": "build tree",
+    "wheels": "wheel cache",
+}
+
+AGE_BUCKETS = ((30, "<30d"), (90, "30-90d"), (365, "90-365d"), (10**9, ">1y"))
+
+
+def bucket(age_days: float) -> str:
+    for limit, label in AGE_BUCKETS:
+        if age_days < limit:
+            return label
+    return ">1y"
+
+
+def census(root: str, depth: int, stale_days: int) -> dict:
+    root = os.path.abspath(root)
+    now = time.time()
+    per_dir: Counter[str] = Counter()  # inodes under each depth-d prefix
+    per_dir_stale: Counter[str] = Counter()
+    age: Counter[str] = Counter()
+    hog_kind: dict[str, str] = {}  # hog path -> kind
+    hog_count: Counter[str] = Counter()  # hog path -> inodes in its subtree
+    hog_of: dict[str, str] = {}  # dir path -> the hog path it sits under
+    errors = 0
+    total = 0
+    bytes_total = 0
+
+    def prefix(path: str) -> str:
+        rel = os.path.relpath(path, root)
+        if rel == ".":
+            return "."
+        parts = rel.split(os.sep)
+        return os.sep.join(parts[:depth])
+
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            errors += 1
+            continue
+        hog = hog_of.get(d)
+        pfx = prefix(d)
+        with it:
+            for e in it:
+                total += 1
+                per_dir[pfx] += 1
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    errors += 1
+                    continue
+                age_days = (now - st.st_mtime) / 86400
+                age[bucket(age_days)] += 1
+                if age_days >= stale_days:
+                    per_dir_stale[pfx] += 1
+                if not e.is_dir(follow_symlinks=False):
+                    bytes_total += st.st_size
+                if hog:
+                    hog_count[hog] += 1
+                if e.is_dir(follow_symlinks=False):
+                    sub = e.path
+                    if hog:
+                        hog_of[sub] = hog
+                    elif e.name in HOG_NAMES:
+                        hog_kind[sub] = HOG_NAMES[e.name]
+                        hog_of[sub] = sub
+                        hog_count[sub] += 1  # the hog directory itself
+                    stack.append(sub)
+    by_kind: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    for path, n in hog_count.items():
+        by_kind[hog_kind[path]][path] += n
+    return {
+        "root": root,
+        "total": total,
+        "bytes": bytes_total,
+        "errors": errors,
+        "per_dir": per_dir,
+        "per_dir_stale": per_dir_stale,
+        "age": age,
+        "hogs": by_kind,
+    }
+
+
+def human(n: float) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PiB"
+
+
+def report(r: dict, top: int, stale_days: int) -> str:
+    out = []
+    out.append(f"inode census of {r['root']}")
+    out.append(
+        f"  entries (files+dirs+links): {r['total']:,}   bytes: {human(r['bytes'])}   unreadable: {r['errors']}"
+    )
+    out.append("")
+    out.append("by age (mtime):")
+    for _, label in AGE_BUCKETS:
+        n = r["age"].get(label, 0)
+        pct = 100 * n / r["total"] if r["total"] else 0
+        out.append(f"  {label:>8}  {n:>10,}  {pct:5.1f}%")
+    out.append("")
+    out.append(
+        f"top {top} directories by inodes (stale = older than {stale_days} days):"
+    )
+    out.append(f"  {'inodes':>10}  {'stale':>10}  path")
+    for path, n in r["per_dir"].most_common(top):
+        out.append(f"  {n:>10,}  {r['per_dir_stale'].get(path, 0):>10,}  {path}")
+    out.append("")
+    out.append("inode hogs (whole subtree counted once, at the outermost hit):")
+    any_hog = False
+    for kind, counter in sorted(r["hogs"].items(), key=lambda kv: -sum(kv[1].values())):
+        kind_total = sum(counter.values())
+        out.append(
+            f"  {kind:<18} {kind_total:>10,} inodes in {len(counter)} location(s)"
+        )
+        for path, n in counter.most_common(5):
+            out.append(f"      {n:>10,}  {os.path.relpath(path, r['root'])}")
+        any_hog = True
+    if not any_hog:
+        out.append("  none of the usual patterns found")
+    out.append("")
+    out.append("what to do with it: a python/conda env or a cache can be deleted and")
+    out.append(
+        "rebuilt, or packed into one archive or Apptainer image (N inodes -> 1)."
+    )
+    out.append("This script changed nothing.")
+    return "\n".join(out)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("root")
+    ap.add_argument(
+        "-d",
+        "--depth",
+        type=int,
+        default=2,
+        help="group directories at this depth (default 2)",
+    )
+    ap.add_argument(
+        "-n", "--top", type=int, default=25, help="rows in the top-directories table"
+    )
+    ap.add_argument(
+        "--stale-days",
+        type=int,
+        default=90,
+        help="age that counts as stale (default 90)",
+    )
+    a = ap.parse_args(argv)
+    if not os.path.isdir(a.root):
+        print(f"not a directory: {a.root}", file=sys.stderr)
+        return 2
+    r = census(a.root, a.depth, a.stale_days)
+    print(report(r, a.top, a.stale_days))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

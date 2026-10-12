@@ -128,7 +128,11 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    (not ours to identify from here; the snapshot does not split by user);
    no byte increase is needed, a +100 GiB cushion is optional. Who
    consumed the 9.7 TB is also unknown from the snapshot. A fresh read
-   needs the vault-held key on `work/meluxina/bootstrap`. The uses:
+   needs the vault-held key on `work/meluxina/bootstrap`. Inodes free
+   only on delete (overwrite reuses, nothing is retained-then-collected);
+   `scripts/inode-census` is a dependency-free, read-only python3 script
+   Reto runs on the login node to see which directories and which
+   environments/caches hold the files, by age. The uses:
    - (a) LLM operations: the slullama rung, `backlog/slullama-hpc-placement.md`
      leg 2.
    - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,
