@@ -202,6 +202,13 @@ ALERT_RULES: tuple[AlertRule, ...] = (
     ),
     _watchdog(
         "autonomy",
+        "lanes_idle_beside_queue",
+        "A job executor has queued work but claimed nothing for an hour.",
+        budget="1h",
+        service=None,
+    ),
+    _watchdog(
+        "autonomy",
         "doctor_report_fresh",
         "The doctor tick has not written a report within twice its fresh window.",
         budget="2×FRESH_WINDOW",

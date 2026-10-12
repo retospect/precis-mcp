@@ -2011,6 +2011,8 @@ class SkillHandler(Handler):
             )
         lines.extend(["", "**Dark switches**", ""])
         lines.extend(_render_dark_switches(store))
+        lines.extend(["", "**Fleet utilisation (last hour)**", ""])
+        lines.extend(_render_fleet_utilisation(store))
         lines.extend(["", "**Embedder**", ""])
         embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
         if embedder is None:
@@ -2881,6 +2883,62 @@ def _render_dark_switches(store: Store | None) -> list[str]:
         "",
         render_agent_table(rows, schema=["service", "state", "setting"]),
     ]
+
+
+def _render_fleet_utilisation(store: Store | None) -> list[str]:
+    """Per-loop busy/poll share of the last hour plus idle-lane callout.
+
+    Reads the shared ``precis.health_checks`` queries (the same ones the
+    ``lanes_idle_beside_queue`` digest check uses).
+    """
+    if store is None:
+        return ["_stateless build — no worker_logs to read_"]
+    from precis import health_checks
+
+    try:
+        with store.pool.connection() as conn:
+            util = health_checks.loop_utilisation(conn)
+            lanes = health_checks.idle_lanes(conn)
+    except Exception as exc:
+        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+    out: list[str] = []
+    if util:
+        out.append(
+            render_agent_table(
+                [
+                    {
+                        "host": u.host,
+                        "process": u.process,
+                        "busy": f"{u.busy_frac:.0%}",
+                        "polling": f"{u.poll_frac:.0%}",
+                        "passes": u.passes,
+                    }
+                    for u in util
+                ],
+                schema=["host", "process", "busy", "polling", "passes"],
+            )
+        )
+    else:
+        out.append(
+            "_no pass-duration rows in the last hour "
+            "(needs a worker build that logs duration_ms)_"
+        )
+    out.append("")
+    if lanes:
+        listed = "; ".join(
+            f"{lane.executor} ({lane.queued} queued, "
+            f"oldest {lane.oldest_queued_minutes}m)"
+            for lane in lanes
+        )
+        out.append(f"Lanes idle beside queued work: {listed}")
+    else:
+        out.append("Lanes idle beside queued work: none")
+    out.append("")
+    out.append(
+        "busy = time in passes that claimed work; idle beside an empty queue "
+        "is healthy."
+    )
+    return out
 
 
 def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:

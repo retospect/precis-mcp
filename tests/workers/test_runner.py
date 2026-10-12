@@ -369,6 +369,29 @@ class TestRunLoopRefPassCrash:
         assert payload["ok"] == 0
         assert payload.get("error") == "ValueError"
         assert errored[0].levelname == "ERROR"
+        assert isinstance(payload["duration_ms"], int)
+        assert payload["duration_ms"] >= 0
+
+    def test_success_payloads_carry_duration_ms(
+        self, store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def _ok_pass(batch_size: int) -> BatchResult:
+            return BatchResult(handler="okpass", claimed=0, ok=0, failed=0)
+
+        with caplog.at_level("INFO", logger="precis.workers.runner"):
+            run_loop(
+                [RakeLemmaHandler(max_keywords=3)],
+                store,
+                once=True,
+                ref_passes=[_ok_pass],
+            )
+
+        payloads = [p for r in caplog.records if (p := _payload(r)) is not None]
+        assert {p["handler"] for p in payloads} >= {"okpass"}
+        assert len(payloads) >= 2  # handler loop + ref-pass loop
+        for p in payloads:
+            assert isinstance(p["duration_ms"], int)
+            assert p["duration_ms"] >= 0
 
     def test_run_loop_continues_after_ref_pass_crash(self, store) -> None:
         """The crash must not stop the rest of the cycle -- a second

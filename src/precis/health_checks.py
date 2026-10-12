@@ -482,10 +482,145 @@ def activity_by_handler(
     }
 
 
+@dataclass(frozen=True, slots=True)
+class LoopUtilisation:
+    """One ``(host, process)`` worker loop's pass-time split over a window.
+
+    ``busy_s`` is time spent in passes that claimed work, ``poll_s`` in
+    passes that claimed nothing; ``passes`` counts logged passes.
+    """
+
+    host: str
+    process: str
+    busy_s: float
+    poll_s: float
+    passes: int
+    window_s: int
+
+    @property
+    def busy_frac(self) -> float:
+        return self.busy_s / self.window_s if self.window_s else 0.0
+
+    @property
+    def poll_frac(self) -> float:
+        return self.poll_s / self.window_s if self.window_s else 0.0
+
+
+def loop_utilisation(conn: Any, *, window_s: int = 3600) -> list[LoopUtilisation]:
+    """Per-``(host, process)`` busy/poll seconds from ``worker_logs`` pass rows.
+
+    Reads the ``duration_ms`` ``workers/runner.py::run_loop`` adds to each
+    per-pass payload; rows from older worker builds (no ``duration_ms``) are
+    ignored, so a host that hasn't picked up that build is simply absent.
+    """
+    rows = conn.execute(
+        "SELECT host, process, "
+        "  COALESCE(SUM((payload->>'duration_ms')::bigint) FILTER ("
+        "    WHERE COALESCE((payload->>'claimed')::int, 0) > 0), 0), "
+        "  COALESCE(SUM((payload->>'duration_ms')::bigint) FILTER ("
+        "    WHERE COALESCE((payload->>'claimed')::int, 0) = 0), 0), "
+        "  count(*) "
+        "FROM worker_logs "
+        "WHERE ts >= now() - make_interval(secs => %(w)s) "
+        "  AND payload ? 'handler' AND payload ? 'duration_ms' "
+        "GROUP BY host, process ORDER BY host, process",
+        {"w": window_s},
+    ).fetchall()
+    return [
+        LoopUtilisation(
+            host=h,
+            process=p,
+            busy_s=float(busy) / 1000.0,
+            poll_s=float(poll) / 1000.0,
+            passes=int(n),
+            window_s=window_s,
+        )
+        for h, p, busy, poll, n in rows
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class IdleLane:
+    """A job executor with old queued work and no recent claim."""
+
+    executor: str
+    queued: int
+    oldest_queued_minutes: int
+
+
+#: Executor owned by ``workers/nursery.py::_detect_dispatch_stalls``.
+_IDLE_LANE_EXEMPT_EXECUTORS = ("claude_inproc",)
+
+
+def idle_lanes(
+    conn: Any, *, queued_min_minutes: int = 30, window_s: int = 3600
+) -> list[IdleLane]:
+    """Job executors with queued work older than ``queued_min_minutes`` but
+    no job started in ``window_s`` and none currently running.
+
+    ``claude_inproc`` is excluded: ``workers/nursery.py``'s
+    ``_detect_dispatch_stalls`` already owns that lane. Only live
+    (``retired_at IS NULL``) job refs count.
+    """
+    # Start from the queued jobs (reached through the STATUS:queued tag, not
+    # a scan of every job ref) and only then probe each candidate executor
+    # for a running or recently started job. The probes stop at the first
+    # hit, so the expensive no-match walk only happens when a lane really is
+    # idle beside its queue.
+    rows = conn.execute(
+        """
+        WITH q AS (
+          SELECT r.meta->>'executor' AS executor,
+                 count(*)::int        AS queued,
+                 min(r.created_at)    AS oldest
+            FROM refs r
+            JOIN ref_tags rt ON rt.ref_id = r.ref_id
+            JOIN tags t ON t.tag_id = rt.tag_id
+           WHERE r.kind = 'job' AND r.retired_at IS NULL
+             AND t.namespace = 'STATUS' AND t.value = 'queued'
+             AND r.meta->>'executor' IS NOT NULL
+             AND r.meta->>'executor' <> ALL(%(exempt)s)
+           GROUP BY 1
+          HAVING min(r.created_at) < now() - make_interval(mins => %(mins)s)
+        )
+        SELECT q.executor, q.queued,
+               floor(extract(epoch FROM now() - q.oldest) / 60)::int
+          FROM q
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM refs r
+                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                   JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE r.kind = 'job' AND r.retired_at IS NULL
+                    AND t.namespace = 'STATUS' AND t.value = 'running'
+                    AND r.meta->>'executor' = q.executor)
+           AND NOT EXISTS (
+                 SELECT 1 FROM refs r
+                  WHERE r.kind = 'job' AND r.retired_at IS NULL
+                    AND r.meta->>'executor' = q.executor
+                    AND (r.meta->>'started_at')::timestamptz
+                          >= now() - make_interval(secs => %(w)s))
+         ORDER BY q.executor
+        """,
+        {
+            "exempt": list(_IDLE_LANE_EXEMPT_EXECUTORS),
+            "mins": queued_min_minutes,
+            "w": window_s,
+        },
+    ).fetchall()
+    return [
+        IdleLane(executor=e, queued=int(q), oldest_queued_minutes=int(m))
+        for e, q, m in rows
+    ]
+
+
 __all__ = [
     "FreshnessProbe",
+    "IdleLane",
+    "LoopUtilisation",
     "activity_by_handler",
     "backlog_counts",
     "compute_backlog_counts",
     "fetch_freshness_timestamps",
+    "idle_lanes",
+    "loop_utilisation",
 ]

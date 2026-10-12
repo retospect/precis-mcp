@@ -270,6 +270,7 @@ def run_loop(
             if should_stop is not None and should_stop():
                 log.info("worker: stop signal received; exiting loop")
                 return
+            t0 = time.monotonic()
             try:
                 result = run_handler_once(handler, store, batch_size=batch_size)
             except Exception:
@@ -295,6 +296,7 @@ def run_loop(
                         "claimed": result.claimed,
                         "ok": result.ok,
                         "failed": result.failed,
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
                     }
                 },
             )
@@ -323,6 +325,7 @@ def run_loop(
                 # still idle-sleep when everything else is drained.
                 continue
             activity.set_pass(ref_pass.__name__)
+            t0 = time.monotonic()
             try:
                 result = ref_pass(batch_size)
             except Exception as exc:
@@ -352,6 +355,7 @@ def run_loop(
                             "ok": 0,
                             "failed": 1,
                             "error": type(exc).__name__,
+                            "duration_ms": int((time.monotonic() - t0) * 1000),
                         }
                     },
                 )
@@ -370,6 +374,7 @@ def run_loop(
                         "claimed": result.claimed,
                         "ok": result.ok,
                         "failed": result.failed,
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
                     }
                 },
             )

@@ -1994,3 +1994,29 @@ def test_status_renders_dark_switches_table(
         "_stateless build — no service_config to read_"
     ]
     assert "**Dark switches**" in skill.get(id="precis-status").body
+
+
+def test_fleet_utilisation_renders_seeded_pass_durations(store) -> None:
+    """precis-status shows busy/polling shares from worker_logs duration_ms."""
+    import json
+
+    from precis.handlers import skill as skill_mod
+
+    with store.pool.connection() as conn:
+        for claimed, ms in ((3, 360_000), (0, 36_000)):
+            conn.execute(
+                "INSERT INTO worker_logs "
+                "(ts, host, process, pass, level, message, payload) "
+                "VALUES (now(), 'fu-host', 'fu-proc', 'runner', 'INFO', 'm', "
+                "%s::jsonb)",
+                (json.dumps({"handler": "x", "claimed": claimed, "duration_ms": ms}),),
+            )
+        conn.commit()
+    out = "\n".join(skill_mod._render_fleet_utilisation(store))
+    row = next(line for line in out.splitlines() if "fu-host" in line)
+    assert "fu-proc" in row and "10%" in row and "1%" in row and "2" in row
+    assert "Lanes idle beside queued work:" in out
+    assert "busy = time in passes that claimed work" in out
+    assert skill_mod._render_fleet_utilisation(None) == [
+        "_stateless build — no worker_logs to read_"
+    ]

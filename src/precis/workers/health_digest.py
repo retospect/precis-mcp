@@ -25,6 +25,8 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
      mirrors ``classify.py``'s own claim predicate inline and reads
      "backlog drained" once the corpus backfill completes, rather than
      re-filing a pipeline-stuck gripe against a pass that finished its work.
+     ``lanes_idle_beside_queue`` flags a job executor with old queued work
+     and no claim in an hour (:func:`precis.health_checks.idle_lanes`).
    * **Cadence staleness** (:func:`_cadence_staleness_checks`, derived) —
      every ``scheduler_leases`` row overdue past its *live*-resolved
      interval + margin; zero per-cadence config, so a new
@@ -1095,6 +1097,42 @@ def _check_nanopub_candidates_fresh(conn: Any) -> CheckResult:
     )
 
 
+def _check_lanes_idle_beside_queue(conn: Any) -> CheckResult:
+    """A job executor has old queued work but claimed nothing for an hour.
+
+    Reads :func:`precis.health_checks.idle_lanes` (``claude_inproc`` is
+    excluded there; nursery's dispatch-stall detector owns that lane)."""
+    try:
+        lanes = health_checks.idle_lanes(conn)
+    except Exception:
+        log.exception("health_digest: lanes_idle_beside_queue probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after lanes_idle probe failed")
+        return CheckResult(
+            "autonomy",
+            "lanes_idle_beside_queue",
+            "unknown",
+            "job lanes: probe failed",
+            _WARN,
+        )
+    if not lanes:
+        return CheckResult(
+            "autonomy",
+            "lanes_idle_beside_queue",
+            "ok",
+            "job lanes: no executor idle beside queued work",
+            _WARN,
+        )
+    detail = "; ".join(
+        f"{lane.executor}: {lane.queued} queued, "
+        f"oldest {lane.oldest_queued_minutes}m, no claim in 1h"
+        for lane in lanes
+    )
+    return CheckResult("autonomy", "lanes_idle_beside_queue", "stale", detail, _WARN)
+
+
 def _check_agent_jobs_completing(conn: Any) -> CheckResult:
     """Agent (``claude_inproc``) jobs completing, not all-failing, in 6h.
 
@@ -1473,6 +1511,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_claim_hub_dedup_index(conn))
         out.append(_check_nanopub_candidates_fresh(conn))
         out.append(_check_agent_jobs_completing(conn))
+        out.append(_check_lanes_idle_beside_queue(conn))
         out.append(_check_doctor_report_fresh(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))
@@ -1759,6 +1798,7 @@ _PINNED_FINGERPRINTS: dict[tuple[str, str], str] = {
     ("taproot", "claim_hub_dedup_index"): "claim_hub_dedup_index",
     ("nanopub", "staged_candidates_fresh"): "staged_candidates_fresh",
     ("autonomy", "agent_jobs_completing"): "agent_jobs_completing",
+    ("autonomy", "lanes_idle_beside_queue"): "lanes_idle_beside_queue",
     ("autonomy", "doctor_report_fresh"): "doctor_report_fresh",
     ("infra", "hosts_alive"): "hosts_alive",
     ("meta", "alert_backlog_rot"): "alert_backlog_rot",

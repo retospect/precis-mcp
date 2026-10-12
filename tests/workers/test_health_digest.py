@@ -2305,3 +2305,90 @@ def test_news_paused_schedule_keeps_the_floor(store) -> None:
     res = _news_check(store)
     assert res.status == "stale"
     assert "no live news_poll schedule" in res.detail
+
+
+def _seed_job(
+    store,
+    *,
+    executor: str,
+    status: str,
+    age_min: float = 0.0,
+    started_min_ago: float | None = None,
+) -> int:
+    ref_id = seed_ref(store, title=f"job {executor} {status}", kind="job")
+    now = datetime.now(UTC)
+    meta: dict[str, str] = {"executor": executor}
+    if started_min_ago is not None:
+        meta["started_at"] = (now - timedelta(minutes=started_min_ago)).isoformat()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = %s, created_at = %s WHERE ref_id = %s",
+            (json.dumps(meta), now - timedelta(minutes=age_min), ref_id),
+        )
+        tid = conn.execute(
+            "INSERT INTO tags (namespace, value) VALUES ('STATUS', %s) "
+            "ON CONFLICT (namespace, value) DO UPDATE SET value = EXCLUDED.value "
+            "RETURNING tag_id",
+            (status,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO ref_tags (ref_id, tag_id, set_by) VALUES (%s, %s, 'system')",
+            (ref_id, tid),
+        )
+        conn.commit()
+    return ref_id
+
+
+def _lanes_check(store):
+    from precis.workers.health_digest import _check_lanes_idle_beside_queue
+
+    with store.pool.connection() as conn:
+        return _check_lanes_idle_beside_queue(conn)
+
+
+def test_lanes_idle_stale_when_old_queued_and_no_recent_claim(store) -> None:
+    _seed_job(store, executor="ssh_node_t1", status="queued", age_min=90)
+    res = _lanes_check(store)
+    assert res.status == "stale"
+    assert "ssh_node_t1: 1 queued, oldest " in res.detail
+    assert "no claim in 1h" in res.detail
+
+
+def test_lanes_idle_ok_when_a_job_started_recently(store) -> None:
+    _seed_job(store, executor="ssh_node_t2", status="queued", age_min=90)
+    _seed_job(
+        store,
+        executor="ssh_node_t2",
+        status="succeeded",
+        age_min=100,
+        started_min_ago=10,
+    )
+    res = _lanes_check(store)
+    assert "ssh_node_t2" not in res.detail
+
+
+def test_lanes_idle_ok_when_one_is_running(store) -> None:
+    _seed_job(store, executor="ssh_node_t3", status="queued", age_min=90)
+    _seed_job(store, executor="ssh_node_t3", status="running", age_min=100)
+    assert "ssh_node_t3" not in _lanes_check(store).detail
+
+
+def test_lanes_idle_ignores_young_queue_and_claude_inproc(store) -> None:
+    _seed_job(store, executor="ssh_node_t4", status="queued", age_min=5)
+    _seed_job(store, executor="claude_inproc", status="queued", age_min=500)
+    res = _lanes_check(store)
+    assert "ssh_node_t4" not in res.detail
+    assert "claude_inproc" not in res.detail
+
+
+def test_lanes_idle_unknown_when_the_probe_fails(store, monkeypatch) -> None:
+    def boom(conn, **_kw):
+        conn.execute("SELECT 1/0")
+
+    monkeypatch.setattr(health_digest.health_checks, "idle_lanes", boom)
+    with store.pool.connection() as conn:
+        res = health_digest._check_lanes_idle_beside_queue(conn)
+        # The rollback left the shared connection usable for later checks.
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+    assert res.status == "unknown"
+    assert not res.is_finding
