@@ -107,6 +107,7 @@ from precis.pcb import optimize as pcb_optimize
 from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
+from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
@@ -4402,37 +4403,17 @@ class PcbHandler(Handler):
             )
         return Response(body=body)
 
-    def _render_fab_svg(
-        self,
-        ref_id: int,
-        slug: str,
-        *,
-        selection_manifest: dict[str, Any] | None = None,
-    ) -> Response:
-        """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
-        layer selector.
-
-        Not a prettier ``level='board'``. That one draws the model; this
-        one exports the fab set and reads it back, so what you are looking
-        at is what a fab's own reader will see. The difference is not
-        theoretical: ``svg.render_board`` applies a per-layer dash pattern
-        as a layer cue, which made continuous B.Cu copper look broken and
-        cost a session proving it was not. A view that is stylistically
-        different from the artefact cannot verify the artefact.
-
-        It is also the only view that shows pads, soldermask openings and
-        drill hits, because those exist in the fab set and nowhere in the
-        copper table — plus generated silk (:mod:`precis.pcb.silk`), the
-        SAME builder :meth:`_render_gerber` calls, so this preview matches
-        what a real export would carry.
-        """
+    def _fab_svg_model(
+        self, ref_id: int, slug: str
+    ) -> tuple[dict[str, Any], list[str]] | None:
+        """The board model :meth:`_render_fab_svg` exports to gerbers, plus
+        the furniture warnings — ONE assembly shared with
+        :meth:`selection_objects`, so the click catalogue is built from the
+        very model the picture is. ``None`` when the design has no board."""
         design = self.store.pcb_load(ref_id)
         board = design["board"]
         if board is None:
-            return Response(
-                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
-                "args={'components':[...],'nets':[...]}) to create the design."
-            )
+            return None
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
         pads = self._drc_pads(ref_id, layer_names)
         graph = self.store.pcb_graph(ref_id)
@@ -4481,6 +4462,72 @@ class PcbHandler(Handler):
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
             "mask_open_regions": self._mask_open_regions(ref_id),
         }
+        return model, furniture_warnings
+
+    @staticmethod
+    def _selection_rows(manifest: dict[str, Any]) -> dict[str, Any]:
+        rows = manifest["rows"]
+        return {
+            "instances": rows["instances"],
+            "pins": rows["pins"],
+            "nets": rows["nets"],
+            "components": rows["components"],
+            "identities": manifest.get("instances"),
+        }
+
+    def selection_objects(
+        self, ref_id: int, slug: str, manifest: dict[str, Any]
+    ) -> list[pcb_selectables.SelectObject]:
+        """The selectable-object catalogue of the board the viewer shows,
+        built from :meth:`_fab_svg_model` — the same model the SVG overlay
+        is. ``manifest`` carries the raw relational rows (``rows``) and the
+        per-instance identities (``instances``); see
+        :mod:`precis.pcb.selectables`. Raises ``ValueError`` when there is
+        no board to build it from."""
+        assembled = self._fab_svg_model(ref_id, slug)
+        if assembled is None:
+            raise ValueError("PCB board is not renderable")
+        return pcb_selectables.build(assembled[0], **self._selection_rows(manifest))
+
+    def _render_fab_svg(
+        self,
+        ref_id: int,
+        slug: str,
+        *,
+        selection_manifest: dict[str, Any] | None = None,
+    ) -> Response:
+        """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
+        layer selector.
+
+        Not a prettier ``level='board'``. That one draws the model; this
+        one exports the fab set and reads it back, so what you are looking
+        at is what a fab's own reader will see. The difference is not
+        theoretical: ``svg.render_board`` applies a per-layer dash pattern
+        as a layer cue, which made continuous B.Cu copper look broken and
+        cost a session proving it was not. A view that is stylistically
+        different from the artefact cannot verify the artefact.
+
+        It is also the only view that shows pads, soldermask openings and
+        drill hits, because those exist in the fab set and nowhere in the
+        copper table — plus generated silk (:mod:`precis.pcb.silk`), the
+        SAME builder :meth:`_render_gerber` calls, so this preview matches
+        what a real export would carry.
+        """
+        assembled = self._fab_svg_model(ref_id, slug)
+        if assembled is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        model, furniture_warnings = assembled
+        pads = model["pads"]
+        if selection_manifest is not None and "rows" in selection_manifest:
+            selection_manifest = {
+                **selection_manifest,
+                "objects": pcb_selectables.build(
+                    model, **self._selection_rows(selection_manifest)
+                ),
+            }
         # `synthesized_by_refdes` off `pads` BEFORE export_fab -- the gerber
         # round-trip loses this flag entirely (gerber has no "this pad is a
         # bound, not a measurement" concept, only net/refdes/pin X2

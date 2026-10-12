@@ -83,6 +83,7 @@ shape, so hovering a pad's mask opening still tells you which pad it is.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -240,6 +241,12 @@ class Region:
     #: ._emit_region`'s docstring for why a hole must not inherit the
     #: pour's net.
     net: str | None = None
+    #: X2 pad identity (``%TO.P``) of a solid region — a polygon pad is
+    #: emitted as a ``G36``/``G37`` region inside the ``%TO.N``/``%TO.P``
+    #: pair, so it must keep refdes/pin or it reads as a pour of its net.
+    #: Never set on a hole ring, never guessed.
+    refdes: str | None = None
+    pin: str | None = None
 
 
 @dataclass
@@ -349,7 +356,13 @@ def parse_gerber(text: str) -> LayerArt:
                     in_region = False
                     if len(region_pts) >= 3:
                         art.regions.append(
-                            Region(region_pts, polarity_solid, net=region_attrs.net)
+                            Region(
+                                region_pts,
+                                polarity_solid,
+                                net=region_attrs.net,
+                                refdes=region_attrs.refdes,
+                                pin=region_attrs.pin,
+                            )
                         )
                     region_pts = []
                 elif gcode in ("G01", "G02", "G03"):
@@ -599,7 +612,9 @@ def _region_title(layer: str, region: Region) -> str:
     # docstring) get the silk-appropriate words instead of borrowing
     # copper's.
     is_silk = "Silkscreen" in layer
-    if region.solid:
+    if region.solid and region.refdes and region.pin:
+        kind = f"pad {region.pin} of {region.refdes}"
+    elif region.solid:
         kind = "silk fill" if is_silk else "pour"
     else:
         kind = "silk knockout" if is_silk else "antipad"
@@ -622,12 +637,16 @@ def _handle_attr(handle: str | None) -> str:
     return f' data-handle="{esc(handle, quote=True)}"' if handle else ""
 
 
-def _flash_handle(flash: Flash) -> str | None:
+def _object_handle(net: str | None, refdes: str | None, pin: str | None) -> str | None:
     # Same evidence rule as _flash_title: a pad handle only when the
-    # gerber named the pin; a net-only flash (a via) is the net's handle.
-    if flash.refdes and flash.pin:
-        return argue.pad_handle(flash.refdes, flash.pin)
-    return argue.net_handle(flash.net) if flash.net else None
+    # gerber named the pin; a net-only object (a via, a pour) is the net's.
+    if refdes and pin:
+        return argue.pad_handle(refdes, pin)
+    return argue.net_handle(net) if net else None
+
+
+def _flash_handle(flash: Flash) -> str | None:
+    return _object_handle(flash.net, flash.refdes, flash.pin)
 
 
 def _net_handle(net: str | None) -> str | None:
@@ -826,7 +845,7 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
                 rings.append(regions[j].ring)
                 j += 1
             title = f"<title>{_region_title(layer, region)}</title>"
-            handle = _handle_attr(_net_handle(region.net))
+            handle = _handle_attr(_object_handle(region.net, region.refdes, region.pin))
             if len(rings) == 1:
                 out.append(
                     f'<path d="{_path_d(region.ring, close=True)}" '
@@ -908,6 +927,51 @@ def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
             f'height="{y1 - y0:.4f}" fill="#fff" fill-opacity="0.01"'
             f"{_handle_attr(refdes)}><title>{title}</title></rect>"
         )
+    out.append("</g>")
+    return out
+
+
+def _hit_els(objects: list[Any]) -> list[str]:
+    """The invisible click-target overlay for a selection catalogue — see
+    :mod:`precis.pcb.selectables`. Objects arrive already ordered bottom to
+    top by kind, so document order IS paint order (the client also reads
+    ``data-pcb-kind`` to pick the top kind under the pointer). Nothing here
+    carries a ``data-handle``: ``pcb-argue.js`` walks past the overlay to
+    the layer art beneath."""
+    out = ['<g class="pcb-select">']
+    for obj in objects:
+        ident = obj.identity
+        common = (
+            f' data-pcb-object="{esc(str(ident["key"]), quote=True)}"'
+            f' data-pcb-kind="{esc(str(ident["kind"]), quote=True)}"'
+        )
+        for hit in obj.hits:
+            attrs = f'{common} data-pcb-layer="{esc(str(hit["layer"]), quote=True)}"'
+            shape = hit["shape"]
+            if shape == "circle":
+                out.append(
+                    f'<circle cx="{hit["cx"]:.4f}" cy="{hit["cy"]:.4f}" '
+                    f'r="{hit["r"]:.4f}" fill="#fff" fill-opacity="0.01"{attrs}/>'
+                )
+            elif shape == "rect":
+                out.append(
+                    f'<rect x="{hit["x"]:.4f}" y="{hit["y"]:.4f}" '
+                    f'width="{hit["w"]:.4f}" height="{hit["h"]:.4f}" '
+                    f'fill="#fff" fill-opacity="0.01"{attrs}/>'
+                )
+            elif shape == "poly":
+                pts = [(p[0], p[1]) for p in hit["points"]]
+                out.append(
+                    f'<path d="{_path_d(pts, close=True)}" '
+                    f'fill="#fff" fill-opacity="0.01"{attrs}/>'
+                )
+            else:  # stroke
+                pts = [(p[0], p[1]) for p in hit["points"]]
+                out.append(
+                    f'<path d="{_path_d(pts)}" fill="none" stroke="#fff" '
+                    f'stroke-opacity="0.01" stroke-width="{max(hit["width"], 0.3):.4f}" '
+                    f'stroke-linecap="round" stroke-linejoin="round"{attrs}/>'
+                )
     out.append("</g>")
     return out
 
@@ -1031,6 +1095,20 @@ def render_fab_svg(
             )
         body.append("</g>")
 
+    selection_meta = selection_css = ""
+    if selection_manifest is not None and selection_manifest.get("objects") is not None:
+        objects = selection_manifest["objects"]
+        body.extend(_hit_els(objects))
+        selection_css = (
+            "  .pcb-select .pcb-selected { fill: #facc15; fill-opacity: 0.35; "
+            "stroke: #facc15; stroke-opacity: 1; stroke-width: 0.15; }\n"
+        )
+        selection_meta = (
+            '<metadata id="pcb-objects">'
+            + esc(json.dumps([o.identity for o in objects], sort_keys=True))
+            + "</metadata>\n"
+        )
+
     rows: list[str] = []
     for i, key in enumerate(keys):
         colour, visible = _LAYER_STYLE.get(key, _DEFAULT_STYLE)
@@ -1081,8 +1159,8 @@ def render_fab_svg(
   .legend .hit {{ fill: transparent; cursor: pointer; }}
   .legend-row.off text {{ fill: #6a6a6a; }}
   .legend-row.off .swatch {{ fill-opacity: 0.25; }}
-</style>
-<rect x="0" y="0" width="{doc_w:.1f}" height="{doc_h:.1f}" fill="{_BOARD_BG}"/>
+{selection_css}</style>
+{selection_meta}<rect x="0" y="0" width="{doc_w:.1f}" height="{doc_h:.1f}" fill="{_BOARD_BG}"/>
 <g transform="translate({_LEGEND_GUTTER_PX + -x0 * px:.4f},{y1 * px:.4f}) scale({px:.6f},-{px:.6f})">
 {chr(10).join(body)}
 </g>

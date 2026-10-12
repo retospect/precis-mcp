@@ -174,6 +174,8 @@ def capture_view(store: Any, ref: Any, *, conn: Connection) -> PcbView:
             )
         instances.append(
             {
+                "kind": "instance",
+                "key": f"instance:{row['instance_id']}",
                 "instance_id": row["instance_id"],
                 "refdes": row["refdes"],
                 "footprint": footprint,
@@ -182,7 +184,44 @@ def capture_view(store: Any, ref: Any, *, conn: Connection) -> PcbView:
     return PcbView(current, raw, token, rev, instances)
 
 
-def resolve_selection(view: PcbView, context: Any) -> dict[str, Any]:
+def selection_manifest(view: PcbView) -> dict[str, Any]:
+    """What the SVG route and :func:`selection_objects` hand the handler: the
+    shown token, the instance identities and the live raw rows the
+    :mod:`precis.pcb.selectables` builder joins pads to pins and nets with."""
+    tables = view.raw["tables"]
+
+    def live(name: str) -> list[dict[str, Any]]:
+        return [r for r in tables[name] if not r.get("retired_at")]
+
+    return {
+        "board_ref_id": view.ref.id,
+        "snapshot": view.token,
+        "instances": view.instances,
+        "rows": {
+            "instances": live("pcb_instances"),
+            "components": live("pcb_components"),
+            "pins": live("pcb_pins"),
+            "nets": live("pcb_nets"),
+        },
+    }
+
+
+def selection_objects(store: Any, view: PcbView) -> list[dict[str, Any]]:
+    """Identity dicts of every selectable object of the shown board. Runs the
+    handler on the caller's connection/transaction (same pattern as
+    ``board.svg``); raises ``ValueError`` when the board is not renderable."""
+    try:
+        objects = PcbHandler(hub=Hub(store=store)).selection_objects(
+            view.ref.id, str(view.ref.slug), selection_manifest(view)
+        )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("PCB board is not renderable") from exc
+    return [o.identity for o in objects]
+
+
+def resolve_selection(view: PcbView, context: Any, store: Any = None) -> dict[str, Any]:
     if not isinstance(context, dict) or set(context) != {"board", "shown", "selected"}:
         raise ValueError("invalid PCB selection context")
     if (
@@ -192,16 +231,31 @@ def resolve_selection(view: PcbView, context: Any) -> dict[str, Any]:
         raise ValueError("shown PCB snapshot changed; reload and select again")
     selected = context["selected"]
     if not isinstance(selected, list) or len(selected) != 1:
-        raise ValueError("select exactly one component instance")
+        raise ValueError("select exactly one board object")
     item = selected[0]
-    if not isinstance(item, dict) or type(item.get("instance_id")) is not int:
-        raise ValueError("invalid instance identity")
-    actual = next(
-        (r for r in view.instances if r["instance_id"] == item["instance_id"]), None
-    )
-    if actual is None or actual != item:
-        raise ValueError("selected instance/footprint is absent, ambiguous or forged")
-    return {**view.context, "selected": [copy.deepcopy(actual)]}
+    if not isinstance(item, dict):
+        raise ValueError("invalid selection identity")
+    kind = item.get("kind", "instance")
+    if kind == "instance":
+        if type(item.get("instance_id")) is not int:
+            raise ValueError("invalid instance identity")
+        # A gr473212 context stored before kind/key existed still resolves.
+        item = {"kind": "instance", "key": f"instance:{item['instance_id']}", **item}
+        actual = next(
+            (r for r in view.instances if r["instance_id"] == item["instance_id"]),
+            None,
+        )
+        if actual is None or actual != item:
+            raise ValueError(
+                "selected instance/footprint is absent, ambiguous or forged"
+            )
+        return {**view.context, "selected": [copy.deepcopy(actual)]}
+    if store is None or not isinstance(item.get("key"), str):
+        raise ValueError("selected object is absent, ambiguous or forged")
+    matches = [o for o in selection_objects(store, view) if o["key"] == item["key"]]
+    if len(matches) != 1 or matches[0] != item:
+        raise ValueError("selected object is absent, ambiguous or forged")
+    return {**view.context, "selected": [copy.deepcopy(matches[0])]}
 
 
 def view_context(store: Any, slug: str, context: Any) -> dict[str, Any]:
@@ -209,12 +263,17 @@ def view_context(store: Any, slug: str, context: Any) -> dict[str, Any]:
         ref = store.get_ref(kind="pcb", id=slug, conn=conn)
         if ref is None:
             raise NotFound("PCB design not found")
-        return resolve_selection(capture_view(store, ref, conn=conn), context)
+        return resolve_selection(capture_view(store, ref, conn=conn), context, store)
 
 
 def vet_move(ops: list[dict[str, Any]], context: Any = None) -> str | None:
     if not ops:
         return None
+    if (
+        context is not None
+        and context["selected"][0].get("kind", "instance") != "instance"
+    ):
+        return "moves need a selected component instance; select the component"
     if len(ops) != 1:
         return "PCB supports exactly one selected instance move"
     op = ops[0]
@@ -302,7 +361,7 @@ def dry_run(
     try:
         with hub.live_store.pcb_guarded_tx(ref.id, str(ref.slug)) as conn:
             view = capture_view(hub.live_store, ref, conn=conn)
-            canonical = resolve_selection(view, context)
+            canonical = resolve_selection(view, context, hub.live_store)
             with conn.transaction(force_rollback=True):
                 _move(hub, view, canonical, ops, conn)
     except (ValueError, BadInput, NotFound, Error) as exc:
@@ -323,22 +382,23 @@ def digest(store: Any, slug: str, *, context: dict[str, Any] | None = None) -> s
         if ref is None:
             raise NotFound("PCB design not found")
         view = capture_view(store, ref, conn=conn)
+        selected = None
         if context is not None:
-            resolve_selection(view, context)
+            selected = resolve_selection(view, context, store)["selected"][0]
         poses = {
             r["instance_id"]: {k: r[k] for k in ("x", "y", "rot", "fixed", "layer")}
             for r in view.raw["tables"]["pcb_instances"]
         }
-        return json.dumps(
-            {
-                "board": view.context["board"],
-                "shown": view.context["shown"],
-                "instances": [
-                    {**i, "pose": poses[i["instance_id"]]} for i in view.instances
-                ],
-            },
-            sort_keys=True,
-        )
+        body: dict[str, Any] = {
+            "board": view.context["board"],
+            "shown": view.context["shown"],
+            "instances": [
+                {**i, "pose": poses[i["instance_id"]]} for i in view.instances
+            ],
+        }
+        if selected is not None:
+            body["selected"] = selected
+        return json.dumps(body, sort_keys=True)
 
 
 def apply_proposal(hub: Hub, slug: str, turn: str | None, shown: str | None) -> Any:
@@ -386,7 +446,7 @@ def apply_proposal(hub: Hub, slug: str, turn: str | None, shown: str | None) -> 
             ):
                 raise ValueError("proposal already applied")
             view = capture_view(store, ref, conn=conn)
-            context = resolve_selection(view, meta.get("context"))
+            context = resolve_selection(view, meta.get("context"), store)
             if shown != view.token:
                 raise ValueError("shown snapshot changed; reload")
             ops = meta.get("ops")

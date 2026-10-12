@@ -492,6 +492,9 @@ def test_pcb_selection_chat_explicit_apply_and_readonly_history(
     svg = pcb_client.get(f"/pcb/{slug}/board.svg", params={"shown": view.token})
     assert svg.status_code == 200
     assert "data-pcb-instance" in svg.text
+    assert 'data-pcb-object="pad:' in svg.text and 'id="pcb-objects"' in svg.text
+    assert 'id="pcb-object-choice"' in html.text
+    assert 'id="pcb-select-component"' in html.text
     assert pcb_client.get(f"/pcb/{slug}/board.svg?shown=stale").status_code == 409
     assert calls == []
     out = pcb_client.post(

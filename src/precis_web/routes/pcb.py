@@ -282,15 +282,7 @@ async def pcb_board_svg(
             view = pcb_design.capture_view(store, ref, conn=conn)
             if shown is not None and shown != view.token:
                 return RawResponse(status_code=409, content="shown PCB changed; reload")
-            manifest = (
-                None
-                if shown is None
-                else {
-                    "board_ref_id": ref.id,
-                    "snapshot": view.token,
-                    "instances": view.instances,
-                }
-            )
+            manifest = None if shown is None else pcb_design.selection_manifest(view)
             if manifest is None:
                 resp = _handler(store).get(
                     id=ref.slug, view="svg", args={"level": "fab"}

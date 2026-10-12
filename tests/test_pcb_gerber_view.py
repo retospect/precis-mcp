@@ -914,3 +914,53 @@ def test_handle_attribute_is_escaped() -> None:
     f = gerber_view.Flash(ap, 1.0, 1.0, refdes='U"1', pin="1")
     el = gerber_view._flash_svg(f, "#fff", "t")
     assert 'data-handle="U&quot;1.1"' in el
+
+
+def _polygon_pad_model() -> dict[str, Any]:
+    return _model(
+        copper=[
+            {
+                "ctype": "pour",
+                "layer": "F.Cu",
+                "net": "GND",
+                "polygon": [[20, 2], [28, 2], [28, 10], [20, 10]],
+                "holes": [[[22, 4], [24, 4], [24, 6], [22, 6]]],
+            }
+        ],
+        pads=[
+            {
+                "layer": "F.Cu",
+                "net": "N",
+                "shape": "polygon",
+                "x": 5.0,
+                "y": 5.0,
+                "w": 2.0,
+                "h": 2.0,
+                "poly": [[4, 4], [6, 4], [6, 6], [4, 6]],
+                "refdes": "R1",
+                "pin": "1",
+            }
+        ],
+    )
+
+
+def test_polygon_pad_region_keeps_refdes_and_pin_but_holes_do_not() -> None:
+    art = _art(_polygon_pad_model(), "F_Cu")
+    pad = [r for r in art.regions if r.solid and r.refdes]
+    assert len(pad) == 1
+    assert (pad[0].net, pad[0].refdes, pad[0].pin) == ("N", "R1", "1")
+    holes = [r for r in art.regions if not r.solid]
+    assert len(holes) == 1
+    assert (holes[0].net, holes[0].refdes, holes[0].pin) == (None, None, None)
+    pour = [r for r in art.regions if r.solid and not r.refdes]
+    assert len(pour) == 1 and pour[0].net == "GND"
+
+
+def test_polygon_pad_renders_as_a_pad_with_the_pad_handle() -> None:
+    files = gerber.export_fab(_polygon_pad_model(), name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    assert "pad 1 of R1 · net N" in svg
+    assert 'data-handle="R1.1"' in svg
+    # the pour keeps its net handle and its "pour" wording
+    assert "pour · net GND" in svg
+    assert 'data-handle="net:GND"' in svg

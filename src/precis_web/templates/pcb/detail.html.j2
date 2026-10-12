@@ -34,13 +34,15 @@
 {% else %}
 <script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances} | tojson }}</script>
 <div id="pcb-selection-panel" class="rounded border p-3 mb-3">
-  <h2 class="text-sm font-semibold">Component instance</h2>
-  <p id="pcb-selection-status" role="status">Select a component instance.</p>
-  <label>Instance <select id="pcb-instance-choice"><option value="">Select…</option>
-    {% for item in pcb_instances %}<option value="{{ item.instance_id }}">{{ item.refdes }} · instance {{ item.instance_id }}</option>{% endfor %}
+  <h2 class="text-sm font-semibold">Selection</h2>
+  <p id="pcb-selection-status" role="status">Select a board object.</p>
+  <label>Object <select id="pcb-object-choice"><option value="">Select…</option>
+    <optgroup label="Components">{% for item in pcb_instances %}<option value="{{ item.key }}">{{ item.refdes }} · instance {{ item.instance_id }}</option>{% endfor %}</optgroup>
   </select></label>
   <pre id="pcb-selection-identity"></pre>
-  <button type="button" id="pcb-copy-footprint" disabled>Copy footprint identity</button>
+  <button type="button" id="pcb-copy-selection" disabled>Copy selection</button>
+  <button type="button" id="pcb-select-component" disabled>Select component</button>
+  <button type="button" id="pcb-select-net" disabled>Select net</button>
   <button type="button" id="pcb-deselect">Deselect</button>
 </div>
 {# object, not img: the board SVG's layer-toggle legend is scripted, and

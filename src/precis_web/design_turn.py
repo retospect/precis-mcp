@@ -472,7 +472,7 @@ def op_vocabulary(kind: DesignKind) -> str:
     added to a kind shows up here by name even before its signature is
     written."""
     if kind == "pcb":
-        return "Explicit proposal/Apply only: move{refdes,x?:mm,y?:mm,rot?:degrees,fixed?:null|xy|rot|both}. Exactly one selected instance, no other keys or changes."
+        return "Explicit proposal/Apply only: move{refdes,x?:mm,y?:mm,rot?:degrees,fixed?:null|xy|rot|both}. Exactly one selected instance, no other keys or changes. Selections of a pad, via, silkscreen, outline segment, fiducial or net are discussion-only: ops must be empty."
     if kind == "se":
         pure = sorted(se_known_ops())
         lines = ["Auto-applied on a valid reply (pure block-tree ops):"]
@@ -807,7 +807,9 @@ def _write_transcript(
             if kind == "pcb":
                 from precis_web.pcb_design import capture_view, resolve_selection
 
-                resolve_selection(capture_view(store, design_ref, conn=c), context)
+                resolve_selection(
+                    capture_view(store, design_ref, conn=c), context, store
+                )
 
         appended = ConversationHandler(hub=hub).append_turn(
             slug=cslug,
