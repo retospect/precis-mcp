@@ -313,6 +313,23 @@ bond an earlier glyph removed is `cut.overlap` (ERROR) naming both glyphs. A
 defect set that neither has disjoint disks nor is a glyph is finding
 `cut.overlap` (ERROR) naming the two defects.
 
+Several plain defects on one flat part (gr459928). A cut is not local: the
+wedge sector and its two rays run from the core to the patch edge, so an
+earlier excision deletes a later core inside its sector and an earlier
+insertion copies it. The build tries surgery orders, the authored order
+first (all orders up to four defects), and keeps the first whose result has
+exactly the authored rings with Euler, rim count and three-coordination
+unchanged. When no order composes, finding `cut.crosses` (ERROR) names the
+pairs whose cut regions meet and, where one exists, a re-cut of the same
+ring (same apex hexagon, another of its six vertex rays) that composes; the
+authored order is then built as before. A re-cut makes the same ring at the
+same place and differs only in the outer rim. A lone defect whose surgery
+does not produce its ring is `cut.crosses` too. Wedge defects (plain and
+`57`) on a tube wall are `build.defect` (ERROR) until axial Volterra
+surgery exists; on `fullerene` and `cap(5,5)` any authored defect is
+`build.defect`. Topology composes; the disclination seed does not yet
+unstack two heptagons' wedge copies (check reports `geom.nearest_not_bonded`).
+
 Symmetric shorthand: `{7×6 @fit}` = six heptagons, sixfold, positions solved
 (§12). Orbit sums: `{5@(u,v,A)·k3 + 7@(u',v',B)·k3}` = each site replicated
 under the `C_k` rotation of the host. A collar of order `k` requires
@@ -673,6 +690,8 @@ no ERROR. No `__bool__`.
 | `net.components` `[impl 0.2]` | INFO at 1, WARN above | physical pieces of the net — union-find over **all** bonds including `bond`-verb attachments, so a `[2+2]` bud is one piece though it is two sheets (`data.n`, `data.sizes`) |
 | `internal.euler` | ERROR | `V−E+F ≠ χ` per sheet, or combinatorial `B` inconsistent (library bug) |
 | `valence.over` / `valence.under` | ERROR / WARN | atom with >3 (or 4 after `bond`) / <3 bonds not on a rim |
+| `cut.crosses` | ERROR | authored ring defects whose cuts (sector + rays to the patch edge) meet in every surgery order, or a lone defect whose surgery does not produce its ring; names the pairs and a composing re-cut |
+| `build.defect` | ERROR | wedge defects on a tube wall, or any authored defect on a closed/curved part (`fullerene`, `cap(5,5)`) — refused, not built |
 | `cut.overlap` | ERROR | two surgeries' disks intersect and are not a glyph; a bond-rotation glyph whose bond an earlier glyph consumed (names both); also an opening/collar disk that spans the tube circumference or clips an existing rim |
 | `ring.size.unusual` | WARN | ring outside 4..8 |
 | `port.mismatch` | ERROR | seam: dangling count or edge-word incompatible across its k rims |

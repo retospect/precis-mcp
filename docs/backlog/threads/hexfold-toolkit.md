@@ -522,8 +522,12 @@ removed as met — the transport move it waited on happened 09-29)
    flare out a little, more, a lot.
    - The constraint: a fuse puts the full rim-turning mismatch (6 defects)
      into one seam ring. A bend is graded only by defects inside a patch.
-     Today those work as one defect on a sheet and nothing else; the gripe
-     has the probes.
+     Several defects on one sheet now compose when their cuts can be
+     ordered apart (surgery-order search; `cut.crosses` with a re-cut hint
+     otherwise; example `sheet_two_pentagons.hx`). Tube walls and closed
+     caps refuse authored wedges (`build.defect`). Still open: the seed
+     does not unstack two heptagons' wedge copies (geometry ERRORs), and
+     tube-wall surgery.
    - Smallest unblock: Volterra surgery on tube walls, with the ray leaving
      axially through an end rim. A bend is then a tube instance carrying
      C3 orbits (0→60→90°) or single defects (34/48/60/70/80/90°), and

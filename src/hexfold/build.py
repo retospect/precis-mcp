@@ -9,12 +9,14 @@ every component (code ``internal.euler``).
 
 from __future__ import annotations
 
+import copy
 import functools
 import itertools
 import json
 import math
 import platform
 import re
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -28,11 +30,13 @@ from .defects import (
     Vid,
     _RawDefect,
     cut_disk,
+    cut_region,
     defect_apex,
     defect_ray_angle,
     glyph_bond,
     glyph_footprint,
     run_length,
+    same_core_recuts,
 )
 from .extent import snap_extents
 from .fullerene import C60Data
@@ -466,6 +470,125 @@ def _defect_of(sd: object) -> Defect | None:
     return Defect(ring, sd.site, sd.dir)
 
 
+def _surgery_signature(patch: Patch) -> tuple[Any, ...]:
+    """What a correct surgery keeps or changes predictably: the non-hexagon
+    ring census, Euler characteristic and components, the rim count, and
+    whether any atom is over three-coordinated."""
+    rings, rims = patch.rings_and_rims()
+    census = Counter(len(r) for r in rings if len(r) != 6)
+    over = any(k > 3 for k in patch.degrees().values())
+    return (census, patch.euler_components(), len(rims), over)
+
+
+def _surgery(patch: Patch, authored: list[Defect], order: tuple[int, ...]) -> None:
+    for i in order:
+        d = authored[i]
+        if d.ring < 6:
+            patch.excise(d)
+        elif d.ring > 6:
+            # vertex ids carry the authored index, so they do not depend
+            # on the order the surgeries ran in
+            patch.insert(d, i)
+
+
+#: Orders tried before giving up on composing a defect set (all orders up
+#: to four defects; the authored order is always first).
+_MAX_ORDERS = 24
+
+
+def _apply_authored(
+    patch: Patch,
+    authored: list[Defect],
+    inst: Instance,
+    lat: Lattice,
+    findings: list[Finding],
+) -> None:
+    """Run the authored ring defects' surgeries so they compose (gr459928).
+
+    Each cut is a sector from its core to the patch edge, so whether two
+    defects compose depends on the order: an earlier excision deletes a
+    later core in its sector, an earlier insertion copies it. Orders are
+    tried authored-first; the first whose result has exactly the authored
+    rings (and keeps Euler, rim count and three-coordination) wins. When
+    none does, ``cut.crosses`` names the pairs whose cut regions meet and
+    the re-cuts (same ring, other ray) that do compose; the authored order
+    is then built as before so a non-strict build still returns a net.
+    """
+    if not authored:
+        return
+    if any(d.ring < 3 for d in authored):
+        # a ring under 3 collapses its core (a centred 2@ wedge leaves a
+        # digon the authored hole removes): no face or Euler invariant to
+        # verify, so build it as authored
+        _surgery(patch, authored, tuple(range(len(authored))))
+        return
+    census0, euler0, rims0, _ = _surgery_signature(patch)
+    want = census0 + Counter(d.ring for d in authored if d.ring != 6)
+
+    def composes(trial: Patch, ds: list[Defect], order: tuple[int, ...]) -> bool:
+        _surgery(trial, ds, order)
+        census, euler, rims, over = _surgery_signature(trial)
+        return census == want and euler == euler0 and rims == rims0 and not over
+
+    orders = list(
+        itertools.islice(itertools.permutations(range(len(authored))), _MAX_ORDERS)
+    )
+    for order in orders:
+        trial = copy.deepcopy(patch)
+        if composes(trial, authored, order):
+            patch.__dict__.update(trial.__dict__)
+            return
+
+    sites = [v for v in patch.flatpos if isinstance(v, Site)]
+    regions = [cut_region(d, lat, sites) for d in authored]
+    pairs = [
+        (i, j)
+        for i in range(len(authored))
+        for j in range(i + 1, len(authored))
+        if regions[i] & regions[j]
+    ]
+    hints: list[str] = []
+    for i in sorted({k for pair in pairs for k in pair} or range(len(authored))):
+        for alt in same_core_recuts(authored[i], lat):
+            ds = [*authored[:i], alt, *authored[i + 1 :]]
+            if any(composes(copy.deepcopy(patch), ds, o) for o in orders):
+                hints.append(f"{_defect_label(authored[i])} -> {_defect_label(alt)}")
+                break
+    names = "; ".join(
+        f"{_defect_label(authored[i])} and {_defect_label(authored[j])}"
+        for i, j in pairs
+    )
+    lead = (
+        f"surgery for {_defect_label(authored[0])} does not produce its ring "
+        "(its cut runs from the core to the patch edge)"
+        if len(authored) == 1
+        else "authored defects do not compose in any order"
+        + (f": the cuts of {names} meet" if names else "")
+        + " (each cut runs from its core to the patch edge)"
+    )
+    findings.append(
+        Finding(
+            "cut.crosses",
+            Severity.ERROR,
+            lead
+            + (
+                "; same ring, cut along another ray: " + ", ".join(hints)
+                if hints
+                else "; move a defect or turn its dir so its cut runs away "
+                "from the others"
+            ),
+            where=inst.name,
+            span=inst.span,
+        )
+    )
+    _surgery(patch, authored, tuple(range(len(authored))))
+
+
+def _defect_label(d: Defect) -> str:
+    name = {5: "pentagon", 7: "heptagon", 4: "square", 8: "octagon"}.get(d.ring)
+    return f"{name or d.ring}@{d.site}:{d.dir}"
+
+
 def _apply_defects(
     patch: Patch, inst: Instance, lat: Lattice, findings: list[Finding]
 ) -> None:
@@ -493,14 +616,29 @@ def _apply_defects(
                         span=inst.span,
                     )
                 )
+    wedge_glyphs = [g for g in glyphs if GLYPHS[g[0]] == "wedge"]
+    if patch.tube_nm is not None and (
+        any(d.ring != 6 for d in authored) or wedge_glyphs
+    ):
+        # wedge surgery runs on flat angles about the core; on a rolled
+        # tube the sector wraps the circumference and corrupts the net
+        # (gr459928) -- refuse until axial Volterra surgery exists
+        findings.append(
+            Finding(
+                "build.defect",
+                Severity.ERROR,
+                "wedge defects (pentagon/heptagon/57) on a tube wall are not "
+                "built yet: the cut would wrap the circumference -- bend at a "
+                "fuse seam or collar instead; bond rotations (sw) work",
+                where=inst.name,
+                span=inst.span,
+            )
+        )
+        authored = []
+        glyphs = [g for g in glyphs if GLYPHS[g[0]] != "wedge"]
     patch.authored_sint += sum(6 - d.ring for d in authored)
-    idx = 0
-    for d in authored:
-        if d.ring < 6:
-            patch.excise(d)
-        elif d.ring > 6:
-            patch.insert(d, idx)
-        idx += 1
+    _apply_authored(patch, authored, inst, lat, findings)
+    idx = len(authored)
     # glyphs apply in authored order on the current graph; each one claims
     # the atoms it removes or turns, so a later rotation whose bond is gone
     # can name the glyph that consumed it
@@ -1936,6 +2074,19 @@ def build(
             # as to a sheet (a centred wedge cut makes it a cone frustum)
             if inst.kind not in ("fullerene", "cap") or patch.flat_lid:
                 _apply_defects(patch, inst, lat, findings)
+            elif inst.defects:
+                # a closed or curved part has no flat chart to cut; these
+                # were silently dropped before (gr459928)
+                findings.append(
+                    Finding(
+                        "build.defect",
+                        Severity.ERROR,
+                        f"{inst.kind}: authored defects apply to flat parts "
+                        "only (sheet, cone, cap(6k,0) lid) -- not built",
+                        where=inst.name,
+                        span=inst.span,
+                    )
+                )
             hole_requests.setdefault(key, []).extend(
                 (h.ring, h.site, h.dir) for h in inst.holes
             )

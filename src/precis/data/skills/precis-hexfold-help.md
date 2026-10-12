@@ -118,7 +118,10 @@ Any other menu name is refused (`menu.unknown` ERROR).
 `euler.chi` INFO · `euler.residual` INFO/WARN (curvature budget; both
 per sheet, `data.sheet`) · `euler.closed_unreachable` ERROR ·
 `valence.over`/`under` ERROR/WARN · `cut.overlap` ERROR (opening spans
-the circumference — wider tube) · `ring.size.unusual` WARN (outside
+the circumference — wider tube) · `cut.crosses` ERROR (authored defects
+whose cuts meet in every order; the message names a re-cut of the same
+ring along another ray that composes) · `build.defect` ERROR (wedge
+defects on a tube wall or a closed cap — not built) · `ring.size.unusual` WARN (outside
 4..8; seam faces exempt) · `port.mismatch`/`port.symmetry` ERROR ·
 `fit.unsolvable` ERROR · `fit.alternatives` INFO (the ranked rest of a
 `fit` family) · `fit.propagated` INFO (a roll-up domain before/after

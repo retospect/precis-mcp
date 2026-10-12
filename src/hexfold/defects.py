@@ -616,6 +616,66 @@ def cut_disk(d: Defect, lat: Lattice) -> frozenset[Site]:
     return frozenset(out)
 
 
+def cut_region(d: Defect, lat: Lattice, sites: list[Site]) -> frozenset[Site]:
+    """The flat sites a surgery's cut reaches, among ``sites``: its whole
+    wedge sector out to the patch edge, plus a one-bond strip along each
+    boundary ray (the rays are split or glued), plus the cut disk.
+
+    :func:`cut_disk` is only the neighbourhood of the core; the sector and
+    rays run to the edge, so a defect sitting in another's cut region is
+    deleted (excision), copied (insertion) or torn, however far apart the
+    cores are (gr459928).
+    """
+    c = _apex_of(d, lat)
+    t1 = _ray_of(d, lat)
+    w = 60.0 * d.wedges
+    rays = [_unit(t1), _unit(t1 + w)]
+    out: set[Site] = set(cut_disk(d, lat))
+    for s in sites:
+        p = lat.cart(s) - c
+        if float(np.linalg.norm(p)) < 1e-9:
+            continue
+        x = (math.degrees(math.atan2(p[1], p[0])) - t1) % 360.0
+        if x <= w + 1e-6:
+            out.add(s)
+            continue
+        for u in rays:
+            along = float(p @ u)
+            perp = abs(float(p[0] * u[1] - p[1] * u[0]))
+            if along > 0.0 and perp <= lat.sigma_A + 1e-9:
+                out.add(s)
+                break
+    return frozenset(out)
+
+
+def same_core_recuts(d: Defect, lat: Lattice) -> list[Defect]:
+    """The other ``(site, dir)`` spellings of ``d``'s ring: same apex
+    hexagon, cut along a different one of its six vertex rays. They make
+    the same ring at the same place; only the cut (and so the outer rim of
+    a finite patch) differs."""
+    c = defect_apex(d, lat)
+    t0 = defect_ray_angle(d, lat)
+    out: list[Defect] = []
+    seen = {round(t0) % 360}
+    uv = np.linalg.solve(np.column_stack([lat.a1, lat.a2]), c)
+    u0, v0 = round(float(uv[0])), round(float(uv[1]))
+    for u in range(u0 - 2, u0 + 3):
+        for v in range(v0 - 2, v0 + 3):
+            for s in (0, 1):
+                site = Site(u, v, s)
+                if abs(float(np.linalg.norm(lat.cart(site) - c)) - lat.sigma_A) > 1e-6:
+                    continue
+                for k in range(6):
+                    alt = Defect(d.ring, site, k)
+                    if float(np.linalg.norm(defect_apex(alt, lat) - c)) > 1e-6:
+                        continue
+                    t = round(defect_ray_angle(alt, lat)) % 360
+                    if t not in seen:
+                        seen.add(t)
+                        out.append(alt)
+    return sorted(out, key=lambda a: round(defect_ray_angle(a, lat)) % 360)
+
+
 def disks_disjoint(ds: list[Defect], lat: Lattice) -> bool:
     seen: set[Site] = set()
     for d in ds:

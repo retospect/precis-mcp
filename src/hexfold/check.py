@@ -2,7 +2,8 @@
 
 Never raises for structural problems.  Phase-1 codes:
 euler.chi, euler.residual, euler.closed_unreachable, internal.euler,
-valence.over, valence.under, cut.overlap, ring.size.unusual,
+valence.over, valence.under, cut.overlap, cut.crosses, build.defect,
+ring.size.unusual,
 port.symmetry, rim.nonstandard (INFO, SPEC 10 rim standard), and the
 geometry tier (geom.*) when ``geometry=True``.
 Phase-2 codes: seam.rings, annot.sublattice, fit.unsolvable, fit.alternatives,
