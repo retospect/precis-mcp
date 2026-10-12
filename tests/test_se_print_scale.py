@@ -91,7 +91,7 @@ def test_parse_scale_accepts_exponent_form() -> None:
         ([0.9, 0.1, 0.1], None, 100.0),  # 111 -> 100
         ([1.0, 1.0, 1.0], None, 1.0),  # >= 1 mm prints 1:1
         ([40.0, 20.0, 10.0], None, 1.0),
-        ([256.0, 1.0, 1.0], None, 1.0),  # at the bed: still 1:1
+        ([250.0, 1.0, 1.0], None, 1.0),  # at the bed: still 1:1
         ([500.0, 1.0, 1.0], None, 0.2),  # beyond the bed: fit 100 mm
         ([5e-6, 5e-6, 5e-6], 5e7, 5e7),  # the floor wins over the fit
         ([5e-6, 5e-6, 5e-6], 3.5e7, 3.5e7),  # ...even if not 1-2-5

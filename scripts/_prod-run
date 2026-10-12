@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# _prod-run — one-off: run a repo script against PROD with the same DSN
+# handling as scripts/prod-precis (DSN read in-process, exported to the child
+# only, never on a command line). Usage: scripts/_prod-run scripts/<tool> [args]
+set -euo pipefail
+export PRECIS_DATABASE_URL="$(sed 's#@host.docker.internal:#@127.0.0.1:#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
+cd "$(dirname "$0")/.."
+exec "$@"

@@ -41,7 +41,7 @@ ONE_TO_ONE_FROM_MM = 1.0
 FIT_MM = 100.0
 #: Longest side (mm) beyond which a 1:1 print no longer fits the printer and
 #: a reduction is suggested.
-BED_MM = 256.0
+BED_MM = 250.0
 
 ATOM_UNAVAILABLE = (
     "atomic block {block!r} is not printable yet — printable atomic models "
