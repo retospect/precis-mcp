@@ -2,10 +2,12 @@
 # Claude Code — Anthropic's official CLI for Claude.
 #
 # Installs the `claude` binary system-wide so any user on the host
-# can run it. OAuth login is per-user (each user signs in once and
-# their credentials land under their own ~/.claude/) — this role
-# does NOT automate login (the device-flow needs an interactive
-# browser).
+# can run it. Credentials come from the vault, never a one-time
+# `claude /login` (Reto 2026-10-11, gr260050): every precis path that
+# spawns `claude` fills CLAUDE_CODE_OAUTH_TOKEN via
+# precis.utils.claude_oauth.ensure_oauth_token, and a CLI one-shot with
+# no bound store reveals it through the configured database
+# (precis.secrets.reveal_unbound). This role writes no credentials.
 #
 # Install method: npm global via Homebrew. The official Anthropic
 # install script (claude.ai/install.sh) is per-user — it lands in
@@ -15,11 +17,11 @@
 # Homebrew Apple Silicon that's /opt/homebrew/bin/claude, which
 # IS on every user's default PATH including the hermes daemon's.
 #
-# After this role runs, finish setup interactively:
+# Ad-hoc `claude` typed by an interactive ssh user (outside precis):
 #
-#   # As yourself (for ops + ad-hoc use):
-#   ssh the gateway
-#   claude            # device flow → ~/.claude/.credentials.json
+#   export CLAUDE_CODE_OAUTH_TOKEN="$(precis secret get CLAUDE_CODE_OAUTH_TOKEN)"
+#
+# Legacy, not the supported path:
 #
 #   # As the hermes daemon user (only if you intend to wire Asa
 #   # through `claude -p` as a subprocess — see roles/hermes/README.md):

@@ -254,3 +254,77 @@ def test_complete_dsn_empty_password_userinfo_completed_cleanly(pgpass: Any) -> 
         "postgresql://agent_rw:@db.example.com:6432/precis_prod"
     )
     assert out == ("postgresql://agent_rw" + ":filled@db.example.com:6432/precis_prod")
+
+
+# --- reveal_unbound: the CLI one-shot vault path (gr260050) -----------------
+
+
+class _ClosableStore(_FakeStore):
+    def __init__(self, value: str | None) -> None:
+        super().__init__(value)
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _config_dsn(monkeypatch: pytest.MonkeyPatch, dsn: str | None) -> None:
+    cfg = type("Cfg", (), {"database_url": dsn})()
+    monkeypatch.setattr("precis.config.load_config", lambda: cfg)
+
+
+def test_reveal_unbound_connects_reveals_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ClosableStore("from-vault")
+    seen: list[str] = []
+
+    def _connect(dsn: str, **kw: Any) -> Any:
+        seen.append(dsn)
+        return store
+
+    _config_dsn(monkeypatch, "postgresql://cfg/db")
+    monkeypatch.setattr("precis.store.Store.connect", _connect)
+    assert vault.reveal_unbound("MY_KEY") == "from-vault"
+    assert seen == ["postgresql://cfg/db"]
+    assert store.closed
+    # Second call within the TTL reuses the reveal: no second connection.
+    assert vault.reveal_unbound("MY_KEY") == "from-vault"
+    assert seen == ["postgresql://cfg/db"]
+
+
+def test_reveal_unbound_defers_to_a_bound_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault.bind_store(cast(Any, _FakeStore("bound")))
+
+    def _connect(dsn: str, **kw: Any) -> Any:
+        raise AssertionError("must not open a second connection")
+
+    _config_dsn(monkeypatch, "postgresql://cfg/db")
+    monkeypatch.setattr("precis.store.Store.connect", _connect)
+    assert vault.reveal_unbound("MY_KEY") is None
+
+
+def test_reveal_unbound_without_a_database_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _config_dsn(monkeypatch, None)
+    assert vault.reveal_unbound("MY_KEY") is None
+
+
+def test_reveal_unbound_connect_failure_is_none_and_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[str] = []
+
+    def _connect(dsn: str, **kw: Any) -> Any:
+        attempts.append(dsn)
+        raise OSError("db down")
+
+    _config_dsn(monkeypatch, "postgresql://cfg/db")
+    monkeypatch.setattr("precis.store.Store.connect", _connect)
+    assert vault.reveal_unbound("MY_KEY") is None
+    # A down DB costs one connect per TTL, not one per claude spawn.
+    assert vault.reveal_unbound("MY_KEY") is None
+    assert len(attempts) == 1

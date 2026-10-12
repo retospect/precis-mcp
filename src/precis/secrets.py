@@ -80,6 +80,9 @@ _CACHE_TTL_SECONDS = 60.0
 _cache: dict[str, tuple[float, str]] = {}
 _cache_lock = threading.Lock()
 
+#: Expiry of a recent :func:`reveal_unbound` miss, per name (monotonic).
+_unbound_miss: dict[str, float] = {}
+
 #: Warn-once guard so a persistently-misconfigured vault (no key, no schema)
 #: doesn't spam the log on every resolve.
 _warned: set[str] = set()
@@ -216,8 +219,10 @@ def invalidate(name: str | None = None) -> None:
     with _cache_lock:
         if name is None:
             _cache.clear()
+            _unbound_miss.clear()
         else:
             _cache.pop(name, None)
+            _unbound_miss.pop(name, None)
 
 
 def _warn_once(key: str, msg: str) -> None:
@@ -409,6 +414,71 @@ def get_secret(
         return from_file
 
     return default
+
+
+def reveal_unbound(name: str) -> str | None:
+    """Vault reveal for a process that never bound a store — a CLI one-shot.
+
+    Daemons bind a store at boot (:func:`adopt_process_store`), so
+    :func:`get_secret` reaches the vault. A one-shot such as ``precis taproot
+    repair-evidence`` run from an ssh shell binds none, and its lookups stop at
+    env/file. Credentials that must come from the vault (the ``claude -p``
+    OAuth token, Reto 2026-10-11, gr260050) use this instead: one
+    short-lived connection to the configured database, one audited reveal, closed.
+
+    Returns ``None`` when a store is already bound (the caller's
+    :func:`get_secret` already asked it), when no database is configured, or on
+    any connect/reveal failure — never raises.
+    """
+    if _STORE is not None:
+        return None
+    # A repair pass spawns claude once per item: reuse the outcome within one
+    # TTL rather than open a connection per spawn. Misses are remembered too,
+    # so a down DB costs one connect timeout per TTL, not one per spawn.
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(name)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        if _unbound_miss.get(name, 0.0) > now:
+            return None
+    val = _reveal_unbound_once(name)
+    with _cache_lock:
+        if val is not None:
+            _cache[name] = (now + _CACHE_TTL_SECONDS, val)
+        else:
+            _unbound_miss[name] = now + _CACHE_TTL_SECONDS
+    return val
+
+
+def _reveal_unbound_once(name: str) -> str | None:
+    """One connect + reveal + close for :func:`reveal_unbound`; never raises."""
+    try:
+        from precis.config import load_config
+
+        dsn = load_config().database_url
+    except Exception as exc:
+        _warn_once("unbound-config", f"secrets: no config for vault ({exc})")
+        return None
+    if not dsn:
+        return None
+    try:
+        from precis.store import Store
+
+        store = Store.connect(dsn, min_size=1, max_size=1)
+    except Exception as exc:
+        _warn_once(
+            f"unbound-connect:{type(exc).__name__}",
+            f"secrets: vault connect failed ({type(exc).__name__})",
+        )
+        return None
+    try:
+        return _reveal(store, name)
+    finally:
+        try:
+            store.close()
+        except Exception:
+            log.debug("secrets: closing the one-shot vault store raised")
 
 
 def require_secret(name: str, *, store: Store | None = None) -> str:

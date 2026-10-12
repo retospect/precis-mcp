@@ -71,11 +71,6 @@ correct it.
 - **backlog/embedder-capacity-ownership.md** (local-compute thread) — a
   wait, not this thread's work: local-compute owns the item, but this
   thread's py-spy/topology answers (Do next 1) feed its capacity picture.
-- **gr260050** — `claude -p` under an interactive ssh user on melchior
-  cannot dispatch (OAuth state); blocks CLI-driven repair passes on that
-  host. RULED (Reto 2026-10-11): credentials for `claude -p` under the
-  interactive ssh user come from the vault, never a one-time `claude /login`.
-  Adjacent to serving infra, not owned here.
 
 ## No action needed
 

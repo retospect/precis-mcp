@@ -70,7 +70,11 @@ def ensure_oauth_token(env: MutableMapping[str, str]) -> None:
     try:
         from precis import secrets as _secrets
 
-        token = _secrets.get_secret(ENV_VAR) or ""
+        # A CLI one-shot binds no store, so get_secret stops at env/file and
+        # claude falls back to the keychain: "Not logged in" for an ssh user
+        # (gr260050). The vault is the only store for this token, so ask it
+        # directly.
+        token = _secrets.get_secret(ENV_VAR) or _secrets.reveal_unbound(ENV_VAR) or ""
     except Exception:
         # Defensive only: get_secret swallows its own errors. An import-time
         # failure here must not take down the caller's subprocess spawn.

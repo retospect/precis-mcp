@@ -18,10 +18,14 @@ from typing import Any
 from precis.utils.claude_oauth import ENV_VAR, ensure_oauth_token
 
 
-def _vault(monkeypatch: Any, value: str | None) -> None:
-    """Point ``get_secret`` at ``value`` for every name."""
+def _vault(monkeypatch: Any, value: str | None, *, unbound: str | None = None) -> None:
+    """Point ``get_secret`` at ``value`` and the unbound one-shot reveal at
+    ``unbound`` for every name."""
     monkeypatch.setattr(
         "precis.secrets.get_secret", lambda name, **kw: value, raising=True
+    )
+    monkeypatch.setattr(
+        "precis.secrets.reveal_unbound", lambda name: unbound, raising=True
     )
 
 
@@ -84,3 +88,27 @@ def test_vault_raising_does_not_break_the_caller(monkeypatch):
     env: dict[str, str] = {}
     ensure_oauth_token(env)  # must not propagate
     assert ENV_VAR not in env
+
+
+def test_cli_one_shot_reads_the_vault_when_no_store_is_bound(monkeypatch):
+    """gr260050: an ssh user's CLI one-shot binds no store, so ``get_secret``
+    finds nothing and ``claude`` said "Not logged in". The token must come
+    from the vault through the one-shot reveal."""
+    _vault(monkeypatch, None, unbound=("sk-a" + "nt-oat01-ONESHOT"))
+    env: dict[str, str] = {}
+    ensure_oauth_token(env)
+    assert env[ENV_VAR] == ("sk-a" + "nt-oat01-ONESHOT")
+
+
+def test_bound_store_answer_skips_the_one_shot(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "precis.secrets.get_secret", lambda name, **kw: "sk-bound", raising=True
+    )
+    monkeypatch.setattr(
+        "precis.secrets.reveal_unbound", lambda name: calls.append(name), raising=True
+    )
+    env: dict[str, str] = {}
+    ensure_oauth_token(env)
+    assert env[ENV_VAR] == "sk-bound"
+    assert calls == []
