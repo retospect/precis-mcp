@@ -1,0 +1,217 @@
+# Eval cases for precis-search-help (schema: precis.skill_eval.cases).
+skill: precis-search-help
+cases:
+  - id: exact-string-lexical
+    prompt: |
+      Find the literal string '1.523 eV' in the paper corpus — I need the
+      exact number, so the fuzzy semantic leg will only blur it.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?is).*1\.523.*', mode: lexical}}
+    forbid:
+      calls:
+        - {verb: search, args: {mode: semantic}}
+        - {verb: search, kind: web}
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: '1.523 eV', mode: lexical}}
+      record: null
+      answer: >
+        search(kind='paper', q='1.523 eV', mode='lexical') — an exact
+        identifier or numeric is full-text match only; embeddings blur
+        it and hybrid would only dilute the hit.
+
+  - id: filter-by-tag
+    prompt: |
+      List papers about photocatalysis that are tagged topic:noxrr.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?i).*photocatalysis.*', tags: ['re:topic:noxrr']}}
+    forbid:
+      calls:
+        - {verb: search, args: {q: 're:(?is).*topic:.*'}}   # the tag isn't query text
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: 'photocatalysis', tags: ['topic:noxrr']}}
+      record: null
+      answer: >
+        search(kind='paper', q='photocatalysis',
+        tags=['topic:noxrr']) — tags= is a real kwarg with AND semantics;
+        the tag axis never goes inside q=.
+
+  - id: scope-one-ref
+    prompt: |
+      Only inside paper pa7 — where does 'Z-scheme' come up? Search just
+      that paper's contents, not the corpus.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?i).*z.?scheme.*', scope: pa7}}
+    forbid:
+      calls:
+        - {verb: search, args: {under: 're:.+'}}            # under= walks part-of trees, not one paper
+        - {verb: search, args: {args: {under: 're:.+'}}}    # same knob inside args=
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: 'Z-scheme', scope: pa7}}
+      record: null
+      answer: >
+        search(kind='paper', q='Z-scheme', scope='pa7') restricts to one
+        ref's blocks and flips the result to chunk rows inside it.
+
+  - id: broad-high-recall
+    prompt: |
+      Widest net in one synchronous call: does single-atom Cu improve
+      nitrate-to-ammonia selectivity? Fuse several rephrasings of the
+      question plus a hypothetical ideal-source passage — don't queue a
+      background job and don't walk me through fifty raw hits.
+    expect:
+      calls:
+        - verb: search
+          kind: paper
+          args:
+            q: 're:(?is).*cu.*'
+            args:
+              queries: ['re:(?s).+']
+              answers: ['re:(?s).+']
+    forbid:
+      calls:
+        - {verb: search, kind: web}
+    fake:
+      calls:
+        - verb: search
+          kind: paper
+          args:
+            q: does single-atom Cu help nitrate-to-ammonia selectivity?
+            page_size: 30
+            args:
+              queries:
+                - single-atom copper catalyst NO3RR selectivity
+                - isolated Cu sites suppress hydrogen evolution nitrate
+              answers:
+                - >-
+                  Isolating Cu as single atoms on an N-doped carbon support
+                  raises NH3 faradaic efficiency by weakening *NO binding.
+      record: null
+      answer: >
+        search(kind='paper', q='does single-atom Cu help
+        nitrate-to-ammonia selectivity?', page_size=30,
+        args={'queries': […rephrasings…], 'answers': […ideal passage…]})
+        fuses every phrasing into one ranked list — the async campaign form
+        is args={'good': True} for when the fused list is still too much.
+
+  - id: page-through-hits
+    prompt: |
+      My earlier search(kind='paper', q='photocatalysis') returned the
+      first page and there are many more hits. Give me page 3 at 20 rows
+      per page.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?i)photocatalysis', page: 're:3', page_size: 're:20'}}
+    forbid:
+      calls:
+        - {verb: search, args: {cursor: 're:.+'}}   # cursor is transport paging, not result pages
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: 'photocatalysis', page: 3, page_size: 20}}
+      record: null
+      answer: >
+        Repeat the search with page=/page_size=:
+        search(kind='paper', q='photocatalysis', page=3, page_size=20) —
+        result paging is a search kwarg, independent of the more(cursor)
+        transport pager.
+
+  - id: missing-claim-retry
+    prompt: |
+      I know the corpus holds a chunk containing 'Li7La3Zr2O12' but
+      search(kind='paper', q='Li7La3Zr2O12') came back empty. Retry so the
+      exact identifier hits.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?i)li7la3zr2o12', mode: lexical}}
+    forbid:
+      calls:
+        - {verb: search, kind: web}
+        - {verb: search, args: {mode: semantic}}
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: 'Li7La3Zr2O12', mode: lexical}}
+      record: null
+      answer: >
+        Pin the ranking: search(kind='paper', q='Li7La3Zr2O12',
+        mode='lexical') — an exact string wants the deterministic
+        full-text leg, not the embedding pass that blurs identifiers.
+
+  - id: ascii-canon
+    prompt: |
+      Search the paper corpus for '40 kOhm gate resistance'. I only have
+      an ASCII keyboard — run it as ASCII if that works.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?is).*kohm.*'}}
+    forbid:
+      calls:
+        - {verb: put}          # nothing to mint or transliterate first
+        - {verb: edit}         # can't rewrite the corpus's spelling
+        - {verb: search, kind: web}
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: '40 kOhm gate resistance'}}
+      record: null
+      answer: >
+        Plain ASCII is fine: search(kind='paper', q='40 kOhm gate
+        resistance') — queries are auto-canonicalized, so '40 kOhm' finds
+        a claim written '40 kΩ'.
+
+  - id: exclude-draft-cited
+    prompt: |
+      Search papers for 'wang tile guided self assembly' but drop every
+      source my review draft dr173020 already cites — the skip list is
+      the draft's cite closure, not refs I'd name by hand.
+    expect:
+      calls:
+        - verb: search
+          kind: paper
+          args:
+            q: 're:(?is).*wang.*'
+            args: {exclude: ['re:dr173020']}
+    forbid:
+      calls:
+        - {verb: get, kind: draft}       # the closure resolves server-side; don't walk cites by hand
+    fake:
+      calls:
+        - verb: search
+          kind: paper
+          args: {q: 'wang tile guided self assembly', args: {exclude: ['dr173020']}}
+      record: null
+      answer: >
+        search(kind='paper', q='wang tile guided self assembly',
+        args={'exclude': ['dr173020']}) — a draft container in exclude=
+        resolves server-side to its whole cite closure.
+
+  - id: uncited-draft-discovery
+    prompt: |
+      Which sources on 'self-assembly kinetics' has my review dr173020
+      missed? Run the query-driven discovery search — I'm phrasing the
+      question myself, so don't program recall off the draft's own text.
+    expect:
+      calls:
+        - verb: search
+          kind: paper
+          args:
+            q: 're:(?is).*assembly.*'
+            args: {uncited: 're:(dr)?173020'}
+    forbid:
+      calls:
+        - {verb: get, kind: draft, args: {view: backfill}}   # the section-driven twin, not this question
+    fake:
+      calls:
+        - verb: search
+          kind: paper
+          args: {q: 'self-assembly kinetics', args: {uncited: 'dr173020'}}
+      record: null
+      answer: >
+        search(kind='paper', q='self-assembly kinetics',
+        args={'uncited': 'dr173020'}) drops everything the draft already
+        cites and names how many refs it excluded;
+        get(view='backfill') is the section-driven twin for sweeping a
+        section without a phrased question.

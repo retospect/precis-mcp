@@ -1,0 +1,160 @@
+# Eval cases for precis-memory-help (schema: precis.skill_eval.cases).
+skill: precis-memory-help
+cases:
+  - id: jot-quick-note
+    prompt: |
+      Before it slips my mind — Wang2020's Figure 4 has the cleanest
+      Z-scheme band diagram I've seen. Jot that down in precis.
+    expect:
+      calls:
+        - {verb: put, kind: memory, args: {text: 're:(?is).*wang2020.*'}}
+      record: {kind: memory}
+    forbid:
+      calls:
+        - {verb: put, kind: todo}                    # a note is not a queue item
+    fake:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: Wang2020 Figure 4 has the cleanest Z-scheme band diagram.
+            title: Wang2020's clean Z-scheme diagram
+            tags: [topic:z-scheme]
+      record: {kind: memory}
+      answer: >
+        put(kind='memory', text='Wang2020 Figure 4 has the cleanest
+        Z-scheme band diagram.', tags=['topic:z-scheme']) — text= is the
+        only required arg; the server assigns the me<id> handle.
+
+  - id: record-a-decision
+    prompt: |
+      Log this decision for project precis-v2 so I can find it later: we
+      dropped mode-driven tag/link arguments in favour of typed kwargs,
+      because a mistyped mode now fails loudly instead of silently routing.
+    expect:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: 're:(?is).*kwargs.*'
+            tags: ['re:confidence-.*', 're:project:precis-v2']
+      record: {kind: memory}
+    fake:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: >-
+              Dropped mode-driven tag/link in favour of typed kwargs — a
+              mistyped mode fails loudly now.
+            tags: [confidence-strong, project:precis-v2, topic:api-design]
+      record: {kind: memory}
+      answer: >
+        Decisions are memories: put(kind='memory', text='…',
+        tags=['confidence-strong','project:precis-v2']) — confidence-* and
+        project: are the conventional axes for a settled choice.
+
+  - id: flag-open-question
+    prompt: |
+      Park an unresolved question in precis: does CACHE: pinning survive a
+      re-ingest of the pinned memory's source? It's genuinely uncertain —
+      flag it as still tentative so a later pass settles it.
+    expect:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: 're:(?is).*ingest.*'
+            tags: [confidence-tentative, wip]
+      record: {kind: memory}
+    fake:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: 'Does CACHE: pinning survive a re-ingest of the pinned source?'
+            tags: [confidence-tentative, wip, topic:caching]
+      record: {kind: memory}
+      answer: >
+        put(kind='memory', text='Does CACHE: pinning survive a
+        re-ingest?', tags=['confidence-tentative','wip']) — tentative + wip
+        is the convention for unresolved questions.
+
+  - id: recall-before-task
+    prompt: |
+      I'm about to start building the skill-eval corpus for the repo-dev
+      graph. Recall what I already know about it before I write anything —
+      index view first, then open the best hit with its neighbours.
+    expect:
+      calls:
+        - {verb: search, kind: memory, args: {q: 're:(?is).*eval.*', view: index}}
+        - {verb: get, kind: memory, args: {view: 're:fisheye.*'}}
+    fake:
+      calls:
+        - verb: search
+          kind: memory
+          args: {q: 'skill-eval corpus', tags: ['SPACE:repo-dev'], view: index}
+        - {verb: get, kind: memory, args: {id: me4641, view: 'fisheye+1hop+recall'}}
+      record: null
+      answer: >
+        search(kind='memory', tags=['SPACE:repo-dev'], q='skill-eval
+        corpus', view='index') lists the hits one per line, then
+        get(kind='memory', id='me4641', view='fisheye+1hop+recall') opens
+        the best one with its linked neighbours.
+
+  - id: attach-memory-to-chunk
+    prompt: |
+      Memory me73 ('three-electron pathway — see §2') exists because of
+      paper chunk pc38. Attach it to that chunk so the connection is a
+      graph edge, not just text.
+    expect:
+      calls:
+        - {verb: link, kind: memory, args: {id: 're:(me)?73', target: pc38}}
+    forbid:
+      calls:
+        - {verb: put, kind: memory}                  # re-minting duplicates the memory
+        - {verb: tag, kind: memory}                  # a tag is not an edge
+    fake:
+      calls:
+        - {verb: link, kind: memory, args: {id: 73, target: pc38, rel: cites}}
+      record: null
+      answer: >
+        link(kind='memory', id=73, target='pc38', rel='cites') — the chunk
+        handle leads the target; 'related-to' is the neutral fallback rel.
+
+  - id: distil-research-cache
+    prompt: |
+      My perplexity-research cache 'mechanism-of-noxrr' returned a long,
+      expensive answer — three-electron pathway via *NO → *N₂O₂ → N₂.
+      Distil the gist into a durable memory tagged topic:noxrr that
+      survives the cache TTL, keeping the provenance pointer back to it.
+    expect:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: 're:(?is).+'
+            tags: ['re:topic:noxrr']
+            link: 're:perplexity-research.*'
+      record: {kind: memory}
+    forbid:
+      calls:
+        - {verb: get, kind: perplexity-research}     # re-running the paid cache
+        - {verb: put, kind: perplexity-research}     # cache rows aren't minted
+    fake:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: >-
+              Distilled mechanism: three-electron pathway via *NO → *N₂O₂ →
+              N₂.
+            tags: [topic:noxrr, confidence-moderate]
+            link: 'perplexity-research:mechanism-of-noxrr'
+            rel: derived-from
+      record: {kind: memory}
+      answer: >
+        put(kind='memory', text='Distilled mechanism: …',
+        tags=['topic:noxrr','confidence-moderate'],
+        link='perplexity-research:mechanism-of-noxrr', rel='derived-from')
+        — the memory outlives the cache's TTL and carries your own framing.

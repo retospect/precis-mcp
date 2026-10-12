@@ -1,0 +1,112 @@
+# Eval cases for precis-todo-help (schema: precis.skill_eval.cases).
+skill: precis-todo-help
+cases:
+  - id: file-a-todo
+    prompt: |
+      File this as a todo in one call: 'Review section 3 of
+      abazari2024design' — priority 3, since it shouldn't sit at the
+      default.
+    expect:
+      calls:
+        - verb: put
+          kind: todo
+          args: {text: 're:(?is).*abazari2024design.*', args: {prio: 3}}
+      record: {kind: todo}
+    forbid:
+      calls:
+        - {verb: put, kind: memory}      # a queue item is not a note
+        - {verb: put, kind: gripe}       # or a bug report
+    fake:
+      calls:
+        - verb: put
+          kind: todo
+          args: {text: 'Review section 3 of abazari2024design.', args: {prio: 3}}
+      record: {kind: todo}
+      answer: >
+        put(kind='todo', text='Review section 3 of abazari2024design.',
+        args={'prio': 3}) — the server assigns the td<id> and defaults
+        STATUS:open; args={'prio': N} sets priority in the same call.
+
+  - id: see-my-queue
+    prompt: |
+      Show me my plate — everything in the work queue: open, in progress,
+      blocked, paused. Not the closed history.
+    expect:
+      calls:
+        - {verb: search, kind: todo, args: {view: active}}
+    forbid:
+      calls:
+        - {verb: get, kind: todo, args: {id: 're:/(open|queue|doing|blocked|done)'}}  # deprecated aliases
+        - {verb: search, kind: todo, args: {view: done}}
+    fake:
+      calls:
+        - {verb: search, kind: todo, args: {view: active}}
+      record: null
+      answer: >
+        search(kind='todo', view='active') is the queue — open + doing +
+        blocked + paused; 'doing', 'blocked' and 'done' are the narrower
+        views.
+
+  - id: mark-todo-done
+    prompt: |
+      Todo td122 is finished — close it out properly.
+    expect:
+      calls:
+        - {verb: tag, kind: todo, args: {id: 're:(td)?122', add: ['STATUS:done']}}
+    forbid:
+      calls:
+        - {verb: delete, kind: todo}     # done ≠ deleted
+        - {verb: put, kind: todo}        # a comment isn't a close
+        - {verb: edit, kind: todo}       # status isn't a text rewrite
+    fake:
+      calls:
+        - {verb: tag, kind: todo, args: {id: 122, add: ['STATUS:done']}}
+      record: null
+      answer: >
+        tag(kind='todo', id=122, add=['STATUS:done']) — STATUS: is
+        closed-prefix and replaces atomically, no remove needed.
+
+  - id: bump-priority
+    prompt: |
+      Todo td141 keeps getting passed over by the queue — bump it to the
+      hottest priority so it preempts the rotation.
+    expect:
+      calls:
+        - {verb: tag, kind: todo, args: {id: 're:(td)?141'}}
+    forbid:
+      calls:
+        - {verb: edit, kind: todo}       # priority is the prio column, not the text
+        - {verb: put, kind: todo}
+        - {verb: tag, kind: todo, args: {add: ['re:prio:.*']}}   # lowercase prio: is the memory open tag, not todo's axis
+    fake:
+      calls:
+        - {verb: tag, kind: todo, args: {id: 141, prio: 1}}
+      record: null
+      answer: >
+        tag(kind='todo', id=141, prio=1) — lower is hotter; the
+        add=['PRIO:urgent'] alias is translated to prio=1 and stripped.
+
+  - id: tag-todo-project-topic
+    prompt: |
+      Tag todo td122 with project:perovskite-review and topic:drafting so
+      it files under the review project.
+    expect:
+      calls:
+        - verb: tag
+          kind: todo
+          args:
+            id: 're:(td)?122'
+            add: ['re:project:perovskite-review', 're:topic:drafting']
+    forbid:
+      calls:
+        - {verb: put, kind: todo}        # re-filing duplicates the todo
+        - {verb: edit, kind: todo}       # tags aren't text edits
+        - {verb: link, kind: todo}       # a project tag is not a tree edge
+    fake:
+      calls:
+        - {verb: tag, kind: todo, args: {id: 122, add: ['project:perovskite-review', 'topic:drafting']}}
+      record: null
+      answer: >
+        tag(kind='todo', id=122, add=['project:perovskite-review',
+        'topic:drafting']) — project: and topic: are open tags, both go in
+        one add= list.

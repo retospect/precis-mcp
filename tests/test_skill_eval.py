@@ -32,7 +32,15 @@ from precis.skill_eval.runners import build_prompt
 from precis.utils.claude_p import ClaudePError, ClaudePResult
 
 ROOT = Path(__file__).resolve().parent.parent
-SEED_SKILLS = ("precis-overview", "precis-paper-help", "precis-draft-help")
+SEED_SKILLS = (
+    "precis-overview",
+    "precis-paper-help",
+    "precis-draft-help",
+    "precis-memory-help",
+    "precis-finding-help",
+    "precis-todo-help",
+    "precis-search-help",
+)
 
 _MINIMAL = """\
 skill: demo-skill
@@ -252,6 +260,104 @@ def test_misleading_transcript_turns_a_seed_red(tmp_path: Path) -> None:
     table = report.render_table()
     assert "precis-paper-help/doi-to-abstract  FAIL" in table
     assert table.splitlines()[-1].startswith("0 pass, 1 fail")
+
+
+@pytest.mark.parametrize(
+    ("skill", "case_id", "detour", "reason_bits"),
+    [
+        # A misleading memory skill teaches plain text recall: no
+        # view='index' on the search, no fisheye get on the hit.
+        (
+            "precis-memory-help",
+            "precis-memory-help/recall-before-task",
+            Transcript(
+                calls=(VerbCall("search", "memory", {"q": "skill-eval corpus"}),),
+                answer="I searched memory by text.",
+            ),
+            (
+                "expected call not made: search(kind='memory'",
+                "expected call not made: get(kind='memory'",
+            ),
+        ),
+        # A misleading finding skill accepts a bare doi: as cited_in — the
+        # trap the skill names verbatim ("unknown kind 'doi'").
+        (
+            "precis-finding-help",
+            "precis-finding-help/register-finding",
+            Transcript(
+                calls=(
+                    VerbCall(
+                        "put",
+                        "finding",
+                        {
+                            "title": "gate-bias 2.4 kV",
+                            "body": "2.4 kV for 30 s",
+                            "cited_in": "doi:10.1234/xyz",
+                        },
+                    ),
+                ),
+                record={"kind": "finding"},
+                answer="Registered it against the DOI.",
+            ),
+            (
+                "expected call not made: put(kind='finding'",
+                "forbidden call made: put(kind='finding'",
+            ),
+        ),
+        # A misleading todo skill treats priority as title text.
+        (
+            "precis-todo-help",
+            "precis-todo-help/bump-priority",
+            Transcript(
+                calls=(
+                    VerbCall(
+                        "edit",
+                        "todo",
+                        {
+                            "id": 141,
+                            "mode": "replace",
+                            "text": "URGENT: finish the gate driver review",
+                        },
+                    ),
+                ),
+                answer="Rewrote the title to flag urgency.",
+            ),
+            (
+                "expected call not made: tag(kind='todo'",
+                "forbidden call made: edit(kind='todo'",
+            ),
+        ),
+        # A misleading search skill confuses transport paging
+        # (more(cursor=)) with result paging (page=/page_size=).
+        (
+            "precis-search-help",
+            "precis-search-help/page-through-hits",
+            Transcript(
+                calls=(
+                    VerbCall(
+                        "search",
+                        "paper",
+                        {"q": "photocatalysis", "cursor": "abc123"},
+                    ),
+                ),
+                answer="Paged with the cursor.",
+            ),
+            (
+                "expected call not made: search(kind='paper'",
+                "forbidden call made: search(kind='paper'",
+            ),
+        ),
+    ],
+)
+def test_misleading_transcript_turns_each_new_family_red(
+    skill: str, case_id: str, detour: Transcript, reason_bits: tuple[str, ...]
+) -> None:
+    cases = load_cases(skills=[skill])
+    (case,) = [c for c in cases if c.case_id == case_id]
+    report = run_cases([case], FakeRunner({case_id: detour}))
+    assert report.red and report.cases[0].status == "fail"
+    for bit in reason_bits:
+        assert any(r.startswith(bit) for r in report.cases[0].reasons), bit
 
 
 def test_run_cases_isolates_a_crashing_case_and_handles_empty() -> None:

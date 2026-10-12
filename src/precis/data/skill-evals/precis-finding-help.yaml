@@ -1,0 +1,133 @@
+# Eval cases for precis-finding-help (schema: precis.skill_eval.cases).
+skill: precis-finding-help
+cases:
+  - id: register-finding
+    prompt: |
+      Register this claim so the chase worker sources it: 'gate-bias 2.4 kV
+      applied for 30 s on Si/SiO2 MOSCAPs with Cu top contact, N2 ambient'.
+      I read it in paper chunk pc42.
+    expect:
+      calls:
+        - verb: put
+          kind: finding
+          args:
+            title: 're:(?is).+'
+            body: 're:(?is).*2\.4.*'
+            cited_in: pc42
+      record: {kind: finding}
+    forbid:
+      calls:
+        - {verb: put, kind: finding, args: {cited_in: 're:(doi|arxiv):.*'}}  # a bare doi: is not a handle
+        - {verb: put, kind: paper}       # pc42 is already held; no stub needed
+        - {verb: put, kind: memory}      # a finding is not a free-standing note
+    fake:
+      calls:
+        - verb: put
+          kind: finding
+          args:
+            title: gate-bias 2.4 kV / 30 s on Si/SiO2
+            body: >-
+              Device prep: 2.4 kV applied across the 50 nm gate oxide for
+              30 s on Si/SiO2 MOSCAPs with a Cu top contact, N2 ambient.
+            cited_in: pc42
+      record: {kind: finding}
+      answer: >
+        put(kind='finding', title='gate-bias 2.4 kV / 30 s on Si/SiO2',
+        body='…', cited_in='pc42') — title, body and a source-chunk
+        cited_in= are all mandatory; the ack returns the id and pub_id
+        placeholder.
+
+  - id: check-existing-finding
+    prompt: |
+      Before I register it: has anyone already chased the claim '2.4 kV
+      gate dielectric for 30 s'? Check existing findings for one I could
+      reuse instead of spawning a parallel chase.
+    expect:
+      calls:
+        - {verb: search, kind: finding, args: {q: 're:(?is).*2\.4.*'}}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}     # check first, mint second
+        - {verb: search, kind: memory}   # findings live in their own kind
+    fake:
+      calls:
+        - {verb: search, kind: finding, args: {q: '2.4 kV gate dielectric 30 s'}}
+      record: null
+      answer: >
+        search(kind='finding', q='2.4 kV gate dielectric 30 s') — read the
+        setup column of every hit; a match means reuse its id rather than
+        spawn a parallel chase.
+
+  - id: list-claim-hubs
+    prompt: |
+      Before I mint a new claim hub for 'amine scrubbing raises CO2
+      capacity', list the claim hubs already on file.
+    expect:
+      calls:
+        - {verb: search, kind: finding, args: {tags: ['re:TAPROOT:claim']}}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}     # listing hubs, not minting one
+        - {verb: search, kind: taxon}    # TAPROOT: is a finding tag axis, not a taxon
+    fake:
+      calls:
+        - {verb: search, kind: finding, args: {tags: ['TAPROOT:claim']}}
+      record: null
+      answer: >
+        search(kind='finding', tags=['TAPROOT:claim']) enumerates every
+        claim hub; hubs also ride into the default finding search and the
+        cross-kind fan-out.
+
+  - id: resolve-multi-candidate
+    prompt: |
+      Finding fi42 stalled at STATUS:multi_candidate — the chase couldn't
+      disambiguate the [12,13]-style multi-cite between miller23a and
+      fischer13. I've read the source; miller23a is the right one.
+      Resolve it.
+    expect:
+      calls:
+        - {verb: edit, kind: finding, args: {id: 're:(fi)?42', pick_candidate: miller23a}}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}     # resolving isn't re-minting
+        - {verb: tag, kind: finding}     # STATUS tags can't pick a candidate
+    fake:
+      calls:
+        - {verb: edit, kind: finding, args: {id: 42, pick_candidate: miller23a}}
+      record: null
+      answer: >
+        edit(kind='finding', id=42, pick_candidate='miller23a') resolves
+        the multi-cite; pick_candidate='self' would mark it terminal
+        instead.
+
+  - id: cite-finding-in-draft
+    prompt: |
+      Append a sentence citing finding fi42 ('the gate was held at 2.4 kV
+      for 30 s') to the existing text of draft chunk dc48213 in my review
+      dr510. Keep it a normal inline citation.
+    expect:
+      calls:
+        - verb: edit
+          kind: draft
+          args: {id: dc48213, text: 're:(?s).*\[fi42\].*'}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}                     # citing doesn't re-mint the finding
+        - {verb: link, args: {target: 're:(fi42|finding:42)'}}  # a draft citation is text, not an edge
+    fake:
+      calls:
+        - verb: edit
+          kind: draft
+          args:
+            id: dc48213
+            mode: insert
+            where: after
+            find: last sentence of the chunk
+            text: 'The gate was held at 2.4 kV for 30 s [fi42].'
+      record: null
+      answer: >
+        Inside a draft the cite is the finding handle in text:
+        edit(kind='draft', id='dc48213', mode='insert',
+        text='The gate was held at 2.4 kV for 30 s [fi42].') — the
+        [ab12c3]-style pub_id placeholder is only for hand-maintained
+        .tex/.md files resolved by `precis resolve`.

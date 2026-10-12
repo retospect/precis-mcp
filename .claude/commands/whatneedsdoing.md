@@ -1,7 +1,7 @@
 ---
 description: "One honest 'what needs doing' across repo dev work (backlog, gripes, PRs, Dependabot) and the prod todo queue, plus hygiene and system-health scans."
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(uv run precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/skill-eval:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(uv run precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build ⋅ main on CI:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ skill-eval diff ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build ⋅ main on CI:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— skill-eval —'; scripts/skill-eval --runner live --diff 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
 
 ## Procedure
 
@@ -133,6 +133,15 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      (`docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
      for the SAME resolve step above (adjust / kill / promote), not a
      separate action.
+   - **Skill-eval diff** (`scripts/skill-eval --runner live --diff`) — a
+     budgeted planned-call `claude -p` dry run over the skills HEAD's
+     commit touched (`src/precis/data/skills/`): red = the edited skill
+     teaches a verb path its YAML cases don't plan — a misleading-skill
+     edit. Advisory, same standing as `scripts/mutate-diff`: a red is a
+     to-do for the skill author, never a `scripts/ship` gate stage. No
+     touched skills, or a missing/logged-out `claude`, reports `skipped`
+     and exits 0 — a skip is not a red. Convention:
+     `docs/conventions/skill-evals.md`.
    - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
      >7 days ago) run the session-tightness scan: read recent large local
      transcripts for repeated token-waste (context bloat, wrong-tier agents,
