@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** local-compute
-- **Next:** Collect the Stage B before-day: sample `scripts/pgb-pools POOLS` and `STATS` (`cl_waiting`, `maxwait`, `avg_wait_time`) across 24 h; there is no pgbouncer exporter, so the samples are the record. Then flip Stage B (`server_reset_query_always = 1`) in a restart window. Checked 2026-10-11: no `_LOCK_KEY` holder at all; the gate logs `precis connected after` 4.5–6.6 s on every review pass since 10-04 (under the 10 s profiling threshold), yet 1–4 structural passes a day are still tool-starved after a clean connect, so gr463517 stays open and the cause is past the gate.
+- **Next:** Collect the Stage B before-day: sample `scripts/pgb-pools POOLS` and `STATS` (`cl_waiting`, `maxwait`, `avg_wait_time`) across 24 h; there is no pgbouncer exporter, so the samples are the record. Then flip Stage B (`server_reset_query_always = 1`) in a restart window. Checked 2026-10-11: no `_LOCK_KEY` holder at all; the gate logs `precis connected after` 4.5–6.6 s on every review pass since 10-04 (under the 10 s profiling threshold), yet 1–4 structural passes a day are still tool-starved after a clean connect, so the cause of that starvation is past the gate.
 - **Blocked by:** Nothing for the before-day. pgbouncer applied 2026-10-11 12:31Z (`02-postgres.yml --tags pgbouncer`): `stats_users` live, Stage A live (`track_extra_parameters = default_transaction_read_only`), `agent_rw` reads `default_transaction_read_only = off`; first `SHOW POOLS` 55 active clients, `cl_waiting` 0. Reto’s proxy cutover window comes after Stage B.
 - **Unblocks:** Continuous MCP access for both research tracks.
 - **Acceptance:** Follow [the latest handoff](#thread-context) through BEGIN READ ONLY: gate connection line, a day without starvation, no out-of-transaction _LOCK_KEY, and backend SHA at or after 7f006bf09.
@@ -66,9 +66,8 @@ flight, nothing to build until the waits below clear):**
   had been exercised by 20:40Z: no gated pass and no chunk_keywords pass
   since the deploy.
 - **Next, all read-only checks, through cluster-ops with BEGIN READ ONLY:**
-  1. **gr463517:** after the first review pass since the deploy, look for
-     `claude gate: precis connected after` in worker_logs. Close the gripe
-     after a day of passes with no tool-starved alert. Per Reto's ruling on
+  1. **Gate timing:** after the first review pass since the deploy, look for
+     `claude gate: precis connected after` in worker_logs. Per Reto's ruling on
      review item 9, profile `precis serve` startup only if a pass is refused
      or the 95th percentile of "connected after" is above 10 s.
   2. **After the follow-up deploy restarts pgbouncer (Stage A):** confirm
@@ -123,22 +122,20 @@ check their state first.
   - **Measurement** (before/after `maxwait`, `cl_waiting`, `avg_wait_time`,
     a day each side) needs td458386 (Do-next 4) first. Stage B does not
     start without the "before" day.
-- **gr463517** (structural review ran without precis): the fail-closed
+- **Structural review ran without precis** (gripe closed): the fail-closed
   gate (eebbb9a9f) and the container's blocking MCP wait (3ac3c25d6) are
   live in round 2 (63301c5c, 13:49Z). First structural pass after the
   deploy, 13:50Z on melchior: digest written, $0.71, 188 s. A clean pass
   alone does not prove the gate ran: 35 of the 50 passes in the 12
   days before were clean too. The gate now logs `claude gate: precis connected after Ns`
-  (landed with this entry, round 3). Close the gripe after that line
-  shows on a structural pass and the passes stay free of tool-starved
-  alerts for a day. Step 3, the `precis-agent` rebuild at the current CLI,
+  (landed with this entry, round 3). Step 3, the `precis-agent` rebuild at the current CLI,
   is the organizer's (Reto, 15:07Z, review item
   session-mcp-shared-server-8). Whether to profile `precis serve` startup
   was decided in review item session-mcp-shared-server-9. Reto chose
   option 1: wait for the gate's timing data. Profile only if a pass is
   refused ("precis not connected") or the 95th percentile of
   "connected after" exceeds 10 s. Read both from worker_logs during the
-  gr463517 check.
+  gate-timing check.
 - **Round-2 dogfood, melchior's shared server (13:52Z):** the checkout
   watchdog drained generation 1 (0 in-flight calls) and generation 2
   started at 13:50:16Z on 63301c5c, migration 0181. Session tools work
@@ -278,7 +275,7 @@ check their state first.
 - **A rig never uses the live name:** use scratch `rig*.sh` with their
   own `PRECIS_MCP_HTTP_NAME`. The installed script refuses
   PORT/STATE/IMAGE/SRC overrides on `precis-mcp-http` unless
-  `PRECIS_MCP_LIVE=1` (gr462596).
+  `PRECIS_MCP_LIVE=1` .
 
 ## Horizon
 

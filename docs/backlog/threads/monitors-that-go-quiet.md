@@ -114,7 +114,7 @@ gr346534, soft-deleted)
 ## Horizon
 
 1. **A guard on whether an ephemeral identity may claim jobs at all** —
-   **filed 2026-09-30 as gr458458** at Reto's direction, so it now has an
+   **filed 2026-09-30** at Reto's direction, so it now has an
    owner and leaves this thread. It is prod-work integrity, not monitoring:
    the container claimed 53 nursery jobs and failed all 53, plus 16 axis jobs
    likewise, under an identity nobody can contact, alert on, or trace once
@@ -132,9 +132,8 @@ gr346534, soft-deleted)
    durable identity separating "ephemeral by design" from "vanished", so
    attributability-by-container is a slice here. Last: largest, no
    independently shippable piece touching this thread.
-4. **gr415963** — discuss: unify `/alerts`, `/gripes` and `/needs-you`
-   into one triage surface (view-only merge, or leave as three). A design
-   question, not a defect; no urgency driving it.
+4. Unify `/alerts`, `/gripes` and `/needs-you` into one triage surface:
+   a design question in Reto's queue as td479394, not a defect.
 5. **backlog/doctor-report-and-alert-channel-quality.md** — doctor and alert
    output quality, agent-lane container env, worker_logs ts index; the
    channel the detectors above report through. Platform pass 2026-10-02.

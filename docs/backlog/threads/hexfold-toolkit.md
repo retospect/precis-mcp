@@ -114,8 +114,8 @@ removed as met — the transport move it waited on happened 09-29)
   `relax=tethered ks={t:4, q:6, p:6}`, the `scene.top.joint` WARN on t,
   and the stored `scene` and `plan`. The report is ok, with no
   `scene.bar`. 2898 atoms and a 1.05 Å minimum pair, the same as the
-  local S4b run. The only clashes are WARNs at the t ball neck
-  (gr464391). Reto's ball-top nanobud question is review-queue
+  local S4b run. The only clashes are WARNs at the t ball neck.
+  Reto's ball-top nanobud question is review-queue
   hexfold-toolkit-3.
 - Round 2 dogfood (prod 63301c5c): design `hexfold-dogfood-r2` through
   scripts/prod-precis → **pass**. `sw` is a true Stone–Wales rotation on
@@ -172,7 +172,7 @@ removed as met — the transport move it waited on happened 09-29)
          k = 0..3 all converge with the six seam bonds at 1.403 Å, and a
          0.05 Å random kick re-relaxed to fmax 0.02 returns 1.405–1.406 Å
          (min non-bonded pair 2.16 Å). The neck is a bonded minimum
-         (gr464391 closed). MACE was not re-run (model download blocked
+        . MACE was not re-run (model download blocked
          locally).
        - The bonded alternative passes both relaxers as an isolated
          pillar: a (12,0) tube with a lid and the C60 as a sidewall [2+2]

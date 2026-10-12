@@ -145,15 +145,13 @@ own item); they become items as each comes into reach.
    model, private until paper; waits on 5, which answers where shared
    presentation logic lives. Needs a catpath version bump + wheel
    redeploy.
-7. **The 10-gripe god-module cluster** (**gr343710**, **gr343711**,
-   **gr343712**, **gr343713**, **gr343714**, **gr343715**, **gr343716**,
-   **gr343717**, **gr343719**, **gr343720**) — the
+7. **The god-module cluster** — the
    decomposition debt the split retires; not individually actionable, and
    not worth ranking piece by piece when the split's module-by-module
    extraction addresses the whole cluster by construction.
    Re-vetted 2026-10-11: each one still holds and the files have grown
    (router.py 3582 lines, precis_se/handler.py 6538, handlers/pcb.py 4907).
-   gr343711/712/713/715/716/717/719 are closed as tracked here. The one
+   Seven of the ten cluster gripes are closed as tracked here. The one
    bounded try, moving the provider classes out of router.py, is blocked:
    7 test files monkeypatch `precis.utils.llm.router.call_claude_agent`,
    and the classes use ~15 router internals that `_PROVIDERS` needs at

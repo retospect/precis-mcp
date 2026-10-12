@@ -71,10 +71,6 @@ correct it.
 - **backlog/embedder-capacity-ownership.md** (local-compute thread) — a
   wait, not this thread's work: local-compute owns the item, but this
   thread's py-spy/topology answers (Do next 1) feed its capacity picture.
-- **gr450103** — job_ssh_node worker leaks memory (~117 GB RSS over 2
-  days on castor); infra, adjacent to this thread's fleet-serving scope
-  but not owned by it. Unparks if it recurs on a serve host rather than a
-  worker host.
 - **gr260050** — `claude -p` under an interactive ssh user on melchior
   cannot dispatch (OAuth state); blocks CLI-driven repair passes on that
   host. RULED (Reto 2026-10-11): credentials for `claude -p` under the

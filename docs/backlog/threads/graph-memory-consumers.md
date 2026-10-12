@@ -194,12 +194,6 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 7. **backlog/turn-routing-and-context-dsl.md**
 8. **backlog/context-quality-eval.md** +
    **backlog/fisheye-context-eval-study.md** — the measurement tail.
-9. **gr440078** — how LLM-driven paper access during live note-taking
-   interacts with dreaming, request load and stats (front-pinning burst
-   budget, per-session stub stats, the interactive-lane question).
-10. **gr372794** — paper review notes participate in dream consolidation,
-    critiques do not (Reto 2026-10-11). Unbuilt; anchor loss and
-    autoreviewer volume are design inputs for the cut, not open questions.
 
 ## Parked
 
@@ -208,15 +202,6 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **backlog/contextual-chunk-embeddings.md** — small enabler.
 - **backlog/context-sentence-rag-over-body.md** — small enabler.
 - **backlog/universal-short-codes.md** — small enabler.
-- **gr447365** — an agent routed a Précis URL through webfetch instead of
-  the native handle: a discoverability failure on the agent surface;
-  unparks with backlog/capability-discovery-on-a-sprawling-surface.md.
-- **gr440083** — ERC panel-aware audience tracking over a draft: a
-  human-surface feature ask on draft authoring; parks behind Do-next 1.
-- **gr240051** — reference hover-preview may exceed the 200 ms
-  hover-intent budget: human-surface latency on the web reader; parks
-  behind backlog/fisheye-everywhere.md (knowledge-mesh Do-next 4), whose
-  browser focus page reuses that preview.
 
 ## No action needed
 

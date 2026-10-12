@@ -98,7 +98,7 @@ graph-health-metrics, five parked gripes, and the seam with
    readers, `view='history'`/`'diff'` and the `(unrecorded)` count. The
    as-built choices are in the item's decisions log.
 4. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
-   (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
+   (td461151): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
    calibrated on hand-merged twins, one backfill, a pre-publish check.
    Above fisheye because duplicate hubs split live evidence that the
@@ -228,17 +228,7 @@ items.
 
 ## Parked
 
-- **gr445532** — experiment tracking needs multi-class context for
-  qualitative terms ("low temperature" means opposite things in different
-  communities); unparks with Do-next 8, whose per-axis similarity spaces
-  are the natural home for a comparison class.
-- **gr449840** — precis-finding-help's admission criteria exclude the
-  definitional/methodological claim classes a taxonomy or architecture
-  paper needs to cite; unparks with Do-next 8, which names a definitional
-  claim class explicitly (membership yes/no/unknown).
-- **gr445531** — whether spectral graph theory buys anything on precis's
-  graph structures; unparks when Horizon 3 gives it a populated graph
-  worth measuring the spectrum of.
+- (none)
 
 ## No action needed
 

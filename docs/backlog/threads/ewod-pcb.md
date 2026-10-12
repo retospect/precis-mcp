@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Reto defines "fixed" for the dogfood board, then: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod, which carries the landed distance warm start (replay 51/55 inner vs 42/55 radial; 31 vs 22 on B.Cu alone, mx456/mx457) against prod's current 45/55 (job 472111); (2) if 51 is not enough, authorize the build in [local escape repair](../pcb-escape-local-repair.md), td472840, for the four remaining nets ARR1_R1C5/R6C5/R7C2/R7C6. All three approved routing-levers probes are done: driver rotations 0°/180° collide with the fixed vias, so the exact 270° bottom pose stays (mx458–mx463); four connected In2 plaza-row exits passed copper DRC but regressed 51 → 50/55 (mx464); removal controls 51/49/49 show no gain (mx465–mx467); no lane default ships. The repair item is a draft for review, not a build authorization. EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked; gr467885's migrations are excluded. Historical handoffs below remain historical.
+- **Next:** Reto defines "fixed" for the dogfood board, then: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod, which carries the landed distance warm start (replay 51/55 inner vs 42/55 radial; 31 vs 22 on B.Cu alone, mx456/mx457) against prod's current 45/55 (job 472111); (2) if 51 is not enough, authorize the build in [local escape repair](../pcb-escape-local-repair.md), td472840, for the four remaining nets ARR1_R1C5/R6C5/R7C2/R7C6. All three approved routing-levers probes are done: driver rotations 0°/180° collide with the fixed vias, so the exact 270° bottom pose stays (mx458–mx463); four connected In2 plaza-row exits passed copper DRC but regressed 51 → 50/55 (mx464); removal controls 51/49/49 show no gain (mx465–mx467); no lane default ships. The repair item is a draft for review, not a build authorization. EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked. Historical handoffs below remain historical.
 - **Blocked by:** Reto's definition of "fixed" and the repair-build authorization; the coordinator owns deployment. No provider/model/compute/manufacture/service work. Historical handoffs below do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
@@ -13,7 +13,7 @@
 
 ## Current source evidence
 
-- **Current evidence:** R13 d33bf4b /8.35.12 verified/CLOSED by root; same-owner preview dogfood26 assertions PASS, exposed snapshots unchanged. R14 frozen53e6cb255 has no deployment; independent snapshot correction/escape source PASS did not establish whole-suite grid safety. gr467885 remains OPEN for its stated observable-proof remainder; 23 P1 checks remain historical PASS.
+- **Current evidence:** R13 d33bf4b /8.35.12 verified/CLOSED by root; same-owner preview dogfood26 assertions PASS, exposed snapshots unchanged. R14 frozen53e6cb255 has no deployment; independent snapshot correction/escape source PASS did not establish whole-suite grid safety. 23 P1 checks remain historical PASS.
 - **Routing:** Reto authorizes ewod-dogfood-N route/place/rebuild and public fixtures; non-dogfood boards remain protected. Exact ewod-dogfood-6 replay preserves all raw routing inputs and stored22 routed/33 failed/3 dangling. Actual-terminal/B.Cu probes classify all17 no_path labels as congestion. Half-grid experiment23/32/3, zero routed DRC errors, with12 gained/11 lost nets remains reproduced. Its global default regresses reference5/fab2/3/4; repair restores2/3 and route epoch4, default EWOD22/33/3. No thresholds/budgets/API changes; explicit fine experiment retained, global gain withdrawn. Diagnostic endpoint/layer parity remains separate.
 
 2026-10-04 bounded reconciliation: R9 is CLOSED; four-host attestation is coordinator evidence, while this owner's single native status independently verifies the served SHA/version above. R7 and all deployment/route measurements below are historical. Fixture correction authorized using existing `ARR1_SINK_0` / C639448; BOM confirms queued acquisition. Part read is NotFound, lexical job search returns no entry; request/job/link/readback cannot be completed through returned hints. The stored route summary (22 routed, 33 failed, 3 dangling) is not a fresh routing or DRC result. No board mutations, new jobs, tests, deploy or provider probe. EasyEDA stays PARKED; pcb-platform inactive. Checkpoint: shared fleet `inbox/pcb-postdeploy-reconcile.md` + `.json`; FINISH and wait.
@@ -307,7 +307,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    refusal — he wants the bundle of a broken board to debug from). The
    banner informs and does not gate; the item records what a refusal
    with an override would add if a red bundle is ever uploaded anyway.
-7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
+7. Three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
@@ -325,18 +325,14 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
     generalising the pcb 2D layer system the way solder paste already
     does; the hard part is stencil bridges that keep the adhesive sheet
     one connected component. Reto-architected 2026-09-26; waits on nothing.
-    Interacts with gr414481. **v1 shipped** as `precis.pcb.mech2d` (pure,
+    **v1 shipped** as `precis.pcb.mech2d` (pure,
     never in `export_fab`): ITO cut + spacer adhesive (frame with array
     window, optional via covers), shared round-hole+slot alignment
     primitive, kerf and mirror at export, board-fingerprinted SVG,
     connected-component check. **Left:** stencil bridges (open-polyline
     gaps) for interior islands, the channel-cutout style variant,
     persisting the layers as generator rows / a `pcb` view wiring, the
-    parylene-liner-edge note, Cricut importer check (Reto: "later"),
-    gr414481 extent as an input.
-11. **gr414481** — EWOD boards need a second max-extent check for parylene
-    coating, separate from the fab/manufacturing size cap; feeds gr451662's
-    adhesive-layer extent.
+    parylene-liner-edge note, Cricut importer check (Reto: "later").
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
 14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +
