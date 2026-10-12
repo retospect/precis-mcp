@@ -36,6 +36,10 @@ change while its value still lives in the environment):
 3. a file ``<PRECIS_SECRETS_FILE_DIR>/<name>`` (default ``~/.secrets/pw``);
 4. ``default``.
 
+``require_vault_secret`` is the explicit fail-closed consumer seam: audited
+vault only, no env/file/cache override, redacted error details. SSH credentials
+need origin proof; transition-friendly API consumers keep ``get_secret``.
+
 Everything below the env layer is best-effort: a missing vault schema, an
 unset ``app.secret_key``, or an unreachable DB all fall through to the file /
 default rather than raise, so the vault can ship dark and be populated
@@ -309,7 +313,7 @@ def _scrub_argv(tok: str) -> str:
     return tok
 
 
-def _reveal(store: Store, name: str) -> str | None:
+def _reveal(store: Store, name: str, *, redact_errors: bool = False) -> str | None:
     """One ``vault.reveal`` call. Returns None on any vault error (schema
     absent, key unset, DB down) so callers fall through rather than crash.
 
@@ -346,6 +350,11 @@ def _reveal(store: Store, name: str) -> str | None:
                 conn.rollback()
                 row = conn.execute("SELECT vault.reveal(%s)", (name,)).fetchone()
     except Exception as exc:
+        if redact_errors:
+            log.warning(
+                "secrets: vault-only reveal unavailable (%s)", type(exc).__name__
+            )
+            return None
         _warn_once(
             f"reveal:{type(exc).__name__}",
             f"secrets: vault reveal unavailable ({type(exc).__name__}: {exc}); "
@@ -356,6 +365,22 @@ def _reveal(store: Store, name: str) -> str | None:
     if row is None or row[0] is None:
         return None
     return str(row[0])
+
+
+class VaultSecretUnavailable(RuntimeError):
+    """A vault-only credential cannot be resolved; carries no private detail."""
+
+
+def require_vault_secret(name: str, *, store: Store) -> str:
+    """Audited vault-only lookup, without env/file/cache fallback or error detail.
+
+    SSH credentials must prove vault origin. The transition-friendly resolver
+    remains unchanged for existing API consumers; this path fails closed.
+    """
+    value = _reveal(store, name, redact_errors=True)
+    if not value:
+        raise VaultSecretUnavailable("credential_unavailable")
+    return value
 
 
 def get_secret(
@@ -439,6 +464,7 @@ def list_secrets(*, store: Store) -> list[dict[str, object]]:
 
 
 __all__ = [
+    "VaultSecretUnavailable",
     "adopt_process_store",
     "bind_store",
     "client_identity",
@@ -450,5 +476,6 @@ __all__ = [
     "list_secrets",
     "mounted_secret",
     "require_secret",
+    "require_vault_secret",
     "set_secret",
 ]

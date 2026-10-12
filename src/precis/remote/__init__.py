@@ -1,0 +1,31 @@
+"""Remote batch execution: neutral SSH/Slurm core and a Precis vault bridge.
+
+``ssh`` and ``slurm`` take injected transports and immutable task bundles;
+they import neither Store/vault nor workload engines. ``credentials`` alone
+resolves audited vault values. This seam permits later library extraction
+without a catpath→Precis dependency; extraction/publication remains separate.
+
+OpenSSH loads explicitly declared unencrypted keys over a bounded stdin pipe,
+without plaintext scratch. Encrypted keys use a paired vault passphrase and
+one-shot askpass. Both use a dedicated finite-lifetime agent; PGP is unsupported.
+The bridge uses stdlib IPC rather than a new crypto/SSH dependency; credentials
+never enter manifests, argv, inherited environments or remote workers. Host
+keys must be independently pinned; no first-use acceptance or keyscan trust.
+No construction, import or web status render triggers authentication.
+
+Staging preflights canonical inventory paths against generated and temporary
+names, then rechecks all hashes before readiness. Collection failures journal
+every task without erasing scheduler evidence; retries reuse the same intent.
+OpenSSH status255 is a pending transport failure, not proof of a missing file.
+These filesystem/ledger guarantees stay generic; adapters own domain validation.
+
+Compute bootstrap freezes expected system Python and staged uv identities,
+allocation/ABI/driver and peak byte/inode budgets before model execution. Its
+standalone checker supports baseline Python3.6 so missing target venv/runtime
+does not erase early failure facts. Neutral observations go to the workload's
+separate report producer; neither default modules nor a second allocation can
+silently replace a failed expectation. No runtime tool becomes a package dependency.
+The sourced hook clears prior success exports before its first guard and keeps
+nonzero status until the checker succeeds; consumers preserve the real source
+return code so an early failure cannot reuse another invocation's success facts.
+"""
