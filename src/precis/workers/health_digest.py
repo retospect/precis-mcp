@@ -97,6 +97,7 @@ if TYPE_CHECKING:
 
 from precis import health_checks
 from precis.alerts import (
+    ACKED_SQL,
     STATE_OPEN,
     queue_ops_message,
     raise_alert,
@@ -1263,7 +1264,7 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
     sat open from 2026-08-02 with ``seen_count`` 1053 for exactly that
     reason. A watchdog must not be its own subject.
     """
-    sql = """
+    sql = f"""
         SELECT count(*)::int
           FROM refs r
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -1272,6 +1273,7 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
            AND t.namespace = 'OPEN' AND t.value = %s
            AND r.created_at < now() - interval '7 days'
            AND coalesce(r.meta->>'alert_source', '') <> 'watchdog:meta'
+           AND NOT {ACKED_SQL}
     """
     try:
         row = conn.execute(sql, (STATE_OPEN,)).fetchone()
@@ -2215,7 +2217,7 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
     """
     with store.pool.connection() as conn:
         alert_rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.alert_source, r.fingerprint, r.created_at,
                    r.title, r.meta->>'detail' AS detail,
                    r.meta->>'severity' AS severity, r.meta->>'total' AS total
@@ -2228,6 +2230,7 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
                     OR r.alert_source = ANY(%s))
                AND r.alert_source IS NOT NULL AND r.fingerprint IS NOT NULL
                AND t.namespace = 'OPEN' AND t.value = %s
+               AND NOT {ACKED_SQL}
             """,
             (list(_NURSERY_BACKLOG_SOURCES), list(_TRACKED_SOURCES), STATE_OPEN),
         ).fetchall()

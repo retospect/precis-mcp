@@ -77,17 +77,18 @@ def _asks_count(store: Store) -> int:
 
 def _alerts_count(store: Store) -> int:
     """Open ``kind='alert'`` rows — count-only mirror of alerts._rows."""
-    from precis.alerts import STATE_OPEN
+    from precis.alerts import ACKED_SQL, STATE_OPEN
 
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT count(DISTINCT r.ref_id)
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN' AND t.value = %s
+               AND NOT {ACKED_SQL}
             """,
             (STATE_OPEN,),
         ).fetchone()

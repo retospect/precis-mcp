@@ -79,6 +79,14 @@ log = logging.getLogger(__name__)
 STATE_OPEN = "alert-state:open"
 STATE_RESOLVED = "alert-state:resolved"
 
+#: SQL predicate (alias ``r`` = ``refs``) true while an alert is acknowledged:
+#: ``meta.acked_until`` is a future ISO timestamp. An ack is orthogonal to
+#: lifecycle state — the row stays ``alert-state:open`` with ``resolved_at IS
+#: NULL`` so dedup keeps bumping it and ``resolve_stale_alerts`` still closes
+#: it. Only *readers* (open list, nav badge, backlog-rot check, remediation
+#: router) filter on it; ``raise_alert`` / ``resolve_stale_alerts`` never do.
+ACKED_SQL = "COALESCE((r.meta->>'acked_until')::timestamptz > now(), false)"
+
 #: Valid severities, low→high. Anything else is coerced to ``warn``.
 SEVERITIES = ("info", "warn", "critical")
 
@@ -562,8 +570,60 @@ def resolve_alert(store: Store, ref_id: int, *, resolved_by: str = "") -> bool:
     return True
 
 
-def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
+def ack_alert(
+    store: Store,
+    ref_id: int,
+    *,
+    until: datetime,
+    acked_by: str = "",
+) -> bool:
+    """Silence one open alert until ``until`` without resolving it.
+
+    Writes ``meta.acked_until`` (+ ``acked_by``) via ``update_ref`` — never
+    via a tag, and the row keeps ``alert-state:open`` / ``resolved_at IS
+    NULL`` (see :data:`ACKED_SQL`). Returns ``False`` when ``ref_id`` is not
+    a live open alert. A resolve → re-raise mints a new row, so the ack does
+    not carry over.
+    """
+    if until.tzinfo is None:
+        raise ValueError("ack_alert: until must be timezone-aware (UTC)")
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.ref_id = %s AND r.kind = 'alert' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+            """,
+            (ref_id, STATE_OPEN),
+        ).fetchone()
+        if row is None:
+            return False
+        store.update_ref(
+            ref_id,
+            meta_patch={
+                "acked_until": until.astimezone(UTC).isoformat(),
+                "acked_by": acked_by,
+            },
+            conn=conn,
+        )
+    return True
+
+
+def unack_alert(store: Store, ref_id: int) -> bool:
+    """Clear an ack (``acked_until`` set to now) so the alert reads as live again."""
+    return ack_alert(store, ref_id, until=datetime.now(UTC), acked_by="")
+
+
+def list_open_alerts(
+    store: Store, *, limit: int = 200, include_acked: bool = False
+) -> list[dict[str, Any]]:
     """Open alerts, newest-first, with source / severity / counters.
+
+    Acknowledged alerts (``meta.acked_until`` in the future) are skipped
+    unless ``include_acked``; each row carries ``acked_until`` (or ``None``).
 
     Shared read used by the ``/alerts`` web tab (and available to any
     operator preamble). Pure SQL — no embedder, no handler.
@@ -579,7 +639,8 @@ def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
                    r.meta->>'subject_ref_id' AS subject_ref_id,
                    COALESCE((r.meta->>'seen_count')::int, 1) AS seen_count,
                    r.created_at,
-                   r.updated_at
+                   r.updated_at,
+                   CASE WHEN {acked} THEN r.meta->>'acked_until' END
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
@@ -587,13 +648,17 @@ def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
                AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value = %s
+               {filter}
              ORDER BY CASE r.meta->>'severity'
                         WHEN 'critical' THEN 0
                         WHEN 'warn' THEN 1
                         ELSE 2 END,
                       r.updated_at DESC
              LIMIT %s
-            """,
+            """.format(
+                acked=ACKED_SQL,
+                filter="" if include_acked else f"AND NOT {ACKED_SQL}",
+            ),
             (STATE_OPEN, limit),
         ).fetchall()
     return [
@@ -607,6 +672,7 @@ def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
             "seen_count": int(r[6]),
             "created_at": r[7],
             "updated_at": r[8],
+            "acked_until": r[9],
         }
         for r in rows
     ]
@@ -797,11 +863,13 @@ def notify_critical_alert(
 
 
 __all__ = [
+    "ACKED_SQL",
     "ALERT_RERAISE_THROTTLE_ENV",
     "OPS_ALERT_TARGET_ENV",
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",
+    "ack_alert",
     "alert_history",
     "list_open_alerts",
     "notify_critical_alert",
@@ -811,4 +879,5 @@ __all__ = [
     "resolve_alert",
     "resolve_stale_alerts",
     "sync_resolved_at_with_tags",
+    "unack_alert",
 ]

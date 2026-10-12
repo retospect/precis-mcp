@@ -141,6 +141,17 @@ fresh alert — then the edit is rejected and points you at the live row.
 Most alerts auto-resolve when their producer next runs and the
 condition has cleared, so manual resolution is rarely needed.
 
+**Acknowledge, don't resolve, a known-failing id.** Resolving asserts the
+condition is gone and is undone the next time the producer sees it. To
+silence a still-failing id for a while, use **ack 7d** on the `/alerts` tab
+(it sets `meta.acked_until`; **unack** clears it). An acked alert stays
+`alert-state:open`: producers keep bumping `seen_count`, it still
+auto-resolves when the condition clears, and it shows dimmed on `/alerts`
+with its expiry. While acked it is left out of the nav badge, the
+`alert_backlog_rot` check and the remediation router (which also closes the
+tracker gripe it had filed). A resolve → re-raise is a new row and does not
+inherit the ack. Never ack with a tag.
+
 ## Producers
 
 `get(kind='alert', id='/rules')` is the live, complete list — every

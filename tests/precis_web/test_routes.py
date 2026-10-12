@@ -4237,6 +4237,13 @@ def test_alerts_dismiss_redirects_to_list(client) -> None:
     assert resp.headers["location"] == "/alerts"
 
 
+def test_alerts_ack_and_unack_redirect_to_list(client) -> None:
+    for action in ("ack?days=3", "unack"):
+        resp = client.post(f"/alerts/7/{action}", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/alerts"
+
+
 # ── gripes workbench ────────────────────────────────────────────────
 
 

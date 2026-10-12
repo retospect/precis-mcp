@@ -2392,3 +2392,29 @@ def test_lanes_idle_unknown_when_the_probe_fails(store, monkeypatch) -> None:
         assert conn.execute("SELECT 1").fetchone()[0] == 1
     assert res.status == "unknown"
     assert not res.is_finding
+
+
+# ── acknowledged alerts are invisible to the rot check and the router ────
+
+
+def _ack(store, ref_id: int) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from precis.alerts import ack_alert
+
+    assert ack_alert(store, ref_id, until=datetime.now(UTC) + timedelta(days=1))
+
+
+def test_alert_backlog_rot_ignores_acked_alerts(store) -> None:
+    _ack(store, _seed_old_open_alert(store, "nursery:long-wait"))
+    with store.pool.connection() as conn:
+        assert _check_alert_backlog_rot(conn).status == "ok"
+
+
+def test_router_files_no_gripe_for_an_acked_alert(store) -> None:
+    ref_id = _seed_watchdog_alert(
+        store, group="coherence", name="some-pass", hours_old=30
+    )
+    _ack(store, ref_id)
+    assert _route_findings(store) == frozenset()
+    assert store.list_refs(kind="gripe", tags=["STATUS:open"]) == []

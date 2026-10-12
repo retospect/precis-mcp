@@ -14,19 +14,31 @@ just lists what's currently open, grouped by source, severity-sorted.
   agent ``tag`` verb, which syncs the column the same way). Dismissal
   is not suppression: a still-live condition re-raises on the next
   pass.
+* ``POST /alerts/{id}/ack?days=N`` / ``/unack`` — silence an open alert
+  for N days (default 7) without resolving it: :func:`precis.alerts.ack_alert`
+  stamps ``meta.acked_until``; the row stays open and shows dimmed here
+  with its expiry, but drops out of the nav badge and the health checks.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
-from precis.alerts import STATE_OPEN, STATE_RESOLVED, resolve_alert
+from precis.alerts import (
+    ACKED_SQL,
+    STATE_OPEN,
+    STATE_RESOLVED,
+    ack_alert,
+    resolve_alert,
+    unack_alert,
+)
 from precis_web.deps import get_store, templates
 from precis_web.timefmt import ago as _ago
 
@@ -46,7 +58,7 @@ _SEVERITY_RANK = {"critical": 0, "warn": 1, "info": 2}
 
 def _rows(store: Store, *, state_tag: str, limit: int | None) -> list[dict[str, Any]]:
     """Alerts carrying ``state_tag``, severity- then recency-ordered."""
-    sql = """
+    sql = f"""
         SELECT r.ref_id,
                r.title,
                r.alert_source            AS source,
@@ -56,7 +68,8 @@ def _rows(store: Store, *, state_tag: str, limit: int | None) -> list[dict[str, 
                sr.kind                   AS subject_kind,
                COALESCE((r.meta->>'seen_count')::int, 1) AS seen_count,
                r.created_at,
-               r.updated_at
+               r.updated_at,
+               CASE WHEN {ACKED_SQL} THEN r.meta->>'acked_until' END AS acked_until
           FROM refs r
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
@@ -90,6 +103,7 @@ def _rows(store: Store, *, state_tag: str, limit: int | None) -> list[dict[str, 
                 "seen_count": int(r[7]),
                 "first_seen": _ago(r[8]),
                 "last_seen": _ago(r[9]),
+                "acked_until": r[10],
             }
         )
     return out
@@ -148,4 +162,25 @@ async def resolve(request: Request, ref_id: int) -> Response:
     """
     store = get_store(request)
     await asyncio.to_thread(resolve_alert, store, ref_id, resolved_by="operator")
+    return RedirectResponse(url="/alerts", status_code=303)
+
+
+#: Longest ack the web route accepts — an ack is a TTL, not a mute button.
+_MAX_ACK_DAYS = 90
+
+
+@router.post("/alerts/{ref_id}/ack", response_model=None)
+async def ack(request: Request, ref_id: int, days: int = 7) -> Response:
+    """Silence one open alert for ``days`` days (clamped to 1..90)."""
+    store = get_store(request)
+    until = datetime.now(UTC) + timedelta(days=max(1, min(days, _MAX_ACK_DAYS)))
+    await asyncio.to_thread(ack_alert, store, ref_id, until=until, acked_by="operator")
+    return RedirectResponse(url="/alerts", status_code=303)
+
+
+@router.post("/alerts/{ref_id}/unack", response_model=None)
+async def unack(request: Request, ref_id: int) -> Response:
+    """Clear an ack so the alert counts as live again."""
+    store = get_store(request)
+    await asyncio.to_thread(unack_alert, store, ref_id)
     return RedirectResponse(url="/alerts", status_code=303)

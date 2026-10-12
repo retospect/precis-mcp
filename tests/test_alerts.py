@@ -973,3 +973,93 @@ def test_tag_verb_add_open_replaces_resolved(hub: Hub, store: Store) -> None:
     assert _tags(store, aid) & {STATE_OPEN, STATE_RESOLVED} == {STATE_OPEN}
     resolved_at, _meta = _lifecycle_row(store, aid)
     assert resolved_at is None
+
+
+# ── acknowledgement: a TTL on a still-open row ─────────────────────
+
+
+def _ack_in(store: Store, ref_id: int, **delta: float) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    assert alerts_mod.ack_alert(
+        store, ref_id, until=datetime.now(UTC) + timedelta(**delta), acked_by="t"
+    )
+
+
+def _row(store: Store, ref_id: int) -> tuple[Any, ...]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT resolved_at, (meta->>'seen_count')::int, meta->>'acked_by' "
+            "FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def test_ack_silences_readers_without_resolving(store: Store) -> None:
+    from precis_web.nav import _alerts_count
+
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    before = _alerts_count(store)
+    _ack_in(store, aid, days=1)
+
+    assert aid not in [a["ref_id"] for a in list_open_alerts(store)]
+    shown = {a["ref_id"]: a for a in list_open_alerts(store, include_acked=True)}
+    assert shown[aid]["acked_until"] is not None
+    assert _alerts_count(store) == before - 1
+    resolved_at, _, by = _row(store, aid)
+    assert resolved_at is None
+    assert by == "t"
+    assert STATE_OPEN in _tags(store, aid)
+    assert "alert-state:acknowledged" not in _tags(store, aid)
+
+
+def test_ack_does_not_stop_dedup_or_repage(store: Store) -> None:
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    _ack_in(store, aid, days=1)
+    aid2, is_new = raise_alert(store, source="s", fingerprint="a", title="t")
+    assert (aid2, is_new) == (aid, False)
+    assert _row(store, aid)[1] == 2
+
+
+def test_expired_ack_is_live_again(store: Store) -> None:
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    _ack_in(store, aid, seconds=-60)
+    assert aid in [a["ref_id"] for a in list_open_alerts(store)]
+
+
+def test_unack_restores_visibility(store: Store) -> None:
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    _ack_in(store, aid, days=1)
+    assert alerts_mod.unack_alert(store, aid)
+    assert aid in [a["ref_id"] for a in list_open_alerts(store)]
+
+
+def test_ack_still_auto_resolves_when_condition_clears(store: Store) -> None:
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    _ack_in(store, aid, days=1)
+    resolve_stale_alerts(store, source="s", live_fingerprints=[])
+    assert _row(store, aid)[0] is not None
+    assert STATE_RESOLVED in _tags(store, aid)
+
+
+def test_ack_does_not_carry_over_a_resolve_reraise(store: Store) -> None:
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    _ack_in(store, aid, days=1)
+    resolve_stale_alerts(store, source="s", live_fingerprints=[])
+    aid2, is_new = raise_alert(store, source="s", fingerprint="a", title="t")
+    assert is_new and aid2 != aid
+    assert aid2 in [a["ref_id"] for a in list_open_alerts(store)]
+
+
+def test_ack_refuses_a_non_open_alert_and_naive_datetimes(store: Store) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    aid, _ = raise_alert(store, source="s", fingerprint="a", title="t")
+    with pytest.raises(ValueError):
+        alerts_mod.ack_alert(store, aid, until=datetime(2030, 1, 1))
+    resolve_stale_alerts(store, source="s", live_fingerprints=[])
+    assert not alerts_mod.ack_alert(
+        store, aid, until=datetime.now(UTC) + timedelta(days=1)
+    )

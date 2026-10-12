@@ -46,7 +46,7 @@
     <table class="w-full text-sm">
       <tbody>
         {% for a in g.alerts %}
-        <tr class="border-t border-slate-100 first:border-t-0 align-top">
+        <tr class="border-t border-slate-100 first:border-t-0 align-top{% if a.acked_until %} opacity-50{% endif %}">
           <td class="px-3 py-2 w-20">
             <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ sev_badge.get(a.severity, sev_badge['warn']) }}">
               {{ a.severity }}
@@ -71,6 +71,7 @@
                 {% endif %}
               </span>
               {% endif %}
+              {% if a.acked_until %}<span>acked until {{ a.acked_until[:16] }}Z</span>{% endif %}
               {% if a.seen_count > 1 %}<span>seen {{ a.seen_count }}×</span>{% endif %}
               <span>first {{ a.first_seen }}</span>
               <span>last {{ a.last_seen }}</span>
@@ -78,6 +79,13 @@
           </td>
           {% if state == 'open' %}
           <td class="px-3 py-2 w-24 text-right">
+            <form method="post" action="/alerts/{{ a.ref_id }}/{% if a.acked_until %}unack{% else %}ack{% endif %}" class="mb-1">
+              <button type="submit"
+                      title="{% if a.acked_until %}Clear the ack{% else %}Silence for 7 days — stays open, hidden from the badge and health checks{% endif %}"
+                      class="rounded border border-slate-300 bg-white px-2 py-0.5 text-[12px] text-slate-600 hover:bg-slate-50 hover:text-slate-800">
+                {% if a.acked_until %}unack{% else %}ack 7d{% endif %}
+              </button>
+            </form>
             <form method="post" action="/alerts/{{ a.ref_id }}/resolve">
               <button type="submit"
                       title="Dismiss — marks resolved; re-raises if the condition persists"

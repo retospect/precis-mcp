@@ -2786,6 +2786,10 @@ video {
   opacity: 0.4;
 }
 
+.opacity-50 {
+  opacity: 0.5;
+}
+
 .opacity-60 {
   opacity: 0.6;
 }
