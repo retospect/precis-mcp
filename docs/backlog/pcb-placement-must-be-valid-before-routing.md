@@ -88,16 +88,20 @@ another cost term.
 
 **Shipped (gr451274a):** `pcb_route` runs `placement_drc_findings` after
 the anneal and before the router; error findings fail the job and write
-nothing (warnings do not block). Still open here: the gate runs after the
-anneal rather than before it, `pcb_place` still only reports, and a gate
-that exists without a placer cost term (b)/(c) refuses boards it could have
-placed.
+nothing (warnings do not block). `force=True` on `op='route'` routes anyway
+and records the override in the job summary and route log. The gate runs
+after the anneal on purpose: movable violators get the anneal's
+`courtyard_overlap` term first, and only what survives is refused. Still
+open here: `pcb_place` still only reports, and a gate without a placer cost
+term for pad/via keepout or a way to shift a `fixed='both'` violator
+((b)/(c)) refuses boards it could have placed.
 
 ## Acceptance criteria
 
 - A board with an instance whose footprint overlaps another's, or with an
-  authored via inside a foreign pad, is refused by `op='route'` before any
-  anneal or maze work happens, naming the participants.
+  authored via inside a foreign pad, that the anneal cannot repair (the
+  violator is pinned), is refused by `op='route'` before any maze work
+  happens, naming the participants.
 - The `pb345846` sink-under-array case is the regression fixture.
 - Escape yield is NOT a criterion. A gate that refuses a board produces no
   yield at all, which is the point.

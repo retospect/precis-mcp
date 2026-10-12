@@ -1168,6 +1168,28 @@ def test_op_route_negotiate_out_of_range_is_bad_input_not_a_long_job(pcb, negoti
         pcb.put(id="op-negotiate", args={"op": "route", "negotiate": negotiate})
 
 
+def test_op_route_force_must_be_boolean(pcb):
+    pcb.put(id="op-force-bad", args=_CROSSED)
+    with pytest.raises(BadInput, match="force"):
+        pcb.put(id="op-force-bad", args={"op": "route", "force": "yes"})
+
+
+def test_op_route_force_true_lands_in_job_params(pcb, store):
+    pcb.put(id="op-force-ok", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="op-force-ok")
+    assert ref is not None
+    pcb.put(id="op-force-ok", args={"op": "route", "seed": 0, "force": True})
+    pcb.put(id="op-force-ok", args={"op": "route", "seed": 0, "force": False})
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta->'params' FROM refs WHERE kind='job' AND parent_id=%s",
+            (ref.id,),
+        ).fetchall()
+    # force=True is a distinct job (dedup key); False is the omitted default.
+    assert sorted("force" in r[0] for r in rows) == [False, True]
+    assert [r[0]["force"] for r in rows if "force" in r[0]] == [True]
+
+
 def test_op_unknown_rejected(pcb):
     pcb.put(id="op-bad", args=_CROSSED)
     with pytest.raises(BadInput, match="unknown op"):

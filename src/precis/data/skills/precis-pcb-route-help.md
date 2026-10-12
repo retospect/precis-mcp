@@ -107,7 +107,9 @@ courtyard overlap, outline containment) over the settled poses plus authored
 fixed copper. Any error-severity finding fails the job (`input`) and writes
 nothing; the reason lists each finding with its measured margin. Warnings do
 not block. Fix the placement (`op='move'`, unpin a part, re-place) and route
-again; `view='drc'` runs the full check.
+again; `view='drc'` runs the full check. `force=True` routes the illegal
+placement anyway; the job summary then opens with `pre-route DRC gate
+OVERRIDDEN (force=True)` and the findings.
 
 `view='congestion'` reports gaps only. With failed nets and no gap warning
 it says the failures have another cause; read `view='route-status'` for

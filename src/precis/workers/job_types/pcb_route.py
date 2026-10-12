@@ -89,6 +89,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "minimum": 0,
             "maximum": pcb_realize.MAX_NEGOTIATE_ITERATIONS,
         },
+        # Route despite pre-route placement DRC errors (recorded in the summary).
+        "force": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -611,7 +613,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # a placement-illegality cost term and an escape hatch for a
     # `fixed='both'` violator, are the larger design question the report
     # parks; on ewod-dogfood-2 every part is `fixed='both'`, so the
-    # refusal is a named complaint the user must act on by hand.
+    # refusal is a named complaint the user must act on by hand — or
+    # `force=True` routes anyway, with the override recorded in the summary.
     # Belt-and-suspenders: the gate is a NEW geometry pass, so a crash in it
     # must never take down a route that would otherwise succeed — an added
     # check that fails closed on the whole job would be worse than the silent
@@ -632,13 +635,27 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
     except Exception:
         log.exception("pcb_route: pre-route DRC gate raised; routing anyway")
-    if n_placement_errors:
+    force = bool(params.get("force", False))
+    if n_placement_errors and not force:
         gate_failure = (
             "pcb_route: refusing to route — the placement is already "
-            f"illegal; nothing written.\n{placement_report}"
+            f"illegal; nothing written.\n{placement_report}\n"
+            "Fix the placement (unpin a violator or move it), or pass "
+            "force=True to route anyway; the override is recorded in the "
+            "job summary."
         )
         ctx.record_failure(gate_failure, failure_class="input")
         return
+    if n_placement_errors:
+        log.warning(
+            "pcb_route: force=True — routing a placement with %d pre-route "
+            "DRC error(s)",
+            n_placement_errors,
+        )
+        placement_report = (
+            f"pre-route DRC gate OVERRIDDEN (force=True): routing a placement "
+            f"with {n_placement_errors} error(s)\n{placement_report}"
+        )
 
     # Authored fixed copper (`fixed_copper`, read before the anneal for the
     # collision gate; pcb-pre-place-route-blocks Slice 1, "Realize seam"):
@@ -1031,6 +1048,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     rres.negotiation.as_dict() if rres.negotiation else None
                 ),
                 "class_layer_drops": list(rres.class_layer_drops),
+                "pre_route_drc": {
+                    "errors": n_placement_errors,
+                    "forced": force and n_placement_errors > 0,
+                },
             }
         },
     )

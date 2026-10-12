@@ -954,6 +954,12 @@ class PcbHandler(Handler):
                     f"to {cap} negotiated-congestion iterations."
                 )
             params["negotiate"] = negotiate
+        # Override for the pre-route placement DRC gate; absent unless True.
+        if op == "route" and opts.get("force") is not None:
+            if not isinstance(opts["force"], bool):
+                raise BadInput("pcb: force must be a boolean (True or False)")
+            if opts["force"]:
+                params["force"] = True
         board_id = (graph.get("board") or {}).get("board_id")
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived
