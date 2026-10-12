@@ -36,6 +36,10 @@ from __future__ import annotations
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 _SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻", "0123456789+-")
 _SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋", "0123456789+-")
@@ -230,3 +234,61 @@ def absent_numerals(sentence: str, source_text: str) -> list[str]:
         seen.add(written)
         missing.append(written)
     return missing
+
+
+#: Grounding chunks per hub: the live pinned passages behind its
+#: ``establishes``/``corroborates`` edges (same relations as the
+#: ``numeral-absent`` lint's ``source_text``; ``contradicts`` is no source).
+_GROUNDING_SQL = """
+    SELECT l.dst_ref_id, c.chunk_id, c.text
+      FROM links l
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
+      JOIN chunks c ON c.chunk_id = l.src_chunk_id AND c.retired_at IS NULL
+     WHERE l.relation IN ('establishes', 'corroborates')
+       AND l.src_chunk_id IS NOT NULL
+       AND l.dst_ref_id = ANY(%s)
+     ORDER BY l.dst_ref_id, l.link_id
+"""
+
+
+def audit_hubs(
+    hubs: list[tuple[int, str]],
+    grounding: dict[int, list[tuple[int, str]]],
+) -> list[dict[str, Any]]:
+    """Ranked numeral audit. ``hubs`` is ``(ref_id, title)``; ``grounding``
+    maps ref_id to ``(chunk_id, text)`` pairs. Hubs without grounding text
+    are skipped (nothing to check against); hubs with no unmatched numeral
+    are not reported. Most unmatched numerals first, then ref_id."""
+    rows: list[dict[str, Any]] = []
+    for ref_id, title in hubs:
+        chunks = grounding.get(ref_id)
+        if not chunks:
+            continue
+        missing = absent_numerals(title, "\n".join(t for _, t in chunks))
+        if missing:
+            rows.append(
+                {
+                    "hub_id": f"fi{ref_id}",
+                    "ref_id": ref_id,
+                    "title": title,
+                    "unmatched": missing,
+                    "chunk_ids": [cid for cid, _ in chunks],
+                }
+            )
+    rows.sort(key=lambda r: (-len(r["unmatched"]), r["ref_id"]))
+    return rows
+
+
+def load_grounding(
+    store: Store, ref_ids: list[int]
+) -> dict[int, list[tuple[int, str]]]:
+    """Read-only fetch of :func:`audit_hubs`'s ``grounding`` mapping."""
+    out: dict[int, list[tuple[int, str]]] = {}
+    if not ref_ids:
+        return out
+    with store.pool.connection() as conn:
+        rows = conn.execute(_GROUNDING_SQL, (ref_ids,)).fetchall()
+    for hub, chunk_id, text in rows:
+        if text:
+            out.setdefault(int(hub), []).append((int(chunk_id), str(text)))
+    return out

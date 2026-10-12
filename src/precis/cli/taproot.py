@@ -569,6 +569,38 @@ def add_parser(subparsers: Any) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    na = tsub.add_parser(
+        "numeral-audit",
+        help="Advisory, read-only ranked report: claim numerals that appear "
+        "in no grounding chunk (establishes/corroborates) of their hub. "
+        "Accepted false positives: derived values (ratios, % changes), "
+        "numbers on other pages, values only in figure images.",
+    )
+    na.add_argument(
+        "--hub",
+        action="append",
+        default=None,
+        help="Audit one hub (fi<id> handle, pub_id, or cite_key; repeatable). "
+        "Default: every live TAPROOT:claim hub.",
+    )
+    na.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Audit a random sample of N hubs (--seed makes it repeatable).",
+    )
+    na.add_argument("--seed", type=int, default=None, help="Seed for --sample.")
+    na.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
+    )
+    na.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def _load_spec(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.spec:
@@ -2113,6 +2145,55 @@ def _run_lint(args: argparse.Namespace) -> None:
         store.close()
 
 
+def _run_numeral_audit(args: argparse.Namespace) -> None:
+    """``precis taproot numeral-audit`` -- advisory ranked report, read-only."""
+    import random
+
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.numeral_audit import audit_hubs, load_grounding
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        cohort = _select_lint_cohort(store, args.hub)
+        if args.sample is not None and args.sample < len(cohort):
+            cohort = random.Random(args.seed).sample(cohort, args.sample)
+        hubs = [(rid, title) for rid, title, _meta, _body in cohort]
+        grounding = load_grounding(store, [rid for rid, _ in hubs])
+        rows = audit_hubs(hubs, grounding)
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {
+                        "cohort_size": len(hubs),
+                        "grounded": len(grounding),
+                        "flagged": len(rows),
+                        "hubs": rows,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return
+        print(
+            f"numeral-audit (advisory): {len(hubs)} hub(s), {len(grounding)} "
+            f"with grounding chunks, {len(rows)} with unmatched numerals.\n"
+            "Known false positives: derived values (ratios, % changes), "
+            "numbers on other pages, figure-only values."
+        )
+        for r in rows:
+            ids = ", ".join(f"ch{c}" for c in r["chunk_ids"][:8])
+            more = len(r["chunk_ids"]) - 8
+            print(f"\n{r['hub_id']}  unmatched: {', '.join(r['unmatched'])}")
+            print(f"  {r['title']}")
+            print(f"  grounding: {ids}" + (f" (+{more} more)" if more > 0 else ""))
+    except BadInput as exc:
+        print(f"taproot numeral-audit: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
@@ -2137,6 +2218,8 @@ def run(args: argparse.Namespace) -> None:
         _run_direct_mint(args)
     elif args.taproot_cmd == "lint":
         _run_lint(args)
+    elif args.taproot_cmd == "numeral-audit":
+        _run_numeral_audit(args)
     else:
         print(f"taproot: unknown subcommand {args.taproot_cmd!r}", file=sys.stderr)
         sys.exit(2)

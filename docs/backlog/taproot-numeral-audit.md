@@ -31,23 +31,26 @@ them against the linked chunks.
 appears on the approve/review page beside `unsupported-term`; never in
 `_BLOCKING_LINT_CODES`). Normalises thousands separators, unicode minus,
 `1.0`/`1`, `x10^n`/`e`-notation, bare `10^n` (incl. PDF-flattened `106`),
-ranges, `%`, SI prefixes, source-side spelled one-ten. Dry-run over 500 prod
-claim hubs: see the gripe comment. Left below: the corpus-wide report CLI
-and the recorded false-positive estimate.
+ranges, `%`, SI prefixes, source-side spelled one-ten. The report CLI
+`precis taproot numeral-audit` (`--hub`, `--sample N --seed`, `--format
+text|json`) ranks live claim hubs by unmatched-numeral count with the
+grounding chunk ids; read-only, separate from `run_mint_gates`.
 
-## In scope
+## Measured false-positive rate (2026-10-12, 300 random prod claim hubs)
 
-- New module (`taproot/numeral_audit.py`) that per hub: (1) tokenizes
-  numerals from the claim title and from each linked chunk
-  (`establishes`/`corroborates`/`cites`), (2) normalizes obvious variants
-  (percent vs fraction, spelled-out small numerals, unit prefixes),
-  (3) reports any claim numeral absent from every linked chunk.
-- (CLI still open; tokenizer, normalisation and fixtures above shipped.)
-- CLI surface `precis taproot numeral-audit` alongside `taproot lint`,
-  ranked per hub. Report-only — never blocking, and kept fully separate
-  from `run_mint_gates` (that gate is "blocking or nothing" by design).
-- Tokenizer reuses the sub/superscript boundary lesson from td244964
-  (insert a boundary at every sub/superscript run before translating).
+166 of 300 hubs had a checkable claim numeral and grounding chunks; 20 (12%)
+were flagged. In 17 of the 20 the numeral's digit string occurs nowhere in
+the grounding text (candidate fabrication or a value on another page; true
+positives not verified against the papers). Tokenizer-attributable false
+positives: 2 of 20 (10%) — PDF-spaced exponent `8.4 × 1 0 4 cm−1`
+(fi349979) and a name that carries digits, `GMTKN55` (fi453546); 1 more
+(fi349605, `3 h` vs a `CNP-3` label) is unclear. Other shapes seen: range
+endpoints where only one end is stated (fi176696 `300–365 nm`), derived
+values. Treat the flag count as an upper bound on tokenizer FPs of ~10–15%
+and a lower bound on real misses only after paper reading.
+
+Open: fold space-separated exponent digits (`1 0 4`) on the source side;
+decide whether hub_refine consumes the signal.
 
 ## Explicitly NOT in scope
 
@@ -65,8 +68,6 @@ and the recorded false-positive estimate.
   (fixture slice).
 - Report ranks hubs by unmatched-numeral count and prints the unmatched
   numerals with their claim context.
-- A measured false-positive estimate on a real corpus slice is recorded on
-  the gripe before the tool's output is used to drive any remediation.
 
 ## Target + blast radius
 
