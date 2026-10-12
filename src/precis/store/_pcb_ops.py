@@ -3529,7 +3529,13 @@ class PcbMixin:
         ``part_footprints`` / ``part_availability`` caches intact; the
         staging + atomic-swap (:meth:`parts_bulk_replace`) is the scale
         lever for the full dump (v1 ~300k, v2 ~2M rows) (the PCB netlist+placement IR —
-        "drop-index trick optional at our row count")."""
+        "drop-index trick optional at our row count").
+
+        Nullable descriptive columns merge (``COALESCE`` with the stored
+        value): a thinner source — the parts-library listing
+        (:mod:`precis.pcb.jlc_library`) carries no height and sometimes no
+        datasheet — refreshes stock/price/basic without blanking what the
+        dump recorded (gr464537)."""
         counts = {"upserted": 0, "restocked": 0}
         with self._pcb_tx() as conn:
             for r in rows:
@@ -3545,13 +3551,19 @@ class PcbMixin:
                          datasheet_url)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (lcsc) DO UPDATE SET
-                        mfr=EXCLUDED.mfr, mfr_part=EXCLUDED.mfr_part,
-                        description=EXCLUDED.description,
+                        mfr=COALESCE(EXCLUDED.mfr, parts.mfr),
+                        mfr_part=COALESCE(EXCLUDED.mfr_part, parts.mfr_part),
+                        description=COALESCE(NULLIF(EXCLUDED.description, ''),
+                                             parts.description),
                         jlcpcb_assemblable=EXCLUDED.jlcpcb_assemblable,
                         basic=EXCLUDED.basic, stock=EXCLUDED.stock,
-                        price=EXCLUDED.price, package=EXCLUDED.package,
-                        height_mm=EXCLUDED.height_mm, params=EXCLUDED.params,
-                        datasheet_url=EXCLUDED.datasheet_url, refreshed_at=now()
+                        price=COALESCE(EXCLUDED.price, parts.price),
+                        package=COALESCE(EXCLUDED.package, parts.package),
+                        height_mm=COALESCE(EXCLUDED.height_mm, parts.height_mm),
+                        params=COALESCE(EXCLUDED.params, parts.params),
+                        datasheet_url=COALESCE(EXCLUDED.datasheet_url,
+                                               parts.datasheet_url),
+                        refreshed_at=now()
                     """,
                     (
                         lcsc,

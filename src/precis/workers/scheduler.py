@@ -364,7 +364,9 @@ def _run_ots_sweep(store: Store, batch_size: int) -> None:
 
 
 def _run_parts_refresh(store: Store, batch_size: int) -> None:
-    """One JLCPCB catalog Open API cursor-walk tick (gr264357), fired from
+    """One JLCPCB parts-library top-up (gr464537, Basic/Preferred from the
+    public listing; credential-free) plus one catalog Open API cursor-walk
+    tick (gr264357), fired from
     the daily host-agnostic ``parts_refresh`` cadence — any live worker can
     win it, same shape as ``ots_sweep``/``nanopub_mirror``. ``batch_size``
     is unused — the pass caps itself via its own row budget (workers/
@@ -378,10 +380,11 @@ def _run_parts_refresh(store: Store, batch_size: int) -> None:
 
     result = run_parts_refresh_pass(store)
     log.info(
-        "scheduler: parts_refresh — claimed=%d ok=%d failed=%d",
+        "scheduler: parts_refresh — claimed=%d ok=%d failed=%d library=%d",
         result["claimed"],
         result["ok"],
         result["failed"],
+        result["library"],
     )
 
 

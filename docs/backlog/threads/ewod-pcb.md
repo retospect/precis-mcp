@@ -62,14 +62,17 @@ se-machine-design's input shape (Do-next).
    (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).
    After the deploy, dogfood: a put that shrinks the outline under routed
    copper rips the net and does not refuse.
-4. gr464537: JLCPCB's getComponentInfos answers prod's parts_refresh with
-   HTTP 500, so `parts` stays empty. Build 5's datasheet pulls resolve
-   URLs through the same API and will mostly record `jlc_api_error`
-   until this is fixed. Best-guess fix landed (first page now omits the
-   null `lastKey`; a failing walk also raises a `parts_refresh` alert).
-   After deploy, check `parts` count > 0 and the `parts_refresh` log;
-   if it still 500s, probe by hand (smaller/omitted `pageSize`) or fall
-   back to `refresh-parts --from-sqlite`. Delete this item once rows land.
+4. gr464537: JLCPCB's getComponentInfos 500s for every body (upstream
+   or account side; ask JLCPCB support). `parts` holds 2.0M rows from the
+   jlcparts v2 dump, but that dump has nothing below ~C6.37M: upstream
+   re-bootstrapped its cache ~2026-09-14 mid-walk and keeps walking up
+   from there. The low range returns when upstream's next walk starts
+   (walk ~98% done 2026-10-12). Meanwhile `refresh-parts --library` and
+   the daily pass top up JLCPCB's Basic + Preferred library (~1.6k
+   parts) with no credentials; every dump load re-applies it. After
+   deploy: run the fill, check C25804/C1525 in `parts`. Later: re-run
+   `--from-sqlite` once the upstream dump goes below C6.37M. Delete
+   this item then.
 5. **Judge cost (round-3 diff review, 2026-10-03).** `_judged_mutation`
    runs the validity DRC twice, plus pcb_load, _build_ir and a copper
    listing, on every judged put, class_rules and footprint call.

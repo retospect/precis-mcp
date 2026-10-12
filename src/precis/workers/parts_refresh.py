@@ -22,17 +22,23 @@ process, or the next day's ``parts_refresh`` scheduler-lease cadence
 (``workers/scheduler.py`` CADENCES, daily), resumes the walk instead of
 restarting it. Dark (no JLCPCB credentials configured) is a clean no-op, not
 a raise — see :func:`run_parts_refresh_pass`.
+
+Each pass first tops up the JLCPCB Basic/Preferred *library* from the public
+website listing (:mod:`precis.pcb.jlc_library`) — credential-free, so it runs
+even when the API walk is dark. The dump lacks the low C-number range and the
+Open API has answered HTTP 500 (gr464537).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.pcb._http import VendorError
 from precis.pcb.jlc_api import JlcApiClient, JlcPermissionError
+from precis.pcb.jlc_library import refresh_library_parts
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -71,18 +77,37 @@ _ALERT_SOURCE = "parts_refresh"
 _ALERT_FINGERPRINT = "jlcpcb-api"
 
 
-def _sync_failure_alert(store: Store, error: str | None) -> None:
-    """Open an alert while the walk fails; resolve it on the next clean pass."""
-    if error is None:
-        resolve_stale_alerts(store, source=_ALERT_SOURCE, live_fingerprints=())
-        return
-    raise_alert(
-        store,
-        source=_ALERT_SOURCE,
-        fingerprint=_ALERT_FINGERPRINT,
-        title="[parts_refresh] JLCPCB catalog walk is failing",
-        detail=f"{error}\n\nThe `parts` catalog stays stale/empty until this "
-        "clears; fallback is `precis pcb refresh-parts --from-sqlite`.",
+_LIBRARY_FINGERPRINT = "jlcpcb-library"
+
+
+def _sync_failure_alerts(
+    store: Store, failures: dict[str, str], *, untested: tuple[str, ...] = ()
+) -> None:
+    """Open an alert per failing step (``{fingerprint: error}``); resolve
+    every other parts_refresh alert except ``untested`` steps (skipped this
+    pass, so an open alert for them is neither confirmed nor cleared)."""
+    if _ALERT_FINGERPRINT in failures:
+        raise_alert(
+            store,
+            source=_ALERT_SOURCE,
+            fingerprint=_ALERT_FINGERPRINT,
+            title="[parts_refresh] JLCPCB catalog walk is failing",
+            detail=f"{failures[_ALERT_FINGERPRINT]}\n\nThe `parts` catalog "
+            "stays stale/empty until this clears; fallback is "
+            "`precis pcb refresh-parts --from-sqlite`.",
+        )
+    if _LIBRARY_FINGERPRINT in failures:
+        raise_alert(
+            store,
+            source=_ALERT_SOURCE,
+            fingerprint=_LIBRARY_FINGERPRINT,
+            title="[parts_refresh] JLCPCB parts-library top-up is failing",
+            detail=f"{failures[_LIBRARY_FINGERPRINT]}\n\nBasic/Preferred parts "
+            "may be missing from `parts` until this clears; manual retry is "
+            "`precis pcb refresh-parts --library`.",
+        )
+    resolve_stale_alerts(
+        store, source=_ALERT_SOURCE, live_fingerprints=(*failures, *untested)
     )
 
 
@@ -98,8 +123,15 @@ def run_parts_refresh_pass(
     row_budget: int = DEFAULT_ROW_BUDGET,
     client: ComponentSource | None = None,
     page_size: int = 100,
+    library: Callable[[Store], dict[str, int]] | None = None,
 ) -> dict[str, Any]:
-    """One JLCPCB catalog Open API cursor-walk tick.
+    """One parts-library top-up plus one JLCPCB catalog Open API cursor-walk tick.
+
+    The library top-up (``library``, default
+    :func:`~precis.pcb.jlc_library.refresh_library_parts`) runs first, before
+    the credential check; its failure is reported as ``"library_error"``
+    (``failed`` +1) and the ``jlcpcb-library`` alert, and never stops the
+    API walk. ``"library"`` is the upserted count (0 on failure).
 
     Resumes from :data:`CURSOR_SETTING_KEY`'s checkpoint, imports up to
     ``row_budget`` normalized rows via the existing per-row
@@ -127,12 +159,38 @@ def run_parts_refresh_pass(
     ``scheduler.py``, would otherwise only see a generic ``except
     Exception`` traceback) rather than just logging it.
     """
+    failures: dict[str, str] = {}
+    library_upserted = 0
+    library_error: str | None = None
+    try:
+        counts = (library or refresh_library_parts)(store)
+        library_upserted = counts.get("upserted", 0)
+        log.info(
+            "parts_refresh: source=jlcpcb-library rows=%d upserted=%d restocked=%d",
+            counts.get("rows", 0),
+            library_upserted,
+            counts.get("restocked", 0),
+        )
+    except VendorError as exc:
+        log.warning("parts_refresh: library top-up failed: %s", exc)
+        library_error = str(exc)
+        failures[_LIBRARY_FINGERPRINT] = library_error
+
+    def _result(base: dict[str, Any]) -> dict[str, Any]:
+        base["library"] = library_upserted
+        if library_error is not None:
+            base["failed"] += 1
+            base["library_error"] = library_error
+        return base
+
     client = client or JlcApiClient(store=store)
     if not client.available:
         log.info(
             "parts_refresh: no JLCPCB API credentials configured; skipping this cycle"
         )
-        return {"claimed": 0, "ok": 0, "failed": 0}
+        # Dark skips the walk: leave any open API alert as it was.
+        _sync_failure_alerts(store, failures, untested=(_ALERT_FINGERPRINT,))
+        return _result({"claimed": 0, "ok": 0, "failed": 0})
 
     since_key = store.get_setting(CURSOR_SETTING_KEY) or None
     rows: list[dict[str, Any]] = []
@@ -162,11 +220,13 @@ def run_parts_refresh_pass(
         if client.last_key != since_key:
             store.set_setting(CURSOR_SETTING_KEY, client.last_key or "")
 
-    _sync_failure_alert(store, error)
     if error is not None:
-        return {"claimed": len(rows), "ok": 0, "failed": 1, "error": error}
+        failures[_ALERT_FINGERPRINT] = error
+    _sync_failure_alerts(store, failures)
+    if error is not None:
+        return _result({"claimed": len(rows), "ok": 0, "failed": 1, "error": error})
     if not rows:
-        return {"claimed": 0, "ok": 0, "failed": 0}
+        return _result({"claimed": 0, "ok": 0, "failed": 0})
 
     counts = store.parts_import(rows)
     log.info(
@@ -175,12 +235,14 @@ def run_parts_refresh_pass(
         counts["upserted"],
         counts["restocked"],
     )
-    return {
-        "claimed": len(rows),
-        "ok": counts["upserted"],
-        "failed": 0,
-        "restocked": counts["restocked"],
-    }
+    return _result(
+        {
+            "claimed": len(rows),
+            "ok": counts["upserted"],
+            "failed": 0,
+            "restocked": counts["restocked"],
+        }
+    )
 
 
 __all__ = ["CURSOR_SETTING_KEY", "DEFAULT_ROW_BUDGET", "run_parts_refresh_pass"]

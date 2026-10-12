@@ -26,7 +26,13 @@ Subcommands:
   them current from then on. ``--dry-run`` counts, writes nothing;
   idempotent.
 
-Two sources, not equivalent:
+Three sources, not equivalent:
+
+* ``--library`` — top-up only: JLCPCB's Basic + Preferred parts library from
+  the public website listing (:mod:`precis.pcb.jlc_library`, no credentials).
+  The v2 dump lacks the low C-number range (gr464537), so every dump load
+  (``--from-sqlite``, or the default's dump fallback) is followed by this
+  top-up unless ``--no-library`` is given.
 
 * ``--from-api`` (preferred) — the JLCPCB Open API's ``lastKey`` cursor walk
   (:func:`precis.workers.parts_refresh.run_parts_refresh_pass`, sharing its
@@ -182,6 +188,17 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "(staging + atomic swap). Default fallback when neither flag is "
         "given and no API credentials are configured: "
         "$PRECIS_JLCPARTS_DUMP_PATH.",
+    )
+    src.add_argument(
+        "--library",
+        action="store_true",
+        help="Only top up JLCPCB's Basic + Preferred parts library from the "
+        "public website listing (no credentials).",
+    )
+    rp.add_argument(
+        "--no-library",
+        action="store_true",
+        help="Skip the library top-up normally run after a dump load.",
     )
     rp.add_argument(
         "--page-size",
@@ -387,17 +404,53 @@ def _refresh_parts(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(getattr(args, "database_url", None))
     store = Store.connect(dsn)
     try:
-        if args.from_sqlite:
-            _refresh_from_sqlite(store, args.from_sqlite)
+        library = not args.no_library
+        if args.library:
+            _refresh_library(store)
+        elif args.from_sqlite:
+            _refresh_from_sqlite(store, args.from_sqlite, library=library)
         elif args.from_api:
             _refresh_from_api(store, page_size=args.page_size, row_limit=args.row_limit)
         else:
-            _refresh_default(store, page_size=args.page_size, row_limit=args.row_limit)
+            _refresh_default(
+                store,
+                page_size=args.page_size,
+                row_limit=args.row_limit,
+                library=library,
+            )
     finally:
         store.close()
 
 
-def _refresh_from_sqlite(store: Store, path: str) -> None:
+def _refresh_library(store: Store) -> dict[str, int]:
+    from precis.pcb._http import VendorError
+    from precis.pcb.jlc_library import refresh_library_parts
+
+    try:
+        counts = refresh_library_parts(store)
+    except VendorError as exc:
+        raise SystemExit(f"pcb refresh-parts --library: {exc}") from exc
+    print(
+        f"pcb refresh-parts: source=jlcpcb-library rows={counts['rows']} "
+        f"upserted={counts['upserted']} restocked={counts['restocked']}"
+    )
+    return counts
+
+
+def _library_after_dump(store: Store) -> None:
+    """Top up the library after a dump load (the dump lacks it, gr464537).
+    The dump already loaded, so a failure here warns instead of failing."""
+    try:
+        _refresh_library(store)
+    except SystemExit as exc:
+        print(
+            f"pcb refresh-parts: WARNING library top-up failed after dump "
+            f"load ({exc}); Basic parts may be missing — retry with --library",
+            file=sys.stderr,
+        )
+
+
+def _refresh_from_sqlite(store: Store, path: str, *, library: bool = True) -> None:
     from precis.pcb.catalog import bulk_refresh_parts_from_sqlite
 
     counts = bulk_refresh_parts_from_sqlite(store, path)
@@ -405,6 +458,8 @@ def _refresh_from_sqlite(store: Store, path: str) -> None:
         f"pcb refresh-parts: source=jlcparts-dump path={path!r} "
         f"loaded={counts['loaded']} restocked={counts['restocked']}"
     )
+    if library:
+        _library_after_dump(store)
 
 
 def _refresh_from_api(store: Store, *, page_size: int, row_limit: int | None) -> None:
@@ -443,7 +498,9 @@ def _refresh_from_api(store: Store, *, page_size: int, row_limit: int | None) ->
     )
 
 
-def _refresh_default(store: Store, *, page_size: int, row_limit: int | None) -> None:
+def _refresh_default(
+    store: Store, *, page_size: int, row_limit: int | None, library: bool = True
+) -> None:
     from precis.pcb.jlc_api import JlcApiClient
 
     client = JlcApiClient(store=store)
@@ -462,7 +519,7 @@ def _refresh_default(store: Store, *, page_size: int, row_limit: int | None) -> 
         "pcb refresh-parts: no JLCPCB API credentials configured; "
         f"falling back to the community dump at {path!r}"
     )
-    _refresh_from_sqlite(store, path)
+    _refresh_from_sqlite(store, path, library=library)
 
 
 __all__ = ["add_parser", "run"]

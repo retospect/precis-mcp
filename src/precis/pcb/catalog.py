@@ -14,6 +14,10 @@ Two dump formats are read (see :func:`jlcparts_format`): the legacy v1
 ``components`` table (~300k rows) and the current ``source-db-v2``
 (``meta.format``) with ``jlc_components`` (~2M rows, most of them not
 JLCPCB-assemblable — see :func:`normalize_jlcparts_v2_row`).
+
+The 2026-10 v2 dump lacks C-numbers below ~6.37M (upstream's walk lost them,
+gr464537), so dump loads are followed by the :mod:`precis.pcb.jlc_library`
+top-up of the Basic/Preferred library.
 """
 
 from __future__ import annotations

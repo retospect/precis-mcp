@@ -433,12 +433,18 @@ class _FakeJlcApiClient:
         self.last_key = None  # walk exhausted — reset for the next full pass
 
 
+def _OK_LIBRARY(store):
+    """Library top-up stub: no network in tests."""
+    del store
+    return {"rows": 0, "upserted": 0, "restocked": 0}
+
+
 def test_parts_refresh_pass_no_credentials_is_a_clean_noop(store):
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
     client = _FakeJlcApiClient(available=False)
-    result = run_parts_refresh_pass(store, client=client)
-    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    result = run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)
+    assert result == {"claimed": 0, "ok": 0, "failed": 0, "library": 0}
 
 
 def test_parts_refresh_pass_imports_and_checkpoints_a_bounded_walk(store):
@@ -459,8 +465,16 @@ def test_parts_refresh_pass_imports_and_checkpoints_a_bounded_walk(store):
         },
     ]
     client = _FakeJlcApiClient(pages=pages)
-    result = run_parts_refresh_pass(store, client=client, row_budget=1)
-    assert result == {"claimed": 1, "ok": 1, "failed": 0, "restocked": 0}
+    result = run_parts_refresh_pass(
+        store, client=client, row_budget=1, library=_OK_LIBRARY
+    )
+    assert result == {
+        "claimed": 1,
+        "ok": 1,
+        "failed": 0,
+        "restocked": 0,
+        "library": 0,
+    }
     assert store.part_row("C90001") is not None
     assert store.part_row("C90002") is None  # row_budget stopped the walk here
     # Partial walk: the cursor advanced past row 1, so it's checkpointed —
@@ -475,7 +489,7 @@ def test_parts_refresh_pass_resumes_from_its_checkpoint(store):
     client = _FakeJlcApiClient(
         pages=[{"lcsc": "C90003", "stock": 5, "_cursor": "cursor-2"}]
     )
-    run_parts_refresh_pass(store, client=client)
+    run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)
     assert client.seen_since_keys == ["cursor-1"]
 
 
@@ -488,7 +502,7 @@ def test_parts_refresh_pass_surfaces_permission_error(store):
             "jlcpcb", "console scope not granted", status=403
         )
     )
-    result = run_parts_refresh_pass(store, client=client)
+    result = run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)
     assert result["failed"] == 1
     assert "console scope not granted" in result["error"]
 
@@ -505,11 +519,13 @@ def test_parts_refresh_failure_raises_alert_and_success_resolves_it(store):
         )
 
     client = _FakeJlcApiClient(permission_error=VendorError("jlcpcb", "HTTP 500"))
-    assert run_parts_refresh_pass(store, client=client)["failed"] == 1
+    assert (
+        run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)["failed"] == 1
+    )
     assert _sev() is not None
 
     ok = _FakeJlcApiClient(pages=[{"lcsc": "C90009", "stock": 1}])
-    assert run_parts_refresh_pass(store, client=ok)["failed"] == 0
+    assert run_parts_refresh_pass(store, client=ok, library=_OK_LIBRARY)["failed"] == 0
     assert _sev() is None
 
 
@@ -573,7 +589,7 @@ def test_cli_refresh_default_falls_back_to_sqlite_without_credentials(
     )
     monkeypatch.setenv("PRECIS_JLCPARTS_DUMP_PATH", str(db))
 
-    pcb_cli._refresh_default(store, page_size=100, row_limit=None)
+    pcb_cli._refresh_default(store, page_size=100, row_limit=None, library=False)
 
     out = capsys.readouterr().out
     assert "no JLCPCB API credentials" in out
@@ -661,7 +677,67 @@ def test_cli_refresh_from_sqlite_uses_the_bulk_swap(store, tmp_path, capsys):
             )
         ],
     )
-    pcb_cli._refresh_from_sqlite(store, str(db))
+    pcb_cli._refresh_from_sqlite(store, str(db), library=False)
     out = capsys.readouterr().out
     assert "source=jlcparts-dump" in out and "loaded=1" in out
     assert store.part_row("C77007") is not None
+
+
+def _one_row_dump(tmp_path):
+    db = tmp_path / "cache.sqlite3"
+    _write_jlcparts_sqlite(
+        db,
+        [(77008, "Murata", "GRM1", "cap", 1, 1, "0402", "http://x", "[]", "{}")],
+    )
+    return str(db)
+
+
+def test_cli_refresh_from_sqlite_tops_up_library_after_dump(
+    store, tmp_path, monkeypatch, capsys
+):
+    calls = []
+
+    def _fake(st, **kw):
+        calls.append(st)
+        return {"rows": 5, "upserted": 4, "restocked": 1}
+
+    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _fake)
+    pcb_cli._refresh_from_sqlite(store, _one_row_dump(tmp_path))
+    out = capsys.readouterr().out
+    assert calls == [store]
+    assert "source=jlcpcb-library rows=5 upserted=4 restocked=1" in out
+
+
+def test_cli_refresh_from_sqlite_no_library_skips_top_up(store, tmp_path, monkeypatch):
+    def _boom(st, **kw):
+        raise AssertionError("top-up must not run")
+
+    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _boom)
+    pcb_cli._refresh_from_sqlite(store, _one_row_dump(tmp_path), library=False)
+
+
+def test_cli_refresh_from_sqlite_library_failure_warns_not_fails(
+    store, tmp_path, monkeypatch, capsys
+):
+    from precis.pcb._http import VendorError
+
+    def _fail(st, **kw):
+        raise VendorError("jlcpcb-web", "HTTP 503")
+
+    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _fail)
+    pcb_cli._refresh_from_sqlite(store, _one_row_dump(tmp_path))
+    err = capsys.readouterr().err
+    assert "WARNING library top-up failed" in err and "HTTP 503" in err
+    assert store.part_row("C77008") is not None
+
+
+def test_cli_refresh_library_only_surfaces_vendor_error(store, monkeypatch):
+    from precis.pcb._http import VendorError
+
+    def _fail(st, **kw):
+        raise VendorError("jlcpcb-web", "HTTP 503")
+
+    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _fail)
+    with pytest.raises(SystemExit) as excinfo:
+        pcb_cli._refresh_library(store)
+    assert "HTTP 503" in str(excinfo.value)
