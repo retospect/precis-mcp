@@ -573,7 +573,7 @@ def add_parser(subparsers: Any) -> None:
         "numeral-audit",
         help="Advisory, read-only ranked report: claim numerals that appear "
         "in no grounding chunk (establishes/corroborates) of their hub. "
-        "Accepted false positives: derived values (ratios, % changes), "
+        "Accepted false positives: derived values (ratios, percentage changes), "
         "numbers on other pages, values only in figure images.",
     )
     na.add_argument(
@@ -2178,7 +2178,7 @@ def _run_numeral_audit(args: argparse.Namespace) -> None:
         print(
             f"numeral-audit (advisory): {len(hubs)} hub(s), {len(grounding)} "
             f"with grounding chunks, {len(rows)} with unmatched numerals.\n"
-            "Known false positives: derived values (ratios, % changes), "
+            "Known false positives: derived values (ratios, percentage changes), "
             "numbers on other pages, figure-only values."
         )
         for r in rows:

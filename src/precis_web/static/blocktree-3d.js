@@ -225,7 +225,7 @@ function showViewerFallback(viewerEl, err, { reload = false, message = null } = 
   for (const id of [
     "bt3d-level", "bt3d-explode", "bt3d-export-png", "bt3d-export-svg",
     "bt3d-connections", "bt3d-container-mode", "bt3d-atoms", "bt3d-target",
-    "bt3d-smooth",
+    "bt3d-smooth", "bt3d-tool-volumes",
   ]) {
     const el = document.getElementById(id);
     if (el) el.disabled = true;
@@ -933,6 +933,9 @@ export async function blocktreeViewer3D({
   topologyEl,
   explodeButton,
   connectionsToggle,
+  // se only: draws the swept fastener/driver/hand volumes behind each
+  // insertion-path finding (tool-volumes.json). Absent = no toggle.
+  toolVolumesToggle,
   axesToggle,
   containerModeSelect,
   // The three scene-shaping controls. They were a plain GET form until
@@ -1870,6 +1873,18 @@ export async function blocktreeViewer3D({
   //: Bumped per render: a build that yielded across a newer render is stale.
   let renderGen = 0;
 
+  //: The "tool volumes" overlay (docs/backlog/se-mechanical-drc.md
+  //: rulings 5/6): the server's group of swept volumes for failing
+  //: insertion-path findings, appended to whatever scene is drawn while
+  //: the toggle is on, so isolate/level/revision re-renders keep it.
+  //: `{url, group, findings}` of the last fetch, or null before one.
+  let toolVolumes = null;
+  function withToolVolumes(shapes) {
+    if (!toolVolumesToggle || !toolVolumesToggle.checked) return shapes;
+    if (!toolVolumes || !toolVolumes.group || !shapes) return shapes;
+    return { ...shapes, parts: [...(shapes.parts || []), toolVolumes.group] };
+  }
+
   function renderScene(shapes, { camera = null, refit = true, atomicPayload = null } = {}) {
     clearValidationSelection();
     validationStatus("");
@@ -1877,9 +1892,10 @@ export async function blocktreeViewer3D({
     renderGen++;
     atomicOverlay?.dispose();
     rendering = true;
+    const drawn = withToolVolumes(shapes);
     try {
       viewer.clear();
-      viewer.render(shapes, renderOptions, viewerOptions);
+      viewer.render(drawn, renderOptions, viewerOptions);
       // A fresh render starts from default states: put the user's eyes
       // (envelope, interface-shape grid lines, ...) back before it paints.
       visibility.restore(viewer);
@@ -1896,7 +1912,7 @@ export async function blocktreeViewer3D({
     // Every render, not just the first: a reload that reintroduced a
     // second addressing scheme would otherwise pass the check once at
     // load and go quiet exactly when it started lying.
-    _checkPathInvariant(viewer, shapes);
+    _checkPathInvariant(viewer, drawn);
     applyUiState();
     retintAfterRender(shapes);
     if (camera) {
@@ -2115,6 +2131,43 @@ export async function blocktreeViewer3D({
   // never found a segment matching a uid) and this checkbox was as inert
   // as every tree eyeball. No change needed here beyond the id scheme
   // itself unifying — this call was already the right shape.
+  if (toolVolumesToggle) {
+    toolVolumesToggle.addEventListener("change", async () => {
+      if (!viewer) return;
+      const camera = (() => {
+        try {
+          return viewer.getCameraLocationSettings();
+        } catch {
+          return null;
+        }
+      })();
+      let note = "";
+      if (toolVolumesToggle.checked) {
+        const base = new URL(sceneUrl, window.location.href);
+        base.pathname = base.pathname.replace(/scene3d\.json$/, "tool-volumes.json");
+        const url = revUrl(base.pathname);
+        if (!toolVolumes || toolVolumes.url !== url) {
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const body = await resp.json();
+            toolVolumes = { url, group: body.group, findings: body.findings || [] };
+          } catch (err) {
+            console.error("blocktree-3d: tool volumes fetch failed", err);
+            toolVolumesToggle.checked = false;
+            validationStatus("tool volumes could not be loaded");
+            return;
+          }
+        }
+        note = toolVolumes.group
+          ? `tool volumes: ${toolVolumes.findings.length} finding(s) — red the fastener's path, amber the driver, purple the hand`
+          : "tool volumes: no blocked fastener path to show";
+      }
+      renderScene(shownShapes, { camera, refit: false });
+      if (note) validationStatus(note);
+    });
+  }
+
   if (connectionsToggle) {
     connectionsToggle.addEventListener("change", () => {
       if (!viewer) return;

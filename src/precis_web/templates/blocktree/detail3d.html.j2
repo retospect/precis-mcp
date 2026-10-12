@@ -87,6 +87,13 @@
     <input type="checkbox" id="bt3d-connections" checked />
     connections
   </label>
+  {% if kind == "se" %}
+  <label class="flex items-center gap-1 text-xs text-slate-600"
+         title="the swept fastener, driver and hand volumes behind each blocked insertion-path finding (red path, amber driver, purple hand)">
+    <input type="checkbox" id="bt3d-tool-volumes" />
+    tool volumes
+  </label>
+  {% endif %}
   <label class="flex items-center gap-1 text-xs text-slate-600"
          title="the x/y/z orientation marker in the corner of the 3D view; PNG/SVG export includes it only while this is on">
     <input type="checkbox" id="bt3d-axes" checked />
@@ -311,6 +318,7 @@
     topologyEl: document.getElementById("bt3d-topology"),
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),
+    toolVolumesToggle: document.getElementById("bt3d-tool-volumes"),
     axesToggle: document.getElementById("bt3d-axes"),
     containerModeSelect: document.getElementById("bt3d-container-mode"),
     levelSelect: document.getElementById("bt3d-level"),

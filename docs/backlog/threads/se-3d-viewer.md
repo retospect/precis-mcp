@@ -121,23 +121,10 @@ up:
 4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-5. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
-   only, rulings 1–7 in the file. Asks whether a fastener can REACH its
-   seat; `toolaccess.access()` only ever asked whether a seated screw can
-   be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
-   that item too, not here — this thread only consumes it — so the item is
-   self-contained. IN BUILD: design note `reviews/se-3d-viewer.md` §2,
-   ACCEPTED with one change (verdict §2): a material-ancestor blocker is
-   the `material_parent_not_walked` warning, not an error, until
-   `_walk_axis` stamps holes in material parents. The validator half
-   SHIPPED in round 2 (`toolaccess.insertion_path`, run by `fasten`, so in
-   `view='drc'`/`view='fasten'`, not `validate`; findings carry
-   `geometry`). On unicycle-c1: flange_bolt_right gets the warning;
-   flange_bolt_left gets the ERROR, its body sweep crossing
-   seatpost_clamp_bolt (a real hit as drawn: the pinch bolt runs through
-   its path). Error findings gate nothing (order, bom, realize never read
-   them). Next: the render, from an on-demand endpoint fetched when a
-   finding badge is clicked. Scene3d must not run `fasten` per page load.
+5. **backlog/se-mechanical-drc.md** — validator and render both built
+   (the "tool volumes" toggle fetches `tool-volumes.json` on demand; the
+   scene never runs `fasten`). What is left there needs Reto (a fastener
+   blocked only by another fastener) or waits on 3 below (phase 2).
    Budget: the insertion check took `fasten` on unicycle-c1 from 0.35 s
    to 1.39 s; the render slice must not add to that. The flange_bolt_left
    error is an assembly-order fact (it goes in before the pinch bolt);

@@ -128,6 +128,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.structure.probe import detect_bonds
 from precis.viz3d.sheetsmooth import deviation as sheet_deviation
 from precis.viz3d.sheetsmooth import ring_faces, smooth_sheet
+from precis_se import fasten as se_fasten
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
@@ -146,6 +147,7 @@ from precis_web.blocktree_3d import (
     build_scene,
     scene_scale,
     tint_blocks,
+    tool_volume_group,
 )
 from precis_web.blocktree_svg import (
     AXES,
@@ -1324,6 +1326,57 @@ def _build_scene3d(
     return scene, facts, findings, sorted(changed), None
 
 
+async def _tool_volumes_response(
+    request: Request, kind: str, slug: str, *, rev: int | None
+) -> Response:
+    """The 3D page's "tool volumes" toggle (docs/backlog/se-mechanical-drc.md
+    rulings 5/6): every fasten finding that carries swept volumes
+    (``fastener_insertion_path``'s body/tool/hand sweeps), as one
+    ``Shapes`` group (:func:`~precis_web.blocktree_3d.tool_volume_group`)
+    the client appends to the scene, plus the findings themselves for the
+    legend. Fetched on demand, not with ``scene3d.json``: the fasten pass
+    walks every fastener's insertion path, which the plain scene never
+    needs. ``group`` is ``None`` when nothing failed."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, kind, slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    adapter = _ADAPTERS[kind]
+
+    def _build() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        if rev is None:
+            tree = adapter.load_tree(store, ref.id)
+        else:
+            tree = _tree_at(store, kind, ref.id, _revision_axis(store, ref.id, rev))
+        found = [
+            {
+                "rule": f.rule,
+                "subject": f.subject,
+                "severity": f.severity,
+                "detail": f.detail,
+                "geometry": f.geometry,
+            }
+            for f in se_fasten.findings(se_fasten.fasten(tree))
+            if f.geometry
+        ]
+        scale = scene_scale(tree, adapter.effective_envelope)
+        return found, tool_volume_group(found, adapter.label, scale)
+
+    try:
+        found, group = await asyncio.to_thread(_build)
+    except _NoSuchRevision as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    return JSONResponse(
+        {
+            "group": group,
+            "findings": [
+                {k: v for k, v in f.items() if k != "geometry"} for f in found
+            ],
+        }
+    )
+
+
 async def _scene3d_response(
     request: Request,
     kind: str,
@@ -2281,6 +2334,13 @@ async def se_revision_fragment(
     request: Request, slug: str, rev: int | None = None
 ) -> Response:
     return await _revision_fragment(request, "se", slug, rev)
+
+
+@router.get("/se/{slug}/tool-volumes.json")
+async def se_tool_volumes(
+    request: Request, slug: str, rev: int | None = None
+) -> Response:
+    return await _tool_volumes_response(request, "se", slug, rev=rev)
 
 
 @router.get("/se/{slug}/atomic3d.json")

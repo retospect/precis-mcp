@@ -198,7 +198,10 @@ diameter. Findings worth knowing by name:
   blocker and the tool that came closest. The holes this joint stamps are
   subtracted from their members. Final-state access is a property of the
   design, not a false positive: the way out is a clear path, and only
-  failing that a declared install order (not modelled yet).
+  failing that a declared install order (not modelled yet). To see what
+  blocked it, tick "tool volumes" on the design's 3D page (`/se/<slug>`):
+  each failing sweep is drawn translucent — red the screw's path, amber
+  the driver, purple the hand — named for its blocker.
 - `material_parent_not_walked` (warn) — the sweep above was blocked by the
   screw's own parent block, which is made or bought (has a mode or a
   binding). The fasten pass stamps no hole in a parent, so the path through

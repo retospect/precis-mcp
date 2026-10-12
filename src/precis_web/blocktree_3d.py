@@ -1329,3 +1329,74 @@ def build_scene(
         nodes=nodes,
         container_paths=list(assembly.container_paths),
     )
+
+
+# ── swept tool/hand volumes of a failing finding (se-mechanical-drc ruling 5) ──
+
+#: The group name the client appends next to ``connections`` when the
+#: "tool volumes" toggle is on.
+TOOL_VOLUMES_GROUP = "tool volumes"
+
+#: Per-role tint: the fastener's own insertion sweep, the driver's swept
+#: solid, the gripping hand behind it.
+_VOLUME_COLOUR = {"body": "#dc2626", "tool": "#f59e0b", "hand": "#a855f7"}
+_VOLUME_ALPHA = 0.35
+
+
+def _segment(text: str) -> str:
+    """A finding subject as one viewer name segment ("/" would split it)."""
+    return text.replace("/", "∕")
+
+
+def tool_volume_group(
+    findings: list[dict[str, Any]], root_name: str, scale: float
+) -> dict[str, Any] | None:
+    """The swept volumes a finding carries in ``geometry`` (records of
+    ``envelope``/``pose``/``rot``/``role``/``blocker``, world frame, SI —
+    :func:`precis_se.toolaccess.insertion_path`) as one ``Shapes`` group
+    under the design root: a sub-group per finding, a translucent solid
+    per volume, tinted by role and named for its blocker. ``scale`` is the
+    scene's display factor (:func:`scene_scale`), so the volumes land on
+    the blocks they were checked against. Leaves carry negative uids: they
+    are not blocks, so block tinting and picking never resolve them.
+    ``None`` when no finding has a renderable volume."""
+    group_path = _child_path(_root_path(root_name), TOOL_VOLUMES_GROUP)
+    groups: list[dict[str, Any]] = []
+    uid = 0
+    for k, f in enumerate(findings, start=1):
+        fname = _segment(f"{k} {f['rule']} {f['subject']}")
+        fpath = _child_path(group_path, fname)
+        leaves: list[dict[str, Any]] = []
+        for rec in f.get("geometry") or []:
+            raw = world_mesh(rec["envelope"], rec["pose"], rec["rot"])
+            if raw is None:
+                continue
+            role = str(rec.get("role") or "body")
+            blocker = rec.get("blocker")
+            name = _segment(f"{role} ← {blocker}" if blocker else role)
+            if any(leaf["name"] == name for leaf in leaves):
+                name = f"{name} {len(leaves) + 1}"
+            uid -= 1
+            leaf = _shape_leaf(
+                _child_path(fpath, name),
+                name,
+                (raw[0] * scale, raw[1]),
+                _VOLUME_COLOUR.get(role, _VOLUME_COLOUR["body"]),
+                uid,
+            )
+            leaf["alpha"] = _VOLUME_ALPHA
+            leaf["renderback"] = True
+            leaves.append(leaf)
+        if leaves:
+            groups.append(
+                {"version": 3, "id": fpath, "name": fname, "loc": None, "parts": leaves}
+            )
+    if not groups:
+        return None
+    return {
+        "version": 3,
+        "id": group_path,
+        "name": TOOL_VOLUMES_GROUP,
+        "loc": None,
+        "parts": groups,
+    }

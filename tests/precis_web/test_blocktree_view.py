@@ -1268,3 +1268,69 @@ def test_se_view3d_page_does_not_compute_heavy_payloads(
     assert r.status_code == 200
     assert "scene3d.json" in r.text
     assert "checking" in r.text
+
+
+# ── tool volumes overlay (docs/backlog/se-mechanical-drc.md rulings 5/6) ──
+
+
+def test_se_tool_volumes_404(client) -> None:
+    assert client.get("/se/nope/tool-volumes.json").status_code == 404
+
+
+def test_se_tool_volumes_empty_without_fastener_findings(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/tool-volumes.json")
+    assert r.status_code == 200
+    assert r.json() == {"group": None, "findings": []}
+
+
+def test_se_tool_volumes_serves_the_group_and_findings_without_geometry(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    from precis_se.validate import ValidationIssue
+    from precis_web.routes import blocktree_view as bv
+
+    issue = ValidationIssue(
+        rule="fastener_insertion_path",
+        subject="bolt",
+        detail="bolt cannot reach its seat: screw body blocked by 'crown'",
+        severity="error",
+        geometry=[
+            {
+                "role": "body",
+                "envelope": "cyl:r0.002h0.02",
+                "pose": [0.0, 0.0, 0.0],
+                "rot": [0.0, 0.0, 0.0],
+                "blocker": "crown",
+            }
+        ],
+    )
+    monkeypatch.setattr(bv.se_fasten, "fasten", lambda tree: [])
+    monkeypatch.setattr(bv.se_fasten, "findings", lambda results: [issue])
+    _seed_se(runtime_with_store)
+    body = blocktree_client.get("/se/unicycle_web/tool-volumes.json").json()
+    assert body["findings"] == [
+        {
+            "rule": "fastener_insertion_path",
+            "subject": "bolt",
+            "severity": "error",
+            "detail": issue.detail,
+        }
+    ]
+    group = body["group"]
+    assert group["name"] == "tool volumes"
+    scene = blocktree_client.get("/se/unicycle_web/scene3d.json").json()
+    assert group["id"] == scene["shapes"]["id"] + "/tool volumes"
+    (leaf,) = group["parts"][0]["parts"]
+    assert leaf["name"] == "body ← crown" and leaf["uid"] < 0
+
+
+def test_se_view3d_page_has_the_tool_volumes_toggle(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert 'id="bt3d-tool-volumes"' in r.text
+    assert 'toolVolumesToggle: document.getElementById("bt3d-tool-volumes")' in r.text
