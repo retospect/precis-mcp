@@ -260,6 +260,7 @@ class SeHandler(Handler):
                 "a",
                 "b",
                 "walker",
+                "shown_design_token",
                 "cursor",
                 "atom",
                 "token",
