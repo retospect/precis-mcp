@@ -202,7 +202,9 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **backlog/dev-context-diet.md** — small enabler, parked until a
   consumer above needs it.
 - **backlog/contextual-chunk-embeddings.md** — small enabler.
-- **backlog/context-sentence-rag-over-body.md** — small enabler.
+- **backlog/context-sentence-rag-over-body.md** — small enabler; the
+  code part landed, what remains is prod ops (re-clear the no-abstract
+  cohort + refs 498/3234/42556, then the blast-radius measurement).
 - **backlog/universal-short-codes.md** — small enabler.
 
 ## No action needed

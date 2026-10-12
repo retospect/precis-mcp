@@ -806,6 +806,7 @@ def build_ref_passes(
     if _register("context_sentence"):
         from precis.utils.llm.router import DispatchClient as _DispatchClient
         from precis.utils.llm.router import Tier as _Tier
+        from precis.workers.embed import EmbedHandler as _CtxSentEmbedHandler
         from precis.workers.runner import BatchResult as _CtxSentBatchResult
 
         _ctx_sentence_client = _DispatchClient(
@@ -815,6 +816,35 @@ def build_ref_passes(
             log_blobs=False,
         )
 
+        # Body-passage retrieval wants a query embedder for its semantic
+        # legs; reuse the booted EmbedHandler's when one exists, else
+        # resolve lazily on first tick — eager construction here would
+        # load bge-m3 on every agent-profile boot even though the pass is
+        # default-OFF (same pattern as hub_refine above). A missing or
+        # failing embedder degrades retrieval to its lexical legs.
+        _ctx_sent_embed_handler = next(
+            (h for h in handlers if isinstance(h, _CtxSentEmbedHandler)), None
+        )
+        _ctx_sent_embedder_cache: list[Any] = []
+
+        def _ctx_sent_get_embedder() -> Any:
+            if _ctx_sent_embedder_cache:
+                return _ctx_sent_embedder_cache[0]
+            if _ctx_sent_embed_handler is not None:
+                embedder = _ctx_sent_embed_handler.embedder
+            else:
+                try:
+                    embedder = _resolve_embedder(args, store)
+                except Exception:
+                    log.warning(
+                        "context_sentence: embedder unavailable -- "
+                        "body retrieval degrades to lexical legs",
+                        exc_info=True,
+                    )
+                    embedder = None
+            _ctx_sent_embedder_cache.append(embedder)
+            return embedder
+
         def _context_sentence_pass(batch_size: int) -> _CtxSentBatchResult:
             from precis.workers.context_sentence import run_context_sentence_pass
 
@@ -822,6 +852,7 @@ def build_ref_passes(
                 store,
                 client=_ctx_sentence_client,
                 batch_size=min(batch_size, 8),
+                embedder=_ctx_sent_get_embedder(),
             )
             return _CtxSentBatchResult(
                 handler="context_sentence",

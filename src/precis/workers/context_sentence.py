@@ -36,9 +36,11 @@ planetary science" onto *Solid C60: a new form of carbon*, because ord
 0..2 of that ref are an ozone-chemistry bibliography. The model was not
 hallucinating; it described what it was handed. So :func:`_claim` no
 longer takes "the first body chunk": it prefers ``card_abstract``, then
-``refs.meta['abstract']``, then the first of the leading
-:data:`_FRONT_CHUNKS` chunks that is real prose and not end matter
-(:func:`pick_abstract_chunk`), else passes nothing. The prompt also makes
+``refs.meta['abstract']``, then the paper's own retrieved method
+passages — the top-k same-paper body chunks the in-paper fused
+lexical+embedding search (:func:`retrieve_body_block`, the store arm
+behind ``search(kind='paper', scope='pa<id>')``) returns for a fixed set
+of method-seeking queries — else passes nothing. The prompt also makes
 the TITLE authoritative and gives the model :data:`NO_CONTEXT` to decline
 with when the text can't belong to a paper of that title — a decline is
 terminal (:func:`is_decline`), never retried, since a retry that invents a
@@ -46,8 +48,8 @@ sentence is the exact failure the hatch exists to stop. A wrong context
 line is worse than none: it rides along with someone's literal quote as
 fact.
 
-**The input can also be no paper at all.** A first-chunk read usually
-yields the paper's MASTHEAD — title, byline, affiliations — which has no
+**The input can also be no paper at all.** A body read can still yield
+only the paper's MASTHEAD — title, byline, affiliations — which has no
 method content to characterize: on prod, 788 of the 841 grounding-source
 papers have no ``card_abstract`` chunk, and the mastheads score 0.08-0.23
 on the prose measure where real abstracts score 0.76-0.94. Asked to
@@ -93,6 +95,9 @@ import logging
 import re
 from typing import Any
 
+from precis.store import SEMANTIC_DISTANCE_FLOOR
+from precis.utils.embed_query import embed_query
+
 log = logging.getLogger(__name__)
 
 __all__ = [
@@ -105,8 +110,8 @@ __all__ = [
     "backfill_candidate_ref_ids",
     "is_decline",
     "lint_violation",
-    "pick_abstract_chunk",
     "propose_context_sentence",
+    "retrieve_body_block",
     "run_context_sentence_pass",
     "usable_context",
 ]
@@ -236,9 +241,9 @@ def usable_context(title: str, abstract: str) -> bool:
     """True when ``abstract`` plausibly carries paper prose a method
     sentence could be grounded in; False for a content-free block.
 
-    :func:`_claim` falls back to the paper's FIRST BODY CHUNK when it has
-    no ``card_abstract``, and on prod that fallback is a masthead — the
-    title, the byline, the affiliations — for ~94% of the grounding cohort
+    :func:`retrieve_body_block` can still assemble a MASTHEAD-only block —
+    the title, the byline, the affiliations — and on prod that was ~94% of
+    the grounding cohort under the old ord-0 fallback
     (gr346458). A sentence written from a byline is the model's background
     recall, not the paper: prod produced "NEC Corporation researchers
     observed helical microtubules ... using transmission electron
@@ -266,53 +271,112 @@ def usable_context(title: str, abstract: str) -> bool:
     return prose / len(words) >= _MIN_PROSE_FRACTION
 
 
-#: How many leading body chunks are searched for the paper's real abstract.
-#: Scanned PDFs put the masthead in ord 0 and the abstract a chunk or two
-#: later (ref 42558: byline at ord 0, "We describe monocrystalline ..." at
-#: ord 1); past this window we are into the introduction/methods, which is
-#: not "the abstract" and not worth guessing at.
-_FRONT_CHUNKS = 4
-
-_REF_SECTION_RE = re.compile(
-    r"reference|bibliograph|acknowledg|literature cited|funding", re.IGNORECASE
+#: Section roles a retrieved passage must not sit under — the same
+#: hearsay roles the nanopub primary-source gate rejects (references /
+#: bibliographies / related-work / background: those cite the doers, they
+#: are not them, so a bibliography must never become "the method"), plus
+#: the acknowledgements/funding end-matter a methods query still surfaces.
+#: Kept local rather than imported from ``precis.nanopub.evidence`` —
+#: workers may not reach for the handlers layer evidence pulls in.
+_HEARSAY_ROLE_RE = re.compile(
+    r"reference|bibliograph|related.work|prior.art|background|"
+    r"state.of.the.art|acknowledg|literature.cited|funding",
+    re.IGNORECASE,
 )
-_ABSTRACT_SECTION_RE = re.compile(r"abstract|summary", re.IGNORECASE)
 #: Citation-shaped fragments: ``1234, 56-78`` volume/page runs and ``1999)``
-#: year closers. A reference list has many per chunk, prose has ~none.
+#: year closers. A reference list has many per chunk, prose has ~none —
+#: the backstop for a bibliography chunk carrying no section role.
 _CITATION_RE = re.compile(
     r"\b\d{1,4}\s*[,:]\s*\d{1,5}\s*[–-]\s*\d{1,5}\b|\b(?:19|20)\d{2}\)|\bet al\b"
 )
 
 
-def _looks_like_references(text: str, section_path: Any) -> bool:
-    """True for a bibliography / end-matter chunk (by heading or by its
-    density of citation fragments) — never a paper's own abstract."""
+def _end_matter(text: str, section_path: Any) -> bool:
+    """True for a hearsay/end-matter chunk — by its section role
+    (:data:`_HEARSAY_ROLE_RE`), or, for an un-sectioned chunk, by its
+    density of citation fragments."""
     heading = " ".join(str(h) for h in (section_path or []))
-    if _REF_SECTION_RE.search(heading):
+    if _HEARSAY_ROLE_RE.search(heading):
         return True
     return len(_CITATION_RE.findall(text)) >= 3
 
 
-def pick_abstract_chunk(title: str, chunks: list[tuple[str, Any]]) -> str:
-    """The text of the leading chunk that is a genuine abstract, else ``""``.
+#: Fixed method-seeking query legs for the in-paper retrieval fallback —
+#: the spec's four groups ("we calculate / DFT / first-principles", "we
+#: synthesized / measured / characterized", "experimental setup /
+#: methods", "simulation details") expanded into one phrasing per leg,
+#: because ``websearch_to_tsquery`` ANDs a leg's terms: a leg written as
+#: "we synthesized measured characterized" would require all three
+#: phrasings in one chunk. Each leg runs lexical, plus semantic when an
+#: embedder is wired, inside ``ChunkStore.search_chunks_multi``'s RRF
+#: fusion — the same engine the ``scope='pa<id>'`` arm of
+#: ``search(kind='paper')`` drives.
+_METHOD_QUERIES: tuple[str, ...] = (
+    "we calculate",
+    "DFT first-principles",
+    "we synthesized",
+    "we measured",
+    "we characterized",
+    "experimental setup",
+    "methods",
+    "simulation details",
+)
 
-    ``chunks`` is ``(text, section_path)`` in ord order. Picks the first
-    chunk under an Abstract/Summary heading, otherwise the first that
-    carries prose (:func:`usable_context`) and is not end matter. A
-    masthead at ord 0 is skipped, not returned — the old rule took
-    ``ord`` 0 unconditionally, which fed bylines and neighbouring
-    articles' reference lists to the model as "the abstract" (gr346458).
-    ``""`` when nothing trustworthy exists: callers pass no abstract
-    rather than garbage."""
-    ok = [
-        (t, sp)
-        for t, sp in chunks
-        if not _looks_like_references(t, sp) and usable_context(title, t)
+#: Bound on the assembled block (spec): at most this many passages, total
+#: at most :data:`_ABSTRACT_CHARS` chars. ``_RETRIEVAL_LIMIT`` over-fetches
+#: so end-matter drops can still fill the passage window.
+_MAX_PASSAGES = 4
+_RETRIEVAL_LIMIT = 12
+
+
+def retrieve_body_block(
+    store: Any, *, embedder: Any, ref_id: int
+) -> tuple[str, list[int]]:
+    """The paper's own method passages via the in-paper fused search.
+
+    Runs :data:`_METHOD_QUERIES` through
+    :meth:`ChunkStore.search_chunks_multi` scoped to ``ref_id`` — the
+    store helper the ``scope='pa<id>'`` arm of ``search(kind='paper')``
+    resolves into — so the block is the top-k same-paper body passages
+    the fused lexical+embedding engine ranks first, not position ord 0.
+    A ``None``/failing embedder degrades to the lexical legs
+    (:func:`embed_query`). Hearsay/end-matter chunks are excluded
+    (:func:`_end_matter`); survivors are assembled score-desc-then-ord,
+    at most :data:`_MAX_PASSAGES` passages and :data:`_ABSTRACT_CHARS`
+    chars total — deterministic, so the same paper yields the same input
+    across sweeps. Returns ``(block_text, source_chunk_ids)``; the ids
+    feed the pass's per-ref log line."""
+    query_vecs = [
+        v for q in _METHOD_QUERIES if (v := embed_query(embedder, q)) is not None
     ]
-    for t, sp in ok:
-        if _ABSTRACT_SECTION_RE.search(" ".join(str(h) for h in (sp or []))):
-            return t
-    return ok[0][0] if ok else ""
+    hits = store.chunks.search_chunks_multi(
+        q_texts=list(_METHOD_QUERIES),
+        query_vecs=query_vecs,
+        scope_ref_id=ref_id,
+        limit=_RETRIEVAL_LIMIT,
+        max_distance=SEMANTIC_DISTANCE_FLOOR,
+    )
+    passages = [
+        (block, score)
+        for block, _ref, score in hits
+        if not _end_matter(str(block.text or ""), block.meta.get("section_path"))
+    ]
+    passages.sort(key=lambda t: (-t[1], t[0].ord))
+    parts: list[str] = []
+    chunk_ids: list[int] = []
+    joined_len = 0
+    for block, _score in passages[:_MAX_PASSAGES]:
+        text = str(block.text or "").strip()
+        if not text:
+            continue
+        room = _ABSTRACT_CHARS - joined_len - (2 if parts else 0)
+        if room <= 0:
+            break
+        snippet = text[:room]
+        parts.append(snippet)
+        chunk_ids.append(int(block.id))
+        joined_len += len(snippet) + (2 if len(parts) > 1 else 0)
+    return "\n\n".join(parts), chunk_ids
 
 
 # ── lint (belt over the LLM) ─────────────────────────────────────────────
@@ -487,26 +551,36 @@ def backfill_candidate_ref_ids(conn: Any) -> list[int]:
 
 def _claim(
     conn: Any, *, limit: int, ref_ids: list[int] | None
-) -> list[tuple[int, str, str]]:
-    """``(ref_id, title, abstract)`` for up to ``limit`` still-unsentenced
-    live papers. ``ref_ids``, when given, IS the candidate set (the lazy
-    single-paper enqueue, or a targeted backfill/test run); ``None``
-    sweeps :func:`backfill_candidate_ref_ids`. Excludes a paper already
-    carrying a sentence, one that converged on "no sentence"
+) -> list[tuple[int, str, str, list[int]]]:
+    """``(ref_id, title, block, block_chunk_ids)`` for up to ``limit``
+    still-unsentenced live papers. ``ref_ids``, when given, IS the
+    candidate set (the lazy single-paper enqueue, or a targeted
+    backfill/test run); ``None`` sweeps
+    :func:`backfill_candidate_ref_ids`. Excludes a paper already carrying
+    a sentence, one that converged on "no sentence"
     (:data:`META_FAILED_KEY`), and one whose context block had nothing to
-    work with (:data:`META_NO_ABSTRACT_KEY`)."""
+    work with (:data:`META_NO_ABSTRACT_KEY`).
+
+    ``block`` here is only the two authoritative sources — the
+    ``card_abstract`` chunk (whose ``chunk_id`` lands in
+    ``block_chunk_ids`` for the per-ref log) or a prose
+    ``refs.meta['abstract']``. The body-retrieval fallback needs the
+    store, not this connection, so the pass resolves it per row (see
+    :func:`retrieve_body_block`)."""
     candidates = ref_ids if ref_ids is not None else backfill_candidate_ref_ids(conn)
     if not candidates:
         return []
     rows = conn.execute(
         """
-        SELECT r.ref_id, r.title,
-               (SELECT text FROM chunks
-                 WHERE ref_id = r.ref_id AND chunk_kind = 'card_abstract'
-                   AND retired_at IS NULL
-                 ORDER BY ord LIMIT 1),
+        SELECT r.ref_id, r.title, card.chunk_id, card.text,
                r.meta->>'abstract'
           FROM refs r
+          LEFT JOIN LATERAL (
+               SELECT chunk_id, text FROM chunks
+                WHERE ref_id = r.ref_id AND chunk_kind = 'card_abstract'
+                  AND retired_at IS NULL
+                ORDER BY ord LIMIT 1
+               ) card ON TRUE
          WHERE r.ref_id = ANY(%(ids)s)
            AND r.retired_at IS NULL
            AND r.meta->>%(key)s IS NULL
@@ -523,23 +597,14 @@ def _claim(
             "limit": limit,
         },
     ).fetchall()
-    out: list[tuple[int, str, str]] = []
-    for ref_id, title, card, meta_abstract in rows:
+    out: list[tuple[int, str, str, list[int]]] = []
+    for ref_id, title, card_id, card_text, meta_abstract in rows:
         title = str(title or "")
-        block = str(card or "")
+        block = str(card_text or "")
+        chunk_ids = [int(card_id)] if block and card_id is not None else []
         if not block and meta_abstract and usable_context(title, str(meta_abstract)):
             block = str(meta_abstract)
-        if not block:
-            head = conn.execute(
-                """
-                SELECT text, section_path FROM chunks
-                 WHERE ref_id = %s AND ord >= 0 AND ord < %s AND retired_at IS NULL
-                 ORDER BY ord
-                """,
-                (ref_id, _FRONT_CHUNKS),
-            ).fetchall()
-            block = pick_abstract_chunk(title, [(str(t or ""), sp) for t, sp in head])
-        out.append((int(ref_id), title, block))
+        out.append((int(ref_id), title, block, chunk_ids))
     return out
 
 
@@ -549,8 +614,9 @@ def run_context_sentence_pass(
     client: Any,
     batch_size: int = 8,
     ref_ids: list[int] | None = None,
+    embedder: Any = None,
 ) -> dict[str, int]:
-    """One claim → generate → lint → write cycle. Returns
+    """One claim → retrieve → generate → lint → write cycle. Returns
     ``{claimed, ok, failed}``.
 
     ``ref_ids`` optionally restricts the sweep to specific papers (lazy
@@ -558,7 +624,9 @@ def run_context_sentence_pass(
     :func:`backfill_candidate_ref_ids` — the live-publish-row grounding
     cohort. Never raises on a single paper's failure; a dropped/lint-failed
     sentence bumps ``failed`` and stamps :data:`META_FAILED_KEY` so the
-    paper is not re-claimed forever.
+    paper is not re-claimed forever. ``embedder`` feeds the semantic legs
+    of the body-passage retrieval (:func:`retrieve_body_block`); ``None``
+    degrades that search to its lexical legs.
 
     Two outcomes converge a paper WITHOUT a model verdict and so stay out
     of ``failed``, which counts verdicts: a content-free context block
@@ -572,16 +640,27 @@ def run_context_sentence_pass(
         return {"claimed": 0, "ok": 0, "failed": 0}
 
     ok = failed = deferred = no_abstract = 0
-    for ref_id, title, abstract in rows:
+    for ref_id, title, block, chunk_ids in rows:
         try:
-            if not usable_context(title, abstract):
+            if not block:
+                block, chunk_ids = retrieve_body_block(
+                    store, embedder=embedder, ref_id=ref_id
+                )
+            log.info(
+                "context_sentence: ref_id=%s context block %s",
+                ref_id,
+                f"chunks={chunk_ids}"
+                if chunk_ids
+                else ("meta.abstract" if block else "empty"),
+            )
+            if not usable_context(title, block):
                 # No paper prose to characterize — calling the model here
                 # buys background recall dressed as provenance (gr346458).
                 store.update_ref(ref_id, meta_patch={META_NO_ABSTRACT_KEY: True})
                 no_abstract += 1
                 continue
             try:
-                sentence = _generate_with_lint(client, title, abstract, ref_id=ref_id)
+                sentence = _generate_with_lint(client, title, block, ref_id=ref_id)
             except TransientFailure:
                 deferred += 1
                 continue

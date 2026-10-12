@@ -9,11 +9,13 @@ LLM client — no network, mirroring ``test_paper_glossary``/
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from precis.store import ChunkInsert
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers.context_sentence import (
@@ -27,12 +29,12 @@ from precis.workers.context_sentence import (
     backfill_candidate_ref_ids,
     is_decline,
     lint_violation,
-    pick_abstract_chunk,
     propose_context_sentence,
+    retrieve_body_block,
     run_context_sentence_pass,
     usable_context,
 )
-from tests.workers._helpers import seed_chunk, seed_ref
+from tests.workers._helpers import make_mock_bge_m3, seed_chunk, seed_ref
 
 
 class _FakeClient:
@@ -338,52 +340,227 @@ class TestUsableContext:
         assert not usable_context(title, title)
 
 
-class TestAbstractSelection:
-    """The block handed to the model is a real abstract or nothing
-    (gr346458 root cause: it used to be ord 0 unconditionally)."""
+#: Method prose the method-seeking queries match — the shape retrieval
+#: should surface in place of the masthead.
+_METHODS = (
+    "We synthesized the films by chemical vapour deposition and "
+    "measured their elastic response by atomic force microscopy "
+    "indentation, fitting each force-displacement curve to a nonlinear "
+    "elastic model across independently prepared samples."
+)
 
-    _REFS = (
-        "21. Smith, J. Acta Metall. 12, 345-367 (1964).\n"
-        "22. Jones, K. et al. J. Mater. Sci. 8, 100-120 (1973).\n"
-        "23. Brown, L. Phil. Mag. 30, 55-70 (1990)."
-    )
+#: A references chunk whose text would lexically match the method
+#: queries ("measured", "synthesized", "characterized") — excluded by
+#: its section role, so a bibliography never becomes "the method".
+_REFS_WITH_METHOD_TERMS = (
+    "R1. Smith measured similar films, Acta Metall. 54, 635-640 (2006).\n"
+    "R2. Jones characterized comparable samples, J. Mater. Sci. 8, 100-120 "
+    "(1973).\n"
+    "R3. Brown synthesized earlier films, Phil. Mag. 30, 55-70 (1990)."
+)
 
-    def test_masthead_at_ord0_is_never_returned(self) -> None:
-        title = "Helical microtubules of graphitic carbon"
-        assert pick_abstract_chunk(title, [(_MASTHEAD, None)]) == ""
+#: The same shape with no section role — caught by citation-fragment
+#: density instead.
+_REFS_UNSECTIONED = (
+    "21. Smith, J. measured similar films. Acta Metall. 12, 345-367 (1964).\n"
+    "22. Jones, K. et al. J. Mater. Sci. 8, 100-120 (1973).\n"
+    "23. Brown, L. Phil. Mag. 30, 55-70 (1990)."
+)
 
-    def test_skips_masthead_to_the_real_abstract(self) -> None:
-        got = pick_abstract_chunk("A paper", [(_MASTHEAD, None), (_ABSTRACT, None)])
-        assert got == _ABSTRACT
 
-    def test_reference_list_is_not_an_abstract(self) -> None:
-        assert pick_abstract_chunk("Elastic Properties", [(self._REFS, None)]) == ""
+def _seed_body(
+    store: Any, title: str, pieces: list[tuple[str, list[str] | None]]
+) -> tuple[int, list[int]]:
+    """Seed one ref + one chunk per ``(text, section_path)`` piece;
+    return ``(ref_id, chunk_ids)`` in ord order."""
+    ref_id = seed_ref(store, title=title)
+    rows = [
+        ChunkInsert(ord=i, text=t, meta={"section_path": sp} if sp else {})
+        for i, (t, sp) in enumerate(pieces)
+    ]
+    return ref_id, [c.id for c in store.chunks.insert_chunks(ref_id, rows)]
 
-    def test_abstract_heading_beats_earlier_prose(self) -> None:
-        intro = _ABSTRACT.replace("We measured", "Earlier work measured")
-        got = pick_abstract_chunk(
-            "A paper", [(intro, ["Introduction"]), (_ABSTRACT, ["Abstract"])]
+
+class TestBodyRetrieval:
+    """With no ``card_abstract``/meta abstract, the block is the top-k
+    same-paper body passages the in-paper fused search ranks first —
+    never position ord 0, never a hearsay-role chunk (spec AC)."""
+
+    def test_block_is_the_method_passage_not_the_masthead(self, store: Any) -> None:
+        ref_id, ids = _seed_body(
+            store,
+            "Helical microtubules of graphitic carbon",
+            [
+                (_MASTHEAD, None),
+                (_METHODS, ["Experimental"]),
+                (_REFS_WITH_METHOD_TERMS, ["References"]),
+            ],
         )
-        assert got == _ABSTRACT
+        block, chunk_ids = retrieve_body_block(store, embedder=None, ref_id=ref_id)
+        assert block == _METHODS
+        assert chunk_ids == [ids[1]]
+
+    def test_references_role_is_excluded_even_when_it_matches(self, store: Any) -> None:
+        ref_id, ids = _seed_body(
+            store,
+            "A paper",
+            [(_REFS_WITH_METHOD_TERMS, ["References"]), (_METHODS, ["Experimental"])],
+        )
+        block, chunk_ids = retrieve_body_block(store, embedder=None, ref_id=ref_id)
+        assert block == _METHODS
+        assert ids[0] not in chunk_ids
+
+    def test_an_unsectioned_bibliography_is_excluded(self, store: Any) -> None:
+        ref_id, ids = _seed_body(
+            store, "A paper", [(_REFS_UNSECTIONED, None), (_METHODS, None)]
+        )
+        block, chunk_ids = retrieve_body_block(store, embedder=None, ref_id=ref_id)
+        assert block == _METHODS
+        assert ids[0] not in chunk_ids
+
+    def test_masthead_and_bibliography_yield_no_block(self, store: Any) -> None:
+        ref_id, _ = _seed_body(
+            store,
+            "Helical microtubules",
+            [(_MASTHEAD, None), (_REFS_UNSECTIONED, None)],
+        )
+        block, chunk_ids = retrieve_body_block(store, embedder=None, ref_id=ref_id)
+        assert block == ""
+        assert chunk_ids == []
+
+    def test_block_is_bounded_to_four_passages_and_1500_chars(self, store: Any) -> None:
+        passage = (
+            "We measured the setup with standard methods and characterized "
+            "every sample under simulation details from the experimental "
+            + "protocol "
+            * 60
+        )
+        ref_id, _ = _seed_body(
+            store, "A paper", [(f"{passage} batch {i}", None) for i in range(6)]
+        )
+        block, chunk_ids = retrieve_body_block(store, embedder=None, ref_id=ref_id)
+        assert len(chunk_ids) <= 4
+        assert len(block) <= 1500
+
+    def test_semantic_leg_contributes_when_an_embedder_is_wired(
+        self, store: Any
+    ) -> None:
+        """The passage's prose matches none of the method queries
+        lexically — only its stored vector (identical to one query's
+        embedding here) can surface it, so this exercises the semantic
+        legs of the fused search, not just the lexical ones."""
+        embedder = make_mock_bge_m3()
+        prose = (
+            "Geometry optimizations were performed with periodic boundary "
+            "conditions and a plane wave basis set under tight convergence "
+            "thresholds for every structure examined in this work."
+        )
+        ref_id = seed_ref(store, title="A computational paper")
+        (chunk,) = store.chunks.insert_chunks(
+            ref_id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=prose,
+                    embedding=embedder.embed_one("we calculate"),
+                )
+            ],
+        )
+        block, chunk_ids = retrieve_body_block(store, embedder=embedder, ref_id=ref_id)
+        assert block == prose
+        assert chunk_ids == [chunk.id]
 
     def test_claim_passes_empty_block_for_masthead_only_paper(self, store: Any) -> None:
+        """``_claim`` resolves only card_abstract/meta abstract — the
+        retrieval fallback lives in the pass."""
         ref_id, _ = _seed_paper(store, title="Helical microtubules", body=_MASTHEAD)
         with store.pool.connection() as conn:
             (row,) = _claim(conn, limit=5, ref_ids=[ref_id])
         assert row[2] == ""
-
-    def test_claim_finds_abstract_behind_the_masthead(self, store: Any) -> None:
-        ref_id, _ = _seed_paper(store, title="Helical microtubules", body=_MASTHEAD)
-        seed_chunk(store, ref_id=ref_id, text=_ABSTRACT, ord=1)
-        with store.pool.connection() as conn:
-            (row,) = _claim(conn, limit=5, ref_ids=[ref_id])
-        assert row[2] == _ABSTRACT
+        assert row[3] == []
 
     def test_pass_makes_no_model_call_on_masthead_only_paper(self, store: Any) -> None:
         ref_id, _ = _seed_paper(store, title="Helical microtubules", body=_MASTHEAD)
         client = _FakeClient(["should never be asked"])
         run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
         assert client.calls == []
+
+
+class TestPassOverBody:
+    """End-to-end: the block the model sees is retrieved body prose —
+    or the paper converges on the no-abstract stamp, never on a
+    byline-derived sentence (gr346458 / spec AC)."""
+
+    def test_sentence_is_written_from_body_prose(self, store: Any) -> None:
+        ref_id, _ = _seed_body(
+            store,
+            "Helical microtubules of graphitic carbon",
+            [(_MASTHEAD, None), (_METHODS, ["Experimental"])],
+        )
+        client = _FakeClient(["Films were synthesized by chemical vapour deposition."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        user = client.calls[0][-1]["content"]
+        assert _METHODS in user
+        assert "Iijima" not in user
+
+    def test_card_abstract_still_wins_over_retrieval(self, store: Any) -> None:
+        """Ref 207807's shape: a real card_abstract means the block is
+        exactly the card — retrieval never runs."""
+        ref_id = seed_ref(store, title="A DFT paper")
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            text=_ABSTRACT,
+            ord=-1,
+            chunk_kind="card_abstract",
+        )
+        seed_chunk(store, ref_id=ref_id, text=_METHODS, ord=0)
+        client = _FakeClient(["Computational study; DFT-calculated properties only."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result["ok"] == 1
+        user = client.calls[0][-1]["content"]
+        assert _ABSTRACT in user
+        assert _METHODS not in user
+
+    def test_masthead_plus_bibliography_stamps_no_abstract(self, store: Any) -> None:
+        """The spec's fixture: a paper whose only chunks are a byline and
+        a bibliography still scores below usable_context's thresholds —
+        stamped no-abstract, no model call, never a failed-from-masthead
+        stamp."""
+        ref_id, _ = _seed_body(
+            store,
+            "Helical microtubules",
+            [(_MASTHEAD, None), (_REFS_UNSECTIONED, None)],
+        )
+        client = _FakeClient(["Never asked."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert client.calls == []
+        assert result == {"claimed": 1, "ok": 0, "failed": 0}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert meta.get(META_NO_ABSTRACT_KEY) is True
+        assert META_FAILED_KEY not in meta
+
+    def test_per_ref_log_names_the_chunk_ids(
+        self, store: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ref_id, ids = _seed_body(
+            store, "A paper", [(_MASTHEAD, None), (_METHODS, None)]
+        )
+        with caplog.at_level(logging.INFO, logger="precis.workers.context_sentence"):
+            run_context_sentence_pass(
+                store, client=_FakeClient(["x."]), ref_ids=[ref_id]
+            )
+        assert any(
+            f"ref_id={ref_id}" in r.getMessage() and str(ids[1]) in r.getMessage()
+            for r in caplog.records
+        )
 
 
 class TestBackfillSelection:

@@ -721,6 +721,21 @@ def _unique_snip(quote: str, haystacks: list[str]) -> str:
 _CONTEXT_SENTENCE_INFLIGHT: set[int] = set()
 _CONTEXT_SENTENCE_LOCK = threading.Lock()
 
+#: Cached query embedder for the retrieval arm of the sentence pass —
+#: resolved once on first enqueue. ``recall_embedder`` builds the remote
+#: HTTP embedder only (never torch in the web process) and returns
+#: ``None`` when no remote URL is configured, which degrades the
+#: retrieval to its lexical legs.
+_CONTEXT_SENTENCE_EMBEDDER: list[Any] = []
+
+
+def _context_sentence_embedder(store: Any) -> Any:
+    if not _CONTEXT_SENTENCE_EMBEDDER:
+        from precis.backfill.workspace import recall_embedder
+
+        _CONTEXT_SENTENCE_EMBEDDER.append(recall_embedder(store))
+    return _CONTEXT_SENTENCE_EMBEDDER[0]
+
 
 def _run_context_sentence_enqueue(store: Any, ref_id: int) -> None:
     """The actual paper-context-sentence generation for one ref (``docs/
@@ -732,7 +747,12 @@ def _run_context_sentence_enqueue(store: Any, ref_id: int) -> None:
         from precis.workers.context_sentence import run_context_sentence_pass
 
         client = DispatchClient(tier=Tier.SMALL, source="context_sentence")
-        run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+        run_context_sentence_pass(
+            store,
+            client=client,
+            ref_ids=[ref_id],
+            embedder=_context_sentence_embedder(store),
+        )
     except Exception:
         log.warning(
             "context_sentence: lazy enqueue failed for ref_id=%s",
