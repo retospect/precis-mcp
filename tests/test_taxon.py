@@ -944,14 +944,14 @@ class TestLexicalNameAndDefinition:
         assert "no taxon named" not in body
         assert f"tn{rid}" in body
 
-    def test_card_scan_is_taxon_only(self) -> None:
+    def test_card_scan_is_opt_in(self) -> None:
         from precis.handlers.concept import ConceptHandler
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.taxon import TaxonHandler
 
         assert TaxonHandler.search_card_kinds == ("card_combined",)
+        assert MemoryHandler.search_card_kinds == ("card_combined",)  # header card
         assert ConceptHandler.search_card_kinds is None
-        assert MemoryHandler.search_card_kinds is None
 
 
 class TestDedup:

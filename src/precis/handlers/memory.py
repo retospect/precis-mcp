@@ -218,9 +218,13 @@ class MemoryHandler(NumericRefHandler):
 
     # The body lives in a `memory_body` chunk (ord>=0), embedded + keyworded
     # by the standard workers — that chunk is the memory's single embed
-    # source. No `card_combined` card any more (migration 0050): emitting
-    # both would double-embed the same prose.
+    # source. The body-text card is gone (migration 0050): emitting it too
+    # would double-embed the same prose. ``emits_card`` stays False; the
+    # separate *header* card (title + hook only, never the body — migration
+    # 0198) is written by ``ChunksOps.sync_header_card`` on every write path
+    # and opted into search via ``search_card_kinds``.
     emits_card: ClassVar[bool] = False
+    search_card_kinds: ClassVar[tuple[str, ...] | None] = ("card_combined",)
 
     # On create/edit, resolve `kind:ref` handles in the body and write
     # `related-to` links to them — so a memory is findable from the refs
@@ -530,6 +534,7 @@ class MemoryHandler(NumericRefHandler):
                 self._apply_attribution_tag(ref.id, misses, conn=conn)
             if self.autolink_mentions:
                 self._sync_mention_links(ref.id, body, conn=conn)
+            self.store.chunks.sync_header_card(ref.id, conn=conn)
         # Attribute the new memory's body chunk to the current agent run
         # (Slice B provenance) — a no-op unless PRECIS_CURRENT_AGENTLOG is
         # set (e.g. the dream pass), so a dream's own memories walk back to
@@ -818,6 +823,7 @@ class MemoryHandler(NumericRefHandler):
                     self.store.chunks.set_ref_title(
                         ref.id, new_title, source="agent", conn=conn
                     )
+                self.store.chunks.sync_header_card(ref.id, conn=conn)
             changed = ", ".join(
                 k for k in ("rule", "warrant", "hook", "type") if k in meta_patch
             )
@@ -948,6 +954,8 @@ class MemoryHandler(NumericRefHandler):
                 self.store.chunks.set_ref_title(
                     ref_id, new_title, source="agent", conn=conn
                 )
+            if meta_patch or new_title is not None:
+                self.store.chunks.sync_header_card(ref_id, conn=conn)
             # Re-sync auto-mention links to the rewritten body: drop the old
             # auto links, add the current ones. Hand-added links survive.
             self._sync_mention_links(ref_id, new_text, conn=conn, replace=True)
@@ -1148,6 +1156,13 @@ class MemoryHandler(NumericRefHandler):
                 return block.text
         return ref.title or ""
 
+    def _hit_text(self, ref: Ref, block: Any) -> str:
+        """Search-hit text: the body prose, even when the best-ranked chunk
+        was the title+hook header card (so a card hit still shows a snippet)."""
+        if getattr(block, "chunk_kind", None) == "card_combined":
+            return self._body_text(ref)
+        return str(block.text or "")
+
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Single-ref view: ``# memory <id>: <title>`` + body + tag line."""
         title = ref.title or ""
@@ -1227,6 +1242,7 @@ class MemoryHandler(NumericRefHandler):
         view: str | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        scope: str | None = None,
         **kw: Any,
     ) -> Response:
         """Memory search. An unscoped query whose hits cluster in one hub or
@@ -1243,6 +1259,7 @@ class MemoryHandler(NumericRefHandler):
             view=view,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            scope=scope,
             **kw,
         )
         if not (q and q.strip()):
@@ -1270,9 +1287,14 @@ class MemoryHandler(NumericRefHandler):
         view: str | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        scope: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Body-chunk search; ``view='index'`` renders hits as index bullets.
+
+        ``scope=`` picks where ``q`` matches: ``'title'`` = only the header
+        card (title + hook), ``'body'`` = only the body prose, omitted =
+        both. Anything else is refused.
 
         ``view='index'`` returns one ``- <Title> (me<id>[, <filename>]) —
         <hook>`` line per best-ranked memory (the session-start index shape;
@@ -1280,6 +1302,15 @@ class MemoryHandler(NumericRefHandler):
         ``<hook>`` is ``meta.hook`` else the body's first line). Any other
         ``view`` is refused; ``None`` is the unchanged default render.
         """
+        chunk_scope = scope.strip().lower() if isinstance(scope, str) else None
+        if chunk_scope == "":
+            chunk_scope = None
+        if chunk_scope not in (None, "title", "body"):
+            raise BadInput(
+                f"unknown scope {scope!r} for search(kind='memory')",
+                options=["title", "body"],
+                next="search(kind='memory', q='<words>', scope='title')",
+            )
         if view is None:
             return super().search(
                 q=q,
@@ -1289,6 +1320,7 @@ class MemoryHandler(NumericRefHandler):
                 mode=mode,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                chunk_scope=chunk_scope,
                 **_kw,
             )
         if view != "index":
@@ -1315,6 +1347,7 @@ class MemoryHandler(NumericRefHandler):
             mode=mode,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            chunk_scope=chunk_scope,
         )
         if not hits:
             tag_suffix = f" tagged {normalized}" if normalized else ""
@@ -1526,6 +1559,7 @@ class MemoryHandler(NumericRefHandler):
                 [ChunkInsert(ord=0, text=new_text, meta={"chunk_kind": _BODY_KIND})],
                 conn=conn,
             )
+            self.store.chunks.sync_header_card(survivor.id, conn=conn)
             for tag in tag_objs:
                 self.store.add_tag(
                     survivor.id,
