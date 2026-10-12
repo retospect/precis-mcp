@@ -366,13 +366,14 @@ class NumericRefHandler(Handler):
         id: Any = None,
         extent: Any = "fisheye",
         q: str | None = None,
+        ring: Any = None,
     ) -> Response:
         """The eye ladder on one ref, resolved the way this kind's ``get``
         resolves it — ``kind:id`` link targets, pub-id slugs where the
         subclass overrides ``_coerce_id``, and ``Gone`` for a soft-deleted
         row — before the shared render (:mod:`precis.handlers._eye`)."""
         ref = self._resolve_live_ref(self._coerce_id(id))
-        return super().eye(id=int(ref.id), extent=extent, q=q)
+        return super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
 
     def get(
         self,

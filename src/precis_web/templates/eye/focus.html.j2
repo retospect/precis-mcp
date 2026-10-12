@@ -7,7 +7,7 @@
     <p class="text-xs text-slate-500">
       <a href="/eye/" class="underline">eye</a>
       {% if reader_url %}· <a href="{{ reader_url }}" class="underline">open in its reader</a>{% endif %}
-      · <span class="font-mono">get(id='{{ handle }}', extent='{{ extent }}'{% if q %}, q='{{ q }}'{% endif %})</span>
+      · <span class="font-mono">get(id='{{ handle }}', extent='{{ extent }}'{% if q %}, q='{{ q }}'{% endif %}{% if ring %}, args={'ring': {{ ring }}}{% endif %})</span>
     </p>
   </div>
   <nav class="flex flex-wrap gap-1 text-xs" aria-label="extent ladder">
@@ -16,5 +16,13 @@
     {% endfor %}
   </nav>
 </div>
+{% if chips %}
+<nav class="mb-3 flex flex-wrap items-center gap-1 text-xs" aria-label="ring filters">
+  <span class="text-slate-500">ring:</span>
+  {% for c in chips %}
+  <a href="{{ c.href }}" class="rounded px-2 py-0.5 font-mono bg-amber-100 text-amber-800 hover:bg-amber-200" title="remove this filter">{{ c.label }} ×</a>
+  {% endfor %}
+</nav>
+{% endif %}
 <pre class="eye-body whitespace-pre-wrap rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-700{% else %}border-slate-200 bg-white text-slate-800{% endif %} p-4 text-sm leading-relaxed">{{ body | safe }}</pre>
 {% endblock %}

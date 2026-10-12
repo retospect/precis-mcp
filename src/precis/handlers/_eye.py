@@ -176,20 +176,26 @@ def eye_response(
     id: str | int | None,
     extent: str | int | Extent,
     q: str | None = None,
+    ring: Any = None,
 ) -> Response:
     """Render the eye on ``(kind, id)`` at ``extent`` — the default body of
-    :meth:`precis.protocol.Handler.eye`."""
+    :meth:`precis.protocol.Handler.eye`. ``ring`` is
+    :class:`precis.utils.eye_render.RingFilter`'s wire form: ``{'kinds':
+    <csv|list>, 'space': <csv|list>}``, narrowing every ring a link or doc
+    eye renders."""
     handle = eye_handle(store, kind=kind, id=id)
     try:
-        return Response(body=render_eye(store, handle, extent, q=q))
+        return Response(body=render_eye(store, handle, extent, q=q, ring=ring))
     except ValueError as e:
         raise BadInput(str(e), next=EYE_NEXT) from e
 
 
-def eye_body(store: Store, handle: str, extent: Any, *, q: str | None = None) -> str:
+def eye_body(
+    store: Store, handle: str, extent: Any, *, q: str | None = None, ring: Any = None
+) -> str:
     """:func:`render_eye` with its ``ValueError`` as a ``BadInput`` — for a
     handler that already holds the handle (draft's ``¶`` anchors)."""
     try:
-        return render_eye(store, handle, extent, q=q)
+        return render_eye(store, handle, extent, q=q, ring=ring)
     except ValueError as e:
         raise BadInput(str(e), next=EYE_NEXT) from e

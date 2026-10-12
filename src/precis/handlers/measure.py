@@ -184,7 +184,12 @@ class MeasureHandler(Handler):
     # ── get ──────────────────────────────────────────────────────────
 
     def eye(
-        self, *, id: Any = None, extent: Any = "fisheye", q: str | None = None
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
     ) -> Response:
         raise Unsupported(
             "a measure is a row of a run, not a node: it has no neighbourhood "

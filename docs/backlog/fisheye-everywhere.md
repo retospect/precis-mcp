@@ -8,7 +8,7 @@ model: opus
 
 # fisheye everywhere — what is left after the ladder landed on every kind
 
-## Shipped (2026-10-02 … 2026-10-09; `git log` is the record)
+## Shipped (2026-10-02 … 2026-10-12; `git log` is the record)
 
 The eye ladder rungs (`fisheye+2hop`, `+recall`), the ring registry
 (`utils/refeye.py::RING_GROUPS`), `extent=` on every kind's `get`
@@ -21,29 +21,24 @@ handle-or-query box), and `precis-fisheye-help` with one worked example per
 ring group. The `focus` verb and render→act loop stay in
 `fisheye-level2.md`; the SVG graph page is `web-graph-navigation.md`.
 
+2026-10-12: ring filters on the focus page (`?kind=<csv>&space=<csv>`,
+URL as state, chips reflect it, linked handles carry it forward; the
+param parsing is `precis_web/graph_filters.py`, shared with the
+`web-graph-navigation.md` SVG page's slices-to-come). The same narrowing
+rides the eye door itself — `args={'ring': {'kinds':…, 'space':…}}` on
+`get(extent=…)` → `eye_render.RingFilter`, narrowing first hop, second
+hop and `+recall`. The `Roadmap` served-by mix resolved by ranking:
+`refeye.py::RING_GROUP_KIND_RANK` lists `quest` neighbours first, so a
+hub with hundreds of serving papers can't hide its sub-quests. And the
+quest eye opens with its gist — statement + rubric composed from
+`refs.title`/`refs.meta` by `handlers/quest.py::quest_gist` — not the
+logbook, which stays at `view='logbook'`.
+
 ## In scope (remaining)
 
-1. **Ring filters on the focus page** by kind and by the `SPACE:` tag axis
-   (`file-mirror.md` §"Pillar-review deltas"), so repo-dev and research
-   neighbourhoods can be shown apart or together. Query params, URL as
-   state, chips reflect it — the same shape `web-graph-navigation.md`
-   slice 4 gives the SVG page; share the filter parsing with it.
 2. **Human acceptance**: from a finding hub Reto reaches its evidence
    papers, its `measures` rows and the quest that cites it in three clicks
    and no SQL. Not machine-checkable; closes when Reto says so.
-3. **A quest's `served-by` block mixes sub-quests with papers and
-   structures** (found 2026-10-03). qu202467 has 484 serving papers, so
-   the 8-row `served-by` cap can hide every serving sub-quest. Split the
-   `Roadmap` ring by source kind, or rank sub-quests first. A
-   `RING_GROUPS` decision, made when the measures pilot gives the quest
-   ring a "best numbers" group.
-4. **The quest ladder's fisheye body is the logbook** (dogfood 2026-10-04).
-   `get(kind='quest', id=202467, extent='fisheye+1hop')` puts about 30
-   lines above the ring: the statement, then the logbook entries. A
-   fisheye should open with the node's gist (statement and rubric) and
-   leave the logbook to `view='logbook'`. The renderer takes the body
-   from the quest's chunks; a quest needs a one-chunk gist for the eye,
-   the same way a finding has its claim.
 
 ## Navigation (2026-10-06) — dive in, back out
 
@@ -71,22 +66,30 @@ keyboard layer is not duplicated here.
 
 ## Acceptance criteria
 
-1. `/eye/<handle>?kind=memory&space=repo-dev` narrows every ring to that
-   kind and SPACE; the same URL without the params renders the full ring.
+1. ~~`/eye/<handle>?kind=memory&space=repo-dev` narrows every ring to that
+   kind and SPACE; the same URL without the params renders the full
+   ring.~~ shipped 2026-10-12 — `tests/precis_web/test_eye_route.py`.
 2. Item 2 above, by Reto's word.
-3. `get(kind='quest', id=qu202467, extent='fisheye+1hop')` lists the
+3. ~~`get(kind='quest', id=qu202467, extent='fisheye+1hop')` lists the
    serving sub-quests in `Roadmap` before any paper, and opens with the
-   quest's gist, not its logbook.
-
-## Target + blast radius
-
-- `src/precis_web/routes/eye.py` (filters), `src/precis/utils/eye_render.py`
-  (`_first_hop` filter hook; quest gist body), `utils/refeye.py::RING_GROUPS`
-  (Roadmap split), `handlers/quest.py` (a gist chunk), skill
-  `precis-fisheye-help`.
+   quest's gist, not its logbook.~~ shipped 2026-10-12 —
+   `tests/test_eye_render.py`.
 
 ## Open questions / decisions log
 
+- **[decided 2026-10-12]** The `served-by` mix resolved by ranking, not a
+  split: `refeye.py::RING_GROUP_KIND_RANK` orders `quest` neighbours
+  first in `Roadmap`, so serving sub-quests precede papers under the
+  per-label cap. If a "best numbers" group is ever wanted for the quest
+  ring it lands as a `RING_GROUPS` entry, not a retune of this rank.
+- **[decided 2026-10-12]** The quest eye's body is a composed gist
+  (`handlers/quest.py::quest_gist`, statement + `rubric`/`demand`/`supply`
+  from `refs.title`/`refs.meta`), not a stored chunk — a meta edit can't
+  drift it, and no quest needed a backfill.
+- **[decided 2026-10-12]** Ring filters ride the eye door
+  (`args={'ring': …}` → `Handler.eye(ring=…)` → `eye_render.RingFilter`),
+  so `/eye/<handle>` and the MCP `get` narrow identically rather than the
+  page carrying a second filter path.
 - **[open, non-blocking]** The `+recall` cap (k=8) and whether recall
   crosses kinds by default (same kind + finding). Built with both
   defaults and a 0.6 cosine-distance floor (`eye_render._RECALL_*`).

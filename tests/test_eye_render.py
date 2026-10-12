@@ -531,6 +531,139 @@ def test_recall_says_so_when_the_ref_is_not_embedded(hub: Hub) -> None:
     assert "— recall: no embedded chunk on this ref yet —" in out
 
 
+# ── ring filters (RingFilter): kind + the SPACE: tag axis ────────────
+
+
+def test_ring_filter_narrows_the_first_hop_by_kind(hub: Hub) -> None:
+    """``fisheye-everywhere.md`` AC 1: ``ring={'kinds': 'memory'}`` drops
+    every non-memory neighbour; no filter renders the full ring."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    note = store.insert_ref(kind="memory", slug=None, title="A note")
+    paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS")
+    for near in (note, paper):
+        store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    h = handle_registry.format_handle("memory", focus.id)
+
+    narrowed = render_eye(store, h, "fisheye+1hop", ring={"kinds": "memory"})
+    assert f"related-to: me{note.id}" in narrowed
+    assert "related-to: pa" not in narrowed
+    full = render_eye(store, h, "fisheye+1hop")
+    assert f"related-to: pa{paper.id}" in full
+
+
+def test_ring_filter_narrows_by_the_space_tag_axis(hub: Hub) -> None:
+    """``space=`` selects inside the closed SPACE: partition — a tagged
+    neighbour survives, an untagged one drops, and the focus itself still
+    renders (the filter narrows the ring, never the eye)."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    repo = store.insert_ref(kind="memory", slug=None, title="Repo note")
+    other = store.insert_ref(kind="memory", slug=None, title="Research note")
+    store.add_tag(repo.id, Tag.closed("SPACE", "repo-dev"), set_by="system")
+    for near in (repo, other):
+        store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    h = handle_registry.format_handle("memory", focus.id)
+
+    out = render_eye(store, h, "fisheye+1hop", ring={"space": "repo-dev"})
+    assert f"related-to: me{repo.id}" in out
+    assert f"related-to: me{other.id}" not in out
+    assert "Focus" in out
+
+
+def test_ring_filter_reaches_the_second_hop(hub: Hub) -> None:
+    """The counts at ``fisheye+2hop`` narrow the same way — both the
+    first-hop neighbours a second hop walks out from and the far refs it
+    counts."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    near = store.insert_ref(kind="memory", slug=None, title="Near")
+    side = store.insert_ref(kind="paper", slug="side20", title="Side paper")
+    deep_paper = store.insert_ref(kind="paper", slug="deep21", title="Deep paper")
+    deep_mem = store.insert_ref(kind="memory", slug=None, title="Deep note")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=side.id, relation="related-to")
+    for far in (deep_paper, deep_mem):
+        store.add_link(src_ref_id=near.id, dst_ref_id=far.id, relation="related-to")
+    h = handle_registry.format_handle("memory", focus.id)
+
+    full = render_eye(store, h, "fisheye+2hop")
+    assert "1 paper via related-to" in full and "1 memory via related-to" in full
+    narrowed = render_eye(store, h, "fisheye+2hop", ring={"kinds": "memory"})
+    assert "1 memory via related-to" in narrowed
+    assert "paper via" not in narrowed
+
+
+def test_ring_filter_rejects_an_unknown_kind(hub: Hub) -> None:
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    with pytest.raises(ValueError, match="unknown ring kind"):
+        render_eye(
+            store,
+            handle_registry.format_handle("memory", focus.id),
+            "fisheye+1hop",
+            ring={"kinds": "nosuchkind"},
+        )
+
+
+def test_roadmap_lists_serving_sub_quests_before_papers(hub: Hub) -> None:
+    """``fisheye-everywhere.md`` in-scope 3 / AC 3: ``served-by`` mixes
+    sub-quests with papers — the quests rank first so the per-label cap
+    can't hide them behind hundreds of serving papers (qu202467)."""
+    store = hub.live_store
+    q = store.insert_ref(kind="quest", slug=None, title="The mesh quest")
+    for i in range(9):
+        p = store.insert_ref(kind="paper", slug=f"s{i}", title=f"Paper {i}")
+        store.add_link(src_ref_id=p.id, dst_ref_id=q.id, relation="serves")
+    sub1 = store.insert_ref(kind="quest", slug=None, title="Sub quest one")
+    sub2 = store.insert_ref(kind="quest", slug=None, title="Sub quest two")
+    store.add_link(src_ref_id=sub1.id, dst_ref_id=q.id, relation="serves")
+    store.add_link(src_ref_id=sub2.id, dst_ref_id=q.id, relation="serves")
+
+    out = render_eye(
+        store, handle_registry.format_handle("quest", q.id), "fisheye+1hop"
+    )
+    served = [
+        ln.strip() for ln in out.splitlines() if ln.strip().startswith("served-by:")
+    ]
+    assert served[0].startswith(f"served-by: qu{sub1.id}")
+    assert served[1].startswith(f"served-by: qu{sub2.id}")
+    assert served[2].startswith("served-by: pa")
+    assert "… +3 more" in out  # 11 servers, 8 rows
+
+
+def test_quest_eye_opens_with_the_gist_not_the_logbook(hub: Hub) -> None:
+    """``fisheye-everywhere.md`` in-scope 4 / AC 3: a quest's eye body is
+    the one-chunk gist — striving statement (all title lines) + rubric —
+    and the ``quest_log`` chunks stay at ``view='logbook'``."""
+    store = hub.live_store
+    q = store.insert_ref(
+        kind="quest",
+        slug=None,
+        title="Catalyse NO to NH3\nselectivity above 90% at ambient",
+        meta={
+            "rubric_objectives": [
+                {"key": "log_tof", "sense": "max"},
+                {"key": "P_side", "sense": "max", "optional": True},
+            ],
+            "demand": {"log_tof": {"value": 2.0}},
+        },
+    )
+    from precis.quest.logbook import append_entry
+
+    append_entry(
+        store, q.id, text="Tried Fe-N4 sites", entry_type="hypothesis", by="agent"
+    )
+
+    out = render_eye(
+        store, handle_registry.format_handle("quest", q.id), "fisheye+1hop"
+    )
+    assert "selectivity above 90% at ambient" in out
+    assert "rubric: log_tof max · P_side max (optional)" in out
+    assert "demand: log_tof=2.0" in out
+    assert "Tried Fe-N4 sites" not in out
+
+
 # ── skill eyes: file-backed, atomic (no neighborhood) ──────────────────
 
 

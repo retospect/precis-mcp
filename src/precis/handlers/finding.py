@@ -906,12 +906,13 @@ class FindingHandler(NumericRefHandler):
         id: Any = None,
         extent: Any = "fisheye",
         q: str | None = None,
+        ring: Any = None,
     ) -> Response:
         """The eye ladder on a finding: the shared render led by the
         claim-hub posture header (:func:`_hub_eye_header`); a ``pub_id``
         slug resolves like it does on ``get``."""
         ref = self._resolve_live_ref(self._coerce_id(self._resolve_pub_id_slug(id)))
-        resp = super().eye(id=int(ref.id), extent=extent, q=q)
+        resp = super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
         return Response(body=_hub_eye_header(self.store, ref) + resp.body)
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:

@@ -82,6 +82,49 @@ def test_focus_page_on_a_skill_and_on_a_dead_handle(
     assert client.get("/eye/not-a-handle").status_code == 404
 
 
+def test_focus_page_ring_filters_narrow_and_chip(
+    client: TestClient, store: Any
+) -> None:
+    """``fisheye-everywhere.md`` AC 1: ``?kind=&space=`` narrow every
+    ring; the URL is the state — chips show it and every linked handle
+    carries it forward."""
+    from precis.store import Tag
+
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    repo = store.insert_ref(kind="memory", slug=None, title="Repo note")
+    other = store.insert_ref(kind="memory", slug=None, title="Research note")
+    paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS")
+    store.add_tag(repo.id, Tag.closed("SPACE", "repo-dev"), set_by="system")
+    for near in (repo, other, paper):
+        store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+
+    page = client.get(
+        f"/eye/me{focus.id}", params={"kind": "memory", "space": "repo-dev"}
+    )
+    assert page.status_code == 200
+    assert f"me{repo.id}" in page.text  # the matching neighbour
+    assert f"me{other.id}" not in page.text.split("ring:")[-1]  # untagged: out
+    assert f"pa{paper.id}" not in page.text.split("ring:")[-1]  # wrong kind: out
+    # the chips reflect the URL state and the links carry it forward
+    assert "kind:memory" in page.text and "space:repo-dev" in page.text
+    assert (
+        f"/eye/me{repo.id}?extent=fisheye%2B1hop&kind=memory&space=repo-dev"
+        in page.text
+    )
+    # the same URL without the params renders the full ring, no chips
+    full = client.get(f"/eye/me{focus.id}")
+    assert f"me{other.id}" in full.text and f"pa{paper.id}" in full.text
+    assert 'aria-label="ring filters"' not in full.text
+
+
+def test_focus_page_rejects_a_bad_ring_filter(client: TestClient, store: Any) -> None:
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    bad = client.get(f"/eye/me{focus.id}", params={"kind": "nosuchkind"})
+    assert bad.status_code == 400 and "unknown kind" in bad.text
+    bad = client.get(f"/eye/me{focus.id}", params={"space": "outer"})
+    assert bad.status_code == 400 and "unknown space" in bad.text
+
+
 def test_index_redirects_a_handle_and_searches_a_query(
     client: TestClient, store: Any
 ) -> None:

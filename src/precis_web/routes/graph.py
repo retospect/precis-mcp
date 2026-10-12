@@ -33,6 +33,7 @@ from fastapi.responses import JSONResponse
 from precis.errors import BadInput, NotFound
 from precis.utils.refeye import RING_GROUPS, ring_group
 from precis_web.deps import get_store
+from precis_web.graph_filters import csv_list
 from precis_web.routes.items import _parse_date
 
 router = APIRouter(prefix="/graph", tags=["graph"])
@@ -43,11 +44,6 @@ DEFAULT_CAP = 60
 MAX_CAP = 200
 
 OTHER_GROUP = "Other"
-
-
-def _csv(raw: str) -> list[str] | None:
-    vals = [v.strip() for v in (raw or "").split(",") if v.strip()]
-    return vals or None
 
 
 def ring_groups(counts: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
@@ -94,8 +90,8 @@ async def neighbourhood_json(
             kind,
             ref_id,
             depth=depth,
-            rels=_csv(rels),
-            kinds=_csv(kinds),
+            rels=csv_list(rels),
+            kinds=csv_list(kinds),
             since=_parse_date(since),
             until=_parse_date(until),
             cap=cap,

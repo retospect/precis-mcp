@@ -17,8 +17,10 @@ quest **is a vector**, the substrate the alignment floor + reading calibration
 consume for free.
 
 The **logbook** hangs off the quest as append-only ``quest_log`` chunks (the
-``gripe`` body+comment pattern) — a WORM, dated ledger of deeds. Append idiom
-mirrors gripe's comment append, with an entry type:
+``gripe`` body+comment pattern) — a WORM, dated ledger of deeds. Because the
+chunks *are* the ledger, the fisheye's body slot reads :func:`quest_gist`
+(statement + rubric) instead; the logbook stays at ``view='logbook'``. Append
+idiom mirrors gripe's comment append, with an entry type:
 ``put(kind='quest', id=N, text='…', entry='hypothesis')``. A ``milestone`` entry
 is a **deed** (the honest medieval sense of progress); an entry carrying a
 ``cost`` feeds the **tote** (lifetime spend = a query over the dated log, no
@@ -108,6 +110,58 @@ _DEMAND_NEXT = (
     "'reason': 'why the part needs it'}}}"
 )
 _SUPPLY_NEXT = "meta={'supply': {'<axis key>': {'value': 6.0, 'evidence': ['fi<id>']}}}"
+
+
+def _rubric_summary(meta: dict[str, Any]) -> list[str]:
+    """The rubric half of :func:`quest_gist`: a ``rubric:`` line from
+    ``meta.rubric_objectives`` (``key <sense>`` per axis, ``(optional)``
+    kept), plus ``demand:``/``supply:`` lines on a roadmap capability node
+    — ``<axis>=<value>``, the target/best number, not its prose evidence."""
+    lines: list[str] = []
+    raw = meta.get("rubric_objectives")
+    if isinstance(raw, list):
+        axes = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key:
+                continue
+            sense = str(item.get("sense") or "").strip() or "min"
+            axis = f"{key} {sense}" + (" (optional)" if item.get("optional") else "")
+            axes.append(axis)
+        if axes:
+            lines.append("rubric: " + " · ".join(axes))
+    for field in ("demand", "supply"):
+        entries = meta.get(field)
+        if not isinstance(entries, dict):
+            continue
+        bits = []
+        for axis in sorted(entries):
+            entry = entries[axis]
+            value = entry.get("value") if isinstance(entry, dict) else entry
+            if value is not None:
+                bits.append(f"{axis}={value}")
+        if bits:
+            lines.append(f"{field}: " + " · ".join(bits))
+    return lines
+
+
+def quest_gist(ref: Ref) -> str:
+    """The one-chunk gist a quest's fisheye opens on — the striving
+    statement (``refs.title``, all lines: the criteria ride its tail) plus
+    its rubric, never the logbook (``view='logbook'`` keeps that).
+    Composed from the ref rather than stored as a chunk: a
+    ``rubric_objectives``/``demand``/``supply`` meta edit can't drift a
+    derived gist, and quests minted before it existed need no backfill
+    (``fisheye-everywhere.md`` in-scope 4)."""
+    meta = ref.meta or {}
+    parts: list[str] = []
+    statement = (ref.title or "").strip()
+    if statement:
+        parts.append(statement)
+    parts.extend(_rubric_summary(meta))
+    return "\n".join(parts)
 
 
 def _check_operating_conditions(meta: dict[str, Any]) -> None:

@@ -13,10 +13,14 @@ cross-link.
   ``sk:precis-get-help``) or a query. A handle redirects to its focus; a
   query runs the cross-kind ``search`` and shows the hits with their
   handles linked, so one click focuses the hit.
-* ``GET /eye/{handle}?extent=<rung>&q=<kind:label>`` — the focus. The
-  rung defaults to ``fisheye+1hop`` (the neighbourhood, which is the point
-  of the page); the ladder is a row of links; ``q=`` expands one
-  second-hop group at ``fisheye+2hop``, as on the MCP door.
+* ``GET /eye/{handle}?extent=<rung>&q=<kind:label>&kind=<csv>&space=<csv>``
+  — the focus. The rung defaults to ``fisheye+1hop`` (the neighbourhood,
+  which is the point of the page); the ladder is a row of links; ``q=``
+  expands one second-hop group at ``fisheye+2hop``, as on the MCP door.
+  ``kind=``/``space=`` narrow every ring — by neighbour kind and the
+  ``SPACE:`` tag axis (``fisheye-everywhere.md`` in-scope 1), parsed by
+  the same :mod:`precis_web.graph_filters` the ``/graph`` pages read —
+  the URL is the state and the chips above the body reflect it.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.utils import handle_registry
 from precis_web.deps import await_dispatch, templates
+from precis_web.graph_filters import parse_kind_filter, parse_space_filter
 from precis_web.ref_urls import ref_url
 
 router = APIRouter(prefix="/eye", tags=["eye"])
@@ -49,25 +54,46 @@ _HANDLE_IN_TEXT = re.compile(r"(?<![\w:/.-])([a-z]{2}\d+)(?![\w-])")
 _SKILL_IN_TEXT = re.compile(r"(?<![\w/])sk:([a-z0-9][a-z0-9-]*)")
 
 
-def _eye_href(handle: str, extent: str = DEFAULT_EXTENT) -> str:
-    return f"/eye/{quote(handle, safe=':')}?extent={quote(extent, safe='')}"
+def _eye_href(
+    handle: str,
+    extent: str = DEFAULT_EXTENT,
+    *,
+    kinds: frozenset[str] | None = None,
+    spaces: frozenset[str] | None = None,
+) -> str:
+    href = f"/eye/{quote(handle, safe=':')}?extent={quote(extent, safe='')}"
+    if kinds:
+        href += "&kind=" + quote(",".join(sorted(kinds)), safe="")
+    if spaces:
+        href += "&space=" + quote(",".join(sorted(spaces)), safe="")
+    return href
 
 
-def linkify_handles(text: str, *, extent: str = DEFAULT_EXTENT) -> str:
+def linkify_handles(
+    text: str,
+    *,
+    extent: str = DEFAULT_EXTENT,
+    kinds: frozenset[str] | None = None,
+    spaces: frozenset[str] | None = None,
+) -> str:
     """HTML-escape ``text`` and turn every handle it names into a link to
-    that handle's focus page at ``extent``. Pure text transform (no store):
-    a handle that does not parse — ``ab12`` with no such code — is left as
-    text, so a false positive costs a plain word, never a dead link."""
+    that handle's focus page at ``extent`` — the active ring filter
+    (``kinds``/``spaces``) rides the URL so a click keeps the narrowed
+    view. Pure text transform (no store): a handle that does not parse —
+    ``ab12`` with no such code — is left as text, so a false positive
+    costs a plain word, never a dead link."""
 
     def _record(m: re.Match[str]) -> str:
         h = m.group(1)
         if handle_registry.parse(h) is None:
             return h
-        return f'<a class="eye-handle" href="{_eye_href(h, extent)}">{h}</a>'
+        href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
+        return f'<a class="eye-handle" href="{href}">{h}</a>'
 
     def _skill(m: re.Match[str]) -> str:
         h = m.group(0)
-        return f'<a class="eye-handle" href="{_eye_href(h, extent)}">{h}</a>'
+        href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
+        return f'<a class="eye-handle" href="{href}">{h}</a>'
 
     escaped = html.escape(text, quote=False)
     return _SKILL_IN_TEXT.sub(_skill, _HANDLE_IN_TEXT.sub(_record, escaped))
@@ -96,13 +122,24 @@ def _reader_url(handle: str) -> str | None:
     return ref_url(parsed[0], parsed[2])
 
 
-def _ladder(handle: str, extent: str) -> list[dict[str, Any]]:
+def _ladder(
+    handle: str,
+    extent: str,
+    *,
+    kinds: frozenset[str] | None = None,
+    spaces: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
     base = extent[: -len("+recall")] if extent.endswith("+recall") else extent
     recall = extent != base
     rungs = [
         {
             "label": r,
-            "href": _eye_href(handle, r + ("+recall" if recall else "")),
+            "href": _eye_href(
+                handle,
+                r + ("+recall" if recall else ""),
+                kinds=kinds,
+                spaces=spaces,
+            ),
             "on": r == base,
         }
         for r in EYE_LADDER
@@ -110,11 +147,51 @@ def _ladder(handle: str, extent: str) -> list[dict[str, Any]]:
     rungs.append(
         {
             "label": "+recall",
-            "href": _eye_href(handle, base if recall else f"{base}+recall"),
+            "href": _eye_href(
+                handle,
+                base if recall else f"{base}+recall",
+                kinds=kinds,
+                spaces=spaces,
+            ),
             "on": recall,
         }
     )
     return rungs
+
+
+def _filter_chips(
+    handle: str,
+    extent: str,
+    *,
+    kinds: frozenset[str] | None,
+    spaces: frozenset[str] | None,
+) -> list[dict[str, str]]:
+    """One chip per active ring-filter value, each a link to the same page
+    minus that value (the URL is the state, the chips reflect it). A
+    trailing ``clear`` chip drops every axis when more than one is on."""
+    on_kinds = kinds or frozenset()
+    on_spaces = spaces or frozenset()
+    chips = [
+        {
+            "label": f"kind:{k}",
+            "href": _eye_href(
+                handle, extent, kinds=on_kinds - {k} or None, spaces=spaces
+            ),
+        }
+        for k in sorted(on_kinds)
+    ]
+    chips += [
+        {
+            "label": f"space:{s}",
+            "href": _eye_href(
+                handle, extent, kinds=kinds, spaces=on_spaces - {s} or None
+            ),
+        }
+        for s in sorted(on_spaces)
+    ]
+    if len(chips) > 1:
+        chips.append({"label": "clear", "href": _eye_href(handle, extent)})
+    return chips
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -143,8 +220,11 @@ async def eye_focus(
     handle: str,
     extent: str = DEFAULT_EXTENT,
     q: str | None = None,
+    kind: str = "",
+    space: str = "",
 ) -> Any:
-    """The focus page for one handle at one rung."""
+    """The focus page for one handle at one rung, optionally narrowed by
+    ``kind=``/``space=`` ring filters."""
     target = _handle_target(handle)
     if target is None:
         return templates.TemplateResponse(
@@ -170,9 +250,26 @@ async def eye_focus(
             },
             status_code=400,
         )
+    try:
+        kinds = parse_kind_filter(kind)
+        spaces = parse_space_filter(space)
+    except ValueError as e:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Bad ring filter", "status": 400, "detail": str(e)},
+            status_code=400,
+        )
     args: dict[str, Any] = {**target, "extent": extent}
     if q:
         args["q"] = q
+    ring: dict[str, list[str]] = {}
+    if kinds:
+        ring["kinds"] = sorted(kinds)
+    if spaces:
+        ring["space"] = sorted(spaces)
+    if ring:
+        args["ring"] = ring
     body, is_error = await await_dispatch(request, "get", args)
     status = 200
     if is_error:
@@ -186,9 +283,11 @@ async def eye_focus(
             "handle": canonical,
             "extent": extent,
             "q": q or "",
-            "body": linkify_handles(body, extent=extent),
+            "body": linkify_handles(body, extent=extent, kinds=kinds, spaces=spaces),
             "is_error": is_error,
-            "ladder": _ladder(canonical, extent),
+            "ladder": _ladder(canonical, extent, kinds=kinds, spaces=spaces),
+            "chips": _filter_chips(canonical, extent, kinds=kinds, spaces=spaces),
+            "ring": ring or None,
             "reader_url": _reader_url(canonical),
         },
         status_code=status,

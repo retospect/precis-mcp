@@ -486,6 +486,7 @@ class DraftHandler(Handler):
         id: Any = None,
         extent: Any = "fisheye",
         q: str | None = None,
+        ring: Any = None,
     ) -> Response:
         """The eye ladder on a draft section. A ``dc<id>`` handle takes the
         shared path; the legacy ``¶<base58>`` anchor (which no registry
@@ -498,8 +499,8 @@ class DraftHandler(Handler):
                     f"an eye focuses one node, not a window ({s!r})",
                     next="drop the -B..A suffix, or omit extent= to read the window",
                 )
-            return Response(body=eye_body(self.store, s, extent, q=q))
-        return super().eye(id=id, extent=extent, q=q)
+            return Response(body=eye_body(self.store, s, extent, q=q, ring=ring))
+        return super().eye(id=id, extent=extent, q=q, ring=ring)
 
     def get(
         self,

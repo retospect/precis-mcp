@@ -60,10 +60,11 @@ from __future__ import annotations
 
 import logging
 import weakref
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
-from precis.utils.refeye import RING_GROUPS, ring_group
+from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
@@ -119,6 +120,68 @@ _HOME_FWD = 12
 #: decimal parse, rather than folded into the registry's grammar.
 _SKILL_HANDLE_PREFIX = handle_registry.code_for_kind("skill") + ":"
 
+#: The closed ``SPACE:`` tag axis (``docs/backlog/file-mirror.md``
+#: §Pillar-review deltas) — the partition a ``space=`` ring filter selects
+#: inside. Kept here so the renderer and the web pages
+#: (``precis_web.graph_filters``) share one list.
+SPACE_AXIS: frozenset[str] = frozenset({"research", "repo-dev", "personal"})
+
+
+@dataclass(frozen=True)
+class RingFilter:
+    """A narrowing on a link-kind eye's rings — by neighbour kind and/or by
+    the ``SPACE:`` tag axis (``fisheye-everywhere.md`` in-scope 1), so e.g.
+    repo-dev and research neighbourhoods can be shown apart. ``None`` on an
+    axis leaves it open; ``spaces`` drops every neighbour carrying no
+    ``SPACE:`` tag (the axis is a partition). The focus itself always
+    renders; the tree eyes (reading order, not link edges) and the atomic
+    skill eye have no ring to narrow.
+    """
+
+    kinds: frozenset[str] | None = None
+    spaces: frozenset[str] | None = None
+
+    @classmethod
+    def parse(cls, raw: Any) -> RingFilter | None:
+        """``ring=``'s wire form → a :class:`RingFilter`: ``None``, an
+        existing ``RingFilter``, or a dict ``{"kinds": <csv|list>,
+        "space": <csv|list>}`` (values may carry or omit the ``SPACE:``
+        prefix). Raises ``ValueError`` on a non-dict or an unknown kind —
+        the same error channel as an unknown rung."""
+        if raw is None or isinstance(raw, cls):
+            return raw
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"eye: ring= takes a dict like {{'kinds': 'memory', "
+                f"'space': 'repo-dev'}}, got {raw!r}"
+            )
+        kinds = _csv_set(raw.get("kinds"))
+        spaces = _csv_set(raw.get("space"))
+        bad_kinds = [k for k in kinds or () if not handle_registry.is_known_kind(k)]
+        if bad_kinds:
+            raise ValueError(f"eye: unknown ring kind(s) {bad_kinds!r}")
+        normed = (
+            frozenset(
+                v[len("SPACE:") :] if v.upper().startswith("SPACE:") else v
+                for v in spaces
+            )
+            if spaces is not None
+            else None
+        )
+        return cls(kinds=kinds, spaces=normed)
+
+
+def _csv_set(raw: Any) -> frozenset[str] | None:
+    """``<csv>`` or a list/tuple/set of values → a frozenset, ``None`` when
+    absent or empty."""
+    if raw is None:
+        return None
+    vals = (
+        raw if isinstance(raw, (list, tuple, set, frozenset)) else str(raw).split(",")
+    )
+    out = frozenset(str(v).strip() for v in vals if str(v).strip())
+    return out or None
+
 
 def render_eye(
     # store stays Any: tests pass a hand-rolled fake narrower than Store
@@ -129,6 +192,7 @@ def render_eye(
     extent: Extent | str | int,
     *,
     q: str | None = None,
+    ring: RingFilter | dict[str, Any] | None = None,
 ) -> str:
     """Render one eye by its kind's neighborhood strategy. Raises ``ValueError``
     if the handle does not resolve to a live ref/chunk, or asks a rung its
@@ -139,8 +203,11 @@ def render_eye(
     ``q='<kind>:<label>'`` at ``fisheye+2hop`` expands one second-hop group
     (:func:`_second_hop`); ``q='<label>'`` (no colon) at ``fisheye+1hop`` or
     above lists one first-hop group uncapped (:func:`_expand_first_hop`) — the
-    call a ``… +N more`` line carries."""
+    call a ``… +N more`` line carries. ``ring`` narrows every ring a link or
+    doc eye renders (first hop, second hop, recall) by neighbour kind and/or
+    ``SPACE:`` tag (:class:`RingFilter`)."""
     ext, recall = parse_extent(extent)
+    filt = RingFilter.parse(ring)
     if q is not None and (ext < Extent.HOP1 or (ext < Extent.HOP2 and ":" in q)):
         raise ValueError(
             "eye: q='<label>' lists one first-hop group at fisheye+1hop; "
@@ -163,9 +230,18 @@ def render_eye(
         return render_fisheye(store, kind=kind, handle=handle, extent=ext)
     if kind in _DOC_KINDS:
         return _render_doc_eye(
-            store, handle, kind, ext, is_chunk=is_chunk, recall=recall, expand=q
+            store,
+            handle,
+            kind,
+            ext,
+            is_chunk=is_chunk,
+            recall=recall,
+            expand=q,
+            ring=filt,
         )
-    return _render_note_eye(store, handle, kind, ext, recall=recall, expand=q)
+    return _render_note_eye(
+        store, handle, kind, ext, recall=recall, expand=q, ring=filt
+    )
 
 
 #: The suffix that adds the similarity rung to any extent.
@@ -352,6 +428,7 @@ def _render_doc_eye(
     is_chunk: bool,
     recall: bool = False,
     expand: str | None = None,
+    ring: RingFilter | None = None,
 ) -> str:
     """A doc-kind eye (paper / patent / web / …): the dynamic keyword-cluster TOC
     around the eyeball. A whole-doc handle renders the cluster map; a ``pc``
@@ -383,7 +460,7 @@ def _render_doc_eye(
 
     # The reference ring is a property of the ref, not its body — an empty
     # paper linked to a note still surfaces that note at fisheye+1hop.
-    sections = _rings(store, ref_id, kind, ext, recall=recall, expand=expand)
+    sections = _rings(store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring)
     return "\n\n".join([block, *sections])
 
 
@@ -410,6 +487,22 @@ def _cut_marker(kind: str, handle: str, shown: int, total: int) -> str:
     return line
 
 
+def _note_body(store: Store, ref: Any, kind: str, *, cap: int) -> tuple[str, int]:
+    """``(the eye's body chunk capped, its full length)``. A quest's chunks
+    are its *logbook* — append-only ``quest_log`` entries — so its eye body
+    is the one-chunk gist instead: the striving statement + rubric,
+    composed from ``refs.title``/``refs.meta`` by
+    :func:`precis.handlers.quest.quest_gist` (``fisheye-everywhere.md``
+    in-scope 4). Composed, not stored: meta rubric edits can't drift a
+    derived gist, and pre-change quests need no backfill."""
+    if kind == "quest":
+        from precis.handlers.quest import quest_gist
+
+        gist = quest_gist(ref)
+        return _cap(gist, cap), len(gist)
+    return _ordered_body(store, int(ref.id), cap=cap)
+
+
 def _render_note_eye(
     store: Store,
     handle: str,
@@ -418,6 +511,7 @@ def _render_note_eye(
     *,
     recall: bool = False,
     expand: str | None = None,
+    ring: RingFilter | None = None,
 ) -> str:
     """A link-kind ref (memory / finding / …): the note at its extent (title →
     gist → body), and at ``fisheye+1hop`` its **link neighborhood** — every ref
@@ -429,14 +523,16 @@ def _render_note_eye(
     if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind)}"
     cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
-    body, total = _ordered_body(store, int(ref.id), cap=cap)
+    body, total = _note_body(store, ref, kind, cap=cap)
     if cap == _VERBATIM_CAP and total > _VERBATIM_CAP:
         marker = _cut_marker(
             kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
         )
         body = f"{body}\n{marker}"
     block = f"{_head(ref, kind)}\n{body}" if body else _head(ref, kind)
-    sections = _rings(store, int(ref.id), kind, ext, recall=recall, expand=expand)
+    sections = _rings(
+        store, int(ref.id), kind, ext, recall=recall, expand=expand, ring=ring
+    )
     return "\n\n".join([block, *sections])
 
 
@@ -701,12 +797,44 @@ def _by_recency(store: Store, ids: list[int]) -> list[int]:
     return sorted(ids, key=lambda i: stamp.get(i, floor), reverse=True)
 
 
+def _space_tags(store: Store, ref_ids: Any) -> dict[int, frozenset[str]]:
+    """``{ref id: its SPACE:-axis values}`` for many refs in one query —
+    ``frozenset()`` for a ref carrying none (outside every partition)."""
+    ids = {int(i) for i in ref_ids}
+    if not ids:
+        return {}
+    tagged = store.ref_tags_bulk(list(ids))
+    return {
+        rid: frozenset(v for ns, v in pairs if ns == "SPACE")
+        for rid, pairs in tagged.items()
+    }
+
+
+def _ring_kept(
+    store: Store,
+    ring: RingFilter,
+    refs: dict[int, Any],
+    oids: list[int],
+) -> list[int]:
+    """``oids`` narrowed by ``ring``: kind from the ref row, ``SPACE:`` tags
+    in one bulk read (only when the filter uses the axis)."""
+    out = oids
+    if ring.kinds is not None:
+        out = [o for o in out if str(getattr(refs[o], "kind", "")) in ring.kinds]
+    if ring.spaces is not None:
+        space_of = _space_tags(store, out)
+        out = [o for o in out if space_of.get(o, frozenset()) & ring.spaces]
+    return out
+
+
 def _first_hop(
-    store: Store, ref_id: int
+    store: Store, ref_id: int, *, ring: RingFilter | None = None
 ) -> tuple[dict[tuple[str, str], list[int]], dict[int, Any]]:
     """``(live neighbour ids by (ring group, label), the neighbour refs)`` —
     the collected form of :func:`_link_neighbors`, shared with the second
-    hop, which walks out from exactly these neighbours."""
+    hop, which walks out from exactly these neighbours. ``ring`` narrows
+    the neighbours kept; ``RING_GROUP_KIND_RANK`` then orders each label
+    block (Roadmap lists sub-quests before papers)."""
     links = store.links_for(ref_id, direction="both")
     by_label = _bucket_edges(
         store,
@@ -719,7 +847,21 @@ def _first_hop(
     live = {
         key: [oid for oid in oids if _live(refs, oid)] for key, oids in by_label.items()
     }
-    return {key: oids for key, oids in live.items() if oids}, refs
+    live = {key: oids for key, oids in live.items() if oids}
+    if ring is not None:
+        live = {
+            key: kept
+            for key, oids in live.items()
+            if (kept := _ring_kept(store, ring, refs, oids))
+        }
+    for (group, _label), oids in live.items():
+        rank = RING_GROUP_KIND_RANK.get(group)
+        if rank:
+            pri = {k: i for i, k in enumerate(rank)}
+            oids.sort(
+                key=lambda o: pri.get(str(getattr(refs[o], "kind", "")), len(rank))
+            )
+    return live, refs
 
 
 def _live(refs: dict[int, Any], oid: int) -> bool:
@@ -925,6 +1067,7 @@ def _second_hop(
     hop1: dict[tuple[str, str], list[int]],
     *,
     expand: str | None = None,
+    ring: RingFilter | None = None,
 ) -> str:
     """The ``fisheye+2hop`` layer: what the first-hop neighbours link to.
 
@@ -977,10 +1120,23 @@ def _second_hop(
                 continue
             if not far_live:
                 continue
+            if (
+                ring is not None
+                and ring.kinds is not None
+                and (str(far_kind) not in ring.kinds)
+            ):
+                continue
             label = _as_seen_from_here(
                 str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
             )
             groups.setdefault((str(far_kind), label), set()).add(far)
+    if ring is not None and ring.spaces is not None and groups:
+        space_of = _space_tags(store, {o for ids in groups.values() for o in ids})
+        groups = {
+            key: kept
+            for key, ids in groups.items()
+            if (kept := {o for o in ids if space_of.get(o, frozenset()) & ring.spaces})
+        }
     if not groups:
         if expand is not None:
             raise ValueError(
@@ -1035,20 +1191,30 @@ _RECALL_K = 8
 _RECALL_MAX_DISTANCE = 0.6
 
 
-def _recall(store: Store, ref_id: int, kind: str) -> str:
+def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) -> str:
     """The ``+recall`` rung: the k nearest chunks by embedding, same kind +
     ``finding``, each with its gist line. Similarity, not edges — the ring
     above says what is linked; this says what is *about* the same thing and
     was never linked (``refeye``'s module docstring draws the same line).
+    A ring filter narrows this rung too: kinds intersect the same-kind +
+    ``finding`` leg, ``spaces`` override the focus's own partition.
     """
     seed = store.chunks.seed_chunk_for_ref(ref_id)
     vec = store.chunks.get_chunk_vector(seed) if seed is not None else None
     if vec is None:
         return "— recall: no embedded chunk on this ref yet —"
     kinds = sorted({kind, "finding"})
+    if ring is not None and ring.kinds is not None:
+        kinds = sorted(set(kinds) & ring.kinds)
     # A SPACE: tag is a partition (research / repo-dev / personal): recall
-    # stays inside the focus's own, filtered in the query so k fills from it.
-    space = [str(t) for t in store.tags_for(ref_id) if t.prefix == "SPACE"]
+    # stays inside the focus's own, filtered in the query so k fills from it —
+    # or inside the space a ring filter selected instead.
+    if ring is not None and ring.spaces is not None:
+        space = sorted(f"SPACE:{s}" for s in ring.spaces)
+    else:
+        space = [str(t) for t in store.tags_for(ref_id) if t.prefix == "SPACE"]
+    if not kinds:
+        return "— recall (nearest by embedding) —\n  — the filter excludes this leg —"
     hits = store.chunks.search_chunks_semantic(
         query_vec=vec,
         kinds=kinds,
@@ -1089,20 +1255,21 @@ def _rings(
     *,
     recall: bool,
     expand: str | None,
+    ring: RingFilter | None,
 ) -> list[str]:
     """Every neighbourhood section a non-tree eye appends at ``ext``:
     the first hop at ``fisheye+1hop`` and up, the second hop at
-    ``fisheye+2hop``, recall when asked."""
+    ``fisheye+2hop``, recall when asked. ``ring`` narrows all three."""
     sections: list[str] = []
     if ext >= Extent.HOP1:
-        hop1, refs = _first_hop(store, ref_id)
+        hop1, refs = _first_hop(store, ref_id, ring=ring)
         first_hop_label = expand if expand is not None and ":" not in expand else None
         if first_hop_label is not None:
             sections.append(_expand_first_hop(store, hop1, refs, first_hop_label))
         elif expand is None:
             sections.append(_render_ring(store, ref_id, hop1, refs))
         if ext >= Extent.HOP2 and first_hop_label is None:
-            sections.append(_second_hop(store, ref_id, hop1, expand=expand))
+            sections.append(_second_hop(store, ref_id, hop1, expand=expand, ring=ring))
     if recall:
-        sections.append(_recall(store, ref_id, kind))
+        sections.append(_recall(store, ref_id, kind, ring=ring))
     return [s for s in sections if s]

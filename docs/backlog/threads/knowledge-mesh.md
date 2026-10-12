@@ -121,12 +121,13 @@ graph-health-metrics, five parked gripes, and the seam with
    When pcb-platform fills the catalog: re-run the dry run, hand Reto
    the real run as a command, then read one board's part with
    `get(kind='part')`.
-6. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
-   ring groups, `fisheye+2hop` and the `+recall` suffix shipped
-   2026-10-02 (in-scope 1 and 3); the ladder is live on draft, finding and
-   quest; open is it on every other kind (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
-   skill's partial-rollout section. The goal's most visible surface; also
-   the answer to "a viewer for the memory" once 9 lands. 2026-10-06
+6. **backlog/fisheye-everywhere.md** — status ready, no blocker. The
+   ladder is live on every kind, the `/eye/<handle>` focus page carries
+   ring filters (`?kind=&space=`), the Roadmap ring ranks sub-quests
+   first and the quest eye opens on its gist — all landed 2026-10-12.
+   What remains is Reto's human acceptance walk (item 2). The goal's
+   most visible surface; also the answer to "a viewer for the memory"
+   once 9 lands. 2026-10-06
    (Reto: "dive into the graph and back out again"): the navigation
    pieces — zoom-out via `UP_RELATIONS`, came-from slot, peek, keyboard
    map — live in `web-graph-navigation.md` slices 7–9; `/eye/` keeps the

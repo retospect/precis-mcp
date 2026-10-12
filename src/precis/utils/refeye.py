@@ -169,6 +169,15 @@ RING_GROUPS: dict[str, frozenset[str]] = {
     "Notes & links": SEMANTIC_RELATIONS,
 }
 
+#: Neighbour kinds a group ranks first, in order — the same hand-made
+#: decision rule as :data:`RING_GROUPS` itself. ``Roadmap``: a quest's
+#: ``served-by`` mixes sub-quests with papers and structures, and a hub
+#: with hundreds of serving papers (qu202467: 484) would hide every
+#: serving sub-quest behind the per-label cap — sub-quests list before
+#: any paper (``fisheye-everywhere.md`` in-scope 3). Within a kind the
+#: stored edge order stands.
+RING_GROUP_KIND_RANK: dict[str, tuple[str, ...]] = {"Roadmap": ("quest",)}
+
 #: What the ``fisheye+1hop`` link neighborhood (``eye_render.py::
 #: _link_neighbors``) follows — the union of :data:`RING_GROUPS`.
 #: ``SEMANTIC_RELATIONS`` itself is left unchanged — ``render_reference_ring``

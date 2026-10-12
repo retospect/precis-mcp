@@ -93,6 +93,48 @@ class TestTheDoor:
         out, err = _get(runtime_with_store, kind="todo", id=todo.id, extent="fisheye")
         assert err and ("[error:Gone]" in out or "[error:NotFound]" in out)
 
+    def test_ring_arg_narrows_the_rings_via_the_dispatch_door(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        """``fisheye-everywhere.md`` in-scope 1: the ``ring=`` filter the
+        ``/eye`` page sends rides the same door — top-level (the page's
+        dispatch args) and inside ``args=`` (the agent's extras) both land."""
+        focus = _ref(store, "memory", "Focus")
+        note = _ref(store, "memory", "A note")
+        paper = _ref(store, "paper", "A paper", slug="p1")
+        for near in (note, paper):
+            store.add_link(
+                src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to"
+            )
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=focus.id,
+            extent="fisheye+1hop",
+            ring={"kinds": "memory"},
+        )
+        assert not err
+        assert f"related-to: me{note.id}" in out and "related-to: pa" not in out
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=focus.id,
+            extent="fisheye+1hop",
+            # the agent-facing `args={'ring': …}` form arrives as __extras__
+            # (tools/core.py's get wrapper)
+            __extras__={"ring": {"kinds": "paper"}},
+        )
+        assert not err
+        assert f"related-to: pa{paper.id}" in out and "related-to: me" not in out
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=focus.id,
+            extent="fisheye+1hop",
+            ring={"kinds": "nosuchkind"},
+        )
+        assert err and "[error:BadInput]" in out and "unknown ring kind" in out
+
 
 class TestPerKind:
     def test_taxon_eye_groups_its_hierarchy_under_taxonomy(

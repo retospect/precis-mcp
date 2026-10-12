@@ -1934,9 +1934,16 @@ class DispatchMixin(RuntimeShape):
         if verb == "get":
             extent = _eye_extent(args)
             if extent is not None:
+                # ``ring=`` narrows the rings a link/doc eye renders
+                # (``fisheye-everywhere.md`` in-scope 1); popped like
+                # ``extent=`` so the kwargs gate never sees it.
+                ring = args.pop("ring", None)
+                extras = args.get(_EXTRAS_KEY)
+                if ring is None and isinstance(extras, dict):
+                    ring = extras.pop("ring", None)
                 try:
                     response = handler.eye(
-                        id=args.get("id"), extent=extent, q=args.get("q")
+                        id=args.get("id"), extent=extent, q=args.get("q"), ring=ring
                     )
                     self._stamp_recalled(kind, args.get("id"))
                     return response

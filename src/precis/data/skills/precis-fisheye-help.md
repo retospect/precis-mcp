@@ -141,7 +141,7 @@ a mirrored file reads `me4641 (worker_busy_vs_starved_diagnosis.md)`.
 | Ring | Relations | Worked example |
 |---|---|---|
 | **Claim graph** | `establishes`, `corroborates`, `contradicts`, `refines`, `conjunct-of`, `disputes`, `motivated-by` | `get(kind='finding', id='fi42', extent='fisheye+1hop')` → `Claim graph:` · `<-establishes: pa5 — …` · `<-refines: fi77 — …` (fi77 refines this); a claim hub leads with its trust posture (`precis-finding-help`) |
-| **Roadmap** | `serves`, `served-by` | `get(kind='quest', id='qu12', extent='fisheye+1hop')` → `Roadmap:` · `serves: qu3 — Grow the mesh` · `served-by: qu40 — …` · `served-by: pa88 — …`; a todo that `serves` a quest shows the same block |
+| **Roadmap** | `serves`, `served-by` | `get(kind='quest', id='qu12', extent='fisheye+1hop')` → `Roadmap:` · `serves: qu3 — Grow the mesh` · `served-by: qu40 — …` · `served-by: pa88 — …`; a todo that `serves` a quest shows the same block. Serving **sub-quests list before any paper** — a hub with hundreds of serving papers can't hide them behind the cap |
 | **Taxonomy** | `specialises`, `generalises`, `instance-of`, `has-instance`, `quantifies`, `quantified-by` | `get(kind='taxon', id='tn88', extent='fisheye+1hop')` → `Taxonomy:` · `specialises: tn2 — Faradaic efficiency` · `has-instance: me5 — FE at −0.5 V` |
 | **Concepts** | `has-prerequisite`, `prerequisite-of`, `analogy-of`, `contrasts-with` | `get(kind='concept', id='cn9', extent='fisheye+1hop')` → `Concepts:` · `has-prerequisite: cn4 — Maxwell counting` |
 | **Parts** | `contains`, `part-of`, `made-of`, `used-in` | `get(kind='component', id='cp3', extent='fisheye+1hop')` → `Parts:` · `contains: cp7 — Bipolar plate`; on `cp7` the same row reads `part-of: cp3`; a memory section `part-of` its file reads `contains:` on the file's eye |
@@ -150,6 +150,23 @@ a mirrored file reads `me4641 (worker_busy_vs_starved_diagnosis.md)`.
 
 A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
 structural and not in the ring; `view='links'` lists everything.
+
+The rings narrow two ways — `args={'ring': {'kinds': 'memory,quest',
+'space': 'repo-dev'}}` (either axis optional; `space` selects inside the
+closed `SPACE:` tag axis and drops untagged neighbours). First hop,
+second hop and `+recall` all honour it. The same narrowing is the
+`?kind=&space=` state on the browser page `/eye/<handle>`; a draft/plan
+section eye (reading order, not link edges) and a skill eye have no ring
+to narrow.
+
+```python
+get(kind="memory", id="me474312", extent="fisheye+1hop",
+    args={"ring": {"kinds": "memory", "space": "repo-dev"}})  # repo-dev memories only
+```
+
+A **quest** eye opens with its gist — the striving statement +
+`rubric:`/`demand:`/`supply:` lines from meta — not its logbook; the
+lab notebook stays at `view='logbook'`.
 
 ## The second hop (`fisheye+2hop`)
 

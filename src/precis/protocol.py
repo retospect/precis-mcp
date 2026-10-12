@@ -371,12 +371,15 @@ class Handler(ABC):
         id: Any = None,
         extent: Any = "fisheye",
         q: str | None = None,
+        ring: Any = None,
     ) -> Response:
         """The fisheye ladder on one node of this kind — ``get(kind=K,
         id=…, extent=<rung>)``, where ``extent`` is ``kwd`` / ``summary``
         / ``verbatim`` / ``fisheye`` / ``fisheye+1hop`` / ``fisheye+2hop``,
         any of them ``+recall``-suffixed; ``q='<kind>:<label>'`` expands one
-        second-hop group.
+        second-hop group. ``ring={'kinds': <csv|list>, 'space': <csv|list>}``
+        narrows a link or doc eye's rings by neighbour kind and/or the
+        ``SPACE:`` tag axis (``fisheye-everywhere.md`` in-scope 1).
 
         Not a dispatch-table verb: the dispatcher routes a ``get`` carrying
         ``extent=`` (or a ladder label in ``view=``) here, so every kind has
@@ -395,7 +398,9 @@ class Handler(ABC):
             raise Unsupported(
                 f"no eye on kind={self.spec.kind!r}: this process has no store bound"
             )
-        return eye_response(store, kind=self.spec.kind, id=id, extent=extent, q=q)
+        return eye_response(
+            store, kind=self.spec.kind, id=id, extent=extent, q=q, ring=ring
+        )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         """Per-kind list of accepted ``view=`` values.
