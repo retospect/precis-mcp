@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from .defects import vid_key
 from .fullerene import C60Data
 from .lattice import Lattice, Site, neighbors
 from .text import Connect, Hole, Instance, Spec
@@ -134,8 +135,11 @@ def expand(spec: Spec) -> Spec:
             d = c60()
             sites = d.sites()
             b66 = min(
-                (tuple(sorted((sites[a], sites[b]), key=str)) for a, b in d.bonds66()),
-                key=lambda p: (str(p[0]), str(p[1])),
+                (
+                    tuple(sorted((sites[a], sites[b]), key=vid_key))
+                    for a, b in d.bonds66()
+                ),
+                key=lambda p: (vid_key(p[0]), vid_key(p[1])),
             )
             nb = neighbors(hsite)[(hdir or 0) % 3]
             gen = [
