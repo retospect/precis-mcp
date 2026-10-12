@@ -14,18 +14,29 @@ rotations) so a member force ``u`` at port point ``p`` loads it with the
 wrench ``(u, (p − pose) × u)`` — without that, a hub's spokes all act
 through one point and carry no moment about the axle (gr334787). A block
 all of whose members attach at its origin stays a 3-DOF pin node.
-``objectives.fixed`` grounds translations only; rotations stay free.
-``rigid`` connects merge their blocks into
-ONE rigid body (6 DOF, :func:`rigid_groups`; reference = first grounded
-member else first by name) whose members attach at their port world
-positions relative to that reference (gr334788). Other non-axial connects
-and envelope contact are NOT
-modelled — this is the axial subgraph's answer, honestly scoped, not a
+``rigid`` connects merge their blocks into ONE rigid body (6 DOF,
+:func:`rigid_groups`; reference = first grounded member else first by
+name) whose members attach at their port world positions relative to that
+reference (gr334788). Other non-axial connects and envelope contact are
+NOT modelled — this is the axial subgraph's answer, honestly scoped, not a
 general mobility analysis of the whole design.
 
+Supports (``objectives.fixed``, Reto 2026-10-12 on gr334788): every
+grounded block pins the point at ITS pose on its body — one constraint row
+per listed translation, ``(d + θ × r)_k = 0`` with ``r`` the arm from the
+body's pose — so on one rigid body one foot grounds 3 DOF, two feet 5,
+three non-collinear feet 6. A block whose ``fixed`` covers x, y and z and
+is the only grounded block of its body is a clamp: it also grounds the
+three rotations, unless its list names ``rx``/``ry``/``rz`` itself — then
+exactly those rotations are grounded (an axle bearing on a lone body is
+``x y z rx ry``). Rotation axes act only
+on a 6-DOF body; a pin node's rotation is not a modelled DOF. A grounded
+point off its body's pose makes that body 6-DOF.
+
 The counting is Calladine's extension of Maxwell's rule: with ``j`` nodes,
-``b`` members and ``c`` grounded translations (``objectives.fixed``),
-``m − s = n − c − b`` (``n`` = 3 per pin node + 6 per rigid body) where ``m`` = independent inextensional mechanisms
+``b`` members and ``c`` grounded DOFs (the rank of the support constraint
+rows), ``m − s = n − c − b`` (``n`` = 3 per pin node + 6 per rigid body)
+where ``m`` = independent inextensional mechanisms
 and ``s`` = independent self-stress states — both read off one SVD of the
 equilibrium matrix. Whether a first-order mechanism is actually stabilized
 by an available self-stress is the second-order (product-force /
@@ -59,6 +70,7 @@ formfind still places its nodes at block poses (ports ignored; Reto
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -208,8 +220,19 @@ def _axial_members(tree: SeTree) -> list[MemberRow]:
 
 
 def _fixed_axes(tree: SeTree, name: str) -> list[str]:
+    """Every axis in ``objectives.fixed`` — translations ``x/y/z`` and
+    body rotations ``rx/ry/rz``."""
     fixed = tree.blocks[name].objectives.get("fixed")
     return [str(a) for a in fixed] if isinstance(fixed, list) else []
+
+
+_TRANSLATIONS = ("x", "y", "z")
+_ROTATIONS = ("rx", "ry", "rz")
+
+
+def fixed_translations(tree: SeTree, name: str) -> list[str]:
+    """The translation axes of ``objectives.fixed`` (the pin part)."""
+    return [a for a in _fixed_axes(tree, name) if a in _TRANSLATIONS]
 
 
 def _rank(matrix: np.ndarray) -> int:
@@ -246,7 +269,13 @@ class _System:
     coords: np.ndarray  # (j, 3) block poses
     dof: np.ndarray  # (j,) 3 or 6
     start: np.ndarray  # (j,) first row of each node
-    fixed_mask: np.ndarray  # (n,) bool — objectives.fixed translations
+    #: (rows, n) — one row per grounded point axis or body rotation
+    #: (``objectives.fixed``); ``c`` is its rank.
+    constraints: np.ndarray
+    #: (n, n − c) orthonormal basis of the displacements the constraints
+    #: allow; a pure axis selection (columns of I) when every row grounds
+    #: one DOF directly, so pin-only designs keep the old row deletion.
+    free_basis: np.ndarray
     equilibrium: np.ndarray  # (n, b) — tension-positive unit columns
     lengths: np.ndarray  # (b,)
     arms: list[tuple[np.ndarray, np.ndarray]]  # per live member: (r_a, r_b)
@@ -263,12 +292,25 @@ def _skew(v: np.ndarray) -> np.ndarray:
     return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
 
 
+def _free_basis(constraints: np.ndarray) -> np.ndarray:
+    """Orthonormal basis of ``{d : constraints · d = 0}``. When every row
+    grounds a single DOF the basis is those columns of I deleted — the
+    exact row deletion pin-only designs always had."""
+    n = constraints.shape[1]
+    if all(np.count_nonzero(row) == 1 for row in constraints):
+        grounded = {int(np.flatnonzero(row)[0]) for row in constraints}
+        return np.eye(n)[:, [k for k in range(n) if k not in grounded]]
+    return _null_space(constraints)
+
+
 def _assemble(tree: SeTree) -> _System:
     members = _axial_members(tree)
     groups = rigid_groups(tree)
     # Rigid-group reduction (gr334788): every block of a group is one rigid
-    # body; its reference is the first grounded member (so ``fixed`` there
-    # is exact), else the first by name. ``rep_of`` maps member -> reference.
+    # body; its reference is the first grounded member, else the first by
+    # name. Each grounded member pins its own point on the body (constraint
+    # rows below), so the choice only sets where the body's pose sits.
+    # ``rep_of`` maps member -> reference.
     rep_of: dict[str, str] = {}
     group_notes: dict[str, list[str]] = {}
     for group in groups:
@@ -280,11 +322,6 @@ def _assemble(tree: SeTree) -> _System:
             f"rigid group {{{', '.join(group)}}} merged into one rigid body "
             f"at '{rep}' (6 DOF; members attach at their port world positions)"
         ]
-        if len(grounded) > 1:
-            group_notes[rep].append(
-                f"rigid group at '{rep}': objectives.fixed on {len(grounded)} "
-                "members is applied to the reference only (its translations)"
-            )
     for row in members:
         if (
             row.skipped is None
@@ -343,6 +380,16 @@ def _assemble(tree: SeTree) -> _System:
         arms.append((ra, rb))
         ends.append((index[row.a_block], index[row.b_block]))
         extent_pts.append(np.vstack([row.a_point, row.b_point]))
+    # Supports: every grounded block of a node (a rigid group's members
+    # included) pins the point at ITS pose on the node's body.
+    supports: list[tuple[int, str, np.ndarray, list[str]]] = []
+    for name in sorted(tree.blocks):
+        if name not in index or not _fixed_axes(tree, name):
+            continue
+        i = index[name]
+        foot = np.asarray(tree.blocks[name].pose, dtype=float).reshape(3)
+        supports.append((i, name, foot - coords[i], _fixed_axes(tree, name)))
+        extent_pts.append(foot.reshape(1, 3))
     pts = np.vstack(extent_pts)
     arm_eps = (
         _ARM_RTOL * float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
@@ -355,15 +402,54 @@ def _assemble(tree: SeTree) -> _System:
             rigid_body[ia] = True
         if float(np.linalg.norm(rb)) > arm_eps:
             rigid_body[ib] = True
+    for i, _name, arm, axes in supports:
+        # a pinned point off the body's pose couples translation and
+        # rotation, so the body needs its rotations to be modelled
+        if float(np.linalg.norm(arm)) > arm_eps and any(
+            a in _TRANSLATIONS for a in axes
+        ):
+            rigid_body[i] = True
     dof = np.where(rigid_body, 6, 3).astype(int)
     start = np.concatenate([[0], np.cumsum(dof)[:-1]]).astype(int)
     n = int(dof.sum())
 
-    axis_index = {"x": 0, "y": 1, "z": 2}
-    fixed_mask = np.zeros(n, dtype=bool)
-    for name in node_names:
-        for axis in _fixed_axes(tree, name):
-            fixed_mask[start[index[name]] + axis_index[axis]] = True
+    # Constraint rows. A translation axis k of a support with arm r pins
+    # that point: (d + θ × r)_k = 0, i.e. e_k on the translation rows and
+    # −skew(r)[k] on the rotation rows. Clamp (Reto 2026-10-12): a support
+    # covering x, y and z that is the ONLY support on its body also grounds
+    # the three body rotations, unless it lists rotation axes itself — then
+    # exactly those are grounded (an axle bearing is x y z rx ry).
+    # Rotation axes act only on a 6-DOF body — a pin node's rotation is not
+    # a modelled DOF, so a clamp there grounds the same as a pin.
+    per_node = Counter(i for i, *_ in supports)
+    rows: list[np.ndarray] = []
+    for i, name, arm, axes in supports:
+        r0 = int(start[i])
+        rot = {a for a in axes if a in _ROTATIONS}
+        if not rot and set(_TRANSLATIONS) <= set(axes) and per_node[i] == 1:
+            rot = set(_ROTATIONS)
+        for k, axis in enumerate(_TRANSLATIONS):
+            if axis not in axes:
+                continue
+            crow = np.zeros(n)
+            crow[r0 + k] = 1.0
+            if dof[i] == 6:
+                crow[r0 + 3 : r0 + 6] = -_skew(arm)[k]
+            rows.append(crow)
+        if dof[i] == 6:
+            for k, axis in enumerate(_ROTATIONS):
+                if axis in rot:
+                    crow = np.zeros(n)
+                    crow[r0 + 3 + k] = 1.0
+                    rows.append(crow)
+        elif any(a in _ROTATIONS for a in axes):
+            notes.append(
+                f"'{name}': rotation axes in objectives.fixed ground nothing "
+                "here — every member meets its node at one point, so the "
+                "node's rotation is not a modelled DOF"
+            )
+    constraints = np.array(rows).reshape(len(rows), n)
+    free_basis = _free_basis(constraints)
 
     # Equilibrium matrix: column k is member k's unit direction, +u at
     # its a-end and −u at its b-end (tension-positive), with the moment
@@ -391,7 +477,8 @@ def _assemble(tree: SeTree) -> _System:
         coords=coords,
         dof=dof,
         start=start,
-        fixed_mask=fixed_mask,
+        constraints=constraints,
+        free_basis=free_basis,
         equilibrium=equilibrium,
         lengths=lengths,
         arms=arms,
@@ -469,7 +556,7 @@ def _scope_honesty_notes(tree: SeTree, node_names: list[str]) -> list[str]:
         forced = isinstance(force, list) and any(float(x) != 0.0 for x in force)
         if (fixed_axes or forced) and name not in in_scope:
             out_of_scope.append(name)
-        if fixed_axes == {"x", "y", "z"} and forced:
+        if {"x", "y", "z"} <= fixed_axes and forced:
             fixed_and_forced.append(name)
     notes: list[str] = []
     if out_of_scope:
@@ -526,11 +613,11 @@ def classify(tree: SeTree) -> StabilityReport:
         )
 
     coords = system.coords
-    fixed_mask = system.fixed_mask
-    c = int(fixed_mask.sum())
-    free = ~fixed_mask
-    n_free = int(free.sum())
-    a_free = system.equilibrium[free, :]
+    constraints = system.constraints
+    c = _rank(constraints)
+    free = system.free_basis
+    n_free = int(free.shape[1])
+    a_free = free.T @ system.equilibrium
 
     u_svd, svals, vt = np.linalg.svd(a_free)
     smax = float(svals[0]) if svals.size else 0.0
@@ -540,8 +627,8 @@ def classify(tree: SeTree) -> StabilityReport:
 
     # Rigid-body modes the supports leave free: the span of the six
     # generators (3 translations, 3 rotations about the centroid),
-    # restricted to motions that hold every fixed DOF at zero. A
-    # rigid-body node also turns by the generator's rotation.
+    # restricted to motions every support allows. A rigid-body node also
+    # turns by the generator's rotation.
     rigid_full = np.zeros((system.n, 6))
     centroid = coords.mean(axis=0)
     for i in range(j):
@@ -551,10 +638,10 @@ def classify(tree: SeTree) -> StabilityReport:
         if system.dof[i] == 6:
             rigid_full[r0 + 3 : r0 + 6, 3:6] = np.eye(3)
     if c:
-        gen_null = _null_space(rigid_full[fixed_mask, :])
-        rigid_free = rigid_full[free, :] @ gen_null
+        gen_null = _null_space(constraints @ rigid_full)
+        rigid_free = free.T @ rigid_full @ gen_null
     else:
-        rigid_free = rigid_full[free, :]
+        rigid_free = free.T @ rigid_full
     rb_dim = _rank(rigid_free)
     m_internal = m - rb_dim
     if c == 0:
@@ -680,7 +767,7 @@ def _verdict(
         )
 
     for state in candidates:
-        stress = _stress_matrix(system, state)[free, :][:, free]
+        stress = free.T @ _stress_matrix(system, state) @ free
         quad = internal.T @ stress @ internal
         eigvals = np.linalg.eigvalsh(quad)
         scale = float(np.max(np.abs(quad))) or 1.0
@@ -860,8 +947,8 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
 
     live_rows = [pr for pr in rows if pr.skipped is None]
     b = len(live)
-    free = ~system.fixed_mask
-    a_free = system.equilibrium[free, :]
+    free = system.free_basis
+    a_free = free.T @ system.equilibrium
 
     declared_idx = [
         k for k, row in enumerate(live) if row.params.get("preload") is not None
@@ -914,8 +1001,8 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
 
     scale = max((abs(float(t[k])) for k in declared_idx), default=0.0)
     tolerance = _PRESTRESS_RTOL * scale
-    residual_field = system.equilibrium @ t
-    residual_field[system.fixed_mask] = 0.0  # reactions carry fixed DOFs
+    # reactions carry what the supports hold: keep only the free part
+    residual_field = free @ (a_free @ t)
     # Per node: force out-of-balance (N); a rigid body's moment
     # out-of-balance (N·m) joins as a force at the mean member length.
     lref = float(np.mean(system.lengths))

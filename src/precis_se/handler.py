@@ -5249,11 +5249,13 @@ def _render_stability(tree: SeTree) -> str:
         "(block pose + port pose); a block whose members meet it at "
         "different points is a 6-DOF rigid body, otherwise a pin node at "
         "its pose; rigid connects merge their blocks into one rigid body; "
-        "fixed grounds translations only; pin-ended axial members only — "
-        "other non-axial connects and envelope contact are NOT modelled",
+        "fixed pins each grounded block's point on its body (x/y/z; "
+        "x+y+z on a body's only support clamps all 6 DOF; rx/ry/rz ground "
+        "rotations); pin-ended axial members only — other non-axial "
+        "connects and envelope contact are NOT modelled",
         "",
         f"j={report.j} node(s)  b={report.b} member(s)  c={report.c} "
-        f"grounded translation(s)  rank={report.rank}",
+        f"grounded DOF(s)  rank={report.rank}",
         f"m={report.m} mechanism(s) (rb={report.rb_dim} rigid-body, "
         f"internal={report.m_internal})  s={report.s} self-stress state(s)",
         "",

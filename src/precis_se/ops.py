@@ -1497,7 +1497,7 @@ def _vet_objectives(
         # 'fixed' on a connect is read by nothing (the swallowed-facet
         # lesson, reviewer finding 2026-09-09).
         raise OpError(
-            f"{opname}: 'fixed' grounds a BLOCK's translations (stability "
+            f"{opname}: 'fixed' grounds a BLOCK (stability "
             "supports) — it has no meaning on a connect"
         )
     if not edge and raw.get("role") is not None:

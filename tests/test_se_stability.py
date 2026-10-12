@@ -1058,11 +1058,12 @@ def _hub_wheel(tangential: float) -> SeTree:
     z = ±0.02, radius 0.03) laced by axial spokes to 8 grounded rim
     points at radius 1 (z = 0). ``tangential`` shifts each rim end that
     many radians around from its hole's angle (alternating sign per
-    flange); 0 = radial lacing. The hub is grounded in translation only
-    (``fixed`` x/y/z), so its three rotations are the question."""
+    flange); 0 = radial lacing. The hub sits in an axle bearing
+    (``fixed`` x y z rx ry — a bare x/y/z on a lone body would clamp it),
+    so the axle rotation is the question."""
     ops: list[dict[str, Any]] = [
         {"op": "add_block", "name": "hub", "pose": [0.0, 0.0, 0.0]},
-        {"op": "set_load", "block": "hub", "fixed": True},
+        {"op": "set_load", "block": "hub", "fixed": ["x", "y", "z", "rx", "ry"]},
     ]
     k = 0
     for flange, z in ((1.0, 0.02), (-1.0, -0.02)):
@@ -1121,7 +1122,7 @@ def test_tangential_spokes_stiffen_the_hub_about_the_axle() -> None:
     report = se_stability.classify(tree)
     assert report.m == 0 and report.m_internal == 0
     assert report.verdict.startswith("rigid")
-    assert (report.j, report.b, report.rank) == (9, 8, 3)
+    assert (report.j, report.b, report.rank) == (9, 8, 1)
 
 
 def test_port_offset_follows_the_block_rotation() -> None:
@@ -1147,10 +1148,11 @@ def test_origin_port_designs_keep_three_dof_nodes() -> None:
     assert system.n == 3 * len(system.node_names)
 
 
-def test_single_offset_bar_leaves_two_rotation_mechanisms() -> None:
-    """One bar from a grounded point to a body's offset port: translations
-    held, three rotations free, one resisted."""
-    tree = apply_ops(
+def _offset_bar_body(fixed: Any) -> SeTree:
+    """One bar from a grounded wall pin to a body's offset port (0, 1, 0);
+    the bar runs along (2, −1, 0), so its only moment about the body's
+    pose is about z."""
+    return apply_ops(
         SeTree(),
         [
             {"op": "add_block", "name": "wall", "pose": [2.0, 0.0, 0.0]},
@@ -1158,7 +1160,7 @@ def test_single_offset_bar_leaves_two_rotation_mechanisms() -> None:
             {"op": "set_load", "block": "wall", "fixed": True},
             {"op": "add_block", "name": "body", "pose": [0.0, 0.0, 0.0]},
             {"op": "add_port", "block": "body", "name": "p", "pose": [0.0, 1.0, 0.0]},
-            {"op": "set_load", "block": "body", "fixed": True},
+            {"op": "set_load", "block": "body", "fixed": fixed},
             {
                 "op": "connect",
                 "a": "body.p",
@@ -1167,9 +1169,112 @@ def test_single_offset_bar_leaves_two_rotation_mechanisms() -> None:
             },
         ],
     )
-    report = se_stability.classify(tree)
-    assert report.m == 2
+
+
+def test_lone_body_with_full_translation_support_is_clamped() -> None:
+    """x/y/z on the body's only support clamps it: n = 6 + 3, c = 6 + 3,
+    b = 1 → nothing free, the bar is a self-stress (m − s = −1)."""
+    report = se_stability.classify(_offset_bar_body(True))
+    assert (report.c, report.rank, report.m, report.s) == (9, 0, 0, 1)
+    assert report.m - report.s == 9 - report.c - report.b
+
+
+def test_explicit_rotation_axes_leave_the_rest_free() -> None:
+    """x y z rx: c = 4 + 3; free ry, rz; the bar resists rz only → m = 1."""
+    report = se_stability.classify(_offset_bar_body(["x", "y", "z", "rx"]))
+    assert (report.c, report.rank, report.m, report.s) == (7, 1, 1, 0)
+
+
+def test_partial_translation_support_stays_a_pin() -> None:
+    """x y only: no clamp; free z, rx, ry, rz (4); the bar resists rz →
+    rank 1, m = 3; c = 2 + 3, m − s = 9 − 5 − 1."""
+    report = se_stability.classify(_offset_bar_body(["x", "y"]))
+    assert (report.c, report.rank, report.m, report.s) == (5, 1, 3, 0)
     assert "mobile" in report.verdict
+
+
+# ── supports on rigid groups: one constraint row set per foot ───────────
+
+
+def _footed_group(
+    feet: dict[str, Any], wall: list[float], foot_poses: list[list[float]] | None = None
+) -> SeTree:
+    """Rigid group {f1, f2, f3} (poses (0,0,0), (1,0,0), (0,1,0) unless
+    given) with one bar from f1's origin port to a grounded wall pin, plus
+    ``objectives.fixed`` per foot. Pin nodes: wall (3 DOF, 3 grounded);
+    the group is one 6-DOF body. n = 9, b = 1."""
+    poses = foot_poses or [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    ops: list[dict[str, Any]] = [
+        {"op": "add_block", "name": "w", "pose": wall},
+        {"op": "add_port", "block": "w", "name": "pin"},
+        {"op": "set_load", "block": "w", "fixed": True},
+    ]
+    for k, pose in enumerate(poses, start=1):
+        ops += [
+            {"op": "add_block", "name": f"f{k}", "pose": pose},
+            {"op": "add_port", "block": f"f{k}", "name": "pin"},
+        ]
+    ops.append(_bar("w", "pin", "f1"))
+    for name, spec in feet.items():
+        ops.append({"op": "set_load", "block": name, "fixed": spec})
+    tree = apply_ops(SeTree(), ops)
+    return _with_rigid(_with_rigid(tree, "f1", "f2"), "f1", "f3")
+
+
+def _counts(tree: SeTree) -> tuple[int, int, int, int]:
+    report = se_stability.classify(tree)
+    system = se_stability._assemble(tree)
+    assert system.n == 9 and report.b == 1
+    assert report.m - report.s == system.n - report.c - report.b
+    return report.c, report.rank, report.m, report.s
+
+
+def test_one_foot_on_a_group_clamps_the_body() -> None:
+    """One foot (f2, off the bar's block) is the body's only support →
+    clamp: 6 + 3 wall = 9 grounded, nothing free."""
+    assert _counts(_footed_group({"f2": True}, [0.0, 0.0, 2.0])) == (9, 0, 0, 1)
+
+
+def test_one_partial_foot_on_a_group_pins_its_own_point() -> None:
+    """f2 fixed in z only: pins f2's point in z (1 DOF), no clamp. Free
+    5; f2 is the reference, so the bar along z at f1 (arm (−1, 0, 0))
+    is resisted through θ_y → rank 1, m = 4; c = 1 + 3."""
+    assert _counts(_footed_group({"f2": ["z"]}, [0.0, 0.0, 2.0])) == (4, 1, 4, 0)
+
+
+def test_two_feet_on_a_group_ground_five_and_leave_their_hinge() -> None:
+    """f2 + f3 pinned: 5 body DOF + 3 wall = 8 grounded; one hinge about
+    the f2–f3 line is left. It moves f1 along z: a bar along z resists it
+    (rigid), a bar along x does not (m = 1, s = 1)."""
+    feet = {"f2": True, "f3": True}
+    assert _counts(_footed_group(feet, [0.0, 0.0, 2.0])) == (8, 1, 0, 0)
+    assert _counts(_footed_group(feet, [-2.0, 0.0, 0.0])) == (8, 0, 1, 1)
+    report = se_stability.classify(_footed_group(feet, [-2.0, 0.0, 0.0]))
+    assert not any("reference only" in n for n in report.notes)
+
+
+def test_three_non_collinear_feet_ground_six() -> None:
+    feet = {"f1": True, "f2": True, "f3": True}
+    assert _counts(_footed_group(feet, [0.0, 0.0, 2.0])) == (9, 0, 0, 1)
+
+
+def test_three_collinear_feet_ground_five() -> None:
+    """Feet on the x axis leave the rotation about it: f1's origin is ON
+    the axis, so the bar cannot resist it (m = 1); c = 5 + 3."""
+    feet = {"f1": True, "f2": True, "f3": True}
+    collinear = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+    assert _counts(_footed_group(feet, [0.0, 0.0, 2.0], collinear)) == (8, 0, 1, 1)
+
+
+def test_stability_view_header_names_clamp_semantics() -> None:
+    text = _render_stability(_footed_group({"f2": True}, [0.0, 0.0, 2.0]))
+    assert "clamps all 6 DOF" in text and "grounded DOF(s)" in text
+
+
+def test_fixed_accepts_rotation_axes_in_canonical_order() -> None:
+    assert se_joints._vet_fixed(["rz", "x", "RX"]) == ["x", "rx", "rz"]
+    with pytest.raises(se_joints.JointError):
+        se_joints._vet_fixed(["w"])
 
 
 def test_stress_matrix_matches_finite_difference_hessian() -> None:

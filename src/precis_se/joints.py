@@ -429,8 +429,10 @@ OBJECTIVE_KEYS: dict[str, str] = {
     "role": "atomic mode: the capability both ports of a kind='bond' "
     "connect must afford, overriding the default 'covalent' (connects "
     "only)",
-    "fixed": "support: grounded translations — true (all three) or a "
-    "subset list from 'x'|'y'|'z' (blocks only; read by view='stability')",
+    "fixed": "support: true (x, y, z) or a subset list from "
+    "'x'|'y'|'z'|'rx'|'ry'|'rz'; pins the block's point on its rigid body, "
+    "x+y+z on a body's only support clamps it (blocks only; read by "
+    "view='stability')",
 }
 
 
@@ -507,16 +509,19 @@ def validate_objectives(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _vet_fixed(raw: Any) -> list[str]:
-    """Normalize the ``fixed`` support declaration to a sorted axis list.
-    ``True`` means all three translations; a list names a subset. ``False``
-    /empty is rejected — an unsupported block just omits the key."""
+    """Normalize the ``fixed`` support declaration to an axis list in
+    ``x y z rx ry rz`` order. ``True`` means all three translations; a list
+    names a subset of the translations and body rotations ``rx/ry/rz``.
+    ``False``/empty is rejected — an unsupported block just omits the key."""
+    order = ("x", "y", "z", "rx", "ry", "rz")
     if raw is True:
         return ["x", "y", "z"]
     if isinstance(raw, (list, tuple)):
-        axes = sorted({str(a).strip().lower() for a in raw})
-        if axes and all(a in ("x", "y", "z") for a in axes):
-            return axes
+        axes = {str(a).strip().lower() for a in raw}
+        if axes and axes <= set(order):
+            return [a for a in order if a in axes]
     raise JointError(
         f"objective 'fixed' must be true or a non-empty subset of "
-        f"['x','y','z'], got {raw!r} — omit the key for an unsupported block"
+        f"['x','y','z','rx','ry','rz'], got {raw!r} — omit the key for an "
+        "unsupported block"
     )

@@ -200,8 +200,9 @@ def _densities(op: dict[str, Any], members: list[_Member]) -> list[float]:
 def _fixed_axes(tree: SeTree, name: str) -> set[str]:
     """The stability module's reading of ``objectives.fixed`` — one
     parser, so the solve's anchors can never disagree with the
-    checker's supports."""
-    return set(se_stability._fixed_axes(tree, name))
+    checker's supports. Translations only: formfind nodes are points, a
+    rotation axis grounds nothing here."""
+    return set(se_stability.fixed_translations(tree, name))
 
 
 def _movable(tree: SeTree, op: dict[str, Any], node_names: list[str]) -> set[str]:

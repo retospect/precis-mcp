@@ -178,7 +178,8 @@ the last four delimit region selectors, `precis-se-regions-help`.)
 
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
   keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `fixed`
-  (true or subset of `["x","y","z"]`; blocks only) · `clear`. Flat —
+  (true = `["x","y","z"]`, or a subset of `["x","y","z","rx","ry","rz"]`;
+  blocks only — see `view='stability'` below for pin vs clamp) · `clear`. Flat —
   never nested under `objectives=`. Keys MERGE across calls (`fixed`
   then `force` keeps both; a repeated key overwrites); `clear: true` is
   the only reset. Same for the connect target — amend a connect's
@@ -462,17 +463,26 @@ the design serves, default `related-to` for a sibling variant,
 `rel='parent'` (with `target='folder:N'`) files it into a folder;
 `mode='remove'` deletes the edge.
 
-`view='stability'` (Maxwell/Calladine m−s on the axial subgraph):
+## Check rigidity — view='stability'
+
+Maxwell/Calladine m−s on the axial subgraph:
 
 - Model honesty (stated in its header): axial members attach at their
   **port world positions** (block pose + `add_port` pose); a block whose
   members meet it at different points is a 6-DOF rigid body (so a hub's
   spokes laced to rim-offset ports carry axle torque), else a pin node at
-  its pose. `fixed` grounds translations only. `rigid` connects merge their blocks into ONE
+  its pose. `rigid` connects merge their blocks into ONE
   rigid body (6 DOF; members attach at their port world positions; reference =
   first grounded member, else first by name), so a rim ring or frame needs no
   axial-truss stand-in; an axial between two blocks of one group is internal and
   skipped. Other non-axial connects (`revolute` …) are NOT in the equilibrium matrix.
+- `fixed` pins the point at each grounded block's pose on its body: on one
+  rigid body (group) one foot grounds 3 DOF, two feet 5, three non-collinear
+  feet 6. Clamp: `x`+`y`+`z` on a body's ONLY grounded block grounds all 6
+  DOF (a bolted-down part). A subset like `["z"]` stays a pin. Listing any of
+  `rx`/`ry`/`rz` turns the clamp off and grounds exactly those — an axle bearing on a lone hub is
+  `["x","y","z","rx","ry"]`. Rotations only act on a 6-DOF body; a pin
+  node's rotation is not modelled. `c` in the header = grounded DOFs.
 - Verdicts: `rigid` · `prestress-stabilized` · `first-order mobile —
   NOT stabilized …` · the not-checked tripwire line.
 - Declared preloads are checked as a self-stress state (out-of-balance
