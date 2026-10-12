@@ -24,14 +24,22 @@ Ops-gated resolve-metadata runs plus the standing-worker follow-up.
 
 The corroboration gates shipped (title auto-merge needs >=5 title tokens,
 matching known years and agreeing first author; the orphan-stub filename/handle
-fold needs title overlap with the PDF). What is left:
+fold needs title overlap with the PDF). The title gate (d3d8569ef) stops new
+bad merges.
 
-- Build a paper unmerge primitive (`unmerge_duplicate`). None exists: a wrong
-  merge is permanent today. It must restore the absorbed ref's identifiers,
-  chunks and links from the merge record.
-- Data repair: fix pa2069 (handle collision, ~25 rows in dc1519359 cite it for
-  unrelated papers) and pa42497->pa42939 (wrongly merged), after the unmerge
-  primitive exists; then sweep the pa4249x range for the same pattern.
+RULED (Reto 2026-10-12, design-fold): repair by hand first; build unmerge
+only if the damage is wider. Old merges recorded nothing about what they
+moved, so a generic unmerge cannot reverse them anyway.
 
-Size: M. Who: agent-code (unmerge); the pa2069/pa42497 repair is ops after
-unmerge lands.
+1. Data repair by hand: pa2069 (handle collision, ~25 rows in dc1519359 cite
+   it for unrelated papers) and pa42497->pa42939 (wrongly merged). Restore
+   identifiers, chunks and links from the source PDFs and the dc1519359
+   rows.
+2. Read-only sweep of the pa4249x range for the same pattern (merged pair
+   with disagreeing titles, years or first authors). List hits; no writes.
+3. Only if step 2 finds more than 2 further bad merges: record each merge
+   (absorbed ref's identifiers, moved chunk and link ids) going forward and
+   build `unmerge_duplicate` on that record.
+
+Size: S (steps 1–2); M if step 3 triggers. Who: ops for 1–2, agent-code
+for 3.

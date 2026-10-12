@@ -38,6 +38,10 @@ deploy, then the after-deploy steps below.
   next safe_fetch branch: guard a finite timeout <= 0 with 2+ addresses
   (today it raises before any dial), and a test that fails when
   `httpcore.NetworkStream` gains a public method `_FallbackStream` lacks.
+  Ruled (Reto 2026-10-12, design-fold; gr465931): the built packet capture
+  stays off. Reopen trigger: si_fetch ConnectTimeouts still occur after
+  the fallback is deployed; then enable the capture on one host for two
+  weeks, not on all fetchers.
 - Fixed in this ship: gr465474. The bodiless re-fetch minted a duplicate
   anon ref when the fetched file differed from the stored one, because
   `add.py::_valid_fold_stub` required `pdf_sha256 IS NULL`; it now also

@@ -22,6 +22,12 @@ it shows. Until a trace exists there is nothing to code. Files:
 
 Who: ops to capture the trace on the next occurrence, then agent-code.
 
+RULED (Reto 2026-10-12, design-fold): keep the assert; do not exclude the
+venv from the sha check or force a reinstall every deploy. Time-box: if
+the next 10 deploys show no first-pass failure, close gr172390 as
+unreproduced, delete this section and drop the `precis_embedder_trace`
+task.
+
 ## Acceptance
 
 - A first-pass embedder convergence failure is either gone or has a recorded

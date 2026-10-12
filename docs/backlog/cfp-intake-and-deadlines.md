@@ -20,6 +20,16 @@ Owner `src/precis/handlers/cfp.py`. The `WATCH:*` re-check shipped
 (`workers/cfp_watch.py`); it reads `meta.source_url`, which item 1's intake
 must set on the cfp.
 
+RULED (Reto 2026-10-12, design-fold): build item 2 first, then item 1.
+
+- **Slice 1 — typed dates.** `meta.deadline` and `meta.opens_on` (ISO
+  dates, UTC), set with `edit(kind='cfp')` and validated like
+  `meta.source_url`; a bad date rejects with BadInput. `search(kind='cfp')`
+  sorts by deadline. Not a `due:<date>` tag: tags are free text and cannot
+  sort by date. Until slice 1 lands, a `due:` tag is the stopgap.
+- **Slice 2 — URL intake.** `put(kind='cfp', url=…)` mints a cfp (never a
+  paper) and sets `meta.source_url`, so `cfp_watch` picks it up.
+
 Who: agent-code.
 
 ## Acceptance

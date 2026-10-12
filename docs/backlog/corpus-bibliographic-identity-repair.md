@@ -48,6 +48,15 @@ written (`precis.ingest.article_spread`, `ingest:spread` ref_event), and
 tag `multi-article` when the match is ambiguous. Open: the bodiless heal
 passes no target title; existing rows change only on a re-extract.
 
+RULED (Reto 2026-10-12, design-fold): finding existing untagged
+multi-article PDFs is a candidate list, not auto-tagging. Extend
+`scripts/title-body-sweep` with a read-only listing of papers whose first
+chunks disagree with the title while later chunks agree (or the reverse).
+A human reads each candidate and applies `multi-article` by hand. No
+embedding-distance auto-tag. Before trusting the list, measure it against
+the three known cases (pa44468, pa42559, pa207748) and record the false
+positives among the top 20.
+
 Who: agent-code.
 
 ### 5. No title/body mismatch sweep; downstream gates blind to it (gr264184)
