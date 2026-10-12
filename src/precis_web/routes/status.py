@@ -1131,7 +1131,9 @@ def _quota_view(store: Store) -> dict[str, Any]:
     live somewhere that ``status.py`` could reach without a circular
     import (``budget.py`` already imports :func:`_budget_tote` from here).
     """
+    from precis.budget import outcomes as budget_outcomes
     from precis.budget import quota as budget_quota
+    from precis.budget.work_class import WorkClass
 
     try:
         row = store.read_claude_quota()
@@ -1156,7 +1158,21 @@ def _quota_view(store: Store) -> dict[str, Any]:
                 )
     pause = budget_quota.evaluate(store)
     taper = budget_quota.taper_state(store)
+    counts = budget_outcomes.counts_24h(store)
+    outcomes = [
+        {
+            "work_class": cls.value,
+            "blocked": ", ".join(
+                t.upper()
+                for t in ("medium", "big", "frontier")
+                if t in taper.blocked(cls)
+            ),
+            **counts.get(cls.value, dict.fromkeys(budget_outcomes.OUTCOMES, 0)),
+        }
+        for cls in WorkClass
+    ]
     return {
+        "outcomes": outcomes,
         "ts": ts,
         "windows": windows,
         "paused": pause is not None,

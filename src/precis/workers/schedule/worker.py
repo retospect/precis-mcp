@@ -145,13 +145,19 @@ def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
         # tick. Log loudly so a persistent failure gets noticed.
         log.exception("schedule: ensure_watches_root failed")
 
+    now = datetime.now(UTC)
+    try:
+        n_retried = mint_deliverable_retries(store, now=now)
+    except Exception:
+        log.exception("schedule: deliverable retry sweep failed")
+        n_retried = 0
+
     candidate_ids = _candidate_recurring_ids(store, limit=limit)
     if not candidate_ids:
-        return BatchResult(handler="schedule", claimed=0, ok=0, failed=0)
+        return BatchResult(handler="schedule", claimed=0, ok=n_retried, failed=0)
 
-    now = datetime.now(UTC)
     n_claimed = 0
-    n_spawned = 0
+    n_spawned = n_retried
     n_skipped = 0
     for rec_id in candidate_ids:
         try:
@@ -174,6 +180,75 @@ def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
         ok=n_spawned,
         failed=n_skipped,
     )
+
+
+#: Meta key a deliverable job stamps on its tick todo to ask for one more
+#: attempt at that instant (``precis.workers.job_types.briefing``, gr347551).
+DELIVERABLE_RETRY_AT = "deliverable_retry_at"
+
+
+def mint_deliverable_retries(store: Store, *, now: datetime) -> int:
+    """Re-mint tick children whose deliverable asked to be retried by now.
+
+    A budget-paused deliverable (the morning briefing) stamps
+    ``meta.deliverable_retry_at`` on its tick todo instead of failing. Once
+    that instant passes, mint a fresh sibling tick under the same recurring
+    — same ``job_type``/``params``, stamp ``<tick>~retry<n>`` — and move
+    the stamp to ``deliverable_retried_at`` so it fires once. The deadline
+    is the deliverable's own call (it stops stamping past it), so this
+    sweep needs no policy. Rows are locked ``SKIP LOCKED`` for multi-host
+    safety, like the per-recurring claim. Returns the number minted.
+    """
+    n = 0
+    with store.tx() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT c.ref_id, c.meta, p.ref_id, p.title,
+                   p.meta->>'executor', p.meta->>'job_type', p.meta->'params'
+              FROM refs c JOIN refs p ON p.ref_id = c.parent_id
+             WHERE c.kind = 'todo' AND c.retired_at IS NULL
+               AND p.retired_at IS NULL AND p.meta ? 'schedule'
+               -- An operator-paused recurring stops its retries too.
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = p.ref_id AND t.namespace = 'STATUS'
+                      AND t.value = 'paused'
+               )
+               AND c.meta ? '{DELIVERABLE_RETRY_AT}'
+               AND (c.meta->>'{DELIVERABLE_RETRY_AT}')::timestamptz <= %s
+             FOR UPDATE OF c SKIP LOCKED
+            """,
+            (now,),
+        ).fetchall()
+        for child_id, child_meta, rec_id, title, executor, job_type, params in rows:
+            meta = dict(child_meta or {})
+            base = str(
+                meta.get("deliverable_tick") or meta.get("spawned_for_tick") or ""
+            )
+            attempt = int(meta.get("deliverable_attempt") or 0) + 1
+            rec = {
+                "id": int(rec_id),
+                "title": title,
+                "executor": executor,
+                "job_type": job_type,
+                "params": params,
+            }
+            _mint_child_conn(
+                store,
+                conn,
+                rec,
+                tick=now,
+                stamp=f"{base}~retry{attempt}",
+                extra_meta={"deliverable_tick": base, "deliverable_attempt": attempt},
+            )
+            conn.execute(
+                f"UPDATE refs SET meta = (meta - '{DELIVERABLE_RETRY_AT}') "
+                "|| jsonb_build_object('deliverable_retried_at', %s::text) "
+                "WHERE ref_id = %s",
+                (now.isoformat(), int(child_id)),
+            )
+            n += 1
+    return n
 
 
 # ── candidate enumeration (unlocked) ──────────────────────────────
@@ -609,6 +684,7 @@ def _mint_child_conn(
     *,
     tick: datetime,
     stamp: str,
+    extra_meta: dict[str, Any] | None = None,
 ) -> None:
     """Insert one spawned child + the ``spawn`` event on the held tx.
 
@@ -646,6 +722,8 @@ def _mint_child_conn(
         meta["job_type"] = rec["job_type"]
     if rec.get("params") is not None:
         meta["params"] = rec["params"]
+    if extra_meta:
+        meta.update(extra_meta)
     child = store.insert_ref(
         kind="todo",
         slug=None,
@@ -689,4 +767,4 @@ def _render_child_title(rec: dict[str, Any], tick: datetime) -> str:
     return f"{base} {tick.date().isoformat()}"
 
 
-__all__ = ["run_schedule_pass"]
+__all__ = ["DELIVERABLE_RETRY_AT", "mint_deliverable_retries", "run_schedule_pass"]

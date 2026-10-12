@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.budget.work_class import WorkClass
+from precis.budget.work_class import resolve as resolve_work_class
 from precis.utils.timeutil import as_utc
 
 if TYPE_CHECKING:
@@ -173,13 +175,47 @@ def evaluate(store: Store | None) -> QuotaPause | None:
     return None
 
 
-#: Taper thresholds (gr347551), as percent of the window *used*: at or past
-#: the first, stop admitting BIG/FRONTIER (<25% remaining); at or past the
-#: second, stop MEDIUM too (<10% remaining). At 100 (or a blocking status)
-#: :func:`evaluate` parks every paid tier until the reset. SMALL and local
-#: tiers never reach this gate.
-TAPER_STOP_BIG_PCT = 75.0
-TAPER_STOP_MEDIUM_PCT = 90.0
+@dataclass(frozen=True, slots=True)
+class ClassFloor:
+    """When the taper stops a tier for one work class.
+
+    ``stop_big_pct`` / ``stop_medium_pct``: percent of a window *used* at or
+    past which BIG+FRONTIER / MEDIUM too stop being admitted (``None`` =
+    never). ``warning_stops_big``: whether the provider's warning status
+    alone (the only signal the prod snapshot carries — no percentage) stops
+    BIG+FRONTIER for this class.
+    """
+
+    stop_big_pct: float | None
+    stop_medium_pct: float | None
+    warning_stops_big: bool
+
+
+#: The taper table (gr347551; Reto 2026-10-11 tiers, 2026-10-12 work-class
+#: axis): per class, when each paid tier stops. At 100% used (or a blocking
+#: status) :func:`evaluate` parks every class and paid tier until the reset;
+#: SMALL and local tiers never reach this gate; the resume override bypasses
+#: both. Deliverables stop BIG later than background and their caller
+#: degrades to MEDIUM and posts a notice rather than pausing silently
+#: (``precis.workers.briefing``); interactive work is never tapered.
+TAPER_FLOORS: dict[WorkClass, ClassFloor] = {
+    WorkClass.BACKGROUND: ClassFloor(
+        stop_big_pct=75.0, stop_medium_pct=90.0, warning_stops_big=True
+    ),
+    WorkClass.DELIVERABLE: ClassFloor(
+        stop_big_pct=85.0, stop_medium_pct=95.0, warning_stops_big=True
+    ),
+    WorkClass.INTERACTIVE: ClassFloor(
+        stop_big_pct=None, stop_medium_pct=None, warning_stops_big=False
+    ),
+}
+
+#: Background floors, kept as names for callers that predate the table.
+TAPER_STOP_BIG_PCT = TAPER_FLOORS[WorkClass.BACKGROUND].stop_big_pct
+TAPER_STOP_MEDIUM_PCT = TAPER_FLOORS[WorkClass.BACKGROUND].stop_medium_pct
+
+_BIG_UP: frozenset[str] = frozenset({"big", "frontier"})
+_MEDIUM_UP: frozenset[str] = frozenset({"medium", "big", "frontier"})
 
 #: Statuses the CLI raises ahead of exhaustion: the window is inside its
 #: warning band (the provider's own "running low" signal), so the first taper
@@ -195,28 +231,88 @@ _TAPER_WINDOWS: frozenset[str] = frozenset({"five_hour", "seven_day"})
 class Taper:
     """Admission-taper reading of the quota snapshot.
 
-    ``level``: 0 admit all, 1 stop BIG/FRONTIER, 2 also stop MEDIUM.
+    ``used_pct`` is the highest ``used_percentage`` over live windows
+    (``None`` when none reports one) and ``pct_reason`` names that window;
+    ``warning_reason`` names a live window in its warning band (empty when
+    none). :meth:`blocked` turns the reading into the tiers stopped for a
+    work class via :data:`TAPER_FLOORS`.
+
+    ``level`` / ``reason`` are the background reading (0 admit all, 1 stop
+    BIG/FRONTIER, 2 also stop MEDIUM) — what /budget shows as the headline.
     ``no_signal`` is True when the snapshot carried neither a usable
     ``used_percentage`` nor a warning status, so the taper cannot see the
     remaining headroom and fails open (surfaced on /budget so a blind taper
     is visible rather than silently inert).
     """
 
-    level: int
     no_signal: bool
-    reason: str = ""
+    used_pct: float | None = None
+    pct_reason: str = ""
+    warning_reason: str = ""
+
+    def blocked(self, work_class: str | WorkClass | None = None) -> frozenset[str]:
+        """Tier names (``medium``/``big``/``frontier``) the taper stops for
+        ``work_class`` (resolved like a request's: ambient → background)."""
+        floor = TAPER_FLOORS[resolve_work_class(work_class)]
+        used = self.used_pct
+        if (
+            used is not None
+            and floor.stop_medium_pct is not None
+            and used >= floor.stop_medium_pct
+        ):
+            return _MEDIUM_UP
+        if (
+            used is not None
+            and floor.stop_big_pct is not None
+            and used >= floor.stop_big_pct
+        ):
+            return _BIG_UP
+        if self.warning_reason and floor.warning_stops_big:
+            return _BIG_UP
+        return frozenset()
+
+    def why(self, work_class: str | WorkClass | None = None) -> str:
+        """Human reason for :meth:`blocked`, with the remaining headroom."""
+        floor = TAPER_FLOORS[resolve_work_class(work_class)]
+        blocked = self.blocked(work_class)
+        if not blocked:
+            return ""
+        used = self.used_pct
+        threshold = floor.stop_medium_pct if "medium" in blocked else floor.stop_big_pct
+        if used is not None and threshold is not None and used >= threshold:
+            return f"{self.pct_reason}; under {100 - threshold:.0f}% remaining"
+        return f"{self.warning_reason}; in the provider's warning band"
+
+    @property
+    def level(self) -> int:
+        blocked = self.blocked(WorkClass.BACKGROUND)
+        return 2 if "medium" in blocked else 1 if blocked else 0
+
+    @property
+    def reason(self) -> str:
+        blocked = self.blocked(WorkClass.BACKGROUND)
+        if not blocked:
+            return ""
+        used = self.used_pct
+        if (
+            used is not None
+            and TAPER_STOP_BIG_PCT is not None
+            and used >= TAPER_STOP_BIG_PCT
+        ):
+            return self.pct_reason
+        return self.warning_reason
 
 
 def taper_state(store: Store | None) -> Taper:
     """Read the snapshot's remaining headroom into a :class:`Taper`.
 
-    Per window: ``used_percentage`` wins; otherwise a warning ``status``
-    maps to level 1; otherwise that window gives no signal. The highest
-    level over live windows wins. Windows already past their ``resets_at``
-    are ignored (they have rolled). Dark (``level=0``, ``no_signal=True``)
-    on no store / snapshot / bad shape; never raises.
+    Over live windows (``five_hour`` / ``seven_day``; a window already past
+    its ``resets_at`` has rolled and is ignored): the highest
+    ``used_percentage``, and whether any window is in its warning band.
+    Dark (``no_signal=True``, blocks nothing) on no store / snapshot / bad
+    shape; never raises.
     """
-    dark = Taper(level=0, no_signal=True)
+    dark = Taper(no_signal=True)
     if store is None:
         return dark
     try:
@@ -230,7 +326,8 @@ def taper_state(store: Store | None) -> Taper:
     if not isinstance(windows, dict):
         return dark
     now = datetime.now(UTC)
-    level, reason, any_signal = 0, "", False
+    used_pct: float | None = None
+    pct_reason = warning_reason = ""
     for name, bucket in windows.items():
         # Headroom windows only: overage is extra-usage credit, not headroom.
         if name not in _TAPER_WINDOWS or not isinstance(bucket, dict):
@@ -241,22 +338,17 @@ def taper_state(store: Store | None) -> Taper:
         status = str(bucket.get("status", "")).strip().lower()
         raw = bucket.get("used_percentage")
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            any_signal = True
-            if raw >= TAPER_STOP_MEDIUM_PCT:
-                lvl = 2
-            elif raw >= TAPER_STOP_BIG_PCT:
-                lvl = 1
-            else:
-                lvl = 0
-            why = f"{raw:.0f}% of the {name} window used"
-        elif status in _WARNING_STATUSES:
-            any_signal = True
-            lvl, why = 1, f"the {name} window is {status}"
-        else:
-            continue
-        if lvl > level:
-            level, reason = lvl, why
-    return Taper(level=level, no_signal=not any_signal, reason=reason)
+            if used_pct is None or raw > used_pct:
+                used_pct = float(raw)
+                pct_reason = f"{raw:.0f}% of the {name} window used"
+        elif status in _WARNING_STATUSES and not warning_reason:
+            warning_reason = f"the {name} window is {status}"
+    return Taper(
+        no_signal=used_pct is None and not warning_reason,
+        used_pct=used_pct,
+        pct_reason=pct_reason,
+        warning_reason=warning_reason,
+    )
 
 
 def window_for_notice(text: str | None) -> str:
@@ -353,6 +445,8 @@ def probe_due(store: Store | None, *, now: datetime | None = None) -> bool:
 
 __all__ = [
     "DEFAULT_CEILING_PCT",
+    "TAPER_FLOORS",
+    "ClassFloor",
     "QuotaPause",
     "Taper",
     "evaluate",

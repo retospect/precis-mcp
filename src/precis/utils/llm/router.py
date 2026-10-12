@@ -1206,6 +1206,11 @@ class LlmRequest:
     #: pass-level only. Cannot be back-filled — an inproc pass with a natural
     #: ref should set it.
     ref_id: int | None = None
+    #: Who waits on this call — ``interactive`` / ``deliverable`` /
+    #: ``background`` (:mod:`precis.budget.work_class`); picks the quota-taper
+    #: floors (:data:`precis.budget.quota.TAPER_FLOORS`). ``None`` ⇒ the
+    #: ambient ``work_class_scope`` (MCP tool call, web request) or background.
+    work_class: str | None = None
     #: The tier/model a caller asked for first when this call is its budget
     #: *degradation* — a smaller tier or local retry after that one paused at
     #: the breaker (asa_bot's chat turns, gr479851). Stamped into the
@@ -2315,6 +2320,9 @@ def route(req: LlmRequest) -> LlmResult:
         transport=transport.value,
         local=not _rung_is_cloud(ladder[0]),
         bare=ladder[0].bare,
+        work_class=req.work_class,
+        tally=True,
+        degraded=bool(req.degraded_from),
     )
     if trip is not None:
         # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
@@ -2406,6 +2414,9 @@ def route(req: LlmRequest) -> LlmResult:
                 transport=nxt.transport.value,
                 local=not _rung_is_cloud(nxt),
                 bare=nxt.bare,
+                work_class=req.work_class,
+                tally=True,
+                degraded=bool(req.degraded_from),
             )
             if esc_trip is not None:
                 return _classified(
@@ -2659,6 +2670,9 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
         transport=transport.value,
         local=not _rung_is_cloud(ladder[0]),
         bare=ladder[0].bare,
+        work_class=req.work_class,
+        tally=True,
+        degraded=bool(req.degraded_from),
     )
     if trip is not None:
         return _classified(
@@ -2826,6 +2840,8 @@ class DispatchClient:
     #: refuses a cloud fallback with an error result instead of billing it.
     #: ``None`` leaves the chain unfiltered.
     placement: str | None = None
+    #: Taper work class (see :attr:`LlmRequest.work_class`).
+    work_class: str | None = None
 
     def complete(
         self,
@@ -2860,6 +2876,7 @@ class DispatchClient:
                 log_blobs=self.log_blobs,
                 timeout_s=self.timeout_s,
                 placement=self.placement,
+                work_class=self.work_class,
             )
         )
         if res.error is not None:
@@ -2882,6 +2899,8 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
     ``stop_reason`` and the claude lane's ``terminal_reason`` into one boolean
     so a watchdog doesn't need to know which transport ran.
     """
+    from precis.budget.work_class import resolve as _resolve_work_class
+
     prompt_chars = len(req.prompt or "")
     if req.messages:
         prompt_chars += sum(len(str(m.get("content", ""))) for m in req.messages)
@@ -2890,6 +2909,7 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         "tier": req.tier.value,
         "tools_needed": req.tools_needed,
         "source": req.source or None,
+        "work_class": _resolve_work_class(req.work_class).value,
         "has_system": bool(req.system_prompt),
         "has_mcp": bool(req.mcp_config),
     }

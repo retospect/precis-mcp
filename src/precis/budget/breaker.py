@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from precis.budget import meter
 from precis.budget.bands import Cost, cost_from_usd, is_paid
+from precis.budget.work_class import WorkClass
 
 if TYPE_CHECKING:
     from precis.budget.meter import BudgetStatus
@@ -54,6 +55,9 @@ def gate_tier(
     local: bool = False,
     bare: bool = False,
     store: Store | None = None,
+    work_class: str | None = None,
+    tally: bool = False,
+    degraded: bool = False,
 ) -> str | None:
     """Gate an LLM dispatch. ``None`` to allow; a reason string to refuse.
 
@@ -90,15 +94,34 @@ def gate_tier(
 
     ``transport=None`` (legacy callers, tests) falls back to the dollar gate,
     preserving the pre-split behaviour.
+
+    ``work_class`` (:mod:`precis.budget.work_class`; ``None`` → the ambient
+    scope → background) picks the quota-taper floors. ``tally=True`` (the
+    router's dispatch gates only — not selection probes like the policy
+    ranker's eligibility filter) counts the paid decision per class as
+    ``served`` or ``paused`` for /budget (:mod:`precis.budget.outcomes`);
+    ``degraded=True`` (the request carries ``degraded_from`` — a caller's
+    re-ask on a smaller tier after a pause) also counts ``degraded`` when
+    admitted.
     """
     if local:
         return None
     if not is_paid(tier):
         return None
+    from precis.budget import outcomes
+    from precis.budget.work_class import resolve
+
+    cls = resolve(work_class)
     st = store if store is not None else meter.active_store()
     if transport in meter.OAUTH_TRANSPORTS and not bare:
-        return _gate_quota(st, tier)
-    return _gate(st, label="paid model call")
+        reason = _gate_quota(st, tier, cls)
+    else:
+        reason = _gate(st, label="paid model call")
+    if tally:
+        outcomes.record(st, cls, "paused" if reason is not None else "served")
+        if degraded and reason is None:
+            outcomes.record(st, cls, "degraded")
+    return reason
 
 
 def gate_paid(
@@ -146,39 +169,33 @@ def _gate(store: Store | None, *, label: str) -> str | None:
     )
 
 
-#: Tiers the quota taper stops at each level (gr347551): level 1 (<25%
-#: remaining) the expensive lanes, level 2 (<10%) MEDIUM as well. SMALL is
-#: free and never reaches the quota gate.
-_TAPER_BLOCKED: dict[int, frozenset[str]] = {
-    1: frozenset({"big", "frontier"}),
-    2: frozenset({"medium", "big", "frontier"}),
-}
-
-
-def _taper_reason(store: Store | None, tier: Tier) -> str | None:
+def _taper_reason(store: Store | None, tier: Tier, work_class: WorkClass) -> str | None:
     from precis.budget import quota
 
     taper = quota.taper_state(store)
-    if taper.level == 0:
+    name = str(getattr(tier, "value", tier)).lower()
+    if name not in taper.blocked(work_class):
         if taper.no_signal:
             log.debug("quota taper: no signal in snapshot; failing open")
         return None
-    name = str(getattr(tier, "value", tier)).lower()
-    if name not in _TAPER_BLOCKED[taper.level]:
-        return None
-    left = "25%" if taper.level == 1 else "10%"
     return (
-        f"budget: claude quota low ({taper.reason}; under {left} remaining) "
-        f"— {name} work paused. Smaller tiers and free local work still "
-        f"run; auto-clears when the window resets, or resume now on /budget."
+        f"budget: claude quota low ({taper.why(work_class)}) "
+        f"— {name} {work_class.value} work paused. Smaller tiers and free local "
+        f"work still run; auto-clears when the window resets, or resume now on "
+        f"/budget."
     )
 
 
-def _gate_quota(store: Store | None, tier: Tier | None = None) -> str | None:
+def _gate_quota(
+    store: Store | None,
+    tier: Tier | None = None,
+    work_class: WorkClass = WorkClass.BACKGROUND,
+) -> str | None:
     """Gate the claude-OAuth lane on the subscription quota snapshot.
 
-    Parks every paid tier on an exhausted window; otherwise tapers by tier as
-    remaining headroom shrinks (:func:`_taper_reason`)."""
+    Parks every paid tier and class on an exhausted window; otherwise tapers
+    by (work class, tier) as remaining headroom shrinks
+    (:data:`~precis.budget.quota.TAPER_FLOORS`)."""
     from precis.budget import quota
 
     pause = quota.evaluate(store)
@@ -191,7 +208,7 @@ def _gate_quota(store: Store | None, tier: Tier | None = None) -> str | None:
     if pause is not None:
         return pause.reason
     if tier is not None and not resumed:
-        return _taper_reason(store, tier)
+        return _taper_reason(store, tier, work_class)
     return None
 
 

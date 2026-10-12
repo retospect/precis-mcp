@@ -88,6 +88,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel.server import request_ctx
 
 from precis import calllat, inflight
+from precis.budget.work_class import WorkClass, work_class_scope
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.secrets import mounted_secret
 from precis.tools import TOOL_REGISTRY
@@ -292,9 +293,14 @@ def _offload_sync(
             # (anyio can't kill it), releasing the semaphore early — the
             # residual thread count stays bounded by anyio's default
             # thread limiter.
-            return await anyio.to_thread.run_sync(
-                functools.partial(fn, **kwargs), abandon_on_cancel=True
-            )
+            # A session tool call has a person (or agent) waiting on it:
+            # its LLM calls are ``interactive`` for the quota taper
+            # (gr347551). to_thread copies the context, so the scope rides
+            # into the worker thread.
+            with work_class_scope(WorkClass.INTERACTIVE):
+                return await anyio.to_thread.run_sync(
+                    functools.partial(fn, **kwargs), abandon_on_cancel=True
+                )
         finally:
             # abandon_on_cancel means a cancelled request returns here
             # while the OS thread keeps running. Releasing the count with

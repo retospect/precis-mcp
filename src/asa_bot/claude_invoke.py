@@ -537,6 +537,8 @@ async def _invoke_streaming(
         # it (not a user-overridable knob the way --model/--max-turns are).
         output_format="stream-json",
         source="asa_bot",
+        # A person is waiting on this turn: never tapered (gr347551).
+        work_class="interactive",
         env_overlay=overlay,
         cwd=cfg.cwd,
         log_call=True,
@@ -620,6 +622,8 @@ async def _invoke_via_chain(
         extra_args=_ASA_EXTRA_ARGS,
         settings_extra=_ASA_SETTINGS,
         source="asa_bot",
+        # A person is waiting on this turn: never tapered (gr347551).
+        work_class="interactive",
         env_overlay=overlay,
         cwd=cfg.cwd,
         log_call=True,

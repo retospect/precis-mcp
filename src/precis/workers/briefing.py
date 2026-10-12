@@ -18,6 +18,18 @@ table and a DB-stored prompt, it:
    socket) posts it verbatim. Idempotent per brief-date.
 
 Run via ``precis worker --only briefing`` or a scheduled cron tick.
+
+**A deliverable, not background work** (gr347551, Reto 2026-10-12: the
+07:00 brief jo479766 was paused by the quota taper and nothing reached
+#news). The call carries ``work_class='deliverable'`` so the taper stops it
+later than background work, and a pause never ends silently:
+
+* paused on FRONTIER → re-ask on MEDIUM (:data:`DELIVERABLE_LADDER`); the
+  brief is delivered with a one-line "produced on <model>" notice;
+* paused on every rung → :class:`BriefingPaused`; the job posts a one-line
+  "delayed" notice (once per day) and asks the schedule worker to re-mint
+  the tick in an hour (:func:`handle_pause`), until the recurring's
+  deadline (``deadline_utc`` param, default 12:00Z) — then "skipped today".
 """
 
 from __future__ import annotations
@@ -30,6 +42,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis.budget.work_class import WorkClass
 from precis.handlers.news import article_blocks
 from precis.liveness import drain_requested, drain_sleep
 from precis.store import Store
@@ -79,6 +92,24 @@ _BRIEF_MAX_TOKENS = 1200
 #: exercised by tests / a directly-injected client) litellm-shaped error is
 #: re-raised on the first failure so real misconfiguration fails fast instead
 #: of stalling on backoff.
+#: Tiers a paused briefing walks down before giving up for this attempt.
+#: The local rung joins once the gr479851 degrade ladder can pin a served
+#: local model; until then MEDIUM is the floor.
+DELIVERABLE_LADDER: tuple[Tier, ...] = (Tier.FRONTIER, Tier.MEDIUM)
+
+#: Default latest time (UTC, ``HH:MM``) a paused briefing keeps retrying;
+#: past it the day is skipped with a notice. Per-recurring override: the
+#: job's ``deadline_utc`` param.
+DEFAULT_DEADLINE_UTC = "12:00"
+
+#: Spacing between re-attempts of a paused briefing.
+RETRY_SPACING = timedelta(hours=1)
+
+
+class BriefingPaused(RuntimeError):
+    """Every rung of :data:`DELIVERABLE_LADDER` came back budget-paused."""
+
+
 _LLM_RETRY_ATTEMPTS = int(os.environ.get("PRECIS_BRIEFING_RETRY_ATTEMPTS") or 3)
 _LLM_RETRY_BACKOFF_S = float(os.environ.get("PRECIS_BRIEFING_RETRY_BACKOFF_S") or 2.0)
 
@@ -172,8 +203,8 @@ def _is_transient_llm_error(exc: BaseException) -> bool:
     """Whether an ``llm.complete`` failure is worth retrying.
 
     Transient: a :class:`~precis.utils.llm.router.DispatchError` (the router's
-    uniform error contract for a ``claude_agent`` subprocess hiccup or a
-    breaker-scoped pause — it doesn't expose the old litellm-HTTP path's finer
+    uniform error contract for a ``claude_agent`` subprocess hiccup; a
+    budget pause is not retried here — it doesn't expose the old litellm-HTTP path's finer
     4xx/5xx distinction, so any dispatch failure is retried, bounded by
     ``attempts``) — plus, for a directly-injected legacy litellm-shaped client
     (still exercised by :mod:`tests.test_briefing_retry`), a dropped
@@ -183,7 +214,9 @@ def _is_transient_llm_error(exc: BaseException) -> bool:
     real misconfiguration fails fast instead of stalling on backoff.
     """
     if isinstance(exc, DispatchError):
-        return True
+        # A budget pause does not clear on a seconds scale: :func:`_compose`
+        # walks down the ladder instead (a retry would just re-trip).
+        return not exc.paused
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code == 429 or exc.code >= 500
     return isinstance(exc, urllib.error.URLError | ConnectionError | TimeoutError)
@@ -265,28 +298,14 @@ def run_briefing(
         log.info("briefing: no news in the last %dh — nothing to brief", lookback_hours)
         return {"articles": 0, "brief_chars": 0, "ref_id": None}
 
-    # Fold through the router instead of holding a raw litellm
-    # client — so this cloud-tier call gets the budget breaker + the route-log
-    # (llm_call_log starts capturing real data on this pass). tools_needed=True
-    # lands on claude_agent (free-text final answer + system prompt honored,
-    # no tools advertised since mcp_config is left unset) rather than the
-    # tool-less claude_p judge shape, which would drop the system prompt and
-    # demand a parseable JSON block this pass's prose brief never has.
-    llm = client or DispatchClient(
-        tier=Tier.FRONTIER,
-        model=os.environ.get("PRECIS_BRIEFING_MODEL") or None,
-        tools_needed=True,
-        max_tokens=_BRIEF_MAX_TOKENS,
-        source="briefing",
-        log_call=True,
-    )
     context = _format_context(refs)
-    result = _complete_with_retry(
-        llm,
-        _build_briefing_messages(
-            date=now.date().isoformat(), count=len(refs), context=context
-        ),
+    messages = _build_briefing_messages(
+        date=now.date().isoformat(), count=len(refs), context=context
     )
+    if client is not None:
+        result, degraded = _complete_with_retry(client, messages), False
+    else:
+        result, degraded = _compose(store, messages)
     brief = result.text.strip()
 
     date_tag = now.date().isoformat()
@@ -315,6 +334,15 @@ def run_briefing(
 
     if deliver_to:
         _deliver(store, deliver_to, brief, date_tag)
+        if degraded:
+            post_notice(
+                store,
+                deliver_to,
+                f"Briefing produced on {result.model or 'a smaller model'}: "
+                "the claude window is low.",
+                date_tag=date_tag,
+                notice="degraded",
+            )
     if sink is not None:
         try:
             sink(brief)
@@ -322,7 +350,160 @@ def run_briefing(
             log.warning("briefing: sink delivery failed: %s", exc)
 
     log.info("briefing: %d articles → %d-char brief (%s)", len(refs), len(brief), slug)
-    return {"articles": len(refs), "brief_chars": len(brief), "ref_id": ref.id}
+    return {
+        "articles": len(refs),
+        "brief_chars": len(brief),
+        "ref_id": ref.id,
+        "degraded_to": result.model if degraded else None,
+    }
+
+
+def _compose(store: Store, messages: list[dict[str, str]]) -> tuple[Any, bool]:
+    """Run the brief down :data:`DELIVERABLE_LADDER`; ``(result, degraded)``.
+
+    Folds through the router (budget breaker + route-log). tools_needed=True
+    lands on claude_agent (free-text final answer + system prompt honored,
+    no tools advertised since mcp_config is left unset) rather than the
+    tool-less claude_p judge shape, which would drop the system prompt and
+    demand a parseable JSON block this pass's prose brief never has. A
+    ``PRECIS_BRIEFING_MODEL`` pin applies to the first rung only. Raises
+    :class:`BriefingPaused` when every rung is budget-paused; any other
+    dispatch failure propagates.
+    """
+    from precis.budget import outcomes
+
+    reason = ""
+    for i, tier in enumerate(DELIVERABLE_LADDER):
+        pin = os.environ.get("PRECIS_BRIEFING_MODEL") or None
+        llm = DispatchClient(
+            tier=tier,
+            model=pin if i == 0 else None,
+            tools_needed=True,
+            max_tokens=_BRIEF_MAX_TOKENS,
+            source="briefing",
+            log_call=True,
+            work_class=WorkClass.DELIVERABLE,
+        )
+        try:
+            result = _complete_with_retry(llm, messages)
+        except DispatchError as exc:
+            if not exc.paused:
+                raise
+            reason = str(exc)
+            log.warning("briefing: %s tier paused (%s)", tier.value, reason)
+            continue
+        if i > 0:
+            outcomes.record(store, WorkClass.DELIVERABLE, "degraded")
+        return result, i > 0
+    raise BriefingPaused(reason or "budget paused every briefing tier")
+
+
+def deadline_for(day: datetime, deadline_utc: str | None) -> datetime:
+    """``day``'s retry deadline: ``deadline_utc`` (``HH:MM``, UTC) on that
+    date; a malformed value falls back to :data:`DEFAULT_DEADLINE_UTC`."""
+    for raw in (deadline_utc, DEFAULT_DEADLINE_UTC):
+        try:
+            hh, mm = str(raw).split(":")
+            return day.astimezone(UTC).replace(
+                hour=int(hh), minute=int(mm), second=0, microsecond=0
+            )
+        except (TypeError, ValueError):
+            continue
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def handle_pause(
+    store: Store,
+    *,
+    deliver_to: str | None,
+    now: datetime,
+    deadline_utc: str | None,
+    reason: str,
+) -> datetime | None:
+    """Announce a paused briefing; return the next attempt or ``None``.
+
+    Before the deadline: post the "delayed" notice (once per day) and
+    return ``now + RETRY_SPACING``, capped at the deadline so the last
+    attempt lands on it. At or past it: post "skipped today", return
+    ``None``.
+    """
+    date_tag = now.date().isoformat()
+    deadline = deadline_for(now, deadline_utc)
+    if now < deadline:
+        if deliver_to:
+            post_notice(
+                store,
+                deliver_to,
+                "Briefing delayed: the claude window is low. Retrying hourly "
+                f"until {deadline.strftime('%H:%M')} UTC.",
+                date_tag=date_tag,
+                notice="delayed",
+            )
+        log.info("briefing: paused (%s); retrying before %s", reason, deadline)
+        return min(now + RETRY_SPACING, deadline)
+    if deliver_to:
+        post_notice(
+            store,
+            deliver_to,
+            "Briefing skipped today: the claude window stayed low past "
+            f"{deadline.strftime('%H:%M')} UTC.",
+            date_tag=date_tag,
+            notice="skipped",
+        )
+    log.warning("briefing: paused past the %s deadline; skipped (%s)", deadline, reason)
+    return None
+
+
+def post_notice(
+    store: Store, target: str, text: str, *, date_tag: str, notice: str
+) -> bool:
+    """Queue a one-line ``message`` to ``target`` (asa_bot posts it).
+
+    Idempotent per ``(date_tag, notice)`` so an hourly retry does not repeat
+    the "delayed" line. The meta leaves out ``briefing_date``: that key is
+    :func:`_deliver`'s already-delivered marker. Best-effort: a failure is
+    logged; returns whether a message was queued.
+    """
+    import json
+
+    try:
+        with store.tx() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM refs WHERE kind = 'message' "
+                "AND meta->>'briefing_notice_date' = %s "
+                "AND meta->>'briefing_notice' = %s AND retired_at IS NULL LIMIT 1",
+                (date_tag, notice),
+            ).fetchone()
+            if existing is not None:
+                return False
+            ref = store.insert_ref(
+                kind="message",
+                slug=None,
+                title=f"Briefing notice — {date_tag} ({notice})",
+                meta={
+                    "target": target,
+                    "status": "queued",
+                    "reason": f"briefing {date_tag} {notice}",
+                    "briefing_notice": notice,
+                    "briefing_notice_date": date_tag,
+                    "author": "asa",
+                    "proactive": True,
+                },
+                conn=conn,
+            )
+            store.chunks.insert_chunks(
+                ref.id,
+                [ChunkInsert(ord=0, text=text, meta={"chunk_kind": "message_body"})],
+                conn=conn,
+            )
+            payload = {"ref_id": ref.id, "target": target, "author": "asa"}
+            conn.execute(
+                "SELECT pg_notify('precis.messages', %s)", (json.dumps(payload),)
+            )
+    except Exception as exc:
+        log.warning("briefing: %s notice to %s failed: %s", notice, target, exc)
+        return False
+    return True
 
 
 def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
@@ -422,4 +603,11 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
         log.warning("briefing: delivery to %s failed: %s", target, exc)
 
 
-__all__ = ["run_briefing"]
+__all__ = [
+    "DELIVERABLE_LADDER",
+    "BriefingPaused",
+    "deadline_for",
+    "handle_pause",
+    "post_notice",
+    "run_briefing",
+]

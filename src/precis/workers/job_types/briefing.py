@@ -15,6 +15,7 @@ Runs :func:`precis.workers.briefing.run_briefing`, which summarizes recent
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from precis.workers.job_types import JobTypeSpec
@@ -37,14 +38,41 @@ _PARAMS_SCHEMA: dict[str, Any] = {
                 "Omit to only persist the briefing ref."
             ),
         },
+        "deadline_utc": {
+            "type": "string",
+            "pattern": "^[0-2][0-9]:[0-5][0-9]$",
+            "description": (
+                "Latest UTC time (HH:MM, default 12:00) a budget-paused brief "
+                "keeps retrying hourly; past it the day is skipped with a "
+                "notice to deliver_to."
+            ),
+        },
     },
     "additionalProperties": False,
 }
 
 
+def _request_retry(ctx: Any, retry_at: datetime) -> bool:
+    """Stamp ``deliverable_retry_at`` on the job's parent tick todo, which
+    the schedule worker re-mints at that instant. ``False`` when the job
+    has no parent (a hand-minted job: notice only)."""
+    from precis.workers.schedule.worker import DELIVERABLE_RETRY_AT
+
+    with ctx.store.tx() as conn:
+        row = conn.execute(
+            "SELECT parent_id FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+        ).fetchone()
+        if row is None or row[0] is None:
+            return False
+        ctx.store.stamp_ref_meta(
+            int(row[0]), {DELIVERABLE_RETRY_AT: retry_at.isoformat()}, conn=conn
+        )
+    return True
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job."""
-    from precis.workers.briefing import run_briefing
+    from precis.workers.briefing import BriefingPaused, handle_pause, run_briefing
 
     params = (ctx.meta or {}).get("params") or {}
     kwargs: dict[str, Any] = {}
@@ -54,6 +82,26 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         kwargs["deliver_to"] = str(params["deliver_to"])
     try:
         r = run_briefing(ctx.store, **kwargs)
+    except BriefingPaused as exc:
+        # A deliverable never fails silently on a budget pause (gr347551):
+        # notice to the channel, then retry hourly until the deadline.
+        retry_at = handle_pause(
+            ctx.store,
+            deliver_to=kwargs.get("deliver_to"),
+            now=datetime.now(UTC),
+            deadline_utc=params.get("deadline_utc"),
+            reason=str(exc),
+        )
+        if retry_at is not None and _request_retry(ctx, retry_at):
+            ctx.append_chunk(
+                "job_summary",
+                f"briefing: budget-paused ({exc}); retry at {retry_at.isoformat()}",
+            )
+            ctx.set_meta(paused=True, retry_at=retry_at.isoformat())
+        else:
+            ctx.append_chunk("job_summary", f"briefing: budget-paused, skipped ({exc})")
+            ctx.set_meta(paused=True, skipped=True)
+        return
     except Exception as exc:
         log.warning("briefing job: pass raised", exc_info=True)
         ctx.record_failure(f"briefing: pass raised: {exc}")
@@ -67,9 +115,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.append_chunk(
         "job_summary",
         f"briefing: {r['articles']} articles → {r['brief_chars']}-char brief "
-        f"(ref {r['ref_id']})",
+        f"(ref {r['ref_id']})"
+        + (f", degraded to {r['degraded_to']}" if r.get("degraded_to") else ""),
     )
     ctx.set_meta(articles=r["articles"], brief_ref_id=r["ref_id"])
+    if r.get("degraded_to"):
+        ctx.set_meta(degraded_to=r["degraded_to"])
 
 
 SPEC = JobTypeSpec(

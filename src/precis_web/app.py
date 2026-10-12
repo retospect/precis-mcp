@@ -20,8 +20,25 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from precis.budget.work_class import WorkClass, work_class_scope
 from precis_web.config import WebConfig
 from precis_web.errors import register_error_handlers
+
+
+class InteractiveWorkClassMiddleware:
+    """Pure-ASGI: run every HTTP request inside an ``interactive``
+    :func:`~precis.budget.work_class.work_class_scope`."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        with work_class_scope(WorkClass.INTERACTIVE):
+            await self.app(scope, receive, send)
+
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +102,11 @@ def create_app(
     from starlette.middleware.gzip import GZipMiddleware
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+    # A web request has a person waiting: its LLM calls are ``interactive``
+    # for the quota taper (gr347551). Starlette's threadpool copies the
+    # context, so sync handlers see the scope too.
+    app.add_middleware(InteractiveWorkClassMiddleware)
 
     # HTTP Basic in front of everything — routes, the /static mount, and
     # anything added later. Added AFTER gzip so it is the OUTERMOST layer

@@ -33,7 +33,7 @@
 </div>
 {% elif quota and quota.taper_level %}
 <div class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700">
-  Quota taper: {{ quota.taper_reason }} &mdash; {% if quota.taper_level >= 2 %}MEDIUM, BIG and FRONTIER{% else %}BIG and FRONTIER{% endif %} not admitted.
+  Quota taper: {{ quota.taper_reason }} &mdash; {% if quota.taper_level >= 2 %}MEDIUM, BIG and FRONTIER{% else %}BIG and FRONTIER{% endif %} not admitted for background work (per-class detail below).
 </div>
 {% endif %}
 {% if budget.get('degraded') %}
@@ -118,6 +118,39 @@
     can't be overridden — those calls will 429 until the window resets.
   </p>
 </div>
+
+{% if quota and quota.outcomes %}
+<div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl mb-6">
+  <div class="text-xs uppercase tracking-wide text-slate-400 mb-3">Paid LLM calls by work class (24h)</div>
+  <table class="text-sm w-full">
+    <thead>
+      <tr class="text-[11px] text-slate-400 text-left">
+        <th class="font-normal py-1">class</th>
+        <th class="font-normal py-1">tapered now</th>
+        <th class="font-normal py-1 text-right">served</th>
+        <th class="font-normal py-1 text-right">degraded</th>
+        <th class="font-normal py-1 text-right">paused</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for row in quota.outcomes %}
+      <tr>
+        <td class="py-1 font-mono text-slate-600">{{ row.work_class }}</td>
+        <td class="py-1 text-[11px] text-slate-500">{{ row.blocked or '—' }}</td>
+        <td class="py-1 text-right">{{ row.served }}</td>
+        <td class="py-1 text-right {% if row.degraded %}text-amber-700{% endif %}">{{ row.degraded }}</td>
+        <td class="py-1 text-right {% if row.paused %}text-rose-700{% endif %}">{{ row.paused }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="text-[11px] text-slate-400 mt-2">
+    Counted per budget-gate decision: a degraded call also shows once as paused (the refused
+    tier) and once as served (the smaller tier). Interactive work is never tapered, only parked
+    when the window is exhausted.
+  </p>
+</div>
+{% endif %}
 
 <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-lg mb-6">
   <div class="text-xs uppercase tracking-wide text-slate-400 mb-3">Caps (real-money transports)</div>

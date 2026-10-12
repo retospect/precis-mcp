@@ -5400,7 +5400,9 @@ def test_op_chain_escape_breaker_trip_on_next_rung_pauses(
     local, cloud = _saturated(monkeypatch)
     seen: list[tuple[str, bool]] = []
 
-    def gate(tier: Tier, *, transport: str, local: bool, bare: bool) -> str | None:
+    def gate(
+        tier: Tier, *, transport: str, local: bool, bare: bool, **_kw: Any
+    ) -> str | None:
         seen.append((transport, local))
         return None if local else "dollar cap hit"
 
