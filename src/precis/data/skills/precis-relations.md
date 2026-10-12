@@ -35,7 +35,14 @@ options list. Link verb mechanics and target grammar live in
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
 | `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its neb-tier (parked) sibling on the same catalyst candidate. |
 | `conjunct-of` | (none) | Taproot only: A (an atomic claim hub) is one conjunct of B (the composite hub bundling it) — no inverse, advisory-only, written by `taproot.hub.apply_extraction`'s decomposition, not hand-authored. |
+| `explains` | (none) | Taproot only: A (a claim hub stating a mechanism/cause) explains B (the claim hub it is the "because" of) — directed A → B, no inverse, no cycles, advisory-only: no evidence flows along it and it never feeds trust or the cite fallback. Written by `taproot.hub.apply_extraction`'s causal split, or `link(rel='explains')` on a claim hub. |
 | `generalises` | `specialises` | A is the broader abstraction of B. |
+## Which relation for workflow items, reasoning, documents and parts?
+## Relation slugs beyond claims and citations — blocks, fixes, entails, cited-in, realized-by
+## What do the workflow, argument-graph and document rels mean?
+
+| `rel=` | Inverse | Use for |
+|---|---|---|
 | `blocks` | `blocked-by` | A workflow item must finish before B can. |
 | `see-also` | (none) | One-way "for context" pointer with no reverse semantic. |
 | `retracts` | `retracted-by` | A retracts B (notice → paper). |

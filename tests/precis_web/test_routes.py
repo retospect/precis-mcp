@@ -3953,6 +3953,22 @@ def test_console_run_search_paper_bails_on_unsupported_param(client, runtime) ->
     assert args.get("folder") == "42" or args.get("folder") == 42
 
 
+def test_console_run_search_paper_bails_on_unique_per(client, runtime) -> None:
+    """``unique_per='chunk'`` asks for the MCP's per-hit drill shape —
+    the console override can't render it (it only knows bibliographic
+    paper rows), so the call must reach real dispatch rather than
+    silently answer with the collapsed view."""
+    resp = client.post(
+        "/console/run",
+        data={"verb": "search", "args_text": "kind=paper q=x unique_per=chunk"},
+    )
+    assert resp.status_code == 200
+    assert runtime.calls  # fell through to real dispatch
+    verb, args = runtime.calls[-1]
+    assert verb == "search"
+    assert args.get("unique_per") == "chunk"
+
+
 def test_console_run_tolerates_comma_separated_args(client, runtime) -> None:
     """Python-call-style ``kind=draft, id=test01`` parses the same as the
     space-separated form — the trailing comma is stripped, not dispatched

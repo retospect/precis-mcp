@@ -67,6 +67,7 @@ def _extract_multi(
     composite: str | None,
     not_claims: list[NotClaim] | None = None,
     composite_source: str | None = None,
+    explains: tuple[tuple[int, int], ...] = (),
 ):
     """Fake ``ExtractFn``: a decomposed extraction — ``atoms`` sentences plus
     an optional bundling ``composite`` sentence and ``not_claims``. Mirrors
@@ -80,6 +81,7 @@ def _extract_multi(
             composite=_claim(composite) if composite is not None else None,
             not_claims=tuple(not_claims or ()),
             composite_source=composite_source,
+            explains=explains,
         )
 
     return _fn
@@ -2180,3 +2182,52 @@ def test_apply_chunk_mint_cap_refuses_over_mining_one_chunk(
 
     other = _run(f"Tubes are metallic [{pc2}].", "Tubes are metallic.", "d3")
     assert other.plans[0].action == "new"
+
+
+def test_apply_decomposition_mints_the_explains_edge_between_atom_hubs(
+    draft: DraftHandler, hub: Hub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The causal split reaches the graph on the draft-backfill path too:
+    the extraction's ``explains`` pair rides GroupPlan into apply_extraction,
+    which writes mechanism -> effect between the two ATOM hubs (never the
+    composite) while both atoms stay conjunct-of parts of the composite."""
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Because claim [{pc}].")
+
+    caplog.set_level("WARNING", logger="precis.taproot.hub")
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(
+            ["Effect atom.", "Mechanism atom."],
+            "Effect because mechanism.",
+            explains=((1, 0), (7, 0)),  # the second pair is unwritable: skipped
+        ),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.explains == ((1, 0), (7, 0))
+    # the dropped pair is counted on the plan/chunk result and logged with
+    # the chunk origin
+    assert plan.explains_skipped == 1
+    assert result.n_explains_skipped == 1
+    assert any(
+        f"dc{dc}" in r.getMessage() and "(7, 0)" in r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
+    composite_hub = plan.hub_ref_id
+    assert composite_hub is not None
+    assert len(_conjunct_atom_ids(hub.live_store, composite_hub)) == 2
+    with hub.live_store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT s.title, d.title FROM links l "
+            "JOIN refs s ON s.ref_id = l.src_ref_id "
+            "JOIN refs d ON d.ref_id = l.dst_ref_id WHERE l.relation = 'explains'"
+        ).fetchall()
+    assert rows == [("Mechanism atom.", "Effect atom.")]

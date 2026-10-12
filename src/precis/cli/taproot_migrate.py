@@ -34,9 +34,9 @@ tier + a format-flake guard — routed through :mod:`precis.utils.llm.router`
 since the 2026-08-15 ``llm.chain.medium`` cutover made MEDIUM haiku).
 ``--tier small`` / ``--tier big`` remain as explicit opt-ins for A/B work.
 
-Run ``canary`` (11 hand-authored passages through the chosen tier + the
+Run ``canary`` (13 hand-authored passages through the chosen tier + the
 migration gates, exit 1 on failure) before any bulk ``dry-run`` — it
-catches a collapsed/degraded extractor for the cost of 11 calls instead
+catches a collapsed/degraded extractor for the cost of 13 calls instead
 of a burned bulk run.
 
     precis taproot-migrate score
@@ -96,9 +96,9 @@ def add_parser(subparsers: Any) -> None:
 
     c = tsub.add_parser(
         "canary",
-        help="Pre-run extractor smoke test: 11 hand-authored passages "
+        help="Pre-run extractor smoke test: the hand-authored passages "
         "through the chosen tier + the migration gates; exit 1 on any "
-        "lossy/nested verdict or no-claim mismatch. Run before any bulk "
+        "lossy/nested/bad-explains verdict or no-claim mismatch. Run before any bulk "
         "dry-run.",
     )
     c.add_argument(
@@ -236,7 +236,15 @@ def add_parser(subparsers: Any) -> None:
     )
     a.add_argument(
         "--only-verdict",
-        choices=("pass-through", "split", "no-claim", "lossy", "nested", "error"),
+        choices=(
+            "pass-through",
+            "split",
+            "no-claim",
+            "lossy",
+            "nested",
+            "bad-explains",
+            "error",
+        ),
         default=None,
         help="Restrict to outcomes with this verdict (default: every verdict "
         "present in the file).",
@@ -643,6 +651,8 @@ def _run_apply(args: argparse.Namespace) -> None:
         "edges_repointed",
         "edges_kept_needs_review",
         "atoms_withheld_ungrounded",
+        "explains_written",
+        "explains_skipped",
         "skipped_already_stamped",
         "skipped_verdict",
         "no_claim_needs_review",

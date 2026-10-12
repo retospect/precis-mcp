@@ -422,6 +422,14 @@ distinct resolvable surface, not a replacement for `short`. Once defined
 or silenced, a token stops being hinted; reference a term with
 `[PEI](<dc-term-handle>)` (explicit terms win over auto-detected ones).
 
+**Defining several at once** — a glossary pass, a parts list — is one
+call, not one per term: `put(kind='draft', id='<slug>',
+chunk_kind='term', terms=[{'text': '<definition>', 'meta': {'short':
+'<ABBR>'}}, ...])` (≤50 per call; a bare string entry is shorthand for
+`{'text': it}`; an entry may carry `at=` to place it, else it files
+under the registry's home heading). All-or-nothing: a rejected entry
+rolls the whole call back and names its position.
+
 ## Audit the draft — hygiene checks & the gap-finder
 
 Before export, runtime flags undefined abbreviations, unresolved citations

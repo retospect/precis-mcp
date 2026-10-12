@@ -384,6 +384,8 @@ class LinksMixin:
         relation: str,
         ref_id: int,
         max_depth: int = _ANCESTOR_MAX_DEPTH,
+        *,
+        conn: Connection | None = None,
     ) -> set[int]:
         """Refs that reach ``ref_id`` by following ``relation`` edges
         (``x`` such that ``x -relation-> ... -relation-> ref_id``), ``ref_id``
@@ -394,6 +396,10 @@ class LinksMixin:
         (``contains`` / ``part-of``), so the walk does not care which side a
         writer used. Chunk-level endpoints collapse to their refs. The walk
         is depth-capped at ``max_depth`` so a pre-existing cycle terminates.
+
+        ``conn`` runs the walk on the caller's connection, so edges written
+        earlier in the caller's still-open transaction are visible (and no
+        second pool connection is taken while the caller holds one).
 
         The one closure helper: ``acyclic`` enforcement
         (:func:`~precis.utils.link_tag_ops.check_relation_constraints`)
@@ -420,11 +426,12 @@ class LinksMixin:
         )
         SELECT DISTINCT ref_id FROM anc WHERE depth > 0
         """
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                sql,
-                {"rel": relation, "inv": inverse, "start": ref_id, "max": max_depth},
-            ).fetchall()
+        params = {"rel": relation, "inv": inverse, "start": ref_id, "max": max_depth}
+        if conn is not None:
+            rows = conn.execute(sql, params).fetchall()
+        else:
+            with self.pool.connection() as c:
+                rows = c.execute(sql, params).fetchall()
         return {int(r[0]) for r in rows}
 
     def functional_conflict(

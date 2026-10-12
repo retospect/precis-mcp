@@ -1,12 +1,12 @@
 ---
 status: ready
 pillar: platform
-title: LLM failure classification — remaining: MEDIUM ladder proof, log column
+title: LLM failure classification — remaining: MEDIUM ladder proof
 prio: low
 model: sonnet
 ---
 
-# LLM failure classification — remaining: MEDIUM ladder proof, log column
+# LLM failure classification — remaining: MEDIUM ladder proof
 
 Design session 2026-09-17 (Reto + agent), rippling-zooming-taco worktree.
 Trigger: a web follow-up on fi191121 (conv co345510) stored a Claude
@@ -30,24 +30,23 @@ SMALL-lane in-process retry (`router._run_with_retry`,
 the web follow-up's enqueue path on a quota/budget failure (closes
 gr345578); `ExtractionUnavailable` carrying class + horizon so the taproot
 backfill names why/when instead of a bare "unavailable". `git log` is the
-record.
+record. Plus (2026-10-12): the `llm_call_log.reason_class` column —
+migration 0204 promotes the class out of `features` (the jsonb keys are
+still written; `retry_at` stays features-only), `spend_rollup` accepts
+`group_by="reason_class"`, and a partial index serves the by-class query.
 
 ## Remaining scope
 
-1. **Ladder proof on MEDIUM only** (config, no code). Set a
-   `llm.chain.medium` override on prod with a paid OpenRouter
-   no-training-provider rung below claude, so `FailoverProvider` runs on
-   prod for the first time on a low-stakes tier. The fall-through gate
-   (`content` never falls through) is already in the router.
+1. **Ladder proof on MEDIUM only** (config, no code — needs prod + Reto's
+   provider pick). Set a `llm.chain.medium` override on prod with a paid
+   OpenRouter no-training-provider rung below claude, so
+   `FailoverProvider` runs on prod for the first time on a low-stakes
+   tier. The fall-through gate (`content` never falls through) is already
+   in the router; the in-repo half is proven by
+   `tests/test_llm_failure_classification.py`'s `test_medium_ladder_*`.
    Acceptance: one `llm-failover: fell back to rung 1` warning observed in
    worker logs during the next quota window, with the result placement
    stamped `cloud`.
-2. **`llm_call_log.reason_class` column** (optional). The class and
-   horizon are stored today under `llm_call_log.features`
-   (`features->>'reason_class'`, `features->>'retry_at'`), which already
-   answers the 30-day by-class query without a regex. Promote to a real
-   nullable column (forward migration) only if the jsonb path proves too
-   slow or a dashboard wants an index.
 
 ## Explicitly NOT in scope
 

@@ -67,8 +67,12 @@ log = logging.getLogger(__name__)
 _VERBS: tuple[Verb, ...] = _ALL_VERBS
 
 #: Top-level ``tools/core.py`` verb kwargs whose declared default is
-#: **not** ``None`` (``edit(mode='find-replace', verdict='approved')``,
-#: ``link(mode='add')``, ``search(page_size=10, page=1)``). Every other
+#: **not** ``None``, or that the verb forwards unconditionally
+#: (``edit(mode='find-replace', verdict='approved')``, ``link(mode='add')``,
+#: ``search(page=1)`` — and ``page_size``, whose wrapper value is now
+#: ``None`` when unset so the paper handler can pick its mode-aware
+#: default, but which stays tolerated for callers that do pass it).
+#: Every other
 #: top-level kwarg defaults to ``None`` and is stripped by
 #: :meth:`DispatchMixin._invoke_handler`'s ``clean`` filter unless the
 #: caller actually supplied it — so its presence in ``clean`` reliably
@@ -507,8 +511,9 @@ def _tick_disabled_hint(kind: str) -> str | None:
 
 
 #: Agent-authored text args of put/edit/supersede, across every kind's verbs
-#: (collected from the handlers' signatures). ``meta`` / ``params`` / ``items``
-#: are dict/list containers whose string values are scanned recursively.
+#: (collected from the handlers' signatures). ``meta`` / ``params`` /
+#: ``items`` / ``terms`` are dict/list containers whose string values are
+#: scanned recursively.
 _SECRET_GATED_ARGS = (
     "text",
     "body",
@@ -531,7 +536,7 @@ _SECRET_GATED_ARGS = (
     "description",
     "abstract",
 )
-_SECRET_GATED_CONTAINERS = ("meta", "params", "items")
+_SECRET_GATED_CONTAINERS = ("meta", "params", "items", "terms")
 
 
 def _string_leaves(label: str, value: Any, out: list[tuple[str, str]]) -> None:

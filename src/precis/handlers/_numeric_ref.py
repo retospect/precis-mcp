@@ -25,6 +25,18 @@ Subclass contract:
 The base provides ``get`` / ``search`` / ``put`` exactly as v1's
 MemoryHandler did. Subclasses that need fancier behaviour (e.g. `anki`'s
 cloze-markup handling) override the relevant hook.
+
+Queryless gripe/todo/quest status/tag browse accepts recency and
+priority. Runtime keeps these reads out of query-based source search;
+priority ordering runs before SQL pagination, with unset priority at 5
+and ref-id ties.
+
+Lifecycle browse defaults to live rows without changing ranked defaults:
+explicit status/tags or ``status='*'`` include terminal history. The
+shared list/count SQL excludes terminal tags before paging and reports
+their exact hidden count. Rows expose real state from a bulk tag read;
+alerts retain alert-state tags. Closing/tag cleanup belongs to the write
+owner, never to a browse request.
 """
 
 from __future__ import annotations
@@ -79,8 +91,9 @@ _BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw")
 
 # Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
 # ``batch_ids = True``. Sized to the measured loops it replaces (runs of
-# 38-154 singleton calls, ``docs/backlog/singleton-id-no-batch-form.md``)
-# while keeping one batch ``get`` render on the order of a search page.
+# 38-154 singleton calls, surface-review pass #1 2026-09-29) while
+# keeping one batch ``get`` render on the order of a search page. The
+# draft ``terms=[...]`` batch write reuses it for the same reason.
 BATCH_ID_CAP = 50
 
 # Summary budget for the TOON list view's first-line cell. Memories

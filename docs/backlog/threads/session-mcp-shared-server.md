@@ -301,20 +301,16 @@ check their state first.
 6. **backlog/mcp-verb-kwarg-parity.md** — 71 handler kwargs are silently
    dropped by put/edit; the verb signature is the MCP schema, so a dropped
    kwarg is a silent no-op for every session. Platform pass 2026-10-02.
-7. **backlog/singleton-id-no-batch-form.md** — `get`/`tag` take
-   `id=[...]` on gripe, alert and todo since 2026-10-09 (`Store.atomic()`
-   makes the tag batch one transaction); left is the batch
-   `put(kind='draft', chunk_kind='term', terms=[...])` glossary case.
-8. **Gripe comment cap** — `src/precis/handlers/gripe.py` caps routine
+7. **Gripe comment cap** — `src/precis/handlers/gripe.py` caps routine
     reads at the newest20 comments; `view='comments'` exposes full history.
     R14 source is prepared; deployed replay remains pending.
-9. **backlog/mcp-staleness-title-roundtrip-guards.md** — title round-trip
+8. **backlog/mcp-staleness-title-roundtrip-guards.md** — title round-trip
     assert plus an MCP staleness banner; guards the stale-process class.
-10. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
+9. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
     with structured Response fields.
-11. **backlog/cli-bind-store-audit.md** — CLI entrypoints without bind_store
+10. **backlog/cli-bind-store-audit.md** — CLI entrypoints without bind_store
     miss live routing.
-12. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
+11. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
     FastMCP; still blocked, so last.
 
 ## Parked

@@ -94,8 +94,10 @@ def test_verbatim_total_differs_from_lexical_total(store: Store) -> None:
     h = PaperHandler(hub=Hub(store=store))
     q = f"photocatalysis{tag} mechanism{tag}"
 
-    lex = h.search(q=q, mode="lexical", page_size=2)
-    verbatim = h.search(q=q, mode="verbatim", page_size=2)
+    # unique_per='chunk': this test pins the chunk-pool totals — paper
+    # rows count distinct refs, a different (also honest) denominator.
+    lex = h.search(q=q, mode="lexical", page_size=2, unique_per="chunk")
+    verbatim = h.search(q=q, mode="verbatim", page_size=2, unique_per="chunk")
 
     assert "2 of 5" in lex.body
     assert "2 of 3" in verbatim.body

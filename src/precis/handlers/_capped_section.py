@@ -1,4 +1,11 @@
-"""Shared selection and overflow for bounded child collections on bare reads."""
+"""Shared selection and overflow for bounded child collections on bare reads.
+
+Inline links and gripe comments use this one capped-section renderer:
+selection and an explicit full-view pointer bound child counts on routine
+reads, and individual text is not clipped. Gripe keeps newest comments
+chronologically; ``log`` remains the audit trail, while ``comments`` is
+the opt-in complete conversation (policy detail:
+:mod:`precis.handlers._comment_timeline`)."""
 
 from collections.abc import Callable, Sequence
 from typing import Any

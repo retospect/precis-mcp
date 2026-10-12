@@ -80,12 +80,22 @@ HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradic
 #: composite hub" (docs/backlog/taproot-atomic-claims.md); ``disputes`` =
 #: "source hub appears to conflict with the target hub — non-blocking open
 #: question, free to file" (docs/backlog/disputes-edge-nonblocking-disagreement.md
-#: D3/D4); ``contradicts`` is adjudication-derived (Part 2) and NOT fileable
-#: through this door. All link-don't-merge, NO evidence flow (each hub keeps
+#: D3/D4); ``explains`` = "source hub is the mechanism/cause that explains
+#: the target hub" (migration 0203, the "X because Y" causal split — explaining
+#: atom -> explained atom, acyclic, never feeds ``derive_evidence``/trust/the
+#: cite fallback); ``contradicts`` is adjudication-derived (Part 2) and NOT
+#: fileable through this door. All link-don't-merge, NO evidence flow (each hub keeps
 #: its own paper→hub edges). Written through :func:`link_claims` (the single
 #: write door), distinct from the paper→hub evidence edges of
 #: :data:`HUB_ROLES`.
-CLAIM_LINK_RELATIONS: frozenset[str] = frozenset({"refines", "conjunct-of", "disputes"})
+CLAIM_LINK_RELATIONS: frozenset[str] = frozenset(
+    {"refines", "conjunct-of", "disputes", "explains"}
+)
+
+#: The causal-split relation (migration 0203): explaining hub -> explained
+#: hub. Named so :func:`link_claims`' cycle guard and
+#: :func:`apply_extraction`'s pair minting share one spelling.
+EXPLAINS_RELATION = "explains"
 
 #: The default role :func:`apply_placement` attaches with. ``corroborates`` is
 #: the *safe* assumption — never falsely claim a paper is the originator.
@@ -1822,8 +1832,10 @@ def link_claims(
     ``True`` if a new edge was written, ``False`` if it already existed.
 
     ``relation`` must be one of :data:`CLAIM_LINK_RELATIONS` (``refines``,
-    ``conjunct-of``, ``disputes``) and a registered relation
-    (:func:`validate_relation`).
+    ``conjunct-of``, ``disputes``, ``explains``) and a registered relation
+    (:func:`validate_relation`). ``explains`` points explaining hub ->
+    explained hub (``from`` = the mechanism, ``to`` = the effect) and may not
+    close a cycle of ``explains`` edges (:class:`BadInput`).
     **Both** endpoints must be live ``TAPROOT:claim`` findings, and differ
     (a hub can't link to itself).
 
@@ -1878,6 +1890,20 @@ def link_claims(
         ).fetchone()
         if existing is not None:
             return False
+        # Walked on the caller's connection so explains edges written earlier
+        # in the same open transaction are seen. Concurrent writers in other
+        # transactions can still race a cycle in — acceptable for an advisory
+        # edge.
+        if validated == EXPLAINS_RELATION and to_hub_ref_id in store.ancestors(
+            EXPLAINS_RELATION, from_hub_ref_id, conn=c
+        ):
+            raise BadInput(
+                f"fi{from_hub_ref_id} --explains--> fi{to_hub_ref_id} would "
+                "close an explains cycle (the target already explains the "
+                "source, directly or through a chain)",
+                next="explains is directed mechanism -> effect; check the "
+                "direction of the pair",
+            )
         store.add_link(
             src_ref_id=from_hub_ref_id,
             dst_ref_id=to_hub_ref_id,
@@ -2797,6 +2823,11 @@ class ExtractionOutcome:
 
     atom_hub_ids: list[int]
     composite_hub_id: int | None
+    #: ``explains`` edges written (new rows) / pairs skipped as unwritable
+    #: (see :func:`apply_extraction` step 4) on this call. An idempotent
+    #: re-run counts an already-present edge as neither.
+    explains_written: int = 0
+    explains_skipped: int = 0
 
 
 def apply_extraction(
@@ -2805,6 +2836,8 @@ def apply_extraction(
     atoms: list[tuple[CanonicalClaim, Placement]],
     composite: tuple[CanonicalClaim, Placement] | None,
     not_claims: tuple[NotClaim, ...] = (),
+    explains: tuple[tuple[int, int], ...] = (),
+    origin: str | None = None,
     paper_ref_id: int,
     role: str = _DEFAULT_ROLE,
     meta: dict[str, Any] | None = None,
@@ -2830,13 +2863,26 @@ def apply_extraction(
        arg: ``"model"``/``"coerced"``, from ``ClaimExtraction``).
     3. Every placed atom hub gets ``link_claims(atom, composite,
        relation="conjunct-of")``.
+    4. Each ``explains`` pair ``(explaining index, explained index)`` — 0-based
+       positions in ``atoms`` — whose two atoms both landed on a hub gets
+       ``link_claims(explaining, explained, relation="explains")``. A pair
+       that cannot be written is skipped, never raised: an out-of-range or
+       self index, a ``needs_review`` endpoint (no hub id), two atoms that
+       converged on the SAME hub, or an edge that would close a cycle. The
+       migration gate (``classify_extraction`` → ``bad-explains``) is what
+       holds a malformed extraction; this door only refuses to write a
+       wrong edge. The edge is written whether or not there is a composite.
+       Every skipped pair logs a WARNING naming ``origin`` (the caller's
+       source span, e.g. ``"dc123"``) and is counted in
+       :attr:`ExtractionOutcome.explains_skipped`.
 
     Idempotency falls out of the primitives: :func:`mint_hub`'s pub_id
     converges re-runs, :func:`link_claims` no-ops on an existing edge, and
     :func:`_merge_not_claims_memo` is sha-keyed and existing-wins.
     """
     atom_hub_ids: list[int] = []
-    for atom_claim, atom_placement in atoms:
+    hub_by_atom_index: dict[int, int] = {}
+    for atom_index, (atom_claim, atom_placement) in enumerate(atoms):
         hub_id = apply_placement(
             store,
             atom_claim,
@@ -2851,6 +2897,7 @@ def apply_extraction(
         )
         if hub_id is not None:
             atom_hub_ids.append(hub_id)
+            hub_by_atom_index[atom_index] = hub_id
 
     composite_hub_id: int | None = None
     if composite is not None:
@@ -2877,14 +2924,58 @@ def apply_extraction(
                 conn=conn,
             )
 
+    explains_written = 0
+    explains_skipped = 0
+    for explaining_index, explained_index in explains:
+        explaining_hub = hub_by_atom_index.get(explaining_index)
+        explained_hub = hub_by_atom_index.get(explained_index)
+        if (
+            explaining_hub is None
+            or explained_hub is None
+            or explaining_hub == explained_hub
+        ):
+            log.warning(
+                "taproot: dropping explains pair (%s, %s) from %s: index out "
+                "of range, endpoint not placed, or both atoms on the same hub",
+                explaining_index,
+                explained_index,
+                origin or "unknown",
+            )
+            explains_skipped += 1
+            continue
+        try:
+            wrote = link_claims(
+                store,
+                from_hub_ref_id=explaining_hub,
+                to_hub_ref_id=explained_hub,
+                relation=EXPLAINS_RELATION,
+                set_by=set_by,
+                conn=conn,
+            )
+        except BadInput as exc:  # e.g. would close a cycle
+            log.warning(
+                "taproot: dropping explains pair fi%s -> fi%s from %s: %s",
+                explaining_hub,
+                explained_hub,
+                origin or "unknown",
+                exc,
+            )
+            explains_skipped += 1
+            continue
+        explains_written += int(wrote)
+
     return ExtractionOutcome(
-        atom_hub_ids=atom_hub_ids, composite_hub_id=composite_hub_id
+        atom_hub_ids=atom_hub_ids,
+        composite_hub_id=composite_hub_id,
+        explains_written=explains_written,
+        explains_skipped=explains_skipped,
     )
 
 
 __all__ = [
     "CLAIM_LINK_RELATIONS",
     "EVIDENCE_SRC_KINDS",
+    "EXPLAINS_RELATION",
     "HUB_ROLES",
     "JUDGE_SETUP_CHARS",
     "MERGE_COLLAPSE_RELATION",

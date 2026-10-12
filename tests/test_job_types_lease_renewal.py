@@ -47,7 +47,11 @@ def backfill_seen(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     def apply(_s: Any, _e: Any, _h: Any, chunk_id: int, **_k: Any) -> Any:
         seen.append(chunk_id)
         return SimpleNamespace(
-            plans=[], n_ungrounded=0, rewritten_text=None, chunk_id=chunk_id
+            plans=[],
+            n_ungrounded=0,
+            n_explains_skipped=0,
+            rewritten_text=None,
+            chunk_id=chunk_id,
         )
 
     monkeypatch.setattr(taproot_backfill, "_build_embedder", lambda _s: object())

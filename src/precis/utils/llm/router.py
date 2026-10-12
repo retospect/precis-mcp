@@ -3022,6 +3022,7 @@ def _record_dispatch(
                 output_tokens=result.output_tokens,
                 cache_read_tokens=result.cache_read_tokens,
                 cache_creation_tokens=result.cache_creation_tokens,
+                reason_class=result.reason_class,
             )
         )
         return logged if isinstance(logged, str) else None

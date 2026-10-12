@@ -96,6 +96,9 @@ def test_broad_next_page_trailer_echoes_broad_params(store: Store) -> None:
         q="nitrate ammonia",
         queries=["copper selectivity"],
         answers=["Isolated Cu sites raise ammonia faradaic efficiency."],
+        # per_paper is a chunk-mode cap — the paper-row default already
+        # shows one row each and rejects per_paper>1 alongside it.
+        unique_per="chunk",
         per_paper=2,
         page_size=2,
     )
@@ -110,13 +113,18 @@ def test_broad_next_page_trailer_echoes_broad_params(store: Store) -> None:
     assert "args={'queries': ['copper selectivity']" in body
     assert "'answers': [" in body
     assert "'per_paper': 2}" in body
+    # The explicit unique_per echoes too — a replay without it would
+    # silently flip to the paper-row default mid-walk.
+    assert "unique_per='chunk'" in body
 
 
 def test_plain_search_trailer_has_no_broad_echo(store: Store) -> None:
     _seed(store, slug="plA", blocks=_BLOCKS_A, embed=False)
     _seed(store, slug="plB", blocks=_BLOCKS_B, embed=False)
     h = _handler(store)
-    resp = h.search(q="nitrate ammonia", page_size=2)
+    # unique_per='chunk': this test pins the chunk-page continuation;
+    # the paper-row default pages papers (2 seeded = no second page).
+    resp = h.search(q="nitrate ammonia", page_size=2, unique_per="chunk")
     # The page=2 continuation exists but carries no broad-arg echo.
     # (NB "per_paper=2" not bare "per_paper=" — the broad-retrieval
     # discoverability hint legitimately names the knobs.)
@@ -204,6 +212,7 @@ def test_default_broad_hint_replay_preserves_arguments(
         q="nitrate ammonia",
         queries=queries,
         answers=answers,
+        unique_per="chunk",
         per_paper=2,
         page_size=page_size,
     )
@@ -211,6 +220,7 @@ def test_default_broad_hint_replay_preserves_arguments(
     assert args["q"] == "nitrate ammonia"
     assert args["queries"] == queries and args["answers"] == answers
     assert args["per_paper"] == 2
+    assert args["unique_per"] == "chunk"  # explicit mode echoes into hints
     assert "scope" not in args and "mode" not in args  # preserve implicit defaults
     assert args["page_size"] == (10 if page_size == 1 else page_size)
     assert args["page"] == (1 if page_size == 1 else 2)
@@ -279,7 +289,12 @@ def test_broad_lexical_mode_skips_embedding(store: Store) -> None:
     _seed(store, slug="lxA", blocks=_BLOCKS_A, embed=False)
     emb = CountingEmbedder()
     h = _handler(store, emb)
-    resp = h.search(q="nitrate ammonia", queries=["copper"], mode="lexical")
+    resp = h.search(
+        q="nitrate ammonia",
+        queries=["copper"],
+        mode="lexical",
+        unique_per="chunk",
+    )
     assert emb.batch_calls == []
     assert emb.one_calls == []
     assert "block hit" in resp.body
@@ -295,6 +310,7 @@ def test_broad_search_degrades_when_embedder_raises(store: Store) -> None:
         q="nitrate ammonia",
         queries=["hydrogen evolution"],
         answers=["Copper suppresses the hydrogen evolution reaction."],
+        unique_per="chunk",
     )
     # No exception; the lexical legs still answer.
     assert "block hit" in resp.body

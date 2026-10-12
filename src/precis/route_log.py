@@ -104,6 +104,13 @@ class LlmCallRecord:
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    #: The router-stamped failure class (``quota``/``budget``/``rate``/
+    #: ``transport``/``content``, migration 0204) promoted out of ``features``
+    #: to a real column so the by-class query is indexable. ``None`` on a
+    #: success, an unclassified failure, or a caller that doesn't classify.
+    #: ``features`` still carries it (alongside ``retry_at``) — this column is
+    #: the queryable projection, not the only store.
+    reason_class: str | None = None
 
 
 def _blob_hash(text: str) -> str:
@@ -203,13 +210,14 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 request_hash, response_hash, request_chars, response_chars,
                 cost_usd, turns_used, duration_ms, errored, error, data_parsed,
                 ref_id, features, placement, placement_routed,
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                reason_class
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s, %s, %s
             )
             """,
             (
@@ -236,6 +244,7 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 rec.output_tokens,
                 rec.cache_read_tokens,
                 rec.cache_creation_tokens,
+                rec.reason_class,
             ),
         )
         conn.commit()
@@ -274,6 +283,7 @@ _GROUP_COLS = {
     "source": "source",
     "ref": "ref_id",
     "model": "model",
+    "reason_class": "reason_class",
 }
 
 

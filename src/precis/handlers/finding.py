@@ -667,6 +667,9 @@ class FindingHandler(NumericRefHandler):
           (``view='evidence'``).
         - ``rel='refines'`` → link this hub as a sharper/reworded version of
           another hub (``target`` a ``fi<id>``); advisory, no evidence flows.
+        - ``rel='explains'`` → this hub is the mechanism/cause that explains
+          the ``target`` hub (``fi<id>``); advisory, directed explaining →
+          explained, no cycles, no evidence flows.
 
         Anything else — a non-hub finding, a non-Taproot relation, or
         ``mode='remove'`` — falls through to the generic numeric-ref link.
@@ -685,7 +688,7 @@ class FindingHandler(NumericRefHandler):
                         next=(
                             "target='pc<id>' (a supporting paper chunk)"
                             if rel in hub.HUB_ROLES
-                            else "target='fi<id>' (the coarser hub this refines)"
+                            else f"target='fi<id>' (the claim hub {rel} points at)"
                         ),
                     )
                 tgt = str(target).strip()
@@ -732,7 +735,7 @@ class FindingHandler(NumericRefHandler):
                             + multi_article_advisory(self.store, resolved.ref_id, tgt)
                         )
                     )
-                # rel == 'refines'
+                # rel is a claim-link relation ('refines', 'explains', ...)
                 to_hub = authoring.resolve_hub_ref_id(self.store, tgt)
                 added = hub.link_claims(
                     self.store,
@@ -744,7 +747,7 @@ class FindingHandler(NumericRefHandler):
                 return Response(
                     body=(
                         f"{'linked' if added else 'already linked'}: "
-                        f"fi{hub_ref_id} --refines--> fi{to_hub}"
+                        f"fi{hub_ref_id} --{rel}--> fi{to_hub}"
                     )
                 )
         # Removing an evidence edge must mirror attach_evidence's direction:

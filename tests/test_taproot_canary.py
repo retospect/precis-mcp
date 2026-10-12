@@ -58,7 +58,7 @@ def _faithful_stub(passage: str) -> ClaimExtraction:
 
 def test_canary_passes_with_a_faithful_extractor() -> None:
     report = canary_extraction(extract_fn=_faithful_stub, progress=False)
-    assert report.total >= 11
+    assert report.total >= 13
     assert report.gate_rejections == []
     assert report.no_claim_mismatches == []
     assert report.ok
@@ -108,3 +108,78 @@ def test_dry_run_cli_rejects_escalate_with_non_small_tier(tier: str) -> None:
     with pytest.raises(SystemExit) as exc_info:
         _run_dry_run(args)
     assert exc_info.value.code == 2
+
+
+# ── explains (causal split) — fixture rows + the canary's soft metric ────────
+
+_CAUSAL_ROWS = {
+    int(row["id"]): row
+    for row in _load_jsonl(EXTRACTION_PASSAGES_FIXTURE)
+    if row.get("expected_explains_count") is not None
+}
+
+
+def test_fixture_carries_one_split_and_one_vague_inline_causal_row() -> None:
+    assert sorted(
+        (int(r["expected_atom_count"]), int(r["expected_explains_count"]))
+        for r in _CAUSAL_ROWS.values()
+    ) == [(1, 0), (2, 1)]
+    for row in _CAUSAL_ROWS.values():
+        assert "because" in row["passage"]
+        assert row["note"]
+
+
+def _split_on_because(passage: str) -> ClaimExtraction:
+    """Splits the split-case passage into effect + mechanism atoms with the
+    pair recorded; everything else falls back to the faithful baseline."""
+    if "undercoordinated" not in passage:
+        return _faithful_stub(passage)
+    return ClaimExtraction(
+        atoms=(
+            CanonicalClaim(
+                sentence="Nanoporous gold oxidizes CO at room temperature.", scope={}
+            ),
+            CanonicalClaim(
+                sentence=(
+                    "The undercoordinated surface gold atoms of nanoporous gold "
+                    "bind molecular oxygen strongly."
+                ),
+                scope={},
+            ),
+        ),
+        composite=CanonicalClaim(sentence=passage, scope={}),
+        not_claims=(),
+        explains=((1, 0),),
+    )
+
+
+def test_canary_grades_explains_counts_softly() -> None:
+    right = canary_extraction(extract_fn=_split_on_because, progress=False)
+    assert right.ok
+    assert right.explains_mismatches == []
+    assert "explains-count mismatches: 0 of 2 graded" in right.format()
+
+    # A faithful one-atom echo folds the mechanism inline: drift on the split
+    # row only — reported, but the canary still passes (granularity call).
+    folded = canary_extraction(extract_fn=_faithful_stub, progress=False)
+    assert folded.ok
+    assert [r.expected_explains_count for r in folded.explains_mismatches] == [1]
+    assert "Explains-count drift" in folded.format()
+
+
+def test_canary_fails_on_a_malformed_explains_pair() -> None:
+    def _bad_pair(passage: str) -> ClaimExtraction:
+        ext = _split_on_because(passage)
+        if ext.explains:
+            return ClaimExtraction(
+                atoms=ext.atoms,
+                composite=ext.composite,
+                not_claims=ext.not_claims,
+                explains=((1, 1),),
+            )
+        return ext
+
+    report = canary_extraction(extract_fn=_bad_pair, progress=False)
+    assert not report.ok
+    assert [r.verdict for r in report.gate_rejections] == ["bad-explains"]
+    assert "CANARY FAILED" in report.format()

@@ -90,7 +90,33 @@ def test_explicit_page_size_at_default_value_still_conflicts() -> None:
     assert "page_size=10" in body
 
 
-def test_no_size_args_resolves_to_default(captured_payload: dict[str, Any]) -> None:
+def test_no_size_args_forwards_none(captured_payload: dict[str, Any]) -> None:
+    # Unset page_size forwards None so each handler's own default applies —
+    # PaperHandler.search uses the gap to pick a mode-aware default: 25
+    # papers on the default unique_per='paper' view, 10 chunks on the
+    # per-hit drill view.
     out = tools_core.search(kind="memory", q="x")
     assert not _is_error(out)
-    assert captured_payload["page_size"] == 10
+    assert captured_payload["page_size"] is None
+
+
+def test_unique_per_forwards(captured_payload: dict[str, Any]) -> None:
+    out = tools_core.search(kind="paper", q="x", unique_per="chunk")
+    assert not _is_error(out)
+    assert captured_payload["unique_per"] == "chunk"
+
+
+def test_unique_per_unset_stays_out_of_payload(
+    captured_payload: dict[str, Any],
+) -> None:
+    out = tools_core.search(kind="paper", q="x")
+    assert not _is_error(out)
+    assert "unique_per" not in captured_payload
+
+
+def test_unique_per_unknown_value_is_bad_input(
+    captured_payload: dict[str, Any],
+) -> None:
+    out = tools_core.search(kind="paper", q="x", unique_per="chapter")
+    assert _is_error(out)
+    assert "unique_per" in _body(out)

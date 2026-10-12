@@ -205,7 +205,11 @@ def test_null_retraction_status_does_not_change_ranking(store: Store) -> None:
     )
 
     h = _handler(store, e)
-    resp = h.search(q="nitrate reduction copper electrode", page_size=10)
+    resp = h.search(
+        q="nitrate reduction copper electrode",
+        page_size=10,
+        unique_per="chunk",
+    )
     body = resp.body
     assert "block hit" in body
     assert "⚠" not in body

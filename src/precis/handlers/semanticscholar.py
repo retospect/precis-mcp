@@ -28,6 +28,12 @@ as a one-time hint rather than an init failure.
 Cache TTL: 30 days. S2 indexes new papers continuously but the
 top-10 for a query — and a paper's reference list — are stable on
 that timescale.
+
+The search mode additionally diffs every external hit against the held
+corpus (DOI → arXiv → normalized title), flagging
+``held``/``stub``/``NEW`` — a NEW hit accepts via the existing
+``put(kind='paper', doi=…)`` stub path. Hits are relevance-ranked only,
+with no recency assumption.
 """
 
 from __future__ import annotations

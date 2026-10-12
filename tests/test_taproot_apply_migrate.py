@@ -1509,3 +1509,217 @@ def test_split_mint_cap_skips_hub_whose_atoms_overflow_a_chunk(store: Any) -> No
             ).fetchone()
             is None
         )
+
+
+# ── split — explains pairs (the causal split, migration 0203) ─────────────
+
+_EFFECT_ATOM = "Nanoporous gold oxidizes CO at room temperature."
+_MECH_ATOM = "Undercoordinated surface gold atoms of nanoporous gold bind O2."
+
+
+def _explains_edges(store: Any) -> list[tuple[str, str]]:
+    """``(explaining title, explained title)`` for every live explains edge."""
+    with store.pool.connection() as conn:
+        return [
+            (str(a), str(b))
+            for a, b in conn.execute(
+                "SELECT s.title, d.title FROM links l "
+                "JOIN refs s ON s.ref_id = l.src_ref_id "
+                "JOIN refs d ON d.ref_id = l.dst_ref_id "
+                "WHERE l.relation = 'explains' ORDER BY s.title, d.title"
+            ).fetchall()
+        ]
+
+
+def _causal_composite(store: Any) -> int:
+    return mint_hub(
+        store,
+        _claim(
+            "Nanoporous gold oxidizes CO at room temperature because its "
+            "undercoordinated surface gold atoms bind O2."
+        ),
+    )
+
+
+def _apply_one(store: Any, row: dict[str, Any], **kw: Any):
+    return apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=kw.pop("block_fn", _block_none),
+        judge_fn=kw.pop("judge_fn", _never_called),
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+        **kw,
+    )
+
+
+def test_split_row_with_an_explains_pair_writes_the_edge(store: Any) -> None:
+    composite = _causal_composite(store)
+    row = _row(composite, "split", atoms=[_EFFECT_ATOM, _MECH_ATOM])
+    row["extraction"]["explains"] = [[1, 0]]  # mechanism (1) explains effect (0)
+
+    report = _apply_one(store, row)
+
+    assert report.split_applied == 1
+    assert report.atoms_placed == 2
+    assert report.explains_written == 1
+    assert report.explains_skipped == 0
+    assert _explains_edges(store) == [(_MECH_ATOM, _EFFECT_ATOM)]
+    assert "explains_written=1" in report.hubs[0].detail
+    # both atoms are still plain conjunct-of parts of the original hub
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE dst_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (composite,),
+        ).fetchone()[0]
+    assert n == 2
+
+
+def test_split_row_without_explains_key_writes_none(store: Any) -> None:
+    """A row from before the causal split (no ``explains`` key) is unchanged."""
+    composite = _causal_composite(store)
+    report = _apply_one(
+        store, _row(composite, "split", atoms=[_EFFECT_ATOM, _MECH_ATOM])
+    )
+    assert report.explains_written == 0
+    assert report.explains_skipped == 0
+    assert _explains_edges(store) == []
+
+
+def test_split_explains_skips_a_withheld_endpoint(store: Any) -> None:
+    """The pair's indices are the ORIGINAL extraction indices: atom 1 is
+    withheld ungrounded (no hub), so the pair (1, 0) is skipped and counted —
+    the surviving atom still places and the hub still stamps."""
+    composite = _causal_composite(store)
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=composite,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    row = _row(composite, "split", atoms=[_EFFECT_ATOM, _MECH_ATOM])
+    row["extraction"]["explains"] = [[1, 0]]
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _grounded_atom_entry(_EFFECT_ATOM, paper_ref_id=paper),
+            _ungrounded_atom_entry(_MECH_ATOM, "verify-rejected"),
+        ],
+    }
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        todo_fn=_TodoCollector(),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map({_EFFECT_ATOM}),
+    )
+
+    assert report.split_applied == 1
+    assert report.atoms_withheld_ungrounded == 1
+    assert report.explains_written == 0
+    assert report.explains_skipped == 1
+    assert _explains_edges(store) == []
+    assert _meta(store, composite)["taproot_decomposed_at"] == _FIXED_NOW.isoformat()
+
+
+def test_split_explains_index_is_the_original_index_not_the_surviving_one(
+    store: Any,
+) -> None:
+    """Atom 0 is withheld; atoms 1 and 2 survive. The pair (2, 1) must link
+    atom 2's hub to atom 1's hub — not be shifted by the withheld slot."""
+    composite = _causal_composite(store)
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=composite,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    junk = "Gold is a metal."
+    row = _row(composite, "split", atoms=[junk, _EFFECT_ATOM, _MECH_ATOM])
+    row["extraction"]["explains"] = [[2, 1]]
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _ungrounded_atom_entry(junk, "no-passage"),
+            _grounded_atom_entry(_EFFECT_ATOM, paper_ref_id=paper),
+            _grounded_atom_entry(_MECH_ATOM, paper_ref_id=paper),
+        ],
+    }
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        todo_fn=_TodoCollector(),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map({_EFFECT_ATOM, _MECH_ATOM}),
+    )
+
+    assert report.explains_written == 1
+    assert report.explains_skipped == 0
+    assert _explains_edges(store) == [(_MECH_ATOM, _EFFECT_ATOM)]
+
+
+def test_split_explains_skips_bad_cyclic_and_same_hub_pairs(store: Any) -> None:
+    """Out-of-range, malformed, cyclic (the second edge of [[1,0],[0,1]]
+    inside the one hub transaction) and self pairs are skipped and counted;
+    the first valid pair still lands."""
+    composite = _causal_composite(store)
+    row = _row(composite, "split", atoms=[_EFFECT_ATOM, _MECH_ATOM])
+    row["extraction"]["explains"] = [[1, 0], [0, 1], [0, 9], "junk", [1, 1]]
+
+    report = _apply_one(store, row)
+
+    assert report.split_applied == 1
+    assert report.partial_failures == 0
+    assert report.explains_written == 1
+    assert report.explains_skipped == 4
+    assert _explains_edges(store) == [(_MECH_ATOM, _EFFECT_ATOM)]
+
+
+def test_split_explains_is_idempotent_on_rerun(store: Any) -> None:
+    """Un-stamp the hub and re-apply with both atoms now converging onto the
+    hubs the first pass minted: no second edge, nothing counted skipped."""
+    composite = _causal_composite(store)
+    row = _row(composite, "split", atoms=[_EFFECT_ATOM, _MECH_ATOM])
+    row["extraction"]["explains"] = [[1, 0]]
+    first = _apply_one(store, row)
+    assert first.explains_written == 1
+
+    with store.pool.connection() as conn:
+        hub_by_title = {
+            str(t): int(i)
+            for i, t in conn.execute(
+                "SELECT ref_id, title FROM refs WHERE title = ANY(%s)",
+                ([_EFFECT_ATOM, _MECH_ATOM],),
+            ).fetchall()
+        }
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'taproot_decomposed_at' WHERE ref_id = %s",
+            (composite,),
+        )
+    mapping = {t: (h, t) for t, h in hub_by_title.items()}
+
+    second = _apply_one(
+        store,
+        row,
+        block_fn=_block_map(mapping),
+        judge_fn=_judge_same_high,
+    )
+
+    assert second.split_applied == 1
+    assert second.explains_written == 0
+    assert second.explains_skipped == 0
+    assert _explains_edges(store) == [(_MECH_ATOM, _EFFECT_ATOM)]

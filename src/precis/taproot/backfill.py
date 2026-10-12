@@ -234,6 +234,17 @@ class GroupPlan:
     #: :func:`precis.taproot.hub.apply_extraction` (step 8). Empty when the
     #: extraction rejected nothing (including the no-decomposition case).
     not_claims: tuple[NotClaim, ...] = ()
+    #: The extraction's ``explains`` pairs — indices into :attr:`atom_plans`
+    #: (explaining atom, explained atom) — handed to
+    #: :func:`precis.taproot.hub.apply_extraction`, which writes the
+    #: ``explains`` edge between the two placed atom hubs and skips any pair
+    #: it cannot (this path has no ``classify_extraction`` gate, so a bad
+    #: pair is dropped at the door, never raised).
+    explains: tuple[tuple[int, int], ...] = ()
+    #: How many of :attr:`explains` :func:`apply_chunk` could not write
+    #: (bad sentinel, out of range, unplaced endpoint, same hub, cycle) —
+    #: each also logged at WARNING by ``apply_extraction``. Set post-write.
+    explains_skipped: int = 0
     #: (handle, paper_ref_id) for each resolved supporter — for a fetched-``[pa]``
     #: ref-level promote, only the fetched supporters (stubs never mint evidence).
     supporters: list[tuple[str, int]] = field(default_factory=list)
@@ -281,6 +292,12 @@ class ChunkBackfill:
     @property
     def n_claims(self) -> int:
         return sum(1 for p in self.plans if p.claim is not None)
+
+    @property
+    def n_explains_skipped(self) -> int:
+        """``explains`` pairs the extraction proposed that this chunk's
+        apply could not write (dropped with a WARNING naming ``dc<chunk>``)."""
+        return sum(p.explains_skipped for p in self.plans)
 
     @property
     def n_ungrounded(self) -> int:
@@ -635,6 +652,7 @@ def _run_cascade(
         composite_plan=composite_plan,
         composite_source=extraction.composite_source,
         not_claims=extraction.not_claims,
+        explains=extraction.explains,
         supporters=supporters,
         hub_ref_id=target_placement.hub_ref_id,
         ungrounded=ungrounded,
@@ -1180,6 +1198,8 @@ def apply_chunk(
                 composite=plan.composite_plan,
                 composite_source=plan.composite_source,
                 not_claims=plan.not_claims,
+                explains=plan.explains,
+                origin=f"dc{chunk_id}",
                 paper_ref_id=plan.supporters[0][1],
                 meta=_edge_meta(plan.supporters[0][0]),
                 set_by=set_by,
@@ -1196,6 +1216,7 @@ def apply_chunk(
                 plan.note = "risky merge — filed for review, prose left as [pc…]"
                 continue
             plan.hub_ref_id = target_hub_id
+            plan.explains_skipped = outcome.explains_skipped
             hub_landed = True
             # Remaining supporter papers → corroborating evidence on EVERY
             # atom hub (the cited passage asserts all conjuncts; never the

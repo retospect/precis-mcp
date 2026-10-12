@@ -1243,6 +1243,7 @@ class ChunkStore:
         per_paper: int | None = None,
         prefer_body: bool = False,
         pool_per_leg: int = 80,
+        ref_counts_out: dict[int, int] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Multi-leg reciprocal-rank fusion for broad/high-recall
         retrieval. Generalises :meth:`search_chunks_fused` (one lexical +
@@ -1271,6 +1272,17 @@ class ChunkStore:
         that rank cards as evidence keep their existing ordering. Neither
         option applies to the verbatim keyword path.
 
+        ``ref_counts_out`` — when a dict is passed, it is cleared and
+        populated with each ref's fused-candidate count *before* the
+        ``per_paper`` cap and the ``offset``/``limit`` slice (but after
+        ``prefer_body`` card-dropping): the paper-row view's per-row
+        "more" counter — "how many hits did this ref have in the pool
+        beyond the one shown". Counts are pool-bounded, not corpus-exact:
+        a ref whose hits all rank below the per-leg pool cutoff is absent,
+        and a deep tail undercounts. That matches the headline's
+        lexical-lower-bound contract — both describe the retrieved
+        universe, not a full corpus scan.
+
         Returns ``(ChunkRow, Ref, fused_score)``, best first.
         """
         # Defensive hard ceiling on the fan-out. The MCP surface and the
@@ -1285,10 +1297,13 @@ class ChunkStore:
                 f"search_chunks_multi: {n_legs} legs exceeds the hard cap "
                 f"{_MULTI_LEG_HARD_CAP} (callers must bound queries=/answers=)"
             )
+        if ref_counts_out is not None:
+            ref_counts_out.clear()
         m = (mode or "hybrid").strip().lower()
         if m == "verbatim":
             # Verbatim keyword match has no relevance gradient to fuse across
             # reformulations — run it once on the primary query and return.
+            # ``ref_counts_out`` stays empty on this path (no fused pool).
             primary = next((qt for qt in q_texts if qt and qt.strip()), "")
             return self.search_chunks_keywords(
                 terms=primary.split(),
@@ -1397,6 +1412,8 @@ class ChunkStore:
             block, ref = seen[cid]
             if ref.id in body_ref_ids and block.chunk_kind.startswith("card_"):
                 continue
+            if ref_counts_out is not None:
+                ref_counts_out[ref.id] = ref_counts_out.get(ref.id, 0) + 1
             if per_paper is not None:
                 taken = per_paper_count.get(ref.id, 0)
                 if taken >= per_paper:

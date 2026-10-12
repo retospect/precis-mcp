@@ -341,11 +341,13 @@ def _check_reserved_args(
 # Hard cap on page_size for search tool
 _SEARCH_PAGE_SIZE_MAX: int = 100
 
-# search()'s effective page_size default, applied after the k=/limit=
-# alias normalisation (gr338443). The parameter itself defaults to None
-# so "explicitly passed" is detectable even when the caller passes the
-# default value — page_size=10 alongside k=5 must still conflict.
-_SEARCH_PAGE_SIZE_DEFAULT: int = 10
+# There is no tool-level page_size default: an unset page_size forwards
+# ``None``, which dispatch strips so each handler's own default applies.
+# ``PaperHandler.search`` uses that gap to pick a mode-aware default
+# (25 on the ``unique_per='paper'`` page, 10 on the chunk drill page);
+# every other handler keeps its declared default. The ``page_size``/``k``/
+# ``limit`` parameters all default to None so "explicitly passed" is
+# still detectable — page_size=10 alongside k=5 must still conflict.
 
 # Hard cap on ``text=`` payloads to put / edit. The embedder
 # (BGE-M3 / 1024-d) tokenises and forwards the payload in worker
@@ -577,6 +579,12 @@ def search(
     queries: list[str] | None = None,
     answers: list[str] | None = None,
     per_paper: int | None = None,
+    # Row granularity (paper kind): ``'paper'`` (default) returns one row
+    # per paper — best hit's handle, a ``+N`` count of its other hits,
+    # that chunk's keywords; ``'chunk'`` is the per-hit drill shape,
+    # implicit when ``scope=`` is set. Declared at the verb level so the
+    # schema advertises it to strict-schema clients.
+    unique_per: str | None = None,
     # Deep search (paper kind): ``good=True`` queues an async
     # coordinator campaign (fuse → LLM triage children → merged
     # verdict) and returns a job handle instead of hits — poll
@@ -703,8 +711,10 @@ def search(
     'verbatim' (all query words as chunk keywords). `angle=`+`like=`
     spray `n` diverse hits; `view='dreamable'`/`'stubs'` browse.
 
-    paper: `queries=`/`answers=` (HyDE) fuse legs; `per_paper=` spreads;
-    `good=True` queues a deep search; `title=`/`author=` by byline.
+    paper: one row per paper by default (`unique_per='chunk'` drills into
+    per-hit rows — `scope=` implies it, and `per_paper=` caps hits per
+    paper there); `queries=`/`answers=` (HyDE) fuse legs; `good=True`
+    queues a deep search; `title=`/`author=` by byline.
     finding: `trust='verified'|'signed'|'disputed'|'any'`; `status=`.
     `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
     library search (never a filter); `compose=` proposer over it.
@@ -740,9 +750,9 @@ def search(
                 )
             )
         )
-    page_size = _psize_given[0][1] if _psize_given else _SEARCH_PAGE_SIZE_DEFAULT
+    page_size = _psize_given[0][1] if _psize_given else None
 
-    if not isinstance(page_size, int) or page_size <= 0:
+    if page_size is not None and (not isinstance(page_size, int) or page_size <= 0):
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
@@ -752,7 +762,7 @@ def search(
                 )
             )
         )
-    if page_size > _SEARCH_PAGE_SIZE_MAX:
+    if page_size is not None and page_size > _SEARCH_PAGE_SIZE_MAX:
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
@@ -862,6 +872,19 @@ def search(
                 )
             )
         )
+    if unique_per is not None and str(unique_per).strip().lower() not in {
+        "paper",
+        "chunk",
+    }:
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    f"unique_per must be 'paper' or 'chunk', got {unique_per!r}",
+                    next="unique_per='chunk' lists one row per chunk hit",
+                )
+            )
+        )
 
     # Deep-search gate: ``good=True`` is a paper-only surface (it mints
     # a coordinator campaign, not a ranked page). Reject other kinds at
@@ -919,6 +942,8 @@ def search(
         payload["answers"] = answers
     if per_paper is not None:
         payload["per_paper"] = per_paper
+    if unique_per is not None:
+        payload["unique_per"] = unique_per
     if good is not None:
         payload["good"] = bool(good)
     if title is not None:
@@ -1158,6 +1183,13 @@ def put(
     # a chunk (chunk_kind=, text=) placed by at={first|last|into|before|after}.
     at: dict[str, Any] | None = None,
     project: str | int | None = None,
+    # draft term batch (chunk_kind='term'): put(kind='draft', id=<slug>,
+    # chunk_kind='term', terms=[{'text': '<definition>', 'meta': {'short':
+    # '<ABBR>'}}, ...]) files many registry term leaves in one transaction
+    # (≤50; a rejected entry rolls the whole call back and names its
+    # position). Declared at the verb level (the gr262482 pattern) so
+    # strict-schema MCP clients don't strip it.
+    terms: list[dict[str, Any]] | None = None,
     # draft data/table chunk (chunk_kind='table'): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
@@ -1370,6 +1402,7 @@ def put(
             "chunk_kind": chunk_kind,
             "at": at,
             "project": project,
+            "terms": terms,
             "table": table,
             "caption": caption,
             "regen": regen,

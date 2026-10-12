@@ -512,7 +512,32 @@ class BlockSearchResult:
     hits: list[tuple[Any, Any, float]]
     year_notice: str
     broad: bool
+    #: ``True`` when the fused candidate list extended past this page's
+    #: slice (probed via limit+1). In chunk mode this is the broad-mode
+    #: pagination signal; in ``unique_per='paper'`` mode it is the
+    #: paper-level "more beyond this page" signal (the probe runs on the
+    #: per-paper-collapsed list, so it is exact at paper granularity).
     broad_has_more: bool
+    #: ``'paper'`` — one row per ref (best surviving hit + a ``more``
+    #: count of that ref's additional pool hits); ``'chunk'`` — the
+    #: per-hit row shape. Resolved upstream (``PaperHandler.search``
+    #: implies ``'chunk'`` when ``scope=`` is set or ``mode='verbatim'``).
+    unique_per: str = "chunk"
+    #: The caller's *explicit* ``unique_per=`` value, echoed into
+    #: same-search continuations so a ``page=N+1`` hint doesn't silently
+    #: switch shapes (an explicit ``'chunk'`` would otherwise re-resolve
+    #: to the ``'paper'`` default on the follow-up call).
+    unique_per_arg: str | None = None
+    #: Per-ref fused-pool hit counts (``unique_per='paper'`` only) — the
+    #: row's ``more`` column: additional hits beyond the one shown.
+    #: Pool-bounded, not corpus-exact — see
+    #: ``ChunkStore.search_chunks_multi(ref_counts_out=…)``.
+    paper_ref_counts: dict[int, int] = field(default_factory=dict)
+    #: Distinct refs matched (paper mode's honest "of M" denominator),
+    #: ``None`` when the executed mode has no countable universe
+    #: (``semantic``, or multi-leg broad retrieval) — same rule as
+    #: ``total`` below.
+    paper_total: int | None = None
     #: Preserve an explicit retrieval mode in same-search hints. None
     #: retains the caller's implicit hybrid default, not a new mode choice.
     mode: str | None = None
@@ -672,6 +697,8 @@ class FusedBlockSearch:
         queries: list[str] | None,
         answers: list[str] | None,
         per_paper: int | None,
+        unique_per: str = "chunk",
+        unique_per_arg: str | None = None,
         extra_exclude_ref_ids: list[int] | None = None,
         extra_include_ref_ids: list[int] | None = None,
     ) -> BlockSearchResult:
@@ -686,6 +713,17 @@ class FusedBlockSearch:
         )
 
         kind = self.kind
+
+        # ``unique_per='paper'`` renders one row per ref — the store's
+        # ``per_paper=1`` + ``prefer_body`` collapse (R14) on the fused
+        # candidate list, so the mode always takes the multi-leg path even
+        # on a plain ``q``. ``PaperHandler.search`` resolves the default
+        # (chunk under ``scope=``/``mode='verbatim'``) and rejects an
+        # explicit ``unique_per='paper'`` + verbatim pair; the clamp here
+        # is belt-and-braces for direct (agentic-tier) callers of run().
+        paper_rows = (
+            unique_per == "paper" and (mode or "hybrid").strip().lower() != "verbatim"
+        )
 
         # Bare-DOI short-circuit (gr244678): ``q=`` shaped exactly like a
         # DOI (``_DOI_RE`` is anchored ``^...$``, so a DOI embedded in a
@@ -764,6 +802,8 @@ class FusedBlockSearch:
                     year_notice="",
                     broad=False,
                     broad_has_more=False,
+                    unique_per="paper" if paper_rows else "chunk",
+                    unique_per_arg=unique_per_arg,
                     single_page_has_more=False,
                     total=(1 if hits else None),
                     title_matches=(
@@ -922,13 +962,23 @@ class FusedBlockSearch:
         # retrieval".)
         extra_queries = [s for s in (queries or []) if s and s.strip()]
         hyde_answers = [s for s in (answers or []) if s and s.strip()]
-        per_paper_cap = per_paper  # validated by the caller (positive int, no bool)
+        # The per-ref cap the store applies. Paper rows are the cap-1 case;
+        # a caller-passed ``per_paper`` keeps its meaning only in chunk
+        # mode (``PaperHandler.search`` rejects per_paper>=2 alongside
+        # paper rows, and ``per_paper=1`` is the cap the mode already
+        # applies — it does not make the call "broad").
+        per_paper_cap = 1 if paper_rows else per_paper
+        # ``paper_rows`` already excludes verbatim — the verbatim early
+        # return in ``search_chunks_multi`` applies no cap at all, so it
+        # must not opt into body preference or skip row promotion either.
         capped_body_search = (
             kind == "paper"
             and per_paper_cap is not None
             and (mode or "hybrid").strip().lower() != "verbatim"
         )
-        broad = bool(extra_queries or hyde_answers) or per_paper_cap is not None
+        broad = bool(extra_queries or hyde_answers) or (
+            per_paper is not None and not paper_rows
+        )
         # ``broad_has_more``: the fused candidate list extended past this
         # page's slice (probed via limit+1 below). Broad mode's pagination
         # signal — the lexical count of the primary q is the wrong
@@ -943,7 +993,12 @@ class FusedBlockSearch:
         # renderer can offer/withhold a next-page hint without claiming a
         # count it never searched for.
         single_page_has_more = False
-        if broad:
+        # Paper rows ride the same fused path as broad retrieval: the
+        # per_paper=1 collapse needs the whole candidate pool, not the
+        # top slice the single-leg path returns. ``ref_counts`` feeds the
+        # per-row ``more`` counter (pre-cap pool hits per ref).
+        ref_counts: dict[int, int] = {}
+        if broad or paper_rows:
             # Semantic legs embed q + each reformulation + each HyDE
             # answer — in ONE batch call (q is NOT embedded separately;
             # up to 17 serial embed_one round trips collapsed). A missing
@@ -984,6 +1039,7 @@ class FusedBlockSearch:
                 card_kinds=("card_combined",),
                 per_paper=per_paper_cap,
                 prefer_body=capped_body_search,
+                ref_counts_out=ref_counts if paper_rows else None,
             )
             _log.debug(
                 "paper search: SQL legs stage (broad, mode=%s, %d legs) took %.3fs",
@@ -1095,6 +1151,7 @@ class FusedBlockSearch:
                 )
 
         total: int | None = None
+        paper_total: int | None = None
         if hits:
             # Salience: heat the chunks this page surfaced (block-level).
             # One set-based bump; no-op for dream-actor reads.
@@ -1190,6 +1247,29 @@ class FusedBlockSearch:
                         include_ref_ids=include_ref_ids,
                         card_kinds=("card_combined",),
                     )
+                    if paper_rows:
+                        # Paper mode's headline is "N papers of M matched
+                        # (K chunk hits)": ``total`` is K — the chunk-hit
+                        # universe the headline's suffix reports — and
+                        # this second count is M, the same WHERE clause
+                        # over DISTINCT ref_id (the
+                        # ``NumericRefHandler._best_body_hits``
+                        # denominator). Same lower-bound caveat as K: a
+                        # semantic-only paper isn't counted, so floor at
+                        # the rows actually shown.
+                        paper_total = max(
+                            len(hits),
+                            self.store.chunks.count_chunks_lexical(
+                                q=q,
+                                kind=self.kind,
+                                scope_ref_id=scope_ref_id,
+                                tags=normalized_tags,
+                                exclude_ref_ids=exclude_ref_ids or None,
+                                include_ref_ids=include_ref_ids,
+                                card_kinds=("card_combined",),
+                                distinct_refs=True,
+                            ),
+                        )
                 _log.debug(
                     "paper search: SQL legs stage (total count, mode=%s) took %.3fs",
                     m,
@@ -1211,7 +1291,13 @@ class FusedBlockSearch:
             exclude_notice=exclude_notice,
             extra_queries=extra_queries,
             hyde_answers=hyde_answers,
-            per_paper_cap=per_paper_cap,
+            # The caller-supplied cap (echoed into broad continuations) —
+            # not ``per_paper_cap``, which carries paper mode's internal 1.
+            per_paper_cap=per_paper,
+            unique_per="paper" if paper_rows else "chunk",
+            unique_per_arg=unique_per_arg,
+            paper_ref_counts=ref_counts if paper_rows else {},
+            paper_total=paper_total,
             total=(
                 None if total is None else max(len(hits), total - card_dedup_dropped)
             ),
@@ -1403,12 +1489,27 @@ class PaperSearchResultRenderer:
         # The cluster-context hint (Phase E, once segmentation
         # lands) will be a single trailing line rather than a
         # per-row column.
-        head = format_search_headline(
-            n_returned=len(hits),
-            total=total,
-            noun="block hit",
-            query=q,
-        )
+        paper_rows = result.unique_per == "paper"
+        if paper_rows:
+            # "N papers of M matched (K chunk hits)" — M is the distinct-ref
+            # count, K the chunk-hit universe (``result.total``). When the
+            # executed mode had no honest denominator (semantic, multi-leg
+            # broad) both are None and the plain count renders.
+            head = format_search_headline(
+                n_returned=len(hits),
+                total=result.paper_total,
+                noun="paper",
+                query=q,
+            )
+            if total is not None:
+                head += f"  ({total} chunk hits)"
+        else:
+            head = format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun="block hit",
+                query=q,
+            )
         # Each hit renders as a TOON row with its own per-chunk KeyBERT
         # keywords (from ``chunks.keywords``). Per-chunk keywords carry
         # the "what's in this specific chunk" signal directly — the
@@ -1476,15 +1577,29 @@ class PaperSearchResultRenderer:
                 parent_cite = si_parent.get("cite_key") or si_parent.get("ref_id")
                 si_note = f"SI of {parent_cite} — cite as {parent_cite}"
                 kw_display = f"{si_note}: {kw_display}" if kw_display else si_note
-            table_rows.append(
-                {
-                    "handle": handle,
-                    "chunk_keywords": kw_display,
-                }
-            )
+            row = {
+                "handle": handle,
+                "chunk_keywords": kw_display,
+            }
+            if paper_rows:
+                # ``more`` counts the paper's additional hits in the fused
+                # pool beyond the one shown — "+3" reads as three further
+                # matching chunks; a promoted record row (no real pool hit)
+                # and a single-hit paper both render an empty cell.
+                extra_hits = (
+                    0
+                    if score == float("inf")
+                    else result.paper_ref_counts.get(ref.id, 1) - 1
+                )
+                row["more"] = f"+{extra_hits}" if extra_hits > 0 else ""
+            table_rows.append(row)
         rendered_table = render_agent_table(
             table_rows,
-            schema=["handle", "chunk_keywords"],
+            schema=(
+                ["handle", "more", "chunk_keywords"]
+                if paper_rows
+                else ["handle", "chunk_keywords"]
+            ),
         )
         body = (
             head
@@ -1573,17 +1688,27 @@ class PaperSearchResultRenderer:
         )
         # A larger page or next page is still the same search (gr469183).
         # Dropping scope/mode silently substitutes global hybrid retrieval.
-        context_suffix = broad_suffix
+        # ``unique_per`` echoes only when the caller set it explicitly —
+        # an omitted knob re-resolves to the same shape on the next call,
+        # but an explicit ``'chunk'`` would otherwise jump to the
+        # ``'paper'`` default mid-walk.
+        context_suffix_no_up = broad_suffix
         if result.scope is not None:
-            context_suffix += f", scope={result.scope!r}"
+            context_suffix_no_up += f", scope={result.scope!r}"
         if result.mode is not None:
-            context_suffix += f", mode={result.mode!r}"
+            context_suffix_no_up += f", mode={result.mode!r}"
+        context_suffix = context_suffix_no_up
+        if result.unique_per_arg is not None:
+            context_suffix += f", unique_per={result.unique_per_arg!r}"
         # Pagination gate (gr311338): prefer the exact ``total`` when the
         # mode produced one; fall back to the probe-based ``*_has_more``
         # signal when it didn't (broad fusion, or mode='semantic' single-
         # leg) rather than defaulting to "no more" — see
         # ``single_page_has_more``'s docstring on :class:`BlockSearchResult`.
-        if broad:
+        # Paper mode's probe already ran on the collapsed paper list, so
+        # ``broad_has_more`` is exact at paper granularity — use it over
+        # ``total``, which counts chunk hits there, not papers.
+        if paper_rows or broad:
             more_available = result.broad_has_more
         elif total is not None:
             more_available = total > len(hits)
@@ -1591,16 +1716,27 @@ class PaperSearchResultRenderer:
             more_available = result.single_page_has_more
         if more_available:
             if len(hits) == 1:
-                if broad:
+                if paper_rows:
+                    restart_n = 25
+                    more_desc = (
+                        f"restart at page 1 with up to 25 of "
+                        f"{result.paper_total} papers"
+                        if result.paper_total is not None
+                        else "restart at page 1 with up to 25 papers"
+                    )
+                elif broad:
+                    restart_n = 10
                     more_desc = "restart at page 1 with up to 10 fused matches"
                 elif total is not None:
+                    restart_n = 10
                     more_desc = f"restart at page 1 with up to 10 of {total} matches"
                 else:
+                    restart_n = 10
                     more_desc = "restart at page 1 with up to 10 matches"
                 nav.append(
                     (
                         f"search(kind='{kind}', q={q!r}{context_suffix}, "
-                        "page_size=10, page=1)",
+                        f"page_size={restart_n}, page=1)",
                         more_desc,
                     )
                 )
@@ -1617,14 +1753,21 @@ class PaperSearchResultRenderer:
                 # filter for known-irrelevant refs (kept available via
                 # the arg but no longer the recommended next-step
                 # because it bloats the call with a slug list).
-                if broad:
+                if paper_rows or broad:
                     show_next_page = result.broad_has_more
                 elif total is not None:
                     show_next_page = total > result.page_size * result.page
                 else:
                     show_next_page = result.single_page_has_more
                 if show_next_page:
-                    if broad:
+                    if paper_rows:
+                        next_desc = (
+                            f"see the next {result.page_size} of "
+                            f"{result.paper_total} papers"
+                            if result.paper_total is not None
+                            else f"see the next {result.page_size} papers"
+                        )
+                    elif broad:
                         next_desc = (
                             "see the next fused page (keep the same "
                             "queries=/answers= or the ordering shifts)"
@@ -1663,6 +1806,20 @@ class PaperSearchResultRenderer:
                             f"narrow to blocks inside {top_handle} ({top_title})",
                         )
                     )
+                if paper_rows:
+                    # The drill door: paper rows collapse every hit behind
+                    # a ``+N`` counter — offer the per-chunk view so a
+                    # caller who wanted per-passage granularity isn't
+                    # stuck on the summary shape. ``unique_per`` is echoed
+                    # last (it isn't part of ``context_suffix`` when the
+                    # caller never set it).
+                    nav.append(
+                        (
+                            f"search(kind='{kind}', q={q!r}"
+                            f"{context_suffix_no_up}, unique_per='chunk')",
+                            "see every matching chunk, one row per hit",
+                        )
+                    )
                 # Round-2 picky F-9, 2026-05-30: previous wording was
                 # ``q={q!r} + ' <salient term>'`` — Python-flavoured
                 # pseudo-code that a literal-paste agent would send as
@@ -1688,8 +1845,12 @@ class PaperSearchResultRenderer:
                         (
                             "get(kind='skill', id='precis-search-help')",
                             "broaden recall: fuse rephrasings + "
-                            "hypothetical answers (queries=/answers=) "
-                            "and spread across papers (per_paper=)",
+                            "hypothetical answers (queries=/answers=)"
+                            + (
+                                ""
+                                if paper_rows
+                                else " and spread across papers (per_paper=)"
+                            ),
                         )
                     )
 

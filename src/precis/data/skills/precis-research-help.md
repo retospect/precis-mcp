@@ -88,14 +88,14 @@ do not rest on, one reader per paper, root converges onto hubs) is
 
 One phrasing of one query is how findings get missed. For any
 survey-shaped question, open with **broad retrieval** — several
-rephrasings + hypothetical-answer passages fused in one call — and
-use `per_paper=1` to triage across many papers before drilling:
+rephrasings + hypothetical-answer passages fused in one call. The
+default `unique_per='paper'` view already triages one row per paper
+(`+N` marks how many chunks each has); `unique_per='chunk'` drills:
 
 ```python
 search(kind='paper', q='<question>',
        queries=['<rephrasing 1>', '<rephrasing 2>', …],
-       answers=['<a sentence the answering passage would contain>'],
-       per_paper=1)
+       answers=['<a sentence the answering passage would contain>'])
 ```
 
 When the survey matters enough to spend agent time, fire the **deep

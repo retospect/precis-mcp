@@ -885,7 +885,11 @@ class PaperHandler(Handler):
         q: str | None = None,
         scope: str | None = None,
         tags: list[str] | None = None,
-        page_size: int = 10,
+        # ``None`` picks the mode-aware default: 25 rows on the default
+        # ``unique_per='paper'`` page, 10 on the per-chunk page — the MCP
+        # surface forwards ``None`` when the caller didn't name a size so
+        # this default can follow the resolved row shape.
+        page_size: int | None = None,
         page: int = 1,
         exclude: list[str] | None = None,
         mode: str | None = None,
@@ -894,6 +898,12 @@ class PaperHandler(Handler):
         queries: list[str] | None = None,
         answers: list[str] | None = None,
         per_paper: int | None = None,
+        # Row granularity: ``'paper'`` (default) collapses the fused hits
+        # to one row per ref — best surviving chunk's handle + a ``more``
+        # count + that chunk's keywords; ``'chunk'`` is the per-hit drill
+        # shape. Omitted, ``scope=`` or ``mode='verbatim'`` imply 'chunk'
+        # (both are already drill doors).
+        unique_per: str | None = None,
         good: bool = False,
         title: str | None = None,
         author: str | None = None,
@@ -949,7 +959,10 @@ class PaperHandler(Handler):
                 field="title" if title_q else "author",
                 q=q_byline,
                 page=page,
-                page_size=page_size,
+                # Byline pages are already one row per paper — the
+                # mode-aware block-search default (25 paper rows) doesn't
+                # apply here, so an unset page_size keeps the old 10.
+                page_size=page_size if page_size is not None else 10,
                 kind=kind,
             )
 
@@ -966,7 +979,9 @@ class PaperHandler(Handler):
             # instead of silently ignoring them.
             if tags and not good and not queries and not answers:
                 return self._render_tags_only_search(
-                    tags=tags, page=page, page_size=page_size
+                    tags=tags,
+                    page=page,
+                    page_size=page_size if page_size is not None else 10,
                 )
             raise BadInput(
                 "search requires q= or tags=",
@@ -1001,6 +1016,63 @@ class PaperHandler(Handler):
                 f"per_paper must be a positive integer, got {per_paper!r}",
                 next="per_paper=2 keeps at most 2 hits per paper",
             )
+
+        # ``unique_per`` — 'paper' (default) renders one row per ref on
+        # the fused candidate list; 'chunk' is the per-hit drill shape.
+        # The drill doors imply 'chunk': ``scope=`` already restricts to
+        # one ref, and ``mode='verbatim'``'s keyword path applies no
+        # per-paper collapse at all. An explicit ``unique_per='paper'``
+        # with verbatim is a real conflict (the mode can't honour it), so
+        # it errors rather than silently falling back to chunk rows.
+        unique_per_norm = (
+            str(unique_per).strip().lower() if unique_per is not None else None
+        )
+        if unique_per_norm is not None and unique_per_norm not in (
+            "paper",
+            "chunk",
+        ):
+            raise BadInput(
+                f"unique_per must be 'paper' or 'chunk', got {unique_per!r}",
+                next="unique_per='chunk' lists one row per chunk hit",
+            )
+        verbatim_mode = (mode or "").strip().lower() == "verbatim"
+        if unique_per_norm == "paper" and verbatim_mode:
+            raise BadInput(
+                "unique_per='paper' does not apply to mode='verbatim' — "
+                "the keyword-containment path has no ranked per-paper "
+                "pool to collapse",
+                next="drop mode='verbatim', or use unique_per='chunk'",
+            )
+        # unique_per='paper' is the *paper* shape — its headline counts
+        # papers and its rows carry paper-drift semantics. Subclassed
+        # kinds (cfp, datasheet) share this handler but keep chunk rows.
+        if unique_per_norm == "paper" and kind != "paper":
+            raise BadInput(
+                f"unique_per='paper' is a paper-search shape, not kind='{kind}'",
+                next="drop unique_per= — chunked hits are the shape here",
+            )
+        resolved_unique_per = (
+            unique_per_norm
+            if unique_per_norm is not None
+            else (
+                "paper"
+                if kind == "paper" and scope is None and not verbatim_mode
+                else "chunk"
+            )
+        )
+        # ``per_paper=N`` is a chunk-mode diversity cap; paper rows already
+        # collapse to one row per ref, so a larger cap would silently do
+        # nothing. ``per_paper=1`` is exactly what paper mode applies —
+        # accept it as a no-op rather than break old call sites.
+        if resolved_unique_per == "paper" and per_paper is not None and per_paper != 1:
+            raise BadInput(
+                f"per_paper={per_paper} is a chunk-mode cap; "
+                "unique_per='paper' already returns one row per paper",
+                next="drop per_paper=, or pass unique_per='chunk' for the "
+                "capped per-hit view",
+            )
+        if page_size is None:
+            page_size = 25 if resolved_unique_per == "paper" else 10
 
         # ``good=True`` — the deep-search campaign surface. Does NOT
         # search inline: mints a ``good_search`` coordinator job (under
@@ -1047,6 +1119,8 @@ class PaperHandler(Handler):
             queries=queries,
             answers=answers,
             per_paper=per_paper,
+            unique_per=resolved_unique_per,
+            unique_per_arg=unique_per_norm,
             extra_exclude_ref_ids=exclude_ref_ids,
             extra_include_ref_ids=include_ref_ids,
         )

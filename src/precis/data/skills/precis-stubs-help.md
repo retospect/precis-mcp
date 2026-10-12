@@ -155,7 +155,7 @@ this draft doesn't already have" query:
 
 ```python
 get(kind="semanticscholar", id="wang tile guided self assembly", exclude=["dr42995"])
-search(kind="paper", q="wang tile guided self assembly", per_paper=1, exclude=["dr42995"])
+search(kind="paper", q="wang tile guided self assembly", exclude=["dr42995"])
 ```
 
 The first widens the net to the open literature (flagged); the second

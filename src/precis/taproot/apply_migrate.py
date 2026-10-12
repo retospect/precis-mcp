@@ -211,6 +211,14 @@ class ApplyReport:
     #: the run-artifact-level detail :attr:`hubs`' per-hub strings also
     #: carry, aggregated here for a batch-level summary.
     atoms_withheld_reasons: dict[str, int] = field(default_factory=dict)
+    #: ``explains`` edges (causal split, migration 0203) newly written
+    #: between placed atom hubs of a split row that carried pairs.
+    explains_written: int = 0
+    #: ``explains`` pairs a split row carried that could not be written:
+    #: a withheld-ungrounded or ``needs_review`` endpoint (no hub), an
+    #: out-of-range/malformed pair, both atoms on the same hub, or an edge
+    #: that would close a cycle. Skipped, never fatal; each logs a WARNING.
+    explains_skipped: int = 0
     skipped_already_stamped: int = 0
     skipped_verdict: int = 0
     no_claim_needs_review: int = 0
@@ -505,6 +513,29 @@ def _parse_atoms(extraction: dict[str, Any] | None) -> list[CanonicalClaim]:
     return [_parse_claim(a) for a in extraction.get("atoms") or []]
 
 
+def _parse_explains(extraction: dict[str, Any] | None) -> list[tuple[int, int]]:
+    """The ``explains`` pairs out of one row's ``extraction`` dict —
+    0-based ``[explaining atom, explained atom]`` indices into the ORIGINAL
+    ``atoms`` list (``migrate._extraction_to_dict``'s shape). Absent/empty ->
+    ``[]`` (a row from before the causal split). An entry that is not a
+    two-integer list becomes ``(-1, -1)`` so the apply pass counts it as a
+    skipped pair instead of crashing or silently ignoring it."""
+    raw = (extraction or {}).get("explains")
+    if not isinstance(raw, list):
+        return []
+    pairs: list[tuple[int, int]] = []
+    for entry in raw:
+        if (
+            isinstance(entry, (list, tuple))
+            and len(entry) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in entry)
+        ):
+            pairs.append((entry[0], entry[1]))
+        else:
+            pairs.append((-1, -1))
+    return pairs
+
+
 def _parse_grounding(row: dict[str, Any]) -> dict[str, Any] | None:
     """The optional ``"grounding"`` key a *regrounded* JSONL row carries —
     the shape :mod:`precis.taproot.reground`'s CLI stage writes, or the
@@ -711,12 +742,17 @@ def apply_dry_run(
     2. ``"pass-through"`` -> stamp only.
     3. ``"no-claim"`` -> needs_review if the hub has evidence, else counted
        and left untouched.
-    4. ``"lossy"``/``"nested"``/``"error"``/anything unrecognized ->
-       counted, untouched (``skipped_verdict``).
+    4. ``"lossy"``/``"nested"``/``"bad-explains"``/``"error"``/anything
+       unrecognized -> counted, untouched (``skipped_verdict``).
     5. ``"split"`` -> the atom cascade + evidence re-point (see the module
        docstring); a hub whose split extraction didn't actually carry
        ``>=2`` atoms is a partial failure (the dry-run/apply contract
-       broke somewhere upstream), not a silent no-op.
+       broke somewhere upstream), not a silent no-op. The row's
+       ``extraction["explains"]`` pairs (0-based indices into the original
+       atoms) become ``explains`` edges between the placed atom hubs inside
+       the hub's transaction; a pair with a withheld/``needs_review``
+       endpoint, a bad index, one hub on both sides or a cycle is skipped
+       (:attr:`ApplyReport.explains_skipped`).
 
     ``extract_verify_fn``/``block_fn``/``judge_fn``/``merge_confirm_fn``
     default to the real implementations; each is injectable for a fully
@@ -750,6 +786,8 @@ def apply_dry_run(
     atoms_unreferenced = 0
     atoms_withheld_ungrounded = 0
     atoms_withheld_reasons: dict[str, int] = {}
+    explains_written = 0
+    explains_skipped = 0
     skipped_already_stamped = 0
     skipped_verdict = 0
     no_claim_needs_review = 0
@@ -821,6 +859,7 @@ def apply_dry_run(
         edges = _fetch_evidence_edges(store, hub_ref_id)
         lineage_links = _fetch_lineage_links(store, hub_ref_id)
         atoms = _parse_atoms(row.get("extraction"))
+        explains_pairs = _parse_explains(row.get("extraction"))
         grounding = _parse_grounding(row)
         withheld_reasons_by_idx = _withheld_atoms(atoms, grounding)
         grounded_chunk_anchors = _grounded_chunk_anchors(atoms, grounding)
@@ -946,6 +985,8 @@ def apply_dry_run(
         hub_atoms_unreferenced = 0
         hub_atoms_withheld = 0
         hub_withheld_reasons: dict[str, int] = {}
+        hub_explains_written = 0
+        hub_explains_skipped = 0
         aborted = False
         pending_checks: list[int] = []
         # needs_review filings are collected here, never fired immediately —
@@ -1011,6 +1052,56 @@ def apply_dry_run(
                         set_by=set_by,
                         conn=c,
                     )
+
+                # Causal structure between the atoms ("X because Y"): one
+                # `explains` edge (mechanism hub -> effect hub) per pair, in
+                # THIS transaction. `atom_hub_ids` is index-aligned with the
+                # ORIGINAL extraction atoms (a withheld atom holds a None
+                # slot, it is not removed), so the pair's own indices are the
+                # right keys. A pair with an unplaced endpoint (withheld
+                # ungrounded / needs_review), a bad index, one hub on both
+                # sides, or one that would close a cycle is skipped and
+                # counted — never fatal, the conjunct-of structure stands.
+                for ex_a, ex_b in explains_pairs:
+                    hub_a = (
+                        atom_hub_ids[ex_a] if 0 <= ex_a < len(atom_hub_ids) else None
+                    )
+                    hub_b = (
+                        atom_hub_ids[ex_b] if 0 <= ex_b < len(atom_hub_ids) else None
+                    )
+                    if hub_a is None or hub_b is None or hub_a == hub_b:
+                        log.warning(
+                            "taproot-apply: hub_ref_id=%s dropping explains "
+                            "pair (%s, %s): bad index, unplaced (withheld/"
+                            "needs_review) endpoint, or both atoms on one hub",
+                            hub_ref_id,
+                            ex_a,
+                            ex_b,
+                        )
+                        hub_explains_skipped += 1
+                        continue
+                    try:
+                        with c.transaction():  # savepoint — isolate one edge
+                            wrote = link_claims(
+                                store,
+                                from_hub_ref_id=hub_a,
+                                to_hub_ref_id=hub_b,
+                                relation="explains",
+                                set_by=set_by,
+                                conn=c,
+                            )
+                    except BadInput as exc:  # e.g. would close a cycle
+                        log.warning(
+                            "taproot-apply: hub_ref_id=%s dropping explains "
+                            "pair fi%s -> fi%s: %s",
+                            hub_ref_id,
+                            hub_a,
+                            hub_b,
+                            exc,
+                        )
+                        hub_explains_skipped += 1
+                        continue
+                    hub_explains_written += int(wrote)
 
                 # Outbound lineage — blanket copy onto every placed atom
                 # (module docstring: 'derived-from' asserts derivation, not
@@ -1244,6 +1335,8 @@ def apply_dry_run(
         lineage_copied += hub_lineage_copied
         atoms_unreferenced += hub_atoms_unreferenced
         atoms_withheld_ungrounded += hub_atoms_withheld
+        explains_written += hub_explains_written
+        explains_skipped += hub_explains_skipped
         for reason, n in hub_withheld_reasons.items():
             atoms_withheld_reasons[reason] = atoms_withheld_reasons.get(reason, 0) + n
         partial_failures += hub_partial_failures
@@ -1259,7 +1352,9 @@ def apply_dry_run(
                     f"edges_repointed={hub_edges_repointed} "
                     f"edges_kept_needs_review={hub_edges_review} "
                     f"lineage_copied={hub_lineage_copied} "
-                    f"atoms_unreferenced={hub_atoms_unreferenced}"
+                    f"atoms_unreferenced={hub_atoms_unreferenced} "
+                    f"explains_written={hub_explains_written} "
+                    f"explains_skipped={hub_explains_skipped}"
                 ),
             )
         )
@@ -1275,6 +1370,8 @@ def apply_dry_run(
         atoms_unreferenced=atoms_unreferenced,
         atoms_withheld_ungrounded=atoms_withheld_ungrounded,
         atoms_withheld_reasons=atoms_withheld_reasons,
+        explains_written=explains_written,
+        explains_skipped=explains_skipped,
         skipped_already_stamped=skipped_already_stamped,
         skipped_verdict=skipped_verdict,
         no_claim_needs_review=no_claim_needs_review,

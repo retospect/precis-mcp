@@ -46,6 +46,7 @@ search(kind="paper", q="X", args={"exclude": ["pa1", "pa2"]})  # skip refs by ha
 search(kind="paper", q="X", args={"uncited": "dr173020"})  # skip what that draft already cites
 search(kind="patent", q="X", args={"reach": "remote"})  # patent/edgar-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
+search(kind="paper", q="X", unique_per="chunk")  # one row per chunk hit
 search(
     kind="paper",
     q="X",
@@ -53,7 +54,6 @@ search(
     args={
         "queries": ["rephrase 1", "rephrase 2"],
         "answers": ["a passage an ideal source would contain"],
-        "per_paper": 2,
     },
 )  # broad / high-recall (see below)
 ```
@@ -76,6 +76,32 @@ salience pick, or the paper-acquisition backlog (`precis-dreaming-help`,
 `precis-stubs-help`). `status=` is shorthand for
 `tags=['STATUS:<value>']` on kinds with that axis — see "Enumerating a
 tag" below for the per-kind defaults.
+
+## Paper search returns one row per paper
+## Drill into a paper's individual hits
+
+`search(kind='paper', q=…)` defaults to `unique_per='paper'`: each row is
+one paper — the best hit's `pc<chunk_id>` handle (paste into `get`), a
+`more` column counting that paper's *other* hits in the retrieved pool
+(`+3` = three further matching chunks), and the best chunk's keywords.
+The headline counts both levels: `# 12 of 87 papers for 'q' (240 chunk
+hits)` — M and K are the lexical universe, a lower bound when the
+semantic leg also matched.
+
+`unique_per='chunk'` is the drill shape — one row per matching chunk —
+and is implied by the doors that already ask for it: `scope='pa…'`
+(search inside one paper) and `mode='verbatim'`. `per_paper=N` caps hits
+per paper *there*; with paper rows it's redundant and `per_paper>1`
+errors — the collapse already shows one row each.
+Page size follows the shape: default 25 rows in paper mode, 10 in chunk
+mode, and `page=` walks *papers* in the default view.
+
+Refine before you page. When the counter says `87 papers`, fetching
+page 2 is usually the wrong next call — tighten `q=` with a term from a
+`more`-heavy row's keywords, `scope=` into the promising paper (that
+flips to chunk rows inside it), or add `queries=`/`answers=` to move the
+gold to the top instead of reading the tail. Page when you want the
+*breadth* — a survey sweep — not when you want the one right hit.
 
 ## Ranking mode — hybrid (default), lexical, semantic, or verbatim
 
@@ -150,7 +176,6 @@ search(
             "binding and suppressing the competing hydrogen-evolution "
             "reaction, shifting selectivity toward ammonia.",
         ],
-        "per_paper": 2,  # at most 2 chunks per paper → broader spread
     },
 )
 ```
@@ -163,8 +188,9 @@ Rules of thumb:
 - Research / triage questions, not exact-string lookups (`mode='lexical'`
   for those).
 - 3–5 `queries` + 1–2 `answers` is plenty; more legs ≠ better.
-- `args={'per_paper': 2}` is a good default for *breadth*; drop it to mine one
-  paper deeply.
+- `args={'per_paper': N}` is the chunk-view's breadth cap — the default
+  paper view already collapses to one row per paper, so it only applies
+  alongside `unique_per='chunk'`.
 - Honors `mode=`, `tags=`, `scope=`, `args={'exclude': …}`, and year filters like
   any search (a `'lexical'` broad search fuses only the text legs).
 - **Paginate by repeating the broad knobs** — `page=2` must carry the
@@ -271,13 +297,15 @@ search(kind="paper", q="photocatalysis", page=3, page_size=20)
 ```
 
 `page=1` is the default. Bump `page=` to walk results. `page_size=`
-sets the page size (default 10, max 100) — *not* a quality cutoff
+sets the page size (default 10; 25 on paper kind's default
+one-row-per-paper view, max 100) — *not* a quality cutoff
 despite the name. `page_size=` is the canonical spelling.
 
 Broad-retrieval searches paginate the same way, but the `page=N+1`
 call must repeat the same `queries`/`answers`/`per_paper` `args=` keys
 (see "Broad retrieval" above) — dropping them switches to the
-single-query ordering mid-walk.
+single-query ordering mid-walk. On the paper kind's default view a
+page is 25 *papers*; refine first (above), don't walk the tail.
 
 `page=`/`page_size=` above is a **search-level** knob, independent of
 `more(cursor=...)`, the separate MCP-transport pagination mechanism
@@ -367,9 +395,9 @@ walk the draft's cites by hand:
 
 ```python
 search(kind="paper", q="wang tile guided self assembly",
-       args={"per_paper": 1, "exclude": ["dr42995"]})  # the whole draft's cite closure
+       args={"exclude": ["dr42995"]})  # the whole draft's cite closure
 search(kind="paper", q="wang tile guided self assembly",
-       args={"per_paper": 1, "exclude": ["dc48213"]})  # just that section's closure
+       args={"exclude": ["dc48213"]})  # just that section's closure
 ```
 
 A `dr…`/`dc…` entry that doesn't resolve raises `BadInput` naming it

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "COHORTS",
+    "VERDICTS",
     "DryRunOutcome",
     "DryRunReport",
     "HubScore",
@@ -57,7 +58,24 @@ Cohort = Literal["likely-composite", "uncertain", "likely-atomic"]
 #: string literals.
 COHORTS: tuple[Cohort, ...] = ("likely-composite", "uncertain", "likely-atomic")
 
-Verdict = Literal["pass-through", "split", "lossy", "nested", "no-claim", "error"]
+#: ``bad-explains`` (2026-10-03 causal split): the extraction's ``explains``
+#: pairs are malformed (index out of range, self-pair, cycle) — a hold
+#: verdict like ``lossy``/``nested``, never applied.
+Verdict = Literal[
+    "pass-through", "split", "lossy", "nested", "bad-explains", "no-claim", "error"
+]
+
+#: Every verdict, in report/CLI display order — the single source
+#: :func:`render_report` and the CLI's ``--verdict`` choices iterate.
+VERDICTS: tuple[Verdict, ...] = (
+    "pass-through",
+    "split",
+    "lossy",
+    "nested",
+    "bad-explains",
+    "no-claim",
+    "error",
+)
 
 #: :func:`dry_run`'s consecutive-infra-failure breaker: this many
 #: ``verdict="error"`` outcomes in a row aborts the whole run rather than
@@ -623,8 +641,54 @@ def _extraction_union_text(extraction: ClaimExtraction) -> str:
     return " ".join(parts)
 
 
+def _explains_problems(extraction: ClaimExtraction) -> list[str]:
+    """The ``explains`` gate: every pair must name two distinct emitted
+    atoms (indices in ``range(len(atoms))``, no self-pair) and the pairs
+    must form no cycle (Y explains X while X explains Y, directly or
+    through a chain). Empty list = sound (including no pairs at all).
+    Duplicates are collapsed by the parser; a repeated pair here is not a
+    problem. Pure, no DB — the DB-side twin is the cycle check in
+    :func:`precis.taproot.hub.link_claims`."""
+    n = len(extraction.atoms)
+    problems: list[str] = []
+    graph: dict[int, set[int]] = {}
+    for pair in extraction.explains:
+        a, b = pair
+        if not (0 <= a < n and 0 <= b < n):
+            problems.append(f"pair {list(pair)} names no emitted atom (0..{n - 1})")
+        elif a == b:
+            problems.append(f"pair {list(pair)} explains itself")
+        else:
+            graph.setdefault(a, set()).add(b)
+    if problems:
+        return problems
+
+    # Cycle check over the well-formed edges (iterative DFS, white/grey/black).
+    state: dict[int, int] = {}
+    for root in graph:
+        if state.get(root):
+            continue
+        stack: list[tuple[int, list[int]]] = [(root, sorted(graph.get(root, ())))]
+        state[root] = 1
+        while stack:
+            node, todo = stack[-1]
+            if not todo:
+                state[node] = 2
+                stack.pop()
+                continue
+            nxt = todo.pop()
+            if state.get(nxt) == 1:
+                return [f"explains cycle through atoms {nxt} and {node}"]
+            if not state.get(nxt):
+                state[nxt] = 1
+                stack.append((nxt, sorted(graph.get(nxt, ()))))
+    return []
+
+
 def _containment_findings(
-    atoms: tuple[CanonicalClaim, ...], reference_sentence: str
+    atoms: tuple[CanonicalClaim, ...],
+    reference_sentence: str,
+    exempt_pairs: frozenset[frozenset[int]] = frozenset(),
 ) -> list[dict[str, Any]]:
     """P0-3's containment check: every atom-pair or atom-vs-reference
     (composite, or the original sentence when there's no composite) whose
@@ -635,11 +699,20 @@ def _containment_findings(
     of the composite), not the other direction — every sound atom covers
     *some* of the composite by construction, so that direction would fire on
     every split.
+
+    ``exempt_pairs`` are atom-index pairs skipped by the **pairwise** check:
+    an ``explains`` pair (mechanism atom, effect atom) legitimately shares
+    its subject — "Incompatible catalytic sites coexist in the MOF" and "The
+    rigid lattice isolates incompatible catalytic sites in the MOF" overlap
+    ~0.8 on bare tokens without either restating the other. The
+    atom-vs-composite check is never exempt.
     """
     token_sets = [_token_set(atom.sentence) for atom in atoms]
     reference_tokens = _token_set(reference_sentence)
     findings: list[dict[str, Any]] = []
     for i, j in itertools.combinations(range(len(token_sets)), 2):
+        if frozenset((i, j)) in exempt_pairs:
+            continue
         a, b = token_sets[i], token_sets[j]
         ratio = max(
             len(a & b) / len(a) if a else 1.0,
@@ -663,7 +736,14 @@ def classify_extraction(
     terms. Returns ``(verdict, gate_meta)`` — ``gate_meta`` carries
     whatever the fired/checked gates computed (``recall``,
     ``missing_numbers``, ``precision``, ``invented_numbers``,
-    ``containment``, ``missing_content``). NO-CLAIM skips every gate.
+    ``containment``, ``missing_content``, and — when the extraction has
+    ``explains`` pairs — ``explains`` / ``explains_problems``). NO-CLAIM
+    skips every gate.
+
+    The ``explains`` gate (``bad-explains``) runs first: pairs must name
+    two distinct emitted atoms and form no cycle (:func:`_explains_problems`).
+    Each sound explains-pair is also exempt from the pairwise containment
+    check (:func:`_containment_findings`).
 
     The coverage gate (P0-2) checks **both directions**: loss (a dropped
     number, or content-word recall below threshold) and hallucination (an
@@ -680,15 +760,24 @@ def classify_extraction(
     if extraction.is_empty:
         return "no-claim", {}
 
+    explains_meta: dict[str, Any] = {}
+    exempt: frozenset[frozenset[int]] = frozenset()
+    if extraction.explains:
+        explains_meta = {"explains": [list(pair) for pair in extraction.explains]}
+        problems = _explains_problems(extraction)
+        if problems:
+            return "bad-explains", {**explains_meta, "explains_problems": problems}
+        exempt = frozenset(frozenset(pair) for pair in extraction.explains)
+
     if len(extraction.atoms) >= 2:
         reference = (
             extraction.composite.sentence
             if extraction.composite is not None
             else sentence
         )
-        containment = _containment_findings(extraction.atoms, reference)
+        containment = _containment_findings(extraction.atoms, reference, exempt)
         if containment:
-            return "nested", {"containment": containment}
+            return "nested", {**explains_meta, "containment": containment}
 
     union_text = _extraction_union_text(extraction)
     # Loss-direction checks score against the citation-stripped original
@@ -709,6 +798,7 @@ def classify_extraction(
     kept_full = _content_words(sentence) & union_words
     precision = len(kept_full) / len(union_words) if union_words else 1.0
     gate_meta: dict[str, Any] = {
+        **explains_meta,
         "recall": round(recall, 3),
         "missing_numbers": missing_numbers,
         "precision": round(precision, 3),
@@ -894,7 +984,7 @@ def dry_run(
         escalated_gate_meta: dict[str, Any] = {}
         escalation_error: str | None = None
         if escalate_fn is not None and (
-            verdict in ("lossy", "nested") or junk_candidate
+            verdict in ("lossy", "nested", "bad-explains") or junk_candidate
         ):
             try:
                 escalated_extraction = escalate_fn(sentence)
@@ -931,6 +1021,16 @@ def dry_run(
 # ── report rendering ─────────────────────────────────────────────────────
 
 
+def _render_explains_pair(extraction: ClaimExtraction, pair: tuple[int, int]) -> str:
+    """One report line for an ``explains`` pair, 1-based like the atom list
+    above it; an out-of-range (``bad-explains``) index prints as ``?``."""
+    n = len(extraction.atoms)
+    a, b = pair
+    ok = 0 <= a < n and 0 <= b < n
+    label = f"{a + 1} -> {b + 1}" if ok else f"? (malformed pair {list(pair)})"
+    return f"- {label}"
+
+
 def _render_extraction(extraction: ClaimExtraction) -> list[str]:
     lines: list[str] = []
     if extraction.atoms:
@@ -944,6 +1044,12 @@ def _render_extraction(extraction: ClaimExtraction) -> list[str]:
         if extraction.composite is not None
         else "**Composite**: (none)"
     )
+    if extraction.explains:
+        lines.append("")
+        lines.append("**Explains** (explaining atom -> explained atom):")
+        lines.extend(
+            _render_explains_pair(extraction, pair) for pair in extraction.explains
+        )
     if extraction.not_claims:
         lines.append("")
         lines.append("**Not-claims**:")
@@ -1014,7 +1120,7 @@ def render_report(report: DryRunReport) -> str:
     lines.append("")
     lines.append("| Verdict | Count |")
     lines.append("|---|---|")
-    for verdict in ("pass-through", "split", "lossy", "nested", "no-claim", "error"):
+    for verdict in VERDICTS:
         lines.append(f"| {verdict} | {counts.get(verdict, 0)} |")
     lines.append("")
 
@@ -1043,6 +1149,8 @@ def _extraction_to_dict(extraction: ClaimExtraction | None) -> dict[str, Any] | 
         ),
         "composite_source": extraction.composite_source,
         "not_claims": [dict(nc) for nc in extraction.not_claims],
+        # 0-based [explaining atom, explained atom] pairs into "atoms".
+        "explains": [list(pair) for pair in extraction.explains],
     }
 
 

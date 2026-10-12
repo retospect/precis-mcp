@@ -967,6 +967,7 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 "applied": applied,
                 "rewritten": r.rewritten_text is not None,
                 "n_ungrounded": r.n_ungrounded,
+                "n_explains_skipped": r.n_explains_skipped,
                 "groups": [
                     {
                         "action": p.action,
@@ -999,6 +1000,8 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
         summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
         ung = r.n_ungrounded
         ung_note = f"  ({ung} ref-level/ungrounded)" if ung else ""
+        if r.n_explains_skipped:
+            ung_note += f"  ({r.n_explains_skipped} explains pair(s) dropped)"
         print(
             f"dc{r.chunk_id}: {len(r.plans)} cite-group(s) — {summary}{ung_note}{tag}"
         )

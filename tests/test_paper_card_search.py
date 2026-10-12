@@ -231,7 +231,14 @@ def test_capped_search_prefers_body_before_paging(
     assert card_handle is not None
     for page, cid in enumerate(expected, start=1):
         out = handler.search(
-            q="copper", mode="lexical", per_paper=cap, page_size=1, page=page
+            q="copper",
+            mode="lexical",
+            # per_paper>=2 is a chunk-mode cap — paper rows already show
+            # one row per paper, so the capped drill needs the chunk view.
+            unique_per="chunk",
+            per_paper=cap,
+            page_size=1,
+            page=page,
         )
         handle = handle_registry.try_format("paper", cid, chunk=True)
         assert handle is not None and handle in out.body

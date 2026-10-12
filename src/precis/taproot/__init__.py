@@ -10,7 +10,10 @@ overlay on ``finding``/``ref_tags``/``links`` — own schema is
 inverse), ``motivated-by`` (0135, hypothesis -> the provoking artifact, same
 no-evidence-flow contract), ``disputes`` (0151, hub<->hub or paper->hub —
 "appears to conflict", free to file, never blocks, no evidence flow;
-``docs/backlog/disputes-edge-nonblocking-disagreement.md``);
+``docs/backlog/disputes-edge-nonblocking-disagreement.md``),
+``explains`` (0203, explaining claim hub -> explained claim hub — the "X
+because Y" causal split of a composite; directed, acyclic, advisory, never
+feeds ``derive_evidence``/trust/the cite fallback);
 ``corroborates``/``contradicts`` reuse existing slugs, endpoint kinds
 disambiguate — ``contradicts`` is adjudication-derived only (Part 2 of
 that same item, not built) and not itself fileable through

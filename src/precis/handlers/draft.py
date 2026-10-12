@@ -13,7 +13,8 @@ re-derive instead of going stale. The handler wraps the
 behind the existing seven verbs — **no new verbs**:
 
 - ``put``   — create a draft (`project=`, born with a title heading) or
-  add a chunk (`chunk_kind=`, `text=`, placed by `at=`).
+  add a chunk (`chunk_kind=`, `text=`, placed by `at=`); `terms=[...]`
+  batches many `chunk_kind='term'` leaves in one transaction.
 - ``get``   — list drafts (no id), a draft's outline (`id='<slug>'`), or
   a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
 - ``edit``  — change a chunk's text (`text=`) or move it (`move=`).
@@ -37,15 +38,17 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, NotFound, PrecisError, Unsupported
 from precis.format import toon
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
+from precis.handlers._numeric_ref import BATCH_ID_CAP
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store import Ref
 from precis.store._draft_ops import content_sha
 from precis.utils import draft_regex, handle_registry
 from precis.utils.authors import to_author_dicts
@@ -1048,6 +1051,7 @@ class DraftHandler(Handler):
         chunk_kind: str | None = None,
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        terms: list[Any] | None = None,
         image: str | None = None,
         mime: str | None = None,
         origin: str | None = None,
@@ -1063,6 +1067,12 @@ class DraftHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if copy_of is not None:
+            if terms is not None:
+                raise BadInput(
+                    "copy_of= does not combine with terms= (a fork mints a "
+                    "new draft; a terms batch writes into an existing one)",
+                    next="put(kind='draft', id='<slug>', chunk_kind='term', terms=[...])",
+                )
             # Draft fork/deep-copy primitive: put(kind='draft',
             # copy_of='<src-slug>', project=<todo>) deep-copies the WHOLE
             # source draft (chunks + hierarchy + links) into a NEW draft
@@ -1086,6 +1096,34 @@ class DraftHandler(Handler):
                 f"put(kind='draft') slug {slug!r} may not contain a path "
                 "separator or be a '.'/'..' segment",
                 next="use a plain slug, e.g. put(kind='draft', id='nanotrans', …)",
+            )
+
+        if terms is not None:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
+            return self._put_terms_batch(
+                slug,
+                ref,
+                terms,
+                chunk_kind=chunk_kind,
+                at=at,
+                meta=meta,
+                extras={
+                    "text": text,
+                    "title": title,
+                    "project": project,
+                    "table": table,
+                    "caption": caption,
+                    "regen": regen,
+                    "image": image,
+                    "mime": mime,
+                    "origin": origin,
+                    "permission": permission,
+                    "render": render,
+                    "plots": plots,
+                    "voice": voice,
+                    "lang": lang,
+                },
             )
 
         if chunk_kind == "figure" and image is not None:
@@ -1251,6 +1289,169 @@ class DraftHandler(Handler):
                 f"linked draft-of project {project_ref_id}"
             )
         )
+
+    # ── batch term writes (``terms=[...]``) ────────────────────────
+
+    def _put_terms_batch(
+        self,
+        slug: str,
+        ref: Ref,
+        terms: list[Any],
+        *,
+        chunk_kind: str | None,
+        at: dict[str, Any] | None,
+        meta: dict[str, Any] | None,
+        extras: dict[str, Any],
+    ) -> Response:
+        """``put(kind='draft', id=<slug>, chunk_kind='term', terms=[...])`` —
+        one call files many registry ``term`` leaves, all or nothing.
+
+        The batch form of the singleton term write: each entry is
+        ``{'text': <definition>, 'meta': {...}, 'at': {...}}`` (a bare
+        string is shorthand for ``{'text': it}``), run through the same
+        ``_prepare_term_meta`` → ``ensure_registry_heading`` →
+        ``add_chunks`` path once per term inside ``store.atomic()``, so
+        the first rejected term rolls every entry back and names its
+        position. Sized by :data:`BATCH_ID_CAP` — the same 50 the
+        ``id=[...]`` batches use — so a ~500-term glossary lands in a
+        handful of calls. ``meta=``/``at=`` at the verb level act as
+        per-batch defaults an entry's own values override.
+        """
+        if chunk_kind not in (None, "term"):
+            raise BadInput(
+                f"terms= is the batch form of chunk_kind='term', "
+                f"got chunk_kind={chunk_kind!r}",
+                next="put(kind='draft', id=…, chunk_kind='term', "
+                "terms=[{'text': '…', 'meta': {'short': '…'}}, …])",
+            )
+        conflicts = sorted(k for k, v in extras.items() if v is not None)
+        if conflicts:
+            raise BadInput(
+                f"terms= does not combine with "
+                f"{', '.join(f'{k}=' for k in conflicts)} — per-term fields "
+                "go inside each entry ({'text': …, 'meta': {…}, 'at': {…}})",
+                next="put(kind='draft', id=…, chunk_kind='term', terms=[{…}, …])",
+            )
+        entries = self._coerce_terms(terms)
+        lines: list[str] = []
+        new_chunk_ids: list[int] = []
+        with self.store.atomic():
+            for pos, entry in enumerate(entries):
+                label = self._term_label(entry)
+                try:
+                    m, role = self._prepare_term_meta(
+                        ref.id, {**(meta or {}), **entry["meta"]}
+                    )
+                    entry_at = (
+                        entry["at"]
+                        or at
+                        or {
+                            "into": self.store.drafts.ensure_registry_heading(
+                                ref.id, role
+                            )
+                        }
+                    )
+                    self._raise_on_new_dangling_refs(entry["text"])
+                    chunks = self.store.drafts.add_chunks(
+                        ref_id=ref.id,
+                        chunk_kind="term",
+                        text=entry["text"],
+                        at=entry_at,
+                        meta=m,
+                    )
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"terms[{pos}] ({label}): {exc.cause} — batch of "
+                        f"{len(entries)} rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                made = {c.chunk_id for c in chunks}
+                top = [c for c in chunks if c.parent_chunk_id not in made]
+                new_chunk_ids.extend(c.chunk_id for c in chunks)
+                lines.append(f"{' '.join(str(c.dc) for c in top)}  {label}")
+        self.sync_draft_links(ref.id, restamp_chunk_ids=set(new_chunk_ids))
+        self._attribute_touch(new_chunk_ids)
+        head = (
+            f"added {len(entries)} term{'' if len(entries) == 1 else 's'} "
+            f"to '{slug}' in one transaction"
+        )
+        return Response(body=head + "\n" + "\n".join(lines))
+
+    @staticmethod
+    def _coerce_terms(terms: list[Any]) -> list[dict[str, Any]]:
+        """Normalise ``terms=[...]`` to ``{'text', 'meta', 'at'}`` dicts.
+
+        Shape errors are refused up front — before the transaction opens —
+        and name their ``terms[i]`` position, so a malformed entry never
+        depends on the write loop to be caught. A bare string entry is
+        shorthand for ``{'text': it}``.
+        """
+        if not isinstance(terms, list):
+            raise BadInput(
+                "terms= takes a list of {'text': …, 'meta': {…}} entries, "
+                f"got {type(terms).__name__}",
+                next="put(kind='draft', id=…, chunk_kind='term', "
+                "terms=[{'text': '…', 'meta': {'short': '…'}}, …])",
+            )
+        if not terms:
+            raise BadInput(
+                "terms=[] is empty",
+                next="put(kind='draft', id=…, chunk_kind='term', "
+                "terms=[{'text': '…', 'meta': {'short': '…'}}, …])",
+            )
+        if len(terms) > BATCH_ID_CAP:
+            raise BadInput(
+                f"terms=[...] takes at most {BATCH_ID_CAP} entries, got {len(terms)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+        out: list[dict[str, Any]] = []
+        for pos, raw in enumerate(terms):
+            entry = {"text": raw} if isinstance(raw, str) else raw
+            if not isinstance(entry, dict):
+                raise BadInput(
+                    f"terms[{pos}] must be a dict or a text string, "
+                    f"got {type(raw).__name__}",
+                    next="terms=[{'text': '…', 'meta': {'short': '…'}}, …]",
+                )
+            unknown = set(entry) - {"text", "meta", "at"}
+            if unknown:
+                raise BadInput(
+                    f"terms[{pos}] has unknown keys {sorted(unknown)} "
+                    "(an entry is {'text': …, 'meta': {…}, 'at': {…}})",
+                    next="terms=[{'text': '…', 'meta': {'short': '…'}}, …]",
+                )
+            text = entry.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise BadInput(
+                    f"terms[{pos}] requires a non-empty 'text'",
+                    next="terms=[{'text': '…', 'meta': {'short': '…'}}, …]",
+                )
+            for key in ("meta", "at"):
+                if entry.get(key) is not None and not isinstance(entry[key], dict):
+                    raise BadInput(
+                        f"terms[{pos}]['{key}'] must be a dict, "
+                        f"got {type(entry[key]).__name__}",
+                        next="terms=[{'text': '…', 'meta': {'short': '…'}}, …]",
+                    )
+            out.append(
+                {
+                    "text": text,
+                    "meta": dict(entry.get("meta") or {}),
+                    "at": entry.get("at"),
+                }
+            )
+        return out
+
+    @staticmethod
+    def _term_label(entry: dict[str, Any]) -> str:
+        """The one-line tag for a terms entry: its ``meta.short`` surface
+        when it has one, else the head of the definition text."""
+        short = entry["meta"].get("short")
+        if isinstance(short, str) and short.strip():
+            return short.strip()
+        first = entry["text"].strip().splitlines()[0]
+        return first[:60] + "…" if len(first) > 60 else first
 
     def _dedup_slug(self, candidate: str) -> str:
         """``candidate``, or ``candidate-2``/``-3``/… if a live draft

@@ -1796,6 +1796,23 @@ class TestLinkTaprootRouting:
             ).fetchone()
         assert row is not None and row[0] == "refines"
 
+    def test_explains_routes_to_link_claims_mechanism_to_effect(self, store) -> None:
+        effect = self._mint_hub(store, sentence="Nanoporous gold oxidizes CO.")
+        mechanism = self._mint_hub(
+            store, sentence="Undercoordinated gold atoms of nanoporous gold bind O2."
+        )
+        h = _make_handler(store)
+        out = h.link(id=f"fi{mechanism}", target=f"fi{effect}", rel="explains")
+        assert f"fi{mechanism} --explains--> fi{effect}" in out.body
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT src_ref_id, dst_ref_id FROM links WHERE relation = 'explains'"
+            ).fetchall()
+        assert rows == [(mechanism, effect)]
+        # the closing direction is refused (cycle), through the same door
+        with pytest.raises(BadInput, match="cycle"):
+            h.link(id=f"fi{effect}", target=f"fi{mechanism}", rel="explains")
+
     def test_corroborates_remove_deletes_the_grounded_paper_to_hub_edge(
         self, store
     ) -> None:

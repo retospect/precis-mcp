@@ -54,7 +54,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Read one section / chunk | `get(id='pa5~40')` or a chunk handle `get(id='pc890282')` | `precis-addressing-help` |
 | Read a chunk + its neighborhood | `get(kind='draft', id='dc41', view='fisheye')` | `precis-fisheye-help` |
 | Browse a paper's structure | `get(kind='paper', id='wang2020state', view='toc')` | `precis-toc-help` |
-| Broad paper retrieval | `search(kind='paper', queries=[...], answers=[...HyDE], per_paper=N)` | `precis-search-help` |
+| Broad paper retrieval | `search(kind='paper', queries=[...], answers=[...HyDE])` — one row per paper; `unique_per='chunk'` drills | `precis-search-help` |
 | Deep async paper campaign | `search(kind='paper', q='...', good=True)` → poll the job handle | `precis-search-help` |
 | Which skill do I need? | `get(kind='skill', id='toc')` / `search(kind='skill', q='your goal')` | `precis-overview` |
 | Stumble into something new | `get(kind='random')` | `precis-random-help` |

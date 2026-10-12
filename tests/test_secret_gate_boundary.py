@@ -84,6 +84,13 @@ def test_meta_and_nested_strings_are_scanned() -> None:
         _refuse_agent_secrets(
             "put", {"kind": "k", "__extras__": {"params": {"env": [SECRET]}}}, hub
         )
+    # draft's batch term write: a credential nested in an entry's text/meta
+    with pytest.raises(BadInput, match=r"terms\[1\]\[text\]"):
+        _refuse_agent_secrets(
+            "put",
+            {"kind": "k", "terms": [{"text": "ok"}, {"text": SECRET}]},
+            hub,
+        )
 
 
 def test_clean_text_and_other_verbs_pass() -> None:

@@ -66,8 +66,10 @@ container items.
 9. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
    exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
    baseline first (8).
-10. **backlog/llm-quota-failure-classification.md** — router-owned LLM failure
-    classification and deferred retry; the quota half of 3's outage class.
+10. **backlog/llm-quota-failure-classification.md** — only the prod MEDIUM
+    ladder proof remains: a `llm.chain.medium` override (paid OpenRouter rung
+    below claude) plus one observed `fell back to rung 1` warning. Needs
+    prod + Reto's provider pick; code side landed 2026-10-12.
 11. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
     branches instead of discarding them.
 12. **backlog/prioritization-auto-scoring.md** — severity x frequency

@@ -15,7 +15,7 @@ says ``same``) is tallied but tolerated (taproot.md's "safe direction").
 :func:`eval_extraction` is the sibling gate for the AIDA-Atomic constraint
 added to :func:`~precis.taproot.canon.extract_claim`
 (``docs/backlog/taproot-atomic-claims.md`` §AIDA): it runs the extractor
-over :data:`EXTRACTION_PASSAGES_FIXTURE` (11 hand-authored passages,
+over :data:`EXTRACTION_PASSAGES_FIXTURE` (13 hand-authored passages,
 shipped as package data so a deployed host can run it) and checks two
 hard gates (bar = 0) plus one soft metric — see its docstring.
 
@@ -28,7 +28,7 @@ collapsing every multi-clause sentence to a single truncated atom — a
 failure ``eval_extraction``'s conjunction/composite gates are blind to but
 the coverage gate flags as ``lossy`` on sight. Run the canary (CLI:
 ``precis taproot-migrate canary``) before any bulk dry-run: if the
-extractor can't cleanly handle 11 hand-authored passages, it has no
+extractor can't cleanly handle 13 hand-authored passages, it has no
 business running 1,346 hubs.
 
 Both harnesses make live model calls when run with the real canon
@@ -442,21 +442,33 @@ class CanaryResult:
     actual_atom_count: int
     verdict: GateVerdict
     gate_meta: dict[str, Any] = field(default_factory=dict)
+    #: The fixture row's ``expected_explains_count`` (how many ``explains``
+    #: pairs the passage's causal structure warrants), or ``None`` when the
+    #: row is not graded for it (every row but the causal ones).
+    expected_explains_count: int | None = None
+    actual_explains_count: int = 0
 
 
 @dataclass
 class CanaryReport:
     """:func:`canary_extraction`'s output. The bar is deliberately tight —
-    these are 11 clean hand-authored passages — but granularity-tolerant:
+    these are clean hand-authored passages — but granularity-tolerant:
     a sound ``split`` where the fixture's author kept one atom (or vice
     versa) is not a failure, because the gates already established that
     nothing was lost. Only two things fail the canary, both bar-0:
 
-    * a **gate rejection** (``lossy``/``nested``) — the extractor
-      truncated, padded, or fake-split a clean passage (the SMALL-tier
-      collapse the A/B re-run exposed shows up here);
+    * a **gate rejection** (``lossy``/``nested``/``bad-explains``) — the
+      extractor truncated, padded, fake-split, or mangled the ``explains``
+      pairs of a clean passage (the SMALL-tier collapse the A/B re-run
+      exposed shows up here);
     * a **no-claim mismatch** in either direction — claims extracted from
       a NO-CLAIM passage, or a claim-bearing passage returned empty.
+
+    ``explains`` agreement (:attr:`explains_mismatches`) is a **soft**
+    metric, reported but not failing: whether a mechanism clause is
+    self-contained enough to stand alone is a granularity call, so a model
+    that folds one inline (or splits a vague one) is drift to read, not a
+    gate violation.
     """
 
     results: list[CanaryResult] = field(default_factory=list)
@@ -468,7 +480,20 @@ class CanaryReport:
     @property
     def gate_rejections(self) -> list[CanaryResult]:
         """Passages the migration gates rejected — bar is 0."""
-        return [r for r in self.results if r.verdict in ("lossy", "nested")]
+        return [
+            r for r in self.results if r.verdict in ("lossy", "nested", "bad-explains")
+        ]
+
+    @property
+    def explains_mismatches(self) -> list[CanaryResult]:
+        """Graded rows (``expected_explains_count`` set) whose got pair
+        count differs from it — soft metric, never fails the canary."""
+        return [
+            r
+            for r in self.results
+            if r.expected_explains_count is not None
+            and r.actual_explains_count != r.expected_explains_count
+        ]
 
     @property
     def no_claim_mismatches(self) -> list[CanaryResult]:
@@ -490,8 +515,12 @@ class CanaryReport:
             f"Taproot extraction canary — {self.total} passages",
             "",
             "verdicts: " + "  ".join(f"{v}={counts[v]}" for v in sorted(counts)),
-            f"gate rejections (lossy/nested): {len(self.gate_rejections)} — bar is 0",
+            "gate rejections (lossy/nested/bad-explains): "
+            f"{len(self.gate_rejections)} — bar is 0",
             f"no-claim mismatches: {len(self.no_claim_mismatches)} — bar is 0",
+            f"explains-count mismatches: {len(self.explains_mismatches)} "
+            f"of {sum(r.expected_explains_count is not None for r in self.results)} "
+            "graded — soft metric",
             "",
             "CANARY OK" if self.ok else "CANARY FAILED",
         ]
@@ -509,6 +538,15 @@ class CanaryReport:
                         f"got_atoms={r.actual_atom_count} "
                         f"gate_meta={r.gate_meta}"
                     )
+        if self.explains_mismatches:
+            lines.append("")
+            lines.append("Explains-count drift (soft, read individually):")
+            for r in self.explains_mismatches:
+                lines.append(
+                    f"  passage {r.passage_id}: "
+                    f"expected_explains={r.expected_explains_count} "
+                    f"got_explains={r.actual_explains_count}"
+                )
         return "\n".join(lines)
 
 
@@ -540,10 +578,16 @@ def canary_extraction(
             actual_atom_count=len(extraction.atoms),
             verdict=verdict,
             gate_meta=gate_meta,
+            expected_explains_count=(
+                int(row["expected_explains_count"])
+                if row.get("expected_explains_count") is not None
+                else None
+            ),
+            actual_explains_count=len(extraction.explains),
         )
         results.append(result)
         if progress:
-            bad = verdict in ("lossy", "nested") or (
+            bad = verdict in ("lossy", "nested", "bad-explains") or (
                 (result.expected_atom_count == 0) != (verdict == "no-claim")
             )
             print(

@@ -84,19 +84,21 @@ get(kind="paper", id="<DOI>")  # DOI of a held paper → its overview; read the 
 search(kind="paper", q="photocatalytic NOx reduction")
 search(
     kind="paper", q="photocatalytic NOx reduction", page_size=20
-)  # default 10, max 100
+)  # default 25 papers, max 100
 ```
 
-Each result is a chunk handle `pc<chunk_id>` (paste back into
-`get`/`link`); order is the relevance signal. Mechanics (mode=, pagination,
-tags=): `precis-search-help`.
+Each row is one paper — the best hit's chunk handle `pc<chunk_id>`
+(paste back into `get`/`link`), a `+N` count of that paper's other
+hits, and the best chunk's keywords; order is the relevance signal.
+`unique_per='chunk'` (implied by `scope=`) returns one row per matching
+chunk instead. Mechanics (mode=, pagination, tags=): `precis-search-help`.
 
 When one phrasing isn't finding it, escalate (details in
 `precis-search-help` → Broad retrieval):
 
 ```python
 # Broad: fuse rephrasings + hypothetical-answer passages in one call
-search(kind="paper", q="…", queries=["…", "…"], answers=["…"], per_paper=1)
+search(kind="paper", q="…", queries=["…", "…"], answers=["…"])
 # Deep: async triage campaign — returns a job handle, poll for the curated result
 search(kind="paper", q="…", good=True)  # → poll get(kind='job', id=…)
 ```

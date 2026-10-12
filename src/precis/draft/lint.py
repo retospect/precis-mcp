@@ -187,12 +187,22 @@ def promote_hint(slug: str, promote: dict[str, str]) -> str:
     if not promote:
         return ""
     toks = ", ".join(promote)
-    short, long = next(iter(promote.items()))
+    if len(promote) > 1:
+        entries = ", ".join(
+            f"{{'text': {long!r}, 'meta': {{'short': {short!r}}}}}"
+            for short, long in promote.items()
+        )
+        call = f"put(kind='draft', id={slug!r}, chunk_kind='term', terms=[{entries}])"
+    else:
+        short, long = next(iter(promote.items()))
+        call = (
+            f"put(kind='draft', id={slug!r}, chunk_kind='term', "
+            f"text={long!r}, meta={{'short': {short!r}}})"
+        )
     return (
         f"\n\nℹ inline definition(s): {toks}. They work, but live only in "
         f"this chunk's prose — promote to the glossary so they survive edits: "
-        f"put(kind='draft', id={slug!r}, chunk_kind='term', text={long!r}, "
-        f"meta={{'short': {short!r}}})."
+        f"{call}."
     )
 
 
@@ -203,10 +213,20 @@ def abbrev_hint(slug: str, undefined: list[str]) -> str:
         return ""
     toks = ", ".join(undefined)
     first = undefined[0]
+    if len(undefined) > 1:
+        define = (
+            f"put(kind='draft', id={slug!r}, chunk_kind='term', terms=["
+            f"{{'text': '<expansion>', 'meta': {{'short': {first!r}}}}}, …]) "
+            f"(all of them in one call)"
+        )
+    else:
+        define = (
+            f"put(kind='draft', id={slug!r}, chunk_kind='term', "
+            f"text='<expansion>', meta={{'short': {first!r}}})"
+        )
     return (
         f"\n\n⚠ undefined abbreviation(s): {toks}. For each, either DEFINE it — "
-        f"put(kind='draft', id={slug!r}, chunk_kind='term', text='<expansion>', "
-        f"meta={{'short': {first!r}}}) — or, if it isn't an abbreviation, SILENCE "
+        f"{define} — or, if it isn't an abbreviation, SILENCE "
         f"it: edit(kind='draft', id={slug!r}, not_abbrev=[{first!r}])."
     )
 

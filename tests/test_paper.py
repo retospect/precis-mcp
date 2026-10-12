@@ -745,6 +745,12 @@ class TestSearch:
             blocks=["unrelated text"],
         )
         resp = handler.search(q="nitrate reduction", page_size=5)
+        # Default view: one row per paper — the paper's best (here only)
+        # hit renders as its pc handle, headline counts papers.
+        assert chunk_handle(store, "paper-a") in resp.body
+        assert "1 paper" in resp.body
+        # The drill shape keeps the per-hit headline.
+        resp = handler.search(q="nitrate reduction", page_size=5, unique_per="chunk")
         assert chunk_handle(store, "paper-a") in resp.body
         assert "block hit" in resp.body
 
@@ -984,7 +990,7 @@ class TestSearch:
         )
         resp = handler.search(q="nitrate reduction", page_size=5)
         body = resp.body
-        assert "block hit" in body
+        assert "paper" in body
         assert chunk_handle(store, "paper-plain") in body
         assert "DOI match" not in body
         assert "not in the local corpus" not in body
@@ -1013,15 +1019,19 @@ class TestSearch:
                 title=f"Paper {slug}",
                 blocks=[f"photocatalytic nitrogen reduction in {slug}"],
             )
-        resp = handler.search(q="photocatalytic", page_size=1)
+        # ``unique_per='chunk'`` — the paper-default page sizes rows at
+        # 25; the per-hit view keeps the 10-row restart this test pins.
+        resp = handler.search(q="photocatalytic", page_size=1, unique_per="chunk")
         # Header still announces "1 of N" so the caller knows there
         # are more matches.
         assert " of " in resp.body
-        # The larger-page action advertises and requests a page-1 restart.
+        # The larger-page action advertises and requests a page-1 restart;
+        # an explicit unique_per echoes into the hint so the replayed call
+        # keeps the same row shape.
         assert "restart at page 1 with up to 10 of 4 matches" in resp.body
         assert (
-            "search(kind='paper', q='photocatalytic', page_size=10, page=1)"
-            in resp.body
+            "search(kind='paper', q='photocatalytic', unique_per='chunk', "
+            "page_size=10, page=1)" in resp.body
         )
         # Old: scope=<self> is no longer suggested.
         # ``scope='paper-a'`` would only appear in the legacy two-
@@ -1381,7 +1391,9 @@ class TestSearch:
         _seed_paper(store, slug="sem-probe-a", blocks=[text, text])
 
         # Exactly page_size matching chunks: no more to page to.
-        exact = handler.search(q=text, mode="semantic", page_size=2)
+        # (unique_per='chunk': the probe contract this test pins is the
+        # per-hit one — paper rows collapse these into one row each.)
+        exact = handler.search(q=text, mode="semantic", page_size=2, unique_per="chunk")
         headline = exact.body.split("\n", 1)[0]
         assert " of " not in headline
         assert "page=2" not in exact.body
@@ -1390,7 +1402,9 @@ class TestSearch:
         # page_size — the probe must now offer the next page, still
         # without ever claiming a "of K" total.
         _seed_paper(store, slug="sem-probe-b", blocks=[text])
-        overflowing = handler.search(q=text, mode="semantic", page_size=2)
+        overflowing = handler.search(
+            q=text, mode="semantic", page_size=2, unique_per="chunk"
+        )
         headline2 = overflowing.body.split("\n", 1)[0]
         assert " of " not in headline2
         assert "page=2" in overflowing.body
@@ -1461,9 +1475,14 @@ class TestSearch:
                 blocks=[f"alpha topic in {slug}"],
                 doi=f"10.1/{slug}",
             )
-        resp = handler.search(q="alpha", page_size=1)
+        # unique_per='chunk': the per-hit view keeps the 10-row restart
+        # this test pins (the paper default pages papers at 25).
+        resp = handler.search(q="alpha", page_size=1, unique_per="chunk")
         body = resp.body
         assert "page_size=10" in body
+        # Explicit mode echoes into the widen hint — replaying it must
+        # not jump to the paper default.
+        assert "unique_per='chunk'" in body
         # Singleton branch must not render an exclude continuation.
         assert "exclude=[" not in body
 

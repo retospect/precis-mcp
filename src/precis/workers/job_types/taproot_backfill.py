@@ -74,6 +74,8 @@ def _render_chunk_summary(result: Any) -> str | None:
     summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
     if result.n_ungrounded:
         summary += f", {result.n_ungrounded} ref-level/ungrounded"
+    if result.n_explains_skipped:
+        summary += f", {result.n_explains_skipped} explains pair(s) dropped"
     return f"dc{result.chunk_id}: {summary}"
 
 
@@ -122,6 +124,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     n_converted = 0
     n_failed = 0
     n_ungrounded = 0
+    n_explains_skipped = 0
     #: Chunks with a group whose extraction LLM was down — left OFF the
     #: checkpoint so a retry of this job re-runs them (an outage is not a
     #: verdict; checkpointing it would make the loss permanent).
@@ -170,6 +173,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             if result.rewritten_text is not None:
                 n_converted += 1
             n_ungrounded += result.n_ungrounded
+            n_explains_skipped += result.n_explains_skipped
             stalled = [p for p in result.plans if p.action == "extract-unavailable"]
             if stalled:
                 unavailable.append(c.chunk_id)
@@ -188,6 +192,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     if n_ungrounded:
         summary += f", {n_ungrounded} ref-level/ungrounded"
+    if n_explains_skipped:
+        summary += f", {n_explains_skipped} explains pair(s) dropped"
     if unavailable:
         summary += f", {len(unavailable)} with claim extraction unavailable"
     ctx.append_chunk("job_summary", summary)

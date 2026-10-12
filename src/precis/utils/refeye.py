@@ -108,6 +108,11 @@ CLAIM_RELATIONS: frozenset[str] = frozenset(
         # joined CLAIM_LINK_RELATIONS, so it must join this pinned union too.
         "disputes",
         "motivated-by",
+        # causal-split mechanism -> effect claim link (migration 0203);
+        # joined CLAIM_LINK_RELATIONS, so it joins this pinned union too —
+        # the ring line is labelled with its relation, so it never reads as
+        # support.
+        "explains",
     }
 )
 

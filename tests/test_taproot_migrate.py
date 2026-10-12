@@ -786,3 +786,83 @@ def test_dump_outcomes_jsonl_round_trips_every_outcome(store: Store) -> None:
 def test_dump_outcomes_jsonl_empty_report_is_empty_string() -> None:
     empty_report = DryRunReport(outcomes=[], requested_limit=0, cohort_filter=None)
     assert dump_outcomes_jsonl(empty_report) == ""
+
+
+# ── explains (causal split) — report, JSONL dump, escalation ─────────────
+
+_CAUSAL_TITLE = (
+    "Nanoporous gold oxidizes CO at room temperature because its "
+    "undercoordinated surface gold atoms bind molecular oxygen strongly."
+)
+
+
+def _causal_extraction(
+    explains: tuple[tuple[int, int], ...],
+) -> ClaimExtraction:
+    return ClaimExtraction(
+        atoms=(
+            _claim("Nanoporous gold oxidizes CO at room temperature."),
+            _claim(
+                "Undercoordinated surface gold atoms of nanoporous gold bind "
+                "molecular oxygen strongly."
+            ),
+        ),
+        composite=_claim(_CAUSAL_TITLE),
+        not_claims=(),
+        explains=explains,
+    )
+
+
+def test_dry_run_report_and_dump_show_the_explains_pairs(store: Store) -> None:
+    mint_hub(store, _claim(_CAUSAL_TITLE))
+
+    report = dry_run(
+        store, limit=10, extract_fn=lambda _s: _causal_extraction(((1, 0),))
+    )
+    (outcome,) = report.outcomes
+    assert outcome.verdict == "split"
+    assert outcome.gate_meta["explains"] == [[1, 0]]
+
+    rendered = render_report(report)
+    assert "**Explains** (explaining atom -> explained atom):" in rendered
+    assert "- 2 -> 1" in rendered  # 1-based, like the atom list above it
+    assert "| bad-explains | 0 |" in rendered
+
+    (record,) = [json.loads(line) for line in dump_outcomes_jsonl(report).splitlines()]
+    assert record["extraction"]["explains"] == [[1, 0]]
+    assert record["gate_meta"]["explains"] == [[1, 0]]
+
+
+def test_dump_of_an_extraction_without_explains_has_an_empty_list(
+    store: Store,
+) -> None:
+    mint_hub(store, _claim("A plain rendering claim"))
+    report = dry_run(store, limit=10, extract_fn=_fake_extract)
+    (record,) = [json.loads(line) for line in dump_outcomes_jsonl(report).splitlines()]
+    assert record["extraction"]["explains"] == []
+    assert "**Explains**" not in render_report(report)
+
+
+def test_dry_run_holds_a_malformed_explains_pair_and_escalates_it(
+    store: Store,
+) -> None:
+    """A bad pair is a hold verdict (never ``split``), counted in the report
+    table, rendered as a malformed pair — and, like lossy/nested, is
+    re-extracted by ``escalate_fn``, which can flip it to a sound split."""
+    mint_hub(store, _claim(_CAUSAL_TITLE))
+
+    report = dry_run(
+        store,
+        limit=10,
+        extract_fn=lambda _s: _causal_extraction(((0, 0), (5, 1))),
+        escalate_fn=lambda _s: _causal_extraction(((1, 0),)),
+    )
+    (outcome,) = report.outcomes
+    assert outcome.verdict == "bad-explains"
+    assert outcome.escalated_verdict == "split"
+    assert report.counts == {"bad-explains": 1}
+
+    rendered = render_report(report)
+    assert "| bad-explains | 1 |" in rendered
+    assert "**Verdict**: BAD-EXPLAINS" in rendered
+    assert "malformed pair [5, 1]" in rendered

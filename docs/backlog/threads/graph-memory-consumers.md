@@ -170,9 +170,9 @@ or a temp file shows up there as friction (no retag; that item stays put).
 Search cluster, ranked here as the consumer side of navigation (retrieval is
 how an agent reaches the graph; `fisheye-*` is how it moves within it):
 
-- **backlog/paper-search-unique-per-paper.md** and
-  **backlog/paper-evidence-selection-fisher-rao.md** — what a search returns
-  shapes every consumer's first read.
+- **backlog/paper-evidence-selection-fisher-rao.md** — what a search
+  returns shapes every consumer's first read (its
+  `paper-search-unique-per-paper` sibling shipped 2026-10-12).
 - **backlog/embed-freshness.md** · **backlog/improve-hnsw-recall-check.md** —
   silent recall loss is invisible to the agent that suffers it.
 - **backlog/uncited-facet-patent-edgar-wiring.md** ·
@@ -212,7 +212,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 ## Seam
 
 Search cluster (13 items) joined 2026-10-01; `classify-scope-and-400-watch`
-left for `platform`.
+left for `platform`; `paper-search-unique-per-paper` shipped 2026-10-12.
 
 `knowledge-mesh` owns the substrate (knowledge-mesh, measures-substrate,
 graph-gardener), the memory half (file-mirror, context-memory-hierarchy,

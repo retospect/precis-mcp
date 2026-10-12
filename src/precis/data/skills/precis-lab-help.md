@@ -39,7 +39,7 @@ corpus, so a claim you make can be cited.
 
 ```
 search(kind='paper', queries=['synthesis of <target>', 'total synthesis <scaffold>'],
-       answers=['<a one-line HyDE answer>'], per_paper=2)   # prior art first
+       answers=['<a one-line HyDE answer>'])   # prior art first
 put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')   # mint the plan
 get(kind='route', id='<slug>')                     # poll — the step graph
 get(kind='route', id='<slug>', view='metrics')     # LinChemIn descriptors to score/compare

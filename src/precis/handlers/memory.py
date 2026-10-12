@@ -33,6 +33,24 @@ citation token appears in the cited text. A miss tags the memory
 adds an advisory line to the ack; ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject``
 refuses the write instead. A lookup error fails open and changes no tag.
 ``scripts/memory-attribution-audit`` retro-applies the same check.
+
+Anchored body edits reuse ``utils.edit_resolve``. All handler body writes
+lock the owning ref; anchored writes also compare the previous body with
+the resolver's snapshot inside the transaction. The comparison alone
+would race between the store's read and delete; ``FOR NO KEY UPDATE``
+serializes competing edits while allowing mention links' FK key-share
+locks (``FOR UPDATE`` deadlocked reciprocal mentions). The mention
+wrapper requires healthy ``INTRANS`` after the shared best-effort
+helper: COMMIT can silently roll back an aborted transaction, and
+psycopg can discard a closed/``UNKNOWN`` connection without raising.
+Checking only ``INERROR`` missed that second false-success path. This
+pre-commit check does not certify later commit-time connection failures.
+Conflicts roll back the chunk replacement, derived-row cascade and audit
+event rather than losing a concurrent writer's prose. Whole-body
+replacement remains explicit. Creation fields (title, rule, warrant and
+hook) travel in a call-local ``put_meta`` payload; staging them on the
+shared handler let concurrent puts overwrite or clear each other's
+metadata, even on failed requests.
 """
 
 from __future__ import annotations

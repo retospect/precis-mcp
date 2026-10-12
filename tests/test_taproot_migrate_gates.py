@@ -35,8 +35,19 @@ from typing import Any
 
 import pytest
 
-from precis.taproot.canon import CanonicalClaim, ClaimExtraction, NotClaim
-from precis.taproot.migrate import Verdict, classify_extraction
+from precis.taproot.canon import (
+    BAD_EXPLAINS_PAIR,
+    CanonicalClaim,
+    ClaimExtraction,
+    NotClaim,
+)
+from precis.taproot.migrate import (
+    VERDICTS,
+    Verdict,
+    _containment_findings,
+    _explains_problems,
+    classify_extraction,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "taproot" / "migration_pilot_25.jsonl"
 
@@ -74,7 +85,10 @@ def _build_extraction(row: dict[str, Any]) -> ClaimExtraction:
         NotClaim(text=nc["text"], reason=nc["reason"])
         for nc in row.get("not_claims", [])
     )
-    return ClaimExtraction(atoms=atoms, composite=composite, not_claims=not_claims)
+    explains = tuple((int(a), int(b)) for a, b in row.get("explains", []))
+    return ClaimExtraction(
+        atoms=atoms, composite=composite, not_claims=not_claims, explains=explains
+    )
 
 
 def _params() -> list[Any]:
@@ -235,3 +249,148 @@ def test_kept_citation_numbers_are_not_invented() -> None:
         sentence, ClaimExtraction(atoms=atoms, composite=composite, not_claims=())
     )
     assert meta["invented_numbers"] == ()
+
+
+# ── explains gate (the causal split, migration 0203) ───────────────────────
+
+_CAUSAL_SENTENCE = (
+    "Nanoporous gold, a dealloyed Au-Ag material, oxidizes CO at room "
+    "temperature because its undercoordinated surface gold atoms bind "
+    "molecular oxygen strongly."
+)
+_EFFECT = CanonicalClaim(
+    sentence="Nanoporous gold oxidizes CO at room temperature.", scope={}
+)
+_MECHANISM = CanonicalClaim(
+    sentence=(
+        "Nanoporous gold oxidizes CO at room temperature as its "
+        "undercoordinated surface gold atoms bind molecular oxygen strongly."
+    ),
+    scope={},
+)
+
+
+def _causal(
+    explains: tuple[tuple[int, int], ...],
+    atoms: tuple[CanonicalClaim, ...] = (_EFFECT, _MECHANISM),
+) -> ClaimExtraction:
+    return ClaimExtraction(
+        atoms=atoms,
+        composite=CanonicalClaim(sentence=_CAUSAL_SENTENCE, scope={}),
+        not_claims=(),
+        explains=explains,
+    )
+
+
+def test_bad_explains_is_a_declared_verdict() -> None:
+    assert "bad-explains" in VERDICTS
+    assert set(VERDICTS) == {
+        "pass-through",
+        "split",
+        "lossy",
+        "nested",
+        "bad-explains",
+        "no-claim",
+        "error",
+    }
+
+
+@pytest.mark.parametrize(
+    ("explains", "fragment"),
+    [
+        (((1, 5),), "names no emitted atom"),  # index past the last atom
+        (((-2, 0),), "names no emitted atom"),  # negative index
+        ((BAD_EXPLAINS_PAIR,), "names no emitted atom"),  # parser's sentinel
+        (((1, 1),), "explains itself"),  # self-pair
+        (((0, 1), (1, 0)), "cycle"),  # two-cycle
+    ],
+)
+def test_malformed_explains_is_held_as_bad_explains(
+    explains: tuple[tuple[int, int], ...], fragment: str
+) -> None:
+    verdict, meta = classify_extraction(_CAUSAL_SENTENCE, _causal(explains))
+    assert verdict == "bad-explains"
+    assert any(fragment in p for p in meta["explains_problems"]), meta
+    assert meta["explains"] == [list(p) for p in explains]
+
+
+def test_explains_cycle_through_a_chain_is_detected() -> None:
+    a = CanonicalClaim(sentence="A is true.", scope={})
+    b = CanonicalClaim(sentence="B is true.", scope={})
+    c = CanonicalClaim(sentence="C is true.", scope={})
+    ext = _causal(((0, 1), (1, 2), (2, 0)), atoms=(a, b, c))
+    assert _explains_problems(ext)
+    assert classify_extraction(_CAUSAL_SENTENCE, ext)[0] == "bad-explains"
+    # the same chain without the closing edge is a sound DAG
+    assert _explains_problems(_causal(((0, 1), (1, 2)), atoms=(a, b, c))) == []
+    # a diamond (two explainers of one effect, one explainer of two effects)
+    # is not a cycle
+    d = CanonicalClaim(sentence="D is true.", scope={})
+    assert (
+        _explains_problems(_causal(((0, 2), (1, 2), (0, 3)), atoms=(a, b, c, d))) == []
+    )
+
+
+def test_sound_explains_pair_passes_and_is_recorded_in_gate_meta() -> None:
+    verdict, meta = classify_extraction(_CAUSAL_SENTENCE, _causal(((1, 0),)))
+    assert verdict == "split"
+    assert meta["explains"] == [[1, 0]]
+    assert "explains_problems" not in meta
+
+
+def test_no_explains_leaves_gate_meta_unchanged() -> None:
+    _verdict, meta = classify_extraction(_CAUSAL_SENTENCE, _causal(()))
+    assert "explains" not in meta
+
+
+def test_explains_pair_is_exempt_from_pairwise_containment() -> None:
+    """The mechanism atom names the effect's subject and restates its
+    predicate (containment 1.0 of the effect) — the pairwise nested gate
+    would fire on it. Declared as an explains pair it must not; declared as
+    nothing (a plain peer split) it still does."""
+    ext_plain = _causal(())
+    pairwise_plain = _containment_findings(
+        ext_plain.atoms, _CAUSAL_SENTENCE, frozenset()
+    )
+    assert any("atoms" in f for f in pairwise_plain)  # would fire without the pair
+    assert classify_extraction(_CAUSAL_SENTENCE, ext_plain)[0] == "nested"
+
+    verdict, meta = classify_extraction(_CAUSAL_SENTENCE, _causal(((1, 0),)))
+    assert verdict == "split", meta
+    assert "containment" not in meta
+
+
+def test_explains_exemption_is_only_for_the_declared_pair() -> None:
+    """A third atom that restates one of the pair is not exempted."""
+    dup = CanonicalClaim(sentence=_EFFECT.sentence, scope={})
+    ext = _causal(((1, 0),), atoms=(_EFFECT, _MECHANISM, dup))
+    verdict, meta = classify_extraction(_CAUSAL_SENTENCE, ext)
+    assert verdict == "nested"
+    assert {"atoms": (0, 2), "ratio": 1.0} in meta["containment"]
+
+
+def test_explains_pair_does_not_exempt_the_composite_check() -> None:
+    """An atom that alone covers the whole composite is a fake split no
+    matter what pair it carries."""
+    sentence = _MECHANISM.sentence
+    ext = ClaimExtraction(
+        atoms=(_EFFECT, _MECHANISM),
+        composite=CanonicalClaim(sentence=sentence, scope={}),
+        not_claims=(),
+        explains=((1, 0),),
+    )
+    verdict, meta = classify_extraction(sentence, ext)
+    assert verdict == "nested"
+    assert any(f.get("vs") == "composite" for f in meta["containment"])
+
+
+def test_pilot_rows_with_explains_pairs_are_sound() -> None:
+    """The re-labelled fi176422 / fi176399 rows carry their pairs through
+    the fixture and clear the explains gate."""
+    rows = {row["hub"]: row for row in _load_rows()}
+    for hub in ("fi176422", "fi176399"):
+        assert rows[hub]["explains"], hub
+        ext = _build_extraction(rows[hub])
+        assert ext.explains == tuple(tuple(p) for p in rows[hub]["explains"])
+        assert _explains_problems(ext) == [], hub
+        assert classify_extraction(rows[hub]["sentence"], ext)[0] == "split", hub

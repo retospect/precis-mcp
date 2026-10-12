@@ -23,6 +23,7 @@ from precis.taproot.hub import (
     MERGE_COLLAPSE_RELATION,
     PROPHETIC_EXAMPLE_CAVEAT,
     ExtractionOutcome,
+    _is_composite_hub,
     apply_extraction,
     apply_placement,
     attach_evidence,
@@ -1688,3 +1689,331 @@ def test_human_rejected_ignores_the_judges_per_source_memo():
     # Anything that is not the judges' memo still blocks.
     assert human_rejected({"taproot_rejected": True}) is True
     assert human_rejected({"taproot_rejected": {"r123": "not supported"}}) is True
+
+
+# ── explains — the causal-split claim→claim edge (migration 0203) ───────
+
+#: "X because Y": the effect atom X and the mechanism atom Y (a distinct,
+#: self-contained claim that names its own subject).
+_EFFECT_CLAIM = CanonicalClaim(
+    sentence="Nanoporous gold oxidizes CO at room temperature.",
+    scope={"material": "nanoporous gold"},
+)
+_MECHANISM_CLAIM = CanonicalClaim(
+    sentence=(
+        "Undercoordinated surface gold atoms of nanoporous gold bind molecular "
+        "oxygen strongly."
+    ),
+    scope={"material": "nanoporous gold"},
+)
+_CAUSAL_COMPOSITE = CanonicalClaim(
+    sentence=(
+        "Nanoporous gold oxidizes CO at room temperature because its "
+        "undercoordinated surface gold atoms bind molecular oxygen strongly."
+    ),
+    scope={"material": "nanoporous gold"},
+)
+
+
+def test_explains_relation_is_seeded_directed_without_inverse(store: Any) -> None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT is_symmetric, inverse_slug FROM relations WHERE slug = 'explains'"
+        ).fetchone()
+    assert row == (False, None)
+
+
+def test_link_claims_writes_an_explains_edge_mechanism_to_effect(store: Any) -> None:
+    effect = mint_hub(store, _EFFECT_CLAIM)
+    mechanism = mint_hub(store, _MECHANISM_CLAIM)
+
+    wrote = link_claims(
+        store, from_hub_ref_id=mechanism, to_hub_ref_id=effect, relation="explains"
+    )
+
+    assert wrote is True
+    # Directed explaining -> explained; no auto-mirror, no inverse row.
+    assert _edge(store, mechanism, effect) == "explains"
+    assert _edge(store, effect, mechanism) is None
+    # Idempotent on a re-run.
+    assert (
+        link_claims(
+            store, from_hub_ref_id=mechanism, to_hub_ref_id=effect, relation="explains"
+        )
+        is False
+    )
+
+
+def test_link_claims_explains_rejects_self_and_non_hub_endpoints(store: Any) -> None:
+    hub = mint_hub(store, _EFFECT_CLAIM)
+    paper = seed_ref(store, title="Not a hub", kind="paper")
+    with pytest.raises(BadInput):
+        link_claims(store, from_hub_ref_id=hub, to_hub_ref_id=hub, relation="explains")
+    with pytest.raises(BadInput):
+        link_claims(
+            store, from_hub_ref_id=paper, to_hub_ref_id=hub, relation="explains"
+        )
+    with pytest.raises(BadInput):
+        link_claims(
+            store, from_hub_ref_id=hub, to_hub_ref_id=paper, relation="explains"
+        )
+
+
+def test_link_claims_explains_refuses_to_close_a_cycle(store: Any) -> None:
+    effect = mint_hub(store, _EFFECT_CLAIM)
+    mechanism = mint_hub(store, _MECHANISM_CLAIM)
+    root = mint_hub(store, _ATOM_CLAIM)
+    link_claims(
+        store, from_hub_ref_id=mechanism, to_hub_ref_id=effect, relation="explains"
+    )
+    link_claims(
+        store, from_hub_ref_id=root, to_hub_ref_id=mechanism, relation="explains"
+    )
+
+    # direct reverse
+    with pytest.raises(BadInput, match="cycle"):
+        link_claims(
+            store, from_hub_ref_id=effect, to_hub_ref_id=mechanism, relation="explains"
+        )
+    # through the chain root -> mechanism -> effect
+    with pytest.raises(BadInput, match="cycle"):
+        link_claims(
+            store, from_hub_ref_id=effect, to_hub_ref_id=root, relation="explains"
+        )
+    assert _edge(store, effect, mechanism) is None
+    assert _edge(store, effect, root) is None
+    # a transitive shortcut in the SAME direction is not a cycle
+    assert (
+        link_claims(
+            store, from_hub_ref_id=root, to_hub_ref_id=effect, relation="explains"
+        )
+        is True
+    )
+
+
+def _supporters(evidence: Any) -> list[int]:
+    """Every supporting paper of a ``HubEvidence`` (originators + corroborators;
+    a lone supporter is a sole derivative, not an originator)."""
+    return [e.paper_ref_id for e in evidence.originators + evidence.corroborators]
+
+
+def test_explains_carries_no_evidence_trust_or_composite_status(store: Any) -> None:
+    """``explains`` is advisory structure only: the mechanism hub's paper
+    evidence never reaches the explained hub through ``derive_evidence`` and
+    the explained hub's trust label is the same with and without the edge; the
+    edge makes neither endpoint a composite."""
+    from precis.taproot.seniority import derive_evidence
+    from precis.taproot.trust import claim_trust
+
+    effect = mint_hub(store, _EFFECT_CLAIM)
+    mechanism = mint_hub(store, _MECHANISM_CLAIM)
+    paper = seed_ref(store, title="Gold mechanism 2021", kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=mechanism,
+        paper_ref_id=paper,
+        role="establishes",
+        check_retraction=False,
+    )
+    effect_before = derive_evidence(store, effect)
+    effect_trust_before = claim_trust(store, effect)
+    mechanism_before = derive_evidence(store, mechanism)
+    assert _supporters(mechanism_before) == [paper]
+    assert _supporters(effect_before) == []
+
+    link_claims(
+        store, from_hub_ref_id=mechanism, to_hub_ref_id=effect, relation="explains"
+    )
+
+    effect_after = derive_evidence(store, effect)
+    # the explaining hub is NOT a supporter of the explained hub, and its
+    # paper is not evidence for it
+    assert _supporters(effect_after) == []
+    assert effect_after.contradictors == []
+    assert effect_after.computed == []
+    assert effect_after.grounding == []
+    assert _edge(store, paper, effect) is None
+    assert claim_trust(store, effect) == effect_trust_before
+    # the explaining hub's own evidence is untouched
+    assert _supporters(derive_evidence(store, mechanism)) == [paper]
+    with store.pool.connection() as conn:
+        assert _is_composite_hub(effect, conn=conn) is False
+        assert _is_composite_hub(mechanism, conn=conn) is False
+
+
+def test_link_claims_explains_cycle_guard_sees_the_callers_open_transaction(
+    store: Any,
+) -> None:
+    """One transaction writing ``[[1, 0], [0, 1]]``: the second edge closes a
+    cycle with the first, which is still uncommitted — the guard must read on
+    the caller's connection to see it."""
+    effect = mint_hub(store, _EFFECT_CLAIM)
+    mechanism = mint_hub(store, _MECHANISM_CLAIM)
+
+    with store.tx() as c:
+        assert (
+            link_claims(
+                store,
+                from_hub_ref_id=mechanism,
+                to_hub_ref_id=effect,
+                relation="explains",
+                conn=c,
+            )
+            is True
+        )
+        with pytest.raises(BadInput, match="cycle"):
+            link_claims(
+                store,
+                from_hub_ref_id=effect,
+                to_hub_ref_id=mechanism,
+                relation="explains",
+                conn=c,
+            )
+
+    assert _edge(store, mechanism, effect) == "explains"
+    assert _edge(store, effect, mechanism) is None
+
+
+def test_apply_extraction_skips_a_pair_that_would_close_a_cycle_on_existing_hubs(
+    store: Any,
+) -> None:
+    """Both atoms attach onto PRE-EXISTING hubs that already carry
+    effect --explains--> mechanism (from an earlier source). This extraction's
+    pair says mechanism --explains--> effect: refused, counted, logged, and
+    the old edge stands."""
+    paper = seed_ref(store, title="Reversed 2022", kind="paper")
+    effect_hub = mint_hub(store, _EFFECT_CLAIM)
+    mechanism_hub = mint_hub(store, _MECHANISM_CLAIM)
+    link_claims(
+        store,
+        from_hub_ref_id=effect_hub,
+        to_hub_ref_id=mechanism_hub,
+        relation="explains",
+    )
+
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (_EFFECT_CLAIM, Placement(action="attach", hub_ref_id=effect_hub)),
+            (_MECHANISM_CLAIM, Placement(action="attach", hub_ref_id=mechanism_hub)),
+        ],
+        composite=None,
+        explains=((1, 0),),
+        origin="dc42",
+        paper_ref_id=paper,
+    )
+
+    assert outcome.atom_hub_ids == [effect_hub, mechanism_hub]
+    assert outcome.explains_written == 0
+    assert outcome.explains_skipped == 1
+    assert _edge(store, effect_hub, mechanism_hub) == "explains"
+    assert _edge(store, mechanism_hub, effect_hub) is None
+
+
+def test_apply_extraction_mints_the_explains_edge_between_atom_hubs(
+    store: Any,
+) -> None:
+    paper = seed_ref(store, title="Origin 2020", kind="paper")
+
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (_EFFECT_CLAIM, Placement(action="new")),
+            (_MECHANISM_CLAIM, Placement(action="new")),
+        ],
+        composite=(_CAUSAL_COMPOSITE, Placement(action="new")),
+        explains=((1, 0),),
+        paper_ref_id=paper,
+        role="establishes",
+    )
+
+    effect_hub, mechanism_hub = outcome.atom_hub_ids
+    assert (outcome.explains_written, outcome.explains_skipped) == (1, 0)
+    assert outcome.composite_hub_id is not None
+    # both atoms are conjunct-of parts of the composite ...
+    assert _edge(store, effect_hub, outcome.composite_hub_id) == "conjunct-of"
+    assert _edge(store, mechanism_hub, outcome.composite_hub_id) == "conjunct-of"
+    # ... and explains carries the mechanism -> effect structure between them.
+    assert _edge(store, mechanism_hub, effect_hub) == "explains"
+    assert _edge(store, effect_hub, mechanism_hub) is None
+
+    # Idempotent: a re-run attaches to the same hubs and writes no second edge.
+    again = apply_extraction(
+        store,
+        atoms=[
+            (_EFFECT_CLAIM, Placement(action="attach", hub_ref_id=effect_hub)),
+            (_MECHANISM_CLAIM, Placement(action="attach", hub_ref_id=mechanism_hub)),
+        ],
+        composite=(
+            _CAUSAL_COMPOSITE,
+            Placement(action="attach", hub_ref_id=outcome.composite_hub_id),
+        ),
+        explains=((1, 0),),
+        paper_ref_id=paper,
+    )
+    assert again.atom_hub_ids == outcome.atom_hub_ids
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'explains' "
+            "AND src_ref_id = %s AND dst_ref_id = %s",
+            (mechanism_hub, effect_hub),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_apply_extraction_skips_unwritable_explains_pairs(store: Any) -> None:
+    """Out-of-range / self / not-placed / same-hub / cyclic pairs are
+    skipped (the migration gate is what holds a bad extraction); the valid
+    pair in the same call still lands and nothing raises."""
+    paper = seed_ref(store, title="Skips 2020", kind="paper")
+
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (_EFFECT_CLAIM, Placement(action="new")),
+            (_MECHANISM_CLAIM, Placement(action="new")),
+            (_ATOM_CLAIM, Placement(action="needs_review", reason="risky")),
+        ],
+        composite=(_CAUSAL_COMPOSITE, Placement(action="new")),
+        explains=((9, 0), (1, 1), (2, 0), (0, 2), (-1, 0), (1, 0), (0, 1)),
+        paper_ref_id=paper,
+        todo_fn=lambda claim, pl: None,
+    )
+
+    effect_hub, mechanism_hub = outcome.atom_hub_ids
+    assert (outcome.explains_written, outcome.explains_skipped) == (1, 6)
+    assert _edge(store, mechanism_hub, effect_hub) == "explains"
+    # the closing (0, 1) pair was refused by the cycle guard, not written
+    assert _edge(store, effect_hub, mechanism_hub) is None
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'explains' "
+            "AND src_ref_id IN (%s, %s)",
+            (effect_hub, mechanism_hub),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_apply_extraction_two_atoms_converging_on_one_hub_write_no_explains(
+    store: Any,
+) -> None:
+    paper = seed_ref(store, title="Same hub 2020", kind="paper")
+    hub = mint_hub(store, _EFFECT_CLAIM)
+
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (_EFFECT_CLAIM, Placement(action="attach", hub_ref_id=hub)),
+            (_MECHANISM_CLAIM, Placement(action="attach", hub_ref_id=hub)),
+        ],
+        composite=None,
+        explains=((1, 0),),
+        paper_ref_id=paper,
+    )
+
+    assert outcome.atom_hub_ids == [hub, hub]
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'explains'"
+        ).fetchone()[0]
+    assert n == 0

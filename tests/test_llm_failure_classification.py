@@ -7,6 +7,8 @@ never falls through a chain.
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from typing import Any
@@ -386,3 +388,93 @@ def test_out_of_credits_payload_reply_is_paused_quota_with_retry_at() -> None:
     assert res.reason_class == "quota"
     assert res.retry_at is not None and res.retry_at.hour == 11
     assert res.retry_at.minute == 0 and res.retry_at.tzinfo is not None
+
+
+# ── MEDIUM ladder proof (remaining item 1) ────────────────────────────
+#
+# The item ships as prod config, not code: a ``llm.chain.medium`` override
+# pinning claude rung 0 with a paid OpenRouter (``openai_compat``) rung 1
+# below it — the first ``FailoverProvider`` walk on prod. These tests are
+# the in-repo half of its acceptance: the operator-chain path does what
+# that config relies on (a quota-class rung-0 failure falls through, the
+# "fell back to rung 1" warning fires, the landed placement stamps
+# ``cloud``), and the ``content`` gate still never reaches the paid rung.
+
+#: The chain shape the prod ``llm.chain.medium`` row will carry — the
+#: env-var spelling (``PRECIS_LLM_CHAIN_MEDIUM``) parses through the same
+#: :func:`live_config.chain_override` → :func:`resolve_chain` path.
+_MEDIUM_LADDER = json.dumps(
+    [
+        {
+            "placement": "cloud",
+            "model": "claude-haiku-4-5-20251001",
+            "transport": "claude_p",
+        },
+        {
+            "placement": "cloud",
+            "model": "openai/gpt-5-mini",
+            "transport": "openai_compat",
+        },
+    ]
+)
+
+
+def _medium_ladder(
+    monkeypatch: pytest.MonkeyPatch, rung0: LlmResult, rung1: LlmResult
+) -> tuple[_Prov, _Prov]:
+    """Install the MEDIUM chain override (env spelling) with ``_Prov``
+    fakes behind the claude_p / openai_compat transports; returns the two
+    fakes so the caller can assert on call counts."""
+    monkeypatch.setenv("PRECIS_LLM_CHAIN_MEDIUM", _MEDIUM_LADDER)
+    # The openai_compat rung only parses with a hosted endpoint configured.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    claude, paid = _Prov(rung0), _Prov(rung1)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_P, claude)
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, paid)
+    return claude, paid
+
+
+def test_medium_ladder_quota_falls_back_to_paid_rung(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    claude, paid = _medium_ladder(
+        monkeypatch,
+        _errored("You've hit your session limit · resets 9pm (UTC)"),
+        LlmResult(
+            text="ok",
+            cost_usd=0.01,
+            turns_used=None,
+            model="openai/gpt-5-mini",
+            tier=Tier.MEDIUM,
+        ),
+    )
+    with caplog.at_level(logging.WARNING, logger="precis.utils.llm.router"):
+        out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
+    # The acceptance shape, at unit level: quota on rung 0 walks the ladder.
+    assert out.error is None and out.text == "ok"
+    assert claude.calls == 1 and paid.calls == 1
+    assert out.placement == "cloud"
+    assert "llm-failover: fell back to rung 1" in caplog.text
+
+
+def test_medium_ladder_content_error_never_reaches_paid_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The one way the config can do harm: a refusal on rung 0 must not
+    # spend the paid rung for the same answer.
+    claude, paid = _medium_ladder(
+        monkeypatch,
+        _errored("refused: content_policy"),
+        LlmResult(
+            text="ok",
+            cost_usd=0.01,
+            turns_used=None,
+            model="openai/gpt-5-mini",
+            tier=Tier.MEDIUM,
+        ),
+    )
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+    assert out.error is not None and out.reason_class == "content"
+    assert claude.calls == 1 and paid.calls == 0

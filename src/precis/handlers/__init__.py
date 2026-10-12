@@ -24,28 +24,32 @@ dropping those selects a different corpus or ranking. Next-page hints keep
 page size; the single-hit larger-page action explicitly restarts at page 1.
 Omitted mode stays omitted so the default retrieval contract is unchanged.
 
-Inline links and gripe comments use one capped-section renderer: selection
-and an explicit full-view pointer bound child counts on routine reads. Gripe
-keeps newest comments chronologically; log remains the audit trail, while
-comments is the opt-in complete conversation. Individual text is not clipped.
+``search(kind='paper')`` defaults to ``unique_per='paper'``: one row per
+ref — the best surviving hit's ``pc`` handle, a ``+N`` count of its other
+fused-pool hits, that chunk's keywords — over ``search_chunks_multi``'s
+``per_paper=1`` + ``prefer_body`` collapse, which pages at paper
+granularity. ``unique_per='chunk'`` keeps the per-hit drill shape and is
+implied by the doors that already ask for it (``scope=``,
+``mode='verbatim'`` — verbatim has no per-paper pool to collapse, so an
+explicit ``'paper'`` there is a BadInput, not a silent fallback). Page-size
+defaults follow the row shape (25 papers / 10 chunks): the MCP surface
+forwards ``page_size=None`` when unset so the handler resolves it *after*
+``unique_per``. Headline counters stay honest: "N papers of M matched
+(K chunk hits)" counts the lexical universe (a lower bound under fusion);
+``semantic``/multi-leg calls show the plain count, same rule as before.
+Explicit ``unique_per=`` echoes into same-search continuations so a
+``page=N+1`` hint can't flip shapes mid-walk.
 
-Memory authoring reuses ``utils.edit_resolve`` for anchored body edits.
-All handler body writes lock the owning ref; anchored writes also compare
-the previous body with the resolver's snapshot inside the transaction.
-The comparison alone would race between the store's read and delete;
-``FOR NO KEY UPDATE`` serializes competing edits while allowing mention
-links' FK key-share locks (``FOR UPDATE`` deadlocked reciprocal mentions).
-Memory's mention wrapper requires healthy ``INTRANS`` after the shared
-best-effort helper: COMMIT can silently roll back an aborted transaction,
-and psycopg can discard a closed/``UNKNOWN`` connection without raising.
-Checking only ``INERROR`` missed that second false-success path. This
-pre-commit check does not certify later commit-time connection failures.
-Conflicts roll back the chunk
-replacement, derived-row cascade and audit event rather than losing a
-concurrent writer's prose. Whole-body replacement remains explicit.
-Creation fields (title, rule, warrant and hook) travel in a call-local
-``put_meta`` payload; staging them on the shared handler let concurrent
-puts overwrite or clear each other's metadata, even on failed requests.
+Inline links and gripe comments share one capped-section renderer —
+selection plus an explicit full-view pointer bound child counts on
+routine reads (:mod:`precis.handlers._capped_section`; the gripe comment
+policy: :mod:`precis.handlers._comment_timeline`).
+
+Memory authoring reuses ``utils.edit_resolve`` for anchored body edits:
+all handler body writes lock the owning ref, and anchored writes also
+compare the previous body with the resolver's snapshot inside the
+transaction. Lock choice, the pre-commit ``INTRANS`` check and the
+call-local ``put_meta`` payload: :mod:`precis.handlers.memory`.
 
 **Bare ``**_kw`` catch-alls are strict by default (gr334695).** A verb
 method's own ``**kwargs`` is the cooperative-inheritance idiom this
@@ -64,30 +68,18 @@ on an undecorated ``**_kw`` to mean "tolerant"; the default is strict.
 
 **Container-aware ``exclude=`` (cite closure).** ``search(kind='paper')``
 and ``get(kind='semanticscholar')`` accept ``exclude=`` entries that are
-paper slugs, a draft ref (``dr…``), or a draft chunk (``dc…``, hierarchical
-subtree); containers resolve server-side to every paper cited within —
-``[pa…]`` direct, ``[pc…]`` via owning paper, ``[fi…]`` via the hub's
-supporter papers (:mod:`precis.handlers._exclude_closure`). The
-semanticscholar surface additionally diffs every external hit against the
-held corpus (DOI → arXiv → normalized title), flagging
-``held``/``stub``/``NEW`` — a NEW hit accepts via the existing
-``put(kind='paper', doi=…)`` stub path. Relevance-ranked only, no recency
-assumption. Bogus container entries raise ``BadInput``; bare stale slugs
-keep the historical silent-drop contract.
+paper slugs, draft refs or draft-chunk subtrees; containers resolve
+server-side to every paper cited within. Container shapes, resolution
+order and the stale-vs-bogus contract: :mod:`precis.handlers._exclude_closure`;
+the held/stub/NEW corpus diff: :mod:`precis.handlers.semanticscholar`.
 
 Create receipts read committed lifecycle tags because creation may override
 open/active atomically; request defaults misreported parked todos/quests.
 Todo receipts offer start-work only for open, unhalted refs.
 
-Queryless gripe/todo/quest status/tag browse accepts recency and priority.
-Runtime keeps these reads out of query-based source search; priority ordering
-runs before SQL pagination, with unset priority at 5 and ref-id ties.
-
-Lifecycle browse defaults to live rows without changing ranked defaults:
-explicit status/tags or status='*' include terminal history. Shared list/count
-SQL excludes terminal tags before paging and reports their exact hidden count.
-Rows expose real state from a bulk tag read; alerts retain alert-state tags.
-Closing/tag cleanup belongs to the write owner, never to a browse request.
+Queryless gripe/todo/quest browse — recency and priority sorts, live-row
+lifecycle defaults, terminal-tag exclusion with exact hidden counts —
+runs on the shared list/count path in :mod:`precis.handlers._numeric_ref`.
 
 The todo tree
 =============

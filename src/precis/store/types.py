@@ -246,6 +246,15 @@ Relation = Literal[
     # relation='motivated-by')`. Keep in sync with the `relations` seed in
     # 0135_taproot_motivated_by_relation.sql.
     "motivated-by",
+    # Taproot claim→claim advisory link, fourth relation — migration 0203
+    # (the "X because Y" causal split). `explains` (explaining claim hub →
+    # explained claim hub) carries the structure between the two atoms of a
+    # causal sentence; same link-don't-merge / no-evidence-flow shape as
+    # `refines`/`conjunct-of` and never an input to derive_evidence, trust or
+    # the cite fallback. No inverse: read both directions via
+    # `links_for(direction='in'|'out', relation='explains')`. Keep in sync
+    # with the `relations` seed in 0186_taproot_explains_relation.sql.
+    "explains",
     # Acquisition-mode findings — migration 0105. `awaits-evidence` binds
     # a `finding` (STATUS:acquiring) to each `DREAM:acquire` paper stub its
     # `wants=` descriptors minted; the chase worker polls the linked stubs

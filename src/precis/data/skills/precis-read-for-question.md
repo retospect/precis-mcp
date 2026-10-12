@@ -54,9 +54,8 @@ hubbed or cited is what surfaces the nearby rest. So:
 ```python
 search(kind="paper", q="<question>",
        queries=["<question, second phrasing>", "<the technique you would expect>"],
-       answers=["<a sentence that would state the result>"],
-       per_paper=2)
-search(kind="paper", q="<question>", hubbed=False, per_paper=2)  # skip papers already backing a hub
+       answers=["<a sentence that would state the result>"])
+search(kind="paper", q="<question>", hubbed=False)  # skip papers already backing a hub
 search(kind="source", q="<question>")  # papers + hubs together, one posture-prefixed table
 ```
 

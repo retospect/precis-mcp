@@ -1465,3 +1465,159 @@ def test_mint_cap_admit_all_reserves_nothing_on_refusal() -> None:
 
 def test_mint_cap_default_limit_is_module_constant() -> None:
     assert canon.MintCap().limit == canon.MAX_HUBS_PER_CHUNK_PER_RUN == 3
+
+
+# ── explains — the causal split (migration 0203) ────────────────────────
+
+
+def _route_payload(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> None:
+    monkeypatch.setattr(canon, "route", lambda req: _result(data=payload))
+
+
+_CAUSAL_CLAIMS = [
+    {"claim": "Nanoporous gold oxidizes CO at room temperature."},
+    {"claim": "Undercoordinated surface gold atoms of nanoporous gold bind O₂."},
+]
+
+
+def test_extract_claim_parses_explains_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mechanism atom (index 1) explains the effect atom (index 0)."""
+    _route_payload(
+        monkeypatch,
+        {
+            "claims": _CAUSAL_CLAIMS,
+            "composite": "Nanoporous gold oxidizes CO because its sites bind O₂.",
+            "not_claims": [],
+            "explains": [[1, 0]],
+        },
+    )
+    result = extract_claim("Nanoporous gold oxidizes CO because its sites bind O₂.")
+    assert len(result.atoms) == 2
+    assert result.composite is not None
+    assert result.explains == ((1, 0),)
+
+
+def test_extract_claim_missing_or_null_explains_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply that predates the field (key absent) or says null is not an
+    error — no pairs."""
+    extras: list[dict[str, Any]] = [{}, {"explains": None}, {"explains": []}]
+    for extra in extras:
+        _route_payload(
+            monkeypatch,
+            {
+                "claims": _CAUSAL_CLAIMS,
+                "composite": "bundle",
+                "not_claims": [],
+                **extra,
+            },
+        )
+        assert extract_claim("passage").explains == ()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "1 explains 0",  # not a list at all
+        [[1]],  # wrong arity
+        [[1, 0, 1]],  # wrong arity
+        [["1", "0"]],  # non-integer
+        [[True, 0]],  # bool is not an index
+        [[1.0, 0]],  # float
+        [{"explains": 1}],  # wrong shape
+        [[1, 7]],  # names no claim
+        [[1, -1]],  # negative
+    ],
+)
+def test_extract_claim_malformed_explains_becomes_the_bad_sentinel(
+    monkeypatch: pytest.MonkeyPatch, raw: Any
+) -> None:
+    """A malformed pair never crashes the parser and is never silently
+    dropped: it is kept as ``BAD_EXPLAINS_PAIR`` for the gate to hold."""
+    _route_payload(
+        monkeypatch,
+        {
+            "claims": _CAUSAL_CLAIMS,
+            "composite": "bundle",
+            "not_claims": [],
+            "explains": raw,
+        },
+    )
+    result = extract_claim("passage")
+    assert result.explains == (canon.BAD_EXPLAINS_PAIR,)
+    assert len(result.atoms) == 2
+
+
+def test_extract_claim_explains_indices_survive_an_unparseable_claim_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model's indices are positions in ITS claims list. An unparseable
+    item (no claim text) shifts every later atom, so the pair is remapped to
+    the surviving atoms; a pair that names the dropped item is flagged."""
+    _route_payload(
+        monkeypatch,
+        {
+            "claims": [
+                {"claim": "Effect atom."},
+                {"claim": ""},  # dropped by the parser
+                {"claim": "Mechanism atom."},
+            ],
+            "composite": "bundle",
+            "not_claims": [],
+            "explains": [[2, 0], [1, 0]],
+        },
+    )
+    result = extract_claim("passage")
+    assert [a.sentence for a in result.atoms] == ["Effect atom.", "Mechanism atom."]
+    assert result.explains == ((1, 0), canon.BAD_EXPLAINS_PAIR)
+
+
+def test_extract_claim_duplicate_explains_pairs_collapse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _route_payload(
+        monkeypatch,
+        {
+            "claims": _CAUSAL_CLAIMS,
+            "composite": "bundle",
+            "not_claims": [],
+            "explains": [[1, 0], [1, 0]],
+        },
+    )
+    assert extract_claim("passage").explains == ((1, 0),)
+
+
+def test_no_claim_extraction_carries_no_explains() -> None:
+    result = canon._coerce_extraction([], None, [], explains=((1, 0),))
+    assert result.is_empty
+    assert result.explains == ()
+
+
+def test_legacy_single_object_reply_has_no_explains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _route_payload(monkeypatch, {"claim": "A lone legacy-shape claim."})
+    assert extract_claim("passage").explains == ()
+
+
+def test_extract_prompt_carries_the_mechanism_split_rule() -> None:
+    """The prompt's P2-13 rule changed from "fold it into the atom it
+    explains" to "own atom + explains pair when groundable; inline when too
+    vague; never not_claims"."""
+    flat = " ".join(canon._EXTRACT_PROMPT.split())
+    assert "Fold a mechanism clause" not in flat
+    assert "OWN atom" in flat
+    assert "[explaining atom index, explained atom index]" in flat
+    assert "too vague to stand alone" in flat
+    assert 'never put it in "not_claims" and never drop it' in flat
+    assert '"explains": [[' in flat
+    # a mechanism atom must carry a pair, and the enumeration step lists the
+    # mechanism as an assertion (so the coverage check doesn't drift)
+    assert (
+        "An atom you emit for a mechanism MUST appear in an explains pair; "
+        "a mechanism atom with no pair is an error." in flat
+    )
+    assert "is listed here as its own assertion" in flat
+    # the template still formats: only {excerpt} is a placeholder
+    assert "PASSAGE:\nsome text" in canon._EXTRACT_PROMPT.format(excerpt="some text")

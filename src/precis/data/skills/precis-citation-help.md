@@ -77,7 +77,7 @@ never ground on whatever paper you happen to be holding:
 search(kind="paper", q="<the claim's most distinctive phrase>")
 search(kind="paper", q="<claim terms> <the technique you'd expect>",
        queries=["<the question form>"],
-       answers=["<a sentence that would state the result>"], per_paper=2)
+       answers=["<a sentence that would state the result>"])
 get(id="pc<id>")                  # read the full chunk — excerpts are triage-only
 get(id="pa<id>", view="claims")   # hubs this paper already grounds — yours may be here
 ```
@@ -125,7 +125,7 @@ and search those, in both corpora:
 
 ```python
 search(kind="paper", q="<negated claim>",
-       answers=["<conflicting version 1>", "<conflicting version 2>"], per_paper=1)
+       answers=["<conflicting version 1>", "<conflicting version 2>"])
 search(kind="finding", q="<negated claim>", status="*", mode="semantic")
 get(id="fi<id>", view="evidence")   # contradicts / disputes edges already on the hub
 ```

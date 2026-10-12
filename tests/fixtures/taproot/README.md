@@ -92,8 +92,12 @@ decomposition step (`eval_canon.eval_extraction` +
 `eval_canon.canary_extraction`), not the dedup gate above. One object per
 row: `id`, `passage`, `expected_atom_count` (0 for NO-CLAIM),
 `expected_not_claims` (rejected-conjunct substrings, audit only — not
-graded as a hard gate in v1), `note` (provenance / rationale). Eleven rows,
-hand-authored (2026-08-13/14) to cover: the carbon-nanomaterials worked
+graded as a hard gate in v1), `note` (provenance / rationale), and — on the
+causal rows only — `expected_explains_count` (how many `explains` pairs the
+passage warrants; graded by `eval_canon.canary_extraction` as a SOFT metric,
+never failing the canary, since whether a mechanism clause stands alone is a
+granularity call). Thirteen rows, hand-authored (2026-08-13/14, plus the two
+causal rows 2026-10-03) to cover: the carbon-nanomaterials worked
 example (`docs/backlog/taproot-atomic-claims.md` §Worked example) —
 multi-atom + not_claims + surviving composite; an already-atomic claim (no
 composite); two NO-CLAIM shapes (pure pointer, meta-prose); a
@@ -106,3 +110,29 @@ a P1-6 modality regression (fi176422, `docs/backlog/
 taproot-migration-extraction-quality-gates.md`) — a counterfactual
 `whereas ... would` foil that a prior prompt version promoted into a false
 indicative claim, and must instead stay out of `claims` entirely.
+
+The two causal rows (ids 12-13, 2026-10-03, the `explains` decision) pin the
+"X because Y" rule in `canon._EXTRACT_PROMPT`: a self-contained, groundable
+mechanism becomes its own atom plus one `explains` pair (id 12: 2 atoms, 1
+pair, no not_claims, original sentence = composite); a mechanism too vague to
+stand alone ("because of its pore structure", id 13) stays inline in the single
+effect atom (1 atom, 0 pairs, never in not_claims).
+
+## `migration_pilot_25.jsonl` — the labelled 25-hub gate calibration
+
+One row per pilot hub: the sentence, the extraction (`atoms`, `composite`,
+`not_claims`, and — where the sentence has a causal structure — `explains`,
+0-based `[explaining atom, explained atom]` pairs into `atoms`), the model's
+verdict, and `expected_gated_verdict` (what `migrate.classify_extraction` must
+say; asserted by `tests/test_taproot_migrate_gates.py`, with four accepted
+`pass-through` false positives marked strict `xfail` there).
+
+fi176422 and fi176399 (the two "because/arises from" rows P2-13 had kept
+folded) were **re-labelled 2026-10-03** under the `explains` rule: they now
+carry the split the rule asks for — mechanism atom + effect atom + the
+`explains` pair, composite kept, fi176422's `whereas ... would` foil in
+`not_claims` — and expect `split`. Those two rows are the labelled
+expectation, not the recorded pilot output (the pilot's extraction for
+fi176422 minted the foil as a false indicative atom; for fi176399 it dropped
+"negligible alone" and "~10^9 setae per foot" and gated `lossy`). The xfail
+set is unchanged (still the four pass-through rows).

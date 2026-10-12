@@ -351,6 +351,100 @@ def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
     assert route_log.gc(store, retention_days=30) >= 1
 
 
+def test_record_call_persists_reason_class(store: Any) -> None:
+    # Migration 0204: the promoted column round-trips beside the features
+    # copy; an unclassed (successful) row stays NULL.
+    tag = uuid4().hex[:8]
+    src = f"rc-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            errored=True,
+            error="HTTP Error 429",
+            features={"reason_class": "rate"},
+            reason_class="rate",
+        ),
+        store=store,
+    )
+    route_log.record_call(_rec(source=src), store=store)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT reason_class, features->>'reason_class' FROM llm_call_log "
+            "WHERE source=%s ORDER BY id",
+            (src,),
+        ).fetchall()
+    assert [r[0] for r in rows] == ["rate", None]
+    assert [r[1] for r in rows] == ["rate", None]
+
+
+def test_dispatch_logs_reason_class_column(store: Any, monkeypatch: Any) -> None:
+    # End-to-end: a quota-class result out of route() lands in BOTH the
+    # promoted column and the features payload (the column is the
+    # queryable projection, not the only store).
+    import precis.utils.llm.router as router
+    from precis.utils.claude_p import ClaudePResult
+    from precis.utils.llm.router import LlmRequest, Tier, route
+
+    tag = uuid4().hex[:8]
+    src = f"rcdisp-{tag}"
+    notice = "You're out of extra usage · resets 11am (UTC)"
+
+    def fake_p(prompt: str, **kwargs: Any) -> ClaudePResult:
+        return ClaudePResult(data={}, raw_stdout=notice, cost_usd=0.0, text=notice)
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+
+    route_log.bind_store(store)
+    try:
+        out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", source=src))
+    finally:
+        route_log.bind_store(None)
+
+    assert out.reason_class == "quota"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT reason_class, errored, features->>'reason_class' "
+            "FROM llm_call_log WHERE source=%s",
+            (src,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "quota"
+    assert row[1] is True
+    assert row[2] == "quota"  # features copy retained for replay/jsonb readers
+
+
+def test_spend_rollup_groups_by_reason_class(store: Any) -> None:
+    # The promoted column is in the rollup allow-list: the 30-day by-class
+    # query no longer needs a jsonb extraction.
+    tag = uuid4().hex[:8]
+    src = f"rcrollup-{tag}"
+    route_log.record_call(
+        _rec(source=src, errored=True, error="HTTP Error 429", reason_class="rate"),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(
+            source=src,
+            errored=True,
+            error="You've hit your session limit",
+            reason_class="quota",
+        ),
+        store=store,
+    )
+    route_log.record_call(_rec(source=src), store=store)  # success → NULL
+    rows = {
+        r.key: r
+        for r in route_log.spend_rollup(
+            store, days=1, group_by="reason_class", source=src
+        )
+    }
+    assert rows["rate"].calls == 1 and rows["rate"].errors == 1
+    assert rows["quota"].calls == 1
+    assert rows["∅"].calls == 1  # the unclassed row
+
+
 def test_spend_rollup_rejects_unknown_group_by(store: Any) -> None:
     import pytest
 

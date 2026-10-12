@@ -32,9 +32,11 @@ schema regen and the two changed product skills (`precis-fisheye-help`,
 1. **Shared render cap** — `src/precis/handlers/_capped_section.py` now
    serves inline links and routine gripe comments in prepared R14 source;
    combined gate and deployed replay remain pending.
-2. **`singleton-id-no-batch-form`** — the batch `get`/`tag` half shipped
-   2026-10-09 (`_coerce_ids`, cap 50, one transaction for the tag batch);
-   left is the batch `put(draft, terms=[...])` case in the file.
+2. **`singleton-id-no-batch-form`** — shipped in full: the batch
+   `get`/`tag` half 2026-10-09 (`_coerce_ids`, cap 50, one transaction for
+   the tag batch), the batch `put(kind='draft', chunk_kind='term',
+   terms=[...])` glossary case 2026-10-12 (one transaction, per-term
+   outcome lines, same `BATCH_ID_CAP`).
 
 **Deployed 1 gates 2.** A batch `get` of 50 gripes whose comment timelines are
 uncapped is worse than the singleton loop it replaces. Doing 2 first

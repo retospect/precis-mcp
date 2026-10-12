@@ -23,6 +23,9 @@ discard a synthetic card when the fused candidate pool contains a body hit
 for that ref, before the diversity cap and page slice. Otherwise a stronger
 card can consume the paper's only slot and hide quotable evidence. Card-only
 matches survive; other store consumers retain their ranking by default.
+``search(kind='paper')`` defaults to ``unique_per='paper'`` on the same
+machinery (``per_paper=1`` over the fused pool, ``ref_counts_out=`` feeding
+each row's ``+N`` "more" counter); ``unique_per='chunk'`` is the drill shape.
 
 Decomposition (in progress, codereview-store-decomposition): the
 stateful pool/tx lifecycle lives in :class:`precis.store.core.StoreCore`

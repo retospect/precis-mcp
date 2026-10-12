@@ -502,6 +502,7 @@ _PAPER_SEARCH_UNSUPPORTED_PARAMS = frozenset(
         "queries",
         "answers",
         "per_paper",
+        "unique_per",
         "folder",
         "sort",
         "since",
@@ -574,9 +575,12 @@ def _paper_console_search(
     fields — reusing the handler's structured ``search_hits()`` (the
     engine ``search()`` itself calls, built for cross-kind fusion) and
     the Papers tab's author-formatting helper, rather than a new search
-    path. Scoped to the console: the MCP ``search`` verb's own render is
-    untouched — the bigger ``unique_per='paper'`` MCP-default change is
-    a separate, already-tracked backlog item.
+    path. Scoped to the console: the MCP ``search`` verb now collapses
+    to one row per paper by default too (``unique_per='paper'``), but its
+    row is the best hit's chunk handle + keywords — this override keeps
+    the bibliographic (title/authors/venue) columns an operator scans by,
+    and ``unique_per`` sits in the bail-out list below so an explicit
+    ``'chunk'`` request still reaches the real handler.
 
     Returns ``None`` — "not applicable, dispatch normally" — for every
     shape this override doesn't cover: a different kind, no ``q=``,
@@ -584,12 +588,12 @@ def _paper_console_search(
     level output through the ordinary handler path), or any search
     param this override doesn't forward to ``search_hits()`` (``scope``,
     ``source``, ``angle``, ``n``, ``like``, ``view``, ``status``,
-    ``queries``, ``answers``, ``per_paper``, ``folder``, ``sort``,
-    ``since``, ``until``) — forwarding only a subset while silently
-    dropping the rest would return a different result set than the real
-    MCP ``search(kind='paper', ...)`` call with no indication anything
-    was ignored, so any of those present bails to normal dispatch
-    instead.
+    ``queries``, ``answers``, ``per_paper``, ``unique_per``, ``folder``,
+    ``sort``, ``since``, ``until``) — forwarding only a subset while
+    silently dropping the rest would return a different result set than
+    the real MCP ``search(kind='paper', ...)`` call with no indication
+    anything was ignored, so any of those present bails to normal
+    dispatch instead.
     """
     kind = str(payload.get("kind") or "").strip().lower()
     if kind not in _PAPER_KIND_SPELLINGS:

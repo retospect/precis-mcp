@@ -118,7 +118,9 @@ exhausted, horizon = the parsed reset; wording in ``quota``), ``budget``
 filtered). One table owns it (``failure``): the router stamps live
 results (structurally from the caught exception first, then by wording),
 the executor's parked-job backoff reads the same table off the captured
-reason string, and the route-log stores both under ``features``. A
+reason string, and the route-log stores both under ``features`` (with
+``reason_class`` also promoted to a real ``llm_call_log`` column, migration
+0204, so the by-class query is indexable). A
 ``content`` error never falls through a failover chain — the next rung
 would answer the same; every other class, and an unclassified error,
 does. On the ``SMALL`` lane over a tool-less transport (local /

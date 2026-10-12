@@ -261,6 +261,13 @@ class NotClaim(TypedDict):
     reason: str  # why it can't be grounded ("forward-looking", "vague", ...)
 
 
+#: Sentinel :attr:`ClaimExtraction.explains` entry for a pair the model
+#: emitted but the parser could not read (wrong shape, non-integer, an index
+#: naming no parsed claim). Always out of range, so the migration gate's
+#: "indices valid" check rejects it.
+BAD_EXPLAINS_PAIR: tuple[int, int] = (-1, -1)
+
+
 @dataclass(frozen=True)
 class ClaimExtraction:
     """The full result of :func:`extract_claim` on one chunk.
@@ -277,6 +284,14 @@ class ClaimExtraction:
       extraction LLM wrote it), ``"coerced"`` (:func:`_coerce_extraction`
       synthesized it from the source sentence), or ``None`` (no composite).
       Persisted as ``meta.composite_source`` on a minted composite hub.
+    * ``explains`` — ``(explaining atom index, explained atom index)``
+      pairs into ``atoms`` ("X because Y" -> ``(index of Y, index of X)``);
+      each becomes an ``explains`` claim→claim edge Y -> X when applied
+      (migration 0203). Advisory structure only — never evidence flow.
+      A malformed pair the model emitted is kept as :data:`BAD_EXPLAINS_PAIR`
+      so :func:`precis.taproot.migrate.classify_extraction` holds the
+      extraction (``bad-explains``) instead of the parser crashing or
+      silently dropping it.
 
     Construct via :func:`extract_claim`, not directly — the three-way
     invariant between ``atoms``/``composite``/``not_claims`` is enforced at
@@ -289,6 +304,7 @@ class ClaimExtraction:
     composite: CanonicalClaim | None
     not_claims: tuple[NotClaim, ...]
     composite_source: str | None = None
+    explains: tuple[tuple[int, int], ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -307,9 +323,12 @@ def _coerce_extraction(
     composite: CanonicalClaim | None,
     not_claims: list[NotClaim],
     source_sentence: str = "",
+    explains: tuple[tuple[int, int], ...] = (),
 ) -> ClaimExtraction:
     """Enforce the atoms/composite/not_claims invariants on parsed model
     output — the ``ClaimExtraction`` analogue of :func:`_coerce_verdict`.
+    ``explains`` rides along unchanged (pair validity is the migration gate's
+    job, not this coercion's) except that a NO-CLAIM carries none.
 
     - Zero atoms -> NO-CLAIM: any composite the model still emitted is
       dropped.
@@ -360,6 +379,7 @@ def _coerce_extraction(
         composite=composite,
         not_claims=not_claims_t,
         composite_source=composite_source,
+        explains=tuple(explains) if atoms_t else (),
     )
 
 
@@ -649,17 +669,20 @@ Rules — the claim will be read ALONE, without this passage:
    formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
    -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs")."""
 
-#: Why the prompt's "mechanism clauses stay attached" rule exists (P2-13,
-#: ``docs/backlog/taproot-migration-extraction-quality-gates.md``): the only
-#: relation :mod:`precis.taproot.migrate` mints between atoms of a split is
-#: ``conjunct-of``, a symmetric-ish "these are peers of one bundle" edge —
-#: there is no vocabulary for "Y is the mechanism/cause for X". Splitting a
-#: causal clause ("because…", "enabled by…", "due to…") into its own atom
-#: therefore doesn't just lose information, it *misrepresents* it: two
-#: independent peer facts where the source stated one fact and its
-#: explanation (pilot: fi176422, fi176399). Keeping it attached — inside
-#: the explaining atom's sentence or its method/regime scope — is the only
-#: shape the current relation model can carry correctly.
+#: Why the prompt's mechanism rule is "its own atom + an ``explains`` pair"
+#: (P2-13, then the 2026-10-03 causal split,
+#: ``docs/backlog/taproot-compound-migration.md``): "X because Y" says one
+#: fact (X) and its explanation (Y). P2-13 first kept the clause folded into
+#: the atom it explains, because the only relation :mod:`precis.taproot.migrate`
+#: minted between atoms of a split was ``conjunct-of`` — "these are peers of
+#: one bundle" — and splitting a causal clause out under it misrepresented the
+#: source as two independent peer facts (pilot: fi176422, fi176399). Migration
+#: 0203 added the directed ``explains`` relation (explaining atom -> explained
+#: atom), so a mechanism that is itself a self-contained, groundable assertion
+#: now gets its own atom and the pair is recorded in the reply's "explains"
+#: list. A mechanism too vague to ground alone ("due to its structure") still
+#: stays inline in the explained atom — never in "not_claims", never dropped.
+#: Contrastive foils are a different thing (the modality rule governs them).
 _EXTRACT_PROMPT = (
     """\
 Does this passage assert a specific, citable scientific claim (a concrete
@@ -682,7 +705,9 @@ subject-predicate fact. Work in two steps:
   A, B, and C" / "X, which also does Y"), each conjunct is its own entry.
   Do this before you write a single "claim" — emitting atoms without
   enumerating first is how a bundled sentence silently loses conjuncts
-  (in practice, every conjunct but the last).
+  (in practice, every conjunct but the last). A mechanism clause
+  ("because…", "due to…") that can stand alone is listed here as its own
+  assertion, like any other (see the mechanism rule below).
   Step 2 — EMIT one outcome per enumerated entry: either one self-
   contained atom in "claims" (obeying rules 1-4 above — resolve referents
   per atom, carry its own material/method/quantity/regime, not the
@@ -707,10 +732,19 @@ factual regime worth keeping — put it in "not_claims" with reason
 and keep the clause as if it were a fact.
 
 Mechanism clauses ("because…", "enabled by…", "due to…", "arises from…")
-are not a peer conjunct in the enumeration — they explain a claim, they
-don't add a second one. Fold a mechanism clause into the atom it explains
-(inline in the sentence, or into that atom's method/regime scope); never
-enumerate it, split it into its own atom, or file it under "not_claims".
+explain a claim; they are not a peer conjunct. When the mechanism is itself
+a self-contained, groundable assertion (it names its own subject and a
+specific cause or mechanism), emit it as its OWN atom in "claims" — rules
+1-4 apply to it like any atom, so it must name its subject, never "this
+mechanism" or "the catalyst" — and record the pair in "explains" as
+[explaining atom index, explained atom index], 0-based positions in
+"claims" ("X because Y" -> [index of Y, index of X]). An atom you emit for
+a mechanism MUST appear in an explains pair; a mechanism atom with no pair
+is an error. When the mechanism is too vague to stand alone ("due to its
+structure", "because of its properties"), keep it inline in the sentence of
+the atom it explains; never put it in "not_claims" and never drop it. A
+contrastive foil ("whereas X would…") is not a mechanism — the modality
+rule above governs it.
 
 Only return the original sentence as "composite" when it genuinely bundles
 two or more groundable-or-rejected parts — an already-atomic passage has no
@@ -759,6 +793,13 @@ Examples:
   not_claims with reason "counterfactual — not asserted by the source".
   Never mint "The sites neutralize each other in homogeneous solution" as
   a fact — that flips the foil into a false indicative claim.
+- "Gecko feet adhere to glass because van der Waals forces act between the
+  spatulae and the surface."  -> two claims: [0] "Gecko feet adhere to
+  glass." [1] "Van der Waals forces act between gecko spatulae and glass."
+  with explains = [[1, 0]] (the mechanism explains the adhesion); the
+  original sentence is the composite. Had the passage said only "because of
+  their structure", that vague clause would stay inline in claim [0] and
+  explains would be [].
 
 For each claim you emit: give the normalized sentence, its type, plus any
 of material/method/quantity/regime it names (omit keys it doesn't name).
@@ -798,7 +839,8 @@ Respond with EXACTLY ONE JSON object, nothing else:
       "text": "<rejected conjunct, verbatim-normalized>",
       "reason": "<why it can't be grounded>"
     }}
-  ]
+  ],
+  "explains": [[<index in "claims" of the explaining claim>, <index of the explained claim>]]
 }}
 """
 )
@@ -1131,11 +1173,16 @@ def _extraction_from_payload(data: dict[str, Any], excerpt: str) -> ClaimExtract
     :func:`_extract_claim_impl` and :func:`extract_claim_strict_medium`."""
     raw_claims = data.get("claims")
     if isinstance(raw_claims, list):
-        atoms = []
-        for item in raw_claims:
+        atoms: list[CanonicalClaim] = []
+        #: raw ``claims[]`` position -> index into ``atoms`` (an unparseable
+        #: item shifts every later atom, so the model's own "explains"
+        #: indices must be remapped, not trusted).
+        atom_index: dict[int, int] = {}
+        for raw_i, item in enumerate(raw_claims):
             if isinstance(item, dict):
                 parsed = _parse_claim_item(item)
                 if parsed is not None:
+                    atom_index[raw_i] = len(atoms)
                     atoms.append(parsed)
         not_claims = []
         for item in data.get("not_claims") or []:
@@ -1148,13 +1195,52 @@ def _extraction_from_payload(data: dict[str, Any], excerpt: str) -> ClaimExtract
         if isinstance(raw_composite, str) and raw_composite.strip():
             composite = CanonicalClaim(sentence=raw_composite.strip(), scope={})
         _log_assertion_arity_drift(data.get("assertions"), atoms, not_claims)
-        return _coerce_extraction(atoms, composite, not_claims, source_sentence=excerpt)
+        return _coerce_extraction(
+            atoms,
+            composite,
+            not_claims,
+            source_sentence=excerpt,
+            explains=_parse_explains(data.get("explains"), atom_index),
+        )
 
     # Legacy single-object degrade: {"claim": ..., "material": ...}.
     single = _parse_claim_item(data)
     if single is None:
         return _EMPTY_EXTRACTION
     return ClaimExtraction(atoms=(single,), composite=None, not_claims=())
+
+
+def _parse_explains(
+    raw: Any, atom_index: dict[int, int]
+) -> tuple[tuple[int, int], ...]:
+    """Parse the reply's ``"explains": [[explaining, explained], ...]`` into
+    atom-index pairs.
+
+    Absent / ``null`` / empty -> ``()`` (a reply that predates the field is
+    not an error). Anything else the model got wrong — a non-list value, an
+    entry that is not a two-integer list, an index naming no parsed claim
+    (``atom_index`` maps the model's ``claims[]`` positions to the surviving
+    atoms') — becomes one :data:`BAD_EXPLAINS_PAIR` so the migration gate
+    holds the extraction; the parser never raises and never silently drops a
+    pair the model meant. Duplicates collapse, order is kept."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        return (BAD_EXPLAINS_PAIR,)
+    pairs: list[tuple[int, int]] = []
+    for entry in raw:
+        pair = BAD_EXPLAINS_PAIR
+        if (
+            isinstance(entry, (list, tuple))
+            and len(entry) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in entry)
+        ):
+            src, dst = atom_index.get(entry[0]), atom_index.get(entry[1])
+            if src is not None and dst is not None:
+                pair = (src, dst)
+        if pair not in pairs:
+            pairs.append(pair)
+    return tuple(pairs)
 
 
 def _log_assertion_arity_drift(
