@@ -139,3 +139,31 @@ class TestExtractNumericsWide:
 
     def test_empty(self):
         assert extract_numerics_wide("") == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expect"),
+    [
+        (r"$1.78\pm0.11$  Å", ["1.78 Å", "0.11 Å"]),
+        (r"$1.72\pm0.06$  Å", ["1.72 Å", "0.06 Å"]),
+        (r"$2.05\pm0.07$  Å", ["2.05 Å", "0.07 Å"]),
+        (r"\(1.78 \pm 0.11\) Å", ["1.78 Å", "0.11 Å"]),
+        (r"$$1.78\pm0.11$$ Å", ["1.78 Å", "0.11 Å"]),
+        (r"$1.78 \pm 0.11 $ Å", ["1.78 Å", "0.11 Å"]),
+        (r"$12\%$ loss", ["12%"]),
+        (r"$25^\circ$C", ["25 °C"]),
+        (r"$3 \times 10$ nm", ["10 nm"]),
+    ],
+)
+def test_wide_reads_latex_inline_math(text, expect):
+    assert set(expect) <= set(extract_numerics_wide(text))
+
+
+def test_wide_reads_tex_micro_with_double_space():
+    assert "5 µm" in extract_numerics_wide(r"a pore of $5$  $\mu$  m width")
+    assert "5 µm" in extract_numerics_wide(r"a pore of 5 \mu m width")
+
+
+def test_wide_leaves_dollar_amounts_alone():
+    assert extract_numerics_wide("costs $5 and $10 each") == []
+    assert extract_numerics_wide("a $5 nm rope") == ["5 nm"]

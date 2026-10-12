@@ -138,9 +138,26 @@ _LIST_HEAD_CHARS = 40
 #: Both forms are read (the ``numerics`` column holds only the raw one).
 _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}\b)")
 _PPM_RE = re.compile(r"\bp\.p\.m\.?")
-#: PDF math: ``$1.78±0.11$ Å`` — drop the ``$`` and read the ``±`` as a
-#: two-member list so 1.78 takes the unit too.
-_MATH_DOLLAR_RE = re.compile(r"\$")
+#: PDF math: ``$1.78\pm0.11$ Å`` — unwrap the math and read the ``±`` as a
+#: two-member list so 1.78 takes the unit too. Inline math is ``$…$`` or
+#: ``\(…\)``; a space-padded ``$`` pair counts as math only with a TeX
+#: command or ``±`` inside, so "costs $5 and $10" is left alone.
+_MATH_INLINE_RE = re.compile(
+    r"\$\$(.{1,200}?)\$\$|\$([^$\n]{1,200}?)\$|\\\((.{0,200}?)\\\)"
+)
+_TEX_WRAP_RE = re.compile(r"\\(?:mathrm|text|textrm|mathit)\{([^{}]*)\}")
+#: LaTeX commands PDF extractors leave in the text, mapped to the symbol.
+_TEX_SYMBOLS = (
+    (
+        re.compile(r"\^\s*\{?\s*\\circ\s*\}?|\\deg(?![A-Za-z])|\\degree(?![A-Za-z])"),
+        "°",
+    ),
+    (re.compile(r"\\pm(?![A-Za-z])"), "±"),
+    (re.compile(r"\\times(?![A-Za-z])"), "×"),
+    (re.compile(r"\\sim(?![A-Za-z])"), "~"),
+    (re.compile(r"\\approx(?![A-Za-z])"), "≈"),
+    (re.compile(r"\\%"), "%"),
+)
 _PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
 #: PDF micro: ``$\mu$ m`` / ``\mu m`` / Greek ``μm`` all read as ``µm`` (U+00B5).
 _TEX_MU_RE = re.compile(r"\$?\\mu\$?\s*(?=[mAMgs]\b)")
@@ -279,14 +296,31 @@ def numeric_spans(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
+def _unwrap_math(m: re.Match[str]) -> str:
+    inner = m.group(1) or m.group(2) or m.group(3) or ""
+    # A single-$ pair padded with spaces is math only if it carries a TeX
+    # command or ±; otherwise it is two dollar amounts ("$5 and $10").
+    if (
+        m.group(2) is not None
+        and inner != inner.strip()
+        and not re.search(r"[\\±]", inner)
+    ):
+        return m.group(0)
+    return inner.strip()
+
+
 def normalize_spellings(text: str) -> str:
     """PDF number spellings the tokenizer misses, rewritten to the plain
-    form: "2,000 p.p.m." → "2000 ppm", "$1.78±0.11$ Å" → "1.78 and 0.11 Å"
-    (the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm"."""
+    form: "2,000 p.p.m." → "2000 ppm", "$1.78\\pm0.11$  Å" → "1.78 and 0.11 Å"
+    (inline math unwrapped, LaTeX ``\\pm``/``\\times``/``\\%``/``^\\circ`` mapped
+    to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm"."""
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
-    norm = _PLUS_MINUS_RE.sub(
-        " and ", _MATH_DOLLAR_RE.sub("", _TEX_MU_RE.sub("µ", norm))
-    )
+    norm = _TEX_MU_RE.sub("µ", norm)
+    norm = _TEX_WRAP_RE.sub(r"\1", norm)
+    for rx, sym in _TEX_SYMBOLS:
+        norm = rx.sub(sym, norm)
+    norm = _MATH_INLINE_RE.sub(_unwrap_math, norm)
+    norm = _PLUS_MINUS_RE.sub(" and ", norm)
     return norm.replace("μ", "µ")  # Greek mu (U+03BC) → micro sign (U+00B5)
 
 
