@@ -219,6 +219,11 @@
   .sd-prov-sourced { border-left: 3px solid #16a34a; }
   .sd-prov-pending { border-left: 3px solid #d97706; }
   .sd-prov-unsourced { border-left: 3px solid #dc2626; }
+  /* Machine-authored provenance (grounded-authoring reviewer edits): the
+     classic reader's amber left marker, as an INNER stripe — not a
+     border-left, which the sd-prov-* grounding colour already owns (a
+     machine-authored paragraph can also be unsourced; both must show). */
+  .sd-authored { box-shadow: inset 4px 0 0 0 #fcd34d; }   /* amber-300 */
   .sd-dot { display: inline-block; width: .4rem; height: .4rem; flex-shrink: 0;
     border-radius: 9999px; margin: .25rem .1rem 0 0; }
   .sd-dot-sourced { background: #16a34a; }
@@ -561,9 +566,9 @@
            `n.editable` (there's no free-text edit path for it), but it always
            gets the structured grid. #}
         {% set _seed = n.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2" data-tour="sd-focus">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
@@ -609,9 +614,9 @@
            moves inside it (a button must sit in the Alpine scope whose
            ``startEdit()`` it calls), which also puts it next to the text it
            edits. #}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2" data-tour="sd-focus">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
@@ -639,10 +644,10 @@
           </figure>
         </div>
         {% elif m.mode == 'full' %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2" data-tour="sd-focus">
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
           {% call draft_editors.draft_edit(ident, n.base58, n.sha, n.editable, n.is_heading, n.text, rows=10) %}
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
@@ -674,7 +679,7 @@
         {% elif m.mode == 'doc' %}
         {# full-doc mode: a chunk in the server-rendered window around the focus,
            verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
-        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id)) }}
         {% elif m.mode == 'skel' %}
         {# full-doc lazy spacer: a distant chunk, sized by its height estimate
            and hydrated to a real doc block on scroll (IntersectionObserver →
@@ -689,7 +694,7 @@
            show). <div> not <a> for the same nested-anchor reason as the
            doc-mode block above. #}
         {% set _is_tbl = n.is_table and n.table %}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ sd_block.sd_dc_id(n.dc) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_dc_id(n.dc) }}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
         {% else %}
         {# ±2 neighbour: one-line summary — the dc span sits inside this <a>, so
            sdCopyDc's stopPropagation/preventDefault (see sd_dc_id) matter here:
@@ -847,7 +852,7 @@
 
       <div class="flex items-center gap-2 text-slate-500">
         <span>Pinned: 📌 {{ eye_count }}</span>
-        {% if eye_count %}<button onclick="smartClearPins()" class="text-[10px] text-slate-400 hover:text-rose-600">unpin all</button>
+        {% if eye_count %}<button onclick="smartAround()" class="text-[10px] text-sky-600 hover:text-sky-800" title="expand around here — promote every pinned block's reference ring (cited papers, cross-refs, linked notes) into eyes">👁 around here</button><button onclick="smartClearPins()" class="text-[10px] text-slate-400 hover:text-rose-600">unpin all</button>
         {% else %}<span class="text-[10px] text-slate-400">nothing pinned — the ask works on the current para</span>{% endif %}
       </div>
 
@@ -1338,7 +1343,7 @@
   {# nav state travels INSIDE #sd-content so a swap carries the fresh values.
      focusHandle (base58) lets the keyboard reach the focus block's inline
      editor via window.__dEditors (i / Enter → startEdit). #}
-  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "focusHandle": (view.focus.base58 if view.focus else ""), "q": q} | tojson }}</script>
+  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "focusHandle": (view.focus.base58 if view.focus else ""), "q": q, "eyes": eye_dcs} | tojson }}</script>
 </div>
 
 <script>
@@ -2016,6 +2021,21 @@ function smartClearPins() {
   fetch(`/drafts/{{ ident }}/marks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'clear' }),
+  }).then(() => window.__sdRefresh()).catch(() => {});
+}
+// "Around here" — bulk-expand every pinned draft chunk's reference ring
+// (cited papers, cross-refs, linked notes) into eyes via the shared
+// /drafts/{ident}/around endpoint (the classic reader's working-set tray
+// button, ported). The dc eye list rides sd-state; ring targets it returns
+// (pa…/me…) just widen the pinned context on the next render.
+function smartAround() {
+  let eyes = [];
+  try { eyes = JSON.parse(document.getElementById('sd-state').textContent).eyes || []; }
+  catch (e) { eyes = []; }
+  if (!eyes.length) return;
+  fetch(`/drafts/{{ ident }}/around`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ handles: eyes }),
   }).then(() => window.__sdRefresh()).catch(() => {});
 }
 // Click-to-copy a chunk id (sd_block.sd_dc_id, _block.html.j2) — every id

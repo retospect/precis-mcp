@@ -14,12 +14,12 @@ from here:
   (``/drive?k=draft&submitted=1``).
 * ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` — 307 into
   ``/smartdraft/{ident}``.
-* ``POST /drafts/{ident}/marks`` / ``/request-ws`` — hand-driven working
-  set (``precis_web.draft_eyes``): toggle pen/eye markers on paragraphs,
-  file a change request carrying the whole set (``meta.working_set``) so
-  the planner tick edits pens grounded in eyes, not a single anchor.
-  Bulk "expand around here into eyes" (``/around``) not yet ported to
-  smartdraft — ``OPEN-ITEMS.md``.
+* ``POST /drafts/{ident}/marks`` / ``/around`` / ``/request-ws`` — hand-driven
+  working set (``precis_web.draft_eyes``): toggle pen/eye markers on
+  paragraphs, bulk-expand a chunk's reference ring into eyes ("around
+  here"), file a change request carrying the whole set
+  (``meta.working_set``) so the planner tick edits pens grounded in eyes,
+  not a single anchor.
 * ``POST /drafts/{ident}/human-review`` — ✓ gutter checkbox: sign-off on
   one block (``edit(kind='draft', review='human')``, migration 0086
   ``chunk_review`` ledger). ``POST .../review/retract`` deletes that
@@ -2174,6 +2174,26 @@ async def edit_marks(request: Request, ident: str) -> JSONResponse:
             draft_eyes.toggle_eye(marks, h, on=on, extent=ext)
     else:
         return JSONResponse({"ok": False, "error": f"bad op {op!r}"}, status_code=400)
+    stored = draft_eyes.save_marks(store, ref.id, marks)
+    return JSONResponse({"ok": True, "marks": _marks_view(store, stored)})
+
+
+@router.post("/drafts/{ident}/around")
+async def edit_around(request: Request, ident: str) -> JSONResponse:
+    """*Around here*: expand the given draft chunks into eyes — the chunks plus
+    their reference rings promoted to real eyes (cited papers, cross-refs, linked
+    notes). Body ``{handles:[dc…]}``. Returns the stored marks."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    handles = [str(h) for h in (payload.get("handles") or []) if _is_dc(str(h))]
+    marks = draft_eyes.load_marks(store, ref.id)
+    draft_eyes.expand_around(store, ref.id, handles, marks)
     stored = draft_eyes.save_marks(store, ref.id, marks)
     return JSONResponse({"ok": True, "marks": _marks_view(store, stored)})
 

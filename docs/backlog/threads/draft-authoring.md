@@ -78,9 +78,8 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   stripped generic scaffold supplied 2026-10-06; poster dispatch and private
   profile implementation still open) ·
   `draft-section-styles`.
-- **Content model** — `smartdraft-review-parity` (may hit td461162, the Phase 5
-  review from the web review block; re-check when it starts) ·
-  `draft-table-structured-enrichment` · `draft-footnotes-annotations` ·
+- **Content model** — `draft-table-structured-enrichment` ·
+  `draft-footnotes-annotations` ·
   `diagram-editing-and-chunk-binding` · `draft-refresh` ·
   `draft-inline-editor`.
 

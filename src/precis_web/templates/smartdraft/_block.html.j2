@@ -73,11 +73,26 @@
 <span class="{{ cls }} cursor-pointer" title="click to copy" onclick="sdCopyDc(event, '{{ dc }}')">{{ dc }}{{ trail }}</span>
 {%- endmacro %}
 
-{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
+{# Machine-authored provenance chip (grounded-authoring reviewer, rung 3d):
+   ``authored`` is the raw ``authored_by`` stamp (``'review:<lens>'``) from
+   ``Store.drafts.authored_provenance`` — the SAME mark the retired classic
+   reader rendered. The block's left stripe is the ``sd-authored`` CSS class
+   on the block div (a box-shadow inset, deliberately NOT border-left — the
+   grounding-provenance ``sd-prov-*`` border already owns that edge, and a
+   block can carry both). A NEW authored chunk or a grounded EXTEND of an
+   existing one starts unreviewed — approve it like any other edit. #}
+{% macro sd_authored_chip(authored) -%}
+{%- if authored -%}
+<span class="inline-flex items-center rounded-sm bg-amber-100 px-1 font-mono text-[10px] text-amber-700"
+      title="machine-authored by the {{ authored.split(':')[-1] }} review lens — starts unreviewed; approve after checking">✎ authored ({{ authored.split(':')[-1] }})</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, authored=none) -%}
 {%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
 {%- set is_tbl = n.is_table and n.table -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{{ sd_dc_id(n.dc) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
+<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
 {%- endmacro %}
 
 {# The per-block review indicator + dropdown

@@ -44,7 +44,14 @@ a measured barrier. Legacy graphs fall back to ``kind``.
 **Smartdraft review.** Shared block widget shows read-only F/C/S/A flags
 (✓ current / ~ stale / – unreviewed); structure/adversarial stay on prose,
 headings show S/A. One matrix for full-page and lazy blocks avoids ledger
-queries and keeps flags aligned with the tooltip.
+queries and keeps flags aligned with the tooltip. Blocks stamped
+``authored_by`` by the grounded-authoring reviewer
+(``store.drafts.authored_provenance``) carry an amber inner stripe + a
+``✎ authored (<lens>)`` chip — an inner box-shadow, not border-left,
+because grounding provenance owns that edge and a block can carry both.
+The Collaborate pane's "👁 around here" bulk-expands every pinned chunk's
+reference ring into eyes (``POST /drafts/{ident}/around`` →
+``draft_eyes.expand_around``).
 
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131; roster via ``precis users``); accounts have

@@ -44,6 +44,7 @@ from precis_web.routes.drafts import (
     _draft_author_lines,
     _draft_ref,
     _draft_version,
+    _is_dc,
     _owner_workspace,
     _review_status_by_chunk,
 )
@@ -242,6 +243,14 @@ async def reader(
     review_status = _review_status_by_chunk(store, ref.id)
     rollup = store.drafts.review_rollup_for_draft(ref.id)
 
+    # Machine-authored provenance (grounded-authoring reviewer edits,
+    # rung 3d — ``chunks.meta`` / ``chunk_events.source`` ``authored_by``
+    # stamp): ONE whole-draft query like ``review_status`` above, read
+    # per-request for the same reason (a new stamp rides on an edit, and
+    # per-request derivation can't drift from the block data). Rendered
+    # as the amber left-stripe + ✎ authored chip the classic reader had.
+    authored_idx = store.drafts.authored_provenance(ref.id)
+
     # Per-block indicator payloads (item 6) — scoped to what's actually
     # RENDERED (the middle pane), not the whole draft, so the citation-
     # integrity flag's store lookups (item 5c) stay O(rendered blocks), not
@@ -282,6 +291,10 @@ async def reader(
             "focus_dc": view.focus.dc if view.focus else "",
             "focus_pinned": bool(view.focus and view.focus.pinned),
             "eye_count": len(marks.get("eyes") or {}),
+            # Draft-chunk eyes only (sorted, for the client to feed back to
+            # POST /drafts/{ident}/around) — promoted ring targets (pa…/me…)
+            # are already eyes, not expandable chunks.
+            "eye_dcs": sorted(h for h in (marks.get("eyes") or {}) if _is_dc(h)),
             "q": query,
             "active_sig": "".join(c for c in _SIGNALS if c in active),
             "sview": sview_mode,
@@ -313,6 +326,7 @@ async def reader(
             "focus_review": focus_review,
             # ── Review status (indicator + rollup) ──
             "review_by_dc": review_by_dc,
+            "authored_idx": authored_idx,
             "rollup": rollup,
             "checker_counts": checker_counts,
             "hub_stats": hub_stats,
@@ -360,6 +374,10 @@ async def blocks(
     review_by_dc = smartdraft.review_payloads_for(
         sel, _review_status_by_chunk(store, ref.id), store
     )
+    # The machine-authored marker rides the same hydrated window (a
+    # scrolled-to block shows its ✎ authored stripe identically to a
+    # server-rendered one).
+    authored_idx = store.drafts.authored_provenance(ref.id)
     # Same abbrev-highlighting map the initial render uses (see reader()'s
     # note) — a scrolled-to hydrated block must highlight defined terms
     # identically to a server-rendered one.
@@ -382,6 +400,7 @@ async def blocks(
             "hypothesis_claims": hypothesis_claims,
             "abbrevs": abbrevs,
             "review_by_dc": review_by_dc,
+            "authored_idx": authored_idx,
             "ident": ident,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
         },

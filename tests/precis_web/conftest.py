@@ -709,6 +709,13 @@ class FakeStore(_FakeStoreBase):
         # fake reports OFF; a test can subclass to exercise the ON branch.
         return False
 
+    def authored_provenance(self, ref_id: int) -> dict[int, str]:
+        # Machine-authored stamp ledger (grounded-authoring reviewer,
+        # rung 3d): ``{chunk_id: 'review:<lens>'}`` — smartdraft's
+        # ✎ authored stripe/chip. The fake reports nothing authored;
+        # a subclass seeds it (see AuthoredFakeStore).
+        return {}
+
     def review_status_for_draft(self, ref_id: int) -> list[DraftReviewRow]:
         # Migration-0086 human/checker review ledger (the ✓ sign-off). The fake
         # reports no reviewable chunks; a subclass returns rows to exercise the

@@ -156,7 +156,7 @@ class SmartDraftFakeStore(FakeStore):
             return [_DRAFT]
         return super().list_refs(kind=kind, limit=limit, offset=offset, **kw)
 
-    def reading_order(self, ref_id):
+    def reading_order(self, ref_id, kind="draft"):
         return list(self._chunks)
 
     def block_views(self, ref_id, handles=None):
@@ -1946,3 +1946,124 @@ def test_smartdraft_checker_strip_heading_and_nonprose_scope(
     assert response.status_code == 200
     assert "sd-review-dot" in response.text
     assert "sd-checker-strip" not in response.text
+
+
+# ── machine-authored provenance marker (rung 3d) + "around here" ──
+
+
+class AuthoredFakeStore(SmartDraftFakeStore):
+    """One extra paragraph stamped ``meta.authored_by`` — the machine-authored
+    provenance mark the grounded-authoring reviewer leaves via either stamp
+    surface (``chunks.meta`` on a new chunk, ``chunk_events.source`` on a
+    grounded edit); ``authored_provenance`` surfaces both as the raw
+    ``'review:<lens>'`` string."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks.append(
+            _sd_chunk(
+                12,
+                "paragraph",
+                "A sentence the grounded reviewer rewrote.",
+                1,
+                meta={"authored_by": "review:cites"},
+            )
+        )
+
+    def authored_provenance(self, ref_id):
+        # Mirrors the real query's shape: any live chunk seeded with
+        # meta.authored_by (the new-chunk stamp) appears.
+        out = {}
+        for c in self._chunks:
+            by = (getattr(c, "meta", None) or {}).get("authored_by")
+            if by:
+                out[c.chunk_id] = by
+        return out
+
+
+@pytest.fixture
+def authored_client(tmp_path) -> TestClient:
+    app = create_app(
+        runtime=FakeRuntime(AuthoredFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    return TestClient(app)
+
+
+def test_smartdraft_machine_authored_block_marker(authored_client: TestClient) -> None:
+    """The amber left stripe (``sd-authored``) + ``✎ authored (<lens>)`` chip
+    mark a machine-edited block in full-doc mode — and only that block."""
+    dc12 = handle_registry.format_handle("draft", 12, chunk=True)
+    dc9 = handle_registry.format_handle("draft", 9, chunk=True)
+    # Focus the heading so dc12 renders as a plain doc-mode block.
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)
+    r = authored_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    seg = _dc_block(r.text, dc12)
+    assert "sd-authored" in seg
+    assert "✎ authored (cites)" in seg
+    assert "machine-authored by the cites review lens" in seg
+    seg9 = _dc_block(r.text, dc9)
+    assert "sd-authored" not in seg9
+    assert "✎ authored" not in seg9
+
+
+def test_smartdraft_machine_authored_focus_marker(
+    authored_client: TestClient,
+) -> None:
+    """The same stripe + chip land on the focused block's ``#mid-focus``."""
+    dc12 = handle_registry.format_handle("draft", 12, chunk=True)
+    r = authored_client.get(f"/smartdraft/sdt?focus={dc12}")
+    assert r.status_code == 200
+    focus = r.text.split('id="mid-focus"', 1)[1]
+    assert "sd-authored" in focus
+    assert "✎ authored (cites)" in focus
+
+
+def test_smartdraft_blocks_hydration_carries_authored_marker(
+    authored_client: TestClient,
+) -> None:
+    """The lazy ``/blocks`` payload carries the same marker — a scrolled-to
+    machine-authored block doesn't silently lose its stripe."""
+    dc12 = handle_registry.format_handle("draft", 12, chunk=True)
+    r = authored_client.get(f"/smartdraft/sdt/blocks?dcs={dc12}")
+    assert r.status_code == 200
+    seg = _dc_block(r.text, dc12)
+    assert "sd-authored" in seg
+    assert "✎ authored (cites)" in seg
+
+
+def test_smartdraft_around_here_button_and_eye_list_state(
+    monkeypatch: pytest.MonkeyPatch, smartdraft_client: TestClient
+) -> None:
+    """With a pinned working set the Collaborate pane offers '👁 around
+    here', and ``sd-state`` ships the dc eye list the button posts back to
+    ``POST /drafts/{ident}/around``."""
+    from datetime import UTC, datetime
+
+    monkeypatch.setattr(
+        _DRAFT,
+        "meta",
+        {
+            "reader_working_set": {
+                "pens": [],
+                "eyes": {"dc2": "fisheye+1hop", "dc3": "fisheye+1hop"},
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        },
+    )
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert 'onclick="smartAround()"' in r.text
+    assert '"eyes": ["dc2", "dc3"]' in r.text
+
+
+def test_smartdraft_no_around_button_without_pins(
+    smartdraft_client: TestClient,
+) -> None:
+    """Nothing pinned → no bulk-expand affordance (the ask falls back to the
+    current para, like the pin row's own note says)."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert 'onclick="smartAround()"' not in r.text
+    assert '"eyes": []' in r.text

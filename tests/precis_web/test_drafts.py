@@ -187,7 +187,7 @@ class DraftFakeStore(FakeStore):
             return [_DRAFT]
         return super().list_refs(kind=kind, limit=limit, offset=offset, **kw)
 
-    def reading_order(self, ref_id):
+    def reading_order(self, ref_id, kind="draft"):
         return list(self._chunks)
 
     def search_chunks_semantic(
@@ -726,7 +726,7 @@ class ListDraftStore(DraftFakeStore):
             return [_LIST_DRAFT]
         return super().list_refs(kind=kind, limit=limit, offset=offset, **kw)
 
-    def reading_order(self, ref_id):
+    def reading_order(self, ref_id, kind="draft"):
         return list(self._chunks)
 
 
@@ -2016,6 +2016,67 @@ def test_request_ws_junk_knobs_leave_llm_select_absent(tmp_path) -> None:
     assert r.status_code == 200 and r.json()["ok"]
     _verb, args = rt.calls[-1]
     assert "llm_select" not in args["meta"]
+
+
+# ── "around here" bulk expand (``/around``) ──
+
+
+class AroundFakeStore(WsFakeStore):
+    """``WsFakeStore`` (working-set persistence + ``dc<id>`` resolution) plus
+    a paragraph citing a held paper by its universal handle — the ring
+    target ``/around`` promotes to an eye (``pa10`` is conftest's paper
+    id 10, resolved by the base fake's ``resolve_handle``)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks.append(
+            _chunk("CCCCCC", "paragraph", "Grounded in [pa10].", 1, chunk_id=6)
+        )
+
+
+def _around_client(tmp_path):
+    rt = FakeRuntime(AroundFakeStore())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    return rt, TestClient(app)
+
+
+def test_around_expands_chunk_into_eyes_and_promotes_its_ring(tmp_path) -> None:
+    _rt, client = _around_client(tmp_path)
+    r = client.post("/drafts/nt/around", json={"handles": ["dc6"]})
+    assert r.status_code == 200 and r.json()["ok"]
+    eyes = {e["handle"]: e for e in r.json()["marks"]["eyes"]}
+    # The chunk itself is eyed …
+    assert "dc6" in eyes and eyes["dc6"]["dc"] is True
+    # … and its cited paper rides in as a cluster-map eye (``_DOC_KINDS``
+    # get the ``summary`` extent, not fisheye).
+    assert "pa10" in eyes
+    assert eyes["pa10"]["kind"] == "paper" and eyes["pa10"]["dc"] is False
+    assert eyes["pa10"]["extent"] == "summary"
+
+
+def test_around_accepts_only_dc_handles(tmp_path) -> None:
+    """Non-``dc`` handles are filtered at the route; an unresolvable dc
+    still lands as a plain eye (``expand_around`` eyes first, then
+    best-effort-expands the ring)."""
+    _rt, client = _around_client(tmp_path)
+    r = client.post("/drafts/nt/around", json={"handles": ["pa10", "dc999"]})
+    assert r.status_code == 200 and r.json()["ok"]
+    handles = {e["handle"] for e in r.json()["marks"]["eyes"]}
+    assert "pa10" not in handles  # a record handle is rejected outright
+    assert "dc999" in handles  # eyed, ring skipped (unresolvable chunk)
+
+
+def test_around_empty_handles_is_a_noop_save(tmp_path) -> None:
+    _rt, client = _around_client(tmp_path)
+    r = client.post("/drafts/nt/around", json={"handles": []})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert r.json()["marks"] == {"pens": [], "eyes": []}
+
+
+def test_around_404s_on_unknown_draft(tmp_path) -> None:
+    _rt, client = _around_client(tmp_path)
+    r = client.post("/drafts/nope/around", json={"handles": ["dc6"]})
+    assert r.status_code == 404
 
 
 # ── human sign-off checkbox (migration 0086 review ledger) ──────────
