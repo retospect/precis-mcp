@@ -1859,6 +1859,25 @@ def test_nursery_backlog_never_files_per_ref(store) -> None:
     assert len(gripes) == 1
 
 
+def test_child_failed_parked_leaf_rebinds_after_tracker_deleted(store) -> None:
+    """gr474610: one parked leaf whose tracker gripe was soft-deleted gets a
+    fresh live tracker on the next eval — the marker scan skips retired
+    gripes, so the still-open alert re-files instead of pointing nowhere."""
+    _seed_nursery_backlog_alert(
+        store, source="nursery:child-failed-parked", ref_id=500, hours_old=30, total=1
+    )
+    _route_findings(store)
+    (first,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    store.retire_ref(first.id)
+
+    routed = _route_findings(store)
+    assert ("nursery-backlog", "nursery:child-failed-parked") in routed
+    (fresh,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert fresh.id != first.id
+    body = store.chunks.list_chunks_for_ref(fresh.id)[0].text
+    assert body.startswith("watchdog-condition: nursery:child-failed-parked/backlog")
+
+
 def test_watchdog_routing_unchanged_alongside_nursery_backlog(store) -> None:
     """A watchdog alert and a nursery backlog alert both over budget in the
     same eval: watchdog behaviour stays byte-identical (its own marker
