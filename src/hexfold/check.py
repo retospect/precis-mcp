@@ -401,6 +401,42 @@ def _geometry_findings(
             )
         )
 
+    # Reto's DRC (gr459567, 2026-10-12): an atom whose nearest non-bonded
+    # atom is no farther than its nearest bonded one has a bond list that
+    # disagrees with its spatial neighbours (interpenetrating parts, a
+    # collapsed rim angle), whatever the absolute distances.  The stricter
+    # longest-bond variant goes to geom.summary only: it fails wherever a
+    # junction bond is stretched, which geom.bond.long already reports.
+    nnb, nnb_long, nnb_margin, nnb_long_margin = _nearest_not_bonded(coords, net.bonds)
+    # one line per unordered pair: two atoms that are each other's nearest
+    # non-bonded atom would otherwise fill the ten with five pairs
+    listed: list[NearestNotBonded] = []
+    seen: set[frozenset[int]] = set()
+    for h in nnb:
+        if (pair := frozenset((h.atom, h.other))) not in seen:
+            seen.add(pair)
+            listed.append(h)
+    for h in listed[:10]:
+        out.append(
+            Finding(
+                "geom.nearest_not_bonded",
+                Severity.ERROR,
+                f"atom {h.atom} ({inst[h.atom]}): non-bonded atom {h.other} "
+                f"({inst[h.other]}) at {h.distance:.2f} A is no farther than its "
+                f"nearest bond (to {h.bonded}, {h.nearest_bond:.2f} A); the bond "
+                "list disagrees with the spatial neighbours",
+                where=str(h.atom),
+                data=(
+                    ("atoms", [h.atom, h.other]),
+                    ("instances", [inst[h.atom], inst[h.other]]),
+                    ("distance", round(h.distance, 3)),
+                    ("bonded", h.bonded),
+                    ("nearest_bond", round(h.nearest_bond, 3)),
+                    ("longest_bond", round(h.longest_bond, 3)),
+                ),
+            )
+        )
+
     # The seed tier: the same pair test on the placed seed, before stick
     # runs.  A seed with coincident atoms is wrong whatever the relaxer
     # makes of it afterwards (stick untangles some, a stiffer repulsion
@@ -484,6 +520,13 @@ def _geometry_findings(
                 ("angle_n_over", len(ang_bad)),
                 ("clash_count", len(clashes)),
                 ("clash_min", round(clashes[0][0], 3) if clashes else None),
+                # the bonded-nearest-neighbour rule: atoms failing it against
+                # their nearest bond (geom.nearest_not_bonded) and against
+                # their longest, with the smallest margin (A) of each
+                ("nnb_count", len(nnb)),
+                ("nnb_margin", _round_or_none(nnb_margin)),
+                ("nnb_longest_count", len(nnb_long)),
+                ("nnb_longest_margin", _round_or_none(nnb_long_margin)),
                 ("seed_clash_count", len(seed_clashes)),
                 (
                     "seed_clash_min",
@@ -495,6 +538,7 @@ def _geometry_findings(
                     max(0, len(bond_bad) - 10)
                     + max(0, len(ang_bad) - 10)
                     + max(0, len(clashes) - 10)
+                    + max(0, len(listed) - 10)
                     + max(0, len(seed_overlaps) - 10)
                     + max(0, len(short_bonds) - 10),
                 ),
@@ -508,14 +552,95 @@ def _geometry_findings(
     return out
 
 
+def _round_or_none(x: float | None) -> float | None:
+    return None if x is None else round(x, 3)
+
+
+#: ``_nearest_not_bonded``'s search reach cap: a bond longer than this is
+#: already a ``geom.bond.long`` outlier, and an uncapped reach would make the
+#: cell list quadratic on one broken bond
+_NNB_REACH_CAP_A = 4.0
+
+
+class NearestNotBonded(NamedTuple):
+    """One atom whose nearest non-bonded atom is no farther than one of its
+    own bonds: ``other`` at ``distance`` against the atom's nearest bond
+    (to ``bonded``, ``nearest_bond`` A) and its longest (``longest_bond``)."""
+
+    atom: int
+    other: int
+    distance: float
+    bonded: int
+    nearest_bond: float
+    longest_bond: float
+
+
+def _nearest_not_bonded(
+    coords: np.ndarray, bonds: tuple[tuple[int, int, int], ...] | list
+) -> tuple[list[NearestNotBonded], list[NearestNotBonded], float | None, float | None]:
+    """The bonded-nearest-neighbour rule (gr459567, Reto 2026-10-12): an
+    atom's nearest non-bonded atom must lie farther than its nearest bonded
+    one.  Two interpenetrating sheets, a ball sunk into its host and a bond
+    list that disagrees with the spatial neighbours all break it, whatever
+    the absolute distances.  Unlike ``_clash_pairs`` 1-3 pairs count: a
+    collapsed angle at a degree-1 rim atom sits in no ring, so
+    ``geom.angle.dev`` never sees it.
+
+    Returns the atoms failing the rule against their nearest bond, those
+    failing the stricter variant against their longest bond (both worst
+    margin first, ties by atom), and the smallest margin of each variant
+    (``None`` when no atom has a non-bonded atom within its longest bond's
+    reach)."""
+    if not bonds:
+        return [], [], None, None
+    pts = np.asarray(coords)
+    n = len(pts)
+    nearest: list[tuple[float, int]] = [(math.inf, -1)] * n
+    longest = [0.0] * n
+    for i, j, *_ in bonds:
+        d = float(np.linalg.norm(pts[i] - pts[j]))
+        for a, b in ((i, j), (j, i)):
+            if d < nearest[a][0]:
+                nearest[a] = (d, b)
+            longest[a] = max(longest[a], d)
+    reach = min(max(longest), _NNB_REACH_CAP_A) + 1e-9
+    closest: list[tuple[float, int]] = [(math.inf, -1)] * n
+    for d, i, j in _clash_pairs(pts, bonds, reach, skip_1_3=False):
+        if d < closest[i][0]:
+            closest[i] = (d, j)
+        if d < closest[j][0]:
+            closest[j] = (d, i)
+    hits: list[NearestNotBonded] = []
+    for a in range(n):
+        d, other = closest[a]
+        if other < 0 or nearest[a][1] < 0:
+            continue
+        hits.append(
+            NearestNotBonded(a, other, d, nearest[a][1], nearest[a][0], longest[a])
+        )
+    by_nearest = sorted(hits, key=lambda h: (h.distance - h.nearest_bond, h.atom))
+    by_longest = sorted(hits, key=lambda h: (h.distance - h.longest_bond, h.atom))
+    return (
+        [h for h in by_nearest if h.distance <= h.nearest_bond],
+        [h for h in by_longest if h.distance <= h.longest_bond],
+        by_nearest[0].distance - by_nearest[0].nearest_bond if hits else None,
+        by_longest[0].distance - by_longest[0].longest_bond if hits else None,
+    )
+
+
 def _clash_pairs(
-    coords: np.ndarray, bonds: tuple[tuple[int, int, int], ...] | list, bar: float
+    coords: np.ndarray,
+    bonds: tuple[tuple[int, int, int], ...] | list,
+    bar: float,
+    *,
+    skip_1_3: bool = True,
 ) -> list[tuple[float, int, int]]:
-    """Every pair closer than ``bar`` that is neither bonded nor shares a
-    bonded neighbour, closest first (ties by atom ids).  1-3 pairs are left
-    to ``geom.angle.dev``: a squeezed angle already reports them, and a
-    4-ring's diagonal sits near 2.0 A by construction.  A cell list keeps it
-    linear in atom count; hexfold carries no scipy."""
+    """Every pair closer than ``bar`` that is neither bonded nor (with
+    ``skip_1_3``) shares a bonded neighbour, closest first (ties by atom
+    ids).  1-3 pairs are left to ``geom.angle.dev``: a squeezed angle
+    already reports them, and a 4-ring's diagonal sits near 2.0 A by
+    construction.  A cell list keeps it linear in atom count; hexfold
+    carries no scipy."""
     n = len(coords)
     nbrs: list[set[int]] = [set() for _ in range(n)]
     for i, j, *_ in bonds:
@@ -537,7 +662,7 @@ def _clash_pairs(
             for i in members:
                 near = nbrs[i]
                 for j in other:
-                    if j <= i or j in near or near & nbrs[j]:
+                    if j <= i or j in near or (skip_1_3 and near & nbrs[j]):
                         continue
                     d = float(np.linalg.norm(coords[i] - coords[j]))
                     if d < bar:

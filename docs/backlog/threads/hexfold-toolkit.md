@@ -453,7 +453,17 @@ removed as met — the transport move it waited on happened 09-29)
      0.51 → 0.98 Å. The planner table was regenerated and the goldens
      re-pinned in the same commit. Not done: sweep the stored non-bud
      prod structures (they carry the old relaxer's coordinates until
-     regenerated).
+     regenerated). Regression (gr479847): the 1-3 exclusion lets
+     cone5's degree-1 rim atom 460 fold to 0.99 Å of 497 (no angle
+     spring holds it); found by `geom.nearest_not_bonded`, strict xfail
+     in tests/hexfold/test_nearest_not_bonded.py.
+   - **`geom.nearest_not_bonded` (Reto's DRC): shipped 2026-10-12.** ERROR
+     when an atom's nearest non-bonded atom (1-3 included) is no farther
+     than its nearest bond. The 0.3.5 junctions pass it (pillar bud margin
+     +0.10 Å); under 0.3.4 they failed (pillar bud 1.37 Å vs a 1.47 Å
+     bond, the prod `bud_regen` structure the same). The longest-bond
+     variant stays a `geom.summary` count: the stretched junction bonds
+     fail it (pillar bud 1.54 vs 1.56 Å, nanobud_87 1.82 vs 1.96 Å).
    - **Per-element-pair clash bar (W3): shipped 2026-10-07.**
      `Profile.clash_pair_A` (default H–H 1.5 Å) overrides `clash_A` for
      a listed pair; `geom.clash` names the elements and the bar it

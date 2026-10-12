@@ -100,7 +100,8 @@ class FootRow:
     passes: int
     misses: tuple[str, ...]  # failing bar columns; empty = meets every bar
     # ERROR finding codes of hexfold's geometry tier on the tethered
-    # coordinates (``geom.seed_overlap``, ``geom.clash``); a foot row only.
+    # coordinates (``geom.seed_overlap``, ``geom.clash``,
+    # ``geom.nearest_not_bonded``); a foot row only.
     # Scene rows leave it empty: the scene's errors live in ``ScenePlan``.
     errors: tuple[str, ...] = ()
 
@@ -453,7 +454,8 @@ class ScenePlan:
 
     @property
     def errors(self) -> tuple[str, ...]:
-        """ERROR finding codes (``geom.clash`` overlap, ``geom.seed_overlap``)."""
+        """ERROR finding codes (``geom.clash`` overlap, ``geom.seed_overlap``,
+        ``geom.nearest_not_bonded``)."""
         return tuple(
             sorted({f.code for f in self.findings if f.severity.name == "ERROR"})
         )

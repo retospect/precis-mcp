@@ -140,7 +140,10 @@ reports from before hexfold 0.3.1 list at most 10 entries per code and carry no
 elements named with the pair's bar; H–H has its own 1.5 Å bar, set when a
 terminated armchair bay held its two H at 1.87–1.89 Å (stick's stronger
 repulsion now opens it to about 2.0 Å); a clean check without it is not a
-clean geometry). Nanobud menus
+clean geometry). `geom.nearest_not_bonded` ERROR: an atom whose nearest
+non-bonded atom (1-3 included) is no farther than its nearest bond — the bond
+list disagrees with the spatial neighbours; `geom.summary` adds `nnb_count`,
+`nnb_margin` and the stricter longest-bond counts `nnb_longest_*`. Nanobud menus
 (`[9-6]`, `[8-7]`, `[2+2]`) seed the C60 outside its host; on a flat host
 (sheet, lid) a trailing `face=up|down` on the menu line (or inside a
 `--bond face=down-->` arrow) picks the face, per bud, so a sheet can
