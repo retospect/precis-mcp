@@ -138,7 +138,7 @@ Two facts shape the design:
 
 ### Reto, 2026-10-03T19:32Z (se-3d-viewer-7, all recommended) — supersedes the above where they differ
 
-- **Scale lives in `backlog/print-file-scale.md`.** It owns `scale=` on the
+- **Scale shipped (print-file-scale).** `precis_se/printscale.py` + `routes/se_print.py` own `scale=` on the
   3MF writer, the `-x<factor>` file name, `precis:scale_factor`, the route
   `print/{block}.3mf?scale=&model=` and the `print/{block}.json` suggestion
   (fit to 100 mm, rounded down to 1-2-5). This item builds geometry only, and
@@ -154,4 +154,5 @@ Two facts shape the design:
   basematerials work move to a later build; `viz3d/stickfig.py::_CPK` stays
   the table to reuse then.
 - Ships as atom models for se blocks with atoms (the se page), not only
-  `structure` refs. Cost about 1 build after print-file-scale.
+  `structure` refs. Cost about 1 build; the seam is shipped: replace `printscale.floor_for` (selected-model strut floor; `None` today),
+  fill `printscale.descriptor`'s `models`/`selected_model`, and swap the atom 409 in `routes/se_print.py::_refusal` for the real export.

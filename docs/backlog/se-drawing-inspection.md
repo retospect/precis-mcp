@@ -55,7 +55,7 @@ cross-block proximity review below remains authoritative for diagnostics.
 
 ## Print dialog seam
 
-`print-file-scale.md` owns route/backend changes. Consume its proposed
+`routes/se_print.py` + `precis_se/printscale.py` (shipped) own route/backend changes. Consume their
 `print/{block}.json` fields `real_size_mm`, `suggested_scale`, `min_scale`,
 `models`; submit `?scale=&model=` and display 422 `min_scale` / 409 reasons.
 Do not duplicate scale/floor math in JavaScript. Await se-print confirmation

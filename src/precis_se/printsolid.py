@@ -295,6 +295,29 @@ def _cut_placement(
     return xform, loc, rot
 
 
+def scale_mismatch_finding(
+    block_name: str, diag_m: float, *, scale: float = 1.0
+) -> ValidationIssue | None:
+    """``mode_scale_mismatch`` (warn) when the part's bbox diagonal
+    (``diag_m`` metres at source size, times ``scale`` for a scaled print)
+    falls outside the band the fdm process covers, else ``None``."""
+    diag = diag_m * scale
+    if _MIN_BBOX_DIAG_M <= diag <= _MAX_BBOX_DIAG_M:
+        return None
+    return ValidationIssue(
+        rule="mode_scale_mismatch",
+        subject=block_name,
+        detail=(
+            f"{block_name!r}'s printed solid has a bbox diagonal of "
+            f"{diag:g} m, outside the [{_MIN_BBOX_DIAG_M:g}, "
+            f"{_MAX_BBOX_DIAG_M:g}] m band this shop's fdm process "
+            "covers — you do not FDM a nanoscale or building-scale "
+            "part"
+        ),
+        severity="warn",
+    )
+
+
 def printed_solid(
     tree: SeTree,
     block_name: str,
@@ -348,21 +371,9 @@ def printed_solid(
     volume_before = cad_bulk.volume(design).volume
     lo, hi = cad_bulk.expr_aabb(design, base_expr)
     diag = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
-    if diag < _MIN_BBOX_DIAG_M or diag > _MAX_BBOX_DIAG_M:
-        findings.append(
-            ValidationIssue(
-                rule="mode_scale_mismatch",
-                subject=block_name,
-                detail=(
-                    f"{block_name!r}'s printed solid has a bbox diagonal of "
-                    f"{diag:g} m, outside the [{_MIN_BBOX_DIAG_M:g}, "
-                    f"{_MAX_BBOX_DIAG_M:g}] m band this shop's fdm process "
-                    "covers — you do not FDM a nanoscale or building-scale "
-                    "part"
-                ),
-                severity="warn",
-            )
-        )
+    mismatch = scale_mismatch_finding(block_name, diag)
+    if mismatch is not None:
+        findings.append(mismatch)
 
     world_xform = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
     inv = world_xform.inverse()

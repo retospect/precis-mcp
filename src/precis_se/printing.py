@@ -71,6 +71,7 @@ own handle; it never exports itself.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -111,7 +112,7 @@ from precis_se import capabilities as se_caps
 from precis_se import fasten as se_fasten
 from precis_se import modes as se_modes
 from precis_se.ops import SeBlock, SeTree, pinned_down
-from precis_se.printsolid import PrintedSolid, printed_solid
+from precis_se.printsolid import PrintedSolid, printed_solid, scale_mismatch_finding
 from precis_se.validate import ValidationIssue
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -141,6 +142,12 @@ SLICER_LINE_WIDTH_MM = 0.42
 #: ``floating_island`` findings listed individually per block; the rest are
 #: summarised in one line (the total is always stated).
 MAX_LISTED_ISLANDS = 10
+
+
+def check_scale(scale: float) -> None:
+    """Raise :class:`ValueError` unless ``scale`` is finite and positive."""
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError(f"scale must be finite and positive, got {scale!r}")
 
 
 class PrintUnsupported(RuntimeError):
@@ -189,6 +196,9 @@ class BlockPrintReport:
     #: ``True`` when the mesh above was built and the floating-region check
     #: ran on it (``report_for(mesh_checks=True)``, the default).
     mesh_checked: bool = False
+    #: Print scale factor the report was judged at: every size above is the
+    #: printed (source x scale) size; ``1.0`` is an unscaled print.
+    scale: float = 1.0
 
 
 @dataclass
@@ -290,7 +300,12 @@ def _abstract_joint_findings(
 
 
 def _hole_findings(
-    node: SeBlock, block: str, holes: list[se_fasten.Hole], rules: dict[str, Any]
+    node: SeBlock,
+    block: str,
+    holes: list[se_fasten.Hole],
+    rules: dict[str, Any],
+    *,
+    scale: float = 1.0,
 ) -> list[ValidationIssue]:
     """``hole_undersize`` (warn, per undersize hole) and
     ``hole_shrink_absorbed`` (info, one receipt for the block) — module
@@ -301,18 +316,18 @@ def _hole_findings(
     min_hole = rules.get("min_hole")
     if min_hole is not None:
         for hole in holes:
-            if hole.diameter_m < min_hole:
+            if hole.diameter_m * scale < min_hole:
                 out.append(
                     ValidationIssue(
                         rule="hole_undersize",
                         subject=block,
                         detail=(
-                            f"{hole.name}: a {hole.diameter_m * 1000:.2f} mm "
+                            f"{hole.name}: a {hole.diameter_m * scale * 1000:.2f} mm "
                             f"stamped {hole.kind} hole is below what this "
                             "process can reliably print"
                         ),
                         severity="warn",
-                        measured=f"{hole.diameter_m * 1000:.2f} mm",
+                        measured=f"{hole.diameter_m * scale * 1000:.2f} mm",
                         expected=f">= {min_hole * 1000:.2f} mm (min_hole)",
                         suggested_fix="drill after printing",
                     )
@@ -356,7 +371,7 @@ def _thinnest_dim(alias: str, params: dict[str, float]) -> float | None:
 
 
 def _min_feature_finding(
-    block: str, printed: PrintedSolid, rules: dict[str, Any]
+    block: str, printed: PrintedSolid, rules: dict[str, Any], *, scale: float = 1.0
 ) -> ValidationIssue | None:
     """``min_feature`` (warn) — the worst (thinnest) offending ``add``
     node in the printed solid's own node set, against ``min_wall``
@@ -380,6 +395,7 @@ def _min_feature_finding(
         dim = _thinnest_dim(parsed.alias, parsed.params)
         if dim is None:
             continue
+        dim *= scale
         if worst is None or dim < worst[0]:
             worst = (dim, node_spec.name)
     if worst is None or worst[0] >= threshold:
@@ -467,14 +483,17 @@ def frame_free_findings(
     rules: dict[str, Any],
     *,
     fused: Callable[[str, str], bool] | None = None,
+    scale: float = 1.0,
 ) -> list[ValidationIssue]:
     """The se-only findings that hold whatever frame the solid prints in —
     stamped-hole checks, ``min_feature``, ``abstract_joint`` (module
     docstring). Shared with :mod:`precis_se.printgroup` and, with
     ``fused`` (a ``screw`` demand satisfied by fusion),
     :mod:`precis_se.manufacture`."""
-    out = _hole_findings(node, block, se_fasten.features_for(tree, block), rules)
-    mf = _min_feature_finding(block, printed, rules)
+    out = _hole_findings(
+        node, block, se_fasten.features_for(tree, block), rules, scale=scale
+    )
+    mf = _min_feature_finding(block, printed, rules, scale=scale)
     if mf is not None:
         out.append(mf)
     out.extend(_abstract_joint_findings(tree, block, fused=fused))
@@ -548,6 +567,7 @@ def report_for(
     *,
     cad_store_reader: Store,
     mesh_checks: bool = True,
+    scale: float = 1.0,
 ) -> BlockPrintReport | None:
     """Everything ``view='print'`` needs for one block, or ``None`` when
     the block's resolved mode family isn't ``fdm`` at all — not this
@@ -563,7 +583,14 @@ def report_for(
     floating-region check on it (:func:`build_print_mesh`) — seconds on a
     big field mesh, so the cheap status callers (the ``drc``/``validate``
     pointers, the all-blocks summary, ``view='fab'``) pass ``False`` and
-    keep their old cost; the per-block report and the export keep it on."""
+    keep their old cost; the per-block report and the export keep it on.
+
+    ``scale`` (finite, positive; default 1) is the print scale factor: every
+    check judges the geometry at its PRINTED size (source x ``scale``) while
+    the process rules (layer height, line width, min wall) stay physical —
+    the mesh the report judged is the mesh :func:`export_block_mesh` ships.
+    Raises :class:`ValueError` for a nonfinite or nonpositive ``scale``."""
+    check_scale(scale)
     node = tree.blocks.get(block)
     if node is None:
         return None
@@ -602,7 +629,11 @@ def report_for(
             findings=findings,
         )
 
-    findings.extend(printed.findings)
+    findings.extend(
+        f
+        for f in printed.findings
+        if scale == 1.0 or f.rule != "mode_scale_mismatch"  # re-judged below
+    )
     if printed.volume_after_m3 <= 0.0:
         # net_empty already named the problem (in printed.findings) —
         # there is no solid left to search an orientation over.
@@ -617,6 +648,7 @@ def report_for(
             pinned=pinned,
             best_other=None,
             findings=findings,
+            scale=scale,
         )
 
     if not manifold_available():
@@ -630,7 +662,13 @@ def report_for(
     # the resolution the DRC below judges it at; a sharp design's analytic
     # fold ignores the pitch.
     pitch = rules.get("layer_height")
-    mesh = _solid_mesh(printed.spec, pitch=pitch)
+    mesh = _solid_mesh(printed.spec, pitch=None if pitch is None else pitch / scale)
+    if scale != 1.0:
+        mesh = (mesh[0] * scale, mesh[1])
+        extent = np.ptp(mesh[0], axis=0) if len(mesh[0]) else np.zeros(3)
+        mismatch = scale_mismatch_finding(block, float(np.linalg.norm(extent)))
+        if mismatch is not None:
+            findings.append(mismatch)
     loads = _local_loads(node)
 
     # A SIMP-realized block: the AM filter baked build_dir in before the
@@ -737,6 +775,7 @@ def report_for(
                 pitch=pitch,
                 source_pitch=source_pitch,
                 line_width=rules.get("line_width"),
+                scale=scale,
             )
             findings.extend(_mesh_findings(block, print_mesh, pitch))
         except (ExportError, ValueError) as exc:
@@ -748,7 +787,7 @@ def report_for(
                     severity="info",
                 )
             )
-    findings.extend(frame_free_findings(tree, node, block, printed, rules))
+    findings.extend(frame_free_findings(tree, node, block, printed, rules, scale=scale))
 
     return BlockPrintReport(
         block=block,
@@ -765,6 +804,7 @@ def report_for(
         print_mesh=print_mesh,
         source_pitch=source_pitch,
         mesh_checked=print_mesh is not None,
+        scale=scale,
     )
 
 
@@ -885,6 +925,7 @@ def build_print_mesh(
     welded: bool = False,
     flat_bed_contact: bool = True,
     line_width: float | None = None,
+    scale: float = 1.0,
 ) -> PrintMesh:
     """The mesh ``printed`` ships in the build frame ``down`` names: folded
     in millimetres (:func:`precis.cad.export._scaled_for_export` first —
@@ -903,17 +944,28 @@ def build_print_mesh(
 
     A field-rooted block first gets flat bed contact in field space
     (:func:`flat_bed_spec`; ``flat_bed_contact=False`` disables it): ``PrintMesh.
-    flat_bed`` / ``flat_bed_skipped`` say what happened."""
+    flat_bed`` / ``flat_bed_skipped`` say what happened.
+
+    ``scale`` multiplies the folded geometry (millimetres, after the m->mm
+    conversion) BEFORE the build-frame rotation, weld and tail lift, so the
+    cleanup judges the printed size. ``pitch`` (the printer's layer height)
+    stays physical: a field is tessellated at ``pitch / scale`` in source
+    space, giving the printed mesh that resolution. ``source_pitch`` follows
+    the geometry, so its half-pitch lift tolerance is multiplied."""
+    check_scale(scale)
     scaled = _scaled_for_export(printed.spec)
     mm_pitch = None if pitch is None else pitch * _MM_PER_M
+    src_pitch = None if mm_pitch is None else mm_pitch / scale
     applied = skipped = lattice = None
     if flat_bed_contact:
-        scaled, applied, skipped, lattice = flat_bed_spec(scaled, down, mm_pitch)
-    source_mm = None if source_pitch is None else source_pitch * _MM_PER_M
+        scaled, applied, skipped, lattice = flat_bed_spec(scaled, down, src_pitch)
+    source_mm = None if source_pitch is None else source_pitch * _MM_PER_M * scale
     if welded:
-        raw = [("design", *_solid_mesh(scaled, pitch=mm_pitch, lattice=lattice))]
+        raw = [("design", *_solid_mesh(scaled, pitch=src_pitch, lattice=lattice))]
     else:
-        raw = _component_meshes(scaled, pitch=mm_pitch, lattice=lattice)
+        raw = _component_meshes(scaled, pitch=src_pitch, lattice=lattice)
+    if scale != 1.0:
+        raw = [(n, v * scale, t) for n, v, t in raw]
     halves = [h / 2.0 for h in (mm_pitch, source_mm) if h is not None]
     tol_mm = max(halves) if halves else None
     out = PrintMesh(
@@ -1226,6 +1278,7 @@ def mesh_for_export(
             line_width=None
             if built.line_width_mm is None
             else built.line_width_mm / _MM_PER_M,
+            scale=report.scale,
         )
         return welded, _mesh_findings(report.block, welded, report.pitch)
     return built, None
@@ -1241,6 +1294,7 @@ def write_mesh(
     source_pitch: float | None = None,
     built: PrintMesh | None = None,
     title: str | None = None,
+    scale: float = 1.0,
 ) -> Path:
     """Write ``printed``'s solid to ``out_path`` (``'stl'``/``'3mf'``) in
     the build frame — rotated so ``down`` is ``-z``, bed at ``z = 0``,
@@ -1264,7 +1318,11 @@ def write_mesh(
     print_mesh`, same ``down``/``pitch``) is shipped as-is instead of
     rebuilding, so the file is byte-for-byte the mesh the report judged;
     STL reuses it only when it is a single part (STL has no parts).
-    ``title`` is the 3MF ``Title`` metadata.
+    ``title`` is the 3MF ``Title`` metadata. ``scale`` is the print scale
+    factor ``built`` was (or, when rebuilt here, will be) prepared at: the
+    geometry is scaled once, inside :func:`build_print_mesh`, and the 3MF
+    records the factor as ``precis:scale_factor`` without touching the
+    coordinates again (STL has no metadata slot).
 
     Raises :class:`PrintUnsupported` when ``manifold3d`` is missing, and
     :class:`precis.cad.export.ExportError` on a malformed/empty fold —
@@ -1278,16 +1336,26 @@ def write_mesh(
     if fmt == "stl":
         if built is None or len(built.parts) != 1:
             built = build_print_mesh(
-                printed, down, pitch=pitch, source_pitch=source_pitch, welded=True
+                printed,
+                down,
+                pitch=pitch,
+                source_pitch=source_pitch,
+                welded=True,
+                scale=scale,
             )
         _name, verts, tris = built.parts[0]
         _write_binary_stl(out, verts, tris)
     elif fmt == "3mf":
         if built is None:
             built = build_print_mesh(
-                printed, down, pitch=pitch, source_pitch=source_pitch
+                printed, down, pitch=pitch, source_pitch=source_pitch, scale=scale
             )
-        _write_3mf(out, built.parts, title=title)
+        _write_3mf(
+            out,
+            built.parts,
+            title=title,
+            recorded_scale=None if scale == 1.0 else scale,
+        )
     else:
         raise ExportError(f"unknown mesh format {fmt!r}; supported: stl, 3mf")
     return out
@@ -1332,6 +1400,7 @@ def export_block_mesh(
         source_pitch=report.source_pitch,
         built=built,
         title=title,
+        scale=report.scale,
     )
     shown = report.findings
     if judged is not None:

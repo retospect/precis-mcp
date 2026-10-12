@@ -146,6 +146,7 @@ from precis_se import pick as se_pick
 from precis_se import precedent as se_precedent
 from precis_se import printgroup as se_printgroup
 from precis_se import printing as se_printing
+from precis_se import printscale as se_printscale
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
@@ -1806,9 +1807,30 @@ class SeHandler(Handler):
                 f"args={{'block': {node.template!r}}} instead"
             )
         if se_printgroup.is_group_root(tree, block):
+            try:
+                group_scale = se_printscale.parse_scale(args.get("scale"))
+            except se_printscale.PrintParamError as exc:
+                raise BadInput(f"view='print': {exc.reason}") from exc
+            if group_scale != 1.0:
+                raise BadInput(
+                    f"view='print': scale= is not supported for print group "
+                    f"root {block!r} — only single-block exports are scaled"
+                )
             return self._render_print_group(tree, ref, block, args)
         try:
-            report = se_printing.report_for(tree, block, cad_store_reader=self.store)
+            scale = se_printscale.parse_scale(args.get("scale"))
+            se_printscale.check_floor(tree, block, None, scale)
+        except se_printscale.PrintParamError as exc:
+            raise BadInput(f"view='print': {exc.reason}") from exc
+        except se_printscale.BelowFloor as exc:
+            raise BadInput(
+                f"view='print': scale {scale:g} is below the printable floor; "
+                f"min_scale={exc.min_scale:g}"
+            ) from exc
+        try:
+            report = se_printing.report_for(
+                tree, block, cad_store_reader=self.store, scale=scale
+            )
         except se_printing.PrintUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
@@ -1830,7 +1852,12 @@ class SeHandler(Handler):
         out = (
             Path(str(raw_path)).expanduser()
             if raw_path
-            else Path(tempfile.gettempdir()) / f"{ref.slug}-{block}.{fmt}"
+            else Path(tempfile.gettempdir())
+            / (
+                f"{ref.slug}-{block}.{fmt}"
+                if scale == 1.0
+                else se_printscale.scaled_filename(str(ref.slug), block, scale, fmt)
+            )
         )
         try:
             exported = se_printing.export_block_mesh(
@@ -5693,7 +5720,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "literature": frozenset({"block"}),
     "fret": frozenset(),
     "links": frozenset(),
-    "print": frozenset({"block", "fmt", "path"}),
+    "print": frozenset({"block", "fmt", "path", "scale"}),
     "fab": frozenset(),
 }
 assert {v for v, keys in _VIEW_ARGS.items() if "state" in keys} == _STATE_VIEWS

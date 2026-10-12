@@ -218,6 +218,18 @@ the se reader page's "Print files" section links
 `/se/<design>/print/<block>.3mf` for each printable block (error/finding
 counts in the `X-Precis-Print-Errors`/`-Findings` response headers).
 
+**Scaled files.** A nanometre or micrometre block exports sub-micron at
+1:1. `args={"scale": 2e7}` (web: `?scale=2e7`) multiplies the geometry,
+records `precis:scale_factor` in the 3MF and names the file
+`<design>-<block>-x2e7.3mf`. Every check (floating regions, slicer
+cantilever, cleanup, `min_feature`, hole size, `mode_scale_mismatch`) runs on
+the mesh at its **printed** size; layer height and line width stay physical.
+`GET /se/<design>/print/<block>.json` returns `real_size_mm`,
+`suggested_scale` (longest side fit to 100 mm, rounded down to 1-2-5; 1 for
+1 mm up to the bed), `min_scale` (`null` for a solid) and `models`. A scale
+below the floor is refused with `{"min_scale": f}`; atomic blocks answer 409
+"not printable yet" until printable atomic models ship.
+
 ## 2d — print groups: `intent='model'` on an ancestor block
 
 A group root is any ancestor block that carries a print `intent`; its

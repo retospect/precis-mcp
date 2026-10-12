@@ -650,12 +650,27 @@ def _3mf_object(obj_id: int, name: str, verts: np.ndarray, tris: np.ndarray) -> 
     )
 
 
+def format_scale_factor(scale: float) -> str:
+    """The one spelling of a print scale factor — ``precis:scale_factor``
+    metadata and the scaled download file name share it. Whole numbers
+    with four or more trailing zeros go compact (``2e7``, ``12e6``), other
+    whole numbers stay plain (``100``), the rest take the shortest
+    round-tripping float repr."""
+    if scale == int(scale) and scale >= 1:
+        digits = str(int(scale))
+        stripped = digits.rstrip("0")
+        zeros = len(digits) - len(stripped)
+        return f"{stripped}e{zeros}" if zeros >= 4 else digits
+    return repr(float(scale))
+
+
 def _write_3mf(
     path: Path,
     parts: list[tuple[str, np.ndarray, np.ndarray]],
     *,
     title: str | None = None,
     scale: float = 1.0,
+    recorded_scale: float | None = None,
 ) -> None:
     """Write a 3MF package. Each part is its **own** ``<object>`` referenced
     by the ``<build>`` — so a multi-component assembly stays separable in
@@ -668,10 +683,18 @@ def _write_3mf(
     coordinates without modifying the input arrays. This is a private
     writer prerequisite, not a checked-print scale API: SE callers must
     judge the scaled mesh before exposing it, rather than rescale a mesh
-    whose print findings describe a different size.
+    whose print findings describe a different size. A caller whose parts
+    are ALREADY at printed size (the checked-print path) passes
+    ``recorded_scale`` instead: the factor is written as metadata only and
+    no coordinate is touched.
     """
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("scale must be finite and positive")
+    if recorded_scale is not None:
+        if not math.isfinite(recorded_scale) or recorded_scale <= 0:
+            raise ValueError("recorded_scale must be finite and positive")
+        if scale != 1:
+            raise ValueError("pass scale or recorded_scale, not both")
     objects = "".join(
         _3mf_object(i, name, v if scale == 1 else v * scale, t)
         for i, (name, v, t) in enumerate(parts, start=1)
@@ -684,9 +707,13 @@ def _write_3mf(
         "</metadata>"
     )
     scale_namespace = ""
-    if scale != 1:
+    factor = scale if recorded_scale is None else recorded_scale
+    if factor != 1:
         scale_namespace = ' xmlns:precis="urn:precis:metadata"'
-        meta += f'<metadata name="precis:scale_factor">{scale}</metadata>'
+        meta += (
+            '<metadata name="precis:scale_factor">'
+            f"{format_scale_factor(factor)}</metadata>"
+        )
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<model unit="millimeter" xml:lang="en-US" '

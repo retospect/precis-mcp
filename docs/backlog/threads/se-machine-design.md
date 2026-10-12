@@ -3,10 +3,10 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Build [print-file-scale](../print-file-scale.md) (½ build), then O2–O4 before O5 (Reto 2026-10-12: "ok, we'll work on this, not highest prio now" — the recommendation O2–O4 first, rough box yes, stands as the default when the thread resumes).
-- **Blocked by:** Nothing for print-file-scale. Reto deprioritised this thread on 2026-10-12; the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
+- **Next:** O2–O4 before O5 (Reto 2026-10-12: "ok, we'll work on this, not highest prio now" — the recommendation O2–O4 first, rough box yes, stands as the default when the thread resumes).
+- **Blocked by:** Nothing. Reto deprioritised this thread on 2026-10-12; the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
-- **Acceptance:** Use [print-file-scale](../print-file-scale.md): writer scale, scale metadata/filename, route bounds and printed-size checks; preserve the already dogfooded region slice A.
+- **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
 - **Worktree:** `se-machine-design`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -32,7 +32,7 @@ off that gap until it closes.
 
 - **Branch state at the 95% review (2026-10-04T06:48Z):** nothing is
   only on this branch; everything is on main. Nothing is half-done.
-  Next step: print-file-scale (½ build), then O2–O4 or O5 once Reto
+  Next step: O2–O4 or O5 once Reto
   answers item -6. Reto owes: the load-test numbers (-6), the PCB
   rough-box decision (-8), and the first "Print files" click on
   organic-bracket-1's 3-D page.
@@ -70,8 +70,8 @@ off that gap until it closes.
       `print/{block}.json`;
     - the print check at printed size;
     - the atom models in `backlog/printable-atomic-models.md`.
-    The dialog is se-3d-viewer's. The writer scale is
-    `backlog/print-file-scale.md` (ready).
+    The dialog is se-3d-viewer's. The writer scale shipped
+    (`precis_se/printscale.py`, route `print/{block}.3mf?scale=`).
   - **Open question to Reto** (item -6): declared flat faces with O5 (load
     ports with a solid contact boss), about 1 build, ahead of O2–O4?
 - **Joint sweep** shipped c5a2e8624 and was dogfooded on prod 2026-10-03
@@ -113,8 +113,6 @@ off that gap until it closes.
      at min_member/3, and a `min_member` capability field.
    - O3: default rounding at min_member/3.
    - O4: optimiser convergence.
-   - `backlog/print-file-scale.md`: the writer scale for scaled downloads,
-     ½ build (se-3d-viewer-7).
    Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
    Lab X1 Carbon with tree supports; the goal is support-free.
 3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped
