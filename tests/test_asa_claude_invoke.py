@@ -27,6 +27,7 @@ import pytest
 import precis.utils.claude_agent as claude_agent
 from asa_bot.claude_invoke import ClaudeResult, invoke
 from asa_bot.config import LLMConfig
+from precis.utils.llm.failure import FailureClass
 
 
 @pytest.fixture(autouse=True)
@@ -616,3 +617,172 @@ def test_shutdown_chain_executor_rejects_new_work(
     second = claude_invoke_mod._chain_executor
     assert second is not None
     assert second is not first
+
+
+# ── budget degradation ladder (gr479851) ───────────────────────────────────
+
+_QUOTA_MSG = "budget: claude quota low — paused until the window resets"
+
+
+def _paused_result(tier: Any, reason_class: FailureClass = "quota") -> Any:
+    from precis.utils.llm.router import LlmResult
+
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=tier,
+        error=_QUOTA_MSG,
+        paused=True,
+        reason_class=reason_class,
+    )
+
+
+def _ladder(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    paused: set[Any],
+    local_model: str | None = "qwen-local",
+    reason_class: FailureClass = "quota",
+) -> list[Any]:
+    """Fake both router seams; every tier in ``paused`` returns a breaker
+    pause, any other answers. Returns the recorded LlmRequests in order."""
+    from precis.utils.llm.router import LlmResult
+
+    seen: list[Any] = []
+
+    def _answer(req: Any) -> Any:
+        seen.append(req)
+        if req.tier in paused and req.placement != "local":
+            return _paused_result(req.tier, reason_class)
+        return LlmResult(
+            text="answered",
+            cost_usd=0.0,
+            turns_used=1,
+            model=req.model or "x",
+            tier=req.tier,
+        )
+
+    async def fake_dispatch_async(req: Any) -> Any:
+        res = _answer(req)
+        if not res.paused and req.on_event is not None:
+            await req.on_event(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": res.text}]},
+                }
+            )
+        return res
+
+    monkeypatch.setattr("asa_bot.claude_invoke.warm_runtime", lambda: None)
+    monkeypatch.setattr("asa_bot.claude_invoke.dispatch_async", fake_dispatch_async)
+    monkeypatch.setattr("asa_bot.claude_invoke.route", _answer)
+    monkeypatch.setattr(
+        "asa_bot.claude_invoke.local_fallback_model",
+        lambda *, tools_needed: local_model,
+    )
+    return seen
+
+
+def test_budget_pause_frontier_degrades_to_big_with_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen = _ladder(monkeypatch, paused={Tier.FRONTIER})
+    cfg = _cfg(command=["claude", "-p", "--model", "opus"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-d1"))
+
+    assert [r.tier for r in seen] == [Tier.FRONTIER, Tier.BIG]
+    assert seen[1].placement == "cloud"
+    assert seen[1].degraded_from == "frontier"
+    assert seen[0].degraded_from is None
+    assert result.error is None
+    assert result.text.startswith("answered")
+    last = result.text.splitlines()[-1]
+    assert last.startswith("-# answered on big (")
+    assert "claude window is low" in last
+
+
+def test_budget_pause_local_lane_degrades_through_medium_to_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen = _ladder(
+        monkeypatch, paused={Tier.BIG, Tier.MEDIUM}, local_model="qwen-local"
+    )
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-d2"))
+
+    assert [r.tier for r in seen] == [Tier.BIG, Tier.MEDIUM, Tier.BIG]
+    assert seen[1].placement == "cloud"
+    assert seen[1].degraded_from == "big"
+    last_req = seen[2]
+    assert last_req.placement == "local"
+    assert last_req.model == "qwen-local"
+    assert last_req.degraded_from == "big"
+    assert result.error is None
+    assert result.text.splitlines()[-1].startswith(
+        "-# answered on local (`qwen-local`)"
+    )
+
+
+def test_pinned_claude_model_pause_is_explained_not_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen = _ladder(monkeypatch, paused={Tier.FRONTIER})
+    cfg = _cfg(command=["claude", "-p", "--model", "opus"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-d3", pinned=True))
+
+    assert [r.tier for r in seen] == [Tier.FRONTIER]
+    assert result.error is not None
+    assert _QUOTA_MSG in result.error
+    assert "/model pin" in result.error
+    assert "/status?tab=budget" in result.error
+
+
+def test_pinned_local_still_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen = _ladder(monkeypatch, paused={Tier.BIG})
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-d4", pinned=True))
+
+    assert len(seen) == 2
+    assert result.error is None
+    assert "-# answered on" in result.text
+
+
+def test_all_paused_and_no_local_model_refuses_with_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen = _ladder(
+        monkeypatch,
+        paused={Tier.FRONTIER, Tier.BIG, Tier.MEDIUM},
+        local_model=None,
+    )
+    cfg = _cfg(command=["claude", "-p", "--model", "opus"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-d5"))
+
+    assert [r.tier for r in seen] == [Tier.FRONTIER, Tier.BIG, Tier.MEDIUM]
+    assert result.text == ""
+    assert result.error is not None
+    assert _QUOTA_MSG in result.error
+    assert "No smaller tier could serve" in result.error
+
+
+def test_rate_pause_does_not_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen = _ladder(monkeypatch, paused={Tier.FRONTIER}, reason_class="rate")
+    cfg = _cfg(command=["claude", "-p", "--model", "opus"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-d6"))
+
+    assert [r.tier for r in seen] == [Tier.FRONTIER]
+    assert result.error == _QUOTA_MSG

@@ -12,6 +12,13 @@ Two lanes, picked by the effective ``--model`` value:
   ``claude -p``, no event stream, the reply comes off the aggregated
   :class:`LlmResult`.
 
+Budget degradation (gr479851): a turn whose tier pauses at the budget
+breaker (the claude quota taper, a dollar cap) is re-asked on each smaller
+claude tier, then on a free served local model, and answers with a one-line
+``-#`` notice naming the tier that served it (:func:`_degrade`). A ``/model``
+pin is not degraded — the pause is explained instead. Only this
+conversational lane degrades; worker passes still pause.
+
 asa_bot spawns a fresh turn per Discord message either way. Captures the
 final assistant text + per-turn metadata (stop_reason, token counts).
 On the streaming lane, progress events flow out so the Discord progress
@@ -60,6 +67,7 @@ to the ``precis serve`` that ``claude -p`` spawns, and as an enclosing
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import re
@@ -74,6 +82,12 @@ from asa_bot.llm_runtime import warm_runtime
 from asa_bot.oauth import ensure_oauth_token
 from precis.acting_user import ENV_VAR as ACTING_USER_ENV
 from precis.acting_user import actor_for
+from precis.utils.llm.degrade import (
+    degrade_steps,
+    is_budget_pause,
+    local_fallback_model,
+    tier_for_model,
+)
 from precis.utils.llm.router import (
     LlmRequest,
     LlmResult,
@@ -210,6 +224,11 @@ class ClaudeResult:
         self.error: str | None = None
         self.tool_uses: list[str] = []
         self.session_id: str | None = None
+        # The router refused the turn before any provider ran (budget breaker,
+        # busy local slots) and its failure class — what the budget ladder
+        # (:func:`_degrade`) keys on.
+        self.paused: bool = False
+        self.reason_class: str | None = None
         # True once we've emitted the first-sentence ack event so we
         # don't fire it again as more text streams in.
         self.first_sentence_emitted: bool = False
@@ -276,6 +295,7 @@ async def invoke(
     conv_slug: str,
     on_progress: Callable[..., Any] | None = None,
     acting_user: str | None = None,
+    pinned: bool = False,
 ) -> ClaudeResult:
     """Run one claude -p turn via the router. Returns the aggregated ClaudeResult.
 
@@ -286,6 +306,11 @@ async def invoke(
 
     Caller posts these to Discord as a single edited "working..."
     message (don't spam new posts).
+
+    A turn whose tier pauses at the budget breaker degrades down the ladder
+    (:func:`_degrade`) unless ``pinned`` — the speaker chose the model with
+    ``/model`` — in which case the pause is explained instead
+    (:func:`_pinned_pause`).
 
     Never raises — a router/transport failure lands on
     :attr:`ClaudeResult.error` instead, exactly like the old hand-rolled
@@ -322,20 +347,151 @@ async def invoke(
         except Exception:
             log.exception("debug prompt dump failed; continuing")
 
-    result = ClaudeResult()
+    turn = _Turn(
+        cfg=cfg,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        conv_slug=conv_slug,
+        on_progress=on_progress,
+        acting_user=acting_user,
+        max_turns=max_turns,
+    )
+    is_local = model.strip().lower() == _LOCAL_MODEL_SENTINEL
+    start = tier_for_model(model)
+    if is_local:
+        result = await _invoke_via_chain(turn)
+    else:
+        result = await _invoke_streaming(turn, tier=start, model=model)
+    if not _budget_paused(result):
+        return result
+    # A pin of the ``local`` sentinel is the automatic lane, not a choice of tier.
+    if pinned and not is_local:
+        return _pinned_pause(result, model)
+    return await _degrade(turn, start=start, first=result)
 
-    if model.strip().lower() == _LOCAL_MODEL_SENTINEL:
-        return await _invoke_via_chain(
-            cfg,
-            system_prompt,
-            user_message,
-            conv_slug=conv_slug,
-            result=result,
-            max_turns=max_turns,
-            acting_user=acting_user,
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Turn:
+    """The per-turn inputs every lane and ladder step shares."""
+
+    cfg: LLMConfig
+    system_prompt: str
+    user_message: str
+    conv_slug: str
+    on_progress: Callable[..., Any] | None
+    acting_user: str | None
+    max_turns: int
+
+
+def _budget_paused(result: ClaudeResult) -> bool:
+    """True when the router refused the turn at the budget breaker."""
+    return is_budget_pause(result.paused, result.reason_class)
+
+
+def _pinned_pause(result: ClaudeResult, model: str) -> ClaudeResult:
+    """Explain a pause on a ``/model`` pin instead of silently degrading it."""
+    result.error = (
+        f"{result.error} Your /model pin `{model}` keeps this conversation on "
+        f"that tier, so the turn was not moved to a smaller one. `/model local` "
+        f"returns to automatic routing (smaller tiers answer while the window "
+        f"is low), or resume paid work now on the Budget page "
+        f"(/status?tab=budget)."
+    )
+    return result
+
+
+def _with_notice(result: ClaudeResult, label: str, first: ClaudeResult) -> ClaudeResult:
+    """Append the one-line degraded-tier notice (Discord ``-#`` subtext)."""
+    why = (
+        "the claude window is low"
+        if first.reason_class == "quota"
+        else "the budget cap is reached"
+    )
+    if result.text:
+        result.text = f"{result.text}\n\n-# answered on {label} because {why}"
+    return result
+
+
+async def _degrade(turn: _Turn, *, start: Tier, first: ClaudeResult) -> ClaudeResult:
+    """Walk the budget ladder (:func:`~precis.utils.llm.degrade.degrade_steps`)
+    after ``start`` paused (gr479851).
+
+    Claude steps run on the streaming lane, the local step on the chain lane
+    with the served model :func:`~precis.utils.llm.degrade.local_fallback_model`
+    picks. A paused step costs nothing — the breaker refuses before any
+    provider runs — so walking is cheap. The first step that is not a budget
+    pause answers, with the notice line; a real failure there is surfaced as
+    is. Refuses (the original pause reason, plus why local could not serve)
+    only when no tier can.
+
+    Only asa's conversational turn opts in: worker passes (taproot, agentic
+    job runs, plan ticks) call the router directly and still pause.
+    """
+    degraded_from = start.value
+    for step in degrade_steps(start, opt_in=True):
+        if step.local:
+            return await _degrade_local(turn, start=start, first=first)
+        assert step.model is not None
+        res = await _invoke_streaming(
+            turn,
+            tier=step.tier,
+            model=step.model,
+            placement=step.placement,
+            degraded_from=degraded_from,
         )
+        if not _budget_paused(res):
+            log.info(
+                "asa budget degrade: %s paused → answered on %s",
+                start.value,
+                step.model,
+            )
+            return _with_notice(res, f"{step.tier.value} (`{step.model}`)", first)
+    return first
 
-    overlay = _turn_overlay(cfg, conv_slug, acting_user)
+
+async def _degrade_local(
+    turn: _Turn, *, start: Tier, first: ClaudeResult
+) -> ClaudeResult:
+    """The ladder's last step: a free served local model on the chain lane."""
+    loop = asyncio.get_running_loop()
+    local_model = await loop.run_in_executor(
+        _get_chain_executor(), partial(local_fallback_model, tools_needed=True)
+    )
+    if local_model is None:
+        first.error = (
+            f"{first.error} No smaller tier could serve this turn "
+            f"(no local model is served)."
+        )
+        return first
+    res = await _invoke_via_chain(
+        turn, placement="local", model=local_model, degraded_from=start.value
+    )
+    if res.text:
+        log.info(
+            "asa budget degrade: %s paused → answered on local %s",
+            start.value,
+            local_model,
+        )
+        return _with_notice(res, f"local (`{local_model}`)", first)
+    first.error = (
+        f"{first.error} No smaller tier could serve this turn "
+        f"(local `{local_model}`: {res.error or 'empty response'})."
+    )
+    return first
+
+
+async def _invoke_streaming(
+    turn: _Turn,
+    *,
+    tier: Tier,
+    model: str,
+    placement: str | None = None,
+    degraded_from: str | None = None,
+) -> ClaudeResult:
+    """One turn on the ``claude -p`` streaming lane (a concrete claude id)."""
+    cfg = turn.cfg
+    result = ClaudeResult()
+    overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user)
     # asa_bot can run as a bare `deploy` user with no ~/.claude state, in
     # which case CLAUDE_CODE_OAUTH_TOKEN comes from the vault over asa's OWN
     # PRECIS_DATABASE_URL connection (asa_bot.secrets.reveal_secret) — NOT
@@ -348,20 +504,29 @@ async def invoke(
     ensure_oauth_token(overlay)
 
     async def on_event(evt: dict[str, Any]) -> None:
-        await _handle_event(evt, result, on_progress)
+        await _handle_event(evt, result, turn.on_progress)
 
     req = LlmRequest(
-        tier=Tier.FRONTIER,
-        prompt=user_message,
+        # The breaker gates (and tapers) on this tier, so it names the tier the
+        # model belongs to rather than a blanket FRONTIER.
+        tier=tier,
+        prompt=turn.user_message,
         tools_needed=True,
         # Pin the model explicitly (rather than deferring to the tier
         # default) so a live ``--model`` override applied to ``cfg.command``
         # (bot._llm_with_override, a per-guild slash-command knob) still
         # takes effect — the tier default alone can't see that override.
         model=model,
-        system_prompt=system_prompt,
+        # A non-FRONTIER tier chain may lead with a local rung; dispatch_async
+        # only streams a claude_agent rung 0, so drop local rungs. This assumes
+        # the tier's cloud rungs are claude: a hosted-OSS rung (an OSS-first
+        # chain with PRECIS_LLM_BASE_URL set) also counts as cloud and would
+        # take this turn off the streaming lane.
+        placement=placement or (None if tier is Tier.FRONTIER else "cloud"),
+        degraded_from=degraded_from,
+        system_prompt=turn.system_prompt,
         mcp_config=cfg.mcp_config_path,
-        max_turns=max_turns,
+        max_turns=turn.max_turns,
         max_usd=_MAX_USD_CEILING,
         timeout_s=float(cfg.turn_timeout_seconds),
         disallowed_tools=_ASA_DISALLOWED_TOOLS,
@@ -386,6 +551,8 @@ async def invoke(
         result.error = "internal error dispatching to the LLM router"
         return result
 
+    result.paused = llm_result.paused
+    result.reason_class = llm_result.reason_class
     if llm_result.error is not None:
         if "timed out after" in llm_result.error:
             # Preserve the exact message shape the old hand-rolled
@@ -406,14 +573,11 @@ async def invoke(
 
 
 async def _invoke_via_chain(
-    cfg: LLMConfig,
-    system_prompt: str,
-    user_message: str,
+    turn: _Turn,
     *,
-    conv_slug: str,
-    result: ClaudeResult,
-    max_turns: int,
-    acting_user: str | None = None,
+    placement: str | None = None,
+    model: str | None = None,
+    degraded_from: str | None = None,
 ) -> ClaudeResult:
     """One turn on the router's BIG placement chain (``--model local``).
 
@@ -435,16 +599,21 @@ async def _invoke_via_chain(
 
     Never raises — same contract as :func:`invoke`.
     """
-    overlay = _turn_overlay(cfg, conv_slug, acting_user)
+    cfg = turn.cfg
+    result = ClaudeResult()
+    overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user)
     ensure_oauth_token(overlay)
 
     req = LlmRequest(
         tier=Tier.BIG,
-        prompt=user_message,
+        prompt=turn.user_message,
         tools_needed=True,
-        system_prompt=system_prompt,
+        model=model,
+        placement=placement,
+        degraded_from=degraded_from,
+        system_prompt=turn.system_prompt,
         mcp_config=cfg.mcp_config_path,
-        max_turns=max_turns,
+        max_turns=turn.max_turns,
         max_usd=_MAX_USD_CEILING,
         timeout_s=float(cfg.turn_timeout_seconds),
         disallowed_tools=_ASA_DISALLOWED_TOOLS,
@@ -460,7 +629,7 @@ async def _invoke_via_chain(
     try:
         await loop.run_in_executor(executor, warm_runtime)
         llm_result: LlmResult = await loop.run_in_executor(
-            executor, partial(_route_as, req, acting_user)
+            executor, partial(_route_as, req, turn.acting_user)
         )
     except Exception:
         # Never raise out of invoke() — see its docstring's contract note.
@@ -469,6 +638,8 @@ async def _invoke_via_chain(
         return result
 
     result.text = llm_result.text or ""
+    result.paused = llm_result.paused
+    result.reason_class = llm_result.reason_class
     result.stop_reason = llm_result.stop_reason
     if llm_result.duration_s is not None:
         result.duration_ms = int(llm_result.duration_s * 1000)

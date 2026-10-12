@@ -383,6 +383,7 @@ class AsaBot(discord.Client):
             conv_slug=slug,
             on_progress=on_progress,
             acting_user=account,
+            pinned=bool(self._runtime.model_override),
         )
 
         # 4. Post reply (replace progress msg with final).

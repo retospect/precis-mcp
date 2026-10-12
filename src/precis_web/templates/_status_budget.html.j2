@@ -36,6 +36,12 @@
   Quota taper: {{ quota.taper_reason }} &mdash; {% if quota.taper_level >= 2 %}MEDIUM, BIG and FRONTIER{% else %}BIG and FRONTIER{% endif %} not admitted.
 </div>
 {% endif %}
+{% if budget.get('degraded') %}
+<div class="mb-5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600">
+  Degraded routing (24h) &mdash; calls re-asked on a smaller or local tier because the requested tier paused:
+  {% for d in budget.degraded %}<span class="font-mono text-xs">{{ d.label }}</span> &times;{{ d.calls }}{% if not loop.last %}, {% endif %}{% endfor %}
+</div>
+{% endif %}
 {% if quota and quota.taper_no_signal %}
 <div class="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500">
   taper: no signal &mdash; the quota snapshot reports no used percentage or warning status, so tiers are not being tapered (failing open).

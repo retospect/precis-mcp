@@ -508,6 +508,15 @@ def _budget_tote(store: Any) -> dict[str, Any]:
             "AND fetched_at > now() - interval '24 hours' "
             "GROUP BY 1"
         ).fetchall()
+        # Budget degradation (gr479851): calls a caller re-routed to a smaller
+        # or local tier because the one it asked for paused at the breaker.
+        degraded = conn.execute(
+            "SELECT features->>'degraded_from' || ' → ' || "
+            "COALESCE(NULLIF(model, ''), '—') AS label, count(*)::int "
+            "FROM llm_call_log "
+            "WHERE features ? 'degraded_from' AND ts > now() - interval '24 hours' "
+            "GROUP BY 1 ORDER BY 2 DESC LIMIT 12"
+        ).fetchall()
     # Merge LLM sources + paid-fetch providers into one "by source" ledger.
     merged: dict[str, dict[str, float]] = {}
     for r in list(llm_by_source) + list(fetch_by_provider):
@@ -549,6 +558,7 @@ def _budget_tote(store: Any) -> dict[str, Any]:
             {"label": r[0], "calls": int(r[1]), "cost": float(r[2])} for r in by_model
         ],
         "by_source": by_source,
+        "degraded": [{"label": r[0], "calls": int(r[1])} for r in degraded],
     }
 
 

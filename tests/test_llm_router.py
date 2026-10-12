@@ -5451,3 +5451,52 @@ def test_op_chain_escape_passes_gates_and_runs_next_rung(
 # rung 0 in a 2-rung failover ladder) and
 # test_saturated_escape_on_local_labelled_rung_lands_cloud_routed_local
 # (single pinned rung).
+
+
+# ── budget degradation support (gr479851) ──────────────────────────────
+
+
+def test_big_work_still_pauses_router_never_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*a: object, **kw: object) -> AgentResult:
+        raise AssertionError("provider must not run when the breaker trips")
+
+    monkeypatch.setattr(router, "call_claude_agent", _boom)
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "budget: claude quota low — paused",
+    )
+    out = route(LlmRequest(tier=Tier.BIG, tools_needed=True, source="taproot"))
+    assert out.paused is True
+    assert out.text == ""
+
+
+def test_served_local_rung_served_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("precis.utils.llm.local_serving.served_locally", lambda m: True)
+    rungs = router._served_local_rung(
+        LlmRequest(tier=Tier.BIG, tools_needed=True, placement="local", model="q")
+    )
+    assert len(rungs) == 1
+    assert rungs[0].transport is Transport.OPENAI_TOOLS
+    assert rungs[0].label == "local"
+    assert rungs[0].model is None
+
+
+def test_served_local_rung_unserved_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda m: False
+    )
+    assert (
+        router._served_local_rung(
+            LlmRequest(tier=Tier.BIG, tools_needed=True, placement="local", model="q")
+        )
+        == []
+    )
+
+
+def test_route_features_degraded_from() -> None:
+    base = LlmRequest(tier=Tier.BIG, prompt="p")
+    assert "degraded_from" not in router._route_features(base)
+    deg = LlmRequest(tier=Tier.BIG, prompt="p", degraded_from="frontier")
+    assert router._route_features(deg)["degraded_from"] == "frontier"

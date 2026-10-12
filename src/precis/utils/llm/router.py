@@ -1206,6 +1206,12 @@ class LlmRequest:
     #: pass-level only. Cannot be back-filled — an inproc pass with a natural
     #: ref should set it.
     ref_id: int | None = None
+    #: The tier/model a caller asked for first when this call is its budget
+    #: *degradation* — a smaller tier or local retry after that one paused at
+    #: the breaker (asa_bot's chat turns, gr479851). Stamped into the
+    #: route-log features so the Budget tab can count degraded routing.
+    #: ``None`` ⇒ an ordinary call.
+    degraded_from: str | None = None
     #: Write this call to the route-log at all. ``False`` = no row.
     log_call: bool = True
     #: Store the full request/response text (the ``llm_blob`` replay
@@ -1950,6 +1956,27 @@ def _apply_placement(chain: list[Rung], placement: str | None) -> list[Rung]:
     return chain
 
 
+def _served_local_rung(req: LlmRequest) -> list[Rung]:
+    """A one-rung local chain for a ``placement='local'`` request whose tier
+    chain has no local rung, when ``req.model`` pins a model served on (or
+    reachable from) this host — else ``[]`` (the strict placement error stands).
+
+    This is how a caller reaches a ``served_by`` model without an operator
+    chain rung for it (the budget ladder's local step,
+    :mod:`precis.utils.llm.degrade`, gr479851). The rung pins no
+    model, so the dispatch runs under the slot's server-side name once
+    :func:`~precis.utils.llm.local_serving.acquire` reserves the endpoint.
+    """
+    if req.placement != "local" or not req.model:
+        return []
+    from precis.utils.llm import local_serving as _local
+
+    if not _local.served_locally(req.model):
+        return []
+    transport = Transport.OPENAI_TOOLS if req.tools_needed else Transport.LOCAL
+    return [Rung(transport, label="local")]
+
+
 #: ``SMALL`` (categorizer) model ids that only mean something on the local
 #: loopback (the ``summarizer`` alias and the ``rake-lemma`` name it resolves
 #: to) — POSTing either to a hosted OSS backend 400s, since the hosted side
@@ -2207,7 +2234,9 @@ def route(req: LlmRequest) -> LlmResult:
     # an emptied nonempty chain here is an *error* result, not a silent
     # paused/degrade: the caller asked for a rung the chain doesn't have).
     # No-op when req.placement is None or not a recognized value.
-    _placed_ladder = _apply_placement(ladder, req.placement)
+    _placed_ladder = _apply_placement(ladder, req.placement) or (
+        _served_local_rung(req) if ladder else []
+    )
     if ladder and not _placed_ladder:
         return LlmResult(
             text="",
@@ -2864,6 +2893,8 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         "has_system": bool(req.system_prompt),
         "has_mcp": bool(req.mcp_config),
     }
+    if req.degraded_from:
+        feats["degraded_from"] = req.degraded_from
     if result is not None:
         stop = result.stop_reason
         terminal = result.terminal_reason
