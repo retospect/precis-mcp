@@ -51,6 +51,16 @@ from precis.utils.secret_scan import mask_secrets
 
 log = logging.getLogger(__name__)
 
+# Reaction lifecycle on an inbound turn: WORKING while queued/running,
+# cleared on a reply, swapped for FAILED (plus a one-line error post) when
+# the turn raises, times out or ends in an error result — a turn never
+# ends silently with WORKING left on the message (gr479812).
+_WORKING_REACTION = "🔄"
+_FAILED_REACTION = "⚠️"
+# Slack on top of the LLM turn timeout for the precis calls around it
+# (capture + preamble), each bounded by PrecisConfig.request_timeout_seconds.
+_TURN_DEADLINE_SLACK_S = 300
+
 
 class AsaBot(discord.Client):
     def __init__(
@@ -156,7 +166,7 @@ class AsaBot(discord.Client):
             # If there's a queue forming, give the user a "got it"
             # signal so they don't think we missed it.
             try:
-                await message.add_reaction("🔄")
+                await message.add_reaction(_WORKING_REACTION)
             except discord.HTTPException:
                 pass
 
@@ -187,13 +197,67 @@ class AsaBot(discord.Client):
         while True:
             message = await q.get()
             try:
-                await self._handle_one(slug, message)
-            except Exception:
-                log.exception("turn failed (slug=%s)", slug)
+                await self._run_turn(slug, message)
             finally:
                 q.task_done()
 
-    async def _handle_one(self, slug: str, message: discord.Message) -> None:
+    async def _run_turn(self, slug: str, message: discord.Message) -> None:
+        """One turn under a wall-clock deadline; failure is always visible.
+
+        A hung leg (precis call, LLM chain) used to leave the turn waiting
+        forever with only the working reaction showing, and an exception
+        was logged and dropped (gr479812). Either now swaps the reaction
+        and posts a one-line error.
+        """
+        deadline = self._cfg.llm.turn_timeout_seconds + _TURN_DEADLINE_SLACK_S
+        turn_timeout = asyncio.timeout(deadline)
+        try:
+            async with turn_timeout:
+                ok = await self._handle_one(slug, message)
+        except Exception as e:
+            # A leg's own TimeoutError (e.g. a precis request) keeps its
+            # message; only the turn deadline reads as "no reply".
+            if isinstance(e, TimeoutError) and turn_timeout.expired():
+                log.error("turn timed out after %ss (slug=%s)", deadline, slug)
+                await self._report_failure(message, f"no reply within {deadline}s")
+            else:
+                log.exception("turn failed (slug=%s)", slug)
+                await self._report_failure(message, f"{type(e).__name__}: {e}")
+            return
+        if ok:
+            await self._remove_working(message)
+        else:
+            await self._mark_failed(message)
+
+    async def _remove_working(self, message: discord.Message) -> None:
+        if self.user is None:
+            return
+        try:
+            await message.remove_reaction(_WORKING_REACTION, self.user)
+        except Exception:
+            log.warning("could not clear %s on msg=%s", _WORKING_REACTION, message.id)
+
+    async def _mark_failed(self, message: discord.Message) -> None:
+        await self._remove_working(message)
+        try:
+            await message.add_reaction(_FAILED_REACTION)
+        except Exception:
+            log.warning("could not add %s on msg=%s", _FAILED_REACTION, message.id)
+
+    async def _report_failure(self, message: discord.Message, reason: str) -> None:
+        """Swap the working reaction for the failure one; post one line."""
+        await self._mark_failed(message)
+        line = " ".join(reason.split())[:300] or "unknown error"
+        try:
+            await _reply_target(message).send(
+                mask_secrets(f"{_FAILED_REACTION} asa failed on this message: {line}")
+            )
+        except Exception:
+            log.exception("could not post failure notice (msg=%s)", message.id)
+
+    async def _handle_one(self, slug: str, message: discord.Message) -> bool:
+        """Run one turn; True when it replied cleanly, False on an error
+        result (already posted as a ``(no reply — …)`` message)."""
         # Discord delivers TWO MESSAGE_CREATE events when a thread auto-
         # spawns from a channel message: one for the channel message
         # (which becomes the thread starter), one for the thread message
@@ -207,7 +271,7 @@ class AsaBot(discord.Client):
                 slug,
                 message.thread.id,
             )
-            return
+            return True
 
         # 1. Capture user turn.
         # Mapped Discord id -> precis account abbrev; else display name.
@@ -335,9 +399,12 @@ class AsaBot(discord.Client):
                         await progress_msg.delete()
                     except discord.HTTPException:
                         pass
-                return
+                return True
             body = f"(no reply — {result.error or 'empty response'})"
+            await self._post_reply(message, progress_msg, body, result)
+            return False
         await self._post_reply(message, progress_msg, body, result)
+        return not result.error
 
     async def _post_reply(
         self,

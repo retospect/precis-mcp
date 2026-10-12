@@ -87,6 +87,10 @@ class PrecisConfig:
     notify_database_url: str = ""
     env: dict[str, str] = dataclasses.field(default_factory=dict)
     health_check_interval_seconds: int = 30
+    #: Ceiling on one JSON-RPC request to the precis subprocess. A hung
+    #: subprocess otherwise holds the client lock forever and wedges every
+    #: later call, the health restart included (gr479812).
+    request_timeout_seconds: float = 120.0
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

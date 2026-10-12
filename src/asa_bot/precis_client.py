@@ -11,6 +11,7 @@ response framing stays sane on the single pipe.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -30,6 +31,9 @@ class PrecisClient:
         self._lock = asyncio.Lock()
         self._next_id = 0
         self._initialized = False
+        # Set by _kill: returncode stays None until the loop reaps the
+        # child, so it cannot tell the next request the process is dead.
+        self._killed = False
 
     async def start(self) -> None:
         await self._spawn()
@@ -49,6 +53,7 @@ class PrecisClient:
             env=env,
         )
         self._initialized = False
+        self._killed = False
         log.info("precis MCP spawned pid=%s", self._proc.pid)
 
     async def _ensure_initialized(self) -> None:
@@ -67,10 +72,53 @@ class PrecisClient:
         self._initialized = True
 
     async def request(self, method: str, params: dict[str, Any]) -> Any:
-        """Send a JSON-RPC request, return the result or raise."""
+        """Send a JSON-RPC request, return the result or raise.
+
+        Bounded by ``request_timeout_seconds``: the lock is held across the
+        response read, so an unbounded read on a hung subprocess wedged
+        every later call (gr479812). On timeout the subprocess is killed;
+        the next request respawns it.
+        """
         async with self._lock:
-            await self._ensure_initialized()
-            return await self._send_recv(method, params)
+            await self._respawn_if_dead()
+            try:
+                return await asyncio.wait_for(
+                    self._request_locked(method, params),
+                    timeout=self._cfg.request_timeout_seconds,
+                )
+            except TimeoutError:
+                log.error(
+                    "precis MCP %s timed out after %ss — killing subprocess",
+                    method,
+                    self._cfg.request_timeout_seconds,
+                )
+                self._kill()
+                raise TimeoutError(
+                    f"precis MCP {method} timed out after "
+                    f"{self._cfg.request_timeout_seconds:g}s"
+                ) from None
+
+    async def _request_locked(self, method: str, params: dict[str, Any]) -> Any:
+        await self._ensure_initialized()
+        return await self._send_recv(method, params)
+
+    async def _respawn_if_dead(self) -> None:
+        proc = self._proc
+        if proc is not None and not self._killed and proc.returncode is None:
+            return
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=5)
+        await self._spawn()
+
+    def _kill(self) -> None:
+        if self._proc is None:
+            return
+        self._killed = True
+        with contextlib.suppress(ProcessLookupError):
+            self._proc.kill()
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Convenience: invoke an MCP tool, return its content text."""
@@ -159,19 +207,23 @@ class PrecisClient:
         return True
 
     async def restart(self) -> None:
-        """Kill + respawn. Used by the health-check loop."""
+        """Kill + respawn. Used by the health-check loop.
+
+        Kills *before* taking the lock: a request stuck reading a hung
+        subprocess holds the lock, and the kill hands its read an EOF so it
+        releases. Taking the lock first deadlocked restart behind that very
+        request (gr479812).
+        """
+        old = self._proc
+        self._kill()
         async with self._lock:
-            if self._proc is not None:
-                try:
-                    self._proc.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await asyncio.wait_for(self._proc.wait(), timeout=5)
-                except TimeoutError:
-                    pass
-            self._proc = None
-            await self._spawn()
+            if old is not None:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(old.wait(), timeout=5)
+            if self._proc is old:
+                # Not already respawned by a request that got the lock first.
+                self._proc = None
+                await self._spawn()
 
     async def stop(self) -> None:
         if self._proc is None:
