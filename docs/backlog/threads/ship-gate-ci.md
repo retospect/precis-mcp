@@ -52,7 +52,7 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
    the VM disk on 2026-10-03, and every gate died on a raw ENOSPC.
    The `scripts/test` and `scripts/ship` refusals below 10 GB and the
    reaper's cache cap shipped; left: reaping idle gate/test-db pairs.
-3. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
+3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
@@ -72,9 +72,9 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
    gates were unaffected, median 0.05 min / p90 0.07 (09-26..10-03) vs
    0.05 / 0.10 (10-04..10-11). Main runs now wait in the shared group:
    median 0.63 → 1.72 min, p90 1.43 → 18.4; 77 of 150 main runs never
-   started (a pending run replaced by a newer push, as designed). Open:
-   Reto's max-candidate-age ruling (the item, now a draft) changes only
-   `DEFAULT_MAX_CANDIDATE_HOURS`.
+   started (a pending run replaced by a newer push, as designed). Ruled
+   2026-10-12 (Reto): the max candidate age stays 6 h
+   (`DEFAULT_MAX_CANDIDATE_HOURS` in `scripts/round`); nothing open.
 4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3, the grace/purpose guards and the
    two-sessions-in-one-tree process-table check shipped,
