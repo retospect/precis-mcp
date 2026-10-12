@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ def tick(payload: dict[str, Any], event: str, size: int = 0) -> int:
         except (ValueError, OSError):
             state = {}
         state[event] = int(state.get(event, 0)) + 1
+        state["last_event_at"] = datetime.now(UTC).isoformat()
         if size:
             state["tool_response_bytes"] = (
                 int(state.get("tool_response_bytes", 0)) + size
@@ -120,14 +122,13 @@ def respond(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
     event = payload.get("hook_event_name", "")
     output: dict[str, Any] = {"hookEventName": event}
-    if event in {"SessionStart", "PostCompact"}:
+    if event == "SessionStart":
+        tick(payload, "session_starts")
         output["additionalContext"] = CONTEXT
-    elif event == "PreCompact":
-        output["additionalContext"] = (
-            "Before compaction: save a compact handoff with objective, decisions, "
-            "holds, exact commits/tests, blockers, next action and docs already "
-            "read. Keep pointers, not copied logs. Update your fleet note."
-        )
+    elif event in {"PreCompact", "PostCompact"}:
+        # Codex cannot inject additionalContext from these lifecycle events.
+        # Count invocations without storing prompt or transcript contents.
+        tick(payload, "pre_compacts" if event == "PreCompact" else "post_compacts")
     elif event == "PreToolUse":
         tool_input = payload.get("tool_input", {})
         if not isinstance(tool_input, dict):

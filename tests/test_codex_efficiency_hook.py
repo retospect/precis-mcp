@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -107,11 +108,32 @@ def test_reminders_are_bounded_and_metrics_contain_no_text(
     assert '"large_results": 2' in text
 
 
-def test_lifecycle_context_is_short() -> None:
-    cwd = str(HOOK.parents[2])
+def test_lifecycle_records_invocations_without_unsupported_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hook, "scoped", lambda _: True)
     for event in ["SessionStart", "PreCompact", "PostCompact"]:
-        result = hook.respond({"cwd": cwd, "hook_event_name": event})
-        assert len(result["hookSpecificOutput"]["additionalContext"]) < 750
+        result = hook.respond(
+            {"cwd": str(tmp_path), "session_id": "lifecycle", "hook_event_name": event}
+        )
+        if event == "SessionStart":
+            assert len(result["hookSpecificOutput"]["additionalContext"]) < 750
+        else:
+            assert result == {}
+    metrics = json.loads(
+        next((tmp_path / ".scratch/codex-efficiency").glob("*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metrics["session_starts"] == 1
+    assert metrics["pre_compacts"] == 1
+    assert metrics["post_compacts"] == 1
+    assert set(metrics) == {
+        "session_starts",
+        "pre_compacts",
+        "post_compacts",
+        "last_event_at",
+    }
 
 
 def test_source_navigation_reminder_is_advisory_and_rate_limited(

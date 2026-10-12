@@ -144,3 +144,13 @@ For paired tasks record model/effort, input/cache/output, result acceptance,
 failures, time and exact output-reduction mode. No savings percentage until
 those measurements exist. See `token-review-hook-gaps.md` and
 `docs/runbooks/token-review.md` for the existing Claude workflow.
+
+Lifecycle audit correction (2026-10-04): count SessionStart, PreCompact and
+PostCompact invocations with timestamps in the existing per-session counters.
+Do not store commands, hook input, prompt text or credentials. Configuration
+presence/trust is not runtime proof, and a resumed idle TUI may defer its
+SessionStart context until the next turn. PreCompact/PostCompact cannot inject
+additionalContext; remove that unsupported output. Save handoffs before a
+requested compact. No synthetic model turn solely to create audit evidence.
+Preserve same-thread identity/settings and require idle, empty prompt/queue and
+no owned jobs before client reload; retain active/draft clients as named gaps.
