@@ -117,6 +117,34 @@
       <p class="text-xs text-amber-700/80">No re-sweep queued — the <code>conflict_search</code> service is off, or this claim is past review.</p>
       {% endif %}
     {% endif %}
+    {% if np.counter_mint %}
+    <div class="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+      {% set cm = np.counter_mint %}
+      {% if cm.status == 'minted' %}
+        Counter-claim landed on
+        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
+        {% if cm.report and cm.report.placement and cm.report.placement.action == 'attach' %}(attached to an existing hub){% else %}(new hub){% endif %}
+        — {% if cm.disputes_linked %}a disputes edge joins the pair.{% else %}the pair stayed unlinked (claim-type policy).{% endif %}
+      {% elif cm.status == 'already' %}
+        This passage already has a counter-hub:
+        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
+        — {% if cm.disputes_linked %}the pair is linked.{% else %}but the pair is NOT linked (claim-type policy).{% endif %}
+      {% elif cm.status == 'linked' %}
+        The conflicting passage is already a claim hub:
+        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
+        — {% if cm.disputes_linked %}the pair is linked.{% else %}but the pair stayed unlinked (claim-type policy).{% endif %}
+      {% elif cm.status == 'unsupported' %}
+        The passage licenses no counter-claim{% if cm.report and cm.report.qualify.reason %} — {{ cm.report.qualify.reason }}{% endif %}. Nothing was minted.
+      {% elif cm.status == 'needs_review' %}
+        The merge was too risky to apply — filed for review as a todo, nothing minted.
+      {% elif cm.status == 'self' %}
+        The counter-claim converged onto this same hub — a claim can't dispute itself.
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if np.counter_mint_error %}
+    <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ np.counter_mint_error }}</div>
+    {% endif %}
     {% if cc.covered %}
     <details class="text-xs">
       <summary class="cursor-pointer text-slate-500">Passages covered ({{ cc.covered_total }})</summary>
@@ -126,6 +154,23 @@
           <span class="font-mono {{ 'text-sky-700' if c.verdict == 'disputes' else 'text-slate-400' }}">{{ c.verdict }}</span>
           {{ c.kind }} {{ ref_link(c.kind, c.ref_id, c.title) }}
           {% if c.handle %}<span class="font-mono text-slate-400">{{ c.handle }}</span>{% endif %}
+          {% if c.counter_hub_ref_id %}
+          · counter-claim <a class="text-emerald-700 hover:underline" href="/claim/fi{{ c.counter_hub_ref_id }}">fi{{ c.counter_hub_ref_id }}</a>
+          {% elif c.verdict == 'disputes' and c.chunk_id and c.kind != 'finding' %}
+          <details class="mt-1 ml-4">
+            <summary class="cursor-pointer text-sky-700">mint counter-claim…</summary>
+            <form method="post" action="/nanopub/fi{{ hub_ref_id }}/counter-claim" class="mt-1 space-y-1">
+              <input type="hidden" name="chunk" value="pc{{ c.chunk_id }}">
+              <input type="text" name="proposed" value="{{ c.opposing or '' }}"
+                     placeholder="the opposing claim this passage makes"
+                     class="w-full bg-white text-slate-800 border border-slate-300 rounded p-1 text-xs">
+              <button class="px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-700 text-white text-xs">Mint counter-claim hub</button>
+              <p class="text-[11px] text-slate-500">Review only — for a genuine opposing claim, not a
+                scope/caveat mismatch (that is a wording fix on this claim). The mint qualifies the
+                sentence against this exact passage and links the pair with a non-blocking disputes edge.</p>
+            </form>
+          </details>
+          {% endif %}
         </li>
         {% endfor %}
       </ul>

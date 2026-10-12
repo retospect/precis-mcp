@@ -14,8 +14,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
+from precis.errors import BadInput
 from precis.store.types import ChunkInsert
-from precis.taproot.canon import CanonicalClaim
+from precis.taproot.canon import CanonicalClaim, MergeCandidate, Verdict
+from precis.taproot.directed import QualifyResult
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.workers.conflict_search import (
     CONFLICT_SEARCH_FRESH_DAYS,
@@ -772,3 +776,545 @@ def test_coverage_counts_is_one_query_over_live_hubs(store: Any) -> None:
     assert after["swept"] == swept_before + 1
     _reset_watermark(store, a)
     assert coverage_counts(store)["swept"] == swept_before
+
+
+# ── item 1: counter-claim mint backstop (the review-sitting door) ─────
+
+
+from precis.workers.conflict_search import (
+    _cohort_order,
+    _ordered_due_ids,
+    mint_counter_claim,
+)
+
+_COUNTER = "Pd/C does NOT catalyze Suzuki coupling at room temperature."
+_PASSAGE = (
+    "Control experiments show Pd/C does NOT catalyze Suzuki coupling at "
+    "room temperature: no conversion of aryl bromides was observed."
+)
+_QUOTE = "no conversion of aryl bromides was observed"
+
+
+def _confirm_opposer(
+    store: Any, embedder: Any, sentence: str = _SENTENCE
+) -> tuple[int, int, int]:
+    """Sweep one hub against one planted opposing passage; returns
+    ``(hub_ref_id, paper_ref_id, chunk_id)`` with the ledger's
+    ``disputes``-verdict covered row in place."""
+    hub = _seed_hub(store, sentence)
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="opposer", text=_PASSAGE
+    )
+    run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        negate_fn=_no_negate,
+        verify_fn=lambda **kw: {
+            "supports": "no",
+            "support_reason": "reports the opposite outcome",
+            "caveats": [],
+            "contradicts": True,
+        },
+    )
+    return hub, paper, chunk_id
+
+
+def _qualify_supported(sentence: str, quote: str = _QUOTE) -> Any:
+    def _fn(proposed: str, passage: str) -> QualifyResult:
+        return QualifyResult(
+            supported=True,
+            claim=CanonicalClaim(sentence=sentence, scope={}),
+            quote=quote,
+            reason="qualified",
+        )
+
+    return _fn
+
+
+def _qualify_unsupported(proposed: str, passage: str) -> QualifyResult:
+    return QualifyResult(
+        supported=False, claim=None, quote=None, reason="no honest version"
+    )
+
+
+def _never_qualify(proposed: str, passage: str) -> QualifyResult:
+    raise AssertionError("qualify_fn must not be called")
+
+
+def _block_none(claim: Any, store: Any, embedder: Any) -> list[MergeCandidate]:
+    return []
+
+
+def _never_block(claim: Any, store: Any, embedder: Any) -> list[MergeCandidate]:
+    raise AssertionError("block_fn must not be called")
+
+
+def _block_hit(hub_ref_id: int, claim_text: str) -> Any:
+    def _b(claim: Any, store: Any, embedder: Any) -> list[MergeCandidate]:
+        return [MergeCandidate(hub_ref_id=hub_ref_id, claim=claim_text, distance=0.02)]
+
+    return _b
+
+
+def _verdict(v: Any, c: float) -> Verdict:
+    return {"verdict": v, "confidence": c, "rationale": "test"}
+
+
+def _never_judge(a: str, b: str) -> Verdict:
+    raise AssertionError("judge_fn must not be called")
+
+
+def _disputes_pairs(store: Any, a: int, b: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'disputes' AND "
+            "((src_ref_id = %s AND dst_ref_id = %s) OR "
+            " (src_ref_id = %s AND dst_ref_id = %s))",
+            (a, b, b, a),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _covered_row(store: Any, hub: int, chunk_id: int) -> dict[str, Any]:
+    cs = _hub_meta(store, hub)["conflict_search"]
+    rows = [r for r in cs["covered"] if int(r["chunk_id"]) == chunk_id]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def _finding_count(store: Any) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'finding'"
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_counter_mint_mints_hub_links_pair_and_is_idempotent(store: Any) -> None:
+    """The acceptance: after a review sitting confirms a genuine opposing
+    claim, the counter-hub exists and a disputes edge joins the pair —
+    and re-minting duplicates neither."""
+    embedder = make_mock_bge_m3()
+    hub, paper, chunk_id = _confirm_opposer(store, embedder)
+    findings_before = _finding_count(store)
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_qualify_supported(_COUNTER),
+        block_fn=_block_none,
+        judge_fn=_never_judge,
+    )
+
+    assert result.status == "minted"
+    counter = result.counter_hub_ref_id
+    assert counter is not None and counter != hub
+    assert result.disputes_linked is True
+    assert _finding_count(store) == findings_before + 1
+
+    # The pair edge: counter --disputes--> hub.
+    assert _disputes_pairs(store, counter, hub) == 1
+    links = _links_between(store, counter, hub)
+    assert links[0]["relation"] == "disputes"
+
+    # The counter-hub grounds in the conflicting passage itself.
+    evidence = _links_between(store, paper, counter)
+    assert any(l["relation"] == "corroborates" for l in evidence)
+    assert evidence[0]["source_handle"] == f"pc{chunk_id}"
+
+    # Never unowned: the demand stamp names the review sitting.
+    assert _hub_meta(store, counter)["demanded_by"] == [f"conflict-search:fi{hub}"]
+
+    # The covered row records the counter-hub — a second sitting is a no-op.
+    assert int(_covered_row(store, hub, chunk_id)["counter_hub_ref_id"]) == counter
+
+    again = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_never_qualify,
+    )
+    assert again.status == "already"
+    assert again.counter_hub_ref_id == counter
+    assert _finding_count(store) == findings_before + 1
+    assert _disputes_pairs(store, counter, hub) == 1
+
+
+def test_counter_mint_backstops_a_pair_the_cascade_left_unlinked(store: Any) -> None:
+    """The deliberate backstop: an ``attach`` placement (or a ``new``)
+    files no pair edge itself — the negated-paraphrase candidate is
+    often one ``block()`` never surfaces — so the ensure writes it."""
+    embedder = make_mock_bge_m3()
+    hub, _paper, chunk_id = _confirm_opposer(store, embedder)
+    # Some pre-existing hub the counter-claim attaches to instead.
+    existing_sentence = "Pd/C needs heat for Suzuki coupling."
+    existing = _seed_hub(store, existing_sentence)
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_qualify_supported(existing_sentence),
+        block_fn=_block_hit(existing, existing_sentence),
+        judge_fn=lambda a, b: _verdict("same", 0.95),
+    )
+
+    assert result.status == "minted"
+    assert result.counter_hub_ref_id == existing  # attach, no second hub
+    assert _disputes_pairs(store, existing, hub) == 1
+
+
+def test_counter_mint_when_the_cascade_files_its_own_disputes(store: Any) -> None:
+    """``new_contradicts`` files counter→candidate inside the cascade;
+    the backstop still ensures the REVIEWED pair (counter→hub) — the two
+    edges name different pairs."""
+    embedder = make_mock_bge_m3()
+    hub, _paper, chunk_id = _confirm_opposer(store, embedder)
+    other = _seed_hub(store, "Suzuki coupling runs slowly with Pd/C.")
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_qualify_supported(_COUNTER),
+        block_fn=_block_hit(other, "Suzuki coupling runs slowly with Pd/C."),
+        judge_fn=lambda a, b: _verdict("contradicts", 0.95),
+    )
+
+    assert result.status == "minted"
+    counter = result.counter_hub_ref_id
+    assert counter is not None and counter != hub and counter != other
+    # The cascade's own edge and the backstop's — two distinct pairs.
+    assert _disputes_pairs(store, counter, other) == 1
+    assert _disputes_pairs(store, counter, hub) == 1
+
+
+def test_counter_mint_refuses_a_scope_mismatch_verdict(store: Any) -> None:
+    """Scope/caveat conflicts are a wording fix on the claim, not a
+    counter-hub: a ``no-conflict`` covered row refuses the door, as does
+    a chunk the sweep never confirmed."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    _paper, neutral_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="neutral", text="Pd/C is a hydrogenation catalyst."
+    )
+    run_conflict_search_pass(
+        store, embedder=embedder, negate_fn=_no_negate, verify_fn=_no_verdict
+    )
+
+    with pytest.raises(BadInput, match="not a confirmed conflicting passage"):
+        mint_counter_claim(
+            store,
+            embedder,
+            hub_ref_id=hub,
+            chunk_id=neutral_chunk,
+            proposed=_COUNTER,
+            qualify_fn=_never_qualify,
+        )
+    # A chunk that was never covered at all refuses the same way.
+    with pytest.raises(BadInput, match="not a confirmed conflicting passage"):
+        mint_counter_claim(
+            store,
+            embedder,
+            hub_ref_id=hub,
+            chunk_id=999_999,
+            proposed=_COUNTER,
+            qualify_fn=_never_qualify,
+        )
+    # A non-hub refuses before anything is read.
+    with pytest.raises(BadInput, match="not a live claim hub"):
+        mint_counter_claim(
+            store,
+            embedder,
+            hub_ref_id=999_999,
+            chunk_id=neutral_chunk,
+            proposed=_COUNTER,
+            qualify_fn=_never_qualify,
+        )
+
+
+def test_counter_mint_unsupported_qualify_writes_nothing(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, _paper, chunk_id = _confirm_opposer(store, embedder)
+    findings_before = _finding_count(store)
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_qualify_unsupported,
+        block_fn=_never_block,
+    )
+    assert result.status == "unsupported"
+    assert result.counter_hub_ref_id is None
+    assert _finding_count(store) == findings_before
+
+
+def test_counter_mint_needs_review_files_todo_not_hub(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, _paper, chunk_id = _confirm_opposer(store, embedder)
+    risky = _seed_hub(store, "Pd/C sometimes catalyzes Suzuki coupling.")
+    findings_before = _finding_count(store)
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_qualify_supported("Pd/C sometimes catalyzes Suzuki coupling."),
+        block_fn=_block_hit(risky, "Pd/C sometimes catalyzes Suzuki coupling."),
+        judge_fn=lambda a, b: _verdict("same", 0.5),
+        merge_confirm_fn=lambda a, b: _verdict("different", 0.6),
+    )
+    assert result.status == "needs_review"
+    assert result.counter_hub_ref_id is None
+    assert _finding_count(store) == findings_before
+    assert "counter_hub_ref_id" not in _covered_row(store, hub, chunk_id)
+
+
+def test_counter_mint_self_convergence_links_nothing(store: Any) -> None:
+    """A counter-claim the cascade calls the SAME claim attaches to the
+    disputed hub itself — a hub can't dispute itself."""
+    embedder = make_mock_bge_m3()
+    hub, _paper, chunk_id = _confirm_opposer(store, embedder)
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=_COUNTER,
+        qualify_fn=_qualify_supported(_SENTENCE),
+        block_fn=_block_hit(hub, _SENTENCE),
+        judge_fn=lambda a, b: _verdict("same", 0.99),
+    )
+    assert result.status == "self"
+    assert result.counter_hub_ref_id == hub
+    assert _disputes_pairs(store, hub, hub) == 0
+
+
+def test_counter_mint_on_a_finding_covered_row_links_the_existing_hub(
+    store: Any,
+) -> None:
+    """The confirmed conflict is already a live claim hub (the finding-
+    candidate filter keeps only those): nothing to mint, the pair edge
+    — filed by the sweep itself — is ensured and the row stamped."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    other_hub = _seed_hub(store, "Ru catalyzes olefin metathesis at 60 C.")
+    other_chunk = _embed_hub_body_chunk(store, embedder, other_hub)
+
+    run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        limit=1,
+        negate_fn=_no_negate,
+        verify_fn=lambda **kw: {
+            "supports": "no",
+            "contradicts": True,
+            "caveats": [],
+        },
+    )
+    # The sweep already filed finding --disputes--> hub.
+    assert _disputes_pairs(store, other_hub, hub) == 1
+
+    result = mint_counter_claim(
+        store,
+        embedder,
+        hub_ref_id=hub,
+        chunk_id=other_chunk,
+        proposed=_COUNTER,
+        qualify_fn=_never_qualify,
+    )
+    assert result.status == "linked"
+    assert result.counter_hub_ref_id == other_hub
+    assert result.disputes_linked is True
+    assert _disputes_pairs(store, other_hub, hub) == 1
+    assert int(_covered_row(store, hub, other_chunk)["counter_hub_ref_id"]) == other_hub
+
+
+def test_counter_mint_uses_the_stored_paraphrase_seed(store: Any) -> None:
+    """The covered row records WHICH negated paraphrase surfaced the
+    chunk; an empty ``proposed`` falls back to it — the review sitting
+    need only confirm, not retype."""
+    base = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    paraphrase = "Suzuki coupling proceeds without Pd/C catalysis at RT."
+    _paper, chunk_id = _seed_paper_chunk(store, base, cite_key="opposer", text=_PASSAGE)
+    rigged = _RiggedEmbedder(base, pins={paraphrase: _PASSAGE, _SENTENCE: "decoy"})
+
+    run_conflict_search_pass(
+        store,
+        embedder=rigged,
+        negate_fn=lambda s, sc: {"paraphrases": [paraphrase]},
+        verify_fn=lambda **kw: {"supports": "no", "contradicts": True, "caveats": []},
+    )
+    assert _covered_row(store, hub, chunk_id)["opposing"] == [paraphrase]
+
+    seen: list[str] = []
+
+    def _rec_qualify(proposed: str, passage: str) -> QualifyResult:
+        seen.append(proposed)
+        return QualifyResult(
+            supported=True,
+            claim=CanonicalClaim(sentence=_COUNTER, scope={}),
+            quote=_QUOTE,
+            reason="q",
+        )
+
+    result = mint_counter_claim(
+        store,
+        base,
+        hub_ref_id=hub,
+        chunk_id=chunk_id,
+        proposed=None,
+        qualify_fn=_rec_qualify,
+        block_fn=_block_none,
+        judge_fn=_never_judge,
+    )
+    assert result.status == "minted"
+    assert seen == [paraphrase]
+
+
+def test_counter_mint_needs_a_seed_sentence(store: Any) -> None:
+    """No ``proposed`` and no stored paraphrase seed — nothing to argue."""
+    embedder = make_mock_bge_m3()
+    hub, _paper, chunk_id = _confirm_opposer(store, embedder)
+    # The chunk was found by the claim leg alone (``_no_negate``), so the
+    # covered row carries no seed.
+    assert "opposing" not in _covered_row(store, hub, chunk_id)
+    with pytest.raises(BadInput, match="no counter-claim sentence"):
+        mint_counter_claim(
+            store,
+            embedder,
+            hub_ref_id=hub,
+            chunk_id=chunk_id,
+            proposed=None,
+            qualify_fn=_never_qualify,
+        )
+
+
+# ── item 2: cohort ordering — dense topic neighbourhoods first ────────
+
+
+def test_cohort_order_dense_ranks_shared_source_neighbourhoods_first(
+    store: Any,
+) -> None:
+    """Hubs sharing an evidence source are a dense neighbourhood; the
+    ``dense`` order sweeps them before a sparse hub — under ``ref_id``
+    the sparse (lower ref_id) hub went first."""
+    embedder = make_mock_bge_m3()
+    sparse = _seed_hub(store, "Sparse claim about nothing shared.")
+    dense_a = _seed_hub(store, "Dense claim alpha.")
+    dense_b = _seed_hub(store, "Dense claim beta.")
+    shared, _chunk = _seed_paper_chunk(
+        store, embedder, cite_key="shared", text="A shared source."
+    )
+    for h in (dense_a, dense_b):
+        attach_evidence(
+            store,
+            hub_ref_id=h,
+            paper_ref_id=shared,
+            role="corroborates",
+            meta={},
+            set_by="system",
+        )
+
+    dense_ids = _ordered_due_ids(store, limit=10, order="dense")
+    assert dense_ids[:2] == [dense_a, dense_b]
+    assert dense_ids[-1] == sparse
+
+    ref_ids = _ordered_due_ids(store, limit=10, order="ref_id")
+    assert ref_ids[0] == sparse
+
+    # The pass sweeps in the same order — the dense pair goes first.
+    swept: list[str] = []
+
+    def rec(sentence: str, scope: dict[str, Any]) -> dict[str, Any] | None:
+        swept.append(sentence)
+        return {"paraphrases": []}
+
+    run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        limit=3,
+        negate_fn=rec,
+        verify_fn=_never_verify,
+        cohort_order="dense",
+    )
+    assert swept == [
+        "Dense claim alpha.",
+        "Dense claim beta.",
+        "Sparse claim about nothing shared.",
+    ]
+
+
+def test_cohort_order_knob_defaults_dense_and_env_falls_back(
+    store: Any, monkeypatch: Any
+) -> None:
+    """The knob is on the pass, not a separate tool: env
+    ``PRECIS_CONFLICT_SEARCH_COHORT_ORDER`` picks the order, an
+    unrecognised value falls back to the spec default, and
+    ``cohort_order=`` overrides per call."""
+    monkeypatch.delenv("PRECIS_CONFLICT_SEARCH_COHORT_ORDER", raising=False)
+    assert _cohort_order() == "dense"
+    monkeypatch.setenv("PRECIS_CONFLICT_SEARCH_COHORT_ORDER", "ref_id")
+    assert _cohort_order() == "ref_id"
+    monkeypatch.setenv("PRECIS_CONFLICT_SEARCH_COHORT_ORDER", "bogus")
+    assert _cohort_order() == "dense"
+
+    embedder = make_mock_bge_m3()
+    sparse = _seed_hub(store, "Sparse claim under env.")
+    dense_a = _seed_hub(store, "Dense claim under env.")
+    shared, _chunk = _seed_paper_chunk(
+        store, embedder, cite_key="shared2", text="Another shared source."
+    )
+    dense_b = _seed_hub(store, "Dense claim under env two.")
+    for h in (dense_a, dense_b):
+        attach_evidence(
+            store,
+            hub_ref_id=h,
+            paper_ref_id=shared,
+            role="corroborates",
+            meta={},
+            set_by="system",
+        )
+
+    swept: list[str] = []
+
+    def rec(sentence: str, scope: dict[str, Any]) -> dict[str, Any] | None:
+        swept.append(sentence)
+        return {"paraphrases": []}
+
+    # env=ref_id (set above) walks the flat order — sparse first.
+    monkeypatch.setenv("PRECIS_CONFLICT_SEARCH_COHORT_ORDER", "ref_id")
+    run_conflict_search_pass(
+        store, embedder=embedder, limit=1, negate_fn=rec, verify_fn=_never_verify
+    )
+    assert swept == ["Sparse claim under env."]
+
+    # The parameter overrides the env value.
+    swept.clear()
+    run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        limit=1,
+        negate_fn=rec,
+        verify_fn=_never_verify,
+        cohort_order="dense",
+    )
+    assert swept == ["Dense claim under env."]

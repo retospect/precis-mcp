@@ -1,12 +1,12 @@
 """``conflict_search`` — every claim hub hunts its own opposition.
 
-Slice 1 of ``docs/backlog/claim-conflict-search.md`` (items 1-3: search,
-budgeted verify, coverage ledger; items 4-5, the approve-time advisory
-panel and the counter-claim mint, are later slices). A standing,
-watermarked ref-pass — mirrors ``hub_tagline``'s claim-and-lease shape,
-not ``hub_refine``'s single-transaction discover→verify→write spine
-(this pass is simpler: no composite-hub handling, no rejection memo, no
-reground extension).
+``docs/backlog/claim-conflict-search.md``: the sweep (negated-paraphrase
+ANN → ``paper_rank``-budgeted verify → ``disputes`` edge → coverage
+ledger), the approve-time advisory panel, and the counter-claim mint
+backstop. A standing, watermarked ref-pass — mirrors ``hub_tagline``'s
+claim-and-lease shape, not ``hub_refine``'s single-transaction
+discover→verify→write spine (this pass is simpler: no composite-hub
+handling, no rejection memo, no reground extension).
 
 **One mechanism, two populations.** The cohort is every live claim hub
 (:func:`~precis.taproot.canon.claim_hub_predicate_sql`, re-derived
@@ -72,7 +72,13 @@ Per hub:
 
 **Three doors onto the same sweep.** The standing pass
 (:func:`run_conflict_search_pass`) is the retro backfill: it walks the
-watermark cohort a few hubs per tick. :func:`sweep_one_hub` is the same
+watermark cohort a few hubs per tick, in :data:`_DEFAULT_COHORT_ORDER`
+order — ``dense`` ranks a due hub by how many *other* live claim hubs
+share an evidence source with it, so the backfill sweeps thick topic
+neighbourhoods first (``docs/backlog/claim-conflict-search.md`` item 2:
+conflicts hide where coverage is thickest); ``ref_id`` is the original
+flat walk, kept as the escape hatch via
+``PRECIS_CONFLICT_SEARCH_COHORT_ORDER``. :func:`sweep_one_hub` is the same
 negate→search→verify→file→stamp for ONE named hub, with the same lease
 and the same watermark rule unless ``refresh=True`` — it is what the
 ``conflict_sweep`` job type (``workers/job_types/conflict_sweep.py``)
@@ -89,10 +95,30 @@ one switch for all three populations. The enqueue is idempotent on
 ``meta.idem_key`` (``conflict_sweep:<hub>:v<version>:<reason>``), so a
 mint and a same-day approve-page refresh never queue two sweeps.
 
+**The counter-claim backstop** (:func:`mint_counter_claim`, item 1 —
+the review-sitting door). A ``disputes``-verdict covered row means the
+sweep confirmed a passage that *contradicts* the claim under the same
+setup. When a reviewer confirms it is a genuine opposing claim — not a
+scope/caveat mismatch, which is a wording fix on the claim — the
+passage's claim is minted as its own hub through the normal directed-mint
+path (:func:`precis.taproot.directed.directed_mint`: own sentence, own
+grounding passage) and a ``disputes`` edge is *ensured* between the pair,
+whichever path wrote it (the cascade's own ``new_contradicts`` link, an
+edge a writer filed earlier, or the backstop's own write — directed-
+mint's ``block()`` same-phrasing search often never surfaces the
+negated-paraphrase candidate, so the pair would otherwise stay
+unlinked). The covered row records ``counter_hub_ref_id``, so a second
+sitting — or a re-sweep surfacing the same chunk — mints nothing twice;
+the pair edge itself is idempotent on ``links``' endpoint+relation
+unique index.
+
 Re-derives its own discovery wiring rather than importing
 ``hub_refine``'s underscore-private helpers (a deliberate spec decision,
-docs/backlog/claim-conflict-search.md item 1's boundary note) — the only
-shared import is ``workers/_chase_llm.py``'s verifier.
+docs/backlog/claim-conflict-search.md item 1's boundary note). Shared
+imports: ``workers/_chase_llm.py``'s verifier, and — for the counter-
+claim backstop only — the directed-mint door
+(:mod:`precis.taproot.directed`) and the hub→hub link write door
+(:func:`precis.taproot.hub.link_claims`).
 
 Registered as the ``conflict_search`` :class:`~precis.workers.registry.
 ServiceSpec` (dark, like every other taproot service); wired in
@@ -110,20 +136,34 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.store import Store
-from precis.store.types import Tag
+from precis.store.types import ActorSlug, Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
     NOT_HYPOTHESIS_PREDICATE_PARAMS,
+    block,
     claim_hub_predicate_sql,
+    dedup_judge,
+    merge_confirm,
     not_hypothesis_predicate_sql,
 )
 from precis.taproot.claim_type import (
+    claim_type_of,
     disputes_counterparty_predicate_sql,
+    policy_for,
     sweepable_predicate_sql,
 )
-from precis.taproot.hub import HUB_ROLES
+from precis.taproot.directed import (
+    BlockFn,
+    DirectedMintReport,
+    JudgeFn,
+    MergeConfirmFn,
+    QualifyFn,
+    directed_mint,
+    qualify_claim,
+)
+from precis.taproot.hub import HUB_ROLES, link_claims
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.llm.router import LlmRequest, Tier, route
@@ -133,10 +173,13 @@ from precis.workers._chase_llm import _verify_support_with_caveats
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "COHORT_ORDERS",
     "CONFLICT_SEARCH_FRESH_DAYS",
     "CONFLICT_SEARCH_VERSION",
     "CONFLICT_SWEEP_JOB_TYPE",
     "ConflictCoverage",
+    "CounterMint",
+    "CounterMintStatus",
     "NegateFn",
     "SweepOutcome",
     "VerifyFn",
@@ -144,6 +187,7 @@ __all__ = [
     "coverage_counts",
     "coverage_status",
     "enqueue_conflict_sweep",
+    "mint_counter_claim",
     "negate_claim",
     "run_conflict_search_pass",
     "sweep_one_hub",
@@ -263,43 +307,144 @@ _LEASE_FREE_SQL = """\
                  < now() - make_interval(mins => %(ttl_min)s))
 """
 
-#: Live claim hubs, not a hypothesis, whose conflict-search coverage is
-#: missing or stale, not currently leased by another node's in-flight
-#: sweep. Mirrors ``hub_tagline.py``'s ``_COHORT_SQL`` shape.
-_COHORT_SQL = f"""\
-    SELECT r.ref_id, r.title, r.meta
+# ── cohort ordering (item 2 — dense neighbourhoods first) ─────────────
+
+#: How the standing pass walks the due cohort. ``dense`` ranks a hub by
+#: how many *other* live claim hubs share an evidence source with it —
+#: conflicts hide where coverage is thickest, so thick topic
+#: neighbourhoods are swept first (the spec's MOF-conduction / DNA-bricks /
+#: molecular-switches backfill order). ``ref_id`` is the original flat
+#: walk, kept as the escape hatch. A knob on this pass (env below, or the
+#: ``cohort_order`` parameter), never a separate tool.
+COHORT_ORDERS: tuple[str, ...] = ("dense", "ref_id")
+
+#: The spec order — dense neighbourhoods first.
+_DEFAULT_COHORT_ORDER = "dense"
+
+#: The due-id scan over-claims ids by this factor before the locking
+#: claim picks the first ``limit`` in order — a hub leased or swept
+#: between scan and claim doesn't short the pass.
+_ORDER_OVERSCAN = 4
+
+
+def _cohort_order() -> str:
+    raw = (
+        os.environ.get("PRECIS_CONFLICT_SEARCH_COHORT_ORDER", _DEFAULT_COHORT_ORDER)
+        .strip()
+        .lower()
+    )
+    return raw if raw in COHORT_ORDERS else _DEFAULT_COHORT_ORDER
+
+
+#: Neighbourhood density for the ``dense`` order: the count of distinct
+#: OTHER live claim hubs sharing at least one evidence source
+#: (a :data:`HUB_ROLES` link, paper/patent/etc. → hub) with this hub.
+#: The claim-hub predicate is re-derived on the neighbour (``r2``) same as
+#: on the cohort row — anything less would count chase findings as
+#: neighbours.
+_DENSE_SCORE_SQL = f"""\
+    (
+        SELECT count(DISTINCT l2.dst_ref_id)
+          FROM links l1
+          JOIN links l2 ON l2.src_ref_id = l1.src_ref_id
+          JOIN refs r2 ON r2.ref_id = l2.dst_ref_id
+         WHERE l1.dst_ref_id = r.ref_id
+           AND l1.relation = ANY(%(hub_roles)s)
+           AND l2.relation = ANY(%(hub_roles)s)
+           AND l2.dst_ref_id <> r.ref_id
+           AND r2.kind = 'finding'
+           AND r2.retired_at IS NULL
+           AND {claim_hub_predicate_sql(ref_alias="r2")}
+           AND {not_hypothesis_predicate_sql(ref_alias="r2")}
+    )
+"""
+
+_COHORT_ORDER_BY = {
+    "ref_id": "r.ref_id",
+    "dense": f"{_DENSE_SCORE_SQL} DESC, r.ref_id",
+}
+
+#: The due+lease-free cohort in cohort order — a READ-ONLY scan (no
+#: locks): the locking claim below then takes the first ``limit`` of
+#: these ids it can still lease. Ordering outside the ``FOR UPDATE``
+#: statement keeps a correlated score out of a locking query.
+_COHORT_IDS_SQL = f"""\
+    SELECT r.ref_id
       FROM refs r
      WHERE {_LIVE_HUB_SQL}
        AND {_DUE_SQL}
        AND {_LEASE_FREE_SQL}
-     ORDER BY r.ref_id
+     ORDER BY {{order_by}}
      LIMIT %(limit)s
-       FOR UPDATE OF r SKIP LOCKED
 """
 
 
-def _claim_hubs(store: Store, *, limit: int) -> list[tuple[int, str, dict[str, Any]]]:
-    """Atomically claim up to ``limit`` due hubs: ``(ref_id, title, meta)``.
+def _ordered_due_ids(store: Store, *, limit: int, order: str) -> list[int]:
+    """Due hub ref_ids in cohort order (no locks taken)."""
+    if limit <= 0:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            _COHORT_IDS_SQL.format(order_by=_COHORT_ORDER_BY[order]),
+            {
+                **CLAIM_HUB_PREDICATE_PARAMS,
+                **NOT_HYPOTHESIS_PREDICATE_PARAMS,
+                "version": CONFLICT_SEARCH_VERSION,
+                "ttl_min": _CLAIM_TTL_MIN,
+                "limit": limit,
+                "hub_roles": sorted(HUB_ROLES),
+            },
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _claim_hubs(
+    store: Store, *, limit: int, order: str = "ref_id"
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Atomically claim up to ``limit`` due hubs, in cohort ``order``:
+    ``(ref_id, title, meta)`` tuples in the same order the pass should
+    sweep them.
 
     Same ``UPDATE ... FROM MATERIALIZED-CTE (SELECT ... FOR UPDATE SKIP
     LOCKED) ... RETURNING`` idiom as ``hub_tagline._claim_candidates``
     (see there for why the cohort must be a ``MATERIALIZED`` CTE, never an
     inline subquery — a planner rescan over-claims past ``limit``) — stamps
     ``meta.conflict_search_claimed_at`` atomically so two racing nodes
-    never both pay for the same hub's sweep within the lease TTL.
+    never both pay for the same hub's sweep within the lease TTL. The
+    ordering itself is a read-only pre-scan (:func:`_ordered_due_ids`,
+    over-scanned by :data:`_ORDER_OVERSCAN`); the claim re-checks the
+    watermark/lease conditions on those ids because either can flip
+    between scan and lock, and keeps the scanned rank as the sweep order.
     """
     if limit <= 0:
+        return []
+    ids = _ordered_due_ids(store, limit=limit * _ORDER_OVERSCAN, order=order)
+    if not ids:
         return []
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
-            WITH c AS MATERIALIZED ({_COHORT_SQL})
+            WITH ids AS (
+                SELECT u.ref_id, u.ord
+                  FROM unnest(%(ids)s::bigint[])
+                       WITH ORDINALITY AS u(ref_id, ord)
+            ),
+            c AS MATERIALIZED (
+                SELECT r.ref_id, r.title, r.meta, i.ord
+                  FROM refs r JOIN ids i ON i.ref_id = r.ref_id
+                 WHERE {_LIVE_HUB_SQL}
+                   AND {_DUE_SQL}
+                   AND {_LEASE_FREE_SQL}
+                 ORDER BY i.ord
+                 LIMIT %(limit)s
+                   FOR UPDATE OF r SKIP LOCKED
+            )
             UPDATE refs r
                SET meta = r.meta || jsonb_build_object(
                              'conflict_search_claimed_at', now()::text)
               FROM c
              WHERE r.ref_id = c.ref_id
-             RETURNING r.ref_id, c.title, c.meta
+             RETURNING r.ref_id, c.title, c.meta, c.ord
             """,
             {
                 **CLAIM_HUB_PREDICATE_PARAMS,
@@ -307,11 +452,12 @@ def _claim_hubs(store: Store, *, limit: int) -> list[tuple[int, str, dict[str, A
                 "version": CONFLICT_SEARCH_VERSION,
                 "ttl_min": _CLAIM_TTL_MIN,
                 "limit": limit,
+                "ids": ids,
             },
         ).fetchall()
-    claimed = [(int(r[0]), str(r[1] or ""), dict(r[2] or {})) for r in rows]
-    claimed.sort(key=lambda c: c[0])
-    return claimed
+    claimed = [(int(r[0]), str(r[1] or ""), dict(r[2] or {}), int(r[3])) for r in rows]
+    claimed.sort(key=lambda c: c[3])
+    return [(ref_id, title, meta) for ref_id, title, meta, _ord in claimed]
 
 
 def _claim_one_hub(
@@ -485,15 +631,15 @@ def _discover(
                 limit=topk,
                 exclude_ref_ids=excluded,
             )
-            for block, ref, distance in hits:
-                chunk_id = int(block.id)
+            for hit_block, ref, distance in hits:
+                chunk_id = int(hit_block.id)
                 dist = float(distance)
                 existing = by_chunk.get(chunk_id)
                 if existing is None:
                     by_chunk[chunk_id] = _Candidate(
                         chunk_id=chunk_id,
-                        chunk_ord=int(block.ord),
-                        chunk_text=str(block.text),
+                        chunk_ord=int(hit_block.ord),
+                        chunk_text=str(hit_block.text),
                         ref_id=int(ref.id),
                         ref_kind=str(ref.kind),
                         distance=dist,
@@ -686,6 +832,21 @@ def _covered_chunk_ids(rows: list[dict[str, Any]]) -> set[int]:
     return out
 
 
+def _opposing_seeds(cand: _Candidate, paraphrases: list[str]) -> list[str]:
+    """The negated-paraphrase texts that surfaced ``cand`` — the natural
+    seed for a review-sitting counter-claim (``mint_counter_claim``:
+    ``qualify_claim`` negotiates it into the strongest version the
+    passage licenses)."""
+    out: list[str] = []
+    for label in cand.found_by:
+        if label.startswith("paraphrase:"):
+            try:
+                out.append(paraphrases[int(label.split(":", 1)[1])])
+            except (IndexError, ValueError):
+                continue
+    return out
+
+
 def _sweep_hub(
     store: Store,
     embedder: Any,
@@ -769,15 +930,19 @@ def _sweep_hub(
             continue
         handle = handle_registry.try_format(cand.ref_kind, cand.chunk_id, chunk=True)
         contradicts = verdict.get("contradicts") is True
-        covered.append(
-            {
-                "ref_id": cand.ref_id,
-                "kind": cand.ref_kind,
-                "chunk_id": cand.chunk_id,
-                "handle": handle,
-                "verdict": "disputes" if contradicts else "no-conflict",
-            }
-        )
+        row: dict[str, Any] = {
+            "ref_id": cand.ref_id,
+            "kind": cand.ref_kind,
+            "chunk_id": cand.chunk_id,
+            "handle": handle,
+            "verdict": "disputes" if contradicts else "no-conflict",
+        }
+        # The negated paraphrase(s) that surfaced this chunk — the review
+        # sitting's counter-claim seed (:func:`mint_counter_claim` item 1).
+        opposing = _opposing_seeds(cand, paraphrases)
+        if opposing:
+            row["opposing"] = opposing
+        covered.append(row)
         if contradicts:
             # ``support`` is hardcoded "no", never read off the verdict's
             # own ``supports`` field: the edge exists BECAUSE contradicts
@@ -848,9 +1013,16 @@ def run_conflict_search_pass(
     limit: int | None = None,
     negate_fn: NegateFn | None = None,
     verify_fn: VerifyFn | None = None,
+    cohort_order: str | None = None,
 ) -> dict[str, int]:
     """Run one ``conflict_search`` pass: claim up to ``limit`` due claim
     hubs (default :func:`_hubs_per_pass`) and sweep each for opposition.
+
+    ``cohort_order`` is the backfill ordering knob
+    (:data:`COHORT_ORDERS`): the spec's ``dense`` first (default via
+    :func:`_cohort_order` / ``PRECIS_CONFLICT_SEARCH_COHORT_ORDER``), or
+    ``ref_id`` for the original flat walk. An unrecognised value falls
+    back to the env/default resolution, never fails the pass.
 
     ``negate_fn``/``verify_fn`` are the injectable LLM seams for tests
     (defaults :func:`negate_claim` and ``_chase_llm._verify_support_with_
@@ -886,8 +1058,9 @@ def run_conflict_search_pass(
     verify = verify_fn or _verify_support_with_caveats
     topk = _topk()
     verify_budget = _verify_budget()
+    order = cohort_order if cohort_order in COHORT_ORDERS else _cohort_order()
 
-    claimed_hubs = _claim_hubs(store, limit=hubs_limit)
+    claimed_hubs = _claim_hubs(store, limit=hubs_limit, order=order)
     result["hubs_claimed"] = len(claimed_hubs)
 
     for hub_ref_id, title, meta in claimed_hubs:
@@ -956,6 +1129,349 @@ def sweep_one_hub(
         topk=_topk(),
         verify_budget=_verify_budget(),
     )
+
+
+# ── counter-claim mint (the review-sitting backstop, item 1) ───────────
+
+CounterMintStatus = Literal[
+    "already",
+    "minted",
+    "linked",
+    "unsupported",
+    "needs_review",
+    "self",
+]
+
+
+@dataclass(frozen=True)
+class CounterMint:
+    """The outcome of one :func:`mint_counter_claim` call.
+
+    ``counter_hub_ref_id`` is the hub the counter-claim landed on — a
+    fresh mint, an ``attach`` convergence onto an existing hub, or the
+    live claim hub a ``'finding'``-kind covered row already was (a
+    ``linked`` status). ``disputes_linked`` is the backstop's guarantee:
+    a ``disputes`` edge joins the pair whichever path wrote it. ``report``
+    is the :class:`~precis.taproot.directed.DirectedMintReport` for the
+    review surface — ``None`` on the ``already``/``linked`` paths that
+    never reach directed-mint.
+    """
+
+    status: CounterMintStatus
+    counter_hub_ref_id: int | None
+    disputes_linked: bool
+    report: DirectedMintReport | None = None
+
+
+def _live_claim_hub_meta(store: Store, ref_id: int) -> dict[str, Any] | None:
+    """``meta`` of a live canonical claim hub, or ``None`` — re-derives
+    the claim-hub predicate, the same definition the cohort and the
+    finding-candidate filter use."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT r.meta FROM refs r
+             WHERE r.ref_id = %(ref)s
+               AND r.kind = 'finding'
+               AND r.retired_at IS NULL
+               AND {claim_hub_predicate_sql()}
+            """,
+            {"ref": ref_id, **CLAIM_HUB_PREDICATE_PARAMS},
+        ).fetchone()
+    return dict(row[0] or {}) if row is not None else None
+
+
+def _confirmed_conflict_row(
+    meta: dict[str, Any], chunk_id: int
+) -> tuple[int, dict[str, Any]] | None:
+    """``(index, row)`` of the hub's ``disputes``-verdict covered entry
+    for ``chunk_id`` at the current method version, or ``None`` — the
+    "a review sitting confirms" gate. Only a chunk the sweep itself
+    confirmed ``contradicts`` (the verify prompt's ``same_setup``
+    precondition, so a scope/caveat mismatch never earns the verdict)
+    is counter-mintable; a scope-mismatch is a wording fix on the
+    claim, never a counter-hub."""
+    ledger = _prior_ledger(meta)
+    if ledger is None:
+        return None
+    for i, row in enumerate(_covered_rows(ledger)):
+        if row.get("verdict") != "disputes":
+            continue
+        try:
+            if int(row["chunk_id"]) == chunk_id:
+                return i, row
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _disputes_pair_exists(store: Store, a: int, b: int) -> bool:
+    """A ``disputes`` edge joins the pair, either direction (a
+    ``disputes`` edge is directed but the open question it flags is a
+    pair property)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM links
+             WHERE relation = 'disputes'
+               AND ((src_ref_id = %(a)s AND dst_ref_id = %(b)s)
+                 OR (src_ref_id = %(b)s AND dst_ref_id = %(a)s))
+             LIMIT 1
+            """,
+            {"a": a, "b": b},
+        ).fetchone()
+    return row is not None
+
+
+def _ensure_pair_disputes(
+    store: Store, *, counter_hub: int, hub: int, set_by: ActorSlug
+) -> bool:
+    """The backstop write: ``counter_hub --disputes--> hub`` unless an
+    edge already joins the pair (the directed-mint cascade's own
+    ``new_contradicts`` link, or an edge a writer filed earlier — the
+    item's "whichever path wrote it"). Idempotent on ``links``'
+    endpoint+relation unique index, so a re-sweep or a second sitting
+    never duplicates it.
+
+    Claim-type policy is checked on BOTH hubs, mirroring
+    :func:`precis.taproot.hub._mint_for_placement`'s ``new_contradicts``
+    arm — :func:`link_claims` itself vetoes only the source side; a
+    landscape hub states the common case and neither disputes nor is
+    disputed by a specific result, so that pair stays unlinked by
+    design.
+    """
+    if _disputes_pair_exists(store, counter_hub, hub):
+        return True
+    types = (
+        claim_type_of(_live_claim_hub_meta(store, counter_hub)),
+        claim_type_of(_live_claim_hub_meta(store, hub)),
+    )
+    if not all(policy_for(t).disputes_counterparty for t in types):
+        log.info(
+            "conflict_search: pair disputes %s -> %s skipped (types %s)",
+            counter_hub,
+            hub,
+            types,
+        )
+        return False
+    return link_claims(
+        store,
+        from_hub_ref_id=counter_hub,
+        to_hub_ref_id=hub,
+        relation="disputes",
+        set_by=set_by,
+    )
+
+
+def _stamp_counter_hub(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    covered_idx: int,
+    chunk_id: int,
+    counter_hub_ref_id: int,
+) -> None:
+    """Record the counter-hub on the hub's covered row — a targeted
+    ``jsonb_set`` guarded on BOTH the array index and the chunk id, so
+    a refresh sweep that appended rows mid-write can't be clobbered (the
+    stamp is a no-op rather than a wrong-row write if the row moved).
+    Best-effort: a stamp failure logs and leaves the mint standing — the
+    pair edge is the durable record."""
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                """
+                UPDATE refs
+                   SET meta = jsonb_set(
+                        meta,
+                        ARRAY['conflict_search','covered',%(idx_path)s,
+                              'counter_hub_ref_id'],
+                        to_jsonb(%(counter)s::bigint),
+                        true)
+                 WHERE ref_id = %(hub)s
+                   AND meta->'conflict_search'->'covered'
+                        ->(%(idx_row)s)::int->>'chunk_id' = %(chunk)s
+                """,
+                {
+                    "idx_path": str(covered_idx),
+                    "idx_row": covered_idx,
+                    "counter": counter_hub_ref_id,
+                    "hub": hub_ref_id,
+                    "chunk": str(chunk_id),
+                },
+            )
+            conn.commit()
+    except Exception:
+        log.warning(
+            "conflict_search: counter_hub stamp failed for hub %d row %d "
+            "(the mint and pair edge stand)",
+            hub_ref_id,
+            covered_idx,
+            exc_info=True,
+        )
+
+
+def mint_counter_claim(
+    store: Store,
+    embedder: Any,
+    *,
+    hub_ref_id: int,
+    chunk_id: int,
+    proposed: str | None = None,
+    set_by: ActorSlug = "agent",
+    demand: str | None = None,
+    qualify_fn: QualifyFn | None = None,
+    block_fn: BlockFn | None = None,
+    judge_fn: JudgeFn | None = None,
+    merge_confirm_fn: MergeConfirmFn | None = None,
+) -> CounterMint:
+    """Mint a review-confirmed conflicting passage's claim as its own hub
+    and ensure a ``disputes`` edge joins the pair — item 1, the counter-
+    claim backstop.
+
+    The gate: ``chunk_id`` must be a ``disputes``-verdict covered row in
+    the hub's current-version ledger (:func:`_confirmed_conflict_row`) —
+    a *confirmed* conflicting passage, never a scope/caveat mismatch
+    (the sweep's ``same_setup`` precondition already withheld those).
+    The mint runs the normal directed-mint path
+    (:func:`~precis.taproot.directed.directed_mint`, ``apply=True``): the
+    passage is the counter-claim's own grounding, and ``qualify_claim``
+    negotiates ``proposed`` into its own sentence (when ``proposed`` is
+    empty the covered row's negated-paraphrase seed is used). The pair
+    edge is *ensured* afterwards (:func:`_ensure_pair_disputes`) —
+    directed-mint's ``block()`` same-phrasing search often never
+    surfaces the negated-paraphrase candidate, so the cascade alone
+    would leave the pair unlinked.
+
+    Idempotent: a covered row already stamped ``counter_hub_ref_id``
+    returns ``already`` without re-minting, and the pair edge's endpoint
+    +relation unique index makes a second write a no-op — a re-sweep or
+    a second sitting never duplicates either artifact. Both hubs stay
+    mintable afterwards: ``disputes`` is the non-blocking open question,
+    adjudication is Part 2's door.
+
+    Raises :class:`BadInput` on an empty ``proposed`` with no stored
+    seed, a hub that isn't a live claim hub, a chunk with no confirmed
+    ``disputes`` verdict, or a missing embedder.
+    """
+    seed = (proposed or "").strip()
+    meta = _live_claim_hub_meta(store, hub_ref_id)
+    if meta is None:
+        raise BadInput(
+            f"fi{hub_ref_id} is not a live claim hub",
+            next="counter-claims mint against swept claim hubs",
+        )
+    found = _confirmed_conflict_row(meta, chunk_id)
+    if found is None:
+        raise BadInput(
+            f"pc{chunk_id} is not a confirmed conflicting passage for fi{hub_ref_id}",
+            next=(
+                "counter-mint needs a disputes-verdict covered row — a "
+                "scope or caveat mismatch is a wording fix on the claim, "
+                "not a counter-hub"
+            ),
+        )
+    covered_idx, covered_row = found
+
+    def _landed(counter_hub: int, report: DirectedMintReport | None) -> CounterMint:
+        linked = _ensure_pair_disputes(
+            store, counter_hub=counter_hub, hub=hub_ref_id, set_by=set_by
+        )
+        _stamp_counter_hub(
+            store,
+            hub_ref_id=hub_ref_id,
+            covered_idx=covered_idx,
+            chunk_id=chunk_id,
+            counter_hub_ref_id=counter_hub,
+        )
+        return CounterMint("minted", counter_hub, linked, report)
+
+    prior_hub = covered_row.get("counter_hub_ref_id")
+    if prior_hub is not None:
+        try:
+            counter = int(prior_hub)
+        except (TypeError, ValueError):
+            counter = 0
+        if counter:
+            # A prior sitting already minted for this chunk — ensure the
+            # pair edge (idempotent) and stop: never a second counter-hub.
+            linked = _ensure_pair_disputes(
+                store, counter_hub=counter, hub=hub_ref_id, set_by=set_by
+            )
+            return CounterMint("already", counter, linked)
+
+    kind = str(covered_row.get("kind") or "")
+    if kind == "finding":
+        # The confirmed conflict is already a live claim hub (the
+        # finding-candidate filter keeps only those): the pair is
+        # hub↔hub, so there is nothing to mint — ensure the edge and
+        # record it on the covered row.
+        try:
+            finding_ref = int(covered_row["ref_id"])
+        except (KeyError, TypeError, ValueError):
+            raise BadInput(
+                "covered row has no usable ref_id",
+                next="re-sweep the hub so the ledger row is rewritten",
+            ) from None
+        if _live_claim_hub_meta(store, finding_ref) is None:
+            raise BadInput(
+                f"fi{finding_ref} is not a live claim hub",
+                next="a non-hub finding can't ground a counter-claim — "
+                "counter-mint needs an evidence-source passage",
+            )
+        linked = _ensure_pair_disputes(
+            store, counter_hub=finding_ref, hub=hub_ref_id, set_by=set_by
+        )
+        _stamp_counter_hub(
+            store,
+            hub_ref_id=hub_ref_id,
+            covered_idx=covered_idx,
+            chunk_id=chunk_id,
+            counter_hub_ref_id=finding_ref,
+        )
+        return CounterMint("linked", finding_ref, linked)
+
+    if not seed:
+        seeds = covered_row.get("opposing")
+        if isinstance(seeds, list):
+            seed = next(
+                (s.strip() for s in seeds if isinstance(s, str) and s.strip()),
+                "",
+            )
+    if not seed:
+        raise BadInput(
+            "no counter-claim sentence to argue",
+            next="pass proposed=<the opposing claim the reviewer confirmed>",
+        )
+    if embedder is None:
+        raise BadInput(
+            "no embedder configured",
+            next="the directed-mint block() convergence step needs one",
+        )
+
+    report = directed_mint(
+        store,
+        embedder,
+        proposed=seed,
+        chunk_id=chunk_id,
+        demand=demand or f"conflict-search:fi{hub_ref_id}",
+        apply=True,
+        qualify_fn=qualify_fn or qualify_claim,
+        block_fn=block_fn or block,
+        judge_fn=judge_fn or dedup_judge,
+        merge_confirm_fn=merge_confirm_fn or merge_confirm,
+        set_by=set_by,
+    )
+    if not report.qualify.supported or report.qualify.claim is None:
+        return CounterMint("unsupported", None, False, report)
+    counter_hub = report.hub_ref_id
+    if counter_hub is None:
+        return CounterMint("needs_review", None, False, report)
+    if counter_hub == hub_ref_id:
+        # The "counter-claim" converged onto the very hub it disputes —
+        # a hub can't dispute itself; nothing to link.
+        return CounterMint("self", counter_hub, False, report)
+    return _landed(counter_hub, report)
 
 
 # ── enqueue (mint trigger + approve-time refresh) ────────────────────────

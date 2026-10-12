@@ -88,7 +88,12 @@ as of `at`, method `version`" is a checkable statement, not silence;
 `covered` lists every verified passage (`{ref_id, kind, handle,
 verdict: disputes|no-conflict}`), and a re-sweep at the same version
 never re-verifies one of them. A missing ledger says nothing about
-opposition in either direction. By hand:
+opposition in either direction. The backfill pass sweeps dense topic
+neighbourhoods first (`PRECIS_CONFLICT_SEARCH_COHORT_ORDER`, `dense`
+default / `ref_id` escape hatch). A `disputes`-verdict covered row can
+be counter-minted from the claim review page — the passage's claim
+becomes its own hub through the directed-mint path and the pair gets a
+`disputes` edge; the row's `counter_hub_ref_id` records it. By hand:
 `put(kind='job', job_type='conflict_sweep', params={'hub_id': <fi id>,
 'refresh': true})`; coverage over the corpus is
 `conflict_search.coverage_counts()` (swept/total at the live version).

@@ -27,7 +27,13 @@ records, not adjudications. The coverage panel beside it reads the hub's
 ``meta.conflict_search`` ledger as a dated statement; pre-approve, a
 missing or stale ledger *queues* a ``conflict_sweep`` refresh job (one
 per hub per day, dark unless the service is lit) — the web process never
-runs the search itself, and neither panel changes the approval gate.
+runs the search itself, and neither panel changes the approval gate. A
+``disputes``-verdict covered row also carries the review sitting's
+counter-claim door (``POST /nanopub/fi<id>/counter-claim`` —
+``workers.conflict_search.mint_counter_claim``): a confirmed opposing
+passage mints as its own hub through the directed-mint path with the
+pair's ``disputes`` edge ensured; a scope/caveat mismatch is a wording
+fix on the claim and is never offered the door.
 
 Gripe summary counts link to the existing list route with exact workflow
 status filters; the live total retains the nonterminal cohort. Filtering

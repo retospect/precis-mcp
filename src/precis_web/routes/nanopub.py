@@ -459,6 +459,73 @@ async def nanopub_evidence_remove(
     return _back_to_hub(hub_id)
 
 
+@router.post("/nanopub/fi{hub_id}/counter-claim", response_model=None)
+async def nanopub_counter_claim(
+    request: Request,
+    hub_id: int,
+    chunk: str = Form(""),
+    proposed: str = Form(""),
+) -> Response:
+    """The review-sitting counter-claim door (claim-conflict-search item
+    1): the reviewer has judged a confirmed conflicting passage to be a
+    genuine opposing claim — mint it as its own hub through
+    :func:`precis.workers.conflict_search.mint_counter_claim` (the normal
+    directed-mint path + the disputes-pair backstop) and re-render with
+    the outcome.
+
+    The gate lives in the function (a ``disputes``-verdict covered row
+    for this chunk), so a scope/caveat mismatch — a wording fix on the
+    claim — can never be counter-minted through a hand-rolled POST
+    either. ``set_by="user"`` — the review sitting is the human act.
+    Re-renders like the merge door (``counter_mint``/``counter_mint_error``
+    under ``ctx['np']``) rather than redirecting, because the outcome —
+    which hub the counter-claim landed on, or why nothing was minted —
+    IS the answer the reviewer needs."""
+    from precis.errors import BadInput
+    from precis.workers.conflict_search import mint_counter_claim
+
+    store = get_store(request)
+    embedder = get_embedder(request)
+
+    def _rerender(
+        *,
+        counter_mint: Any = None,
+        counter_mint_error: str | None = None,
+        status: int,
+    ) -> Response:
+        ctx = claim_page_context(store, f"fi{hub_id}", embedder=embedder)
+        if ctx.get("np") is None:
+            return _error(
+                request,
+                "Counter-claim refused",
+                counter_mint_error or "no claim hub",
+                status,
+            )
+        ctx["np"] = {
+            **ctx["np"],
+            "counter_mint": counter_mint,
+            "counter_mint_error": counter_mint_error,
+            "counter_mint_proposed": proposed,
+        }
+        return templates.TemplateResponse(
+            request, "claim/view.html.j2", ctx, status_code=status
+        )
+
+    try:
+        chunk_id = _parse_ref(chunk, ("pc",))
+        result = mint_counter_claim(
+            store,
+            embedder,
+            hub_ref_id=hub_id,
+            chunk_id=chunk_id,
+            proposed=proposed.strip() or None,
+            set_by="user",  # the review sitting is the human act
+        )
+    except BadInput as exc:
+        return _rerender(counter_mint_error=str(exc), status=400)
+    return _rerender(counter_mint=result, status=200)
+
+
 @router.post("/nanopub/fi{hub_id}/merge", response_model=None)
 async def nanopub_merge(
     request: Request,

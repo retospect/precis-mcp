@@ -1,7 +1,7 @@
 ---
 status: ready
 pillar: memory-graph
-title: claim conflict search — remainder: counter-claim mint, backfill ordering, tuning, provenance
+title: claim conflict search — remainder: tuning, provenance
 model: opus
 ---
 
@@ -20,8 +20,10 @@ track of coverage, rank candidates by the **existing** `paper_rank` score
 edge on a confirmed contradicts → `meta.conflict_search` ledger with
 `covered` per-passage verdicts, never re-verifying a covered chunk at the
 same version) behind three doors on one `service_config` switch
-(`conflict_search`): the standing watermark pass (retro backfill),
-the `conflict_sweep` job type queued from `taproot.hub.mint_hub`
+(`conflict_search`): the standing watermark pass (retro backfill,
+`dense` cohort order by default — shared-source neighbourhoods first,
+`PRECIS_CONFLICT_SEARCH_COHORT_ORDER=ref_id` as the flat-walk escape
+hatch), the `conflict_sweep` job type queued from `taproot.hub.mint_hub`
 (`reason='mint'`), and the approve surface's freshness check
 (`nanopub/freshness.py::request_conflict_resweep`, one `refresh` job
 per hub per UTC day when the ledger is missing, from an older method
@@ -30,30 +32,22 @@ page renders the ledger as a dated statement with the covered passages
 (`precis_web/nanopub_render.py::_conflict_coverage_panel`); approve is
 never blocked. `coverage_counts()` is the swept/total query.
 
+The counter-claim backstop: `mint_counter_claim` (the review-sitting
+door, `POST /nanopub/fi<id>/counter-claim` on the approve page's covered
+list) mints a confirmed `disputes`-verdict passage's claim as its own
+hub through the normal directed-mint path and ensures the pair's
+`disputes` edge (the cascade's `block()` often never surfaces the
+negated-paraphrase candidate); the covered row's `counter_hub_ref_id`
+makes repeat sittings idempotent. Scope/caveat mismatches (no
+`disputes` verdict) are wording fixes on the claim, not counter-hubs.
+
 ## Open
 
-1. **Counter-claim + link (item 5).** If a confirmed conflicting passage
-   is a genuine opposing claim with its own grounding in a held source,
-   mint it as its own hub through the normal directed-mint path (own
-   sentence, own grounding passage) and ensure a `disputes` edge joins
-   the pair — a deliberate backstop, since directed-mint's `block()` →
-   `dedup_judge()` → `place()` cascade may or may not file it: the
-   negated-paraphrase candidate is often one `block()`'s same-phrasing
-   search never surfaces. Acceptance: after a review sitting confirms a
-   genuine opposing claim, the counter-hub exists and a `disputes` edge
-   joins the pair (whichever path wrote it); re-sweeping does not
-   duplicate it. Both hubs stay mintable — `disputes` is non-blocking.
-   Scope/caveat conflicts (the disputes spec's expected-majority
-   `scope-mismatch`) are a wording fix on the claim, not a counter-hub.
-2. **Backfill order.** The standing pass walks `ORDER BY ref_id`; the
-   spec wants dense topic neighbourhoods first (MOF conduction, DNA
-   bricks, molecular switches) — conflicts hide where coverage is
-   thickest. Needs a cohort ordering knob, not a separate tool.
-3. **Tuning on the first dense neighbourhood** — verify budget per hub
+1. **Tuning on the first dense neighbourhood** — verify budget per hub
    (6), floor fraction (0.2), freshness window (90 days), topk (8). All
    are starting points; the ledger's `skipped_covered` counts tell how
    much a refresh actually re-spends.
-4. **Provenance question.** Does the searched-at negative statement
+2. **Provenance question.** Does the searched-at negative statement
    ("no known conflict as of <date>, method v<n>") ride into the
    *published* provenance graph, or stay a local honesty record? Close
    to the negative-results pathway in `claim-publication-nanopub-ots.md`
@@ -82,3 +76,10 @@ never blocked. `coverage_counts()` is the swept/total query.
   shares the `conflict_search` service switch so a dark service mints
   nothing. The ledger grew `covered` so an approve-time refresh never
   re-verifies; a version bump still discards it (method changed).
+- 2026-10-12: the counter-claim door lives on the review page's covered
+  list, gated by a `disputes`-verdict covered row — confirmation is the
+  human act, not a POSTable string. The pair edge is ensured after
+  directed-mint rather than trusted to the cascade, because `block()`'s
+  same-phrasing search rarely surfaces a negated paraphrase. Dense
+  ordering is a read-only pre-scan ahead of the existing locking claim,
+  so ordering never enters a `FOR UPDATE` query.

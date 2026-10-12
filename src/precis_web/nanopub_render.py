@@ -1011,22 +1011,55 @@ def _conflict_coverage_panel(
         coverage, job_id = coverage_status(hub_meta), None
 
     rows = list(reversed(coverage.covered))[:_COVERAGE_LIST_CAP]
-    ref_ids = sorted({int(r["ref_id"]) for r in rows if r.get("ref_id") is not None})
+
+    def _int_or_none(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    ref_ids = sorted(
+        {
+            n
+            for r in rows
+            for n in (
+                _int_or_none(r.get("ref_id")),
+                _int_or_none(r.get("counter_hub_ref_id")),
+            )
+            if n is not None
+        }
+    )
     try:
         refs = store.fetch_refs_by_ids(ref_ids) if ref_ids else {}
     except Exception:
         log.warning("conflict coverage: ref lookup failed", exc_info=True)
         refs = {}
-    covered = [
-        {
-            "ref_id": r.get("ref_id"),
-            "kind": r.get("kind") or "",
-            "handle": r.get("handle") or "",
-            "verdict": r.get("verdict") or "",
-            "title": getattr(refs.get(r.get("ref_id")), "title", None) or "",
-        }
-        for r in rows
-    ]
+    covered = []
+    for r in rows:
+        # The review sitting's counter-claim surface (item 1): the
+        # negated paraphrase that surfaced the passage seeds the form,
+        # and a stamped counter-hub renders as a link instead of the
+        # form.
+        seeds = r.get("opposing")
+        counter_hub = _int_or_none(r.get("counter_hub_ref_id"))
+        covered.append(
+            {
+                "ref_id": r.get("ref_id"),
+                "kind": r.get("kind") or "",
+                "chunk_id": r.get("chunk_id"),
+                "handle": r.get("handle") or "",
+                "verdict": r.get("verdict") or "",
+                "title": getattr(refs.get(r.get("ref_id")), "title", None) or "",
+                "opposing": next(
+                    (s for s in seeds if isinstance(s, str) and s.strip()), None
+                )
+                if isinstance(seeds, list)
+                else None,
+                "counter_hub_ref_id": counter_hub,
+                "counter_hub_title": getattr(refs.get(counter_hub), "title", None)
+                or "",
+            }
+        )
     return {
         "status": coverage.status,
         "fresh": coverage.fresh,

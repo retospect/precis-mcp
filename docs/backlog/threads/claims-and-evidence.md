@@ -81,8 +81,10 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    `taproot-adjudicate-reopened-claims` (premise half-stale: the widening arm
    now files non-blocking `disputes`, but a demotion still reopens reviewed
    hubs) · `contradicts-conflates-evidence-and-prose-misuse` (residue = the
-   `misused-by` relation only) · `claim-conflict-search` items 4–5 (slice 1
-   shipped dark; nothing reads its output at approve).
+   `misused-by` relation only) · `claim-conflict-search` (sweep + review
+   panels, counter-claim mint door and dense backfill ordering shipped;
+   open = prod tuning + the published-provenance question; the service
+   stays dark until lit).
 3. **Doors** — `taproot-merge-mcp-surface` (web door + agent `view='merge-plan'` shipped; open = corpus-wide banded candidate scan, low priority) ·
    `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` ·
    `preprint-to-published-cite-upgrade`.

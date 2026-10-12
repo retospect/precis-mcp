@@ -1523,3 +1523,161 @@ def test_withheld_panel_leads_with_the_gate_and_states_each_reason(
     assert "stale: claim edited after verification" in text
     assert "verified 2026-09-01" in text
     assert "never verified" not in text
+
+
+def test_counter_claim_door_mints_links_and_reports_the_outcome(
+    client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review-sitting door (claim-conflict-search item 1): a
+    ``disputes``-verdict covered row offers the counter-claim form; the
+    POST mints through the directed-mint path, links the pair with a
+    non-blocking disputes edge, stamps the covered row, and a second
+    POST mints nothing twice."""
+    from types import SimpleNamespace
+
+    from precis.taproot import directed
+    from precis.workers.conflict_search import CONFLICT_SEARCH_VERSION
+    from precis_web import nanopub_render
+    from tests.workers._helpers import seed_chunk
+
+    _stub_dedup_judge(monkeypatch)
+    monkeypatch.setattr(
+        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
+    )
+    store = _store(runtime_with_store)
+    paper, _chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "Raman shows the D/G ratio rises after annealing.", paper, _chunk
+    )
+
+    passage = (
+        "Control experiments find the D/G ratio does NOT rise after "
+        "annealing at 600 C: every replicate stayed below 1.2."
+    )
+    opp_chunk = seed_chunk(store, ref_id=paper, text=passage, ord=1)
+    store.update_ref(
+        hub,
+        meta_patch={
+            "conflict_search": {
+                "version": CONFLICT_SEARCH_VERSION,
+                "at": "2026-10-10T00:00:00+00:00",
+                "candidates_checked": 1,
+                "disputes_filed": 1,
+                "covered": [
+                    {
+                        "ref_id": paper,
+                        "kind": "paper",
+                        "chunk_id": opp_chunk,
+                        "handle": f"pc{opp_chunk}",
+                        "verdict": "disputes",
+                        "opposing": ["the D/G ratio does not rise after annealing"],
+                    }
+                ],
+            }
+        },
+    )
+
+    # The qualify LLM is stubbed (no live model); its quote must be a
+    # verbatim span of the seeded passage.
+    monkeypatch.setattr(
+        directed,
+        "route",
+        lambda req: SimpleNamespace(
+            text="",
+            data={
+                "supported": True,
+                "claim": "The D/G ratio does not rise after annealing at 600 C.",
+                "quote": "every replicate stayed below 1.2",
+                "reason": "qualified",
+            },
+            error=None,
+        ),
+    )
+
+    page = client.get(f"/claim/fi{hub}")
+    assert f'action="/nanopub/fi{hub}/counter-claim"' in page.text
+    assert 'value="the D/G ratio does not rise after annealing"' in page.text
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/counter-claim",
+        data={"chunk": f"pc{opp_chunk}", "proposed": "the D/G ratio does not rise"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "Counter-claim landed on" in resp.text
+
+    with store.pool.connection() as conn:
+        counter = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE relation = 'corroborates' "
+            "AND src_ref_id = %s AND dst_ref_id != %s",
+            (paper, hub),
+        ).fetchone()
+        assert counter is not None
+        counter = int(counter[0])
+        pair = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'disputes' AND "
+            "((src_ref_id = %s AND dst_ref_id = %s) OR (src_ref_id = %s AND dst_ref_id = %s))",
+            (counter, hub, hub, counter),
+        ).fetchone()
+        stamped = conn.execute(
+            "SELECT meta->'conflict_search'->'covered'->0->>'counter_hub_ref_id' "
+            "FROM refs WHERE ref_id = %s",
+            (hub,),
+        ).fetchone()
+    assert pair is not None and int(pair[0]) == 1
+    assert stamped is not None and int(stamped[0]) == counter
+
+    # A second sitting mints nothing twice.
+    resp2 = client.post(
+        f"/nanopub/fi{hub}/counter-claim",
+        data={"chunk": f"pc{opp_chunk}", "proposed": "anything"},
+    )
+    assert resp2.status_code == 200
+    assert "already has a counter-hub" in resp2.text
+
+
+def test_counter_claim_door_refuses_an_unconfirmed_chunk(
+    client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scope/caveat mismatch is a wording fix on the claim, not a
+    counter-hub: without a disputes-verdict covered row the door
+    refuses, and the form is not offered."""
+    from precis.workers.conflict_search import CONFLICT_SEARCH_VERSION
+    from precis_web import nanopub_render
+
+    _stub_dedup_judge(monkeypatch)
+    monkeypatch.setattr(
+        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
+    )
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A no-conflict claim.", paper, chunk)
+    store.update_ref(
+        hub,
+        meta_patch={
+            "conflict_search": {
+                "version": CONFLICT_SEARCH_VERSION,
+                "at": "2026-10-10T00:00:00+00:00",
+                "candidates_checked": 1,
+                "disputes_filed": 0,
+                "covered": [
+                    {
+                        "ref_id": paper,
+                        "kind": "paper",
+                        "chunk_id": chunk,
+                        "handle": f"pc{chunk}",
+                        "verdict": "no-conflict",
+                    }
+                ],
+            }
+        },
+    )
+
+    page = client.get(f"/claim/fi{hub}")
+    assert f'action="/nanopub/fi{hub}/counter-claim"' not in page.text
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/counter-claim",
+        data={"chunk": f"pc{chunk}", "proposed": "anything"},
+    )
+    assert resp.status_code == 400
+    assert "not a confirmed conflicting passage" in resp.text
