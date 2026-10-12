@@ -223,10 +223,15 @@ graph-health-metrics, five parked gripes, and the seam with
     move first, then the exact-match folksonomy cull.
 ## Waiting on Reto
 
-- **knowledge-mesh-13:** should qu202467 resume, with extraction re-run
-  on new findings each round? Recommended: yes.
+- **knowledge-mesh-13: ruled 2026-10-12 (Reto, chat) — yes.** qu202467
+  resumes, with measure extraction re-run on each round's new findings.
+  "Lift the cap if it helps": the quest's spend cap (roadmap-quest's
+  post-deploy supply cap) may be raised for qu202467 if it throttles the
+  extraction rounds; the owner sets the number and records it here.
 - **knowledge-mesh-14:** the 5 undecided pilot rows (mx349, mx350: re-file
-  as step free energy; mx205, mx206, mx308: leave unreviewed).
+  as step free energy; mx205, mx206, mx308: leave unreviewed). Not
+  explicitly ruled on 2026-10-12; proceed as recommended unless Reto
+  objects.
 
 
 The six 2026-09-30 rulings (fold-in, mirror first, render-only, this

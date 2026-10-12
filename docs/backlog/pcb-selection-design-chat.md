@@ -75,8 +75,9 @@ extensions and web/PCB rationale paragraphs require the reviewed map and
 explicit file ownership before edits; no changes to window25's blocktree
 or structure files. Preserve all other active owners' work and scratch.
 
-The completed routing levers remain complete; pcb-escape-local-repair
-stays draft. This request assigns a viewer feature, not that repair build.
+The completed routing levers remain complete; the local escape repair was
+withdrawn 2026-10-12 (Reto: no hand-routing, free pins/placement/outline;
+td472840 comment 1). This request assigns a viewer feature, not routing.
 No autonomous real-board edits/routing, EasyEDA operations, fabrication,
 provider jobs or new science/compute. Runtime tests use fixtures/dev DB;
 the named real/private URL is context, not permission to mutate it.

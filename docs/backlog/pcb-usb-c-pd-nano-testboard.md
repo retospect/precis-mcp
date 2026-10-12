@@ -175,8 +175,8 @@ Reto approved folding the Nano readiness and anneal-feedback docs onto main.
 The approved distance → rotation → lane-template sequence completed on
 snapshot replay: default distance landed3419720b6; rotated poses collide
 and the legal short lane pilot regresses51→50/55. Retain the51/55
-baseline. [Local repair](pcb-escape-local-repair.md), td472840, is a draft
-for review; further repair implementation is not authorized by that ruling.
+baseline. The local repair draft was withdrawn 2026-10-12 (Reto: no
+hand-routing; pin swaps, placement and outline are free; td472840 comment 1).
 This supersedes the fleet wind-down's A/C ownership hold; those levers use
 snapshot replay only and never Reto's real boards. The anneal-feedback loop
 above remains a separate specification, not implemented by this docs fold.

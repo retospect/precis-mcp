@@ -217,6 +217,31 @@ refine, not replace, them.
 - q2/q3 (reference consistency, oxide corrections): still being explained
   to Reto; no ruling yet.
 
+## Rulings 2026-10-12 (Reto, chat)
+
+- **q3, oxide corrections: ruled.** Apply the Materials-Project-style
+  per-element oxide corrections to the *bulk* oxide references only (Part
+  A already goes through pymatgen); leave surface O*/OH*/H* anchors
+  uncorrected and say so per anchor; draw the oxide phase boundaries as a
+  labelled uncertain layer (a few tenths of a volt). For the NO→NH₃
+  window this matters little: the operating point is cathodic, so the
+  resting-state question is H coverage versus β-PdH, not oxide.
+- **q2 stands as ruled 2026-10-05** (one footing per map, mixed footings
+  partitioned, never blended); nothing further to decide for v1.
+- **The layered diagram must be visible in the viewer.** Reto: "each
+  reaction contributes a masked area (where it can operate) and we overlay
+  those." The overlay is already the design (§7 above, prompt §6 "compute
+  the resting-state map first, then overlay the per-intermediate
+  constraints as a mask"), but no rendering surface was specified and
+  `precis_web` has no Pourbaix page. Slices 2–4 therefore each ship a
+  render: slice 2 the resting-state map as a page under the quest and the
+  slab (`/pourbaix/<handle>`) plus `view='pourbaix'` on the quest and
+  structure kinds for agents; slice 3 the staircase panel beside it on the
+  shared slider bank; slice 4 one translucent mask per intermediate
+  (toggle per rung) overlaid on the map, the intersection drawn as the
+  operating window. Same object on MCP and web (roadmap §Surfaces). Reto
+  offered the fuller reminder prompt if the owner needs it.
+
 ## Slice 1 contract (built 2026-10-07; the prompt's §3 inner loop + §5 source 2)
 
 **Anchor inventory (prod, read-only, 2026-10-07):** no coverage anchors

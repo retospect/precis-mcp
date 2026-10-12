@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Build [print-file-scale](../print-file-scale.md) (½ build), then O2–O4 or O5 once Reto answers item -6.
-- **Blocked by:** Print-file-scale is ready; subsequent organic work waits on item -6. Load-test numbers, PCB rough-box decision and first Print files click remain owed by Reto.
+- **Next:** Build [print-file-scale](../print-file-scale.md) (½ build), then O2–O4 before O5 (Reto 2026-10-12: "ok, we'll work on this, not highest prio now" — the recommendation O2–O4 first, rough box yes, stands as the default when the thread resumes).
+- **Blocked by:** Nothing for print-file-scale. Reto deprioritised this thread on 2026-10-12; the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Use [print-file-scale](../print-file-scale.md): writer scale, scale metadata/filename, route bounds and printed-size checks; preserve the already dogfooded region slice A.
 - **Worktree:** `se-machine-design`

@@ -4,7 +4,7 @@
 
 - **Pillar:** local-compute
 - **Next:** Run the 40-task `chase:verify` compare, local `gpt-oss-120b` vs Haiku 4.5, each arm twice (`scripts/llm_eval/build_chase_verify_gold.py`, then `precis llm eval gpt-oss-120b --compare claude-haiku-4-5 --placement-a local --placement-b cloud --tier medium --gold <set>`), and bring Reto the numbers before touching `llm.chain.medium`. `chase:verify` is ~96% of medium-tier calls (7,191 / $70 in the 7 days to 2026-10-11). It is a claim-support judgment, and the 2026-10-03 tuned-models plan keeps judgment ops on Claude, so Reto decides with the numbers in hand.
-- **Blocked by:** The eval code is deployed (round 24, prod 7530b327a), but running it reads prod from melchior as reto, which the agent permission classifier refuses without Reto's explicit OK in that session. NAS role shares await Reto’s local-compute-12 answer.
+- **Blocked by:** Nothing for the LLM work. Reto, 2026-10-12 (chat): "the compute is llm, we should be able to do that" — explicit OK to run the eval from melchior and to offload to the twins; "validate local compute on one of the twins, and more of that soon". Castor already serves gpt-oss 120B (vLLM, 32 slots) and nothing routes to it: point the summarise chain's rung 0 at castor (melchior's capacity-4 slot overflowed 16,416 of 19,937 calls to cloud in its first 24 h) and run the chase:verify compare against castor. NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
 - **Worktree:** `local-compute`
@@ -112,7 +112,23 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    read 97% full by bytes and inodes (about 26k inodes free), so a loose
    Python environment cannot be installed there. Minimal footprint is one
    image per workload, per-job writes on node-local scratch only, stage
-   deleted after collect. The uses:
+   deleted after collect.
+   **Storage answer for Reto (2026-10-12, from td471801's 2026-10-05 quota
+   read and the twins' image inventory):** the project space is 10,000
+   GiB with 9,711 used (289 GiB free) and 1,000,000 inodes with 973,336
+   used (26,664 free). Bytes are not the constraint; inodes are, and a
+   SIF is one inode. Image estimate, Apptainer SIF (compressed, roughly
+   half of the expanded tree): ML-potential (MACE + torch CUDA) ≈ 3 GiB
+   (the pilot measured 2.96 GB of wheels, 5.5 GB expanded, cap 3 GiB);
+   GPAW + MPI CPU ≈ 1 GiB (our `precis-dft:cpu` image is 1.14 GB);
+   catpath/aizynth ≈ 1.2 GiB. Three images ≈ 5–6 GiB resident, stage
+   worst case 2× that during upload, results 16 MiB per job: under 15 GiB
+   and about 300 inodes total. What to ask the provider for: an inode
+   raise (1 M → 2 M) or a cleanup of whatever holds the 973 k inodes
+   (not ours to identify from here; the snapshot does not split by user);
+   no byte increase is needed, a +100 GiB cushion is optional. Who
+   consumed the 9.7 TB is also unknown from the snapshot. A fresh read
+   needs the vault-held key on `work/meluxina/bootstrap`. The uses:
    - (a) LLM operations: the slullama rung, `backlog/slullama-hpc-placement.md`
      leg 2.
    - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,

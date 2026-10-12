@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Reto defines "fixed" for the dogfood board, then: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod, which carries the landed distance warm start (replay 51/55 inner vs 42/55 radial; 31 vs 22 on B.Cu alone, mx456/mx457) against prod's current 45/55 (job 472111); (2) if 51 is not enough, authorize the build in [local escape repair](../pcb-escape-local-repair.md), td472840, for the four remaining nets ARR1_R1C5/R6C5/R7C2/R7C6. All three approved routing-levers probes are done: driver rotations 0°/180° collide with the fixed vias, so the exact 270° bottom pose stays (mx458–mx463); four connected In2 plaza-row exits passed copper DRC but regressed 51 → 50/55 (mx464); removal controls 51/49/49 show no gain (mx465–mx467); no lane default ships. The repair item is a draft for review, not a build authorization. EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked. Historical handoffs below remain historical.
-- **Blocked by:** Reto's definition of "fixed" and the repair-build authorization; the coordinator owns deployment. No provider/model/compute/manufacture/service work. Historical handoffs below do not renew programme holds.
+- **Next:** Reto ruled "fixed" on 2026-10-12 (chat): nothing beyond the netlist is fixed. Pin swaps are free, placement is free (the driver and parts may move), and the board outline may grow; no hand-routing of any net ("there are infinite solutions, we need one; don't constrain the problem"). The local escape repair build is withdrawn (td472840 comment 1; the item is deleted). So: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod with the landed distance warm start and pin swaps enabled (replay 51/55 inner vs 42/55 radial, mx456/mx457, against prod's current 45/55, job 472111); (2) if that is short of 55/55, a placement pass that may enlarge the outline until every net routes. The levers evidence stays as the record: driver rotations 0°/180° collided with the then-fixed vias (mx458–mx463), connected In2 plaza-row exits regressed 51 → 50/55 (mx464), removal controls 51/49/49 (mx465–mx467). EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked. Historical handoffs below remain historical.
+- **Blocked by:** Nothing from Reto; the coordinator owns deployment. No provider/model/compute/manufacture/service work. Historical handoffs below do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
 - **Worktree:** work/pcb/plaza-row-exits in codex-pcb/.scratch/plaza-row-exits, fresh origin/main; completed-levers evidence docs only. Owner pcb/window6; original bootstrap/branches/scratch preserved. Native startup/src source is distinct; no real-board or provider work.
@@ -94,15 +94,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Do next
 
-0. **backlog/pcb-escape-local-repair.md** — Draft for review after the
-   approved levers completed. Keep legal270°/51of55 inner baseline;
-   driver rotations0°/180° are invalid, and connected In2 runouts regress
-   to50of55 despite clean copper DRC. Remaining baseline nets ARR1_R1C5,
-   ARR1_R6C5, ARR1_R7C2, ARR1_R7C6 need a local repair that preserves
-   routed neighbours. **td472840**, **mx458–mx467** quantify refusals;
-   **mx456/mx457** retain51vs42 warm-start evidence. No further repair
-   build authorization inferred; no real-board routing or fixture
-   dogfood/look items.
+0. **Route dogfood-6 to 55/55 with the problem unconstrained** (Reto,
+   2026-10-12: no hand-routing; pin swaps free, placement free, outline may
+   grow). The local escape repair item was deleted with that ruling; its
+   measured evidence lives in **td472840** (comment 1 carries the ruling)
+   and **mx456–mx467**. Steps: prod re-route with the landed warm start and
+   pin swaps on; then a placement pass that may move the driver and parts
+   and enlarge the outline. Report routed/55, vias, length, and what moved.
 0a. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
    board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
    are chosen in the board frame, and an aligned row or column of
