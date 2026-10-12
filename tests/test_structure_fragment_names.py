@@ -113,3 +113,15 @@ def test_azobenzene_on_gold_slab_no_metal_bonds() -> None:
     )
     names = " ".join(fragment_names(s))
     assert "diazene" in names and "phenyl" in names
+
+
+def test_loosely_relaxed_azobenzene_still_named() -> None:
+    """A stored azobenzene has C-C ~1.50 A and N-N ~1.42 A (no bond is under
+    the double-bond distance cutoffs); coordination still names the groups."""
+    s = _azobenzene_geometry()
+    centre = np.array([10.0, 10.0, 10.0])
+    for a in s.atoms.values():
+        cart = s.cell.frac_to_cart(a.frac)
+        a.frac = s.cell.cart_to_frac(centre + 1.10 * (cart - centre))
+    names = " ".join(fragment_names(s))
+    assert "diazene" in names and "phenyl" in names

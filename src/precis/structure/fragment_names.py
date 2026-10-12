@@ -79,7 +79,66 @@ def _perceive_bonds(scene: Scene) -> list[Bond]:
                     provenance="inferred",
                 )
             )
+    _refine_orders(scene, out)
     return out
+
+
+def _refine_orders(scene: Scene, bonds: list[Bond]) -> None:
+    """Raise orders the distance rules miss on loosely relaxed geometries
+    (a stored azobenzene has C-C 1.50 A and N-N 1.42 A, so every bond reads
+    single). Coordination decides instead: a planar six-ring of three-bonded
+    carbons is aromatic, N-N between two-bonded nitrogens is azo, and a
+    one-bonded O on carbon is a carbonyl."""
+    el = {a: at.element for a, at in scene.atoms.items()}
+    adj: dict[str, list[str]] = {}
+    by_pair: dict[frozenset[str], Bond] = {}
+    for b in bonds:
+        adj.setdefault(b.i, []).append(b.j)
+        adj.setdefault(b.j, []).append(b.i)
+        by_pair[frozenset((b.i, b.j))] = b
+    for b in bonds:
+        pair = (el[b.i], el[b.j])
+        if b.order == 1.0 and pair == ("N", "N"):
+            if len(adj[b.i]) == 2 and len(adj[b.j]) == 2:
+                b.order = 2.0
+        elif b.order == 1.0 and "O" in pair and "C" in pair:
+            o = b.i if el[b.i] == "O" else b.j
+            if len(adj[o]) == 1:
+                b.order = 2.0
+    carbons = {a for a, e in el.items() if e == "C" and len(adj.get(a, ())) == 3}
+    lat = scene.cell.lattice
+    pbc = np.array(scene.cell.pbc, dtype=bool)
+    seen: set[frozenset[str]] = set()
+
+    def walk(start: str, path: list[str]) -> None:
+        for nxt in adj[path[-1]]:
+            if nxt not in carbons:
+                continue
+            if len(path) == 6:
+                if nxt == start:
+                    seen.add(frozenset(path))
+            elif nxt not in path and nxt > start:
+                walk(start, [*path, nxt])
+
+    for c in carbons:
+        walk(c, [c])
+    for ring in seen:
+        labels = sorted(ring)
+        ref = scene.atoms[labels[0]].frac
+        xyz = []
+        for lab in labels:
+            df = scene.atoms[lab].frac - ref
+            df[pbc] -= np.round(df[pbc])
+            xyz.append(df @ lat)
+        pts = np.array(xyz)
+        pts -= pts.mean(axis=0)
+        if np.linalg.svd(pts, compute_uv=False)[-1] > 0.25:  # off-plane rms
+            continue
+        for a in ring:
+            for n in adj[a]:
+                if n in ring:
+                    bond = by_pair[frozenset((a, n))]
+                    bond.order, bond.kind = _AROMATIC_ORDER, "aromatic"
 
 
 def _adjacency(bonds: list[Bond], scene: Scene) -> _Adj:
