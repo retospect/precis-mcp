@@ -22,6 +22,15 @@ monotonically as answers arrive — every field beyond a block's name is
 optional; validation reports absence (filled-fraction honesty) but never fails
 on it.
 
+**Completion reads**: ``completion`` captures all live blocks, ports and bound
+structure snapshots in one statement; the pure shared aggregate includes hidden
+and isolated blocks. Unsupported templates, dangling bindings and incomplete
+inventories remain unknown. An unbound block has unknown applicability; only a
+positive supported non-atomistic binding establishes non-applicability. An exact
+complete empty inventory is not-applicable and never finished. Independent
+block convergence never claims physical assembly convergence. The additive
+``completion``/``completion_digest`` views do not hydrate, generate or dispatch.
+
 **Stored build reports**: `view='report'` lists generated/join findings from
 bound structure metadata for direct design blocks, optionally addressed by
 label or uid (`args={'block': ...}`). It shares the block view's finding

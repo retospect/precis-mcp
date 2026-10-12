@@ -21,13 +21,22 @@ Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 ``structure_positions_snapshot`` reads identity/version/cell/live fractions
 in one SQL statement for S1. Importers can rewrite at the same caller version,
 so a version bracket around separate cell/atom reads is not a snapshot.
+
+``structure_completion_geometry_snapshot`` is the raw, lossless database seam
+for later completion readers: one statement returns the current ref metadata
+and independently ordered live atom/bond rows. Metadata JSON numbers decode
+as ``Decimal``; floating database columns use binary send values so their exact
+binary ratios survive JSON aggregation and PostgreSQL text-output settings.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import struct
 from contextlib import nullcontext
-from typing import Any, TypedDict, cast
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import numpy as np
 from psycopg import Connection
@@ -38,6 +47,9 @@ from precis.structure.cell import Cell, as_image3
 from precis.structure.importers import ExternalId, ExternalRun
 from precis.structure.measures import evaluate as _evaluate_measure
 from precis.structure.scene import Atom, Bond, Measure, Scene
+
+if TYPE_CHECKING:
+    from precis.structure.completion_types import CompletionSnapshot, DisplaySelector
 
 
 class StructurePositionsSnapshot(TypedDict):
@@ -52,6 +64,18 @@ class StructurePositionsSnapshot(TypedDict):
     pbc: Any
     has_lattice: bool
     generated: Any
+
+
+class StructureCompletionGeometrySnapshot(TypedDict):
+    """Raw current structure state, with database numerics kept exact."""
+
+    ref_id: int
+    version: Any
+    meta: dict[str, Any]
+    lattice: Any
+    pbc: Any
+    atoms: list[dict[str, Any]]
+    bonds: list[dict[str, Any]]
 
 
 class StructRunRow(TypedDict):
@@ -511,6 +535,114 @@ class StructureMixin:
             "pbc": meta.get("pbc"),
             "has_lattice": "lattice" in meta,
             "generated": meta.get("generated"),
+        }
+
+    def structure_completion_snapshot(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+        requested_display: DisplaySelector | None = None,
+        selected_run_id: int | None = None,
+        history_limit: int = 64,
+        request_limit: int = 64,
+    ) -> CompletionSnapshot | None:
+        """Read one bounded coherent completion snapshot without writes."""
+        from precis.store._structure_completion import read_completion_snapshot
+
+        return read_completion_snapshot(
+            self,
+            ref_id,
+            conn=conn,
+            requested_display=requested_display,
+            selected_run_id=selected_run_id,
+            history_limit=history_limit,
+            request_limit=request_limit,
+        )
+
+    def structure_completion_geometry_snapshot(
+        self, ref_id: int, *, conn: Connection | None = None
+    ) -> StructureCompletionGeometrySnapshot | None:
+        """Return exact current metadata and ordered live graph rows in one read.
+
+        Atom and bond aggregates are separate correlated subqueries, so the
+        result cannot multiply either row set by the size of the other. JSONB
+        metadata is fetched as text and decoded with ``Decimal`` for JSON
+        numbers. Float columns travel as float8send hex (real promotes exactly
+        to double); otherwise decimal JSON would change their binary ratios or
+        depend on extra_float_digits. Missing metadata
+        stays missing/``None`` for that codec to reject or interpret. This
+        helper does not hydrate a ``Scene``, supply defaults, or write rows.
+
+        A caller-provided connection remains caller-owned. Without one, this
+        method borrows and closes a connection from the store pool.
+        """
+        with (
+            nullcontext(conn) if conn is not None else self.pool.connection() as c,
+            c.cursor(row_factory=dict_row) as cur,
+        ):
+            cur.execute(
+                "SELECT r.ref_id, r.meta::text AS meta_json, "
+                "(r.meta -> 'version')::text AS version_json, "
+                "(r.meta -> 'lattice')::text AS lattice_json, "
+                "(r.meta -> 'pbc')::text AS pbc_json, "
+                "COALESCE((SELECT jsonb_agg(jsonb_build_object("
+                "'id', a.id, 'ref_id', a.ref_id, 'label', a.label, "
+                "'element', a.element, 'fa', encode(float8send(a.fa), 'hex'), "
+                "'fb', encode(float8send(a.fb), 'hex'), "
+                "'fc', encode(float8send(a.fc), 'hex'), "
+                "'fixed', a.fixed, 'magmom', encode(float8send(a.magmom), 'hex'), "
+                "'oxidation', a.oxidation, 'charge', a.charge, "
+                "'hybridization', a.hybridization, "
+                "'added_version', a.added_version, "
+                "'retired_version', a.retired_version, "
+                "'created_at', a.created_at) ORDER BY a.id)::text "
+                "FROM struct_atoms a WHERE a.ref_id = r.ref_id "
+                "AND a.retired_version IS NULL), '[]') AS atoms_json, "
+                "COALESCE((SELECT jsonb_agg(jsonb_build_object("
+                "'id', b.id, 'ref_id', b.ref_id, 'kind', b.kind, "
+                "'bond_order', encode(float8send(b.bond_order::double precision), 'hex'), "
+                "'provenance', b.provenance, "
+                "'i', b.i, 'j', b.j, 'image', b.image, "
+                "'added_version', b.added_version, "
+                "'retired_version', b.retired_version, "
+                "'created_at', b.created_at) ORDER BY b.id)::text "
+                "FROM struct_bonds b WHERE b.ref_id = r.ref_id "
+                "AND b.retired_version IS NULL), '[]') AS bonds_json "
+                "FROM refs r WHERE r.ref_id = %s AND r.kind = 'structure' "
+                "AND r.retired_at IS NULL",
+                (ref_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+
+        def decode_json(value: str | None) -> Any:
+            return (
+                json.loads(value, parse_float=Decimal, parse_int=int)
+                if value is not None
+                else None
+            )
+
+        meta = decode_json(row["meta_json"])
+        atoms = decode_json(row["atoms_json"])
+        bonds = decode_json(row["bonds_json"])
+        for atom in atoms:
+            for field in ("fa", "fb", "fc", "magmom"):
+                if atom[field] is not None:
+                    atom[field] = struct.unpack("!d", bytes.fromhex(atom[field]))[0]
+        for bond in bonds:
+            bond["bond_order"] = struct.unpack("!d", bytes.fromhex(bond["bond_order"]))[
+                0
+            ]
+        return {
+            "ref_id": int(row["ref_id"]),
+            "version": decode_json(row["version_json"]),
+            "meta": meta,
+            "lattice": decode_json(row["lattice_json"]),
+            "pbc": decode_json(row["pbc_json"]),
+            "atoms": atoms,
+            "bonds": bonds,
         }
 
     def structure_load(

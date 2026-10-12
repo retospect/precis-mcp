@@ -1,0 +1,3682 @@
+{
+  "comparison_context": {
+    "claimed_atom_map": [
+      [
+        {
+          "$int": "1"
+        },
+        {
+          "$int": "1"
+        }
+      ],
+      [
+        {
+          "$int": "2"
+        },
+        {
+          "$int": "2"
+        }
+      ]
+    ],
+    "missing_basis_proof": "target swaps a/b axes and PBC; atom IDs alone do not prove edge basis correspondence",
+    "missing_image_proof": "source C1 at 1.1 wraps to target 0.1; target absolute image must change from 0 to 1",
+    "provenance": "synthetic test inputs, not a trusted historic loader or mapper",
+    "source_graph_token": "synthetic:source-graph",
+    "source_snapshot": {
+      "atoms": [
+        {
+          "charge": null,
+          "element": "C",
+          "fixed_mask": {
+            "$int": "0"
+          },
+          "fractional": [
+            {
+              "$rational": {
+                "d": "10",
+                "n": "11"
+              }
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          "hybridization": null,
+          "label": "C1",
+          "magmom": null,
+          "oxidation": null,
+          "row_id": {
+            "$int": "1"
+          }
+        },
+        {
+          "charge": null,
+          "element": "C",
+          "fixed_mask": {
+            "$int": "0"
+          },
+          "fractional": [
+            {
+              "$rational": {
+                "d": "10",
+                "n": "9"
+              }
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          "hybridization": null,
+          "label": "C2",
+          "magmom": null,
+          "oxidation": null,
+          "row_id": {
+            "$int": "2"
+          }
+        }
+      ],
+      "bonds": [
+        {
+          "i": {
+            "$int": "1"
+          },
+          "image": [
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          "j": {
+            "$int": "2"
+          },
+          "kind": "pairwise",
+          "order": {
+            "$int": "1"
+          },
+          "provenance": "declared",
+          "row_id": {
+            "$int": "3"
+          }
+        }
+      ],
+      "identity": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v1",
+        "version": {
+          "$int": "1"
+        }
+      },
+      "lattice": [
+        [
+          {
+            "$int": "1"
+          },
+          {
+            "$int": "0"
+          },
+          {
+            "$int": "0"
+          }
+        ],
+        [
+          {
+            "$int": "0"
+          },
+          {
+            "$int": "1"
+          },
+          {
+            "$int": "0"
+          }
+        ],
+        [
+          {
+            "$int": "0"
+          },
+          {
+            "$int": "0"
+          },
+          {
+            "$int": "1"
+          }
+        ]
+      ],
+      "pbc": [
+        true,
+        false,
+        false
+      ],
+      "source": "verified-historic-snapshot"
+    }
+  },
+  "completion": {
+    "artifact-unsupported": {
+      "binding": "historical-unavailable",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": {
+          "artifact_id": "synthetic:unadopted",
+          "atom_identity_digest": "synthetic",
+          "cell_digest": "synthetic",
+          "graph_digest": null,
+          "natoms": {
+            "$int": "1"
+          },
+          "snapshot_codec": "synthetic",
+          "snapshot_digest": "synthetic"
+        },
+        "geometry": null,
+        "reason": "no-artifact-loader",
+        "role": "unadopted-artifact",
+        "status": "unsupported"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "artifact-rendering-unsupported"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "artifact": {
+          "artifact_id": "synthetic:unadopted",
+          "atom_identity_digest": "synthetic",
+          "cell_digest": "synthetic",
+          "graph_digest": null,
+          "natoms": {
+            "$int": "1"
+          },
+          "snapshot_codec": "synthetic",
+          "snapshot_digest": "synthetic"
+        },
+        "kind": "artifact",
+        "role": "unadopted-artifact",
+        "run_id": null
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": null,
+        "requested_run_id": null,
+        "status": "not-requested"
+      },
+      "shown_geometry": null,
+      "shown_role": null,
+      "state": "unavailable",
+      "status_token": "synthetic:status:unknown"
+    },
+    "current-unknown": {
+      "binding": "exact",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": null,
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "no-trusted-producer",
+        "policy-unavailable"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "kind": "current"
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": null,
+        "requested_run_id": null,
+        "status": "not-requested"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": null,
+      "state": "unknown",
+      "status_token": "synthetic:status:unknown"
+    },
+    "failed-with-earlier-evidence": {
+      "binding": "exact",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": null,
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [
+        {
+          "artifact": null,
+          "assessment": {
+            "reason_codes": [],
+            "status": "verified",
+            "verified": {
+              "adoption_or_artifact_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "consistency_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "producer_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "receipt": {
+                "cache": {
+                  "cache_key": null,
+                  "kind": "fresh",
+                  "mapped_atom_count": null,
+                  "mapping_proof": null,
+                  "reuse_mapping_digest": null,
+                  "source": null,
+                  "source_lookup": null
+                },
+                "constraints": {
+                  "additional_constraints": [],
+                  "atom_mask_digest": "synthetic:free",
+                  "atoms": "free",
+                  "cell": "fixed",
+                  "fixed_atom_count": {
+                    "$int": "0"
+                  },
+                  "fixed_axis_count": {
+                    "$int": "0"
+                  },
+                  "pbc": [
+                    false,
+                    false,
+                    false
+                  ]
+                },
+                "format": {
+                  "$int": "1"
+                },
+                "input": {
+                  "artifact": null,
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  },
+                  "physical_input_digest": null
+                },
+                "job_id": {
+                  "$int": "11"
+                },
+                "lineage": {
+                  "allowance_record_id": null,
+                  "attempt_id": null,
+                  "attempt_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "authorization_id": null,
+                  "candidate_id": null,
+                  "caps": {
+                    "cloud_usd": null,
+                    "cpu_threads": null,
+                    "external_usd": null,
+                    "memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "cumulative_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "extensions": [],
+                  "original_input": null,
+                  "parent_attempt_id": null
+                },
+                "method": {
+                  "backend": "synthetic",
+                  "backend_version": null,
+                  "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "device": null,
+                  "dispersion": null,
+                  "fidelity": "ml",
+                  "model_family": "mace_mp",
+                  "model_variant": "small",
+                  "optimizer": "FIRE",
+                  "optimizer_settings": {
+                    "maxstep": {
+                      "$rational": {
+                        "d": "100",
+                        "n": "3"
+                      }
+                    }
+                  },
+                  "optimizer_version": null,
+                  "precision": null
+                },
+                "output": {
+                  "adoption_record_id": "synthetic:adoption",
+                  "artifact": null,
+                  "atom_mapping_digest": "synthetic:atom-map",
+                  "kind": "adopted-output",
+                  "mapped_atom_count": {
+                    "$int": "1"
+                  },
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  }
+                },
+                "policy_digest": "synthetic:policy-digest",
+                "policy_id": "synthetic:policy",
+                "post_checks": null,
+                "producer": {
+                  "producer_id": null,
+                  "producer_version": null,
+                  "source": "computed",
+                  "source_record_id": null,
+                  "writer_contract": null
+                },
+                "request_id": {
+                  "$int": "11"
+                },
+                "run_id": {
+                  "$int": "12"
+                },
+                "termination": {
+                  "backend_converged": true,
+                  "cell_criterion": null,
+                  "criterion": {
+                    "comparator": "le",
+                    "quantity": "max-atomic-force-norm",
+                    "scope": "all-atoms-raw",
+                    "target": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "units": "eV/angstrom"
+                  },
+                  "final_energy_eV": {
+                    "$rational": {
+                      "d": "36028797018963968",
+                      "n": "3602879701896397"
+                    }
+                  },
+                  "forces": {
+                    "approximate": false,
+                    "criterion_scope": "all-atoms-raw",
+                    "criterion_value": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "max_projected": null,
+                    "max_raw": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "output_artifact_digest": "synthetic:output-force-binding",
+                    "units": "eV/angstrom"
+                  },
+                  "initial_energy_eV": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "reason": "force-converged",
+                  "steps": {
+                    "$int": "300"
+                  }
+                }
+              },
+              "receipt_digest": "synthetic:receipt"
+            }
+          },
+          "constraints": {
+            "additional_constraints": [],
+            "atom_mask_digest": "synthetic:free",
+            "atoms": "free",
+            "cell": "fixed",
+            "fixed_atom_count": {
+              "$int": "0"
+            },
+            "fixed_axis_count": {
+              "$int": "0"
+            },
+            "pbc": [
+              false,
+              false,
+              false
+            ]
+          },
+          "geometry": {
+            "format": {
+              "$int": "1"
+            },
+            "ref_id": {
+              "$int": "9007199254740993"
+            },
+            "token": "synthetic:geometry:v2",
+            "version": {
+              "$int": "2"
+            }
+          },
+          "level": {
+            "fidelity": "ml",
+            "qualification": "converged"
+          },
+          "policy_id": "synthetic:policy",
+          "post_checks": null,
+          "request_id": {
+            "$int": "11"
+          },
+          "role": "adopted-output",
+          "run_id": {
+            "$int": "12"
+          }
+        }
+      ],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "latest-request-failed"
+      ],
+      "request_id": {
+        "$int": "21"
+      },
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "kind": "current"
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": {
+        "created_at": "2026-10-07T01:00:00Z",
+        "failure_reason": "synthetic-backend-failure",
+        "input": {
+          "artifact": null,
+          "persisted": {
+            "format": {
+              "$int": "1"
+            },
+            "ref_id": {
+              "$int": "9007199254740993"
+            },
+            "token": "synthetic:geometry:v2",
+            "version": {
+              "$int": "2"
+            }
+          },
+          "physical_input_digest": null
+        },
+        "job_id": {
+          "$int": "21"
+        },
+        "lineage": null,
+        "owner_ref_id": {
+          "$int": "9007199254740993"
+        },
+        "policy_digest": null,
+        "policy_id": null,
+        "request_id": {
+          "$int": "21"
+        },
+        "result_run_id": null,
+        "state": "failed"
+      },
+      "selected_run": {
+        "record": null,
+        "requested_run_id": null,
+        "status": "not-requested"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": null,
+      "state": "failed",
+      "status_token": "synthetic:status:unknown"
+    },
+    "historic-unsupported": {
+      "binding": "historical-unavailable",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": null,
+        "reason": "historic-unsupported",
+        "role": null,
+        "status": "unsupported"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "historic-unsupported"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v0",
+          "version": {
+            "$int": "0"
+          }
+        },
+        "kind": "persisted",
+        "role": "input-request",
+        "run_id": null
+      },
+      "requested_geometry_token": "synthetic:geometry:v0",
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": null,
+        "requested_run_id": null,
+        "status": "not-requested"
+      },
+      "shown_geometry": null,
+      "shown_role": null,
+      "state": "unavailable",
+      "status_token": "synthetic:status:unknown"
+    },
+    "malformed-receipt": {
+      "binding": "exact",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": null,
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "malformed-receipt"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "kind": "current"
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": {
+          "created_at": "2026-10-07T00:00:00Z",
+          "job_id": {
+            "$int": "11"
+          },
+          "on_version": {
+            "$int": "2"
+          },
+          "raw_completion": null,
+          "raw_converged": true,
+          "raw_fidelity": "ml",
+          "raw_max_force": {
+            "$rational": {
+              "d": "20",
+              "n": "1"
+            }
+          },
+          "raw_model": "mace_mp",
+          "raw_n_steps": {
+            "$int": "300"
+          },
+          "raw_provenance": null,
+          "raw_status": "succeeded",
+          "receipt_assessment": {
+            "reason_codes": [
+              "malformed-receipt"
+            ],
+            "status": "invalid",
+            "verified": null
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "request_id": {
+            "$int": "11"
+          },
+          "run_id": {
+            "$int": "12"
+          }
+        },
+        "requested_run_id": {
+          "$int": "12"
+        },
+        "status": "found"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": null,
+      "state": "unknown",
+      "status_token": "synthetic:status:unknown"
+    },
+    "same-geometry-adopted-output": {
+      "binding": "exact",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": "adopted-output",
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "no-trusted-producer",
+        "policy-unavailable"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "kind": "persisted",
+        "role": "adopted-output",
+        "run_id": {
+          "$int": "12"
+        }
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": {
+          "created_at": "2026-10-07T00:00:00Z",
+          "job_id": {
+            "$int": "11"
+          },
+          "on_version": {
+            "$int": "2"
+          },
+          "raw_completion": null,
+          "raw_converged": true,
+          "raw_fidelity": "ml",
+          "raw_max_force": {
+            "$rational": {
+              "d": "20",
+              "n": "1"
+            }
+          },
+          "raw_model": "mace_mp",
+          "raw_n_steps": {
+            "$int": "300"
+          },
+          "raw_provenance": null,
+          "raw_status": "succeeded",
+          "receipt_assessment": {
+            "reason_codes": [],
+            "status": "verified",
+            "verified": {
+              "adoption_or_artifact_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "consistency_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "producer_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "receipt": {
+                "cache": {
+                  "cache_key": null,
+                  "kind": "fresh",
+                  "mapped_atom_count": null,
+                  "mapping_proof": null,
+                  "reuse_mapping_digest": null,
+                  "source": null,
+                  "source_lookup": null
+                },
+                "constraints": {
+                  "additional_constraints": [],
+                  "atom_mask_digest": "synthetic:free",
+                  "atoms": "free",
+                  "cell": "fixed",
+                  "fixed_atom_count": {
+                    "$int": "0"
+                  },
+                  "fixed_axis_count": {
+                    "$int": "0"
+                  },
+                  "pbc": [
+                    false,
+                    false,
+                    false
+                  ]
+                },
+                "format": {
+                  "$int": "1"
+                },
+                "input": {
+                  "artifact": null,
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  },
+                  "physical_input_digest": null
+                },
+                "job_id": {
+                  "$int": "11"
+                },
+                "lineage": {
+                  "allowance_record_id": null,
+                  "attempt_id": null,
+                  "attempt_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "authorization_id": null,
+                  "candidate_id": null,
+                  "caps": {
+                    "cloud_usd": null,
+                    "cpu_threads": null,
+                    "external_usd": null,
+                    "memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "cumulative_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "extensions": [],
+                  "original_input": null,
+                  "parent_attempt_id": null
+                },
+                "method": {
+                  "backend": "synthetic",
+                  "backend_version": null,
+                  "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "device": null,
+                  "dispersion": null,
+                  "fidelity": "ml",
+                  "model_family": "mace_mp",
+                  "model_variant": "small",
+                  "optimizer": "FIRE",
+                  "optimizer_settings": {
+                    "maxstep": {
+                      "$rational": {
+                        "d": "100",
+                        "n": "3"
+                      }
+                    }
+                  },
+                  "optimizer_version": null,
+                  "precision": null
+                },
+                "output": {
+                  "adoption_record_id": "synthetic:adoption",
+                  "artifact": null,
+                  "atom_mapping_digest": "synthetic:atom-map",
+                  "kind": "adopted-output",
+                  "mapped_atom_count": {
+                    "$int": "1"
+                  },
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  }
+                },
+                "policy_digest": "synthetic:policy-digest",
+                "policy_id": "synthetic:policy",
+                "post_checks": null,
+                "producer": {
+                  "producer_id": null,
+                  "producer_version": null,
+                  "source": "computed",
+                  "source_record_id": null,
+                  "writer_contract": null
+                },
+                "request_id": {
+                  "$int": "11"
+                },
+                "run_id": {
+                  "$int": "12"
+                },
+                "termination": {
+                  "backend_converged": true,
+                  "cell_criterion": null,
+                  "criterion": {
+                    "comparator": "le",
+                    "quantity": "max-atomic-force-norm",
+                    "scope": "all-atoms-raw",
+                    "target": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "units": "eV/angstrom"
+                  },
+                  "final_energy_eV": {
+                    "$rational": {
+                      "d": "36028797018963968",
+                      "n": "3602879701896397"
+                    }
+                  },
+                  "forces": {
+                    "approximate": false,
+                    "criterion_scope": "all-atoms-raw",
+                    "criterion_value": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "max_projected": null,
+                    "max_raw": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "output_artifact_digest": "synthetic:output-force-binding",
+                    "units": "eV/angstrom"
+                  },
+                  "initial_energy_eV": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "reason": "force-converged",
+                  "steps": {
+                    "$int": "300"
+                  }
+                }
+              },
+              "receipt_digest": "synthetic:receipt"
+            }
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "request_id": {
+            "$int": "11"
+          },
+          "run_id": {
+            "$int": "12"
+          }
+        },
+        "requested_run_id": {
+          "$int": "12"
+        },
+        "status": "found"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": "adopted-output",
+      "state": "unknown",
+      "status_token": "synthetic:status:unknown"
+    },
+    "same-geometry-input-request": {
+      "binding": "exact",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": "input-request",
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "no-trusted-producer",
+        "policy-unavailable"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "kind": "persisted",
+        "role": "input-request",
+        "run_id": {
+          "$int": "12"
+        }
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": {
+          "created_at": "2026-10-07T00:00:00Z",
+          "job_id": {
+            "$int": "11"
+          },
+          "on_version": {
+            "$int": "2"
+          },
+          "raw_completion": null,
+          "raw_converged": true,
+          "raw_fidelity": "ml",
+          "raw_max_force": {
+            "$rational": {
+              "d": "20",
+              "n": "1"
+            }
+          },
+          "raw_model": "mace_mp",
+          "raw_n_steps": {
+            "$int": "300"
+          },
+          "raw_provenance": null,
+          "raw_status": "succeeded",
+          "receipt_assessment": {
+            "reason_codes": [],
+            "status": "verified",
+            "verified": {
+              "adoption_or_artifact_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "consistency_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "producer_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "receipt": {
+                "cache": {
+                  "cache_key": null,
+                  "kind": "fresh",
+                  "mapped_atom_count": null,
+                  "mapping_proof": null,
+                  "reuse_mapping_digest": null,
+                  "source": null,
+                  "source_lookup": null
+                },
+                "constraints": {
+                  "additional_constraints": [],
+                  "atom_mask_digest": "synthetic:free",
+                  "atoms": "free",
+                  "cell": "fixed",
+                  "fixed_atom_count": {
+                    "$int": "0"
+                  },
+                  "fixed_axis_count": {
+                    "$int": "0"
+                  },
+                  "pbc": [
+                    false,
+                    false,
+                    false
+                  ]
+                },
+                "format": {
+                  "$int": "1"
+                },
+                "input": {
+                  "artifact": null,
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  },
+                  "physical_input_digest": null
+                },
+                "job_id": {
+                  "$int": "11"
+                },
+                "lineage": {
+                  "allowance_record_id": null,
+                  "attempt_id": null,
+                  "attempt_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "authorization_id": null,
+                  "candidate_id": null,
+                  "caps": {
+                    "cloud_usd": null,
+                    "cpu_threads": null,
+                    "external_usd": null,
+                    "memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "cumulative_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "extensions": [],
+                  "original_input": null,
+                  "parent_attempt_id": null
+                },
+                "method": {
+                  "backend": "synthetic",
+                  "backend_version": null,
+                  "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "device": null,
+                  "dispersion": null,
+                  "fidelity": "ml",
+                  "model_family": "mace_mp",
+                  "model_variant": "small",
+                  "optimizer": "FIRE",
+                  "optimizer_settings": {
+                    "maxstep": {
+                      "$rational": {
+                        "d": "100",
+                        "n": "3"
+                      }
+                    }
+                  },
+                  "optimizer_version": null,
+                  "precision": null
+                },
+                "output": {
+                  "adoption_record_id": "synthetic:adoption",
+                  "artifact": null,
+                  "atom_mapping_digest": "synthetic:atom-map",
+                  "kind": "adopted-output",
+                  "mapped_atom_count": {
+                    "$int": "1"
+                  },
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  }
+                },
+                "policy_digest": "synthetic:policy-digest",
+                "policy_id": "synthetic:policy",
+                "post_checks": null,
+                "producer": {
+                  "producer_id": null,
+                  "producer_version": null,
+                  "source": "computed",
+                  "source_record_id": null,
+                  "writer_contract": null
+                },
+                "request_id": {
+                  "$int": "11"
+                },
+                "run_id": {
+                  "$int": "12"
+                },
+                "termination": {
+                  "backend_converged": true,
+                  "cell_criterion": null,
+                  "criterion": {
+                    "comparator": "le",
+                    "quantity": "max-atomic-force-norm",
+                    "scope": "all-atoms-raw",
+                    "target": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "units": "eV/angstrom"
+                  },
+                  "final_energy_eV": {
+                    "$rational": {
+                      "d": "36028797018963968",
+                      "n": "3602879701896397"
+                    }
+                  },
+                  "forces": {
+                    "approximate": false,
+                    "criterion_scope": "all-atoms-raw",
+                    "criterion_value": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "max_projected": null,
+                    "max_raw": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "output_artifact_digest": "synthetic:output-force-binding",
+                    "units": "eV/angstrom"
+                  },
+                  "initial_energy_eV": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "reason": "force-converged",
+                  "steps": {
+                    "$int": "300"
+                  }
+                }
+              },
+              "receipt_digest": "synthetic:receipt"
+            }
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "request_id": {
+            "$int": "11"
+          },
+          "run_id": {
+            "$int": "12"
+          }
+        },
+        "requested_run_id": {
+          "$int": "12"
+        },
+        "status": "found"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": "input-request",
+      "state": "unknown",
+      "status_token": "synthetic:status:unknown"
+    },
+    "stale": {
+      "binding": "stale",
+      "constraints": null,
+      "display_resolution": {
+        "artifact": null,
+        "geometry": null,
+        "reason": "stale",
+        "role": null,
+        "status": "stale"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": null,
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "No trusted completion evidence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "stale"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v1",
+          "version": {
+            "$int": "1"
+          }
+        },
+        "kind": "persisted",
+        "role": "input-request",
+        "run_id": null
+      },
+      "requested_geometry_token": "synthetic:geometry:v1",
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": null,
+      "selected_request": null,
+      "selected_run": {
+        "record": null,
+        "requested_run_id": null,
+        "status": "not-requested"
+      },
+      "shown_geometry": null,
+      "shown_role": null,
+      "state": "unavailable",
+      "status_token": "synthetic:status:unknown"
+    },
+    "synthetic-capped": {
+      "binding": "exact",
+      "constraints": {
+        "additional_constraints": [],
+        "atom_mask_digest": "synthetic:free",
+        "atoms": "free",
+        "cell": "fixed",
+        "fixed_atom_count": {
+          "$int": "0"
+        },
+        "fixed_axis_count": {
+          "$int": "0"
+        },
+        "pbc": [
+          false,
+          false,
+          false
+        ]
+      },
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": null,
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": {
+        "fidelity": "ml",
+        "qualification": "attempted"
+      },
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "inspect",
+        "reason": "Cap reached without convergence",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "step-cap"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "kind": "current"
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": {
+        "artifact": null,
+        "assessment": {
+          "reason_codes": [],
+          "status": "verified",
+          "verified": {
+            "adoption_or_artifact_proof": {
+              "bound_receipt_digest": "synthetic:receipt",
+              "evidence_record_id": "synthetic:proof",
+              "status": "verified",
+              "verifier": "SYNTHETIC-TEST-ONLY",
+              "verifier_version": "fixture-1"
+            },
+            "consistency_proof": {
+              "bound_receipt_digest": "synthetic:receipt",
+              "evidence_record_id": "synthetic:proof",
+              "status": "verified",
+              "verifier": "SYNTHETIC-TEST-ONLY",
+              "verifier_version": "fixture-1"
+            },
+            "producer_proof": {
+              "bound_receipt_digest": "synthetic:receipt",
+              "evidence_record_id": "synthetic:proof",
+              "status": "verified",
+              "verifier": "SYNTHETIC-TEST-ONLY",
+              "verifier_version": "fixture-1"
+            },
+            "receipt": {
+              "cache": {
+                "cache_key": null,
+                "kind": "fresh",
+                "mapped_atom_count": null,
+                "mapping_proof": null,
+                "reuse_mapping_digest": null,
+                "source": null,
+                "source_lookup": null
+              },
+              "constraints": {
+                "additional_constraints": [],
+                "atom_mask_digest": "synthetic:free",
+                "atoms": "free",
+                "cell": "fixed",
+                "fixed_atom_count": {
+                  "$int": "0"
+                },
+                "fixed_axis_count": {
+                  "$int": "0"
+                },
+                "pbc": [
+                  false,
+                  false,
+                  false
+                ]
+              },
+              "format": {
+                "$int": "1"
+              },
+              "input": {
+                "artifact": null,
+                "persisted": {
+                  "format": {
+                    "$int": "1"
+                  },
+                  "ref_id": {
+                    "$int": "9007199254740993"
+                  },
+                  "token": "synthetic:geometry:v2",
+                  "version": {
+                    "$int": "2"
+                  }
+                },
+                "physical_input_digest": null
+              },
+              "job_id": {
+                "$int": "11"
+              },
+              "lineage": {
+                "allowance_record_id": null,
+                "attempt_id": null,
+                "attempt_usage": {
+                  "cloud_usd": null,
+                  "external_usd": null,
+                  "peak_memory_bytes": null,
+                  "steps": {
+                    "$int": "300"
+                  },
+                  "wall_seconds": null
+                },
+                "authorization_id": null,
+                "candidate_id": null,
+                "caps": {
+                  "cloud_usd": null,
+                  "cpu_threads": null,
+                  "external_usd": null,
+                  "memory_bytes": null,
+                  "steps": {
+                    "$int": "300"
+                  },
+                  "wall_seconds": null
+                },
+                "cumulative_usage": {
+                  "cloud_usd": null,
+                  "external_usd": null,
+                  "peak_memory_bytes": null,
+                  "steps": {
+                    "$int": "300"
+                  },
+                  "wall_seconds": null
+                },
+                "extensions": [],
+                "original_input": null,
+                "parent_attempt_id": null
+              },
+              "method": {
+                "backend": "synthetic",
+                "backend_version": null,
+                "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "device": null,
+                "dispersion": null,
+                "fidelity": "ml",
+                "model_family": "mace_mp",
+                "model_variant": "small",
+                "optimizer": "FIRE",
+                "optimizer_settings": {
+                  "maxstep": {
+                    "$rational": {
+                      "d": "100",
+                      "n": "3"
+                    }
+                  }
+                },
+                "optimizer_version": null,
+                "precision": null
+              },
+              "output": {
+                "adoption_record_id": "synthetic:adoption",
+                "artifact": null,
+                "atom_mapping_digest": "synthetic:atom-map",
+                "kind": "adopted-output",
+                "mapped_atom_count": {
+                  "$int": "1"
+                },
+                "persisted": {
+                  "format": {
+                    "$int": "1"
+                  },
+                  "ref_id": {
+                    "$int": "9007199254740993"
+                  },
+                  "token": "synthetic:geometry:v2",
+                  "version": {
+                    "$int": "2"
+                  }
+                }
+              },
+              "policy_digest": "synthetic:policy-digest",
+              "policy_id": "synthetic:policy",
+              "post_checks": null,
+              "producer": {
+                "producer_id": null,
+                "producer_version": null,
+                "source": "computed",
+                "source_record_id": null,
+                "writer_contract": null
+              },
+              "request_id": {
+                "$int": "11"
+              },
+              "run_id": {
+                "$int": "12"
+              },
+              "termination": {
+                "backend_converged": false,
+                "cell_criterion": null,
+                "criterion": {
+                  "comparator": "le",
+                  "quantity": "max-atomic-force-norm",
+                  "scope": "all-atoms-raw",
+                  "target": {
+                    "$rational": {
+                      "d": "20",
+                      "n": "1"
+                    }
+                  },
+                  "units": "eV/angstrom"
+                },
+                "final_energy_eV": {
+                  "$rational": {
+                    "d": "36028797018963968",
+                    "n": "3602879701896397"
+                  }
+                },
+                "forces": {
+                  "approximate": false,
+                  "criterion_scope": "all-atoms-raw",
+                  "criterion_value": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "max_projected": null,
+                  "max_raw": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "output_artifact_digest": "synthetic:output-force-binding",
+                  "units": "eV/angstrom"
+                },
+                "initial_energy_eV": {
+                  "$rational": {
+                    "d": "10",
+                    "n": "1"
+                  }
+                },
+                "reason": "step-cap",
+                "steps": {
+                  "$int": "300"
+                }
+              }
+            },
+            "receipt_digest": "synthetic:receipt"
+          }
+        },
+        "constraints": {
+          "additional_constraints": [],
+          "atom_mask_digest": "synthetic:free",
+          "atoms": "free",
+          "cell": "fixed",
+          "fixed_atom_count": {
+            "$int": "0"
+          },
+          "fixed_axis_count": {
+            "$int": "0"
+          },
+          "pbc": [
+            false,
+            false,
+            false
+          ]
+        },
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "level": {
+          "fidelity": "ml",
+          "qualification": "attempted"
+        },
+        "policy_id": "synthetic:policy",
+        "post_checks": null,
+        "request_id": {
+          "$int": "11"
+        },
+        "role": "adopted-output",
+        "run_id": {
+          "$int": "12"
+        }
+      },
+      "selected_request": null,
+      "selected_run": {
+        "record": {
+          "created_at": "2026-10-07T00:00:00Z",
+          "job_id": {
+            "$int": "11"
+          },
+          "on_version": {
+            "$int": "2"
+          },
+          "raw_completion": null,
+          "raw_converged": false,
+          "raw_fidelity": "ml",
+          "raw_max_force": {
+            "$rational": {
+              "d": "10",
+              "n": "1"
+            }
+          },
+          "raw_model": "mace_mp",
+          "raw_n_steps": {
+            "$int": "300"
+          },
+          "raw_provenance": null,
+          "raw_status": "succeeded",
+          "receipt_assessment": {
+            "reason_codes": [],
+            "status": "verified",
+            "verified": {
+              "adoption_or_artifact_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "consistency_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "producer_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "receipt": {
+                "cache": {
+                  "cache_key": null,
+                  "kind": "fresh",
+                  "mapped_atom_count": null,
+                  "mapping_proof": null,
+                  "reuse_mapping_digest": null,
+                  "source": null,
+                  "source_lookup": null
+                },
+                "constraints": {
+                  "additional_constraints": [],
+                  "atom_mask_digest": "synthetic:free",
+                  "atoms": "free",
+                  "cell": "fixed",
+                  "fixed_atom_count": {
+                    "$int": "0"
+                  },
+                  "fixed_axis_count": {
+                    "$int": "0"
+                  },
+                  "pbc": [
+                    false,
+                    false,
+                    false
+                  ]
+                },
+                "format": {
+                  "$int": "1"
+                },
+                "input": {
+                  "artifact": null,
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  },
+                  "physical_input_digest": null
+                },
+                "job_id": {
+                  "$int": "11"
+                },
+                "lineage": {
+                  "allowance_record_id": null,
+                  "attempt_id": null,
+                  "attempt_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "authorization_id": null,
+                  "candidate_id": null,
+                  "caps": {
+                    "cloud_usd": null,
+                    "cpu_threads": null,
+                    "external_usd": null,
+                    "memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "cumulative_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "extensions": [],
+                  "original_input": null,
+                  "parent_attempt_id": null
+                },
+                "method": {
+                  "backend": "synthetic",
+                  "backend_version": null,
+                  "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "device": null,
+                  "dispersion": null,
+                  "fidelity": "ml",
+                  "model_family": "mace_mp",
+                  "model_variant": "small",
+                  "optimizer": "FIRE",
+                  "optimizer_settings": {
+                    "maxstep": {
+                      "$rational": {
+                        "d": "100",
+                        "n": "3"
+                      }
+                    }
+                  },
+                  "optimizer_version": null,
+                  "precision": null
+                },
+                "output": {
+                  "adoption_record_id": "synthetic:adoption",
+                  "artifact": null,
+                  "atom_mapping_digest": "synthetic:atom-map",
+                  "kind": "adopted-output",
+                  "mapped_atom_count": {
+                    "$int": "1"
+                  },
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  }
+                },
+                "policy_digest": "synthetic:policy-digest",
+                "policy_id": "synthetic:policy",
+                "post_checks": null,
+                "producer": {
+                  "producer_id": null,
+                  "producer_version": null,
+                  "source": "computed",
+                  "source_record_id": null,
+                  "writer_contract": null
+                },
+                "request_id": {
+                  "$int": "11"
+                },
+                "run_id": {
+                  "$int": "12"
+                },
+                "termination": {
+                  "backend_converged": false,
+                  "cell_criterion": null,
+                  "criterion": {
+                    "comparator": "le",
+                    "quantity": "max-atomic-force-norm",
+                    "scope": "all-atoms-raw",
+                    "target": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "units": "eV/angstrom"
+                  },
+                  "final_energy_eV": {
+                    "$rational": {
+                      "d": "36028797018963968",
+                      "n": "3602879701896397"
+                    }
+                  },
+                  "forces": {
+                    "approximate": false,
+                    "criterion_scope": "all-atoms-raw",
+                    "criterion_value": {
+                      "$rational": {
+                        "d": "10",
+                        "n": "1"
+                      }
+                    },
+                    "max_projected": null,
+                    "max_raw": {
+                      "$rational": {
+                        "d": "10",
+                        "n": "1"
+                      }
+                    },
+                    "output_artifact_digest": "synthetic:output-force-binding",
+                    "units": "eV/angstrom"
+                  },
+                  "initial_energy_eV": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "reason": "step-cap",
+                  "steps": {
+                    "$int": "300"
+                  }
+                }
+              },
+              "receipt_digest": "synthetic:receipt"
+            }
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "request_id": {
+            "$int": "11"
+          },
+          "run_id": {
+            "$int": "12"
+          }
+        },
+        "requested_run_id": {
+          "$int": "12"
+        },
+        "status": "found"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": null,
+      "state": "stopped-unconverged",
+      "status_token": "synthetic:status:unknown"
+    },
+    "synthetic-final-step-converged": {
+      "binding": "exact",
+      "constraints": {
+        "additional_constraints": [],
+        "atom_mask_digest": "synthetic:free",
+        "atoms": "free",
+        "cell": "fixed",
+        "fixed_atom_count": {
+          "$int": "0"
+        },
+        "fixed_axis_count": {
+          "$int": "0"
+        },
+        "pbc": [
+          false,
+          false,
+          false
+        ]
+      },
+      "display_resolution": {
+        "artifact": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "reason": null,
+        "role": null,
+        "status": "exact"
+      },
+      "earlier_evidence_complete": true,
+      "earlier_qualified_evidence": [],
+      "effective_policy": null,
+      "finished": false,
+      "format": {
+        "$int": "1"
+      },
+      "latest_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "level": {
+        "fidelity": "ml",
+        "qualification": "converged"
+      },
+      "next": {
+        "can_submit": false,
+        "fidelity": null,
+        "phase": "post-validate",
+        "reason": "Force pass alone is not finished",
+        "resources": null
+      },
+      "policy_id": null,
+      "post_checks": null,
+      "reason_codes": [
+        "force-converged-at-final-step",
+        "policy-unavailable"
+      ],
+      "request_id": null,
+      "request_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "requested_display": {
+        "kind": "current"
+      },
+      "requested_geometry_token": null,
+      "run_window": {
+        "coverage": "complete",
+        "limit": {
+          "$int": "64"
+        },
+        "next_cursor": null,
+        "returned": {
+          "$int": "0"
+        },
+        "truncated": false
+      },
+      "selected_evidence": {
+        "artifact": null,
+        "assessment": {
+          "reason_codes": [],
+          "status": "verified",
+          "verified": {
+            "adoption_or_artifact_proof": {
+              "bound_receipt_digest": "synthetic:receipt",
+              "evidence_record_id": "synthetic:proof",
+              "status": "verified",
+              "verifier": "SYNTHETIC-TEST-ONLY",
+              "verifier_version": "fixture-1"
+            },
+            "consistency_proof": {
+              "bound_receipt_digest": "synthetic:receipt",
+              "evidence_record_id": "synthetic:proof",
+              "status": "verified",
+              "verifier": "SYNTHETIC-TEST-ONLY",
+              "verifier_version": "fixture-1"
+            },
+            "producer_proof": {
+              "bound_receipt_digest": "synthetic:receipt",
+              "evidence_record_id": "synthetic:proof",
+              "status": "verified",
+              "verifier": "SYNTHETIC-TEST-ONLY",
+              "verifier_version": "fixture-1"
+            },
+            "receipt": {
+              "cache": {
+                "cache_key": null,
+                "kind": "fresh",
+                "mapped_atom_count": null,
+                "mapping_proof": null,
+                "reuse_mapping_digest": null,
+                "source": null,
+                "source_lookup": null
+              },
+              "constraints": {
+                "additional_constraints": [],
+                "atom_mask_digest": "synthetic:free",
+                "atoms": "free",
+                "cell": "fixed",
+                "fixed_atom_count": {
+                  "$int": "0"
+                },
+                "fixed_axis_count": {
+                  "$int": "0"
+                },
+                "pbc": [
+                  false,
+                  false,
+                  false
+                ]
+              },
+              "format": {
+                "$int": "1"
+              },
+              "input": {
+                "artifact": null,
+                "persisted": {
+                  "format": {
+                    "$int": "1"
+                  },
+                  "ref_id": {
+                    "$int": "9007199254740993"
+                  },
+                  "token": "synthetic:geometry:v2",
+                  "version": {
+                    "$int": "2"
+                  }
+                },
+                "physical_input_digest": null
+              },
+              "job_id": {
+                "$int": "11"
+              },
+              "lineage": {
+                "allowance_record_id": null,
+                "attempt_id": null,
+                "attempt_usage": {
+                  "cloud_usd": null,
+                  "external_usd": null,
+                  "peak_memory_bytes": null,
+                  "steps": {
+                    "$int": "300"
+                  },
+                  "wall_seconds": null
+                },
+                "authorization_id": null,
+                "candidate_id": null,
+                "caps": {
+                  "cloud_usd": null,
+                  "cpu_threads": null,
+                  "external_usd": null,
+                  "memory_bytes": null,
+                  "steps": {
+                    "$int": "300"
+                  },
+                  "wall_seconds": null
+                },
+                "cumulative_usage": {
+                  "cloud_usd": null,
+                  "external_usd": null,
+                  "peak_memory_bytes": null,
+                  "steps": {
+                    "$int": "300"
+                  },
+                  "wall_seconds": null
+                },
+                "extensions": [],
+                "original_input": null,
+                "parent_attempt_id": null
+              },
+              "method": {
+                "backend": "synthetic",
+                "backend_version": null,
+                "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "device": null,
+                "dispersion": null,
+                "fidelity": "ml",
+                "model_family": "mace_mp",
+                "model_variant": "small",
+                "optimizer": "FIRE",
+                "optimizer_settings": {
+                  "maxstep": {
+                    "$rational": {
+                      "d": "100",
+                      "n": "3"
+                    }
+                  }
+                },
+                "optimizer_version": null,
+                "precision": null
+              },
+              "output": {
+                "adoption_record_id": "synthetic:adoption",
+                "artifact": null,
+                "atom_mapping_digest": "synthetic:atom-map",
+                "kind": "adopted-output",
+                "mapped_atom_count": {
+                  "$int": "1"
+                },
+                "persisted": {
+                  "format": {
+                    "$int": "1"
+                  },
+                  "ref_id": {
+                    "$int": "9007199254740993"
+                  },
+                  "token": "synthetic:geometry:v2",
+                  "version": {
+                    "$int": "2"
+                  }
+                }
+              },
+              "policy_digest": "synthetic:policy-digest",
+              "policy_id": "synthetic:policy",
+              "post_checks": null,
+              "producer": {
+                "producer_id": null,
+                "producer_version": null,
+                "source": "computed",
+                "source_record_id": null,
+                "writer_contract": null
+              },
+              "request_id": {
+                "$int": "11"
+              },
+              "run_id": {
+                "$int": "12"
+              },
+              "termination": {
+                "backend_converged": true,
+                "cell_criterion": null,
+                "criterion": {
+                  "comparator": "le",
+                  "quantity": "max-atomic-force-norm",
+                  "scope": "all-atoms-raw",
+                  "target": {
+                    "$rational": {
+                      "d": "20",
+                      "n": "1"
+                    }
+                  },
+                  "units": "eV/angstrom"
+                },
+                "final_energy_eV": {
+                  "$rational": {
+                    "d": "36028797018963968",
+                    "n": "3602879701896397"
+                  }
+                },
+                "forces": {
+                  "approximate": false,
+                  "criterion_scope": "all-atoms-raw",
+                  "criterion_value": {
+                    "$rational": {
+                      "d": "20",
+                      "n": "1"
+                    }
+                  },
+                  "max_projected": null,
+                  "max_raw": {
+                    "$rational": {
+                      "d": "20",
+                      "n": "1"
+                    }
+                  },
+                  "output_artifact_digest": "synthetic:output-force-binding",
+                  "units": "eV/angstrom"
+                },
+                "initial_energy_eV": {
+                  "$rational": {
+                    "d": "10",
+                    "n": "1"
+                  }
+                },
+                "reason": "force-converged",
+                "steps": {
+                  "$int": "300"
+                }
+              }
+            },
+            "receipt_digest": "synthetic:receipt"
+          }
+        },
+        "constraints": {
+          "additional_constraints": [],
+          "atom_mask_digest": "synthetic:free",
+          "atoms": "free",
+          "cell": "fixed",
+          "fixed_atom_count": {
+            "$int": "0"
+          },
+          "fixed_axis_count": {
+            "$int": "0"
+          },
+          "pbc": [
+            false,
+            false,
+            false
+          ]
+        },
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "level": {
+          "fidelity": "ml",
+          "qualification": "converged"
+        },
+        "policy_id": "synthetic:policy",
+        "post_checks": null,
+        "request_id": {
+          "$int": "11"
+        },
+        "role": "adopted-output",
+        "run_id": {
+          "$int": "12"
+        }
+      },
+      "selected_request": null,
+      "selected_run": {
+        "record": {
+          "created_at": "2026-10-07T00:00:00Z",
+          "job_id": {
+            "$int": "11"
+          },
+          "on_version": {
+            "$int": "2"
+          },
+          "raw_completion": null,
+          "raw_converged": true,
+          "raw_fidelity": "ml",
+          "raw_max_force": {
+            "$rational": {
+              "d": "20",
+              "n": "1"
+            }
+          },
+          "raw_model": "mace_mp",
+          "raw_n_steps": {
+            "$int": "300"
+          },
+          "raw_provenance": null,
+          "raw_status": "succeeded",
+          "receipt_assessment": {
+            "reason_codes": [],
+            "status": "verified",
+            "verified": {
+              "adoption_or_artifact_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "consistency_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "producer_proof": {
+                "bound_receipt_digest": "synthetic:receipt",
+                "evidence_record_id": "synthetic:proof",
+                "status": "verified",
+                "verifier": "SYNTHETIC-TEST-ONLY",
+                "verifier_version": "fixture-1"
+              },
+              "receipt": {
+                "cache": {
+                  "cache_key": null,
+                  "kind": "fresh",
+                  "mapped_atom_count": null,
+                  "mapping_proof": null,
+                  "reuse_mapping_digest": null,
+                  "source": null,
+                  "source_lookup": null
+                },
+                "constraints": {
+                  "additional_constraints": [],
+                  "atom_mask_digest": "synthetic:free",
+                  "atoms": "free",
+                  "cell": "fixed",
+                  "fixed_atom_count": {
+                    "$int": "0"
+                  },
+                  "fixed_axis_count": {
+                    "$int": "0"
+                  },
+                  "pbc": [
+                    false,
+                    false,
+                    false
+                  ]
+                },
+                "format": {
+                  "$int": "1"
+                },
+                "input": {
+                  "artifact": null,
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  },
+                  "physical_input_digest": null
+                },
+                "job_id": {
+                  "$int": "11"
+                },
+                "lineage": {
+                  "allowance_record_id": null,
+                  "attempt_id": null,
+                  "attempt_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "authorization_id": null,
+                  "candidate_id": null,
+                  "caps": {
+                    "cloud_usd": null,
+                    "cpu_threads": null,
+                    "external_usd": null,
+                    "memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "cumulative_usage": {
+                    "cloud_usd": null,
+                    "external_usd": null,
+                    "peak_memory_bytes": null,
+                    "steps": {
+                      "$int": "300"
+                    },
+                    "wall_seconds": null
+                  },
+                  "extensions": [],
+                  "original_input": null,
+                  "parent_attempt_id": null
+                },
+                "method": {
+                  "backend": "synthetic",
+                  "backend_version": null,
+                  "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "device": null,
+                  "dispersion": null,
+                  "fidelity": "ml",
+                  "model_family": "mace_mp",
+                  "model_variant": "small",
+                  "optimizer": "FIRE",
+                  "optimizer_settings": {
+                    "maxstep": {
+                      "$rational": {
+                        "d": "100",
+                        "n": "3"
+                      }
+                    }
+                  },
+                  "optimizer_version": null,
+                  "precision": null
+                },
+                "output": {
+                  "adoption_record_id": "synthetic:adoption",
+                  "artifact": null,
+                  "atom_mapping_digest": "synthetic:atom-map",
+                  "kind": "adopted-output",
+                  "mapped_atom_count": {
+                    "$int": "1"
+                  },
+                  "persisted": {
+                    "format": {
+                      "$int": "1"
+                    },
+                    "ref_id": {
+                      "$int": "9007199254740993"
+                    },
+                    "token": "synthetic:geometry:v2",
+                    "version": {
+                      "$int": "2"
+                    }
+                  }
+                },
+                "policy_digest": "synthetic:policy-digest",
+                "policy_id": "synthetic:policy",
+                "post_checks": null,
+                "producer": {
+                  "producer_id": null,
+                  "producer_version": null,
+                  "source": "computed",
+                  "source_record_id": null,
+                  "writer_contract": null
+                },
+                "request_id": {
+                  "$int": "11"
+                },
+                "run_id": {
+                  "$int": "12"
+                },
+                "termination": {
+                  "backend_converged": true,
+                  "cell_criterion": null,
+                  "criterion": {
+                    "comparator": "le",
+                    "quantity": "max-atomic-force-norm",
+                    "scope": "all-atoms-raw",
+                    "target": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "units": "eV/angstrom"
+                  },
+                  "final_energy_eV": {
+                    "$rational": {
+                      "d": "36028797018963968",
+                      "n": "3602879701896397"
+                    }
+                  },
+                  "forces": {
+                    "approximate": false,
+                    "criterion_scope": "all-atoms-raw",
+                    "criterion_value": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "max_projected": null,
+                    "max_raw": {
+                      "$rational": {
+                        "d": "20",
+                        "n": "1"
+                      }
+                    },
+                    "output_artifact_digest": "synthetic:output-force-binding",
+                    "units": "eV/angstrom"
+                  },
+                  "initial_energy_eV": {
+                    "$rational": {
+                      "d": "10",
+                      "n": "1"
+                    }
+                  },
+                  "reason": "force-converged",
+                  "steps": {
+                    "$int": "300"
+                  }
+                }
+              },
+              "receipt_digest": "synthetic:receipt"
+            }
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "request_id": {
+            "$int": "11"
+          },
+          "run_id": {
+            "$int": "12"
+          }
+        },
+        "requested_run_id": {
+          "$int": "12"
+        },
+        "status": "found"
+      },
+      "shown_geometry": {
+        "format": {
+          "$int": "1"
+        },
+        "ref_id": {
+          "$int": "9007199254740993"
+        },
+        "token": "synthetic:geometry:v2",
+        "version": {
+          "$int": "2"
+        }
+      },
+      "shown_role": null,
+      "state": "converged",
+      "status_token": "synthetic:status:unknown"
+    }
+  },
+  "description": "Complete SYNTHETIC payloads; shape/codec checks only, not classifier or trust proof",
+  "molecule": {
+    "changed-basis-proof-missing": {
+      "completion": null,
+      "completion_status": "unavailable",
+      "diagnostics": [
+        {
+          "atoms": [],
+          "bonds": [],
+          "complete": false,
+          "diagnostic_id": "synthetic:declared-length",
+          "family": "declared-bond",
+          "geometry": {
+            "format": {
+              "$int": "1"
+            },
+            "ref_id": {
+              "$int": "9007199254740993"
+            },
+            "token": "synthetic:geometry:v2",
+            "version": {
+              "$int": "2"
+            }
+          },
+          "graph": {
+            "algorithm": null,
+            "algorithm_revision": null,
+            "atom_mapping_digest": "synthetic:atom-map",
+            "comparison_source": {
+              "artifact": null,
+              "persisted": {
+                "format": {
+                  "$int": "1"
+                },
+                "ref_id": {
+                  "$int": "9007199254740993"
+                },
+                "token": "synthetic:geometry:v1",
+                "version": {
+                  "$int": "1"
+                }
+              },
+              "physical_input_digest": null
+            },
+            "comparison_source_graph_token": "synthetic:source-graph",
+            "complete": false,
+            "dependency_digest": null,
+            "geometry": {
+              "format": {
+                "$int": "1"
+              },
+              "ref_id": {
+                "$int": "9007199254740993"
+              },
+              "token": "synthetic:geometry:v2",
+              "version": {
+                "$int": "2"
+              }
+            },
+            "mapped_atom_count": {
+              "$int": "2"
+            },
+            "mapping_proof": null,
+            "parameters": {},
+            "periodic_mapping": null,
+            "reason": "changed-basis-proof-missing",
+            "source": "receipt-comparison",
+            "token": null
+          },
+          "method": null,
+          "method_version": null,
+          "parameters": {},
+          "population": null,
+          "quantity": "length",
+          "reason": "changed-basis-proof-missing",
+          "reference": null,
+          "reported_count": null,
+          "status": "unavailable",
+          "total_count": null,
+          "units": "angstrom",
+          "value": null
+        }
+      ],
+      "diagnostics_complete": false,
+      "display_bonds": [],
+      "format": {
+        "$int": "1"
+      },
+      "geometry": {
+        "atoms": [
+          {
+            "charge": null,
+            "element": "C",
+            "fixed_mask": {
+              "$int": "0"
+            },
+            "fractional": [
+              {
+                "$int": "0"
+              },
+              {
+                "$rational": {
+                  "d": "10",
+                  "n": "1"
+                }
+              },
+              {
+                "$int": "0"
+              }
+            ],
+            "hybridization": null,
+            "label": "C1",
+            "magmom": null,
+            "oxidation": null,
+            "row_id": {
+              "$int": "1"
+            }
+          },
+          {
+            "charge": null,
+            "element": "C",
+            "fixed_mask": {
+              "$int": "0"
+            },
+            "fractional": [
+              {
+                "$int": "0"
+              },
+              {
+                "$rational": {
+                  "d": "10",
+                  "n": "9"
+                }
+              },
+              {
+                "$int": "0"
+              }
+            ],
+            "hybridization": null,
+            "label": "C2",
+            "magmom": null,
+            "oxidation": null,
+            "row_id": {
+              "$int": "2"
+            }
+          }
+        ],
+        "bonds": [],
+        "identity": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "lattice": [
+          [
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "1"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          [
+            {
+              "$int": "1"
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          [
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "1"
+            }
+          ]
+        ],
+        "pbc": [
+          false,
+          true,
+          false
+        ],
+        "source": "live-statement"
+      },
+      "geometry_status": "available",
+      "graph": {
+        "algorithm": null,
+        "algorithm_revision": null,
+        "atom_mapping_digest": "synthetic:atom-map",
+        "comparison_source": {
+          "artifact": null,
+          "persisted": {
+            "format": {
+              "$int": "1"
+            },
+            "ref_id": {
+              "$int": "9007199254740993"
+            },
+            "token": "synthetic:geometry:v1",
+            "version": {
+              "$int": "1"
+            }
+          },
+          "physical_input_digest": null
+        },
+        "comparison_source_graph_token": "synthetic:source-graph",
+        "complete": false,
+        "dependency_digest": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "mapped_atom_count": {
+          "$int": "2"
+        },
+        "mapping_proof": null,
+        "parameters": {},
+        "periodic_mapping": null,
+        "reason": "changed-basis-proof-missing",
+        "source": "receipt-comparison",
+        "token": null
+      },
+      "instance": null,
+      "reason_codes": [
+        "changed-basis-proof-missing",
+        "comparison-unavailable"
+      ],
+      "requested_geometry_token": null
+    },
+    "wrapped-endpoint-proof-missing": {
+      "completion": null,
+      "completion_status": "unavailable",
+      "diagnostics": [
+        {
+          "atoms": [],
+          "bonds": [],
+          "complete": false,
+          "diagnostic_id": "synthetic:declared-length",
+          "family": "declared-bond",
+          "geometry": {
+            "format": {
+              "$int": "1"
+            },
+            "ref_id": {
+              "$int": "9007199254740993"
+            },
+            "token": "synthetic:geometry:v2",
+            "version": {
+              "$int": "2"
+            }
+          },
+          "graph": {
+            "algorithm": null,
+            "algorithm_revision": null,
+            "atom_mapping_digest": "synthetic:atom-map",
+            "comparison_source": {
+              "artifact": null,
+              "persisted": {
+                "format": {
+                  "$int": "1"
+                },
+                "ref_id": {
+                  "$int": "9007199254740993"
+                },
+                "token": "synthetic:geometry:v1",
+                "version": {
+                  "$int": "1"
+                }
+              },
+              "physical_input_digest": null
+            },
+            "comparison_source_graph_token": "synthetic:source-graph",
+            "complete": false,
+            "dependency_digest": null,
+            "geometry": {
+              "format": {
+                "$int": "1"
+              },
+              "ref_id": {
+                "$int": "9007199254740993"
+              },
+              "token": "synthetic:geometry:v2",
+              "version": {
+                "$int": "2"
+              }
+            },
+            "mapped_atom_count": {
+              "$int": "2"
+            },
+            "mapping_proof": null,
+            "parameters": {},
+            "periodic_mapping": null,
+            "reason": "wrapped-endpoint-proof-missing",
+            "source": "receipt-comparison",
+            "token": null
+          },
+          "method": null,
+          "method_version": null,
+          "parameters": {},
+          "population": null,
+          "quantity": "length",
+          "reason": "wrapped-endpoint-proof-missing",
+          "reference": null,
+          "reported_count": null,
+          "status": "unavailable",
+          "total_count": null,
+          "units": "angstrom",
+          "value": null
+        }
+      ],
+      "diagnostics_complete": false,
+      "display_bonds": [],
+      "format": {
+        "$int": "1"
+      },
+      "geometry": {
+        "atoms": [
+          {
+            "charge": null,
+            "element": "C",
+            "fixed_mask": {
+              "$int": "0"
+            },
+            "fractional": [
+              {
+                "$rational": {
+                  "d": "10",
+                  "n": "1"
+                }
+              },
+              {
+                "$int": "0"
+              },
+              {
+                "$int": "0"
+              }
+            ],
+            "hybridization": null,
+            "label": "C1",
+            "magmom": null,
+            "oxidation": null,
+            "row_id": {
+              "$int": "1"
+            }
+          },
+          {
+            "charge": null,
+            "element": "C",
+            "fixed_mask": {
+              "$int": "0"
+            },
+            "fractional": [
+              {
+                "$rational": {
+                  "d": "10",
+                  "n": "9"
+                }
+              },
+              {
+                "$int": "0"
+              },
+              {
+                "$int": "0"
+              }
+            ],
+            "hybridization": null,
+            "label": "C2",
+            "magmom": null,
+            "oxidation": null,
+            "row_id": {
+              "$int": "2"
+            }
+          }
+        ],
+        "bonds": [],
+        "identity": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "lattice": [
+          [
+            {
+              "$int": "1"
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          [
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "1"
+            },
+            {
+              "$int": "0"
+            }
+          ],
+          [
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "0"
+            },
+            {
+              "$int": "1"
+            }
+          ]
+        ],
+        "pbc": [
+          true,
+          false,
+          false
+        ],
+        "source": "live-statement"
+      },
+      "geometry_status": "available",
+      "graph": {
+        "algorithm": null,
+        "algorithm_revision": null,
+        "atom_mapping_digest": "synthetic:atom-map",
+        "comparison_source": {
+          "artifact": null,
+          "persisted": {
+            "format": {
+              "$int": "1"
+            },
+            "ref_id": {
+              "$int": "9007199254740993"
+            },
+            "token": "synthetic:geometry:v1",
+            "version": {
+              "$int": "1"
+            }
+          },
+          "physical_input_digest": null
+        },
+        "comparison_source_graph_token": "synthetic:source-graph",
+        "complete": false,
+        "dependency_digest": null,
+        "geometry": {
+          "format": {
+            "$int": "1"
+          },
+          "ref_id": {
+            "$int": "9007199254740993"
+          },
+          "token": "synthetic:geometry:v2",
+          "version": {
+            "$int": "2"
+          }
+        },
+        "mapped_atom_count": {
+          "$int": "2"
+        },
+        "mapping_proof": null,
+        "parameters": {},
+        "periodic_mapping": null,
+        "reason": "wrapped-endpoint-proof-missing",
+        "source": "receipt-comparison",
+        "token": null
+      },
+      "instance": null,
+      "reason_codes": [
+        "wrapped-endpoint-proof-missing",
+        "comparison-unavailable"
+      ],
+      "requested_geometry_token": null
+    }
+  }
+}

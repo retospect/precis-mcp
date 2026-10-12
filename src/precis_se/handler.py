@@ -517,6 +517,8 @@ class SeHandler(Handler):
         # same posture as pcb's place/route jobs).
         can_own_jobs=True,
         views=(
+            "completion",
+            "completion_digest",
             "tree",
             "block",
             "report",
@@ -970,6 +972,8 @@ class SeHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
+            if (view or "").strip().lower() in ("completion", "completion_digest"):
+                raise BadInput("completion requires a specific SE design id")
             if (view or "").strip().lower() == "surface_deviation":
                 raise BadInput(
                     "surface_deviation requires a specific SE design id",
@@ -979,9 +983,29 @@ class SeHandler(Handler):
                     "supply your authored feature profiles for a shaped target",
                 )
             return self._render_list()
-        ref = self.store.get_ref(kind="se", id=str(id).strip())
+        completion_view = (view or "").strip().lower()
+        completion_read = completion_view in ("completion", "completion_digest")
+        ref = self.store.get_ref(
+            kind="se",
+            id=id if completion_read and isinstance(id, int) else str(id).strip(),
+        )
         if ref is None:
             raise NotFound(f"se design {id!r} not found")
+        if completion_view in ("completion", "completion_digest"):
+            from precis_se.completion import read_se_completion
+
+            try:
+                body = read_se_completion(
+                    self.store,
+                    ref.id,
+                    args or {},
+                    digest=completion_view == "completion_digest",
+                )
+            except (ValueError, TypeError) as exc:
+                raise BadInput(str(exc)) from exc
+            if body is None:
+                raise NotFound(f"se design {id!r} no longer exists")
+            return Response(body=body, ref_id=ref.id)
         tree = persist.load_tree(self.store, ref.id)
         tree.own_slug = str(ref.slug)
         tree.foreign = self._foreign_resolver()
@@ -5478,6 +5502,8 @@ _STATE_VIEWS = frozenset({"", "tree", "block", "clearance", "chain", "drc"})
 #: falls through to the plain "unknown se view" error unchanged, from
 #: :meth:`SeHandler.get`.
 _VIEW_ARGS: dict[str, frozenset[str]] = {
+    "completion": frozenset({"shown_design_token"}),
+    "completion_digest": frozenset({"shown_design_token"}),
     "": frozenset({"state"}),
     "tree": frozenset({"state"}),
     "block": frozenset({"name", "state"}),

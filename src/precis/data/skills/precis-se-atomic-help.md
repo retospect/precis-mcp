@@ -26,6 +26,17 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
 `structure` design, and check the result with atomic-only views. Read
 [[precis-se-help]] first for the op grammar.
 
+## Completion reads
+
+`get(kind='se', id='<design>', view='completion')` returns the shared lossless
+v1 all-block envelope; `completion_digest` summarizes it. Optional
+`args={'shown_design_token':'<captured-token>'}` detects a stale shown scene.
+The read includes hidden/isolated blocks and dangling bindings. Unsupported
+instancing or an inventory above 256 blocks is explicitly incomplete; an empty
+design cannot finish. Independent block evidence never establishes physical
+assembly convergence. Reads do not hydrate a blocktree, change geometry or
+submit jobs; `next.can_submit` stays false. Legacy run records remain unverified.
+
 ## Atomic-mode ops (exact parameter lists)
 
 - `declare_threading` / `remove_threading` — **atomic mode.** `a`, `b`

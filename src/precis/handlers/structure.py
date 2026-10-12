@@ -30,6 +30,10 @@ failing edit before the version commits.
 and runs the shared paper search; paper-provenance links + a rationale note
 (``link(..., note=…)`` → ``links.meta``) show *why* a design was made.
 
+``completion`` and ``completion_digest`` read one captured geometry/run/request
+state and delegate to the pure shared derivation. They bypass Scene hydration
+and accept no policy/proof input, so polling cannot relax or import a design.
+
 See ``precis-structure-help``.
 """
 
@@ -139,6 +143,8 @@ _VIEWS = (
     *_NAV_VIEWS,
     "atoms",
     "runs",
+    "completion",
+    "completion_digest",
     "markers",
     "links",
     "literature",
@@ -1061,12 +1067,28 @@ class StructureHandler(Handler):
         # top-level; both routes are honoured.
         a = args or {}
         src = (source or a.get("source") or "").strip() or None
+        if view in ("completion", "completion_digest") and src is not None:
+            raise BadInput("completion reads cannot hydrate external sources")
         if src is not None:
             query = q if q is not None else a.get("q")
             return self._get_external(source=src, q=query, args=a)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
+            if view in ("completion", "completion_digest"):
+                raise BadInput("completion requires a specific structure id")
             return self._render_list()
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        if view in ("completion", "completion_digest"):
+            from precis.structure.completion_read import read_structure_completion
+
+            try:
+                body = read_structure_completion(
+                    self.store, ref.id, a, digest=view == "completion_digest"
+                )
+            except (ValueError, TypeError) as exc:
+                raise BadInput(str(exc)) from exc
+            if body is None:
+                raise NotFound(f"structure {id!r} no longer exists")
+            return Response(body=body, ref_id=ref.id)
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)

@@ -10,6 +10,19 @@ only). The relaxer/DFT
 dependency, MLIP/GPAW rungs remain extras-gated; the store + handler (the DB
 layer) wrap this core.
 
+Exact completion transport lives in ``completion_codec``: tagged integer IDs
+and reduced rational numbers avoid client float rounding. It provides no
+receipt trust, classification or compute; those remain separate boundaries.
+``completion_types`` is the durable shared read contract. ``completion`` derives
+state purely from one coherent store snapshot: request state, verified evidence
+and effective policy are independent. Legacy JSON cannot establish producer or
+adoption proof, so the v1 reader creates no trusted receipts and never enables
+submission. Current geometry remains usable when historic roles are unavailable;
+a selected run cannot supply another geometry's cell or force evidence.
+Without complete request coverage, automatic selection cannot promote older
+evidence merely because no matching request was captured; exact explicit run
+selection remains independent of that history bound.
+
 Compute-adjacent seams, each with its own module docstring:
 
 - `relax` — the rented fidelity ladder (``clean``/``emt`` ours, always-on;

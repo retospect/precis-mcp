@@ -426,6 +426,24 @@ get(
 )  # the compute history: fidelity · converged · steps · energy · max_force
 ```
 
+## Completion reads
+
+`get(kind='structure', id='<design>', view='completion')` returns the shared
+v1 completion envelope; `completion_digest` gives a human-readable summary.
+Both read one coherent geometry/run/request snapshot, without compute or writes.
+Legacy run flags do not establish force convergence or finished geometry:
+request status, trusted evidence and effective policy are separate.
+`next.can_submit` is always false in this read-only version.
+
+Optional args: `requested_display` (default `{"kind":"current"}`),
+`shown_geometry_token`, `selected_run_id`, `history_limit`, `request_limit`.
+Numeric args use lossless tags, e.g. `{"selected_run_id":{"$int":"12"}}`;
+history/request limits are 1–64. All wire integers and rational numbers use
+tags; decode with the shared codec rather than converting IDs to floats.
+An explicit missing/foreign run never selects another run. Persisted input/output
+roles and artifact/historic selectors are echoed with typed unavailable status
+until a trusted loader/provenance path exists; they never borrow current rows.
+
 ## Relax — the GPU dispatch path
 
 ### Energy rungs run on the GPU node — no todo needed (ADR 0044)
