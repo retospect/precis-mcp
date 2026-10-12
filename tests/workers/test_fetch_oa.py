@@ -2258,6 +2258,58 @@ class TestRunCascade:
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
 
+    def test_pass_wall_budget_stops_starting_stubs(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # gr479615: a slow stub must not let one batch hold the serial worker
+        # loop. Each stub "takes" 200 s; with a 300 s budget the pass runs two
+        # and leaves the third unstarted (claimable next pass).
+        for n in range(3):
+            _seed_paper_stub(store, doi=f"10.1234/wall-{n}")
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "300")
+        clock = [1000.0]
+        monkeypatch.setattr(fetch_oa, "_clock", lambda: clock[0])
+        ran: list[int] = []
+
+        def _slow_cascade(_store, stub, *args, **kwargs):
+            ran.append(stub.ref_id)
+            clock[0] += 200.0
+            return None
+
+        monkeypatch.setattr(fetch_oa, "_run_cascade", _slow_cascade)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert len(ran) == 2
+        assert result == {"claimed": 2, "ok": 2, "failed": 0}
+
+    def test_pass_wall_budget_zero_disables_it(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        for n in range(3):
+            _seed_paper_stub(store, doi=f"10.1234/nowall-{n}")
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "0")
+        clock = [1000.0]
+        monkeypatch.setattr(fetch_oa, "_clock", lambda: clock[0])
+
+        def _slow_cascade(_store, stub, *args, **kwargs):
+            clock[0] += 10_000.0
+            return None
+
+        monkeypatch.setattr(fetch_oa, "_run_cascade", _slow_cascade)
+        result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result["claimed"] == 3
+
+    def test_pass_wall_s_bad_value_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_OA_FETCH_PASS_WALL_S", "soon")
+        assert fetch_oa._pass_wall_s() == 300.0
+
     def test_publisher_pattern_runs_first_and_stops_cascade(
         self,
         store: Store,

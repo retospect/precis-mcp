@@ -1876,6 +1876,30 @@ def _oa_fetch_enabled() -> bool:
     )
 
 
+#: Clock for the pass wall budget; a module attribute so tests can drive it
+#: without touching the process-wide ``time.monotonic``.
+_clock = time.monotonic
+
+
+def _pass_wall_s() -> float:
+    """``PRECIS_OA_FETCH_PASS_WALL_S`` — default **300**.
+
+    Wall-time budget for one :func:`run_oa_fetch_pass`: no new stub is
+    started once this much time has elapsed since the stub loop began (the
+    first stub always runs). A stub in flight is not interrupted; its legs
+    carry their own timeouts. Unstarted stubs hold no lease — the claim's
+    row locks end with its connection — so they stay claimable next pass.
+    gr479615: on melchior a 32-stub batch took ~31 min (TLS-handshake
+    timeouts × retries), holding the serial worker loop ~60 min and making
+    every hourly cadence it owns fire 1–2 h apart. Same shape as
+    ``hub_refine._pass_wall_s``. ``0`` or less disables the budget.
+    """
+    try:
+        return float(os.environ.get("PRECIS_OA_FETCH_PASS_WALL_S", "300"))
+    except ValueError:
+        return 300.0
+
+
 def run_oa_fetch_pass(
     store: Store,
     *,
@@ -2016,7 +2040,20 @@ def run_oa_fetch_pass(
     ok = 0
     failed = 0
     total = len(stubs)
+    wall_s = _pass_wall_s()
+    started = _clock()
+    attempted = 0
     for i, stub in enumerate(stubs, start=1):
+        if wall_s > 0 and attempted and _clock() - started >= wall_s:
+            log.info(
+                "fetch_oa: pass wall budget %.0fs spent after %d/%d stubs; "
+                "the rest stay claimable for the next pass",
+                wall_s,
+                attempted,
+                total,
+            )
+            break
+        attempted += 1
         # gr191337-style monopolization is exactly what this pass is prone
         # to (up to ~11 network legs per stub, each capped at
         # ``_DOWNLOAD_TIMEOUT_S``) — a per-stub progress stamp is the whole
@@ -2075,7 +2112,7 @@ def run_oa_fetch_pass(
                 exc_info=True,
             )
             failed += 1
-    return {"claimed": len(stubs), "ok": ok, "failed": failed}
+    return {"claimed": attempted, "ok": ok, "failed": failed}
 
 
 def _markup_fetch_enabled() -> bool:
