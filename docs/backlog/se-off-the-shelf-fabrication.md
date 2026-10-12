@@ -612,9 +612,11 @@ via perplexity-reasoning:479366 because MISUMI pages 403 the fetcher.
 
 Open: check each row against its product URL (HFS8 bore, slot type B/I,
 channel W×D, It and wall are unseeded); item / Bosch Rexroth / Motedis
-rows; wiring `part_profile` into a block (stiffness, `bom` mass, a swept
-envelope from `catalog._tube`'s `profile` category) — nothing consumes the
-resolver yet.
+rows. Wired (gr415062): a `profile`-category component carrying a `profile`
+spec (`40x40` / `HFS8-4040`) derives a `box` envelope the section wide and
+`length_overall` long plus a `slot` port (slot width/type, kg/m) via
+`catalog._profile`; no `profile` key keeps the round-stock reading. Not yet
+consumed: `bom` mass from kg/m and stiffness from Ix/Iy.
 
 Who: agent-code.
 

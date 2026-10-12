@@ -44,6 +44,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from precis.errors import BadInput
+from precis_se import profiles
 from precis_se.ops import PortSpec
 
 #: Port roles this module coins. Free-form by design (`ops.PortSpec`
@@ -441,6 +443,48 @@ def _tube(specs: dict[str, Any]) -> Derived:
     return Derived(envelope=f"cyl:r{_fmt(outer_d / 2.0)}h{_fmt(length)}", ports=ports)
 
 
+def _profile(specs: dict[str, Any]) -> Derived:
+    """A ``profile`` part that names a tabulated section (``profile:
+    '40x40'`` / ``'HFS8-4040'``, :mod:`precis_se.profiles`): a box the
+    section wide, ``length_overall`` long, with a ``slot`` port carrying the
+    vendor's slot width/type and the section's mass per metre. A part with
+    no ``profile`` key keeps the round-stock reading (:func:`_tube`). An
+    unresolvable name is a ``why_not``, never a guessed section."""
+    ref = specs.get("profile")
+    if ref is None:
+        return _tube(specs)
+    (vals, missing) = _need(specs, "length_overall")
+    if missing:
+        return Derived(why_not=f"profile needs {', '.join(missing)}")
+    (length,) = vals
+    try:
+        prof = profiles.resolve(str(ref))
+    except BadInput as exc:
+        return Derived(why_not=str(exc))
+    ports = _axial_ports(
+        length, near="end_a", far="end_b", near_roles=["end"], far_roles=["end"]
+    )
+    notes: dict[str, Any] = {
+        "profile": prof.part_number,
+        "mass_per_m_kg": prof.mass_kg_per_m,
+        "verified": prof.verified,
+    }
+    if prof.slot_width_mm is not None:
+        notes["slot_width_m"] = prof.slot_width_mm * 1e-3
+    if prof.slot_type is not None:
+        notes["slot_type"] = prof.slot_type
+    ports["slot"] = PortSpec(
+        name="slot", roles=["slot"], direction=[1.0, 0.0, 0.0], annotations=notes
+    )
+    return Derived(
+        envelope=(
+            f"box:w{_fmt(prof.width_mm * 1e-3)}d{_fmt(prof.height_mm * 1e-3)}"
+            f"h{_fmt(length)}"
+        ),
+        ports=ports,
+    )
+
+
 def _bearing(specs: dict[str, Any]) -> Derived:
     (vals, missing) = _need(specs, "outer_diameter", "width")
     if missing:
@@ -502,7 +546,7 @@ def _sheet(specs: dict[str, Any]) -> Derived:
 GENERATORS: dict[str, Callable[[dict[str, Any]], Derived]] = {
     "fastener": _fastener,
     "pipe": _tube,
-    "profile": _tube,
+    "profile": _profile,
     "bearing": _bearing,
     "laminate": _sheet,
 }

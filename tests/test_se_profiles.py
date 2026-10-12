@@ -8,7 +8,7 @@ import dataclasses
 import pytest
 
 from precis.errors import BadInput
-from precis_se import profiles
+from precis_se import catalog, profiles
 
 
 def test_part_profile_resolves_to_tabulated_properties() -> None:
@@ -50,3 +50,22 @@ def test_ambiguous_alias_refused() -> None:
     with pytest.raises(BadInput, match=r"ambiguous.*HFS8-4040, X-4040"):
         profiles.resolve_in("40x40", (base, other))
     assert profiles.resolve_in("X-4040", (base, other)) is other
+
+
+def test_catalog_profile_part_derives_box_and_slot_port() -> None:
+    d = catalog.derive("profile", {"profile": "40x40", "length_overall": 0.5})
+    assert d.ok and d.ports is not None
+    assert d.envelope == "box:w0.04d0.04h0.5"
+    slot = d.ports["slot"].annotations
+    assert slot["profile"] == "HFS8-4040"
+    assert slot["mass_per_m_kg"] == 1.73
+    assert {"end_a", "end_b"} <= set(d.ports)
+
+
+def test_catalog_unknown_profile_is_a_gap_and_no_profile_stays_round_stock() -> None:
+    bad = catalog.derive("profile", {"profile": "99x99", "length_overall": 1.0})
+    assert not bad.ok and "unknown profile" in (bad.why_not or "")
+    short = catalog.derive("profile", {"profile": "40x40"})
+    assert "length_overall" in (short.why_not or "")
+    tube = catalog.derive("profile", {"outer_diameter": 0.02, "length_overall": 1.0})
+    assert tube.envelope is not None and tube.envelope.startswith("cyl:")
