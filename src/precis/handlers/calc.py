@@ -2,10 +2,13 @@
 
 Pass an expression as `id=` (or `q=`); the result is the value. Full
 SymPy CAS — calculus, solve, algebra, linear algebra, number theory.
-Trig is **degrees by default for numeric arguments** (``sin(30)`` →
-``1/2``); a *symbolic* argument (``sin(x)`` inside ``integrate``/``diff``)
-stays in sympy-native radians so calculus comes out clean. ``view='rad'``
-forces radians everywhere.
+Trig takes **explicit angle units** on numeric arguments: ``sin(30 deg)``
+→ ``1/2``, ``sin(1.5 rad)``; ``deg`` / ``°`` / ``\\circ`` and ``rad`` are
+accepted, ``pi`` is already unambiguous (``sin(pi/6)``). A bare numeric
+(``sin(30)``) is rejected with the two-reading hint. A *symbolic* argument
+(``sin(x)`` inside ``integrate``/``diff``) stays sympy-native (unitless
+symbol). Inverse trig (``asin(1/2)``) answers in sympy radians and appends
+both forms (``30° (0.5236 rad)``). ``view='rad'`` is obsolete and ignored.
 
 A query with an explicit ``to`` / ``in`` / ``->`` clause (``3 ft to m``,
 ``1 ton to kg``, ``100 degC to degF``) is a **unit conversion** — routed
@@ -24,6 +27,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.utils.units import format_angle_both, format_dsl_number
 
 
 class CalcHandler(Handler):
@@ -36,9 +40,9 @@ class CalcHandler(Handler):
             "Local symbolic and numeric computation via sympy: arithmetic, "
             "roots, trigonometry (sin/cos/tan/atan2, pi), calculus, linear "
             "algebra. Pass an expression as `id` (or `q`); the result is the "
-            "value. Numeric angles are degrees by default (sin(30)=1/2); "
-            "symbolic args (sin(x) in a calculus op) stay in radians so "
-            "integrate/diff come out clean. Pass view='rad' to force radians. "
+            "value. Numeric trig angles need an explicit unit (sin(30 deg), "
+            "sin(1.5 rad), sin(pi/6)); bare sin(30) is rejected. Symbolic "
+            "args (sin(x) in a calculus op) stay sympy-native. "
             "A `to`/`in`/`->` clause is a local unit conversion via pint "
             "(3 ft to m; 1 ton to kg; 100 degC to degF) — offline, exact, "
             "disambiguating (metric_ton vs long_ton, US vs imperial_gallon)."
@@ -82,21 +86,15 @@ class CalcHandler(Handler):
         unit_resp = _try_unit_conversion(expr_str)
         if unit_resp is not None:
             return unit_resp
-        # Degrees is the **default** — this is an engineering-leaning
-        # calculator (bolt circles, draft angles, cad poses are all in
-        # degrees). ``view='rad'`` opts back into sympy's native radians
-        # for symbolic calculus etc. In degrees mode we shadow the trig
-        # builtins inside ``sympify`` so ``sin(30)`` reads its argument
-        # as degrees (``sin(rad(30))`` → ``1/2``) and ``atan2(1,1)``
-        # returns degrees (``deg(...)`` → 45). The shared ``used`` flag
-        # flips the first time any wrapped trig fn is actually applied,
-        # so we only stamp the "interpreted in degrees" note when trig
-        # really ran.
-        degrees = not _wants_radians(view)
-        used = {"trig": False}
-        local_dict = _degrees_locals(sympy, used) if degrees else None
+        # Angles are explicit (gr336352): ``30 deg`` / ``1.5 rad`` literals
+        # become unit-marker symbols, the trig wrappers resolve them and
+        # reject a bare numeric argument; symbolic args stay sympy-native.
+        # ``view='rad'`` (the old mode switch) is obsolete and ignored.
+        used: dict[str, Any] = {"inv_value": None}
+        local_dict = _angle_locals(sympy, used)
+        marked = _mark_angle_units(expr_str)
         try:
-            expr = sympy.sympify(expr_str, locals=local_dict)
+            expr = sympy.sympify(marked, locals=local_dict)
         except (sympy.SympifyError, SyntaxError, TypeError) as e:
             # Hint uses ``q=`` to match the canonical example in
             # precis-overview / precis-help. The handler accepts
@@ -159,12 +157,12 @@ class CalcHandler(Handler):
         # subclasses and keep the fast path. (MCP critic round 2 —
         # calc solve unwired.)
         if isinstance(expr, (list, tuple, dict, set, frozenset)):
-            return Response(
-                body=f"{expr_str} = {_humanise(expr)}" + _degrees_note(degrees, used)
-            )
+            expr = _strip_collection(sympy, expr)
+            return Response(body=f"{expr_str} = {_humanise(expr)}")
 
         try:
-            result = expr if expr.is_number else expr.doit()
+            result = _strip_angle_units(sympy, expr)
+            result = result if result.is_number else result.doit()
         except (AttributeError, TypeError, ValueError, sympy.SympifyError) as e:
             # Sanitize the upstream error message — sympy's
             # ``AttributeError`` on ``__import__('os').system(...)``
@@ -248,7 +246,7 @@ class CalcHandler(Handler):
             )
         return Response(
             body=f"{expr_str} = {_humanise(result)}"
-            + _degrees_note(degrees, used)
+            + _inverse_angle_note(sympy, result, used)
             + unit_note
         )
 
@@ -462,84 +460,124 @@ def _try_unit_conversion(expr_str: str) -> Response | None:
     return Response(body=f"{src} = {_format_quantity(converted)}")
 
 
-def _wants_radians(view: str | None) -> bool:
-    """``view='rad'`` / ``'radian'`` / ``'radians'`` opts out of the
-    degrees default and back into sympy's native radians."""
-    return isinstance(view, str) and view.strip().lower() in (
-        "rad",
-        "radian",
-        "radians",
-    )
+_ANGLE_LIT_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+)\s*\^?\s*\{?"
+    r"(\\circ|°|degrees|degree|deg|radians|radian|rad)\}?(?![A-Za-z0-9_(])"
+)
+
+_DEG_MARK = "angleunit_deg__"
+_RAD_MARK = "angleunit_rad__"
 
 
-def _degrees_note(degrees: bool, used: dict[str, bool]) -> str:
-    """One-line footer stamped when trig actually ran in degrees mode,
-    so the reader knows the convention and how to switch."""
-    if degrees and used["trig"]:
-        return "\n(trig evaluated in degrees — pass view='rad' for radians)"
-    return ""
+def _mark_angle_units(expr_str: str) -> str:
+    """Rewrite ``30 deg`` / ``30°`` / ``30\\circ`` / ``1.5 rad`` literals
+    to ``(30*angleunit_deg__)`` / ``(1.5*angleunit_rad__)`` marker products
+    the trig wrappers resolve — so a bare numeric argument is
+    distinguishable from a unit-tagged one."""
+
+    def sub(m: re.Match[str]) -> str:
+        mark = _RAD_MARK if m.group(2).startswith("rad") else _DEG_MARK
+        return f"({m.group(1)}*{mark})"
+
+    return _ANGLE_LIT_RE.sub(sub, expr_str)
 
 
-def _degrees_locals(sympy: Any, used: dict[str, bool]) -> dict[str, Any]:
-    """Trig builtins that read/return **degrees** instead of radians —
-    but only for **numeric** arguments.
+def _strip_angle_units(sympy: Any, expr: Any) -> Any:
+    """Resolve the unit markers: deg → pi/180, rad → 1."""
+    atoms = getattr(expr, "free_symbols", None)
+    if not atoms:
+        return expr
+    subs = {}
+    for sym in atoms:
+        if sym.name == _DEG_MARK:
+            subs[sym] = sympy.pi / 180
+        elif sym.name == _RAD_MARK:
+            subs[sym] = 1
+    return expr.subs(subs) if subs else expr
 
-    Forward functions interpret their argument as degrees (wrap in
-    ``rad``); inverse functions return degrees (wrap in ``deg``). Sympy
-    keeps these exact — ``sin(30)`` → ``1/2``, ``tan(45)`` → ``1`` — and
-    ``N(...)`` still works for a decimal.
 
-    The degrees convention applies **only when the argument carries no
-    free symbols** (``sin(30)``, ``atan2(1, 1)``). A *symbolic* argument
-    — ``sin(x)`` inside ``integrate(sin(x)**2, x)`` — falls through to
-    sympy's native radians untouched, because substituting ``x → rad(x)``
-    into an indefinite integral over ``x`` corrupts the calculus (it
-    yields a garbled ``pi*x/180`` antiderivative instead of the correct
-    one). This is the "degrees for engineering numerics, radians for
-    symbolic calculus" split (gr48509) — the old code applied ``rad`` to
-    every argument, so ``integrate(sin(x)**2, x)`` in the default mode
-    returned nonsense until you remembered ``view='rad'``.
+def _strip_collection(sympy: Any, obj: Any) -> Any:
+    """Resolve unit markers inside list/tuple/set/dict results."""
+    if isinstance(obj, dict):
+        return {
+            _strip_collection(sympy, k): _strip_collection(sympy, v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return type(obj)(_strip_collection(sympy, v) for v in obj)
+    return _strip_angle_units(sympy, obj)
 
-    ``used['trig']`` flips only when the degrees conversion actually
-    fires (a numeric argument), so the "interpreted in degrees" note is
-    stamped only when it's true; ``pi``, ``sqrt``, calculus etc. fall
-    through to sympy untouched.
+
+def _inverse_angle_note(sympy: Any, result: Any, used: dict[str, Any]) -> str:
+    """Both forms of a numeric inverse-trig result (the caller named no
+    unit, so respond with both: ``30° (0.5236 rad)``)."""
+    if used.get("inv_value") is None or result != used["inv_value"]:
+        return ""
+    if not getattr(result, "is_number", False):
+        return ""
+    try:
+        radians = float(result)
+    except (TypeError, ValueError):
+        return ""
+    return f"\n(angle: {format_angle_both(radians)})"
+
+
+def _angle_locals(sympy: Any, used: dict[str, Any]) -> dict[str, Any]:
+    """Trig builtins with explicit angle units on **numeric** arguments.
+
+    A forward function's numeric argument must carry a unit
+    (``30 deg`` / ``1.5 rad`` markers) or be built from ``pi``
+    (``pi/6`` is unambiguous radians); a bare numeric (``sin(30)``) is
+    rejected with the shared two-reading hint. A *symbolic* argument
+    (``sin(x)`` inside ``integrate``) passes to sympy untouched — the
+    symbol is unitless, so there is no ambiguity and calculus stays
+    clean. Inverse functions return sympy-native radians;
+    ``used['inv_value']`` records the result so the answer gains the both-forms note.
     """
-    rad, deg = sympy.rad, sympy.deg
+    deg_sym, rad_sym = sympy.Symbol(_DEG_MARK), sympy.Symbol(_RAD_MARK)
+    out: dict[str, Any] = {_DEG_MARK: deg_sym, _RAD_MARK: rad_sym}
+    markers = {deg_sym, rad_sym}
 
-    def _is_symbolic(a: Any) -> bool:
-        arg = sympy.sympify(a)
-        return bool(getattr(arg, "free_symbols", set()))
-
-    def fwd(fn: Any) -> Any:  # arg-in-degrees (numeric args only)
+    def fwd(name: str, fn: Any) -> Any:
         def f(a: Any) -> Any:
-            if _is_symbolic(a):
-                return fn(a)  # symbolic → sympy-native radians
-            used["trig"] = True
-            return fn(rad(a))
+            arg = sympy.sympify(a)
+            syms = set(getattr(arg, "free_symbols", set()))
+            if syms - markers:
+                return fn(arg)  # symbolic → sympy-native
+            if syms or arg.has(sympy.pi) or arg == 0:
+                return fn(_strip_angle_units(sympy, arg))
+            shown = str(arg) if not arg.is_finite else format_dsl_number(float(arg))
+            raise BadInput(
+                f"{name}({shown}): an angle argument needs an explicit unit",
+                next=(
+                    f"{name}({shown} deg)? {name}({shown} rad)? "
+                    f"(or build from pi: {name}(pi/6))"
+                ),
+            )
 
         return f
 
-    def inv(fn: Any) -> Any:  # result-in-degrees (numeric args only)
+    def inv(fn: Any) -> Any:
         def f(a: Any) -> Any:
-            if _is_symbolic(a):
-                return fn(a)
-            used["trig"] = True
-            return deg(fn(a))
+            out_val = fn(a)
+            if not getattr(sympy.sympify(a), "free_symbols", set()):
+                used["inv_value"] = out_val
+            return out_val
 
         return f
 
-    out: dict[str, Any] = {}
     for name in ("sin", "cos", "tan", "sec", "csc", "cot"):
-        out[name] = fwd(getattr(sympy, name))
+        out[name] = fwd(name, getattr(sympy, name))
     for name in ("asin", "acos", "atan", "acot", "asec", "acsc"):
         out[name] = inv(getattr(sympy, name))
 
     def _atan2(y: Any, x: Any) -> Any:
-        if _is_symbolic(y) or _is_symbolic(x):
-            return sympy.atan2(y, x)
-        used["trig"] = True
-        return deg(sympy.atan2(y, x))
+        if not (
+            getattr(sympy.sympify(y), "free_symbols", set())
+            or getattr(sympy.sympify(x), "free_symbols", set())
+        ):
+            used["inv_value"] = sympy.atan2(y, x)
+        return sympy.atan2(y, x)
 
     out["atan2"] = _atan2
     return out

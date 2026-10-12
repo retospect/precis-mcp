@@ -1213,6 +1213,36 @@ def test_op_move_sets_position_and_lock(pcb, store):
     assert row == (10.0, 12.0, "xy")
 
 
+@pytest.mark.parametrize(
+    ("key", "value", "expect"),
+    [
+        ("rot", 90.0, 90.0),
+        ("rot", "90deg", 90.0),
+        ("rot", "90°", 90.0),
+        ("rot", "1.5707963267948966 rad", 90.0),
+        ("rot_deg", 90, 90.0),
+    ],
+)
+def test_op_move_rot_takes_degrees_or_explicit_unit(pcb, store, key, value, expect):
+    """gr336352: pcb ``rot`` is degrees as a bare number (declared enclave
+    convention) and also accepts an explicit unit; ``rot_deg`` self-names."""
+    pcb.put(id="op-move-rot", args=_CROSSED)
+    pcb.put(id="op-move-rot", args={"op": "move", "refdes": "A", key: value})
+    ref = store.get_ref(kind="pcb", id="op-move-rot")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT rot FROM pcb_instances WHERE ref_id = %s AND refdes = 'A'",
+            (ref.id,),
+        ).fetchone()
+    assert row[0] == pytest.approx(expect)
+
+
+def test_op_move_rot_bad_unit_rejected(pcb):
+    pcb.put(id="op-move-rot2", args=_CROSSED)
+    with pytest.raises(BadInput):
+        pcb.put(id="op-move-rot2", args={"op": "move", "refdes": "A", "rot": "3 mm"})
+
+
 def test_op_move_onto_another_part_is_refused_naming_the_rule_and_part(pcb, store):
     """docs/backlog/pcb-always-valid-board-invariant.md acceptance: a move
     that would overlap another part's courtyard is refused, and the board

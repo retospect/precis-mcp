@@ -160,11 +160,11 @@ process-DRC findings (overhang, bridge, bed_contact, build_volume).
 > calculus and linear algebra. Handy here for bolt-circle coordinates,
 > slant/draft angles, and tolerance stacks before you `put` them into
 > the source.
-> **`calc` trig is in degrees by default** — matching cad's convention —
-> so `get(kind='calc', q='sin(30)')` → `1/2` and `get(kind='calc',
-> q='N(atan2(1,1))')` → `45` directly, and the result carries a
-> "degrees" note. Pass `view='rad'` for radians (symbolic calculus);
-> wrap in `N(...)` for a decimal instead of the exact form.
+> **`calc` trig takes explicit angle units** — matching cad's grammar —
+> so `get(kind='calc', q='sin(30 deg)')` → `1/2`; a bare `sin(30)` is
+> rejected. Inverse trig (`atan2(1,1)`) answers `pi/4` with both forms
+> (`45° (0.7854 rad)`). Wrap in `N(...)` for a decimal instead of the
+> exact form.
 
 ## See also
 

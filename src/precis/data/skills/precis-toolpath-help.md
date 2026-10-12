@@ -97,9 +97,10 @@ semantics live in `precis-tags`.
 | Video transcript | `get(kind='youtube', q='<video id>')` | free |
 | Semantic Scholar lookup | `get(kind='semanticscholar', q='single-atom catalyst')` | free |
 
-`calc` reads numeric trig in degrees by default (`sin(30)`=1/2) but keeps
-symbolic arguments (`sin(x)` inside `integrate`/`diff`) in radians so
-calculus comes out clean; pass `view='rad'` to force radians everywhere. A
+`calc` needs an explicit unit on numeric trig angles (`sin(30 deg)`=1/2,
+`sin(1.5 rad)`; bare `sin(30)` is rejected) and keeps symbolic arguments
+(`sin(x)` inside `integrate`/`diff`) sympy-native so calculus comes out
+clean. A
 `to`/`in`/`->` clause makes `calc` a **local unit converter** (`3 ft to m`,
 `100 degC to degF`) — reach for it, not paid `math`/Wolfram, for any
 ordinary conversion. Paid tools cache automatically (`precis-cache`).

@@ -26,7 +26,7 @@ gaps, DRC), never a rendered board. Postgres is canonical; gerbers / BOM / the
 autorouter are downstream *export*.
 
 Units are **millimetres**. The board frame: origin at the **board-outline
-corner**, **+X right, +Y up (north)**, rotation **clockwise from north**,
+corner**, **+X right, +Y up (north)**, rotation **clockwise from north** in degrees (`rot`, alias `rot_deg`; a unit string like `"1.5708 rad"` also works),
 pivot = the component centroid. (Exporters convert to each fab's convention —
 e.g. the JLCPCB CPL flips rotation to CCW for you.)
 

@@ -210,7 +210,7 @@ plane-served net is an anomaly, not a normal outcome.
 ## Move, lock, and net-class edits
 
 ```python
-put(kind="pcb", id="s", args={"op": "move", "refdes": "U1", "x": 10.0, "y": 5.0, "rot": 90})
+put(kind="pcb", id="s", args={"op": "move", "refdes": "U1", "x": 10.0, "y": 5.0, "rot": "90deg"})
 put(kind="pcb", id="s", args={"op": "move", "refdes": "J1", "fixed": "xy"})   # lock in place
 put(kind="pcb", id="s", args={"op": "move", "refdes": "J1", "fixed": None})  # unlock
 put(kind="pcb", id="s", args={"op": "class_rules", "name": "i2c", "rules": {"clearance_mm": 0.2}})
@@ -220,7 +220,7 @@ put(kind="pcb", id="s", args={"op": "class_rules", "name": "i2c", "rules": {"cle
 unlike the optimizer's own write-back (which never touches a `fixed`
 instance, enforced in SQL), this IS the authorized edit path. Any of
 `x`/`y`/`rot`/`fixed` may be given; omit `fixed` to leave the lock alone,
-pass `fixed=None` to explicitly clear it.
+pass `fixed=None` to explicitly clear it. `rot` is degrees (alias `rot_deg`); a unit string (`"1.5 rad"`) works too.
 
 A move is refused when the part's new pose would break a rule the placer
 also enforces. The error names the rule and what it hit:

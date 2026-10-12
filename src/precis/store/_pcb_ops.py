@@ -45,6 +45,7 @@ from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb.capabilities import capability_for
 from precis.store.types import ActorSlug
+from precis.utils.units import parse_angle_deg
 
 
 def _validate_pin_declarations(
@@ -98,6 +99,14 @@ def _validate_pin_declarations(
 
 
 _BULK_BATCH = 2000  # rows per round trip in parts_bulk_replace
+
+
+def _rot_deg(d: dict[str, Any]) -> float:
+    """A placement's rotation in degrees (the pcb enclave's stored unit).
+    ``rot_deg`` self-names; ``rot`` is the same degrees (bare number) or an
+    explicit-unit string (``"90deg"``, ``"1.5708 rad"``) — gr336352."""
+    key = "rot_deg" if d.get("rot_deg") is not None else "rot"
+    return parse_angle_deg(d.get(key), arg_name=key, bare="degrees")
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
@@ -188,7 +197,7 @@ def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
         "number": pin_name,
         "shape": shape,
         "layer": str(p.get("layer") or "F.Cu"),
-        "rot": float(p.get("rot") or 0.0),
+        "rot": _rot_deg(p),
         "role": role,
         "mask": mask,
         "paste": paste,
@@ -1273,7 +1282,7 @@ class PcbMixin:
                 refdes,
                 c.get("x"),
                 c.get("y"),
-                float(c.get("rot") or 0.0),
+                _rot_deg(c),
                 str(c.get("layer") or "top"),
                 c.get("fixed"),
                 list(c.get("roles") or []),
@@ -1427,7 +1436,7 @@ class PcbMixin:
                 ftype,
                 f.get("x"),
                 f.get("y"),
-                float(f.get("rot") or 0.0),
+                _rot_deg(f),
                 f.get("layer"),
                 f.get("fixed"),
                 _jsonb_or_none(geom),

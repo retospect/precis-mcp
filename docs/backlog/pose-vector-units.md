@@ -113,16 +113,20 @@ the same hint machinery/files).
 
 ## Angle units across every MCP surface (gr336352)
 
-Any surface taking an angle must name its unit explicitly, not rely on a
-default. Today `src/precis/handlers/calc.py` evaluates trig in degrees by
-default, returns inverse functions in degrees, and needs `deg(...)` /
-`rad(...)` wrappers or `view='rad'` to switch — a triple convention an
-agent must memorise. The pcb instance `rot` is a bare number (degrees by
-convention, `rot_deg` internally). Fix: accept `deg`/`rad`-suffixed
-quantities on each angle argument, reject bare nonzero where the unit is
-ambiguous, and answer in the caller's own unit (respond-in-kind, the rule
-cited above). Sweep calc, pcb `rot`, se/nm `rot`.
-Who: agent-code; ships bundled with this item's vector ingest.
+SHIPPED: shared `parse_angle_deg` / `format_angle_both` /
+`format_angle_in_kind` in `precis/utils/units.py` (`\circ` accepted);
+calc (`sin(30 deg)`, bare numeric rejected, `view='rad'` removed, inverse
+trig answers in both forms); pcb `rot` (bare = declared degrees, unit
+strings accepted, `rot_deg` alias); structure `add_adsorbate rotate`
+(unit required). Already explicit: cad/se joint `state`/`limits`, cad
+`rot:` DSL. Self-named, left: draft `camera.*_deg`, cad `sweep_deg`.
+
+OPEN (rides the pose-vector ingest above): se/nm `rot` vectors still go
+through bare-radian `_as_vec3`; make them per-component angle quantities
+with the same helper. pcb `group_offset.rot` still takes bare degrees only.
+Respond-in-kind for cad/se/nm query
+answers (echo the caller's unit) is not yet threaded through.
+Who: agent-code.
 
 ## Notation robustness eval (gr336349)
 

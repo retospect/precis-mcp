@@ -2,11 +2,11 @@
 id: precis-calc-help
 family: tools
 title: precis — the calc kind (local SymPy CAS)
-summary: an exact, free, local computer-algebra system — arithmetic, calculus (integrals/derivatives/limits/sums/ODEs), equation solving, algebra, linear algebra, number theory; trig in degrees by default with a view='rad' switch; plus local unit conversion (3 ft to m; 1 ton to kg; 100 degC to degF) via pint
+summary: an exact, free, local computer-algebra system — arithmetic, calculus (integrals/derivatives/limits/sums/ODEs), equation solving, algebra, linear algebra, number theory; trig with explicit angle units (sin(30 deg), sin(1.5 rad)); plus local unit conversion (3 ft to m; 1 ton to kg; 100 degC to degF) via pint
 answers:
   - how do I do exact arithmetic or calculus without paying for Wolfram?
   - how do I convert units locally, like feet to meters?
-  - does calc use degrees or radians by default?
+  - how do I give calc an angle (degrees or radians)?
   - what should I do if calc returns an error?
 applies-to: get (kind='calc')
 kinds: [calc]
@@ -38,7 +38,7 @@ for "integrate this".
 |------|----------|
 | arithmetic & numerics | `2**64`, `(2+3*I)*(1-I)` (complex), `N(pi, 30)` (30-digit), exact fractions |
 | roots & powers | `sqrt(2)`, `2**10`, `cbrt(27)` |
-| **trigonometry** | `sin cos tan asin acos atan atan2`, `pi` — **degrees by default** (see below) |
+| **trigonometry** | `sin cos tan asin acos atan atan2`, `pi` — numeric angles need an explicit unit (see below) |
 | **calculus** | **integrals** — indefinite `integrate(x**2, x)` → `x**3/3`, definite `integrate(exp(-x**2), (x, -oo, oo))` → `sqrt(pi)`; derivatives `diff(sin(x)*x**2, x)`; limits `limit(sin(x)/x, x, 0)` → `1`; Taylor series `series(cos(x), x, 0, 6)`; summations `Sum(1/n**2, (n, 1, oo)).doit()` → `pi**2/6`; ODEs `dsolve(Eq(f(x).diff(x), f(x)), f(x))` |
 | equation solving | `solve(Eq(x**2-2, 0), x)` → `[-sqrt(2), sqrt(2)]`; `solveset(...)` for sets |
 | algebra | `simplify(sin(x)**2 + cos(x)**2)` → `1`, `factor(x**3-1)`, `expand((x+1)**3)` |
@@ -49,30 +49,28 @@ Use `oo` for ∞, `I` for the imaginary unit, `pi`/`E` for the constants.
 Wrap any exact result in `N(...)` for a decimal (`N(pi, 30)` sets the
 precision). Symbols are free — `x`, `n`, `f` need no declaration.
 
-## Angles: degrees by default
+## Angles: explicit units
 
-`calc` is engineering-leaning, so **trig reads/returns degrees** unless
-you say otherwise — and a result that actually used trig is stamped with
-a note:
-
-```python
-get(kind="calc", q="sin(30)")  # → 1/2
-#   (trig evaluated in degrees — pass view='rad' for radians)
-get(kind="calc", q="tan(45)")  # → 1
-get(kind="calc", q="N(atan2(1,1))")  # → 45.0   (inverse trig returns degrees too)
-```
-
-Pass `view='rad'` for SymPy's native **radians** — what you want for
-symbolic calculus, where a degree wrapper would turn the integrand into
-`sin(pi*x/180)`:
+Numeric trig arguments **name their unit**: `deg` / `°` / `\circ` for
+degrees, `rad` for radians. A bare `sin(30)` is rejected with the
+two-reading hint (`sin(30 deg)? sin(30 rad)?`). `pi` is already
+unambiguous. Symbolic arguments stay sympy-native, so calculus is clean:
 
 ```python
-get(kind="calc", q="sin(pi/6)", view="rad")  # → 1/2
-get(kind="calc", q="integrate(sin(x), x)", view="rad")  # → -cos(x)
+get(kind="calc", q="sin(30 deg)")  # → 1/2
+get(kind="calc", q="N(sin(1.5 rad))")  # → 0.997495
+get(kind="calc", q="sin(pi/6)")  # → 1/2
+get(kind="calc", q="integrate(sin(x), x)")  # → -cos(x)
 ```
 
-`view='deg'` is an explicit synonym for the default. No note appears in
-radian mode or when an expression uses no trig.
+Inverse functions return sympy's radians and add both forms, since you
+named no unit:
+
+```python
+get(kind="calc", q="asin(1/2)")  # → pi/6   (angle: 30° (0.5236 rad))
+```
+
+`view='rad'` / `view='deg'` are obsolete and ignored.
 
 ## Convert units in a calculation
 

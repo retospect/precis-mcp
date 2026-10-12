@@ -78,98 +78,84 @@ def test_kindspec_declares_only_get() -> None:
     assert spec.supports_link is False
 
 
-# ── trigonometry: radians default + degrees switch ─────────────────
+# ── trigonometry: explicit angle units (gr336352) ──────────────────
 
 
 class TestTrig:
-    """calc is sympy-backed, so trig is exact. **Degrees is the default**
-    (engineering-leaning: ``sin(30)`` → ``1/2``); ``view='rad'`` opts
-    into sympy's native radians for symbolic calculus."""
+    """Numeric trig arguments carry an explicit unit (``sin(30 deg)``,
+    ``sin(1.5 rad)``, ``sin(pi/6)``); bare numerics are rejected with the
+    two-reading hint; symbolic args stay sympy-native; inverse functions
+    answer in both forms."""
 
-    def test_degrees_is_default(self, handler: CalcHandler) -> None:
-        # sin(30°) = 1/2 with no view= needed.
-        r = handler.get(q="sin(30)")
-        assert "1/2" in r.body
+    def test_deg_literal(self, handler: CalcHandler) -> None:
+        assert "= 1/2" in handler.get(q="sin(30 deg)").body
 
-    def test_degrees_tan_45(self, handler: CalcHandler) -> None:
-        r = handler.get(q="tan(45)")
-        assert "= 1" in r.body
+    @pytest.mark.parametrize("spelling", ["30°", "30 °", "30\\circ", "30 degrees"])
+    def test_deg_spellings(self, handler: CalcHandler, spelling: str) -> None:
+        assert "= 1/2" in handler.get(q=f"sin({spelling})").body
 
-    def test_degrees_inverse_returns_degrees(self, handler: CalcHandler) -> None:
-        # atan2(1, 1) = 45° in the default degrees mode.
-        r = handler.get(q="N(atan2(1, 1))")
-        assert "45" in r.body
+    def test_rad_literal(self, handler: CalcHandler) -> None:
+        r = handler.get(q="N(sin(1.5 rad))")
+        assert "0.997" in r.body
 
-    def test_explicit_view_deg_is_degrees(self, handler: CalcHandler) -> None:
-        # view='deg' is an explicit synonym for the default.
-        r = handler.get(q="cos(60)", view="deg")
-        assert "1/2" in r.body
+    def test_tan_45_deg(self, handler: CalcHandler) -> None:
+        assert "= 1" in handler.get(q="tan(45 deg)").body
 
-    def test_radian_switch(self, handler: CalcHandler) -> None:
-        # view='rad' → sympy native: sin(pi/6) = 1/2.
-        r = handler.get(q="sin(pi/6)", view="rad")
-        assert "1/2" in r.body
+    def test_pi_argument_is_unambiguous(self, handler: CalcHandler) -> None:
+        assert "= 1/2" in handler.get(q="sin(pi/6)").body
 
-    def test_radian_switch_bare_number_stays_symbolic(
+    def test_bare_numeric_rejected_with_two_readings(
         self, handler: CalcHandler
     ) -> None:
-        # In radians, sin(30) is 30 radians — does NOT collapse to 1/2.
-        r = handler.get(q="sin(30)", view="rad")
-        assert "1/2" not in r.body
+        with pytest.raises(BadInput) as ei:
+            handler.get(q="sin(30)")
+        msg = str(ei.value) + str(getattr(ei.value, "next", ""))
+        assert "30 deg" in msg and "30 rad" in msg
 
-    def test_degrees_note_present_when_trig_used(self, handler: CalcHandler) -> None:
-        r = handler.get(q="sin(30)")
-        assert "degrees" in r.body
-        assert "view='rad'" in r.body
+    def test_inverse_answers_in_both_forms(self, handler: CalcHandler) -> None:
+        r = handler.get(q="asin(1/2)")
+        assert "pi/6" in r.body
+        assert "30°" in r.body and "0.5236 rad" in r.body
 
-    def test_no_degrees_note_without_trig(self, handler: CalcHandler) -> None:
-        r = handler.get(q="2+3*4")
-        assert "degrees" not in r.body
+    def test_atan2_both_forms(self, handler: CalcHandler) -> None:
+        r = handler.get(q="atan2(1, 1)")
+        assert "45°" in r.body and "0.7854 rad" in r.body
 
-    def test_no_degrees_note_in_radian_mode(self, handler: CalcHandler) -> None:
-        r = handler.get(q="sin(pi/6)", view="rad")
-        assert "degrees" not in r.body
+    def test_view_rad_is_obsolete_and_ignored(self, handler: CalcHandler) -> None:
+        a = handler.get(q="sin(30 deg)", view="rad")
+        assert "= 1/2" in a.body
 
-    def test_radian_calculus_is_clean(self, handler: CalcHandler) -> None:
-        # The canonical calculus example only stays clean in radians.
-        r = handler.get(q="integrate(sin(x), x)", view="rad")
-        assert "cos" in r.body and "180" not in r.body
+    def test_no_angle_note_without_inverse_trig(self, handler: CalcHandler) -> None:
+        assert "angle:" not in handler.get(q="2+3*4").body
 
-    def test_symbolic_calculus_clean_in_default_degrees_mode(
-        self, handler: CalcHandler
-    ) -> None:
-        """gr48509: a symbolic trig argument must NOT be degree-substituted
-        even in the default degrees mode — the degrees convention is for
-        numeric args only. Previously ``integrate(sin(x)**2, x)`` returned a
-        garbled ``pi*x/180`` antiderivative unless you passed view='rad'."""
+    def test_symbolic_calculus_clean(self, handler: CalcHandler) -> None:
         r = handler.get(q="integrate(sin(x)**2, x)")
-        # Correct antiderivative x/2 - sin(x)*cos(x)/2 — no degrees garble.
-        assert "180" not in r.body
-        assert "pi" not in r.body
+        assert "180" not in r.body and "pi" not in r.body
         assert "x/2" in r.body
-        # No degrees note: no numeric trig actually ran in degrees.
-        assert "degrees" not in r.body
 
-    def test_symbolic_diff_clean_in_default_degrees_mode(
-        self, handler: CalcHandler
-    ) -> None:
-        """diff(sin(x), x) → cos(x) in default mode, not the old
-        ``pi*cos(pi*x/180)/180``."""
+    def test_symbolic_diff_clean(self, handler: CalcHandler) -> None:
         r = handler.get(q="diff(sin(x), x)")
-        assert "cos(x)" in r.body
-        assert "180" not in r.body
+        assert "cos(x)" in r.body and "180" not in r.body
 
-    def test_numeric_trig_still_degrees_alongside_symbolic(
+    def test_mixed_numeric_unit_and_symbolic(self, handler: CalcHandler) -> None:
+        r = handler.get(q="sin(30 deg) + diff(cos(x), x)")
+        assert "1/2" in r.body and "sin(x)" in r.body and "180" not in r.body
+
+    def test_collection_results_strip_unit_markers(self, handler: CalcHandler) -> None:
+        r = handler.get(q="solve(x - 30 deg, x)")
+        assert "angleunit" not in r.body and "pi/6" in r.body
+
+    def test_angle_note_only_when_result_is_the_inverse_value(
         self, handler: CalcHandler
     ) -> None:
-        """A mixed expression: numeric ``sin(30)`` collapses to 1/2
-        (degrees) while ``sin(x)`` stays symbolic-radian. Confirms the
-        per-argument split, not a blanket calculus carve-out."""
-        r = handler.get(q="sin(30) + diff(cos(x), x)")
-        # sin(30)=1/2 (degrees); diff(cos(x),x)=-sin(x) (radians).
-        assert "1/2" in r.body
-        assert "sin(x)" in r.body
-        assert "180" not in r.body
+        assert "angle:" not in handler.get(q="asin(1/2)*180/pi").body
+        assert "angle:" not in handler.get(q="cos(asin(1/2))").body
+
+    def test_sin_zero_and_oo(self, handler: CalcHandler) -> None:
+        assert "= 0" in handler.get(q="sin(0)").body
+        with pytest.raises(BadInput) as ei:
+            handler.get(q="sin(oo)")
+        assert "non-finite" not in str(ei.value)
 
     def test_sqrt_and_power(self, handler: CalcHandler) -> None:
         assert "2" in handler.get(q="sqrt(4)").body
@@ -361,7 +347,7 @@ class TestUnitNearMissNudge:
 
     def test_trig_is_never_nudged(self, handler: CalcHandler) -> None:
         # 'in' inside 'sin' / degree trig must not trip the nudge.
-        r = handler.get(q="sin(30)")
+        r = handler.get(q="sin(30 deg)")
         assert "1/2" in r.body
         assert "names a unit" not in r.body
 
@@ -470,7 +456,7 @@ class TestConversionDetectorDoesNotStealMath:
 
     def test_trig_still_sympy(self, handler: CalcHandler) -> None:
         # 'in' inside 'sin' is not space-delimited — no false route.
-        assert "1/2" in handler.get(q="sin(30)").body
+        assert "1/2" in handler.get(q="sin(30 deg)").body
 
     def test_integrate_still_sympy(self, handler: CalcHandler) -> None:
         assert "cos" in handler.get(q="integrate(sin(x), x)", view="rad").body

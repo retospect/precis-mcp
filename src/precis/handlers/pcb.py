@@ -124,6 +124,7 @@ from precis.store._pcb_ops import (
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+from precis.utils.units import parse_angle_deg
 
 log = logging.getLogger(__name__)
 
@@ -480,6 +481,7 @@ class PcbHandler(Handler):
                 "x",
                 "y",
                 "rot",
+                "rot_deg",
                 "fixed",
                 "net",
                 "a",
@@ -1015,9 +1017,13 @@ class PcbHandler(Handler):
     @staticmethod
     def _pose_kwargs(src: dict[str, Any]) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
-        for k in ("x", "y", "rot"):
+        for k in ("x", "y"):
             if src.get(k) is not None:
                 kwargs[k] = float(src[k])
+        for k in ("rot_deg", "rot"):  # degrees, or an explicit-unit string
+            if src.get(k) is not None:
+                kwargs["rot"] = parse_angle_deg(src[k], arg_name=k, bare="degrees")
+                break
         return kwargs
 
     def _op_move(self, ref: Any, args: dict[str, Any]) -> Response:

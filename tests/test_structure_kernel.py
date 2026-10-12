@@ -290,7 +290,7 @@ def test_add_adsorbate_rotate_spins_about_the_surface_normal() -> None:
                 "species": "H2O",
                 "site": {"type": "top", "anchors": ["aPd1"]},
                 "height": 2.0,
-                "rotate": 90.0,
+                "rotate": "90deg",
             }
         ],
     )
@@ -310,6 +310,21 @@ def test_add_adsorbate_rotate_spins_about_the_surface_normal() -> None:
     v1, v2 = disp
     cos = float(v1 @ v2 / (np.linalg.norm(v1) * np.linalg.norm(v2)))
     assert np.degrees(np.arccos(cos)) == pytest.approx(104.5, abs=0.5)
+
+
+def test_add_adsorbate_rotate_bare_nonzero_is_rejected_with_unit_hint() -> None:
+    """gr336352: the angle needs an explicit unit; zero needs none."""
+    from precis.structure import OpError
+
+    op = {
+        "op": "add_adsorbate",
+        "species": "OH",
+        "site": {"type": "top", "anchors": ["aPd1"]},
+    }
+    with pytest.raises(OpError, match="30 deg"):
+        apply_ops(_pd_triangle(), [{**op, "rotate": 30}])
+    apply_ops(_pd_triangle(), [{**op, "rotate": 0}])
+    apply_ops(_pd_triangle(), [{**op, "rotate": "1.5708 rad"}])
 
 
 def test_add_adsorbate_unknown_species_lists_the_catalogue() -> None:

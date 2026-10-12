@@ -46,6 +46,9 @@ from typing import Any
 
 import numpy as np
 
+from precis.errors import BadInput
+from precis.utils.units import parse_angle_deg
+
 from . import elements
 from .cell import Cell
 from .measures import _MEASURE_ARITY, _MEASURE_KINDS
@@ -322,7 +325,7 @@ def _op_add_adsorbate(scene: Scene, op: dict[str, Any]) -> None:
 
     ``{"op": "add_adsorbate", "species": "OH", "site": {"type": "hollow",
     "anchors": ["aPd1", "aPd2", "aPd3"]}, "height": <optional Å>,
-    "rotate": <optional degrees about z>}``.
+    "rotate": <optional angle with unit, e.g. "30deg"/"0.5 rad", about z>}``.
 
     The group's **binding atom** lands exactly where :func:`_op_add_atom_site`
     would put a lone atom of that element (same :func:`_resolve_site`, same
@@ -356,11 +359,9 @@ def _op_add_adsorbate(scene: Scene, op: dict[str, Any]) -> None:
 
     rotate = op.get("rotate", 0.0)
     try:
-        theta = math.radians(float(rotate))
-    except (TypeError, ValueError) as exc:
-        raise OpError(
-            f"add_adsorbate 'rotate' must be a number (degrees), got {rotate!r}"
-        ) from exc
+        theta = math.radians(parse_angle_deg(rotate, arg_name="add_adsorbate rotate"))
+    except BadInput as exc:
+        raise OpError(f"{exc}; {exc.next}" if exc.next else str(exc)) from exc
     cos_t, sin_t = math.cos(theta), math.sin(theta)
 
     labels: list[str] = []

@@ -53,6 +53,7 @@ prefix ladder — nobody reads femto-degrees.
 from __future__ import annotations
 
 import math
+import re
 from typing import Final, Literal
 
 import pint
@@ -233,6 +234,9 @@ def parse_quantity(
             next=f"state a value and unit, e.g. {_HINT_UNITS[dimension][0]!r}",
         )
 
+    if dimension == "angle":
+        text = _ANGLE_CIRC_RE.sub("deg", text)
+
     ureg = _registry()
     try:
         parsed = ureg.parse_expression(text)
@@ -343,6 +347,68 @@ def format_dsl_number(x: float) -> str:
     if text.endswith(".0"):
         text = text[:-2]
     return text
+
+
+#: LaTeX-style degree spellings (``30\\circ``, ``30^\\circ``, ``30^{\\circ}``)
+#: the angle grammar accepts beside ``deg`` / ``°`` / ``degrees``; pint
+#: knows the latter, not the TeX forms, so they are rewritten to ``deg``.
+_ANGLE_CIRC_RE: Final[re.Pattern[str]] = re.compile(r"\^?\s*\{?\\circ\}?")
+
+
+def parse_angle_deg(
+    value: object,
+    *,
+    arg_name: str,
+    bare: Literal["reject", "degrees"] = "reject",
+) -> float:
+    """Angle arg at an MCP surface → degrees (``None``/``""`` → 0.0).
+
+    Accepts ``"90deg"`` / ``"90°"`` / ``"90\\circ"`` / ``"1.5 rad"`` (any
+    pint angle unit). A bare number is rejected with the two-reading hint
+    unless it is zero, or ``bare="degrees"`` declares a unit enclave whose
+    bare convention is degrees (pcb's ``rot``, stored in degrees).
+    """
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, bool):
+        raise BadInput(f"{arg_name} cannot be a boolean: {value!r}")
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise BadInput(f"{arg_name} must be finite, got {value!r}")
+        if bare == "degrees" or value == 0:
+            return float(value)
+    elif isinstance(value, str) and bare == "degrees":
+        try:
+            bare_val = float(value)  # a numeral string is the same bare number
+            if not math.isfinite(bare_val):
+                raise BadInput(f"{arg_name} must be finite, got {value!r}")
+            return bare_val
+        except ValueError:
+            pass
+    if not isinstance(value, (int, float, str)):
+        raise BadInput(f"{arg_name} must be a number or angle string, got {value!r}")
+    return math.degrees(parse_quantity(value, "angle", arg_name=arg_name))
+
+
+def format_angle_both(radians: float) -> str:
+    """Both forms of an angle for display when the caller named no single
+    unit (the respond-in-kind fallback): ``"90° (1.5708 rad)"``."""
+    if not math.isfinite(radians):
+        raise BadInput(f"cannot format a non-finite angle: {radians!r}")
+    return f"{format_quantity(radians, 'angle')} ({radians:.5g} rad)"
+
+
+def format_angle_in_kind(radians: float, unit: str | None) -> str:
+    """Respond-in-kind angle display: echo the unit the caller used
+    (``rad`` → ``1.5708 rad``; ``deg`` → ``90°``). ``unit=None`` (no
+    single unit, or mixed) falls back to :func:`format_angle_both`."""
+    if unit == "rad":
+        if not math.isfinite(radians):
+            raise BadInput(f"cannot format a non-finite angle: {radians!r}")
+        return f"{radians:.5g} rad"
+    if unit == "deg":
+        return format_quantity(radians, "angle")
+    return format_angle_both(radians)
 
 
 def format_quantity(value: float, dimension: Dimension) -> str:
