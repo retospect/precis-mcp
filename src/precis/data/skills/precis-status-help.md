@@ -26,7 +26,9 @@ executes and where it came from — `image_sha`, git branch, dirty flag,
 last release tag, `source_path`, `source_drift`, build time + `build_age`,
 host/user, then one `⚠ WARN` line per staleness finding),
 **Runtime** (container hostname, python, pid, cwd, uptime, and
-`md_vector_warmup` when the `md` kind is registered, which reads
+`tool_calls_1h` + `tool_latency_1h <verb>/<kind>` (p50/p95 of the slowest
+verb/kind pairs over the last hour, this process only; the same data is one
+`precis.calllat` log line per call), `md_vector_warmup` when the `md` kind is registered, which reads
 `warming: batch i/N (k new)` while the pass runs, then one of
 `warm (k new)`, `warm with gaps (k new, m batch(es) skipped)`, or
 `COLD`. ⚠ `COLD` means a NON-retryable error — a dim mismatch or a bad

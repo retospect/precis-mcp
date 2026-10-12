@@ -87,7 +87,7 @@ import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel.server import request_ctx
 
-from precis import inflight
+from precis import calllat, inflight
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.secrets import mounted_secret
 from precis.tools import TOOL_REGISTRY
@@ -303,16 +303,45 @@ def _offload_sync(
             # protect, so it must not hold a bounce open.
             inflight.leave(ticket)
 
+    verb = getattr(fn, "__name__", "?")
+
+    async def timed(kwargs: dict[str, Any], t0: float, waited_ms: float) -> Any:
+        # gr479849: duration is what the caller waited (queue + run). Names,
+        # outcome and result size only — never argument text.
+        outcome, size = "ok", None
+        try:
+            result = await run(kwargs)
+        except BaseException:
+            outcome = "exception"
+            raise
+        else:
+            if isinstance(result, str):
+                size = len(result)
+                if result.startswith("[error"):
+                    outcome = "error"
+            return result
+        finally:
+            calllat.record(
+                verb,
+                kwargs.get("kind"),
+                kwargs.get("view") or kwargs.get("mode"),
+                outcome=outcome,
+                duration_ms=(time.monotonic() - t0) * 1000,
+                wait_ms=waited_ms,
+                size=size,
+            )
+
     @functools.wraps(fn)
     async def wrapper(**kwargs: Any) -> Any:
+        t0 = time.monotonic()
         if semaphore is not None:
             async with semaphore:
-                return await run(kwargs)
+                return await timed(kwargs, t0, (time.monotonic() - t0) * 1000)
         fair = _get_tool_semaphore()
         session = _calling_session()
         await fair.acquire(session)
         try:
-            return await run(kwargs)
+            return await timed(kwargs, t0, (time.monotonic() - t0) * 1000)
         finally:
             fair.release(session)
 

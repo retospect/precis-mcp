@@ -2852,6 +2852,12 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
             rows.append(("python_vector_warmup", py_warmup))
     except Exception:  # pragma: no cover — a status row must not raise
         pass
+    try:
+        from precis import calllat
+
+        rows.extend(calllat.status_rows())
+    except Exception:  # pragma: no cover — a status row must not raise
+        pass
     return rows
 
 
