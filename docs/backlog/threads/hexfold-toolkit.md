@@ -616,13 +616,7 @@ removed as met — the transport move it waited on happened 09-29)
      bond-angle deviation, plus POAV θp, with mean, p95 and max. Second,
      the se 3D viewer colours each atom by its strain, as a toggle next
      to the tier badge.
-5. **backlog/se-join-observability.md, slice 3** — the write-free join
-   dry-run, proven through the reading surfaces. Slices 1 and 2 shipped
-   (`view='report'` 2026-09-30, `view='catalogue'` 2026-10-09 with the
-   per-join-side consulted rows); slice 3 went last by the file's own
-   decision: a dry-run needs a reading surface to prove it wrote nothing
-   with.
-6. **Design retire cascade, remaining half** — Reto ruled 2026-10-01 (recorded on the
+5. **Design retire cascade, remaining half** — Reto ruled 2026-10-01 (recorded on the
    gripe): a design retire **cascades** to the structures its blocks
    minted, except structures promoted to building-block status, and
    (no ruling needed) except any structure another live design still
@@ -630,7 +624,7 @@ removed as met — the transport move it waited on happened 09-29)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+6. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for

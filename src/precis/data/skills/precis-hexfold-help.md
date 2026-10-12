@@ -210,6 +210,16 @@ the two ports' `lattice` tag *pair* (a sorted 2-tuple, `join.lattice` if
 either is absent or the pair has no registered joiner — today only
 `("sp2-hex", "sp2-hex")`, two hexfold rims, is wired).
 
+**Probe without minting:** add `"dry_run": true` to the join and send it
+alone in an `edit` call. It resolves, composes and reports exactly as the
+real join would, then writes nothing — no composite, no structure, no
+revision, the design byte-identical. The reply carries the build-report
+table and the per-side catalogue resolution in the same form
+`get(view='report')` / `get(view='catalogue')` show for the minted block,
+so a green dry run predicts what those views will say. Errors
+(`join.lattice`, `seam.mismatch`, an ERROR finding) raise as for a real
+join.
+
 ## What a join mints (spec §22.2)
 
 The composite is a new atomic block, envelope a bounding cylinder in

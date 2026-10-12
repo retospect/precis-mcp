@@ -200,6 +200,11 @@ def apply_ops_with_atomic(
                 pending_generates.append(pending)
             continue
         if name == "join":
+            if op.get("dry_run"):
+                raise BadInput(
+                    "join dry_run writes nothing, so it runs alone in its own "
+                    "edit(kind='se') call — not mixed with other ops or in a put"
+                )
             echo, join_pending = prepare_join(
                 store, tree, op, design_slug, pending_joins=pending_joins
             )

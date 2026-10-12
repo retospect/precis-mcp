@@ -250,6 +250,21 @@ def for_store(
     return cat
 
 
+def readonly_for_store(store: Any) -> hx_catalogue.MemoryStore:
+    """What :func:`for_store` would hand ``compose``, without the seeding
+    write: the DB's preferred rows (``measured`` withheld, as
+    :meth:`DbCatalogueStore.rows` does) first, then the pinned wildcards
+    first-wins — exactly the state ``seed()`` leaves behind. A join dry
+    run uses this so it resolves identically to the real join and still
+    writes nothing, even on a database nobody has seeded yet."""
+    mem = hx_catalogue.MemoryStore()
+    for row in DbCatalogueStore(store).rows():
+        mem.put(row)
+    for row in hx_catalogue.seed_rows():
+        mem.put(row)
+    return mem
+
+
 def warm_edge(
     store: Any,
     nm: tuple[int, int],

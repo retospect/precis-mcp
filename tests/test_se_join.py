@@ -10,8 +10,6 @@ prepare/finish pair for ``join``.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from hexfold.join import SEAM_RADIUS
@@ -20,7 +18,7 @@ from precis.store import Store
 from precis_se.atomic.apply import apply_ops_with_atomic
 from precis_se.atomic.generate import finish_generate, prepare_generate
 from precis_se.atomic.join import finish_join, prepare_join
-from precis_se.handler import _render_block
+from precis_se.handler import _render_block, _render_report
 from precis_se.ops import SeTree, apply_ops
 
 #: zigzag N=8 tube -- the same shape `tests/hexfold/test_join.py`'s
@@ -59,19 +57,11 @@ def _join(
     return echo, tree
 
 
-def _findings(store: Store, tree: SeTree, block: str) -> list[dict[str, Any]]:
-    """The stored `generated['report']['findings']` of a minted composite
-    -- the only place a join's own findings survive (the echo carries
-    counts, not codes)."""
-    bound = tree.blocks[block].bound
-    assert bound is not None
-    ref = store.get_ref(kind="structure", id=bound)
-    assert ref is not None
-    return list((ref.meta or {})["generated"]["report"]["findings"])
-
-
-def _codes(store: Store, tree: SeTree, block: str) -> set[str]:
-    return {str(f["code"]) for f in _findings(store, tree, block)}
+def _report(store: Store, tree: SeTree, block: str) -> str:
+    """A minted composite's stored findings, read through the same
+    `view='report'` renderer an agent uses -- the only place a join's own
+    findings survive (the echo carries counts, not codes)."""
+    return _render_report(store, tree, {"block": block})
 
 
 def test_join_mints_composite_with_ports_bond_and_record(store: Store) -> None:
@@ -670,7 +660,7 @@ def test_join_block_parented_under_an_ordinary_block_stays_joinable(
     # a's authored parent is not lost: the composite takes its place
     # under `frame`, which is why the a-side gets no `join.reparented`.
     assert tree.blocks["from_ordinary"].parent == "frame"
-    assert "join.reparented" not in _codes(store, tree, "from_ordinary")
+    assert "join.reparented" not in _report(store, tree, "from_ordinary")
 
 
 def test_join_reports_reparented_info_for_an_ordinary_parent_on_b(
@@ -714,12 +704,14 @@ def test_join_reports_reparented_info_for_an_ordinary_parent_on_b(
     # on `tail` is simply gone, which is exactly what the INFO reports.
     assert tree.blocks["rehomed"].parent is None
 
-    findings = _findings(store, tree, "rehomed")
-    reparented = [f for f in findings if f["code"] == "join.reparented"]
-    assert len(reparented) == 1
-    assert reparented[0]["severity"] == "INFO"
-    assert dict(reparented[0]["data"])["old_parent"] == "frame"
-    assert dict(reparented[0]["data"])["block"] == "tail"
+    rows = [
+        line
+        for line in _report(store, tree, "rehomed").splitlines()
+        if "join.reparented" in line
+    ]
+    assert len(rows) == 1
+    assert "INFO" in rows[0]
+    assert "tail" in rows[0] and "'frame'" in rows[0]
 
 
 def test_join_reports_no_reparented_info_when_b_had_no_parent(
@@ -735,4 +727,4 @@ def test_join_reports_no_reparented_info_when_b_had_no_parent(
     _echo, tree = _join(
         store, tree, design_slug, name="plain", a="head.out", b="tail.in"
     )
-    assert "join.reparented" not in _codes(store, tree, "plain")
+    assert "join.reparented" not in _report(store, tree, "plain")

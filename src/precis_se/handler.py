@@ -856,6 +856,8 @@ class SeHandler(Handler):
             isinstance(o, dict) and o.get("op") == "restore_revision" for o in op_list
         ):
             return self._restore_revision(ref, op_list, turn=turn)
+        if any(isinstance(o, dict) and o.get("dry_run") for o in op_list):
+            return self._join_dry_run(ref, op_list)
         pending_jobs: list[PendingJob] = []
         # load -> apply -> save under the design's per-ref lock
         # (persist.tree_mutation's invariant): the retire-all/reinsert-all
@@ -891,6 +893,48 @@ class SeHandler(Handler):
             body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
         body += "\n\n" + self._reply_digest(tree, ref.id)
         return Response(body=body)
+
+    def _join_dry_run(self, ref: Any, op_list: list[dict[str, Any]]) -> Response:
+        """``{"op": "join", ..., "dry_run": true}`` — resolve, compose and
+        report a join, write nothing: no lock, no ``save_tree``, no
+        revision row, no structure mint, no catalogue seeding. The sections
+        are the very renderers ``view='report'`` and ``view='catalogue'``
+        use, fed the record a real join would have stored."""
+        op = op_list[0]
+        if len(op_list) != 1 or op.get("op") != "join":
+            raise BadInput(
+                "dry_run is a flag on a single join op, alone in its edit call "
+                "(it writes nothing, so it cannot ride with ops that do)",
+                next="edit(kind='se', id="
+                f"{str(ref.slug)!r}, ops=[{{'op':'join','name':'x',"
+                "'a':'p.out','b':'q.in','dry_run':True}])",
+            )
+        from precis_se.atomic.catalogue import DbCatalogueStore
+        from precis_se.atomic.join import prepare_join
+
+        tree = persist.load_tree(self.store, ref.id)
+        tree.own_slug = str(ref.slug)
+        tree.foreign = self._foreign_resolver()
+        echo, pending = prepare_join(self.store, tree, op, str(ref.slug))
+        assert pending is not None  # a join always yields a record
+        rec = pending.generated
+        withheld = _withheld_edge_store(DbCatalogueStore(self.store).measured("edge"))
+        lines = [
+            f"# se design '{ref.slug}' join dry run — nothing written",
+            echo,
+            "",
+            "# Build report (as view='report' would show it once minted)",
+            f"## block '{pending.block_name}'",
+            f"structure: {pending.struct_slug}",
+            f"generator: {rec.get('generator', '?')}",
+            *_stored_report_lines(rec),
+            "",
+            "# Catalogue resolution (as view='catalogue' would show it)",
+            *_catalogue_join_lines(
+                pending.block_name, pending.struct_slug, rec, withheld
+            ),
+        ]
+        return Response(body="\n".join(lines))
 
     def _restore_revision(
         self, ref: Any, op_list: list[dict[str, Any]], *, turn: str | None
@@ -2927,13 +2971,120 @@ def _render_report(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str
     return "\n".join(lines)
 
 
+def _fmt_leak_thresh(th: Any) -> str:
+    if isinstance(th, list | tuple) and len(th) == 2:
+        return f"{th[0]:g} Å / {th[1]:g}°"
+    return "?"
+
+
+def _withheld_edge_store(withheld: list[Any]) -> Any:
+    """The measured-row gate's withheld edge rows as a lookup store."""
+    from hexfold.catalogue import MemoryStore
+
+    mem = MemoryStore()
+    for r in withheld:
+        mem.put(r)
+    return mem
+
+
+def _catalogue_join_lines(
+    name: str,
+    struct: str,
+    rec: dict[str, Any],
+    withheld_store: Any,
+) -> list[str]:
+    """One join block's resolution section, from its (stored or dry-run)
+    ``generated`` record — shared by ``view='catalogue'`` and the join dry
+    run so the two cannot drift."""
+    from hexfold.catalogue import resolve_edge
+
+    lines: list[str] = []
+    seam: dict[str, Any] = rec["seam"] if isinstance(rec.get("seam"), dict) else {}
+    parts: list[Any] = rec["parts"] if isinstance(rec.get("parts"), list) else []
+    lines.extend(
+        [
+            "",
+            f"## block '{name}' (join, rung={seam.get('rung', rec.get('relaxer', '?'))})",
+            f"structure: {struct}",
+        ]
+    )
+    types: dict[str, Any] = seam["types"] if isinstance(seam.get("types"), dict) else {}
+    radii: dict[str, Any] = (
+        seam["radius"] if isinstance(seam.get("radius"), dict) else {}
+    )
+    radius_src: dict[str, Any] = (
+        seam["radius_source"] if isinstance(seam.get("radius_source"), dict) else {}
+    )
+    cat_rec: dict[str, Any] = (
+        seam["catalogue"] if isinstance(seam.get("catalogue"), dict) else {}
+    )
+    for i, side in enumerate(("a", "b")):
+        part: dict[str, Any] = (
+            parts[i] if i < len(parts) and isinstance(parts[i], dict) else {}
+        )
+        rim = types.get(side)
+        rim_txt = (
+            f"rim {rim[0]}{rim[1]}"
+            if isinstance(rim, list) and len(rim) == 2
+            else "mixed rim"
+        )
+        lines.append(
+            f"- {side}: {part.get('block', '?')}.{part.get('port', '?')}  {rim_txt}"
+        )
+        side_rec = cat_rec.get(side)
+        if not isinstance(side_rec, dict):
+            lines.append(
+                f"    resolution label not recorded (pre-2026-10-09 join); "
+                f"radius in force {radii.get(side, '?')} "
+                f"({radius_src.get(side, '?')})"
+            )
+            continue
+        row = side_rec.get("row")
+        if not side_rec.get("consulted"):
+            lines.append("    catalogue not consulted (mixed rim or no catalogue)")
+        elif isinstance(row, dict):
+            lines.append(
+                f"    consulted: {side_rec.get('label')} — key "
+                f"{str(row.get('key_hash', ''))[:12]} source={row.get('source')} "
+                f"radius {row.get('seam_radius')} leak "
+                f"{_fmt_leak_thresh(row.get('leak_thresh'))}"
+            )
+        else:
+            lines.append(f"    consulted: {side_rec.get('label')} — no row matched")
+        lines.append(
+            f"    in force: radius {radii.get(side, '?')} "
+            f"({side_rec.get('radius_source')}); leak "
+            f"{_fmt_leak_thresh(side_rec.get('thresh'))} "
+            f"({side_rec.get('thresh_source')})"
+        )
+        if side_rec.get("consulted") and isinstance(rim, list) and len(rim) == 2:
+            sigma_txt = side_rec.get("sigma")
+            w_row, w_label = resolve_edge(
+                withheld_store,
+                str(rim[0]),
+                int(rim[1]),
+                str(seam.get("rung", "stick")),
+                None,
+                sigma=float(sigma_txt) if sigma_txt else None,
+            )
+            if w_row is None:
+                lines.append("    withheld: none for this environment")
+            else:
+                lines.append(
+                    f"    withheld: {w_label} — key {w_row.key.hash()[:12]} "
+                    f"radius {w_row.seam_radius} leak "
+                    f"{_fmt_leak_thresh(w_row.leak_thresh)} (measured-row gate)"
+                )
+    return lines
+
+
 def _render_catalogue(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
     """Catalogue rows the design's joins can see, then each join side's
     recorded resolution — the label ``compose`` carried on the seam
     record, never re-derived. The only lookup done here is which withheld
     (measured) row the gate kept from that side, so the common case
     "the pinned constant governed" is visible next to what it displaced."""
-    from hexfold.catalogue import EdgeMotif, MemoryStore, resolve_edge
+    from hexfold.catalogue import EdgeMotif
     from precis_se.atomic.catalogue import UNTRUSTED_SOURCE, DbCatalogueStore
 
     selector = (args or {}).get("block")
@@ -2953,14 +3104,7 @@ def _render_catalogue(store: Any, tree: SeTree, args: dict[str, Any] | None) -> 
     cat = DbCatalogueStore(store)
     preferred = [r for r in cat.rows("edge") if isinstance(r, EdgeMotif)]
     withheld = [r for r in cat.measured("edge") if isinstance(r, EdgeMotif)]
-    withheld_store = MemoryStore()
-    for r in withheld:
-        withheld_store.put(r)
-
-    def _fmt_thresh(th: Any) -> str:
-        if isinstance(th, list | tuple) and len(th) == 2:
-            return f"{th[0]:g} Å / {th[1]:g}°"
-        return "?"
+    withheld_store = _withheld_edge_store(withheld)
 
     def _row_cells(r: EdgeMotif, status: str) -> dict[str, str]:
         return {
@@ -2970,7 +3114,7 @@ def _render_catalogue(store: Any, tree: SeTree, args: dict[str, Any] | None) -> 
             "rung": r.key.rung,
             "sigma": r.key.sigma,
             "radius": str(r.seam_radius),
-            "leak": _fmt_thresh(r.leak_thresh),
+            "leak": _fmt_leak_thresh(r.leak_thresh),
             "source": r.source,
             "key": r.key.hash()[:12],
         }
@@ -3025,84 +3169,9 @@ def _render_catalogue(store: Any, tree: SeTree, args: dict[str, Any] | None) -> 
                 )
             continue
         joins += 1
-        seam: dict[str, Any] = rec["seam"] if isinstance(rec.get("seam"), dict) else {}
-        parts: list[Any] = rec["parts"] if isinstance(rec.get("parts"), list) else []
         lines.extend(
-            [
-                "",
-                f"## block '{node.name}' (join, rung={seam.get('rung', rec.get('relaxer', '?'))})",
-                f"structure: {node.bound}",
-            ]
+            _catalogue_join_lines(node.name, str(node.bound), rec, withheld_store)
         )
-        types: dict[str, Any] = (
-            seam["types"] if isinstance(seam.get("types"), dict) else {}
-        )
-        radii: dict[str, Any] = (
-            seam["radius"] if isinstance(seam.get("radius"), dict) else {}
-        )
-        radius_src: dict[str, Any] = (
-            seam["radius_source"] if isinstance(seam.get("radius_source"), dict) else {}
-        )
-        cat_rec: dict[str, Any] = (
-            seam["catalogue"] if isinstance(seam.get("catalogue"), dict) else {}
-        )
-        for i, side in enumerate(("a", "b")):
-            part: dict[str, Any] = (
-                parts[i] if i < len(parts) and isinstance(parts[i], dict) else {}
-            )
-            rim = types.get(side)
-            rim_txt = (
-                f"rim {rim[0]}{rim[1]}"
-                if isinstance(rim, list) and len(rim) == 2
-                else "mixed rim"
-            )
-            lines.append(
-                f"- {side}: {part.get('block', '?')}.{part.get('port', '?')}  {rim_txt}"
-            )
-            side_rec = cat_rec.get(side)
-            if not isinstance(side_rec, dict):
-                lines.append(
-                    f"    resolution label not recorded (pre-2026-10-09 join); "
-                    f"radius in force {radii.get(side, '?')} "
-                    f"({radius_src.get(side, '?')})"
-                )
-                continue
-            row = side_rec.get("row")
-            if not side_rec.get("consulted"):
-                lines.append("    catalogue not consulted (mixed rim or no catalogue)")
-            elif isinstance(row, dict):
-                lines.append(
-                    f"    consulted: {side_rec.get('label')} — key "
-                    f"{str(row.get('key_hash', ''))[:12]} source={row.get('source')} "
-                    f"radius {row.get('seam_radius')} leak "
-                    f"{_fmt_thresh(row.get('leak_thresh'))}"
-                )
-            else:
-                lines.append(f"    consulted: {side_rec.get('label')} — no row matched")
-            lines.append(
-                f"    in force: radius {radii.get(side, '?')} "
-                f"({side_rec.get('radius_source')}); leak "
-                f"{_fmt_thresh(side_rec.get('thresh'))} "
-                f"({side_rec.get('thresh_source')})"
-            )
-            if side_rec.get("consulted") and isinstance(rim, list) and len(rim) == 2:
-                sigma_txt = side_rec.get("sigma")
-                w_row, w_label = resolve_edge(
-                    withheld_store,
-                    str(rim[0]),
-                    int(rim[1]),
-                    str(seam.get("rung", "stick")),
-                    None,
-                    sigma=float(sigma_txt) if sigma_txt else None,
-                )
-                if w_row is None:
-                    lines.append("    withheld: none for this environment")
-                else:
-                    lines.append(
-                        f"    withheld: {w_label} — key {w_row.key.hash()[:12]} "
-                        f"radius {w_row.seam_radius} leak "
-                        f"{_fmt_thresh(w_row.leak_thresh)} (measured-row gate)"
-                    )
     if joins == 0 and selector is None:
         lines.extend(["", "No join blocks in this design."])
     return "\n".join(lines)

@@ -66,6 +66,8 @@ anything is trusted.
 
 from __future__ import annotations
 
+import copy
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -84,7 +86,7 @@ from precis.structure import Atom as StructAtom
 from precis.structure import Bond as StructBond
 from precis.structure import Scene as StructScene
 from precis.structure.georelax import relax_graph
-from precis_se.atomic.catalogue import for_store
+from precis_se.atomic.catalogue import for_store, readonly_for_store
 from precis_se.atomic.generate import generated_cell, ingest_envelope
 from precis_se.atomic.generators._types import fmt_length_A
 from precis_se.atomic.generators.hexfold_spec import _se_port_name
@@ -240,6 +242,23 @@ class PendingJoin:
     provenance: str
     ports_map: dict[str, str]
     generated: dict[str, Any]
+    #: ``{"dry_run": true}`` — the record is the whole product: the caller
+    #: renders it, :func:`finish_join` refuses to write it.
+    dry_run: bool = False
+
+
+def _scratch_tree(tree: SeTree) -> SeTree:
+    """A deep copy a dry run may mutate freely. ``foreign`` is a bound
+    method of the handler (store, pool), which must be shared, never
+    copied, so it is lifted out around the copy."""
+    foreign = tree.foreign
+    tree.foreign = None
+    try:
+        scratch = copy.deepcopy(tree)
+    finally:
+        tree.foreign = foreign
+    scratch.foreign = foreign
+    return scratch
 
 
 def _resolve_join_endpoint(
@@ -663,7 +682,8 @@ def _hexfold_join(
     # load-bearing only when a row is trusted to differ.
     # `rung` must go with it: the catalogue is keyed by rung, so a geo
     # join looking up stick rows would read the wrong decay length.
-    catalogue = for_store(store)
+    dry_run = op.get("dry_run") is True
+    catalogue = readonly_for_store(store) if dry_run else for_store(store)
 
     composite = compose(
         blk_a,
@@ -928,11 +948,24 @@ def _hexfold_join(
         f"--{motif} k={k}--> {b_block}.{b_port_name}. "
         f"{len(composite.elements)} atoms, {len(composite.bonds)} bonds."
     )
-    echo = (
-        f"joined block {block_name!r} ({motif}, k={k}): "
-        f"{len(composite.elements)} atom(s), {len(composite.bonds)} bond(s), "
-        f"{len(port_ops)} port(s), bound to structure {struct_slug!r}"
-    )
+    if dry_run:
+        # The record is what finish_join would store, through the same
+        # JSON round trip the store applies (int keys -> str, tuples ->
+        # lists), so the views render a dry run exactly as they render the
+        # minted block.
+        generated_record = json.loads(json.dumps(generated_record))
+        echo = (
+            f"join dry run for block {block_name!r} ({motif}, k={k}): "
+            f"{len(composite.elements)} atom(s), {len(composite.bonds)} "
+            f"bond(s), {len(port_ops)} port(s) — nothing minted, design "
+            "unchanged"
+        )
+    else:
+        echo = (
+            f"joined block {block_name!r} ({motif}, k={k}): "
+            f"{len(composite.elements)} atom(s), {len(composite.bonds)} bond(s), "
+            f"{len(port_ops)} port(s), bound to structure {struct_slug!r}"
+        )
     pending = PendingJoin(
         block_name=block_name,
         struct_slug=struct_slug,
@@ -942,6 +975,7 @@ def _hexfold_join(
         provenance=card_text,
         ports_map=ports_map,
         generated=generated_record,
+        dry_run=dry_run,
     )
     return echo, pending
 
@@ -999,6 +1033,13 @@ def prepare_join(
     would be silently reparented out from under it before its record ever
     reached the store."""
     pending_records = {pj.block_name: pj.generated for pj in (pending_joins or [])}
+    dry_run = op.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise BadInput(f"join: 'dry_run' must be true or false, got {dry_run!r}")
+    if dry_run:
+        # Everything below mutates the tree it is handed (add_block, poses,
+        # re-parenting); a dry run does that to a throwaway copy.
+        tree = _scratch_tree(tree)
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise BadInput("join needs 'a' and 'b' (each 'block.port')")
@@ -1073,7 +1114,10 @@ def finish_join(store: Store, tree: SeTree, pending: PendingJoin) -> None:
     """The store-touching half — :func:`~precis_se.atomic.generate.
     finish_generate`'s shape exactly (its docstring's residual applies
     unchanged here). Skips entirely if a later op in the same list already
-    removed the just-minted composite block."""
+    removed the just-minted composite block. A dry-run pending writes
+    nothing."""
+    if pending.dry_run:
+        return
     node = tree.blocks.get(pending.block_name)
     if node is None:
         return
