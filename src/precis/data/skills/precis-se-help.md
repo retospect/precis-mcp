@@ -75,12 +75,10 @@ FRET links between blocks — see `precis-se-fret-help`.
 
 ## put vs edit — put is a full REPLACE
 
-`put(kind='se', id=…, text=<json>)` **replaces the whole design**. The
-payload's only top-level keys are `description`, `ops` and `scenario`
-(anything else is rejected — an unrecognised shape used to silently empty
-the design). A put whose op list is empty is refused while the design
-has blocks — the ops go in `text=` or in `ops=` (both reach the handler);
-to start over, `delete` the design first. `delete` also retires the
+`put(kind='se', id=…, text=<json>)` **replaces the whole design**. Its
+only top-level keys are `description`, `ops` and `scenario` (anything else
+is rejected). An empty op list is refused while the design has blocks —
+ops go in `text=` or `ops=`; to start over, `delete` the design first. `delete` also retires the
 `structure` refs the design's blocks were bound to, except ones another
 live design still binds (named in the reply as "stay live") and promoted
 building blocks. Incremental changes go through
@@ -114,16 +112,12 @@ coincident atoms are never intended chemistry — re-pose a block
 each other and trip it.
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
-is unique within a design and is the usual way to say which block you
-mean. A block also carries a stable **uid** — shown as `(uid #41)` in
-`view='block'` — that survives edits and re-`put`s and is what every
-stored cross-reference actually points at. **Anywhere an op or a view
-takes an existing block**, `'#41'`/`'uid:41'` addresses it by uid
-instead — including the block half of a `'block.port'` endpoint
-(`connect a='#41.bore'`). Use it when a label is ambiguous; the error
-then lists every matching uid. What gets *stored* is the block's label
-either way, so a design written by uid reads back the same as one
-written by name. (A block name may not be `'uid:…'` or contain `'#'`, `'/'`, `'@'`, `'['` or `']'` —
+is unique within a design. A block also carries a stable **uid** — `(uid
+#41)` in `view='block'` — that survives edits and re-`put`s. **Anywhere an
+op or a view takes an existing block**, `'#41'`/`'uid:41'` addresses it by
+uid, including the block half of `'block.port'` (`connect a='#41.bore'`);
+an ambiguous label's error lists every matching uid. The label is what
+gets stored either way. (A block name may not be `'uid:…'` or contain `'#'`, `'/'`, `'@'`, `'['` or `']'` —
 the last four delimit region selectors, `precis-se-regions-help`.)
 
 ## Ops — blocks and ports
@@ -490,27 +484,21 @@ Maxwell/Calladine m−s on the axial subgraph:
 ## Checking views — drc, fasten, clearance
 
 `view='drc'`: capacity vs declared load ("X N compression against a Y N
-buckling/crush ceiling"), mechanism-implied BOM demands,
-undeclared interpenetration, dof_disagreement, unconnected ports, and
-**connect geometric plausibility** (gr337040/gr338426):
-`connect_envelope_disjoint` (a connect whose envelopes never touch),
-`mechanism_no_interference` (`press`/`snap` with zero overlap),
-`captive_not_contained` (`captive` class, no overlap),
-`screw_axis_no_overlap` (the `screw` *class*; the *mechanism* is
-`view='fasten'`'s job — nothing overlaps along its axis), and
-`axis_not_coaxial`/`axis_not_radially_contained` (`bearing` or
-`revolute`/`cylindrical` whose circular envelopes' axes aren't lined up or
-nested). All warn tier; a bearing/press fit's declared interference is
-expected and stays clean. **Joining precedent** (a `bonded`-state
-transition's `driver_ref` names the reaction, blocktree slice 5): a
-connect whose ports declare a known joining (`CuAAC`, ...) but no
-`reaction` transition names an rxn is `joining_unnamed` (info); a named
-rxn with no `reaction_class` is `joining_class_unknown` (warn); a
-`reaction_class` with zero recorded yield rows is `joining_unprecedented`
-(warn); one or more yield rows is `joining_precedent` (info, with the
-row/rxn counts) — `search(kind='rxn', property='yield',
-reaction_class=...)` is the underlying read. The header's error/warning
-counts ignore `info` rows.
+buckling/crush ceiling"), mechanism-implied BOM demands, undeclared
+interpenetration, dof_disagreement, unconnected ports, and **connect
+plausibility** (all warn): `connect_envelope_disjoint` (envelopes never
+touch), `mechanism_no_interference` (`press`/`snap`, zero overlap),
+`captive_not_contained`, `screw_axis_no_overlap` (the `screw` *class*; the
+mechanism is `view='fasten'`'s), `axis_not_coaxial`/
+`axis_not_radially_contained` (`bearing`/`revolute`/`cylindrical` axes not
+lined up or nested). A declared bearing/press interference stays clean.
+**Joining precedent** (a `bonded` transition's `driver_ref` names the
+reaction): a known joining (`CuAAC`, ...) with no `reaction` transition is
+`joining_unnamed` (info); a named rxn without `reaction_class` is
+`joining_class_unknown` (warn); a class with no yield rows is
+`joining_unprecedented` (warn), with rows `joining_precedent` (info) — the
+read is `search(kind='rxn', property='yield', reaction_class=...)`. The
+header's counts ignore `info` rows.
 `view='fasten'` refuses a stack-up with no screw-form component bound. It
 also decides **nothing** about what a printed member's far end threads into
 — `params.thread_strategy` (`nut | nut-trap | insert | thread-forming |
@@ -527,20 +515,15 @@ block pair named by the design's CONNECTS, worst gap first, capped at 64
 pairs; a block missing an effective envelope is skipped with a note
 rather than failing the whole survey.
 
-**Finding ids and deltas.** `view='validate'`, `view='drc'` and the
-`view='clearance'` digest carry an `id` column (12 hex chars), derived like
-the `pcb` DRC ids (`precis-pcb-help`, "finding ids"; one shared hash over
-`(rule, sorted participants)`): the `subject` split on `—` and sorted, so
-`a—b` and `b—a` key the same — never the detail text, a depth/gap or the row
-position. Two checks on an unchanged tree give identical ids; a deeper
-interference between the same two blocks keeps its id. `se` stores nothing,
-so the delta is caller-supplied: pass the earlier report's ids as
-`args={'previous': ['<id>', …]}` (or one comma-separated string) and the
-head reads `vs previous: N new, M still, K gone`, the table gains a `delta`
-column (`new` / `still`) and a `## gone since previous` list names the ids
-that vanished. A malformed id is refused rather than read as "all new".
-Several findings sharing one rule and subject share an id; the diff counts
-them as a multiset.
+**Finding ids and deltas.** `view='validate'`, `'drc'` and the
+`'clearance'` digest carry a 12-hex `id` per row: the `pcb` DRC hash over
+`(rule, sorted participants)` (`precis-pcb-help`), so `a—b` and `b—a` match
+and detail, depth or row order never change it. `se` stores nothing: pass
+an earlier report's ids as `args={'previous': [...]}` (list or comma
+string) and the head reads `vs previous: N new, M still, K gone`, rows gain
+a `delta` column (`new`/`still`) and `## gone since previous` lists the
+vanished ids. A malformed id is refused. Rows sharing rule and subject
+share an id (diffed as a multiset).
 
 `view='sweep'` — every declared state at once: `precis-se-states-help`.
 

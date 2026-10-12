@@ -73,6 +73,12 @@ def _put(handler: SeHandler, slug: str, ops: list[dict[str, Any]]) -> None:
     handler.put(id=slug, text=json.dumps({"ops": ops}))
 
 
+def _rule(row: str) -> str:
+    """The rule cell of a finding row, wherever the row shape puts it
+    (33d6058fe added a leading id column)."""
+    return next(c for c in row.split("\t") if c.startswith("joint_sweep"))
+
+
 def _sweep_lines(body: str) -> list[str]:
     return [ln for ln in body.splitlines() if "joint_sweep" in ln]
 
@@ -99,7 +105,7 @@ def test_range_through_ninety_degrees_flags_arm_against_post(
 def test_range_short_of_the_post_draws_no_sweep_finding(handler: SeHandler) -> None:
     _put(handler, "rotor_short", _rotor_ops({"range": [0.0, math.pi / 4.0]}))
     body = handler.get(id="rotor_short", view="drc").body
-    assert [ln.split("\t")[1] for ln in _sweep_lines(body)] == ["joint_sweep_clean"]
+    assert [_rule(ln) for ln in _sweep_lines(body)] == ["joint_sweep_clean"]
 
 
 # ── criterion 3: discrete states 0 and π pass view='sweep' — the gap ──────
@@ -134,7 +140,7 @@ def test_discrete_states_at_zero_and_pi_pass_sweep_without_a_range(
     assert "2/2 combination(s) checked" in sweep
     assert "no interference in any checked state" in sweep
     body = handler.get(id="rotor_states", view="drc").body
-    assert [ln.split("\t")[1] for ln in _sweep_lines(body)] == ["joint_sweep_not_run"]
+    assert [_rule(ln) for ln in _sweep_lines(body)] == ["joint_sweep_not_run"]
 
 
 def test_state_posing_control_a_quarter_turn_state_is_caught_by_sweep(

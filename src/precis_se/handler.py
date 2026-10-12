@@ -269,6 +269,7 @@ class SeHandler(Handler):
                 "fmt",
                 "path",
                 "previous",
+                "scale",
             }
         ),
         "put": frozenset({"description", "ops", "scenario"}),
