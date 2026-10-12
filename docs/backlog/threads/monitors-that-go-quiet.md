@@ -108,7 +108,7 @@ gr346534, soft-deleted)
    its own. It must be timeout-guarded against the NFS hang in item 2.
 5. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
    gr472019 and gr476100; the router tracker binding shipped, what is left
-   is the OTS batch 7 re-stamp and the quest_tick search-dispatch bug). It ranks below 1–4 because the alerts still
+   is the OTS batch 7 re-stamp). It ranks below 1–4 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
 
 ## Horizon

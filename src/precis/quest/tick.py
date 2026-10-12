@@ -3010,7 +3010,7 @@ class _TickRun:
         planned = planned if isinstance(planned, list) else []
         if not self.compute:
             self._refuse_searches(
-                len(planned),
+                planned,
                 "compute lane is off for this quest (meta.compute_lane=off), so "
                 "lit-search is skipped on its ticks",
             )
@@ -3023,12 +3023,11 @@ class _TickRun:
         # design) — passed through RAW; `run_search_step` does its own
         # per-entry parsing/blank-filtering (a plain `str(q)` coercion here
         # would mangle a dict entry into its Python repr).
-        raw_searches = self.payload().get("searches")
-        if isinstance(raw_searches, list) and raw_searches:
+        if planned:
             sstep = run_search_step(
                 self.store,
                 self.quest_id,
-                raw_searches,
+                planned,
                 by=self.by,
                 search_fn=self.search_fn,
                 embedder=self.embedder,
@@ -3036,30 +3035,42 @@ class _TickRun:
             self.st["searches_run"] = sstep.queries_run
             self.st["papers_linked"] = sstep.papers_linked
             self._bump("added", sstep.queries_run)
-            capped = raw_searches[:MAX_QUERIES]
-            unparsed = sum(1 for r in capped if _parse_search_entry(r) is None)
+            capped = planned[:MAX_QUERIES]
             self._refuse_searches(
-                unparsed, "entry has no usable `query` (blank or malformed)"
+                [r for r in capped if _parse_search_entry(r) is None],
+                "entry has no usable `query` (blank or malformed)",
             )
             self._refuse_searches(
-                len(raw_searches) - len(capped),
+                planned[MAX_QUERIES:],
                 f"over the per-tick cap of {MAX_QUERIES} searches",
             )
         return None
 
-    def _refuse_searches(self, n: int, why: str) -> None:
-        """Record ``n`` planned searches that did not run: bump the outcome
-        counter and log an ``observation``, so the model's next tick (and the
-        tick record) sees a refusal instead of a narrated-then-dropped
-        dispatch (gripe 476100)."""
+    def _refuse_searches(self, entries: list[Any], why: str) -> None:
+        """Record planned searches that did not run: bump the outcome
+        counter, file the entries onto the quest's open unrun-searches todo,
+        and log an ``observation`` naming it — so a dropped dispatch leaves a
+        tracker with the queries, not just the model's narration (gripe
+        476100)."""
+        n = len(entries)
         if n <= 0:
             return
+        from precis.quest.search import file_unrun_searches
+
         self._bump("searches_refused", n)
+        filed = ""
+        try:
+            todo_id = file_unrun_searches(self.store, self.quest_id, entries, why)
+            filed = f"; filed on {handle_registry.try_format('todo', todo_id) or f'todo:{todo_id}'}"
+        except Exception:
+            log.warning(
+                "run_quest_tick: failed to file refused searches", exc_info=True
+            )
         try:
             append_entry(
                 self.store,
                 self.quest_id,
-                text=f"{n} planned search(es) NOT run: {why}.",
+                text=f"{n} planned search(es) NOT run: {why}{filed}.",
                 entry_type="observation",
                 by=self.by,
             )

@@ -70,7 +70,7 @@ from typing import TYPE_CHECKING, Any
 from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
 from precis.quest.tagging import quest_tag_value
-from precis.store.types import Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.env import env_float, env_int
 
 if TYPE_CHECKING:
@@ -644,17 +644,89 @@ def run_search_step(
     return SearchStep(queries_run=queries_run, papers_linked=linked_total, notes=notes)
 
 
+#: ``meta.content_key`` of the per-quest todo that collects planned searches
+#: a tick could not run (:func:`file_unrun_searches`).
+UNRUN_SEARCHES_KEY = "quest-unrun-searches"
+
+
+def _open_unrun_searches_todo(store: Store, quest_id: int) -> int | None:
+    """The live, not-closed unrun-searches todo under ``quest_id``, or None."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r WHERE r.kind = 'todo' "
+            "AND r.parent_id = %s AND r.retired_at IS NULL "
+            "AND r.meta->>'content_key' = %s AND NOT EXISTS ("
+            " SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
+            " WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'"
+            " AND t.value IN ('done', 'won''t-do', 'auto-timeout')) "
+            "ORDER BY r.ref_id DESC LIMIT 1",
+            (quest_id, UNRUN_SEARCHES_KEY),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def file_unrun_searches(
+    store: Store, quest_id: int, entries: list[Any], why: str
+) -> int:
+    """File planned ``searches`` entries a tick did not run onto one open
+    todo under the quest, so a dropped dispatch leaves a tracker carrying the
+    queries instead of only prose (gripe 476100). Reuses the quest's open
+    unrun-searches todo (one comment per call) and mints a fresh one once
+    the last is closed. Returns the todo's ref id; raises on a store error
+    (the caller logs and moves on)."""
+    from precis.handlers._comment_timeline import append_comment
+
+    lines = []
+    for raw in entries:
+        parsed = _parse_search_entry(raw)
+        lines.append(f"- {parsed.query[:200] if parsed else repr(raw)[:200]}")
+    detail = f"{len(entries)} planned search(es) not run: {why}.\n" + "\n".join(lines)
+
+    todo_id = _open_unrun_searches_todo(store, quest_id)
+    ref = store.get_ref(kind="todo", id=todo_id) if todo_id is not None else None
+    if todo_id is not None and ref is not None:
+        append_comment(
+            store, ref, kind="todo", comment_kind="todo_comment", text=detail
+        )
+        return todo_id
+    handle = _handle("quest", quest_id)
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=f"{handle}: planned lit-searches did not run — run them or fix why",
+            meta={"content_key": UNRUN_SEARCHES_KEY, "quest_id": quest_id},
+            parent_id=quest_id,
+            conn=conn,
+        )
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=detail, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+    return int(ref.id)
+
+
 __all__ = [
     "LINKABLE_KINDS",
     "LOCAL_ENOUGH",
     "LOCAL_KINDS",
     "MAX_LINK_PER_QUERY",
     "MAX_QUERIES",
+    "UNRUN_SEARCHES_KEY",
     "AcquiringSearch",
     "QueryReport",
     "SearchFn",
     "SearchQuery",
     "SearchStep",
+    "file_unrun_searches",
     "make_acquiring_search",
     "relevance_floor",
     "run_search_step",

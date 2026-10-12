@@ -198,6 +198,49 @@ class TestTickGrounding:
         texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
         assert any("2 planned search(es) NOT run" in t for t in texts)
 
+    def test_unrun_searches_are_filed_on_one_open_todo(self, store: Any) -> None:
+        # gr476100: a planned search that cannot run leaves a tracker with
+        # the queries — one open todo per quest, a comment per later tick,
+        # a fresh todo once the last is closed.
+        from precis.quest.search import UNRUN_SEARCHES_KEY
+        from precis.store.types import Tag
+
+        def _todos() -> list[int]:
+            with store.pool.connection() as conn:
+                rows = conn.execute(
+                    "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+                    "AND meta->>'content_key' = %s ORDER BY ref_id",
+                    (qid, UNRUN_SEARCHES_KEY),
+                ).fetchall()
+            return [int(r[0]) for r in rows]
+
+        qid = _mk_quest(store, "A reason-only quest that wants papers")
+        payload = {
+            "logbook": [],
+            "searches": ["nasibulin cnt", {"query": "cnt review"}],
+        }
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        [todo] = _todos()
+        tags = {str(t) for t in store.tags_for(todo)}
+        assert "STATUS:open" in tags
+        body = " ".join(c.text for c in store.chunks.list_chunks_for_ref(todo))
+        assert "nasibulin cnt" in body and "cnt review" in body
+        assert "compute lane is off" in body
+        quest_texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("NOT run" in t and "filed on" in t for t in quest_texts)
+
+        payload2 = {"logbook": [], "searches": ["second query"]}
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload2))
+        assert _todos() == [todo]
+        body = " ".join(c.text for c in store.chunks.list_chunks_for_ref(todo))
+        assert "second query" in body
+
+        store.add_tag(
+            todo, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload2))
+        assert len(_todos()) == 2
+
     def test_unparseable_search_entry_is_reported(self, store: Any) -> None:
         qid = _mk_quest(store, "A quest with a malformed search")
         payload = {"logbook": [], "searches": ["real query", {"q": "wrong key"}, " "]}
