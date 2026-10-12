@@ -705,6 +705,23 @@ class SeHandler(Handler):
         foreign designs it reaches."""
         return persist.foreign_resolver(self.store)
 
+    def bound_structures(self, design: str) -> dict[str, str]:
+        """``{block name: structure slug}`` for every ordinary block of
+        ``design`` bound to a ``structure`` — how a draft view figure
+        resolves ``source='se:<design>'`` + ``block`` (core reaches se only
+        through ``Hub.sibling``). Instances are skipped: they never own a
+        binding (bind via the template). Raises ``NotFound`` for an unknown
+        design."""
+        ref = self.store.get_ref(kind="se", id=str(design).strip())
+        if ref is None:
+            raise NotFound(f"se design {design!r} not found")
+        tree = persist.load_tree(self.store, ref.id)
+        return {
+            name: str(n.bound)
+            for name, n in tree.blocks.items()
+            if n.template is None and n.bound_kind == "structure" and n.bound
+        }
+
     # ── put ──────────────────────────────────────────────────────────
     def put(
         self,

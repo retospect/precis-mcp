@@ -89,11 +89,20 @@ def _finite(
     return float(v)
 
 
-def view_recipe(slug: str, camera: Any, style: Any, refine: Any) -> dict[str, Any]:
+def view_recipe(
+    slug: str,
+    camera: Any,
+    style: Any,
+    refine: Any,
+    *,
+    se_block: tuple[str, str] | None = None,
+) -> dict[str, Any]:
     """Validated canonical ``meta.render`` recipe for a structure stick view.
     Raises ``ValueError`` on unknown keys, wrong types, non-finite or
     out-of-range values, or a ``refine`` that is not the int 0/1/2. Angles are
-    normalised to [0, 360)."""
+    normalised to [0, 360). ``se_block=(design, block)`` records that the
+    structure was picked through an se design's bound block — provenance
+    only; rendering always reads ``source.slug``."""
     camera = {} if camera is None else camera
     style = {} if style is None else style
     if not isinstance(camera, dict) or not isinstance(style, dict):
@@ -130,9 +139,12 @@ def view_recipe(slug: str, camera: Any, style: Any, refine: Any) -> dict[str, An
         or refine not in (0, 1, 2)
     ):
         raise ValueError(f"refine must be the integer 0, 1 or 2, got {refine!r}")
+    source: dict[str, Any] = {"kind": "structure", "slug": slug}
+    if se_block is not None:
+        source["se"], source["block"] = se_block
     return {
         "kind": "view",
-        "source": {"kind": "structure", "slug": slug},
+        "source": source,
         "view": "stick",
         "camera": cam,
         "style": sty,
@@ -140,15 +152,17 @@ def view_recipe(slug: str, camera: Any, style: Any, refine: Any) -> dict[str, An
     }
 
 
-def view_load(store: Any, recipe: dict[str, Any]) -> tuple[int, Any] | None:
-    """``(structure version, Scene)`` for the live structure a view recipe
-    points at, or ``None`` when the slug no longer resolves."""
+def view_load(store: Any, recipe: dict[str, Any]) -> tuple[int, int, Any] | None:
+    """``(structure ref id, version, Scene)`` for the live structure a view
+    recipe points at, or ``None`` when the slug no longer resolves. The ref id
+    matters because a re-generate deletes the structure and re-mints the slug
+    at version 1 — the version alone would read as unchanged."""
     slug = str((recipe.get("source") or {}).get("slug") or "")
     ref = store.get_ref(kind="structure", id=slug) if slug else None
     if ref is None:
         return None
     scene, _handles = store.structure_load(ref.id)
-    return int((ref.meta or {}).get("version", 0)), scene
+    return int(ref.id), int((ref.meta or {}).get("version", 0)), scene
 
 
 def _bond_hash(scene: Any) -> str:
@@ -177,7 +191,7 @@ def view_key(scene: Any, recipe: dict[str, Any]) -> str:
     params = {
         k: v
         for k, v in recipe.items()
-        if k not in ("cached_key", "source_version", "failed")
+        if k not in ("cached_key", "source_version", "source_ref", "failed")
     }
     canon = json.dumps(params, sort_keys=True, separators=(",", ":"))
     joined = "\n".join(
@@ -230,7 +244,7 @@ def _render_view_chunk(
     loaded = view_load(store, recipe)
     if loaded is None:
         return RenderOutcome(ok=False, error="no-source")
-    version, scene = loaded
+    source_ref, version, scene = loaded
 
     def fail(error: str, detail: str = "") -> RenderOutcome:
         # Marker keyed to this structure version, so the blob route does not
@@ -241,6 +255,7 @@ def _render_view_chunk(
             {
                 "failed": {
                     "version": version,
+                    "ref": source_ref,
                     "message": _failure_message(error, detail),
                 }
             },
@@ -261,7 +276,7 @@ def _render_view_chunk(
     key = view_key(scene, recipe)
     store.drafts.stamp_render_fields(
         figure_chunk_id,
-        {"cached_key": key, "source_version": version},
+        {"cached_key": key, "source_version": version, "source_ref": source_ref},
         drop=("failed",),
     )
     return RenderOutcome(ok=True, cached_key=key)
@@ -337,15 +352,23 @@ def _view_fresh(store: Any, meta: dict[str, Any]) -> Any:
     if ref is None:
         return _STALE if pending else None  # a vanished source keeps its image
     version = int((ref.meta or {}).get("version", 0))
+    # Stamps from before ``source_ref`` existed carry no ref: treat as same.
     failed = render.get("failed")
-    if isinstance(failed, dict) and failed.get("version") == version:
+    if (
+        isinstance(failed, dict)
+        and failed.get("version") == version
+        and failed.get("ref", ref.id) == ref.id
+    ):
         return str(failed.get("message") or "view render failed")
     if pending or not render.get("cached_key"):
         return _STALE
-    if render.get("source_version") == version:
+    if (
+        render.get("source_version") == version
+        and render.get("source_ref", ref.id) == ref.id
+    ):
         return None
     loaded = view_load(store, render)
-    if loaded is not None and render["cached_key"] == view_key(loaded[1], render):
+    if loaded is not None and render["cached_key"] == view_key(loaded[2], render):
         return None
     return _STALE
 

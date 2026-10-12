@@ -2,11 +2,12 @@
 id: precis-draft-rich-content-help
 family: drafting
 title: precis — figures, images, and data tables in a draft
-summary: figure chunks (blob/graph/canvas media, clearance gate by origin), and table chunks (structured data, four edit forms, LaTeX-recovered grids)
+summary: figure chunks (blob/graph/canvas/structure-view media, clearance gate by origin), and table chunks (structured data, four edit forms, LaTeX-recovered grids)
 answers:
   - how do I add a paragraph, figure, or table to a draft?
   - how do I attach an image to a draft chunk, and who owns clearance for a third-party figure?
   - how do I turn a data table into a rendered graph in a draft?
+  - how do I render a structure or se block as a figure in a draft?
   - how do I edit one cell of a table chunk without rewriting the whole grid?
 applies-to: put/edit (kind='draft')
 status: active
@@ -81,9 +82,11 @@ re-renders on mismatch, so editing a plotted table refreshes the graph (the
 `plots` edge is the one reactive recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
 caption, export all apply identically.
 
-**Structure view** (`origin='original'`): a ball-and-stick picture of a
-`structure` design, rendered server-side (no image bytes needed). Pass the
-recipe in `meta={'view': {...}}`:
+## Picture a structure or se block — a view figure
+
+A **structure view** figure (`origin='original'`) is a ball-and-stick
+picture of a `structure` design, rendered server-side (no image bytes
+needed). Pass the recipe in `meta={'view': {...}}`:
 
 ```python
 put(kind="draft", id="nanotrans", chunk_kind="figure",
@@ -102,8 +105,20 @@ export. Limits: values are validated at `put` (zoom 0.1-20, `stick_radius`
 0.01-2 Å, `ball_scale` 0.05-3, `refine` an int); structures over 20000
 atoms are refused, and large ones render at reduced `refine`. **Bonds that
 cross a periodic cell wall are not drawn** (molecular structures only; a
-periodic sheet shows missing bonds at the edges). It pins the live slug; there is no `se:` source yet (render the
-structure an `se` block is bound to).
+periodic sheet shows missing bonds at the edges). It pins the live slug.
+
+From an `se` design, name the block instead of the structure:
+`meta={'view': {'source': 'se:nanobud-review-figs', 'block': 'bud22', ...}}`.
+The block's bound structure is resolved at `put` and pinned (`block` may
+be omitted when exactly one block is bound; the error lists the bound
+blocks otherwise). A generated block's structure is `<design>-<block>`;
+re-generating it (delete that structure, then `generate`) re-mints the
+same slug, and the figure re-renders on the next export. Rebinding the
+block to a structure with a different slug does not move the figure — put
+a new one. The `put` reply names the provenance (`se:<design> block '<b>' ->
+structure:<slug> v<N>, generator <g>`); copy what the reader needs into
+the caption, nothing is added to it for you. One block per figure; a
+composite of several posed blocks is not supported.
 
 ## Data / table chunks
 

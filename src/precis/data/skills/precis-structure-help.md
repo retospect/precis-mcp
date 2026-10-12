@@ -9,6 +9,7 @@ answers:
   - how do I probe coordination, rings, or fragments in a structure?
   - how do I import a structure from an external catalyst database?
   - how do I export a structure to POSCAR or CIF?
+  - how do I put a picture of a structure or se block into a draft figure?
   - does it matter where in the cell I put a dopant?
   - what does a 3×3 slab supercell mean for coverage?
   - how do I place an adsorbate on a real site (top/bridge/hollow) without guessing a z coordinate?
@@ -615,6 +616,22 @@ get(kind="structure", id="pd111", view="cif")  # CIF via ASE (core dep)
 
 POSCAR and extXYZ are pure (zero deps); CIF goes through ASE, a core dep —
 no extra needed.
+
+## Picture in a paper — a draft view figure
+
+No structure view returns pixels. To put a structure (or the structure an
+`se` block is bound to) into a draft as a ball-and-stick figure, add a
+figure chunk whose recipe names it; the PNG renders server-side at export:
+
+```python
+put(kind="draft", id="nanotrans", chunk_kind="figure",
+    text="Fig 3. (8,8) nanobud.",
+    meta={"view": {"source": "structure:pd111",    # or 'se:<design>' + 'block'
+                   "camera": {"azimuth_deg": 30, "elevation_deg": 15}}})
+```
+
+Camera/style keys, limits and the `se:` form: precis-draft-rich-content-help
+§"Picture a structure or se block".
 
 ## Retire a design
 

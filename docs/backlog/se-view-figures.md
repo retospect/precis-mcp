@@ -171,11 +171,15 @@ New `src/precis/viz3d/`. Touches `utils/figure_source.py`,
   once stick ships.
 
 **Shipped (structure-source slice):** stick view of a `structure` slug in a
-draft figure, lazy render at export/view, stale on geometry edit. **Still
-open from §2:** `se:<slug>` source (via `hydrate_bound_scenes`), `block`
-selection, lighting/scalebar params in the recipe, r1-sync + enqueued-r2
-`figure_render` job, `derived-from` link, caption/export provenance
-(slug + version), the §4 dev-loop routes, periodic-image bonds (drawn only
+draft figure, lazy render at export/view, stale on geometry edit. **Shipped
+(se-source slice):** `source='se:<design>'` + `block` (optional when one
+block is bound) resolves through `SeHandler.bound_structures` at put and pins
+the bound structure slug, recording design/block in `meta.render.source`; the
+put reply names `se → structure vN, generator`. **Still open from §2:**
+a composite of several posed blocks, lighting/scalebar params in the
+recipe, r1-sync + enqueued-r2 `figure_render` job, `derived-from` link,
+provenance written into the exported caption (today only the put reply and
+recipe carry it), the §4 dev-loop routes, periodic-image bonds (drawn only
 when image is (0,0,0)).
 
 **Gripe:** gr461790 (2026-10-10 triage) is this item from the agent's side.

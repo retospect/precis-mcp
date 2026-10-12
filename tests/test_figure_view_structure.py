@@ -123,8 +123,10 @@ def test_view_figure_rerenders_after_geometry_edit(hub: Hub, tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "view",
     [
-        {"source": "se:co"},
+        {"source": "cad:co"},
+        {"source": "se:"},
         {"source": "structure:"},
+        {"source": "structure:co", "block": "hub"},
         {"source": "structure:co", "camera": {"bogus": 1}},
         {"source": "structure:co", "refine": 7},
         {"source": "structure:co", "refine": 1.9},
@@ -238,3 +240,117 @@ def test_view_key_includes_bonds(hub: Hub) -> None:
         scenes.append(store.structure_load(ref.id)[0])
     recipe = view_recipe("co", None, None, 2)
     assert view_key(scenes[0], recipe) != view_key(scenes[1], recipe)
+
+
+# ── se:<design> source: resolves a bound block to its structure ─────────
+
+
+def _se_design(hub: Hub, slug: str, bindings: dict[str, str]) -> None:
+    """An se design with one block per ``bindings`` entry, each bound to the
+    named structure (no ports)."""
+    ops: list[dict] = []
+    for block, design in bindings.items():
+        ops.append({"op": "add_block", "name": block, "envelope": "sphere:r2e-09"})
+        ops.append({"op": "bind_structure", "block": block, "design": design})
+    hub.sibling("se").put(id=slug, text=json.dumps({"ops": ops}))
+
+
+def test_se_source_resolves_block_and_renders(hub: Hub, tmp_path: Path) -> None:
+    StructureHandler(hub=hub).put(id="co-b", text=_PD)
+    _se_design(hub, "buds", {"hub": "co-b"})
+    ref, fig = _draft(hub, {"source": "se:buds", "block": "hub", "refine": 0})
+    assert fig.meta["render"]["source"] == {
+        "kind": "structure",
+        "slug": "co-b",
+        "se": "buds",
+        "block": "hub",
+    }
+    res = export_docx(hub.live_store, ref, target_path=tmp_path / "a.docx")
+    assert not [w for w in res.warnings if "render" in w]
+    assert _blob(hub, fig.handle)[:8] == b"\x89PNG\r\n\x1a\n"
+    assert _blob(hub, fig.handle) != _PLACEHOLDER_PNG
+
+    # a geometry edit to the bound structure re-renders the se-sourced figure
+    drafts = hub.live_store.drafts
+    StructureHandler(hub=hub).edit(
+        id="co-b", ops=[{"op": "add_atom", "element": "N", "frac": [0.3, 0.2, 0.3]}]
+    )
+    assert needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))
+
+
+def test_view_figure_stale_after_slug_reminted(hub: Hub, tmp_path: Path) -> None:
+    """A re-generate deletes the structure and re-mints the same slug at
+    version 1; the version alone would match the stamp, the ref id does not."""
+    ref, fig = _draft(hub)
+    drafts = hub.live_store.drafts
+    export_docx(hub.live_store, ref, target_path=tmp_path / "a.docx")
+    meta = drafts.draft_chunk_meta(fig.handle)
+    old = hub.live_store.get_ref(kind="structure", id="co")
+    assert old is not None and meta["render"]["source_ref"] == old.id
+
+    sh = StructureHandler(hub=hub)
+    sh.delete(id="co")
+    other = json.loads(_PD)
+    other["ops"][1]["frac"] = [0.1, 0.25, 0.1]
+    sh.put(id="co", text=json.dumps(other))
+    new = hub.live_store.get_ref(kind="structure", id="co")
+    assert new is not None and new.id != old.id
+    assert int((new.meta or {}).get("version", 0)) == meta["render"]["source_version"]
+
+    assert needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))
+    export_docx(hub.live_store, ref, target_path=tmp_path / "b.docx")
+    assert drafts.draft_chunk_meta(fig.handle)["render"]["source_ref"] == new.id
+
+
+def test_se_source_single_bound_block_needs_no_block(hub: Hub) -> None:
+    StructureHandler(hub=hub).put(id="co-b", text=_PD)
+    _se_design(hub, "buds", {"only": "co-b"})
+    _ref, fig = _draft(hub, {"source": "se:buds"})
+    assert fig.meta["render"]["source"]["block"] == "only"
+    assert fig.meta["render"]["source"]["slug"] == "co-b"
+
+
+def test_se_source_put_reply_names_provenance(hub: Hub) -> None:
+    StructureHandler(hub=hub).put(id="co-b", text=_PD)
+    _se_design(hub, "buds", {"hub": "co-b"})
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    d = DraftHandler(hub=hub)
+    d.put(id="g", title="T", project=pid)
+    body = d.put(
+        id="g",
+        chunk_kind="figure",
+        text="Fig.",
+        meta={"view": {"source": "se:buds", "block": "hub"}},
+    ).body
+    assert "se:buds block 'hub' -> structure:co-b v" in body
+
+
+def test_se_source_ambiguous_or_unbound_block(hub: Hub) -> None:
+    sh = StructureHandler(hub=hub)
+    sh.put(id="co-a", text=_PD)
+    sh.put(id="co-b", text=_PD)
+    _se_design(hub, "two", {"left": "co-a", "right": "co-b"})
+    with pytest.raises(BadInput, match=r"2 structure-bound blocks.*'left', 'right'"):
+        _draft_with(hub, {"source": "se:two"})
+    with pytest.raises(BadInput, match="not bound to a structure"):
+        _draft_with(hub, {"source": "se:two", "block": "middle"})
+
+
+def test_se_source_design_without_bindings(hub: Hub) -> None:
+    hub.sibling("se").put(
+        id="bare",
+        text=json.dumps({"ops": [{"op": "add_block", "name": "a"}]}),
+    )
+    with pytest.raises(BadInput, match="no block bound"):
+        _draft_with(hub, {"source": "se:bare"})
+
+
+def test_se_source_unknown_design(hub: Hub) -> None:
+    with pytest.raises(NotFound, match="se design"):
+        _draft_with(hub, {"source": "se:nope"})

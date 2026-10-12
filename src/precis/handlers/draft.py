@@ -1445,16 +1445,23 @@ class DraftHandler(Handler):
         at: dict[str, Any] | None,
     ) -> Response:
         """Add a *structure view* figure (se-view-figures §2): ``view`` is
-        ``{'source': 'structure:<slug>', 'camera': {az/el/…}, 'style': {…},
-        'refine': 0|1|2}``. Only the recipe is stored; the stick-figure PNG is
-        rendered through viz3d at export/view time (placeholder until then) and
-        re-rendered when the structure's geometry changes. ``origin='original'``."""
+        ``{'source': 'structure:<slug>' | 'se:<design>', 'block': <name>,
+        'camera': {az/el/…}, 'style': {…}, 'refine': 0|1|2}``. An ``se:``
+        source resolves, here, to the structure its ``block`` is bound to
+        (``block`` may be omitted when exactly one block is bound); the recipe
+        pins that structure slug and records the design/block as provenance.
+        Only the recipe is stored; the stick-figure PNG is rendered through
+        viz3d at export/view time (placeholder until then) and re-rendered
+        when the structure's geometry changes or its slug is re-minted (a
+        re-generate deletes and re-mints ``<design>-<block>``).
+        ``origin='original'``."""
         from precis.render.figure import VIEW_MAX_ATOMS, view_recipe
 
         nxt = (
             "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
             "meta={'view': {'source': 'structure:<slug>', "
-            "'camera': {'azimuth_deg': 30, 'elevation_deg': 15}}})"
+            "'camera': {'azimuth_deg': 30, 'elevation_deg': 15}}})  "
+            "or meta={'view': {'source': 'se:<design>', 'block': '<block>'}}"
         )
         if caption is None or not str(caption).strip():
             raise BadInput("a figure requires text= (the caption)", next=nxt)
@@ -1462,16 +1469,31 @@ class DraftHandler(Handler):
             raise BadInput("meta['view'] must be an object", next=nxt)
         kind, _, src_slug = str(view.get("source") or "").partition(":")
         src_slug = src_slug.strip()
-        if kind != "structure" or not src_slug:
+        if kind not in ("structure", "se") or not src_slug:
             raise BadInput(
-                "meta['view']['source'] must be 'structure:<slug>'", next=nxt
+                "meta['view']['source'] must be 'structure:<slug>' or 'se:<design>'",
+                next=nxt,
+            )
+        se_block: tuple[str, str] | None = None
+        if kind == "se":
+            design = src_slug
+            block, src_slug = self._view_se_block(design, view.get("block"))
+            se_block = (design, block)
+        elif view.get("block") is not None:
+            raise BadInput(
+                "meta['view']['block'] applies only to an 'se:<design>' source",
+                next=nxt,
             )
         sref = self.store.get_ref(kind="structure", id=src_slug)
         if sref is None:
             raise NotFound(f"structure {src_slug!r} not found")
         try:
             recipe = view_recipe(
-                src_slug, view.get("camera"), view.get("style"), view.get("refine", 2)
+                src_slug,
+                view.get("camera"),
+                view.get("style"),
+                view.get("refine", 2),
+                se_block=se_block,
             )
         except ValueError as exc:
             raise BadInput(str(exc), next=nxt) from exc
@@ -1494,13 +1516,55 @@ class DraftHandler(Handler):
         self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
         self.sync_draft_links(ref_id)
         self._attribute_touch([chunk.chunk_id])
+        smeta = sref.meta or {}
+        prov = f"structure:{src_slug} v{int(smeta.get('version', 0))}"
+        generated = smeta.get("generated")
+        if isinstance(generated, dict) and generated.get("generator"):
+            prov += f", generator {generated['generator']}"
+        if se_block is not None:
+            prov = f"se:{se_block[0]} block {se_block[1]!r} -> {prov}"
         return Response(
             body=(
-                f"added structure view figure {chunk.dc} to {slug} "
-                f"(structure:{src_slug}); "
+                f"added structure view figure {chunk.dc} to {slug} ({prov}); "
                 "image renders on first export/view — render pending"
             )
         )
+
+    def _view_se_block(self, design: str, block: Any) -> tuple[str, str]:
+        """``(block, structure slug)`` for an ``se:<design>`` view source.
+        ``block`` may be omitted when exactly one block of the design is bound
+        to a structure. Raises ``BadInput`` naming the structure-bound blocks
+        when ``block`` is ambiguous, unknown or unbound, or when the se kind
+        is not installed (core reaches it only through ``Hub.sibling``)."""
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        try:
+            se = hub.sibling("se")
+        except KeyError as exc:
+            raise BadInput(
+                "an 'se:<design>' view source needs the se kind, which is not "
+                "installed here",
+                next="use meta={'view': {'source': 'structure:<slug>'}}",
+            ) from exc
+        bound: dict[str, str] = se.bound_structures(design)
+        names = sorted(bound)
+        if not bound:
+            raise BadInput(
+                f"se design {design!r} has no block bound to a structure",
+                next=f"get(kind='se', id={design!r}) — generate or bind a block first",
+            )
+        if block is None:
+            if len(bound) != 1:
+                raise BadInput(
+                    f"se design {design!r} has {len(bound)} structure-bound "
+                    f"blocks; name one with meta['view']['block'] (one of {names})"
+                )
+            block = names[0]
+        if not isinstance(block, str) or block not in bound:
+            raise BadInput(
+                f"block {block!r} of se design {design!r} is not bound to a "
+                f"structure; structure-bound blocks: {names}"
+            )
+        return block, bound[block]
 
     def _add_graph_figure(
         self,
