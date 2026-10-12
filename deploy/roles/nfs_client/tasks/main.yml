@@ -34,6 +34,17 @@
 # same idiom autofs_client uses for the NAS, and how /opt/shared was always
 # actually mounted. Keyed on the src, so a shared_mount change rewrites the
 # old entry instead of leaving a second, stale static mount.
+# Server change: drop any line already mounting shared_mount from a DIFFERENT
+# source, else two static entries claim one mount point. The negative
+# lookahead spares the current source line (idempotent re-runs).
+- name: Remove stale fstab entries for shared_mount from another server (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^(?!{{ (hostvars[nfs_server]["lan_ip"] ~ ":" ~ nfs_export_path ~ "/shared ") | regex_escape }})\S+ {{ shared_mount | regex_escape }} nfs '
+    state: absent
+  become: true
+
 - name: Add shared NFS entry to /etc/fstab (macOS)
   when: os_family == "darwin"
   ansible.builtin.lineinfile:

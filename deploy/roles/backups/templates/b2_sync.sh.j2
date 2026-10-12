@@ -13,6 +13,9 @@ export B2_APPLICATION_KEY_ID="{{ vault_b2_application_key_id }}"
 export B2_APPLICATION_KEY="{{ vault_b2_application_key }}"
 BUCKET="{{ vault_b2_bucket_name }}"
 SHARED="{{ shared_mount }}"
+# Source of the postgres leg. Default = the local/shared dump dir; the overlay
+# may point it at the NAS archive dir ({{ nas_root }}/backups/postgres/).
+PG_SOURCE="{{ b2_postgres_source | default('$SHARED/backups/postgres/', true) }}"
 LOG_TAG="b2-sync"
 
 # Any failed sync aborts the script (set -e); leave an unmistakable marker in
@@ -24,7 +27,7 @@ logger -t "$LOG_TAG" "Starting B2 offsite sync"
 # Sync Postgres dumps (keep last 7 days remotely via --keep-days 7)
 logger -t "$LOG_TAG" "Syncing postgres backups"
 b2 sync --keep-days 7 --replace-newer \
-  "$SHARED/backups/postgres/" \
+  "$PG_SOURCE" \
   "b2://$BUCKET/backups/postgres/"
 
 # Sync config backups
@@ -52,3 +55,4 @@ b2 sync --replace-newer \
   "b2://$BUCKET/data/"
 
 logger -t "$LOG_TAG" "B2 offsite sync complete"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) B2 offsite sync complete"

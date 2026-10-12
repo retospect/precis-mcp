@@ -5,7 +5,7 @@
 - name: Deploy config-pull script
   ansible.builtin.template:
     src: config_pull.sh.j2
-    dest: "{{ shared_mount }}/scripts/config_pull_{{ inventory_hostname }}.sh"
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/config_pull_{{ inventory_hostname }}.sh"
     mode: "0750"
   become: true
 
@@ -14,5 +14,5 @@
     name: "nightly config pull to /shared"
     minute: "30"
     hour: "3"
-    job: "{{ shared_mount }}/scripts/config_pull_{{ inventory_hostname }}.sh >> {{ shared_mount }}/logs/config-pull.log 2>&1"
+    job: "{{ host_local_root | default(shared_mount) }}/scripts/config_pull_{{ inventory_hostname }}.sh >> {{ host_local_root | default(shared_mount) }}/logs/config-pull.log 2>&1"
   become: true

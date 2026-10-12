@@ -37,10 +37,10 @@
     mode: "0750"
   become: true
   loop:
-    - "{{ shared_mount }}/backups/postgres"
+    - "{{ host_local_root | default(shared_mount) }}/backups/postgres"
     - "{{ shared_mount }}/backups/configs"
-    - "{{ shared_mount }}/scripts"
-    - "{{ shared_mount }}/logs"
+    - "{{ host_local_root | default(shared_mount) }}/scripts"
+    - "{{ host_local_root | default(shared_mount) }}/logs"
 
 - name: Ensure NAS backup destination exists
   ansible.builtin.file:
@@ -53,7 +53,7 @@
 - name: Deploy pg_dump backup script
   ansible.builtin.template:
     src: pg_backup.sh.j2
-    dest: "{{ shared_mount }}/scripts/pg_backup.sh"
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/pg_backup.sh"
     mode: "0750"
     owner: "{{ pg_user }}"
   become: true
@@ -62,14 +62,14 @@
   when: backup_usb_mount is defined
   ansible.builtin.template:
     src: usb_backup.sh.j2
-    dest: "{{ shared_mount }}/scripts/usb_backup.sh"
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/usb_backup.sh"
     mode: "0750"
   become: true
 
 - name: Deploy restore test script
   ansible.builtin.template:
     src: restore_test.sh.j2
-    dest: "{{ shared_mount }}/scripts/restore_test.sh"
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/restore_test.sh"
     mode: "0750"
     owner: "{{ pg_user }}"
   become: true
@@ -85,7 +85,7 @@
     name: "pg_dump nightly backup"
     minute: "{{ pg_backup_cron_minute }}"
     hour: "{{ pg_backup_cron_hour }}"
-    job: "{{ shared_mount }}/scripts/pg_backup.sh >> {{ shared_mount }}/logs/backup-pg.log 2>&1"
+    job: "{{ host_local_root | default(shared_mount) }}/scripts/pg_backup.sh >> {{ host_local_root | default(shared_mount) }}/logs/backup-pg.log 2>&1"
     user: "{{ pg_user }}"
   become: true
 
@@ -96,7 +96,7 @@
     minute: "0"
     hour: "5"
     weekday: "0"
-    job: "{{ shared_mount }}/scripts/usb_backup.sh >> {{ shared_mount }}/logs/backup-usb.log 2>&1"
+    job: "{{ host_local_root | default(shared_mount) }}/scripts/usb_backup.sh >> {{ host_local_root | default(shared_mount) }}/logs/backup-usb.log 2>&1"
   become: true
 
 - name: Schedule weekly restore test
@@ -105,7 +105,7 @@
     minute: "0"
     hour: "6"
     weekday: "1"
-    job: "{{ shared_mount }}/scripts/restore_test.sh >> {{ shared_mount }}/logs/backup-tests.log 2>&1"
+    job: "{{ host_local_root | default(shared_mount) }}/scripts/restore_test.sh >> {{ host_local_root | default(shared_mount) }}/logs/backup-tests.log 2>&1"
     user: "{{ pg_user }}"
   become: true
 
@@ -145,7 +145,7 @@
 - name: Deploy B2 sync script
   ansible.builtin.template:
     src: b2_sync.sh.j2
-    dest: "{{ shared_mount }}/scripts/b2_sync.sh"
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/b2_sync.sh"
     mode: "0750"
   become: true
 
@@ -157,7 +157,7 @@
     state: "{{ 'present' if b2_sync_enabled | bool else 'absent' }}"
     minute: "30"
     hour: "4"
-    job: "{{ shared_mount }}/scripts/b2_sync.sh >> {{ shared_mount }}/logs/backup-b2.log 2>&1"
+    job: "{{ host_local_root | default(shared_mount) }}/scripts/b2_sync.sh >> {{ host_local_root | default(shared_mount) }}/logs/backup-b2.log 2>&1"
   become: true
 
 # ── Restore-drill pull access ──
@@ -174,7 +174,7 @@
   when: drill_pull_pubkey is defined
   ansible.builtin.template:
     src: drill_pull.sh.j2
-    dest: "{{ shared_mount }}/scripts/drill_pull.sh"
+    dest: "{{ host_local_root | default(shared_mount) }}/scripts/drill_pull.sh"
     mode: "0750"
     owner: "{{ pg_user }}"
   become: true
@@ -190,7 +190,7 @@
     user: "{{ pg_user }}"
     key: "{{ drill_pull_pubkey }}"
     comment: "restore-drill pull (read-only)"
-    key_options: 'restrict,from="{{ drill_pull_from }}",command="{{ shared_mount }}/scripts/drill_pull.sh"'
+    key_options: 'restrict,from="{{ drill_pull_from }}",command="{{ host_local_root | default(shared_mount) }}/scripts/drill_pull.sh"'
     state: present
     exclusive: false
   become: true

@@ -16,6 +16,6 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardErrorPath</key>
-    <string>{{ shared_mount }}/logs/pgbouncer-error.log</string>
+    <string>{{ host_local_root | default(shared_mount) }}/logs/pgbouncer-error.log</string>
 </dict>
 </plist>

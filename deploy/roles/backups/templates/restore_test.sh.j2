@@ -12,7 +12,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:${PATH}"
 {% endif %}
 
-BACKUP_DIR="{{ shared_mount }}/backups/postgres"
+BACKUP_DIR="{{ host_local_root | default(shared_mount) }}/backups/postgres"
 TEST_DB="precis_prod_restore_test"
 PG_USER="{{ pg_user }}"
 
@@ -23,6 +23,25 @@ PG_USER="{{ pg_user }}"
 # SIGKILL/reboot has an mtime of "now" and would win (gripe 466216). A
 # directory dump is complete only once pg_dump has written toc.dat, so skip
 # any dir without it and fall back to the next-newest.
+{% if pg_backup_local_keep_verified_only | default(false) | bool %}
+# pg_backup.sh deletes the local dump once the NAS archive verifies, so restore
+# from the newest NAS archive instead: extract to a scratch dir under the
+# host-local root (never the NAS share) and remove it on any exit.
+NAS_BACKUP_DIR="{{ nas_root }}/backups/postgres"
+LATEST_ARCHIVE=$(ls -t "${NAS_BACKUP_DIR}"/precis_prod_*.tar.zst 2>/dev/null | head -1)
+
+if [ -z "${LATEST_ARCHIVE}" ]; then
+    echo "[$(date -u)] ERROR: No precis_prod archive found under ${NAS_BACKUP_DIR}"
+    exit 1
+fi
+
+mkdir -p "${BACKUP_DIR}"
+SCRATCH_DIR=$(mktemp -d "${BACKUP_DIR}/restore_test_XXXXXX")
+trap 'rm -rf "${SCRATCH_DIR}"' EXIT
+echo "[$(date -u)] Extracting ${LATEST_ARCHIVE} to ${SCRATCH_DIR}"
+tar --use-compress-program='zstd -d -T0' -xf "${LATEST_ARCHIVE}" -C "${SCRATCH_DIR}"
+LATEST_DUMP=$(find "${SCRATCH_DIR}" -maxdepth 1 -name 'precis_prod_*' 2>/dev/null | sort -r | head -1)
+{% else %}
 LATEST_DUMP=""
 while IFS= read -r cand; do
     if [ -d "${cand}" ] && [ ! -f "${cand}/toc.dat" ]; then
@@ -34,6 +53,7 @@ while IFS= read -r cand; do
 done < <(find "${BACKUP_DIR}" -maxdepth 1 -name 'precis_prod_*' ! -name '*.partial*' 2>/dev/null \
     | awk -F/ '{n=$NF; sub(/^precis_prod_(manual_)?/,"",n); print n "\t" $0}' \
     | sort -r | cut -f2-)
+{% endif %}
 
 if [ -z "${LATEST_DUMP}" ]; then
     echo "[$(date -u)] ERROR: No precis_prod dump found under ${BACKUP_DIR}"

@@ -13,7 +13,7 @@
 # Managed by deploy/roles/backups. Do not edit on the host.
 set -euo pipefail
 
-DUMP_ROOT="{{ shared_mount }}/backups/postgres"
+DUMP_ROOT="{{ host_local_root | default(shared_mount) }}/backups/postgres"
 
 deny() {
   echo "drill_pull: refused: $1" >&2

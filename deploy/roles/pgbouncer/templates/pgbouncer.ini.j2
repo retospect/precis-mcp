@@ -34,4 +34,4 @@ admin_users = {{ 'deploy' if os_family == 'darwin' else 'postgres' }}
 ; userlist entry, so it cannot log in over the network. scripts/pgb-pools.
 stats_users = agent_ro, prometheus_reader
 pidfile = /opt/homebrew/var/run/pgbouncer/pgbouncer.pid
-logfile = {{ shared_mount }}/logs/pgbouncer.log
+logfile = {{ host_local_root | default(shared_mount) }}/logs/pgbouncer.log

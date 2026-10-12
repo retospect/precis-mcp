@@ -26,6 +26,11 @@ all:
     # (node-data bind-mounts its own export onto shared_mount; see
     # roles/nfs_server). Defined ONCE here — no per-OS or per-host override.
     shared_mount: "/mnt/cluster"    # nfs_server's SSD-backed hot share (nfs_client/nfs_server)
+    # Operational (non-backup) DB-node paths: backup/pgbouncer/config_pull
+    # scripts + logs and the local pg_dump staging dir. Defaults to
+    # shared_mount (today's behaviour); set it in the DB node's host_vars to a
+    # disk-local path once shared_mount moves to a remote file server.
+    host_local_root: "{{ shared_mount }}"
     pgbouncer_port: 6432
     postgres_port: 5432
     # The single Postgres host. precis_* roles build their DSN from this

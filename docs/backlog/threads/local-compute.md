@@ -261,10 +261,14 @@ task set.
         DB node.
       - Next: Reto creates the NAS export in the TOS web UI (TOS has no
         CLI; local-compute-12), then agents verify, test-mount and copy.
-      - The deploy-role branch is `worktree-agent-af6719b05abd3f35e`. It
-        changes no behaviour at the overlay defaults; a restore_test /
-        drill_pull fix for verified-only mode is in progress. It goes to
-        the orchestrator.
+      - The deploy-role changes (`host_local_root`, verified-only local
+        dump prune, b2 postgres source, restore_test from the NAS archive)
+        are on main, not deployed. Paths are unchanged at the overlay
+        defaults. Keep `pg_backup_local_keep_verified_only` off until the
+        pre-ship review findings are fixed: drill_pull finds no dump in
+        that mode, a same-day re-run truncates the day's NAS archive with
+        no local copy to fall back on, and a `b2_postgres_source` on the
+        NAS changes B2 retention and layout.
       - The caspar nfsd restart (local-compute-6) stays held.
    b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
