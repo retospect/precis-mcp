@@ -666,6 +666,20 @@ def test_legacy_refresh_ambiguous_title_refuses(
     _unplant(store, first, second)
 
 
+def test_legacy_retire_ambiguous_title_refuses(
+    store: Store, hub: Hub, source: Path
+) -> None:
+    """gr472845: two legacy nodes on one topic refuse under retire too, so a
+    second, differently-sourced node is never retired unseen."""
+    first = _plant_legacy(hub, "Alpha")
+    second = _plant_slugged(hub, "Old alpha notes", "alpha")
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused, match=rf"me{first}, me{second}"):
+        import_mirror(store, source, namespace="fixture", legacy="retire")
+    assert _snapshot(store) == before
+    _unplant(store, first, second)
+
+
 def test_cli_legacy_refresh(
     store: Store,
     hub: Hub,

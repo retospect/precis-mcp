@@ -416,7 +416,8 @@ def import_mirror(
     ``refuse`` (default) raises, ``retire`` soft-deletes them in this
     transaction, ``keep`` imports beside them, ``refresh`` adopts each in place
     (same ref_id and inbound links, ``file_mirror`` stamped, body and links
-    rewritten as for a new node; several nodes for one topic refuse).
+    rewritten as for a new node). Under ``retire`` and ``refresh``, several
+    nodes matching one topic refuse.
     ``missing`` decides the nodes of files deleted since the last import:
     ``keep`` (default) leaves them live and only lists them; ``retire``
     soft-deletes them once validation passes (``MEMORY.md``'s node, the index
@@ -445,17 +446,19 @@ def import_mirror(
                     "re-run with legacy='retire' (or --legacy retire) to soft-delete "
                     "them, or 'keep' to import beside them"
                 )
+            # Several legacy nodes on one topic: refuse for retire as for refresh,
+            # so a second, differently-sourced node is never retired unseen.
+            by_file: dict[str, list[int]] = {}
+            for rid, _title, fname in found:
+                by_file.setdefault(fname, []).append(rid)
+            for fname, rids in by_file.items():
+                if len(rids) > 1:
+                    listing = ", ".join(f"me{r}" for r in rids)
+                    raise ImportRefused(
+                        f"ambiguous legacy nodes for topic {fname!r}: {listing}; "
+                        "retire all but one first"
+                    )
             if legacy == "refresh":
-                by_file: dict[str, list[int]] = {}
-                for rid, _title, fname in found:
-                    by_file.setdefault(fname, []).append(rid)
-                for fname, rids in by_file.items():
-                    if len(rids) > 1:
-                        listing = ", ".join(f"me{r}" for r in rids)
-                        raise ImportRefused(
-                            f"ambiguous legacy nodes for topic {fname!r}: {listing}; "
-                            "retire all but one first"
-                        )
                 for n in files:
                     if n != "MEMORY.md" and n not in nodes and n in by_file:
                         adopt[n] = by_file[n][0]

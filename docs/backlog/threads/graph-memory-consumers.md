@@ -23,7 +23,9 @@ surviving backup. The reported file-mode directory has a different
 checkout key; a directory switch is an inference, not a proved cause.
 gr472845 (title-only retirement selector, export's metadata stamps) is fixed:
 retire matches by normalized title/slug and lists unmatched legacy nodes in
-`legacy_unmatched`; take the pre-import backup with `export --no-stamp`. Since that checkpoint, Reto supplied the 150-file copy and accepted
+`legacy_unmatched`; take the pre-import backup with `export --no-stamp`.
+Several legacy nodes matching one topic now refuse under `--legacy retire` as
+under `refresh`. Since that checkpoint, Reto supplied the 150-file copy and accepted
 its provenance; scratch preparation filled 32 names (me472973), and the
 synthetic dev rehearsal passed (fi472896). No real-copy import has run.
 
