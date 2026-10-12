@@ -2146,42 +2146,54 @@ def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
 # ── un-review (the review-retract door) ─────────────────────────────────
 
 
-def test_retract_review_route_deletes_row_and_reverts_indicator(tmp_path) -> None:
+def test_retract_review_route_dispatches_edit_retract(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
     _rt.store.drafts.record_review(2, "human", verdict="approved")  # dc2 == BBBBBB
-    assert [r.checker for r in _rt.store.drafts.review_status_for_chunk(2)] == ["human"]
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
     assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["review"] == {}
-    assert body["rollup"] == {"done": 0, "total": 1}  # only BBBBBB is prose
-
-    # A re-GET of the chunk's status shows the indicator reverted (empty).
-    assert _rt.store.drafts.review_status_for_chunk(2) == []
-
-
-def test_retract_review_route_defaults_checker_to_human(tmp_path) -> None:
-    _rt, client = _review_client(tmp_path)
-    _rt.store.drafts.record_review(2, "human")
-    _rt.store.drafts.record_review(2, "flow")
-
-    r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
-    assert r.status_code == 200
-    remaining = {row.checker for row in _rt.store.drafts.review_status_for_chunk(2)}
-    assert remaining == {"flow"}  # only 'human' (the default) was retracted
+    assert r.json()["ok"] is True
+    # The delete rides the edit verb (the MCP path), not a direct store call.
+    assert _rt.calls[-1] == (
+        "edit",
+        {"kind": "draft", "id": "dc2", "review": "human", "verdict": "retract"},
+    )
 
 
-def test_retract_review_route_retracts_named_checker(tmp_path) -> None:
+def test_retract_review_route_names_checker(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
     _rt.store.drafts.record_review(2, "human")
     _rt.store.drafts.record_review(2, "flow")
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2", "checker": "flow"})
     assert r.status_code == 200
-    remaining = {row.checker for row in _rt.store.drafts.review_status_for_chunk(2)}
-    assert remaining == {"human"}
+    assert _rt.calls[-1][1]["review"] == "flow"
+
+
+def test_retract_review_route_400s_on_verb_error(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    _rt.store.drafts.record_review(2, "human")
+    _rt.error_verbs.add("edit")
+    r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
+    assert r.status_code == 400
+
+
+def test_set_title_route_dispatches_edit_title(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/title", data={"title": "  New name "})
+    assert r.status_code == 200
+    assert r.json()["title"] == "New name"
+    assert _rt.calls[-1] == (
+        "edit",
+        {"kind": "draft", "id": "nt", "title": "  New name "},
+    )
+
+
+def test_set_title_route_blank_is_422_without_dispatch(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/title", data={"title": "   "})
+    assert r.status_code == 422
+    assert _rt.calls == []
 
 
 def test_retract_review_route_404s_when_no_row_to_retract(tmp_path) -> None:

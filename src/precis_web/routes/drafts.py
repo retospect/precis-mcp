@@ -101,7 +101,7 @@ from precis.draft.scaffolds import DOC_TYPE_BRIEF as _DOC_TYPE_BRIEF
 from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES  # noqa: F401
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput
 from precis.export._data_package import collect_entry
 from precis.export.preflight import draft_export_preflight
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT
@@ -1038,7 +1038,11 @@ async def new_draft(
         draft_ref = store.get_ref(kind="draft", id=slug)
         if draft_ref is not None:
             try:
-                store.drafts.scaffold_sections(draft_ref.id, sections)
+                _, scaffold_err = await await_dispatch(
+                    request, "edit", {"kind": "draft", "id": slug, "scaffold": doctype}
+                )
+                if scaffold_err:  # pragma: no cover - defensive
+                    log.warning("drafts: scaffold rejected for %s", slug)
             except Exception:  # pragma: no cover - defensive
                 log.warning("drafts: scaffold failed for %s", slug, exc_info=True)
     return RedirectResponse(url=f"/drafts/{slug}", status_code=303)
@@ -2789,12 +2793,24 @@ async def retract_review_route(request: Request, ident: str) -> JSONResponse:
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     checker = str(payload.get("checker") or "human")
-    existed = store.drafts.retract_review(chunk.chunk_id, checker)
-    if not existed:
+    # Existence is read first (the verb answers a missing row with a plain
+    # message, not an error) so "nothing to retract" stays a 404; the delete
+    # itself goes through the edit verb — the same write path MCP agents use.
+    if not any(
+        e.checker == checker
+        for e in store.drafts.review_status_for_chunk(chunk.chunk_id)
+    ):
         return JSONResponse(
             {"ok": False, "error": f"no {checker!r} review to retract on {handle}"},
             status_code=404,
         )
+    body, is_error = await await_dispatch(
+        request,
+        "edit",
+        {"kind": "draft", "id": chunk.dc, "review": checker, "verdict": "retract"},
+    )
+    if is_error:
+        return JSONResponse({"ok": False, "error": body}, status_code=400)
     status = store.drafts.review_status_for_chunk(chunk.chunk_id)
     return JSONResponse(
         {
@@ -3076,16 +3092,18 @@ async def set_title(
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    try:
-        old, synced = store.drafts.set_draft_title(
-            ref.id, title, source={"actor": "web-edit"}
+    if not title.strip():
+        return JSONResponse(
+            {"ok": False, "error": "a draft title can't be blank"}, status_code=422
         )
-    except BadInput as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-    except NotFound as exc:
+    old = ref.title or ""
+    body, is_error = await await_dispatch(
+        request, "edit", {"kind": "draft", "id": ref.slug or ref.id, "title": title}
+    )
+    if is_error:
         # The lookup above is not in the write transaction, so a concurrent
-        # delete between the two lands here — 404 like the miss above, not 500.
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+        # delete between the two lands here — surface the verb's message.
+        return JSONResponse({"ok": False, "error": body}, status_code=422)
     # Belt-and-braces, matching the other smartdraft write route: the heading is
     # edited IN PLACE, which `_cache_version`'s content digest now covers, so
     # this only saves the losing side of a race with a concurrent render.
@@ -3094,7 +3112,13 @@ async def set_title(
 
     _smartdraft.invalidate(ref.id)
     return JSONResponse(
-        {"ok": True, "title": title.strip(), "old": old, "heading_synced": synced}
+        {
+            "ok": True,
+            "title": title.strip(),
+            "old": old,
+            # the verb flags a missing title heading in its reply body
+            "heading_synced": "no title heading" not in body,
+        }
     )
 
 
@@ -3248,6 +3272,8 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
         return await redirect_or_error(
             request, "put", args, redirect=back, error_title="Create drawing error"
         )
+    # Direct on purpose: no verb links a figure chunk to its canvas ref (the
+    # canvas mint above already went through ``put``).
     store.drafts.link_figure_canvas(chunk.chunk_id, canvas.id)
     return RedirectResponse(url=f"/figure/{slug}", status_code=303)
 
@@ -3325,6 +3351,8 @@ async def refresh_figure_data_package(
     except ValueError as exc:
         return _error("Refresh failed", str(exc), 409)
 
+    # Direct on purpose: the refreshed PNG and the data-package stamp must land
+    # in one transaction, and no verb takes rendered bytes.
     with store.tx() as conn:
         store.drafts.upsert_chunk_blob(chunk.chunk_id, png, "image/png", conn=conn)
         store.drafts.stamp_figure_data_package(chunk.chunk_id, new_snapshot, conn=conn)
