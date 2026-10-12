@@ -16,10 +16,16 @@ A job/todo declares its box in ``meta.envelope``::
 Three enforcement *tiers*, chosen by how hard the guarantee must be — each
 consumes one resolver in this module:
 
-* **Tool-level** (cheap, cooperative) — :func:`disallowed_tools` drops the
-  precis write verbs and/or the fetch tools from ``claude -p`` via its
-  ``--settings permissions.deny`` channel. Enforced *now*, at the
-  :func:`precis.utils.claude_agent.call_claude_agent` chokepoint.
+* **Tool-level** — :func:`disallowed_tools` drops the precis write verbs
+  and/or the fetch tools from ``claude -p`` via its ``--settings
+  permissions.deny`` channel, at the
+  :func:`precis.utils.claude_agent.call_claude_agent` chokepoint. The
+  ``mcp__precis__<verb>`` names only resolve under the ``typed`` MCP
+  profile, so the precis half is backed by a **verb-level** deny that does
+  not depend on tool names: :func:`denied_verbs` is exported to the spawned
+  ``precis serve`` as ``PRECIS_MCP_DENY_VERBS`` and refused in
+  ``runtime/dispatch.py`` under either profile. The fetch/filesystem
+  built-in denies remain cooperative (they are Claude Code's own tools).
 * **Process-level** (real) — :func:`db_role` hands the task a read-only
   Postgres role (``agent_ro`` vs ``agent_rw``) so a write is refused by the
   database even if attempted. Consumed by the per-call ``precis serve`` the
@@ -88,13 +94,15 @@ DEFAULT = Envelope()
 # write boundary at the *tool* layer is the precis mutate verbs. The
 # fetch/search tools are the egress boundary at the tool layer. (These are
 # the cooperative tier; the DB role and no-net container are the real ones.)
-_PRECIS_WRITE_VERBS: tuple[str, ...] = (
-    "mcp__precis__put",
-    "mcp__precis__edit",
-    "mcp__precis__delete",
-    "mcp__precis__tag",
-    "mcp__precis__link",
+#: The precis verbs that mutate: source of truth for both the typed-profile
+#: tool names below and the profile-independent dispatch deny.
+PRECIS_WRITE_VERB_NAMES: tuple[str, ...] = ("put", "edit", "delete", "tag", "link")
+_PRECIS_WRITE_VERBS: tuple[str, ...] = tuple(
+    f"mcp__precis__{v}" for v in PRECIS_WRITE_VERB_NAMES
 )
+#: Env var carrying the comma-joined denied verbs to the spawned ``precis
+#: serve``; read by ``runtime/dispatch.py`` (which pins the same literal).
+DENY_VERBS_ENV = "PRECIS_MCP_DENY_VERBS"
 #: Built-in tools that can write the local filesystem — denied alongside the
 #: MCP verbs for a ``write:none`` box (a read-only task shouldn't edit files).
 _FS_WRITE_TOOLS: tuple[str, ...] = ("Write", "Edit", "NotebookEdit")
@@ -151,17 +159,15 @@ def disallowed_tools(env: Envelope) -> tuple[str, ...]:
 
     The caller merges this into ``claude -p``'s ``--settings
     permissions.deny`` (see :func:`precis.utils.claude_agent.call_claude_agent`).
-    Cooperative: a determined agent that ignored the deny would still hit
-    the DB role (:func:`db_role`) or the no-net container
-    (:func:`network_mode`) — the real boundaries.
-
     These ``mcp__precis__*`` names are **profile-dependent**: they only exist
     under the default ``typed`` MCP profile. Under ``PRECIS_MCP_PROFILE=
     command`` the server collapses to a single ``precis(command, ...)`` tool
-    and none of these names match anything — the chokepoint guards that
-    combination by refusing the call outright rather than running with a
-    silently inert deny (see
-    ``docs/backlog/agent-deny-lists-are-profile-dependent.md``).
+    and none of these names match anything — the chokepoint refuses that
+    combination outright (``InertDenyListError``). The profile-independent
+    enforcement of the precis half is :func:`denied_verbs`, applied in
+    dispatch. The built-in ``Write``/``Edit``/``WebFetch`` denies are Claude
+    Code's own tool gate; beyond them the real boundaries are the DB role
+    (:func:`db_role`) and the no-net container (:func:`network_mode`).
     """
     deny: list[str] = []
     if env.write == "none":
@@ -174,6 +180,24 @@ def disallowed_tools(env: Envelope) -> tuple[str, ...]:
     if env.egress == "none":
         deny.extend(_FETCH_TOOLS)
     return tuple(deny)
+
+
+def denied_verbs(env: Envelope) -> tuple[str, ...]:
+    """Precis verbs the server must refuse for this envelope, by verb name.
+
+    Profile-independent counterpart of the precis half of
+    :func:`disallowed_tools`: ``write:none`` → every mutate verb;
+    ``write:scoped`` → ``delete`` only. Exported to the spawned ``precis
+    serve`` as :data:`DENY_VERBS_ENV` and enforced in dispatch, so it holds
+    under both the ``typed`` and ``command`` MCP profiles. It guards only a
+    server whose environment carries the variable — the one the worker
+    spawns for this run.
+    """
+    if env.write == "none":
+        return PRECIS_WRITE_VERB_NAMES
+    if env.write == "scoped":
+        return ("delete",)
+    return ()
 
 
 def db_role(env: Envelope) -> str:
@@ -245,12 +269,15 @@ def active_envelope() -> Envelope | None:
 
 __all__ = [
     "DEFAULT",
+    "DENY_VERBS_ENV",
     "EGRESS_VALUES",
+    "PRECIS_WRITE_VERB_NAMES",
     "RETURN_VALUES",
     "WRITE_VALUES",
     "Envelope",
     "active_envelope",
     "db_role",
+    "denied_verbs",
     "disallowed_tools",
     "drops_side_effects",
     "envelope_scope",

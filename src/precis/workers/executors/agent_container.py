@@ -359,10 +359,12 @@ def container_env(
     mode = mode or agent_run_mode()
     auth_key = "ANTHROPIC_API_KEY" if mode == "api" else "CLAUDE_CODE_OAUTH_TOKEN"
     secret_keys = (auth_key, "PRECIS_DATABASE_URL") if dsn is not None else (auth_key,)
+    deny_verbs = _envelope.denied_verbs(env)
     return ContainerEnv(
         secret_keys=secret_keys,
         values={
             "PRECIS_MCP_DB_ROLE": _envelope.db_role(env),
+            **({_envelope.DENY_VERBS_ENV: ",".join(deny_verbs)} if deny_verbs else {}),
             "PRECIS_AGENT_MODE": mode,
             "PRECIS_AGENT_MODEL": model,
             # gr245505: first turn waits for the precis MCP server, same as

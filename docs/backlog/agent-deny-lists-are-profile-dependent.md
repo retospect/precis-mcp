@@ -73,9 +73,16 @@ gr254326 is the live report: a `write:none` envelope does not stop an agent
 from writing. Only the stopgap 02c14616 shipped (the refusal in
 `claude_agent.py::_check_deny_list_profile_safety` above). Two things remain:
 
-- A profile-independent verb deny in `runtime/dispatch.py`: the envelope's
-  denied verbs are enforced where both profiles funnel, so `write:none` holds
-  whatever tool names the profile exposes. This is option (1).
+- ~~Profile-independent verb deny~~ — shipped: `envelope.denied_verbs` is
+  exported to the spawned `precis serve` as `PRECIS_MCP_DENY_VERBS`
+  (`claude_agent._prepare_agent_env`, `agent_container.container_env`) and
+  refused in `dispatch.py::_refuse_envelope_denied_verb` with `Denied`, under
+  both profiles. Limits: it refuses the mutate verbs only (a side-effecting
+  `get`/`search` is `agent_ro`'s job), and only guards a `precis serve`
+  spawned with the variable — an in-process runtime in the worker is not
+  covered. Covers envelope `write:none|scoped` only; the dream pass's
+  explicit `_DREAM_DISALLOWED_TOOLS` still rests on the tool-name deny plus
+  the `InertDenyListError` stopgap.
 - Attribution for subagent writes: a write made by a subagent of a
   `write:none` run should record the parent run, so a breach is traceable to
   the envelope that should have blocked it.

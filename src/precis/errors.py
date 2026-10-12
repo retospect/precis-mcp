@@ -92,6 +92,10 @@ class Unsupported(PrecisError):
     """Mode or view not supported by this kind."""
 
 
+class Denied(PrecisError):
+    """The caller's permission envelope forbids this verb."""
+
+
 class Upstream(PrecisError):
     """A downstream system (DB, paid tool, network) failed."""
 

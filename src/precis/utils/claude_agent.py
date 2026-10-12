@@ -894,6 +894,11 @@ def _prepare_agent_env(
         from precis.workers import envelope as _envelope
 
         proc_env["PRECIS_MCP_DB_ROLE"] = _envelope.db_role(active_env)
+        # Verb-level deny, enforced in the server's dispatch under either MCP
+        # profile. Always reset so an ambient value can't leak in.
+        proc_env.pop(_envelope.DENY_VERBS_ENV, None)
+        if verbs := _envelope.denied_verbs(active_env):
+            proc_env[_envelope.DENY_VERBS_ENV] = ",".join(verbs)
     # First-turn MCP wait (gr245505). With tool search on (the CLI default),
     # a non-interactive first turn waits only for ``alwaysLoad`` servers;
     # ``precis`` keeps connecting in the background, so a short single-turn
@@ -921,6 +926,13 @@ def _prepare_agent_env(
         # The subprocess can't read the in-process ContextVar the OSS loop uses,
         # so these env back-doors are how the claude tick propagates its context.
         proc_env.update(env_overlay)
+    if active_env is not None:
+        # Verb-level deny, enforced in the server's dispatch under either MCP
+        # profile. Set last so neither an ambient value nor an overlay can
+        # loosen the envelope.
+        proc_env.pop(_envelope.DENY_VERBS_ENV, None)
+        if verbs := _envelope.denied_verbs(active_env):
+            proc_env[_envelope.DENY_VERBS_ENV] = ",".join(verbs)
     return proc_env
 
 

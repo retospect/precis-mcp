@@ -36,7 +36,7 @@ import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import BadInput, Internal, NotFound, PrecisError, Unsupported
+from precis.errors import BadInput, Denied, Internal, NotFound, PrecisError, Unsupported
 from precis.protocol import (
     _ALL_VERBS,
     TOLERATES_EXTRA_KWARGS_ATTR,
@@ -545,6 +545,26 @@ def _string_leaves(label: str, value: Any, out: list[tuple[str, str]]) -> None:
             _string_leaves(f"{label}[{i}]", v, out)
 
 
+#: Env var the worker sets on a spawned ``precis serve`` to deny verbs for the
+#: run's permission envelope (``precis.workers.envelope.DENY_VERBS_ENV`` — the
+#: same literal, pinned by a test; not imported to keep runtime free of
+#: workers). Both MCP profiles funnel through
+#: :meth:`DispatchMixin.dispatch_with_status`, so unlike ``permissions.deny``
+#: this cannot be erased by a tool-name mismatch.
+_DENY_VERBS_ENV = "PRECIS_MCP_DENY_VERBS"
+
+
+def _refuse_envelope_denied_verb(verb: str) -> None:
+    """Raise :class:`Denied` when the run's envelope forbids ``verb``."""
+    raw = os.environ.get(_DENY_VERBS_ENV)
+    if raw and verb in {v.strip() for v in raw.split(",")}:
+        raise Denied(
+            f"{verb} is denied by this run's permission envelope",
+            next="this run is read-only or scoped; report the change you "
+            "would make instead of making it",
+        )
+
+
 def _refuse_agent_secrets(verb: str, args: dict[str, Any], hub: Any = None) -> None:
     """Refuse a credential in an agent's put/edit/supersede text, for every
     kind whose handler does not set ``stores_opaque_text``.
@@ -611,6 +631,7 @@ class DispatchMixin(RuntimeShape):
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
+                _refuse_envelope_denied_verb(verb)
                 _refuse_agent_secrets(verb, args, self.hub)
                 response = self._dispatch_inner(verb, dict(args))
                 # Chunk over-large bodies so they don't blow the
