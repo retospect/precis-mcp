@@ -67,13 +67,14 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
    shards), and `gated` = `prod` = 63301c5c. The next main push had a green
    verdict 0.2 h after it landed, and `plan` resolved the last green sha
    over GraphQL under `checks: read` (run 37125755551:
-   `range=f953a5fae..HEAD`). Open: (b) one week of
-   `ci/**` queue delay (created → first job started) before vs after,
-   reported here; (c) Reto's max-candidate-age ruling changes only
-   `DEFAULT_MAX_CANDIDATE_HOURS`. Baseline: 0 of main's 52 commits in the
-   12 h to 12:00Z had a green verdict. Review item organizer-release-branch-1 (v2) has the
-   critique and Reto's two open decisions; design-bearing changes go to the
-   orchestrator as a design note before they land.
+   `range=f953a5fae..HEAD`). Queue delay (run created → first job
+   started, 150 sampled runs per week, measured 2026-10-12): `ci/**` ship
+   gates were unaffected, median 0.05 min / p90 0.07 (09-26..10-03) vs
+   0.05 / 0.10 (10-04..10-11). Main runs now wait in the shared group:
+   median 0.63 → 1.72 min, p90 1.43 → 18.4; 77 of 150 main runs never
+   started (a pending run replaced by a newer push, as designed). Open:
+   Reto's max-candidate-age ruling (the item, now a draft) changes only
+   `DEFAULT_MAX_CANDIDATE_HOURS`.
 4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3, the grace/purpose guards and the
    two-sessions-in-one-tree process-table check shipped,
