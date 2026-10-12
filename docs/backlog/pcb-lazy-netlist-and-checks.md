@@ -17,7 +17,7 @@ measurement and repro, so this spec is the only record after closure.
 `pcb-0042-implementation.md`"; that file does not mention any of them —
 the comment is wrong, this file owns them.)
 
-Hard dependency: `finding-stable-identity.md` (delta reporting in §1g).
+Hard dependency: the shipped finding ids (`precis.pcb.drc.finding_key`) (delta reporting in §1g).
 Cross-referenced, not duplicated: `ewod-controller-and-hv-supply.md`
 (Defect A, Slice 4 blockers, the RAW/VBUS and CH340N traps),
 `pcb-ewod-multitile.md` (rulings 1–11), the shipped fabric-as-fixed-copper work
@@ -273,7 +273,7 @@ stays as a preset filter for continuity.
   `house_default` (`drc.py::_two_tier`), one more axis: a finding's
   severity is a function of `(rule, phase)`.
 - **Delta reporting** (`new / still / resolved`) depends on
-  `finding-stable-identity.md` — hard dependency. `pcb_drc_findings`
+  the shipped finding ids (`precis.pcb.drc.finding_key`) — hard dependency. `pcb_drc_findings`
   persists rows per `run_id` but has no identity column; the layer can
   only say which complaints are new once findings persist with identity.
 
@@ -690,7 +690,7 @@ the snapshot.
   is `todo` before `routed`, `error` at `fab`; `unconnected_pin` warns
   before `fab`.
 - Delta (`new / still / resolved`) via `finding_key` — blocked by
-  `finding-stable-identity.md`; ship the filter and phase first, the delta
+  the shipped finding ids (`precis.pcb.drc.finding_key`); ship the filter and phase first, the delta
   when that lands (`blocked-by` is per-slice, not per-file).
 - `se` inherits the same `check` rendering through the shared finding
   contract; no se-specific work here.
@@ -762,7 +762,7 @@ class, one default net) routes the default net at fab clearance and keeps
   ("we throw out old hats that are useful to humans only"): the ARGUING is
   wanted, the clicking is not. What it actually needs is **stable quotable
   handles** so an LLM can say "R3C4's plaza via" and have it resolve — the
-  same identity work as `finding-stable-identity.md`, on design objects.
+  same identity work as the shipped finding ids (`precis.pcb.drc.finding_key`), on design objects.
   **Flagged for rewrite-or-kill; not rewritten here.** What the rewrite
   must target (Reto, 2026-09-24):
   - **Reuse the precis selector form `kind:identifier[~selector]`**, not a
@@ -802,7 +802,7 @@ class, one default net) routes the default net at fab clearance and keeps
    any route job.
 4. `view='check'` is the single surface; `view='drc'` is a documented
    preset of it; phase changes severity; delta reporting lands when
-   `finding-stable-identity.md` does.
+   the shipped finding ids (`precis.pcb.drc.finding_key`) does.
 5. Reference fixtures `esp32c3_reference`, `motor_power_reference` stay
    green; pinned DRC counts change only with a stated reason.
 
@@ -819,7 +819,7 @@ class, one default net) routes the default net at fab clearance and keeps
 - Store/schema: `_pcb_ops.py::_pcb_apply` (pin vocabulary, declare-all,
   net-naming rule), new migrations for `pcb_roles`,
   `pcb_netlist_snapshots`, `finding_key` on `pcb_drc_findings` (shared with
-  `finding-stable-identity.md`), drop `pcb_pin_swaps`.
+  the shipped finding ids (`precis.pcb.drc.finding_key`)), drop `pcb_pin_swaps`.
 - Handler: `handlers/pcb.py` (`view='check'`, `view='channel-map'`,
   `op='phase'`, `_render_drc` becomes a preset).
 - Skills: `precis-pcb-help`, `precis-pcb-route-help` (rewrite the

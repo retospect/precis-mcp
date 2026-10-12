@@ -107,7 +107,6 @@ from __future__ import annotations
 
 import collections
 import dataclasses
-import hashlib
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -123,6 +122,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
 from shapely.strtree import STRtree
 
+from precis.finding_id import finding_hash
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
@@ -304,8 +304,7 @@ def finding_key(f: DrcFinding) -> str:
     :func:`delta_against` pairs those rank for rank by margin rather than
     pretending the key is unique."""
     rule, ids, layer = finding_identity(f)
-    canon = "|".join((rule, layer or "", "+".join(ids)))
-    return hashlib.sha1(canon.encode("utf-8")).hexdigest()[:12]
+    return finding_hash(rule, ids, layer)
 
 
 #: A standing finding whose margin fell by more than this is reported as

@@ -131,6 +131,7 @@ from precis_se import bom as se_bom
 from precis_se import datums as se_datums
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
+from precis_se import finding_id as se_finding_id
 from precis_se import freedom as se_freedom
 from precis_se import fret, persist, simp_bridge
 from precis_se import joints as se_joints
@@ -266,6 +267,7 @@ class SeHandler(Handler):
                 "token",
                 "fmt",
                 "path",
+                "previous",
             }
         ),
         "put": frozenset({"description", "ops", "scenario"}),
@@ -1105,7 +1107,7 @@ class SeHandler(Handler):
         if v == "pockets":
             return Response(body=_render_pockets(tree))
         if v == "validate":
-            return Response(body=self._render_validate(tree, ref.id))
+            return Response(body=self._render_validate(tree, ref.id, args))
         if v == "mechanics":
             return Response(body=se_atomic_render.render_mechanics(self.store, tree))
         if v == "literature":
@@ -1126,7 +1128,11 @@ class SeHandler(Handler):
             return Response(body=_render_pick(self.store, tree, args))
         if v == "drc":
             body = _render_drc(
-                tree, self.store, ref.id, _scenario_line(self.store, ref.id)
+                tree,
+                self.store,
+                ref.id,
+                _scenario_line(self.store, ref.id),
+                args,
             )
             try:
                 body += self._fdm_drc_pointer(tree)
@@ -1254,7 +1260,9 @@ class SeHandler(Handler):
         """Method seam over :func:`validate_digest` (``view='drc'``)."""
         return validate_digest(findings)
 
-    def _render_validate(self, tree: SeTree, ref_id: int) -> str:
+    def _render_validate(
+        self, tree: SeTree, ref_id: int, args: dict[str, Any] | None = None
+    ) -> str:
         """``view='validate'`` — :mod:`precis_se.validate`'s findings plus
         :func:`precis_se.atomic.validate.validate_atomic`'s, under the
         filled-fraction honesty header, on BOTH the clean and the findings
@@ -1275,6 +1283,7 @@ class SeHandler(Handler):
         The header also records **which scenario governed** these checks
         (:func:`_scenario_line`) — a verdict whose production context isn't
         stated can't be re-read later."""
+        previous = se_finding_id.parse_previous(args)
         findings = self._validate_findings(tree, ref_id)
         header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]
         atomic_line = se_atomic_render.atomic_fill_line(tree)
@@ -1292,24 +1301,36 @@ class SeHandler(Handler):
         )
         fill_block = "\n".join(header_lines)
         if not findings:
-            return f"✓ no validator findings\n{fill_block}"
+            clean = f"✓ no validator findings\n{fill_block}"
+            _, clean_delta = se_finding_id.annotate([], [], previous)
+            return f"{clean}\n\n{clean_delta}" if clean_delta else clean
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
         n_info = sum(1 for f in findings if f.severity == "info")
-        rows = [
-            {
-                "severity": f.severity,
-                "rule": f.rule,
-                "subject": f.subject,
-                "detail": f.detail,
-            }
-            for f in findings
-        ]
+        rows, delta_text = se_finding_id.annotate(
+            [
+                {
+                    "severity": f.severity,
+                    "rule": f.rule,
+                    "subject": f.subject,
+                    "detail": f.detail,
+                }
+                for f in findings
+            ],
+            [se_finding_id.finding_id(f.rule, f.subject) for f in findings],
+            previous,
+        )
         info_suffix = f", {n_info} info" if n_info else ""
         return (
             f"# {n_error} error(s), {n_warn} warning(s){info_suffix}\n"
             f"{fill_block}\n\n"
-            + render_agent_table(rows, schema=["severity", "rule", "subject", "detail"])
+            + (delta_text + "\n\n" if delta_text else "")
+            + render_agent_table(
+                rows,
+                schema=_FINDING_SCHEMA_DELTA
+                if previous is not None
+                else _FINDING_SCHEMA,
+            )
         )
 
     def _render_kinematics(self, tree: SeTree, ref_id: int) -> str:
@@ -4357,7 +4378,17 @@ def _region_pin_findings(store: Any, tree: SeTree) -> list[se_validate.Validatio
     return out
 
 
-def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") -> str:
+_FINDING_SCHEMA = ["id", "severity", "rule", "subject", "detail"]
+_FINDING_SCHEMA_DELTA = ["id", "delta", "severity", "rule", "subject", "detail"]
+
+
+def _render_drc(
+    tree: SeTree,
+    store: Any,
+    ref_id: int,
+    scenario_line: str = "",
+    args: dict[str, Any] | None = None,
+) -> str:
     """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
     findings under the filled-fraction header (same honesty rule as
     validate — a clean empty design is unfilled, not done) and the
@@ -4383,6 +4414,7 @@ def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") 
     the drop happens **here**, at the one place that owns this list —
     never inside the pass, and never by the pass mutating what
     ``se_drc.drc`` returned."""
+    previous = se_finding_id.parse_previous(args)
     report = se_drc.drc(tree)
     report.findings.extend(se_precedent.findings(store, tree, ref_id))
     report.findings.extend(se_kinematics_drc.findings(store, tree, ref_id))
@@ -4397,24 +4429,35 @@ def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") 
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"
     lines: list[str] = []
+    drc_rows, delta_text = se_finding_id.annotate(
+        [
+            {
+                "severity": f.severity,
+                "rule": f.rule,
+                "subject": f.subject,
+                "detail": f.detail,
+            }
+            for f in report.findings
+        ],
+        [se_finding_id.finding_id(f.rule, f.subject) for f in report.findings],
+        previous,
+    )
     if not report.findings:
         lines.append(f"✓ no DRC findings\n{fill_line}")
+        if delta_text:
+            lines.append(f"\n{delta_text}")
     else:
         n_error = sum(1 for f in report.findings if f.severity == "error")
         n_warn = sum(1 for f in report.findings if f.severity == "warn")
         lines.append(f"# {n_error} error(s), {n_warn} warning(s)\n{fill_line}\n")
+        if delta_text:
+            lines.append(f"{delta_text}\n")
         lines.append(
             render_agent_table(
-                [
-                    {
-                        "severity": f.severity,
-                        "rule": f.rule,
-                        "subject": f.subject,
-                        "detail": f.detail,
-                    }
-                    for f in report.findings
-                ],
-                schema=["severity", "rule", "subject", "detail"],
+                drc_rows,
+                schema=_FINDING_SCHEMA_DELTA
+                if previous is not None
+                else _FINDING_SCHEMA,
             )
         )
     if report.dof_probes:
@@ -5565,12 +5608,12 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "revisions": frozenset(),
     "datums": frozenset(),
     "pockets": frozenset(),
-    "validate": frozenset(),
-    "clearance": frozenset({"a", "b", "state"}),
+    "validate": frozenset({"previous"}),
+    "clearance": frozenset({"a", "b", "state", "previous"}),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
     "pick": frozenset({"block", "atom", "token"}),
-    "drc": frozenset({"state"}),
+    "drc": frozenset({"state", "previous"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
     "fasten": frozenset(),
@@ -5944,7 +5987,7 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
     a_name = (args or {}).get("a")
     b_name = (args or {}).get("b")
     if not a_name and not b_name:
-        return _render_clearance_digest(tree)
+        return _render_clearance_digest(tree, se_finding_id.parse_previous(args))
     if not a_name or not b_name:
         raise BadInput(
             "get(kind='se', view='clearance') requires "
@@ -5983,7 +6026,7 @@ def _render_pair_clearance(tree: SeTree, pc: _PairClearance) -> str:
     return "\n".join(lines)
 
 
-def _render_clearance_digest(tree: SeTree) -> str:
+def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) -> str:
     """All-pairs clearance survey: every unique block pair named by a
     CONNECTS edge (self-connects excluded), worst gap first. A pair that
     can't be queried (missing/invalid envelope, incompatible scales) is
@@ -6023,21 +6066,33 @@ def _render_clearance_digest(tree: SeTree) -> str:
     # Worst (most negative = deepest interference) gap first.
     computed.sort(key=lambda pc: pc.gap_m)
 
-    rows = [
-        {
-            "a": pc.a_name,
-            "b": pc.b_name,
-            "joint": _joint_class_for(tree, pc.a_name, pc.b_name) or "—",
-            "gap": format_quantity(pc.gap_m, "length"),
-            "tag": pc.verdict,
-        }
-        for pc in computed
-    ]
+    # id = the pair, never the gap: a deeper interference between the same
+    # two blocks is the same row (``still``), not gone + new.
+    rows, delta_text = se_finding_id.annotate(
+        [
+            {
+                "a": pc.a_name,
+                "b": pc.b_name,
+                "joint": _joint_class_for(tree, pc.a_name, pc.b_name) or "—",
+                "gap": format_quantity(pc.gap_m, "length"),
+                "tag": pc.verdict,
+            }
+            for pc in computed
+        ],
+        [
+            se_finding_id.finding_id("clearance", f"{pc.a_name}—{pc.b_name}")
+            for pc in computed
+        ],
+        previous,
+    )
     header = f"# clearance digest — {len(computed)} pair(s) from CONNECTS"
     if truncated:
         header += f" (showing first {_CLEARANCE_DIGEST_BUDGET} of {total_pairs})"
-    table = render_agent_table(rows, schema=["a", "b", "joint", "gap", "tag"])
-    body = f"{header}\n\n{table}"
+    schema = ["id", "a", "b", "joint", "gap", "tag"]
+    if previous is not None:
+        schema.insert(1, "delta")
+    table = render_agent_table(rows, schema=schema)
+    body = f"{header}\n\n" + (f"{delta_text}\n\n" if delta_text else "") + table
     if notes:
         body += "\n\n" + "\n".join(notes)
     return body

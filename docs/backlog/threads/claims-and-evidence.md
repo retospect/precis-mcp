@@ -153,10 +153,6 @@ All `backlog/<slug>.md`; each unparks when the triage promotes it.
 
 ## Seam
 
-- `finding-stable-identity` was filed with this cluster by name only: it is
-  about pcb/se DRC findings (`pcb_drc_findings` has no stable key), not claim
-  hubs. Owner is the pcb thread, not this one.
-
 - `knowledge-mesh.md` keeps the taproot umbrella (hub model, seniority,
   hub-refine); this thread owns the defect and follow-on items. A fix that
   changes the hub schema is knowledge-mesh's call.

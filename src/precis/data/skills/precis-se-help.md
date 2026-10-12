@@ -527,6 +527,21 @@ block pair named by the design's CONNECTS, worst gap first, capped at 64
 pairs; a block missing an effective envelope is skipped with a note
 rather than failing the whole survey.
 
+**Finding ids and deltas.** `view='validate'`, `view='drc'` and the
+`view='clearance'` digest carry an `id` column (12 hex chars), derived like
+the `pcb` DRC ids (`precis-pcb-help`, "finding ids"; one shared hash over
+`(rule, sorted participants)`): the `subject` split on `—` and sorted, so
+`a—b` and `b—a` key the same — never the detail text, a depth/gap or the row
+position. Two checks on an unchanged tree give identical ids; a deeper
+interference between the same two blocks keeps its id. `se` stores nothing,
+so the delta is caller-supplied: pass the earlier report's ids as
+`args={'previous': ['<id>', …]}` (or one comma-separated string) and the
+head reads `vs previous: N new, M still, K gone`, the table gains a `delta`
+column (`new` / `still`) and a `## gone since previous` list names the ids
+that vanished. A malformed id is refused rather than read as "all new".
+Several findings sharing one rule and subject share an id; the diff counts
+them as a multiset.
+
 `view='sweep'` — every declared state at once: `precis-se-states-help`.
 
 ## Build a block tree over atoms (atomic mode)
