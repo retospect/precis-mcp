@@ -73,19 +73,9 @@ def _handler(store: Store) -> PcbHandler:
 
 
 def _vitals(store: Store, ref_id: int) -> dict[str, Any]:
-    """The numbers a reader wants above the pictures: part/net counts,
-    route status, and the latest DRC error tally."""
-    design = store.pcb_load(ref_id)
-    _run, findings = store.pcb_drc_findings_latest(ref_id)
-    drc = collections.Counter(
-        str(f["rule"]) for f in findings if f["severity"] == "error"
-    )
-    return {
-        "n_parts": len(design["instances"]),
-        "n_nets": len(design["nets"]),
-        "route_status": design.get("route_status") or {},
-        "drc": dict(sorted(drc.items())),
-    }
+    """The numbers a reader wants above the pictures — the shared block
+    (:func:`precis.pcb.argue.vitals`) the ``pcb_argue`` job quotes too."""
+    return argue.vitals(store, ref_id)
 
 
 @router.get("/pcb", response_class=HTMLResponse)

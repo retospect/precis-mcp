@@ -798,6 +798,25 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-pcb-route-help",
     ),
     ServiceSpec(
+        # docs/backlog/pcb-argue-with-design.md slice 2: answer a pcb
+        # design's open argument notes in place — resolve each question's
+        # handles through precis.pcb.argue, run the real machinery (one
+        # live geometric DRC run + measures + part-pair distances), and
+        # store one origin='proposed' answer note re each question.
+        # job_inproc (bounded in-proc; the MEDIUM-tier router call is
+        # in-process too — never a claude -p subprocess, so no `requires`,
+        # the derived_drain reasoning verbatim).
+        name="pcb_argue",
+        label="PCB argue (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("pcb-argue",),
+        one_line="Answer a pcb design's open argument notes in place — "
+        "minted by put(kind='job', job_type='pcb_argue', parent_id=<pcb>).",
+        doc_skill="precis-pcb-route-help",
+    ),
+    ServiceSpec(
         # Fetch an agent-supplied PDF URL into the watch inbox for a paper
         # stub; minted by put(kind='paper', args={'pdf_url': ...}).
         name="paper_pull",

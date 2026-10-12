@@ -3,7 +3,6 @@ status: draft
 title: back-port the handle-accumulation argue box from pcb to se
 prio: low
 model: sonnet
-blocked-by: pcb-argue-with-design.md
 pillar: 3d-design
 ---
 

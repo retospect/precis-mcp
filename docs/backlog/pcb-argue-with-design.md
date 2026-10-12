@@ -1,6 +1,6 @@
 ---
 status: ready
-title: pcb — argue with the design: slice 2, the LLM acts on open arguments
+title: pcb — argue with the design: remainder (decisions + ops owed)
 prio: high
 model: opus
 pillar: 3d-design
@@ -30,12 +30,32 @@ other items (`pcb-keepout-does-not-bind.md`, `pcb-platform.md`) that cite
 | board feature | `feature:outline` | `pcb_features.ftype` |
 | nothing (whole-design argument) | *(no handle)* | the design |
 
-## Left from slice 1
+Slice 2 shipped (`feat(pcb): argue slice 2 - pcb_argue job acts on open
+notes`): the `pcb_argue` job type (`src/precis/workers/job_types/
+pcb_argue.py`, `job_inproc`, parent the design it argues about —
+`PcbHandler` `KindSpec.can_own_jobs=True`) reads open `question` notes
+(`open_questions` over `pcb_notes_list`), resolves their anchors through
+`argue.resolve` (object handles against the same selectables catalogue
+the page builds), runs the real machinery once per run — a live
+geometric DRC run via `PcbHandler._drc_run`, `eyes.evaluate_measures`,
+part-pair centroid distances — and stores one `answer` note
+(`origin='proposed'`, `re=` the question, same `about`) per question via
+`argue.act`'s playbook prompt (gr335242 comment 1 verbatim: propose
+edits for change requests, numbers for interference concerns, an honest
+"not modelled, waits on <item>" for what the evidence can't settle).
+`argue.vitals` is the shared vitals block the page and the job both
+quote. Mint door: `put(kind='job', job_type='pcb_argue',
+parent_id=<pcb ref>, params={'pcb_ref_id': N, 'limit'?, 'question'?})`.
+The Edge_Cuts group of `render_fab_svg` now carries
+`data-handle="feature:outline"` whenever the board's outline is a
+`pcb_features` row — the first `feature:*` handle the render emits.
 
-- `feature:*` handles resolve on submit but nothing in the render emits
-  them yet (Edge_Cuts strokes carry no `%TO` attribute; `pcb_features`
-  rows are not drawn as such). Emit `feature:outline` on the Edge_Cuts
-  group once the outline is a `pcb_features` row on real designs.
+## Left
+
+- **prod `service_config` row for `pcb_argue`** — the doc's fourth
+  wiring item, owed to prod ops (the same gap that bit disputes
+  conflict-search and the `se_propose_atomic` rename). Without it the
+  job type has no console record and no enablement story.
 - A part body is known only from `%TO.P` pad attributes — a part with no
   named pads has no click target. `%TO.C` on silk would fix it but changes
   gerber bytes (every fab-export byte assertion); decide deliberately.
@@ -45,39 +65,8 @@ other items (`pcb-keepout-does-not-bind.md`, `pcb-platform.md`) that cite
   not exercised in a browser by the shipping session. Manual check: open
   `/pcb/ewod-dogfood-1`, click an electrode pad, the HV507 body and a
   track; the box must read e.g. `ARR1.R3C4 U1 net:HV_RAIL`.
-- `pcb-argue-backport-se.md` is now unblocked.
-
-## Slice 2 — the LLM acts on the argument
-
-An argument note is an instruction, not just a record: "so the llm can
-fix problems". Slice 1 answers inline, once, with prose. A `pcb_argue`
-job type reads open argument notes on a design, resolves their anchors,
-and answers each in place — following `gr335242` comment 1's playbook,
-which already classified the three canonical argument forms and is
-kind-agnostic:
-
-- **change request** → propose the edit (`origin='proposed'`, human
-  accepts) — e.g. "R_BLEED should be bottom-side".
-- **interference/geometry concern** → run the real machinery (DRC on
-  the named pair, clearance probe, courtyard check) and answer with
-  numbers — e.g. "these two pads look shorted".
-- **verification question** → run what exists and answer HONESTLY when
-  the question exceeds the model, naming the backlog item it waits on —
-  never a confabulated yes.
-
-Every answer lands as an `answer`/`decision` note anchored to the same
-handles (`store.pcb_note_insert`, `re=` the question), so the argument
-thread lives on the design. `precis.utils.notes.open_questions` over
-`pcb_notes_list` is the work queue.
-
-**Wiring this slice needs, none of it free** (the vet caught all four):
-`PcbHandler`'s `KindSpec` must set `can_own_jobs=True` (it never does
-today — defaults `False`; `handlers/figure.py` is the explicit-`True`
-precedent) so the job can be parented on the design it argues about;
-a params schema; an executor lane assignment; and a **prod
-`service_config` row**, without which the job type ships dark and
-never runs — that exact gap has bitten this project twice (disputes
-conflict-search, and the nm→se `se_propose_atomic` rename).
+- `pcb-argue-backport-se.md` is unblocked — slice 2 is the shared job it
+  mirrors.
 
 ## Left from gr335242 (se/nm viewer, rounds 1/2a shipped)
 

@@ -145,7 +145,11 @@ off that gap until it closes.
 7. **pcb-se-binding v2** — section "Follow-up v2" in
    `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
    with real heights and subtracted mounting holes. Blocked-by 6.
-8. **backlog/pcb-argue-with-design.md**
+8. **backlog/pcb-argue-with-design.md** — slices 1+2 shipped; the
+   `pcb_argue` job answers open notes in place. Left in the file: the
+   prod `service_config` row (ops), the `%TO.C` gerber-bytes decision
+   (Reto), the browser click check (human), and `pcb-argue-backport-se`
+   now unblocked.
 9. **backlog/cross-scale-single-assembly.md** — blocked-by 6
    (pcb-se-binding).
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -1379,6 +1380,84 @@ def content_hash(
     return hashlib.blake2b(payload_json.encode("utf-8"), digest_size=12).hexdigest()
 
 
+def stackup_capability(stackup: list[dict[str, Any]]) -> CapabilityRow | None:
+    """This board's fab-capability row, or ``None`` for a layer count
+    :func:`precis.pcb.drc.process_for_stackup` has no row for.
+
+    Was ``PcbHandler._stackup_capability`` until ``pcb_argue`` needed the
+    same lookup and the workers->handlers layering contract refused the
+    import. ``None`` rather than raising, for exactly the reason
+    :func:`furniture_clearance_mm` documents — a board on an unsupported
+    layer count still has to export and preview."""
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb.capabilities import capability_for
+
+    try:
+        return capability_for(pcb_drc.process_for_stackup(stackup))
+    except ValueError:
+        return None
+
+
+def furniture_clearance_mm(stackup: list[dict[str, Any]]) -> float | None:
+    """The clearance :func:`precis.pcb.furniture.board_furniture` hands to
+    :func:`precis.pcb.planes.cut_antipads` for a fiducial's antipad ring —
+    resolved from :mod:`precis.pcb.capabilities` through
+    :func:`precis.pcb.rules.resolve_net_rules`, the SAME resolver the DRC
+    render calls per-net. No net-class override applies to a fiducial (it
+    carries no net), so this is the fab-floor figure.
+
+    ``None`` for a stackup layer count with no capability row, rather
+    than raising: the gerber and fab-SVG renders (unlike the DRC render)
+    never called ``capability_for`` before this ring existed, and a board
+    that has not been routed yet — so carries no pour, hence nothing for
+    ``cut_antipads`` to cut — must still export/preview cleanly on an
+    unsupported layer count."""
+    capability = stackup_capability(stackup)
+    if capability is None:
+        return None
+    from precis.pcb.rules import resolve_net_rules
+
+    return resolve_net_rules("", layer_is_outer=True, fab_caps=capability).clearance_mm
+
+
+#: The label abbreviations a real part label uses for "electrolytic"/
+#: "tantalum"/generic "polarized" — the polarity test
+#: :func:`polarized_refdes` shares with every silk caller.
+_POLARIZED_LABEL_RE = re.compile(r"ELEC|TANT|POL", re.IGNORECASE)
+
+
+def polarized_refdes(design: dict[str, Any]) -> frozenset[str]:
+    """The refdes of every instance that carries REAL polarity — the
+    ``polarized`` set :func:`~precis.pcb.silk.build_silk` (via
+    :func:`~precis.pcb.furniture.board_furniture`) uses to decide which
+    R/C/L/FB parts still get a pin-1 mark (that module's own docstring,
+    "Not every part needs one"). Was ``PcbHandler._polarized_refdes`` —
+    moved here with ``stackup_capability``/``furniture_clearance_mm`` when
+    ``pcb_argue`` needed the same determination and the workers->handlers
+    layering contract refused the import.
+
+    The IR silk builds from has refdes but no labels, so this happens off
+    the raw design's ``instances`` list. An instance is polarized when it
+    declares ``"polarized": true`` outright, OR its ``label`` matches
+    (case-insensitively) one of ELEC/TANT/POL — neither test authoritative
+    on its own: a label is free text a BOM author may not have written
+    consistently, and a design with no ``polarized`` flag at all (the
+    common case today) must still infer polarity from whatever label it
+    has."""
+    out: set[str] = set()
+    for i in design.get("instances") or []:
+        refdes = str(i.get("refdes") or "")
+        if not refdes:
+            continue
+        if i.get("polarized"):
+            out.add(refdes)
+            continue
+        label = str(i.get("label") or "")
+        if _POLARIZED_LABEL_RE.search(label):
+            out.add(refdes)
+    return frozenset(out)
+
+
 __all__ = [
     "apply_pin_swap_overrides",
     "apply_real_pin_offsets",
@@ -1388,13 +1467,16 @@ __all__ = [
     "extract_sketch",
     "fixed_vias_from_copper",
     "footprints_by_refdes",
+    "furniture_clearance_mm",
     "land_rects_by_instance",
     "local_footprint_names_by_refdes",
     "mounting_holes_from_features",
     "outline_from_features",
     "pin_swap_diff",
+    "polarized_refdes",
     "positions",
     "segment_key",
     "signal_layers",
     "sorted_graph",
+    "stackup_capability",
 ]

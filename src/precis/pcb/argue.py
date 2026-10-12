@@ -41,10 +41,16 @@ member list for a net) and the design's vitals. The reply is stored as
 an ``answer`` note (``origin='proposed'``) re the question, anchored to
 the same handles. The question is stored FIRST and verbatim — a model
 outage degrades to "recorded, unanswered", never to a lost argument.
+:func:`act` is the job-side twin (``pcb_argue``, slice 2): the same call
+with the gr335242 playbook prepended and a machinery-evidence block the
+job computed (DRC findings, part-pair distances, measure verdicts), so
+an interference concern is answered with numbers and a verification
+question gets an honest "not modelled" instead of a guess.
 """
 
 from __future__ import annotations
 
+import collections
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -261,14 +267,25 @@ def prompt(
     return _PROMPT.format(title=title, vitals=vit, context=ctx, text=text)
 
 
-def ask(
-    *,
-    title: str,
-    text: str,
-    resolved: list[Resolved],
-    vitals: dict[str, Any],
-    ref_id: int | None = None,
-) -> str:
+def vitals(store: Any, ref_id: int) -> dict[str, Any]:
+    """The numbers a reader wants above the pictures: part/net counts,
+    route status, and the latest persisted DRC error tally — one block,
+    shared by the board page's inline answer and the ``pcb_argue`` job so
+    the two never quote different vitals at the same design."""
+    design = store.pcb_load(ref_id)
+    _run, findings = store.pcb_drc_findings_latest(ref_id)
+    drc = collections.Counter(
+        str(f["rule"]) for f in findings if f["severity"] == "error"
+    )
+    return {
+        "n_parts": len(design["instances"]),
+        "n_nets": len(design["nets"]),
+        "route_status": design.get("route_status") or {},
+        "drc": dict(sorted(drc.items())),
+    }
+
+
+def _route_call(prompt_text: str, ref_id: int | None) -> str:
     """One MEDIUM-tier call; the model's prose answer. Raises on transport
     failure or an empty reply — the caller degrades, this never does."""
     from precis.utils.llm.router import LlmRequest, Tier, route
@@ -277,7 +294,7 @@ def ask(
         LlmRequest(
             tier=Tier.MEDIUM,
             source=LLM_SOURCE,
-            prompt=prompt(title=title, text=text, resolved=resolved, vitals=vitals),
+            prompt=prompt_text,
             max_usd=LLM_MAX_USD,
             timeout_s=LLM_TIMEOUT_S,
             ref_id=ref_id,
@@ -289,6 +306,109 @@ def ask(
     if not answer:
         raise RuntimeError("the model returned no answer")
     return answer
+
+
+def ask(
+    *,
+    title: str,
+    text: str,
+    resolved: list[Resolved],
+    vitals: dict[str, Any],
+    ref_id: int | None = None,
+) -> str:
+    """The inline answer (POST /pcb/{slug}/note): one MEDIUM-tier call."""
+    return _route_call(
+        prompt(title=title, text=text, resolved=resolved, vitals=vitals), ref_id
+    )
+
+
+_ACT_PROMPT = """\
+You are acting on a printed-circuit-board design named {title!r}: a human \
+left arguments on it (naming parts, pads and nets by HANDLE — REFDES (a \
+part), REFDES.PIN (one pad), net:NAME (a net), feature:TYPE (board \
+features), and the board viewer's selection keys for objects with no \
+name: via:X:Y (a VIA), silk:LAYER:ROLE:REFDES (a SILK label), outline:N \
+(an OUTLINE segment), fiducial:N (a FIDUCIAL)). This argument was recorded \
+verbatim as a question; your reply is stored as the answer note anchored \
+to the same handles — write it for the human who reads the ledger.
+
+Playbook — classify the argument, then answer its own kind:
+
+(a) CHANGE REQUEST -> say concretely what should change (which handle, \
+what edit) and what it would affect. You change nothing yourself: the \
+answer is stored origin='proposed' for a human to accept.
+(b) INTERFERENCE / GEOMETRY CONCERN -> answer from the machinery's \
+numbers below (a FRESH placement-DRC pass over the board as it stands \
+now — placement-drc lines — plus the last full geometric run's \
+routed-copper numbers where one exists — full-drc lines — plus authored \
+measures and part-pair distances). Quote the number, never approximate \
+one.
+(c) VERIFICATION QUESTION -> answer from the evidence; when the \
+question exceeds what the machinery checked or the context shows, say \
+so plainly and name the backlog item it waits on — never a \
+confabulated yes.
+
+Design vitals:
+{vitals}
+
+Handles and their context:
+{context}
+
+Machinery evidence for these handles:
+{evidence}
+
+The argument:
+{text}
+
+Answer in plain prose, at most 200 words, naming handles exactly as \
+given. If the evidence section is thin for this argument, say what was \
+not checked rather than guessing.
+"""
+
+
+def act_prompt(
+    *,
+    title: str,
+    text: str,
+    resolved: list[Resolved],
+    vitals: dict[str, Any],
+    evidence: list[str],
+) -> str:
+    ctx = (
+        "\n".join(f"- {r.handle} ({r.kind}): {r.context!r}" for r in resolved)
+        or "- (none — a whole-design argument)"
+    )
+    vit = "\n".join(f"- {k}: {v!r}" for k, v in vitals.items()) or "- (none)"
+    ev = (
+        "\n".join(f"- {e}" for e in evidence)
+        or "- (no machinery covered these handles — say so, do not guess)"
+    )
+    return _ACT_PROMPT.format(
+        title=title, vitals=vit, context=ctx, evidence=ev, text=text
+    )
+
+
+def act(
+    *,
+    title: str,
+    text: str,
+    resolved: list[Resolved],
+    vitals: dict[str, Any],
+    evidence: list[str],
+    ref_id: int | None = None,
+) -> str:
+    """The job-side answer (``pcb_argue`` job): the gr335242 playbook
+    prompt + the machinery's numbers, one MEDIUM-tier call."""
+    return _route_call(
+        act_prompt(
+            title=title,
+            text=text,
+            resolved=resolved,
+            vitals=vitals,
+            evidence=evidence,
+        ),
+        ref_id,
+    )
 
 
 def note_name(kind: str, text: str, taken: set[str]) -> str:
@@ -309,6 +429,8 @@ __all__ = [
     "HANDLE_RE",
     "OBJECT_PREFIXES",
     "Resolved",
+    "act",
+    "act_prompt",
     "all_handles",
     "ask",
     "candidates",
@@ -322,4 +444,5 @@ __all__ = [
     "pad_handle",
     "prompt",
     "resolve",
+    "vitals",
 ]

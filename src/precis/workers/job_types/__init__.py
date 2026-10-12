@@ -475,6 +475,16 @@ def _load_datasheet_pull() -> JobTypeSpec:
     return datasheet_pull.SPEC
 
 
+def _load_pcb_argue() -> JobTypeSpec:
+    # docs/backlog/pcb-argue-with-design.md slice 2: answer a pcb design's
+    # open argument notes in place (resolve handles, run the real
+    # machinery, store origin='proposed' answer notes). Plugin dispatch
+    # under job_inproc.
+    from precis.workers.job_types import pcb_argue
+
+    return pcb_argue.SPEC
+
+
 def _load_paper_pull() -> JobTypeSpec:
     # Fetch an agent-supplied PDF URL into the watch inbox with a fetch
     # sidecar for a paper stub — the enqueued half of
@@ -734,6 +744,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "datasheet_pull":
         _REGISTRY["datasheet_pull"] = _load_datasheet_pull()
         return _REGISTRY["datasheet_pull"]
+    if name == "pcb_argue":
+        _REGISTRY["pcb_argue"] = _load_pcb_argue()
+        return _REGISTRY["pcb_argue"]
     if name == "paper_pull":
         _REGISTRY["paper_pull"] = _load_paper_pull()
         return _REGISTRY["paper_pull"]
@@ -791,6 +804,7 @@ def known_job_types() -> list[str]:
         "pcb_place",
         "pcb_route",
         "datasheet_pull",
+        "pcb_argue",
         "paper_pull",
         "deferred_llm_call",
     ]

@@ -1024,6 +1024,7 @@ def render_fab_svg(
     title: str = "board",
     margin_mm: float = 2.0,
     selection_manifest: dict[str, Any] | None = None,
+    outline_handle: str | None = None,
 ) -> str:
     """An SVG of a whole fab set, one toggleable group per layer.
 
@@ -1071,7 +1072,21 @@ def render_fab_svg(
         # THROUGH a hole, exactly backwards), and silkscreen is physically
         # ink sitting on top, not something to see other layers through.
         op_attr = f' opacity="{_COPPER_LAYER_OPACITY}"' if key.endswith("_Cu") else ""
-        body.append(f'<g id="layer-{key}" class="{cls}" fill="{colour}"{op_attr}>')
+        # The Edge_Cuts GROUP carries `feature:outline` (pcb-argue-with-
+        # design.md slice 2): its strokes are anonymous gerber geometry —
+        # the one handle they all mean is the pcb_features outline row the
+        # file was exported from. `outline_handle` is passed only when the
+        # design's outline is such a row; gerber strokes without one never
+        # claimed it. `closest()` from a bare stroke hits the group, so the
+        # whole outline answers to one click.
+        group_handle = (
+            _handle_attr(outline_handle)
+            if key == "Edge_Cuts" and outline_handle
+            else ""
+        )
+        body.append(
+            f'<g id="layer-{key}" class="{cls}" fill="{colour}"{op_attr}{group_handle}>'
+        )
         art = arts.get(key)
         if key.endswith("_Mask"):
             # A film with holes, not the holes themselves — see the module

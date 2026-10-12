@@ -341,6 +341,16 @@ route button on that page — actions stay here, in `put(args={'op':…})`.
 it before a place/route to see what the human already argued, and answer
 open questions the machinery can settle.
 
+**Act on the arguments — the `pcb_argue` job.** `put(kind="job",
+job_type="pcb_argue", parent_id=<pcb ref id>, params={"pcb_ref_id": <id>})`
+(`limit`, `question` optional) answers every open `question` note in
+place: resolves each note's handles, runs the machinery (fresh placement
+DRC, the last full run's routed-copper findings, measures, part-pair
+distances), stores one `answer` note `re=` the question,
+`origin='proposed'` — proposed edits for change requests, numbers for
+interference concerns, an honest "not modelled" for what the evidence
+can't settle.
+
 ## Fill in a missing footprint — `op='footprint'`
 
 `view='drc'` reporting `synthesized_footprint` means a catalog `part=`

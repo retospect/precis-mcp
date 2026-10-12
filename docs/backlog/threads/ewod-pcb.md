@@ -337,9 +337,9 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 15. **backlog/component-followons.md** — `idea`; comparator/violator query,
     price-break costing on the shipped component kind. Waits on nothing; no
     pcb item depends on it.
-16. **backlog/pcb-argue-backport-se.md** — `blocked-by`
-    pcb-argue-with-design (se-machine-design Do-next 5, not ranked here);
-    low, back-ports the argue box to se.
+16. **backlog/pcb-argue-backport-se.md** — unblocked 2026-10-12
+    (pcb-argue-with-design slice 2 landed the shared job); se-machine-
+    design Do-next 8, not ranked here; low, back-ports the argue box to se.
 17. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
     above serves; re-read when ranking the next round.
 
