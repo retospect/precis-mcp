@@ -32,7 +32,11 @@ from typing import TYPE_CHECKING, Any, Literal
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput
-from precis.identity import make_pub_id, make_taproot_hub_paper_id
+from precis.identity import (
+    make_pub_id,
+    make_taproot_hub_paper_id,
+    normalize_text_for_hash,
+)
 from precis.ingest.provenance import check_ref_retraction
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
@@ -367,6 +371,122 @@ def _enqueue_conflict_sweep(store: Store, hub_ref_id: int, *, conn: Any) -> None
         )
 
 
+#: Hop cap for :func:`_merge_survivor` — a longer collapse chain is a
+#: cycle or corruption, not merge history.
+_MERGE_CHAIN_MAX_HOPS = 8
+
+
+def _merge_survivor(c: Any, ref_id: int) -> int:
+    """The live hub ``ref_id``'s identity now belongs to (gr477211).
+
+    ``ref_id`` itself when it is live. A merged loser
+    (:func:`merge_hubs`) is soft-deleted but keeps its ``pub_id`` rows, so
+    a re-mint of its exact ``(sentence, scope)`` used to converge onto the
+    retired loser. A retired hub whose only remaining link is its
+    ``loser --refines--> winner`` collapse record (the merge repoints or
+    drops every other edge) resolves to that winner, hop by hop. Anything
+    else retired comes back unchanged — this does not guess why a hub was
+    deleted.
+    """
+    current = ref_id
+    for _ in range(_MERGE_CHAIN_MAX_HOPS):
+        row = c.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (current,)
+        ).fetchone()
+        if row is None or row[0] is None:
+            return current
+        links = c.execute(
+            "SELECT src_ref_id, dst_ref_id, relation FROM links "
+            "WHERE src_ref_id = %s OR dst_ref_id = %s LIMIT 2",
+            (current, current),
+        ).fetchall()
+        if (
+            len(links) != 1
+            or int(links[0][0]) != current
+            or links[0][2] != MERGE_COLLAPSE_RELATION
+        ):
+            return ref_id
+        current = int(links[0][1])
+    return ref_id
+
+
+def _scope_named(value: str, sentence_key: str) -> bool:
+    """Whether the sentence itself names this scope value, as whole words
+    (``air`` is not named by "fairly")."""
+    v = normalize_text_for_hash(value)
+    if len(v) < 3:
+        return False
+    return re.search(rf"(?<!\w){re.escape(v)}(?!\w)", sentence_key) is not None
+
+
+def _restates_scope(
+    new_scope: dict[str, Any], hub_scope: dict[str, Any], sentence_key: str
+) -> bool:
+    """Whether two scopes on the same sentence describe one claim.
+
+    Claim sentences are self-contained (``canon.CLAIM_FORM_RULES``), so a
+    scope axis the sentence names is pinned by the sentence: a differing
+    value on the other side is a leaked label (the citing draft's subject,
+    fi449493's ``material=Carbon nanobuds`` on a sentence about "carbon
+    nanomaterials"), not a narrower claim. An axis neither side's value is
+    named in is real scope — ``material=A`` vs ``material=B`` on a sentence
+    naming neither stays two hubs.
+    """
+    for key in set(new_scope) | set(hub_scope):
+        a = str(new_scope.get(key) or "")
+        b = str(hub_scope.get(key) or "")
+        if normalize_text_for_hash(a) == normalize_text_for_hash(b):
+            continue
+        if not (_scope_named(a, sentence_key) or _scope_named(b, sentence_key)):
+            return False
+    return True
+
+
+def _find_restated_hub(c: Any, claim: CanonicalClaim) -> int | None:
+    """A hub already stating ``claim.sentence`` under a scope that
+    :func:`_restates_scope` reconciles with ``claim.scope`` — the
+    draft-scoped restatement the scope-hashed ``pub_id`` misses (gr477211).
+
+    Sentence first, scope second: candidates are claim hubs whose title
+    normalizes to the same sentence, live ones first, then merged losers
+    (resolved to their survivor); an exact scope match wins over a
+    reconciled one. Driven from the ``TAPROOT:claim`` tag, so the scan is
+    over hubs, not every finding.
+    """
+    sentence_key = normalize_text_for_hash(claim.sentence)
+    if not sentence_key:
+        return None
+    rows = c.execute(
+        """
+        SELECT r.ref_id, r.title, r.meta->'scope', r.retired_at IS NOT NULL
+          FROM tags t
+          JOIN ref_tags rt ON rt.tag_id = t.tag_id
+          JOIN refs r ON r.ref_id = rt.ref_id
+         WHERE t.namespace = %s AND t.value = %s
+           AND r.kind = 'finding'
+           AND regexp_replace(lower(btrim(r.title)), '\\s+', ' ', 'g') = %s
+         ORDER BY r.retired_at IS NOT NULL, r.ref_id
+        """,
+        (TAPROOT_NAMESPACE, TAPROOT_CLAIM, " ".join(claim.sentence.lower().split())),
+    ).fetchall()
+    new_scope = dict(claim.scope)
+    matches: list[tuple[bool, bool, int]] = []
+    for ref_id, title, scope, retired in rows:
+        if normalize_text_for_hash(title) != sentence_key:
+            continue
+        hub_scope = dict(scope or {})
+        if not _restates_scope(new_scope, hub_scope, sentence_key):
+            continue
+        survivor = _merge_survivor(c, int(ref_id))
+        if retired and survivor == int(ref_id):
+            continue  # deleted for some other reason — not a convergence target
+        exact = {k: str(v) for k, v in hub_scope.items()} == {
+            k: str(v) for k, v in new_scope.items()
+        }
+        matches.append((not exact, bool(retired), survivor))
+    return min(matches)[2] if matches else None
+
+
 def mint_hub(
     store: Store,
     claim: CanonicalClaim,
@@ -401,6 +521,13 @@ def mint_hub(
     savepoint, and resolves to the winner's ref_id — the caller always
     gets back a real hub ref_id, never a dropped edge.
 
+    **Sentence first, scope second** (gr477211). After a pub_id miss the
+    lookup tries the landscape sentence identity, then
+    :func:`_find_restated_hub`: the same sentence under a scope its own
+    words reconcile (a draft's subject leaked into ``scope``) converges
+    instead of forking. Every identity hit on a merged loser resolves to
+    the live winner (:func:`_merge_survivor`).
+
     ``extra_meta`` merges additional ``meta`` keys at insert time (used by
     :func:`apply_extraction` to seed a composite hub's not-claims memo);
     applied only on an actual insert — a converge-to-existing branch returns
@@ -422,12 +549,19 @@ def mint_hub(
             ("pub_id", pub_id),
         ).fetchone()
         if row is not None:
-            return int(row[0])
+            # A merged loser keeps its pub_id: converge onto the winner,
+            # never onto the soft-deleted loser.
+            return _merge_survivor(c, int(row[0]))
         # Sentence-only identity (claim_type.py): a hub whose type dedups
         # on the sentence alone (landscape) registered its sentence; ANY
         # mint of that sentence — whatever scope the citing draft leaked
         # into it (fi449493 vs fi192855) — converges onto that parent.
-        return find_hub_by_sentence(c, claim.sentence)
+        landscape = find_hub_by_sentence(c, claim.sentence)
+        if landscape is not None:
+            return landscape
+        # Any other type: same sentence, scope reconciled by the sentence's
+        # own words (gr477211) — the type may be unset or not yet landscape.
+        return _find_restated_hub(c, claim)
 
     def _mint(c: Any) -> int:
         meta: dict[str, Any] = {"scope": dict(claim.scope), "source": "taproot"}

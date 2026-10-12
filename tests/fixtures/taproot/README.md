@@ -67,6 +67,12 @@ signed off 2026-07-28** (`human_approved` field on those rows).
   a contradiction — hard negatives for open #8). Spread across all five
   domains. These give the `contradicts` edge real coverage (n=23) that
   corpus mining couldn't.
+- **Regression pairs** (pair 239 onward, `provenance: regression:<gripe>`):
+  real hub pairs a human merged after the mint path forked them. Pair 239
+  is fi449493 / fi192855 (gr477211), a landscape restatement labelled
+  `equivalent`. The mint-time identity fix lives in
+  `taproot/hub.py::_find_restated_hub`; this row tracks whether the judge
+  also catches the paraphrase, which identity cannot.
 
 ## Known gaps
 - `contradicts` coverage is now mostly **synthetic** (n=22 of 23) — fine
