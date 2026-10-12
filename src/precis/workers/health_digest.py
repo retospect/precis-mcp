@@ -86,7 +86,8 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -246,12 +247,75 @@ _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
 # input-aware like ``chunks_extracted`` — see that function for why.
 
 
+#: Slack added to the news_poll recurring's longest cron gap: the schedule
+#: pass, dispatch and the claude_inproc lane each add minutes between a tick
+#: and the first news ref landing.
+_NEWS_SCHEDULE_SLACK_H = 2.0
+
+
+def _news_budget(conn: Any, floor_hours: float) -> tuple[float, str]:
+    """The ``news`` freshness budget, following the news_poll recurring's cron.
+
+    gr479694: the recurring was moved from every 30m to ``0 5 * * *`` on
+    2026-10-11, and the fixed 8h budget then read a healthy daily cadence as
+    a 13h outage. The budget is the longest gap between consecutive cron
+    fires over the past week plus slack, never below ``floor_hours``. No
+    live (unpaused) recurring keeps the floor, so a removed or paused
+    schedule still trips the check. Returns ``(budget, note)``; ``note``
+    names the schedule in the detail line.
+    """
+    from precis.workers.schedule.parse import parse_schedule, ticks_since
+
+    rows = conn.execute(
+        """
+        SELECT r.meta->'schedule'->>'cron'
+          FROM refs r
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL
+           AND r.meta->>'job_type' = 'news_poll'
+           AND r.meta->'schedule' ? 'cron'
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                    AND t.value = 'paused')
+        """
+    ).fetchall()
+    now = datetime.now(UTC)
+    best: tuple[float, str] | None = None
+    for (cron,) in rows:
+        try:
+            sched = parse_schedule({"cron": cron, "backfill_missed": True})
+            fires = ticks_since(now - timedelta(days=7), sched, now=now)
+        except Exception:
+            log.warning("health_digest: unparseable news_poll cron %r", cron)
+            continue
+        if len(fires) < 2:
+            # Weekly or slower: fewer than two fires inside the 7-day walk
+            # (ticks_since caps there), so the gap is at least a week.
+            gap_h = 7 * 24.0
+        else:
+            gap_h = max((b - a).total_seconds() for a, b in pairwise(fires)) / 3600
+        budget = max(floor_hours, gap_h + _NEWS_SCHEDULE_SLACK_H)
+        # Several news_poll recurrings: the most frequent one sets the pace.
+        if best is None or budget < best[0]:
+            best = (budget, f", news_poll schedule {cron!r}")
+    return best or (floor_hours, ", no live news_poll schedule")
+
+
 def _freshness_layer1(conn: Any) -> list[CheckResult]:
     probes = health_checks.fetch_freshness_timestamps(
         conn, [(key, sql) for key, _grp, sql, *_ in _FRESHNESS_CHECKS]
     )
     out: list[CheckResult] = []
     for key, group, _sql, budget_hours, severity, what in _FRESHNESS_CHECKS:
+        note = ""
+        if key == "news":
+            try:
+                # Savepoint: a failed lookup must not abort the shared
+                # connection the remaining Layer-1 checks run on.
+                with conn.transaction():
+                    budget_hours, note = _news_budget(conn, budget_hours)
+            except Exception:
+                log.exception("health_digest: news budget lookup failed")
         probe = probes[key]
         if not probe.ok:
             out.append(
@@ -265,7 +329,7 @@ def _freshness_layer1(conn: Any) -> list[CheckResult]:
                     group,
                     key,
                     "ok",
-                    f"{what}: {age:.1f}h ago (budget {budget_hours:.0f}h)",
+                    f"{what}: {age:.1f}h ago (budget {budget_hours:.0f}h{note})",
                     severity,
                     age,
                 )
@@ -277,7 +341,7 @@ def _freshness_layer1(conn: Any) -> list[CheckResult]:
                 group,
                 key,
                 "stale",
-                f"{what}: last seen {seen} (budget {budget_hours:.0f}h)",
+                f"{what}: last seen {seen} (budget {budget_hours:.0f}h{note})",
                 severity,
                 age,
             )

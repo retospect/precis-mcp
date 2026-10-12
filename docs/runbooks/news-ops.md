@@ -17,6 +17,13 @@ twice) and on the canonical URL. **Polite polling:** a conditional GET
 (`etag`/`last-modified`) means an unchanged feed returns `304` and isn't
 re-downloaded. Article pages are never fetched at all (RSS-only).
 
+**Cadence:** not a `scheduler_leases` cadence (so `/health` lists no
+`news_poll` row). A recurring todo (`meta.job_type='news_poll'`,
+`meta.schedule.cron`) spawns a child per tick; dispatch turns it into a
+`claude_inproc` job. Check `refs.meta->'schedule'` before calling a gap an
+outage: it was `0 5 * * *` (daily) from 2026-10-11. The `watchdog:ingest/news`
+budget follows that cron (longest gap + 2h, floor 8h).
+
 Run one pass by hand:
 
 ```

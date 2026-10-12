@@ -2182,3 +2182,107 @@ def test_tracked_aggregate_source_is_one_gripe_closing_when_all_clear(store) -> 
     resolve_alert(store, ids[2])
     _route_findings(store)
     assert retired()
+
+
+# ── gr479694: the news budget follows the news_poll recurring's cron ─────
+
+
+def _seed_news_recurring(store, cron: str, *, paused: bool = False) -> int:
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="news poll",
+        meta={
+            "schedule": {"cron": cron, "backfill_missed": False},
+            "executor": "claude_inproc",
+            "job_type": "news_poll",
+        },
+    )
+    if paused:
+        store.add_tag(ref.id, Tag.closed("STATUS", "paused"), set_by="system")
+    return int(ref.id)
+
+
+def _seed_news_ref(store, *, hours_ago: float) -> None:
+    ref = store.insert_ref(
+        kind="news", slug=f"test-news-{uuid4().hex[:8]}", title="N", meta={}
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (hours_ago, ref.id),
+        )
+        conn.commit()
+
+
+def _news_check(store) -> CheckResult:
+    with store.pool.connection() as conn:
+        out = health_digest._freshness_layer1(conn)
+    return next(c for c in out if c.name == "news")
+
+
+def test_news_daily_schedule_is_not_stale_after_13h(store) -> None:
+    """The gr479694 shape: news_poll moved to daily 05:00, the last ref is
+    13h old — a healthy daily cadence, not an outage."""
+    _seed_news_recurring(store, "0 5 * * *")
+    _seed_news_ref(store, hours_ago=13.0)
+    res = _news_check(store)
+    assert res.status == "ok", res.detail
+    assert "budget 26h" in res.detail
+    assert "'0 5 * * *'" in res.detail
+
+
+def test_news_daily_schedule_still_trips_when_a_fire_is_missed(store) -> None:
+    _seed_news_recurring(store, "0 5 * * *")
+    _seed_news_ref(store, hours_ago=27.0)
+    assert _news_check(store).status == "stale"
+
+
+def test_news_frequent_schedule_keeps_the_8h_floor(store) -> None:
+    _seed_news_recurring(store, "*/30 * * * *")
+    _seed_news_ref(store, hours_ago=9.0)
+    res = _news_check(store)
+    assert res.status == "stale"
+    assert "budget 8h" in res.detail
+
+
+def test_news_weekly_schedule_gets_a_week_of_budget(store) -> None:
+    _seed_news_recurring(store, "0 5 * * 1")
+    _seed_news_ref(store, hours_ago=72.0)
+    res = _news_check(store)
+    assert res.status == "ok", res.detail
+    assert "budget 170h" in res.detail
+
+
+def test_news_unparseable_cron_keeps_the_floor(store) -> None:
+    _seed_news_recurring(store, "not a cron")
+    _seed_news_ref(store, hours_ago=9.0)
+    res = _news_check(store)
+    assert res.status == "stale"
+    assert "no live news_poll schedule" in res.detail
+
+
+def test_news_budget_lookup_failure_keeps_the_floor_and_the_conn(
+    store, monkeypatch
+) -> None:
+    def boom(conn, floor):
+        conn.execute("SELECT 1/0")
+
+    monkeypatch.setattr(health_digest, "_news_budget", boom)
+    _seed_news_ref(store, hours_ago=9.0)
+    with store.pool.connection() as conn:
+        out = health_digest._freshness_layer1(conn)
+        # The savepoint kept the shared connection usable.
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+    res = next(c for c in out if c.name == "news")
+    assert res.status == "stale"
+    assert "budget 8h)" in res.detail
+
+
+def test_news_paused_schedule_keeps_the_floor(store) -> None:
+    _seed_news_recurring(store, "0 5 * * *", paused=True)
+    _seed_news_ref(store, hours_ago=13.0)
+    res = _news_check(store)
+    assert res.status == "stale"
+    assert "no live news_poll schedule" in res.detail
