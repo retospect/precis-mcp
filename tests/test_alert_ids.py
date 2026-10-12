@@ -5,8 +5,9 @@ single enumerable table of failure ids, so these tests keep it from
 drifting from the producers in both directions —
 
 * every ``raise_alert`` call site in ``src/`` supplies a ``source=`` that
-  resolves (constant, module constant, local f-string, or a helper's
-  returned f-string) to a registered rule's source pattern, and every
+  resolves (constant, module constant, local f-string, a helper's
+  returned f-string, or a ``RULES_BY_ID["<rule id>"].rule`` registry
+  binding) to a registered rule's source pattern, and every
   registered source pattern has a raise site;
 * every fixed-name ``health_digest`` check is pinned to a fingerprint in
   ``_PINNED_FINGERPRINTS`` that resolves to a registered rule, so a check
@@ -36,10 +37,30 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 _VAR = re.compile(r"\{[^{}]*\}")
 
 
+def _registry_rule_key(node: ast.AST) -> str | None:
+    """``RULES_BY_ID["<id>"]`` / ``alert_ids.RULES_BY_ID["<id>"]`` → the key."""
+    if not isinstance(node, ast.Subscript):
+        return None
+    owner = node.value
+    is_registry = (isinstance(owner, ast.Name) and owner.id == "RULES_BY_ID") or (
+        isinstance(owner, ast.Attribute) and owner.attr == "RULES_BY_ID"
+    )
+    key = node.slice
+    if is_registry and isinstance(key, ast.Constant) and isinstance(key.value, str):
+        return key.value
+    return None
+
+
 def _pattern_of(node: ast.AST | None) -> str | None:
-    """A string literal or f-string → pattern with ``{var}`` placeholders."""
+    """A string literal or f-string → pattern with ``{var}`` placeholders.
+    ``RULES_BY_ID["<rule id>"].rule`` resolves to the rule id's source
+    half (``<source>/<subject>`` → ``<source>``)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if isinstance(node, ast.Attribute) and node.attr == "rule":
+        key = _registry_rule_key(node.value)
+        if key is not None:
+            return alert_ids.split_id(key)[0]
     if isinstance(node, ast.JoinedStr):
         out = []
         for part in node.values:
@@ -162,6 +183,34 @@ def test_every_registered_source_has_a_raise_site() -> None:
         "AlertRule sources with no raise_alert call site (stale rule, or the "
         f"raiser's source= is no longer resolvable): {dangling}"
     )
+
+
+def _registry_key_lookups() -> list[tuple[str, str]]:
+    """``(file, key)`` for every ``RULES_BY_ID["<key>"]`` lookup in src."""
+    out: list[tuple[str, str]] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        if path.name == "alert_ids.py" and path.parent.name == "precis":
+            continue  # the registry itself
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            key = _registry_rule_key(node)
+            if key is not None:
+                out.append((str(path.relative_to(_SRC)), key))
+    return out
+
+
+def test_every_registry_key_lookup_names_a_registered_rule() -> None:
+    """A ``RULES_BY_ID["<id>"]`` binding is the explicit producer→rule link
+    (``_ALERT_SOURCE = RULES_BY_ID[...].rule``); a key naming no registered
+    id would be a ``KeyError`` at import, so it is gated here."""
+    bad = sorted(
+        {
+            f"{file}: {key}"
+            for file, key in _registry_key_lookups()
+            if key not in RULES_BY_ID
+        }
+    )
+    assert not bad, f"RULES_BY_ID lookups for unregistered rule ids: {bad}"
 
 
 # ── registry hygiene ─────────────────────────────────────────────────────

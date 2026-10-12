@@ -40,10 +40,16 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
+from precis.alert_ids import RULES_BY_ID
+
 if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+_ALERT_SOURCE = RULES_BY_ID[
+    "nanopub_mirror/concurrence:{artifact_code}:fi{claim_ref_id}"
+].rule
 
 #: Same protocol on every host; a failed fetch retries down the list.
 MIRROR_HOSTS = (
@@ -343,7 +349,7 @@ def concurrence_scan(store: Store) -> int:
             if row.artifact_code in our_codes:
                 if resolve_alert_by_fingerprint(
                     store,
-                    source="nanopub_mirror",
+                    source=_ALERT_SOURCE,
                     fingerprint=f"concurrence:{row.artifact_code}:fi{claim_ref_id}",
                 ):
                     log.info(
@@ -355,7 +361,7 @@ def concurrence_scan(store: Store) -> int:
                 continue
             _alert_id, is_new = raise_alert(
                 store,
-                source="nanopub_mirror",
+                source=_ALERT_SOURCE,
                 fingerprint=f"concurrence:{row.artifact_code}:fi{claim_ref_id}",
                 title=(
                     f"external nanopub concurs with fi{claim_ref_id}: "

@@ -63,6 +63,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.quest.allocator import active_quest_ids
 from precis.quest.body import quest_body_marker
 from precis.quest.weave_tick import (
@@ -78,6 +79,8 @@ if TYPE_CHECKING:
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
+
+_DRY_REST_ALERT_SOURCE = RULES_BY_ID["quest_tick/quest:dry-rest/{quest_id}"].rule
 
 
 def build_search_embedder(store: Any) -> Any | None:
@@ -532,7 +535,7 @@ def _register_dry_rest(store: Store, quest_id: int) -> int:
             title = (getattr(ref, "title", None) or "").strip() or f"quest {quest_id}"
             raise_alert(
                 store,
-                source="quest_tick",
+                source=_DRY_REST_ALERT_SOURCE,
                 fingerprint=f"quest:dry-rest/{quest_id}",
                 title=(
                     f"quest {quest_id} ({title}) appears blocked on missing "

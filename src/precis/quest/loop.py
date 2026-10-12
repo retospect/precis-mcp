@@ -116,6 +116,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.quest.allocator import active_quest_ids, cool_stalled
 from precis.quest.compute import (
     _TIER_NEB,
@@ -1108,7 +1109,7 @@ def _reconcile_stale_computing_pathways(store: Store) -> int:
         return 0
 
 
-_DRY_REST_ALERT_SOURCE = "quest_tick"
+_DRY_REST_ALERT_SOURCE = RULES_BY_ID["quest_tick/quest:dry-rest/{quest_id}"].rule
 
 
 def _dry_rest_alert_fingerprint(quest_id: int) -> str:

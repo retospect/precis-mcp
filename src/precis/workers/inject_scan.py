@@ -37,6 +37,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert
 from precis.mail.account import Account, load_account
 from precis.mail.imap import ImapAuthError
@@ -52,6 +53,8 @@ from precis.store import Store
 from precis.store._email_ops import EmailScan
 
 log = logging.getLogger(__name__)
+
+_ALERT_SOURCE = RULES_BY_ID["inject_scan/{account}:{folder}:{uidvalidity}:{uid}"].rule
 
 #: ``(account, *, store, folder, uid) -> Message | None``.
 FetchBodyFn = Callable[..., Message | None]
@@ -218,7 +221,7 @@ def _raise_quarantine_alert(
     detail = (evidence.get("tier2") or evidence.get("tier1") or {}).get("reason", "")
     raise_alert(
         store,
-        source="inject_scan",
+        source=_ALERT_SOURCE,
         fingerprint=f"{scan.account}:{scan.folder}:{scan.uidvalidity}:{scan.uid}",
         title=f"Suspected prompt injection: {(msg.subject or '(no subject)')[:80]}",
         detail=f"{scan.account} {scan.folder}/{scan.uid} from {msg.from_}: {detail}"[

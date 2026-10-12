@@ -36,6 +36,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.alert_ids import RULES_BY_ID
+
 if TYPE_CHECKING:
     from precis.store import Store
     from precis.utils.llm.router import LlmRequest, Transport
@@ -53,7 +55,7 @@ DEFAULT_HEADROOM = 0.2
 #: by :data:`DEFAULT_HEADROOM`. A caller with a real token count passes it.
 _CHARS_PER_TOKEN = 4
 
-_ALERT_SOURCE = "admit:oversize"
+_ALERT_SOURCE = RULES_BY_ID["admit:oversize/{model}:{source}"].rule
 
 
 @dataclass(frozen=True, slots=True)

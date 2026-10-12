@@ -58,6 +58,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis import alerts
+from precis.alert_ids import RULES_BY_ID
 from precis.handlers.orcid import enqueue_authored_works, store_orcid_record
 from precis.identity import normalize_doi
 from precis.ingest import orcid as orcid_api
@@ -105,6 +106,10 @@ _MIN_INTERVAL_S = 1.0 / _MAX_FETCHES_PER_SECOND
 #: (``orcid_enrich._CREDENTIALS_ALERT_RAISED = False``).
 _CREDENTIALS_ALERT_RAISED = False
 
+_CREDENTIALS_ALERT_SOURCE = RULES_BY_ID[
+    "orcid_enrich/orcid_enrich:missing_credentials"
+].rule
+
 
 def _due(store: Store) -> bool:
     """True when the throttle window has elapsed since the last pass."""
@@ -122,7 +127,7 @@ def _raise_missing_credentials_alert(store: Store) -> None:
         return
     alerts.raise_alert(
         store,
-        source="orcid_enrich",
+        source=_CREDENTIALS_ALERT_SOURCE,
         fingerprint="orcid_enrich:missing_credentials",
         title="orcid_enrich: ORCID client credentials not configured",
         detail=(

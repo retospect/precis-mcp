@@ -4494,6 +4494,98 @@ def test_status_page_renders(client) -> None:
     assert "loading backlog" in resp.text
 
 
+def test_status_health_checks_render_the_agent_panel_object(
+    client, runtime, monkeypatch
+) -> None:
+    """Parity: the Health sub-tab renders ``health_digest.health_panel()``
+    — literally the same object ``get(kind='alert', id='/health')`` reads —
+    so page and agent can never disagree on a check's verdict. Both
+    surfaces are fed one canned panel; every check row must appear in
+    both renders with the same status and detail."""
+    from datetime import UTC, datetime
+    from typing import Any
+
+    from precis.dispatch import Hub
+    from precis.handlers.alert import AlertHandler
+    from precis.workers import health_digest
+
+    panel: dict[str, Any] = {
+        "computed_at": datetime(2026, 10, 12, 4, 0, tzinfo=UTC),
+        "snapshot_age_hours": 2.5,
+        "checks": [
+            {
+                "id": "watchdog:ingest/news",
+                "group": "ingest",
+                "name": "news",
+                "status": "stale",
+                "detail": "a news ref landing: last seen 30.0h ago (budget 8h)",
+                "severity": "warn",
+                "age_hours": 30.0,
+                "live": True,
+            },
+            {
+                "id": "watchdog:discovery/embed",
+                "group": "discovery",
+                "name": "embed",
+                "status": "ok",
+                "detail": "chunks embedded: 0 pending (caught up)",
+                "severity": "warn",
+                "age_hours": 0.4,
+                "live": False,
+            },
+            {
+                "id": "watchdog:meta/alert_backlog_rot",
+                "group": "meta",
+                "name": "alert_backlog_rot",
+                "status": "unknown",
+                "detail": "probe failed",
+                "severity": "info",
+                "age_hours": None,
+                "live": False,
+            },
+        ],
+        "open_alerts": {"warn": 2},
+    }
+    monkeypatch.setattr(
+        health_digest, "health_panel", lambda store, conn=None: dict(panel)
+    )
+
+    agent_body = AlertHandler(hub=Hub(store=runtime.store)).get(id="/health").body
+    resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    page = resp.text
+
+    for check in panel["checks"]:
+        assert check["id"] in agent_body
+        assert check["id"] in page
+        assert check["detail"] in agent_body
+        assert check["detail"] in page
+    # Both surfaces carry the header facts: snapshot age + open alerts.
+    assert "2.5h" in agent_body and "2.5h" in page
+    assert "2 warn" in agent_body and "2 warn" in page
+    assert "Health checks" in page
+
+
+def test_status_health_checks_empty_without_a_snapshot(client, monkeypatch) -> None:
+    """No eval yet (fresh install) renders the empty state, not a 500."""
+    from precis.workers import health_digest
+
+    monkeypatch.setattr(
+        health_digest,
+        "health_panel",
+        lambda store, conn=None: {
+            "computed_at": None,
+            "snapshot_age_hours": None,
+            "checks": [],
+            "open_alerts": {},
+        },
+    )
+    resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    assert "no health_digest eval yet" in resp.text
+    assert "No health checks yet" in resp.text
+
+
 def test_status_backlog_shows_last_done(client, monkeypatch) -> None:
     """Each pipeline-backlog row shows when the pass last did work.
 

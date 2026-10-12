@@ -3,8 +3,11 @@
 Direct SQL summaries off the live DB: ref counts per kind, the paper
 corpus (held vs stub), todo status breakdown, finding-chase status,
 and the most recent ``ref_events`` (ingests, status flips, worker
-activity). Each section is computed defensively so a schema surprise
-in one query degrades to an empty panel instead of a 500.
+activity). The Health sub-tab's check table is
+:func:`precis.workers.health_digest.health_panel` itself — literally the
+object the agent's ``get(kind='alert', id='/health')`` renders, so the
+two surfaces can't drift. Each section is computed defensively so a
+schema surprise in one query degrades to an empty panel instead of a 500.
 """
 
 from __future__ import annotations
@@ -622,96 +625,18 @@ def _heartbeats(store: Store) -> list[dict[str, Any]]:
     return out
 
 
-#: Liveness signals — the end-to-end "is it alive" heartbeat. Each is
-#: ``(label, sql returning one timestamp, staleness threshold seconds)``.
-#: Only the *scheduled-cadence* signals (news / briefing) carry a
-#: threshold and flag amber when overdue; the pipeline stages move only
-#: when there's work to ingest, so flagging them on a quiet corpus would
-#: cry wolf — they stay informational (threshold ``None``).
-_LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
-    (
-        "Paper ingested",
-        "SELECT max(created_at) FROM refs WHERE kind = 'paper' AND retired_at IS NULL",
-        None,
-    ),
-    # ``max(created_at)`` seq-scans all ~1.5M chunks (no index on
-    # created_at) — ~900ms. ``created_at`` is monotonic with the serial
-    # ``chunk_id`` PK, so the newest row by id carries the newest
-    # timestamp: an ``ORDER BY chunk_id DESC LIMIT 1`` PK-index probe
-    # gives the same "last extracted" answer in ~1ms.
-    (
-        "Chunk extracted",
-        "SELECT created_at FROM chunks ORDER BY chunk_id DESC LIMIT 1",
-        None,
-    ),
-    ("Chunk indexed (embed)", "SELECT max(created_at) FROM chunk_embeddings", None),
-    ("Chunk summarized", "SELECT max(created_at) FROM chunk_summaries", None),
-    (
-        "News ingested",
-        "SELECT max(created_at) FROM refs WHERE kind = 'news' AND retired_at IS NULL",
-        2 * 3600,  # cron */30m — amber after ~4 missed polls
-    ),
-    (
-        # When the dream pass last *ran* (worker_logs), not a tag on its
-        # output: dream memories don't carry a stable ``tier:dream`` tag,
-        # so the pass log is the reliable liveness source.
-        "Dream",
-        "SELECT max(ts) FROM worker_logs WHERE pass = 'dream_agent'",
-        None,
-    ),
-    (
-        "Morning briefing",
-        "SELECT max(ts) FROM worker_logs WHERE pass = 'briefing'",
-        26 * 3600,  # daily ~05:00 — amber after a missed day
-    ),
-]
-
-
-def _liveness(store: Store) -> list[dict[str, Any]]:
-    """End-to-end freshness: last activity per pipeline stage + watch.
-
-    Answers "is it alive?" at a glance — when did the corpus last take
-    in a paper, extract / index / summarise a chunk, ingest news, dream,
-    or deliver the briefing. Each signal is read independently (via the
-    shared :func:`precis.health_checks.fetch_freshness_timestamps` — the
-    same probe-runner ``health_digest``'s curated Layer-1 checks use) so
-    one schema surprise degrades *that row* to "unknown" rather than
-    dropping the whole panel (mirrors :func:`_backlog_counts`). Only the
-    scheduled-cadence signals (news / briefing) flag stale; the pipeline
-    stages are informational since idle is normal on a quiet corpus.
+def _health_panel(store: Store) -> dict[str, Any]:
+    """The Health sub-tab's liveness panel: literally the object the agent
+    surface reads — :func:`precis.workers.health_digest.health_panel` (the
+    same call ``get(kind='alert', id='/health')`` renders). Both surfaces
+    therefore always agree on each check's verdict; the page just adds
+    HTML around the same ``checks`` rows. The live reads run on the
+    request-shared connection.
     """
-    out: list[dict[str, Any]] = []
-    # One connection for all seven signals (was one *per* signal — seven
-    # round-trips).
+    from precis.workers import health_digest
+
     with _connect(store) as conn:
-        probes = health_checks.fetch_freshness_timestamps(
-            conn, [(label, sql) for label, sql, _budget in _LIVENESS_SIGNALS]
-        )
-    for label, _sql, stale_after_s in _LIVENESS_SIGNALS:
-        probe = probes[label]
-        if not probe.ok:
-            out.append(
-                {
-                    "label": label,
-                    "ago": "—",
-                    "stale": False,
-                    "scheduled": stale_after_s is not None,
-                    "unknown": True,
-                }
-            )
-            continue
-        age = _age_seconds(probe.ts)
-        stale = stale_after_s is not None and (age is None or age > stale_after_s)
-        out.append(
-            {
-                "label": label,
-                "ago": _ago(probe.ts) if probe.ts is not None else "never",
-                "stale": stale,
-                "scheduled": stale_after_s is not None,
-                "unknown": False,
-            }
-        )
-    return out
+        return health_digest.health_panel(store, conn=conn)
 
 
 # ── Now sub-tab: live worker activity + job lanes + alerts ─────────
@@ -1226,7 +1151,7 @@ def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
         # lazy-loaded by the template via ``GET /status/backlog``
         # (the ``_backlog`` fragment below) so it never blocks the
         # initial page render.
-        "liveness": _safe(lambda: _liveness(store)) or [],
+        "health": _safe(lambda: _health_panel(store)) or {},
         "usage": _safe(lambda: _claude_usage(store)) or {},
         "heartbeats": heartbeats,
         "extra_hosts": extra_hosts,

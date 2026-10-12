@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
 from precis.store import Store
 from precis.utils.claude_quota import (
@@ -35,7 +36,7 @@ log = logging.getLogger(__name__)
 #: revoked/stale OAuth token 401s every agentic call cluster-wide
 #: (plan_tick, reviewers, dream, figure) and was invisible for a whole day
 #: behind an unrelated outage — this makes it page the moment it recurs.
-_AUTH_ALERT_SOURCE = "quota_check:auth"
+_AUTH_ALERT_SOURCE = RULES_BY_ID["quota_check:auth/{host}:claude-oauth"].rule
 
 
 def _raise_auth_alert(store: Store, host: str) -> None:

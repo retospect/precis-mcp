@@ -38,6 +38,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from precis.alert_ids import RULES_BY_ID
 from precis.nanopub.state import (
     FROZEN_BYTES,
     FROZEN_STRING,
@@ -57,7 +58,7 @@ ACTION_REOPEN = "reopen"
 #: Anchored or published — a human must supersede/retract instead.
 ACTION_SUPERSEDE_REQUIRED = "supersede-required"
 
-ALERT_SOURCE = "nanopub-demote"
+ALERT_SOURCE = RULES_BY_ID["nanopub-demote/contradicted-frozen:{hub_ref_id}"].rule
 
 
 @dataclass(frozen=True, slots=True)

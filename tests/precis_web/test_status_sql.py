@@ -20,12 +20,11 @@ from typing import Any
 from precis.health_checks import _KEYWORDS_VERSION
 from precis.store import Tag
 from precis_web.routes.status import (
-    _LIVENESS_SIGNALS,
     _automations,
     _background_anomalies,
     _backlog_counts,
     _health_ctx,
-    _liveness,
+    _health_panel,
     _llm_ops_ctx,
     _recent_passes,
     _services_ctx,
@@ -232,22 +231,22 @@ def test_failed_passes_groups_by_handler_and_drops_verdict_passes(
     assert by_handler["embed:bge-m3"]["failed"] == 3
 
 
-def test_liveness_runs_every_signal_against_real_pg(store: Any) -> None:
-    """Each liveness query is valid SQL against real PG (the panel's
-    point): one row per signal, in registry order, none degraded to the
-    ``unknown`` sentinel (which only happens on a query exception). Only
-    the scheduled-cadence signals carry the ``scheduled`` flag.
-    """
-    rows = _liveness(store)
+def test_health_panel_runs_against_real_pg(store: Any) -> None:
+    """The Health sub-tab's liveness panel is ``health_digest.health_panel``
+    — the same object the agent's ``/health`` read renders. Against real
+    PG the panel's live freshness probes and the open-alert count must
+    run cleanly (no snapshot yet → ``snapshot_age_hours`` is None)."""
+    panel = _health_panel(store)
 
-    assert [r["label"] for r in rows] == [label for label, _, _ in _LIVENESS_SIGNALS]
-    assert not any(r["unknown"] for r in rows)  # every query executed cleanly
-
-    by_label = {r["label"]: r for r in rows}
-    assert by_label["News ingested"]["scheduled"] is True
-    assert by_label["Morning briefing"]["scheduled"] is True
-    # Pipeline stages are informational — never flagged on cadence.
-    assert by_label["Chunk extracted"]["scheduled"] is False
+    assert set(panel) == {
+        "computed_at",
+        "snapshot_age_hours",
+        "checks",
+        "open_alerts",
+    }
+    live = [c for c in panel["checks"] if c["live"]]
+    assert live  # the _FRESHNESS_CHECKS probes re-ran on this store
+    assert all(c["id"].startswith("watchdog:") for c in panel["checks"])
 
 
 def test_automations_lists_tagged_recurrings_with_produced_artifact(
@@ -304,9 +303,11 @@ def test_automations_lists_tagged_recurrings_with_produced_artifact(
     assert all(r["payload"] != "ping me later" for r in rows)
 
 
-def test_liveness_scheduled_signal_clears_when_fresh(store: Any) -> None:
-    """A recent ``briefing`` pass log clears the stale flag; the signal
-    reads ``worker_logs.pass``, so a fresh row means "alive"."""
+def test_health_panel_live_probe_clears_when_fresh(store: Any) -> None:
+    """A recent ``briefing`` pass log clears the ``morning_brief_cast``
+    staleness; the live probe reads ``worker_logs.pass``, so a fresh row
+    means "alive". (Was the Liveness panel's scheduled-signal test — the
+    check verdict now comes from ``health_panel``.)"""
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO worker_logs (host, pass, level, message) "
@@ -314,8 +315,8 @@ def test_liveness_scheduled_signal_clears_when_fresh(store: Any) -> None:
         )
         conn.commit()
 
-    by_label = {r["label"]: r for r in _liveness(store)}
-    assert by_label["Morning briefing"]["stale"] is False
+    by_id = {c["id"]: c for c in _health_panel(store)["checks"]}
+    assert by_id["watchdog:reading/morning_brief_cast"]["status"] == "ok"
 
 
 def test_llm_ops_ctx_ignores_stale_override_on_non_steerable_source(store: Any) -> None:

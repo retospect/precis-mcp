@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import (
     notify_critical_alert,
     open_alert_severity,
@@ -33,7 +34,7 @@ from precis.workers.runner import BatchResult
 log = logging.getLogger(__name__)
 
 #: Alert source for a filling-disk condition.
-_DISK_ALERT_SOURCE = "disk_check"
+_DISK_ALERT_SOURCE = RULES_BY_ID["disk_check/{host}:{path}"].rule
 
 #: ``os.pathsep``-separated list of paths to ``df``. Default: just ``/`` —
 #: on the data node (caspar) the PG data dir, /opt/homebrew, and

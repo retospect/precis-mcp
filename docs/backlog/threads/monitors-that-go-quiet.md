@@ -130,8 +130,9 @@ gr346534, soft-deleted)
 2. **backlog/alert-failure-id-registry.md** — the registry, `/rules`
    catalogue and idle-aware health panel shipped 2026-10-09; "did host-dark
    fire, for which host" is addressable by id. `acked_until` TTL shipped
-   (web ack/unack, readers filter it). Left, per the file: `/status` onto the
-   panel, call-site constants, an agent verb to ack.
+   (web ack/unack, readers filter it). `/status`'s Health tab renders the
+   `health_panel()` object and producers bind `RULES_BY_ID[...].rule`
+   (2026-10-12). Left, per the file: an agent verb to ack.
 3. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
    the condition registry; Do-next 3 exists because a host has no
    durable identity separating "ephemeral by design" from "vanished", so

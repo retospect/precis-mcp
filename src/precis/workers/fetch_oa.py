@@ -95,6 +95,7 @@ from tenacity import (
 
 from precis import secrets as _secrets
 from precis import settings
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
@@ -858,7 +859,9 @@ _OPENALEX_RATE_LIMIT_URL = "https://api.openalex.org/rate-limit"
 #: the guaranteed-correct fallback: it fires straight off the paid fetch's
 #: own failure, regardless of which balance model OpenAlex is actually
 #: enforcing.
-_OPENALEX_BALANCE_SOURCE = "fetch_oa:openalex_balance"
+_OPENALEX_BALANCE_SOURCE = RULES_BY_ID[
+    "fetch_oa:openalex_balance/openalex-content-credits-low"
+].rule
 _OPENALEX_BALANCE_FINGERPRINT = "openalex-content-credits-low"
 
 #: HTTP status OpenAlex plausibly uses to signal "no more balance" on the

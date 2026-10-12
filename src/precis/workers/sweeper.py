@@ -88,6 +88,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Store
 from precis.store.types import Tag
@@ -123,6 +124,11 @@ _UNSCHEDULABLE_SCAN_CAP = 500
 _LEASE_OWNING_EXECUTORS = frozenset({"ssh_node", "claude_inproc", "claude_docker"})
 
 log = logging.getLogger(__name__)
+
+#: Alert source for the unschedulable-job finding (``scheduler`` — the job
+#: waits on a capability no host advertises, so it belongs to dispatch,
+#: not to the sweeper that noticed it).
+_SCHEDULER_ALERT_SOURCE = RULES_BY_ID["scheduler/unschedulable:{ref_id}"].rule
 
 
 def _stuck_job_hours() -> float:
@@ -665,7 +671,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         fingerprint = f"unschedulable:{ref_id}"
         raise_alert(
             store,
-            source="scheduler",
+            source=_SCHEDULER_ALERT_SOURCE,
             fingerprint=fingerprint,
             title=f"Job #{ref_id} needs {', '.join(unmet)} — no host advertises it",
             detail=(
@@ -678,7 +684,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         )
         live.add(fingerprint)
         n += 1
-    resolve_stale_alerts(store, source="scheduler", live_fingerprints=live)
+    resolve_stale_alerts(store, source=_SCHEDULER_ALERT_SOURCE, live_fingerprints=live)
     return n
 
 

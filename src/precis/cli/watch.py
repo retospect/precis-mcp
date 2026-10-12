@@ -45,6 +45,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import notify_critical_alert, raise_alert
 from precis.cli._common import resolve_dsn
 from precis.corpus_layout import corpus_pdf_dest
@@ -776,7 +777,7 @@ def _check_elsevier_truncation(
     try:
         _ref, is_new = raise_alert(
             store,
-            source="watch:elsevier_truncation",
+            source=_ELSEVIER_TRUNCATION_ALERT_SOURCE,
             fingerprint=fingerprint,
             title=title,
             detail=detail,
@@ -803,8 +804,14 @@ def _check_elsevier_truncation(
 #: this hardens against: surya-ocr 0.22.1's new hard llama-server
 #: requirement broke every Marker invocation on melchior for weeks and
 #: ingest silently kept eating PDFs via the fitz fallback).
-_MARKER_FALLBACK_ALERT_SOURCE = "ingest:marker-fallback"
+_MARKER_FALLBACK_ALERT_SOURCE = RULES_BY_ID[
+    "ingest:marker-fallback/marker-fallback"
+].rule
 _MARKER_FALLBACK_ALERT_FINGERPRINT = "marker-fallback"
+
+_ELSEVIER_TRUNCATION_ALERT_SOURCE = RULES_BY_ID[
+    "watch:elsevier_truncation/elsevier-truncation:{ref_id}"
+].rule
 
 
 def _check_marker_fallback(pdf: Path, result: IngestResult, *, store: Store) -> None:

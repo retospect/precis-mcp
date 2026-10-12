@@ -36,12 +36,19 @@ from dataclasses import dataclass
 from datetime import UTC
 from typing import TYPE_CHECKING
 
+from precis.alert_ids import RULES_BY_ID
+
 if TYPE_CHECKING:
     from opentimestamps.core.timestamp import Timestamp
 
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+#: Both rules share the ``nanopub_ots`` source; the constant names the rule
+#: its call site feeds.
+_STUCK_PENDING_ALERT_SOURCE = RULES_BY_ID["nanopub_ots/stuck-pending:{batch_id}"].rule
+_AUDIT_ALERT_SOURCE = RULES_BY_ID["nanopub_ots/audit-mismatch"].rule
 
 DEFAULT_CALENDAR = "https://alice.btc.calendar.opentimestamps.org"
 
@@ -238,7 +245,7 @@ def upgrade_sweep(
     for superseded in store.nanopub_superseded_batches():
         if resolve_alert_by_fingerprint(
             store,
-            source="nanopub_ots",
+            source=_STUCK_PENDING_ALERT_SOURCE,
             fingerprint=f"stuck-pending:{superseded.id}",
         ):
             log.info(
@@ -250,7 +257,7 @@ def upgrade_sweep(
     for already_upgraded in store.nanopub_upgraded_batches():
         if resolve_alert_by_fingerprint(
             store,
-            source="nanopub_ots",
+            source=_STUCK_PENDING_ALERT_SOURCE,
             fingerprint=f"stuck-pending:{already_upgraded.id}",
         ):
             log.info(
@@ -294,7 +301,7 @@ def upgrade_sweep(
             log.info("nanopub ots: batch %s upgraded", batch.id)
             if resolve_alert_by_fingerprint(
                 store,
-                source="nanopub_ots",
+                source=_STUCK_PENDING_ALERT_SOURCE,
                 fingerprint=f"stuck-pending:{batch.id}",
             ):
                 log.info(
@@ -337,7 +344,7 @@ def _stuck_alert(store: Store, batch_id: int, detail: str) -> None:
 
     raise_alert(
         store,
-        source="nanopub_ots",
+        source=_STUCK_PENDING_ALERT_SOURCE,
         fingerprint=f"stuck-pending:{batch_id}",
         title=f"OTS batch {batch_id} stuck pending",
         detail=detail,
@@ -379,7 +386,7 @@ def audit(store: Store, *, limit: int = 5000) -> list[AuditFinding]:
 
         raise_alert(
             store,
-            source="nanopub_ots",
+            source=_AUDIT_ALERT_SOURCE,
             fingerprint="audit-mismatch",
             title=f"nanopub proof-store audit: {len(findings)} finding(s)",
             detail="; ".join(

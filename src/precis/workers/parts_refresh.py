@@ -35,6 +35,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, Protocol
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.pcb._http import VendorError
 from precis.pcb.jlc_api import JlcApiClient, JlcPermissionError
@@ -73,7 +74,7 @@ CURSOR_SETTING_KEY = "pcb.parts_refresh.last_key"
 
 #: Alert identity for a failing walk (gr464537: a daily 500 sat as a log
 #: WARNING for a week while ``parts`` stayed empty).
-_ALERT_SOURCE = "parts_refresh"
+_ALERT_SOURCE = RULES_BY_ID["parts_refresh/jlcpcb-api"].rule
 _ALERT_FINGERPRINT = "jlcpcb-api"
 
 

@@ -26,6 +26,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from precis.alert_ids import RULES_BY_ID
 from precis.budget import meter
 from precis.budget.bands import Cost, cost_from_usd, is_paid
 from precis.budget.work_class import WorkClass
@@ -37,8 +38,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_ALERT_SOURCE = "budget"
-_ALERT_SOURCE_QUOTA = "budget:quota"
+_ALERT_SOURCE = RULES_BY_ID["budget/cap-{window}"].rule
+_ALERT_SOURCE_QUOTA = RULES_BY_ID["budget:quota/quota-{window}"].rule
 
 _alert_lock = threading.Lock()
 #: Last tripped window we alerted on (``'hourly'`` / ``'daily'`` / ``None``),

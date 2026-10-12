@@ -36,6 +36,7 @@ from typing import Any
 
 import psycopg
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Store
 from precis.workers import _throttle
@@ -52,7 +53,7 @@ _STATE_KEY = "llm_reconcile:last_run"
 _REFRESH_ENV_VAR = "PRECIS_LLM_RECONCILE_REFRESH_HOURS"
 _DEFAULT_REFRESH_HOURS = 24.0
 #: Alert source for the drift / dead-endpoint findings (deduped per fingerprint).
-_ALERT_SOURCE = "llm_reconcile:drift"
+_ALERT_SOURCE = RULES_BY_ID["llm_reconcile:drift/proxy-missing:{model_id}"].rule
 
 #: The live model feed. No key needed; SSRF-guarded via safe_get.
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"

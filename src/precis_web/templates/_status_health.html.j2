@@ -141,35 +141,61 @@
   {% endif %}
 </section>
 
-<!-- Liveness — the "is it alive" heartbeat: last activity per pipeline
-     stage (ingest → extract → index → summarise) plus the scheduled
-     watches (news / briefing) and dreams. Scheduled signals turn amber
-     when overdue; pipeline stages are informational (idle is normal on
-     a quiet corpus). -->
-{% if liveness %}
+<!-- Health checks — the health_digest panel itself: literally the
+     ``health_panel()`` object the agent surface renders at
+     ``get(kind='alert', id='/health')``, so the page and the agent can
+     never disagree on a check's verdict. ``stale`` rows are findings
+     (each carries a registered failure id); ``unknown`` means the
+     check's own probe failed. Rows flagged ``live`` were re-probed at
+     render time; the rest are the last eval's snapshot. The heavy
+     backlog counts stay live behind the lazy fragment below. -->
+{% set hp = health or {} %}
+{% set hp_checks = hp.get('checks', []) %}
 <section class="mb-6">
-  <h2 class="text-sm font-semibold mb-2">Liveness</h2>
+  <h2 class="text-sm font-semibold mb-2">Health checks
+    <span class="font-normal text-xs text-slate-400">
+      {% if hp.get('snapshot_age_hours') is not none %}
+        snapshot {{ '%.1f'|format(hp.snapshot_age_hours) }}h old{% if hp.get('computed_at') %} ({{ hp.computed_at.strftime('%Y-%m-%dT%H:%MZ') }}){% endif %}
+      {% else %}
+        no health_digest eval yet
+      {% endif %}
+      {% set open_alerts = hp.get('open_alerts', {}) %}
+      {% if open_alerts %}
+        · open alerts:
+        {% for sev, n in open_alerts | dictsort %}<span class="{% if sev == 'critical' %}text-rose-600 font-semibold{% elif sev == 'warn' %}text-amber-600{% else %}text-slate-400{% endif %}">{{ n }} {{ sev }}</span>{{ ', ' if not loop.last }}{% endfor %}
+      {% endif %}
+    </span>
+  </h2>
+  {% if not hp_checks %}
+  <p class="text-xs text-slate-500 rounded-lg border border-slate-200 bg-white px-4 py-3">
+    No health checks yet — the hourly <span class="font-mono">health_digest</span> pass has not run on this store.
+  </p>
+  {% else %}
   <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
     <table class="w-full text-sm">
       <tbody class="divide-y divide-slate-100">
-        {% for s in liveness %}
+        {# Same order the agent render uses: stale, then unknown, then ok. #}
+        {% for want in ('stale', 'unknown', 'ok') %}
+        {% for c in hp_checks if c.status == want %}
         <tr class="hover:bg-slate-50">
-          <td class="px-4 py-2 text-slate-700">
+          <td class="px-4 py-2 text-slate-700 whitespace-nowrap">
             <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle
-              {% if s.unknown %}bg-slate-300{% elif s.stale %}bg-amber-500{% else %}bg-emerald-500{% endif %}"></span>
-            {{ s.label }}
-            {% if s.scheduled %}<span class="text-xs text-slate-400">· scheduled</span>{% endif %}
+              {% if c.status == 'unknown' %}bg-slate-300{% elif c.status == 'stale' %}{% if c.severity == 'critical' %}bg-rose-500{% else %}bg-amber-500{% endif %}{% else %}bg-emerald-500{% endif %}"></span>
+            <span class="font-mono text-xs">{{ c.id }}</span>
+            {% if c.live %}<span class="text-xs text-emerald-600" title="re-probed at render time, not from the snapshot">· live</span>{% endif %}
           </td>
-          <td class="px-4 py-2 text-right tabular-nums {% if s.stale %}text-amber-700 font-semibold{% else %}text-slate-500{% endif %}">
-            {{ s.ago }}
+          <td class="px-4 py-2 text-slate-500 text-xs">{{ c.detail }}</td>
+          <td class="px-4 py-2 text-right tabular-nums whitespace-nowrap {% if c.status == 'stale' %}text-amber-700 font-semibold{% else %}text-slate-400{% endif %}">
+            {% if c.age_hours is not none %}{{ '%.1f'|format(c.age_hours) }}h{% else %}—{% endif %}
           </td>
         </tr>
+        {% endfor %}
         {% endfor %}
       </tbody>
     </table>
   </div>
+  {% endif %}
 </section>
-{% endif %}
 
 <!-- Background health — spin loops (a worker re-claiming the same ref
      every pass) + failed worker passes, both over 24h. These are the

@@ -27,6 +27,10 @@ PCB DRC's stable rule id + located subject):
   ``"7d"``, ``"interval+margin"``), free text, because the producers'
   budgets are not all hours.
 
+Producers bind their ``source=`` to the registry rather than re-typing
+the literal: ``RULES_BY_ID["<rule id>"].rule`` — a rename is a ``KeyError``
+at import, not silent drift, and the key names the rule the site feeds.
+
 Modelled on ``workers/registry.py`` (frozen slotted dataclass, a module
 tuple plus a by-id dict). ``tests/test_alert_ids.py`` is the totality
 gate: every ``raise_alert`` call site in ``src/`` must resolve to a

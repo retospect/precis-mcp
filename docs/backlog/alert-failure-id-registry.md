@@ -1,7 +1,7 @@
 ---
 status: ready
 pillar: platform
-title: alert failure ids — remainder: /status onto the panel, call-site constants
+title: alert failure ids — remainder: agent verb to ack
 prio: normal
 model: sonnet
 ---
@@ -21,25 +21,14 @@ prompt and the `cluster-ops` remit. Also shipped (`feat(alert): acked_until
 TTL`): `alerts.ack_alert` / `unack_alert` store `meta.acked_until` on a
 still-open row; `ACKED_SQL` filters it in `list_open_alerts`, the nav badge,
 `_check_alert_backlog_rot` and the remediation router; `/alerts` shows acked
-rows dimmed with ack/unack buttons. Not built: an agent verb to ack (the web
-tab and `ack_alert` are the only entry points). What is left:
-
-## 1. `/status` onto the panel (optional)
-
-`precis_web/routes/status.py` still computes its liveness sections itself
-(through the same `health_checks` functions, so there is one truth already).
-Refactoring it onto `health_digest.health_panel()` would make the web page
-and the agent read literally the same object; `/status/backlog` keeps
-computing live for a human who clicks it. Confirm by diffing a page render
-before/after. Skipped at ship to keep the diff to the agent surface.
-
-## 2. Call-site constants
-
-Producers still spell their `source=` as local constants
-(`_ALERT_SOURCE = "admit:oversize"` etc.); the static test resolves and
-checks them, so nothing drifts, but importing the registered rule's source
-from `precis.alert_ids` at each of the ~20 sites would make the link
-explicit in the code. Mechanical; pair with any touch of those files.
+rows dimmed with ack/unack buttons. Shipped 2026-10-12
+(`refactor(alert): /status onto health_panel; call-site rule constants`):
+the Health sub-tab renders `health_panel()` — the same object the agent's
+`/health` reads (`/status/backlog` still computes live); every producer's
+`source=` spelling binds `RULES_BY_ID["<rule id>"].rule` instead of a local
+literal (the totality test resolves the binding and gates each key names a
+registered id). What is left: an agent verb to ack (the web
+tab and `ack_alert` are the only entry points).
 
 ## Notes carried forward
 

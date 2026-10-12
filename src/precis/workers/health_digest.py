@@ -51,7 +51,8 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
    in :mod:`precis.alert_ids`, not ``CheckResult.name`` — so renaming a
    check never mints a new id. The full check set is also persisted as a
    JSON snapshot (:data:`CHECKS_SNAPSHOT_KEY`) that :func:`health_panel`
-   — the agent-facing ``get(kind='alert', id='/health')`` — reads with its
+   — rendered by ``get(kind='alert', id='/health')`` and the ``/status``
+   Health sub-tab alike — reads with its
    age instead of re-running the ~30 s backlog aggregates, overlaying the
    cheap freshness probes live.
 3. **Remediation router** (:func:`_route_findings`) — a still-open
@@ -87,6 +88,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -2497,8 +2500,20 @@ def _load_checks_snapshot(store: Store) -> dict[str, Any] | None:
     return data if isinstance(data, dict) and "checks" in data else None
 
 
-def health_panel(store: Store) -> dict[str, Any]:
-    """The agent-facing per-subsystem health read.
+@contextmanager
+def _conn_or_pool(store: Store, conn: Any | None) -> Iterator[Any]:
+    """Yield ``conn`` when the caller already holds one (``/status``'s
+    request-shared connection), else a fresh pooled connection."""
+    if conn is not None:
+        yield conn
+    else:
+        with store.pool.connection() as pooled:
+            yield pooled
+
+
+def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
+    """The per-subsystem health read — agent (``id='/health'``) and web
+    (``/status`` Health sub-tab) render literally this object.
 
     Same states ``/status`` and the digest show, in one call, without the
     expensive part: every check comes from the last eval's snapshot
@@ -2512,6 +2527,10 @@ def health_panel(store: Store) -> dict[str, Any]:
     ``open_alerts`` is the open-alert count by severity. Returns
     ``snapshot_age_hours=None`` and an empty ``checks`` list when no
     eval has run yet (a fresh install) — never raises.
+
+    ``conn`` lets a caller with an already-open connection (the
+    ``/status`` route's request-shared one) run the live reads on it
+    instead of checking out two more pooled connections.
     """
     snap = _load_checks_snapshot(store)
     checks: list[dict[str, Any]] = []
@@ -2526,8 +2545,8 @@ def health_panel(store: Store) -> dict[str, Any]:
         checks = [dict(c, live=False) for c in snap["checks"] if isinstance(c, dict)]
 
     try:
-        with store.pool.connection() as conn:
-            live = _freshness_layer1(conn)
+        with _conn_or_pool(store, conn) as c:
+            live = _freshness_layer1(c)
     except Exception:
         log.exception("health_panel: live freshness probes raised")
         live = []
@@ -2542,8 +2561,8 @@ def health_panel(store: Store) -> dict[str, Any]:
 
     open_by_sev: dict[str, int] = {}
     try:
-        with store.pool.connection() as conn:
-            rows = conn.execute(
+        with _conn_or_pool(store, conn) as c:
+            rows = c.execute(
                 """
                 SELECT r.meta->>'severity', count(*)
                   FROM refs r

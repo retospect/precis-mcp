@@ -25,6 +25,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert
 from precis.workers.runner import BatchResult
 
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 META_KEY = "cfp_watch"
-ALERT_SOURCE = "cfp_watch"
+ALERT_SOURCE = RULES_BY_ID["cfp_watch/changed:{ref_id}"].rule
 MAX_FETCHES_PER_RUN = 25
 MIN_RECHECK_S = 20 * 3600
 _HISTORY_KEEP = 5
