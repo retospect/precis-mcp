@@ -210,7 +210,8 @@ removed as met — the transport move it waited on happened 09-29)
        - The (24,0) pill variant is unblocked: gr464358's frustum was
          seeded mirrored (fixed 2026-10-11, no seed pair under 1.2 Å for
          k = 4..16, n = 6..24); re-run `plan_foot(24, 8.0)`. Hole cells
-         that hit gr464341's fuse phase are refused, so a layout change
+         that hit gr464341's fuse phase are refused (Reto 2026-10-12: option c,
+         keep str order; `k='fit'` covers it), so a layout change
          may need a cell moved.
        - Reto picked pill12. The pillar's fused (6,0)→C60 neck opened
          under MACE-MP and GFN2-xTB only because its seed was
@@ -644,8 +645,10 @@ removed as met — the transport move it waited on happened 09-29)
      by the test adapter (`tests/test_hexfold_seam_decay.py::_geo_relaxer`).
      Threading it means changing the `Relaxer` return type, so it is a
      design call, not a one-liner.
-   - Second, larger slice: the `EnvKey` extent field, shared with
-     gr457997.
+   - Second slice (ruled 2026-10-12, Reto design-fold): no `EnvKey`
+     extent. Grow the tube per repeat unit until the radius and threshold
+     converge, key the converged value as today, and mark it unstable past
+     a ~5 nm cap. Spec: `hexfold-integration.md` §Step 6 slice 1.
 
 ## Horizon
 

@@ -522,6 +522,33 @@ relaxer's `trace.converged` back through the `Relaxer` seam, and putting
 the measurement extent into `EnvKey` — remain the precondition for
 `trust_measured=True` (slice 2, above) and are still open.
 
+**Ruled 2026-10-12 (Reto, design-fold; gr456641 + gr457997): measure to
+convergence, do not key by extent.** A seam environment is local. At a
+given rim type, radius and orientation it must settle within a few repeat
+units, so the tube length is a measurement variable, not a key field.
+This replaces fix 3 (`EnvKey` extent) and item 2 of "What slice 2 should
+do instead".
+
+1. `measure_environment` grows the tube one repeat unit at a time (the
+   translational period: ~4.26 Å zigzag, ~2.46 Å armchair; a chiral tube
+   steps a full period so every end termination is covered). It stops
+   when `seam_radius` and the leak threshold are unchanged for two
+   consecutive increments.
+2. Every step asserts relaxer convergence (fix 1: the `Relaxer` return
+   type carries `converged`). The far end is held or H-capped, so its
+   motion cannot read as seam signal.
+3. The converged value is keyed by `EnvKey` as it is today (rim type,
+   radius, orientation); there is no hash change. The convergence length
+   is stored beside the value.
+4. No convergence by a cap (~5 nm, tunable) → `coverage="unstable"`,
+   reusing the existing flag; the pinned wildcard stays authoritative.
+5. `_LEAK_THRESH["a"] = 2.9°` is re-measured this way; the pinned
+   value is the shortest-tube reading and goes. The four `==`-pinned
+   seam radii are re-baselined to the converged values.
+
+`trust_measured` turns on once 1–4 ship and the re-measured armchair
+threshold is within the same order as zigzag's 0.025° or is explained.
+
 ## Step 5 join open item 1: ruled (2026-09-29)
 
 `join.reparented` is back as an **INFO**, narrowed to the ordinary-parent

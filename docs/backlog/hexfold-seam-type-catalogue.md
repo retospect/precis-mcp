@@ -8,6 +8,10 @@ model: opus
 
 # hexfold: seam-type catalogue
 
+Consumer (Reto 2026-10-12, gr464405): the tiler's known-good building-block
+library is these rows plus a "QM-validated (method, protocol, max seam
+bond)" field. See `hexfold-ideal-surface-then-tile.md` §[9-6] control.
+
 ## R17 variant A public scene contract — 2026-10-07
 
 Orchestrator authorizes the equal-120 straight Y only. On branch

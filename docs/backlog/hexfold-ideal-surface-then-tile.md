@@ -184,6 +184,38 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
       (12,0) lid pillar, or the stick neck shown as an idealised model. No
       relaxed top ships.
 
+### [9-6] control and known-good building blocks (gr464405) — ruled 2026-10-12
+
+`examples/nanobud_96.hx` builds a stick-clean [9-6] bud (seam: 3 nonagons
++ 3 hexagons) that tears under GFN2-xTB and MACE-MP. The test setup:
+host tube(10,10), len 6, H-capped, bud at mid-tube, FIRE with fmax 0.05.
+Five of six seam bonds open to 2.27–3.37 Å. [2+2] holds under the same
+protocol (1.578 / 1.654 Å). Reto (design-fold) ruled to keep [9-6] and
+measure it; it is not dropped on this evidence.
+
+1. **Orientation sweep (first, cheap).** On the current (10,10) host,
+   sweep the C60 orientation and phase at the seam under xTB (script:
+   hexfold-corner/s4_bud_control.py). Record which registrations close.
+   Compare the winner's seam motif with Wang and Li 2009.
+2. **Iterate the tiler.**
+   - (a) A radius sweep: (12,12) and (15,15) hosts. Less curvature means
+     less seam strain.
+   - (b) A library of known-good building blocks. These are QM-validated
+     seam and junction motifs, seeded with [2+2] and any [9-6] the sweep
+     closes. The tiler places them as whole units and only synthesizes
+     the rest.
+   - The library rows are the seam-motif rows of
+     `hexfold-seam-type-catalogue.md`, with a "QM-validated (method,
+     protocol, max seam bond)" field. A motif without one is not "known
+     good".
+3. **Drop [9-6] from figures and catalogue use** only if neither the
+   sweep nor the larger radii give a closed seam. Until then it is marked
+   "stick-only, unstable under QM".
+
+Accept: each [9-6] candidate has an xTB seam-bond table, the library holds
+[2+2] with its validation, and the tiler builds a nanobud from a library
+block without re-synthesizing its seam.
+
 ## Target + blast radius
 
 ### R15 — authored sphere reach correction (gr469873)

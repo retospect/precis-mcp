@@ -135,3 +135,15 @@ trailing-unit form, e-notation, or per-component units. An A/B over
 `src/precis/llm_eval` (harness, tasks, scorers) would measure
 mis-scaled-quantity rates per notation. Who: needs-Reto: wants data before committing the canonical form's
 strictness; agent-code builds the eval.
+
+**Status and ruling 2026-10-12 (Reto, design-fold).** The eval is built:
+`src/precis/llm_eval/notation.py`, 16 tasks over length, force, mass and
+volume from nm to km, with arms `si_prefix` / `e_notation`. Haiku 4.5
+(medium, repeats 1) scored exact 16/16 on both arms. The tasks are at
+ceiling and do not separate the arms. Next steps:
+
+1. Rerun on a weaker or local model (gpt-oss on castor, repeats 3).
+2. If that also saturates, keep both notations (status quo) and close
+   gr336349.
+3. Harder tasks (mixed prefixes, ranges, intent-to-value) only if the
+   weaker model shows a gap worth isolating.
