@@ -58,13 +58,39 @@ class SecretScrubFilter(logging.Filter):
 
             masked = mask_secrets(text, warn=False)
             if masked != text:
-                record.msg = masked
-                record.args = None
+                if not _mask_args_in_place(record, text):
+                    record.msg = masked
+                    record.args = None
         except Exception:  # a log filter must never break logging
             return True
         finally:
             _guard.busy = False
         return True
+
+
+def _mask_args_in_place(record: logging.LogRecord, text: str) -> bool:
+    """Mask string args element-wise, keeping ``record.args`` a tuple.
+
+    Formatters that unpack ``record.args`` (uvicorn's ``AccessFormatter``
+    reads a 5-tuple) crash on ``args=None``, so collapsing to a pre-formatted
+    message is the last resort. True when the rewritten record formats clean.
+    """
+    from precis.utils.secret_scan import mask_secrets
+
+    args = record.args
+    if not isinstance(args, tuple):
+        return False
+    new_args = tuple(
+        mask_secrets(a, warn=False) if isinstance(a, str) else a for a in args
+    )
+    try:
+        candidate = record.msg % new_args if isinstance(record.msg, str) else None
+    except Exception:
+        return False
+    if candidate is None or mask_secrets(candidate, warn=False) != candidate:
+        return False
+    record.args = new_args
+    return True
 
 
 def _has_nonstring(args: Any) -> bool:

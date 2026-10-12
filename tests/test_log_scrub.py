@@ -120,3 +120,25 @@ def test_overhead_on_ordinary_lines_is_negligible() -> None:
     )
     # Generous CI bound: well under 20 us/record (a handler emit costs 10-50 us).
     assert per_record_us < 20
+
+
+def test_masked_record_keeps_tuple_args_for_uvicorn_access_formatter() -> None:
+    """gr479780: args=None crashed uvicorn's AccessFormatter on every URL
+    carrying a token ("--- Logging error ---", line lost)."""
+    from uvicorn.logging import AccessFormatter
+
+    rec = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("1.2.3.4:0", "GET", "/podcast/feed.xml?t=" + SECRET, "1.1", 200),
+        None,
+    )
+    SecretScrubFilter().filter(rec)
+    assert isinstance(rec.args, tuple) and len(rec.args) == 5
+    out = AccessFormatter("%(asctime)s %(levelprefix)s %(message)s").format(rec)
+    assert SECRET not in out
+    assert "<redacted:" in out
+    assert out[:4].isdigit()  # asctime present
