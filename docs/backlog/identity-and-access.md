@@ -6,6 +6,67 @@ prio: normal
 
 # Identity and access
 
+## October 2026 refresh: groups and end-to-end MCP authorization (draft)
+
+Reto requested row-level user controls, possibly groups, carried through
+MCP and user tracking (2026-10-04). This authorizes design/backlog work;
+no schema or live access-policy change is selected here.
+
+**Checked present state:** migration 0131 already creates `web_users`;
+0164 adds indexed `refs.owner_login` referencing `web_users.login`.
+The web package docstring describes authenticated, fully authorized
+humans without roles or per-route ACLs. `server.py::_install_token_auth`
+checks a configured bearer token for network MCP; it does not resolve
+that credential into a per-user principal. Historical claims below about
+an unauthenticated web and no ownership column are obsolete. Do not add
+duplicate users/ownership structures from those older proposals.
+
+Proposed design questions and requirements:
+
+- Reuse the existing identity/ownership model after auditing consumers.
+  Consider groups, membership and explicit resource grants with distinct
+  read/write/admin capabilities. Tags and caller-provided `source` are
+  attribution, never authentication or authorization.
+- Resolve identity at the trusted transport boundary: verified web
+  session; network MCP credential mapped to a principal; stdio launched
+  under an explicitly provisioned human/service identity. Keep requesting
+  human, executing agent/service, request/session and on-behalf-of job
+  identity distinct. A model cannot choose its authority in tool arguments.
+- Carry immutable principal context through all seven verbs and follow-on
+  jobs. Recheck current membership/grants when a queued job executes;
+  user-originated jobs cannot inherit a worker's broad authority.
+- Establish transaction-scoped identity on every checked-out connection
+  before protected SQL. Review transaction pooling and use transaction-local
+  state, with missing/invalid principal denied. No pooled session identity.
+- Design PostgreSQL RLS together with application checks. Review policies
+  for SELECT and writes (`USING` / `WITH CHECK`), table-owner and BYPASSRLS
+  behavior, views/functions and foreign-key error disclosure. No privileged
+  role on ordinary user requests. Policy implementation remains unapproved.
+- Protect chunks, embeddings, summaries, links, history, identifiers,
+  downloads and caches as well as refs. Derived output cannot broaden the
+  visibility of its inputs; mixed-source synthesis needs an explicit rule.
+- Apply visibility before search ranking/limits and throughout graph
+  traversal, fisheye rings, counts and RAG prompt assembly. Hide inaccessible
+  titles, handles and neighbours. Cache by effective authorization context
+  and invalidate on membership/grant revocation.
+- Audit mutations and access with principal, executing agent, request/job,
+  target and outcome; never log credentials. Separate operational telemetry
+  retention from permanent research provenance.
+
+Acceptance design: two users plus a group; cross-user reads/writes denied;
+group sharing and revocation verified; missing identity fails closed;
+pooled connection reuse cannot retain authority; queued jobs respect revoked
+grants; semantic search, fisheye, summaries and caches disclose no private
+content. Test legacy unowned rows and deleted owners explicitly: current
+`ON DELETE SET NULL` must not accidentally turn private material public.
+
+Open decisions: commons versus private defaults by kind; legacy backfill;
+group administrators and inheritance; grant revocation/cache semantics;
+which system passes truly require broad access. Reto's interest in groups
+does not approve any of these defaults. Link migration planning to
+`memory-native-authoring.md` and `fisheye-everywhere.md`: repo-dev and
+personal memory need the same enforcement as other working documents.
+
 Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
 ## User identity & ask-user routing — design plan

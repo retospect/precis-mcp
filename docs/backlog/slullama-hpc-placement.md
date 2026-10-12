@@ -101,3 +101,71 @@ llm.chain.big = [{"placement":"local","transport":"openai_tools","model":"qwen-h
   reaching the tunnel or triggering `sbatch`.
 - `docs/reference/config-variables.md` §4 stays accurate once real values
   are set.
+
+## MeluXina batch LLM plan and autocatpath pilot (draft, 2026-10-04)
+
+Reto requests an LLM plan plus a small remote-controlled Slurm test from
+autocatpath running an ML potential. Existing experiment/rerun holds remain;
+the pilot uses an independent fixture, not a held scientific campaign.
+This batch plan does not enable the earlier login-node proxy proposal:
+LuxProvide's current usage policy disallows long-running login-node processes.
+
+Owners: MeluXina for SSH/Slurm lifecycle; chemistry/catpath for the ML-potential
+worker and wheel; local-compute for the later LLM qualification workload.
+Actual local checkout is `/Users/reto/catpath` (clean main when checked);
+implementation belongs in an isolated worktree, not that checkout's main.
+
+### First pilot: ML potential through autocatpath
+
+1. Precis resolves SSH credentials through its existing vault. First verify
+   supported secret names, multiline private-key entry, passphrase handling and
+   pinned host identity. No credentials in job manifests, logs or shared notes.
+2. Check authentication and run `myquota` once to discover project, storage and
+   granted resources; inspect permitted partition/QoS. Do not infer entitlement
+   from cluster visibility or username. No repeated quota polling.
+3. Stage an immutable local autocatpath wheel, compatible dependencies and a
+   tiny deterministic ML-potential fixture. Record source SHA, wheel checksum,
+   model/weights identity and task manifest; do not substitute latest main.
+4. Submit one bounded Slurm allocation via the catpath backend. Install/test on
+   appropriate compute resources, use `srun` for execution, declare account,
+   partition/QoS, CPUs/GPUs/memory and short walltime. Choose a fixture and
+   tolerances before submission; no DFT or LLM job is required for this pilot.
+5. Persist task/job IDs, disconnect, resume monitoring and retrieve energies,
+   forces and execution metadata (or a bounded tiny relaxation if that is the
+   existing supported worker contract). Verify shapes, units, finite values,
+   successful exit and correspondence to the staged input.
+6. Collect logs and result checksums before reviewed scratch cleanup. Record
+   failed/timed-out/missing outcomes. Reconnection must not duplicate a job;
+   uncertain submission acknowledgement must reconcile before any resubmit.
+
+Gate: one real ML-potential result through catpath's SSH/Slurm path, captured
+by Precis with provenance. A mocked scheduler test or SSH login alone is not
+this result. Report actual job ID, resources, runtime and allocation usage.
+
+### Later LLM pilot
+
+Use the same staging/submission/collection contracts for batch inference,
+starting with a small pinned evaluation pack from the existing graph workload.
+Select a model only after checking allocation, memory, software compatibility
+and licence; stage pinned weights and dependencies without fetching models on
+every job. Compare completion coverage, task quality, walltime/node-hours and
+queue/startup cost against the existing reference. No interactive serving rung,
+always-on allocation, training campaign or production routing change yet.
+
+### Rate controls and provider references
+
+Separate submission pacing, pending/in-flight cap, array concurrency, status
+poll backoff and node-hour/storage budget; Slurm account/QoS limits remain
+authoritative. Batch homogeneous tasks with a measured array concurrency cap;
+share controller limits across workers rather than letting each poll separately.
+`myquota` is limited to once per 10 seconds and must not be repeatedly watched.
+
+- Connecting: https://docs.lxp.lu/first-steps/connecting/
+- Usage policy: https://docs.lxp.lu/access/PoliciesSummary/
+- Jobs/arrays: https://docs.lxp.lu/first-steps/handling_jobs/
+- Allocations: https://docs.lxp.lu/access/allocation_monitoring/#myquota
+
+Open prerequisites: usable vault-backed SSH consumer, actual project/resource
+entitlement, chosen compatible wheel/model and pilot fixture. Coordinator
+assigns implementation/validation and live pilot sequencing; no remote run has
+been performed by writing this draft.
