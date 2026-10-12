@@ -443,6 +443,14 @@ Every claim stamps the claiming worker's `version@sha` on the job
 table records what code actually ran where. Each row is
 `host process version@sha jobs=N last=<UTC>`.
 
+The stamp is taken at claim time, so `/builds` shows what a process ran
+on its last claim, not what it runs now. A lane that has claimed nothing
+since a restart (an idle `precis-worker-compute`, say) keeps showing its
+pre-restart build, and `last=` can still move because polls update the
+old jobs. An old build on such a process is "no claim since the
+restart", not "deploy did not land"; the deploy's own post-bounce check
+(playbook 43 for the compute lane) is the authority there.
+
 A fix is live on a process when that process's newest build sha is the fix
 or a descendant of it. Do not judge that by eye: pass the fix's commit as
 `args={'sha': ...}` (or `id='/builds?sha=...'`) and git answers per row —

@@ -925,6 +925,29 @@
       loop: "{{ precis_bounce_units | default(precis_units.stdout_lines | select | list) }}"
       failed_when: false
 
+    # gr479965: on this path play 43 skips its own bounce + build check (it
+    # sees precis_deploy_changed), and the restart above is what puts new code
+    # into the compute lane — so the check runs here instead. Same script play
+    # 43 renders; see the assert task there for what it proves. Inside the
+    # 660s TimeoutStartSec the ExecStartPre gate may hold the unit
+    # `activating`, hence the long retry window.
+    - name: "gr479965: assert the bounced compute lane runs the deployed build (Linux)"
+      when:
+        - os_family == "linux"
+        - precis_any_bounce | bool
+        - "'precis-worker-compute.service' in (precis_bounce_units | default(precis_units.stdout_lines | select | list))"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /opt/precis/bin/assert-unit-build.py
+          - precis-worker-compute
+          - "{{ precis_worker_git_ref | default('') }}"
+      register: precis_compute_build_check
+      retries: 45
+      delay: 15
+      until: (precis_compute_build_check.rc | default(1)) == 0
+      changed_when: false
+
     - name: Report bounced units (Linux/the GPU node)
       when: os_family == "linux"
       ansible.builtin.debug:

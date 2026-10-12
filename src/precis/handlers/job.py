@@ -473,7 +473,9 @@ class JobHandler(NumericRefHandler):
             f"# fleet builds — from job lease stamps, since={since_hours}h "
             f"(cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})\n"
             "# one row per host/process/build; newest build per process "
-            "is what it is running now"
+            "is what it is running now\n"
+            "# stamped at claim time: a process that has claimed nothing "
+            "since its last restart still shows its pre-restart build"
         )
         repo: Path | None = None
         if sha is not None:

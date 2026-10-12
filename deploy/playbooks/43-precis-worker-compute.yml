@@ -102,6 +102,7 @@
     _compute_gate_script: /opt/precis/bin/wait-for-job-ssh-node.sh
     _compute_gate_max_attempts: 40
     _compute_gate_interval_sec: 15
+    _compute_build_check_script: /opt/precis/bin/assert-unit-build.py
   tasks:
     - name: "gr199339: ensure the gate script's directory exists"
       # /opt/precis itself is created by roles/precis_worker/tasks/provision.yml
@@ -271,6 +272,107 @@
         daemon_reload: true
       when: precis_deploy_changed is not defined
       failed_when: false
+      register: _compute_bounce
+
+    # gr479965: the bounce above reporting `changed` proves only that systemd
+    # restarted the unit — not that the restarted process runs the build this
+    # deploy installed. The failure classes it cannot see: ExecStart pointing
+    # at a venv the install did not touch, an install skipped for this host,
+    # or a restart that landed before the install finished. The deploy would
+    # report green while the lane ran old code. /builds cannot see it either:
+    # it shows the build stamped on each job when it was claimed, so an idle
+    # lane keeps showing its last pre-restart claim (r27 read as stale on
+    # castor/pollux for exactly that reason, while their venvs and processes
+    # were on 5c692aad3). So the check runs on the host, against the unit
+    # itself: the venv its ExecStart names must carry the pinned sha in
+    # direct_url.json, and the running main process must have started after
+    # that file was written. Plain python with argv, no Jinja, so
+    # tests/test_deploy_compute_build_assert.py runs the same text against
+    # fake systemctl/ps.
+    - name: "gr479965: render the post-bounce build check"
+      ansible.builtin.copy:
+        dest: "{{ _compute_build_check_script }}"
+        mode: "0755"
+        owner: root
+        group: root
+        content: |
+          #!/usr/bin/env python3
+          # Managed by ansible (deploy/playbooks/43-precis-worker-compute.yml).
+          # assert-unit-build.py UNIT [EXPECTED_SHA] — exit 0 iff UNIT is
+          # active, the venv its ExecStart runs from holds precis-mcp at
+          # EXPECTED_SHA (skipped when not a 40-char sha, e.g. a branch
+          # deploy), and its main process started after that install.
+          import glob
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+
+
+          def fail(msg):
+              print(f"assert-unit-build: {msg}", file=sys.stderr)
+              sys.exit(1)
+
+
+          def main(argv):
+              unit = argv[1]
+              expected = argv[2] if len(argv) > 2 else ""
+              out = subprocess.run(
+                  ["systemctl", "show", unit, "-p", "ActiveState", "-p", "MainPID", "-p", "ExecStart"],
+                  capture_output=True, text=True, encoding="utf-8", check=True,
+              ).stdout
+              props = dict(line.partition("=")[::2] for line in out.splitlines() if "=" in line)
+              state, pid = props.get("ActiveState", ""), props.get("MainPID", "0").strip()
+              if state != "active" or pid in ("", "0"):
+                  fail(f"{unit} is {state or 'unknown'} (MainPID={pid or '?'}), not running")
+              m = re.search(r"path=(\S+)", props.get("ExecStart", ""))
+              if not m:
+                  fail(f"cannot read the ExecStart binary of {unit}: {props.get('ExecStart')!r}")
+              venv = os.path.dirname(os.path.dirname(m.group(1)))
+              hits = sorted(glob.glob(f"{venv}/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json"))
+              if not hits:
+                  fail(f"{unit} runs {m.group(1)} but {venv} has no precis_mcp install")
+              with open(hits[0], encoding="utf-8") as fh:
+                  installed = (json.load(fh).get("vcs_info") or {}).get("commit_id", "")
+              if re.fullmatch(r"[0-9a-f]{40}", expected) and installed != expected:
+                  fail(f"{unit} runs {venv}, which holds {installed or 'no vcs commit'}, not the deployed {expected}")
+              etimes = subprocess.run(
+                  ["ps", "-o", "etimes=", "-p", pid],
+                  capture_output=True, text=True, encoding="utf-8", check=True,
+              ).stdout.strip()
+              started = time.time() - int(etimes)
+              built = os.stat(hits[0]).st_mtime
+              # ps reports whole seconds; 2s of slack keeps a restart in the
+              # same second as the install from reading as stale.
+              if started + 2 < built:
+                  fail(f"{unit} pid {pid} started {int(built - started)}s before {venv} was installed; it runs the old code")
+              print(f"ok {unit} pid={pid} venv={venv} sha={installed or '?'}")
+
+
+          if __name__ == "__main__":
+              main(sys.argv)
+
+    # Runs whenever the bounce ran (`is not skipped`, so a failed restart —
+    # hidden by the bounce's failed_when: false — is caught here too). On
+    # redeploy the bounce is skipped and redeploy-precis.yml's step-2 bounce
+    # runs this same script after its restart. 45 x 15s covers the
+    # ExecStartPre gate's 600s bound: the unit sits in `activating` until
+    # the venv accepts --only job_ssh_node.
+    - name: "gr479965: assert the bounced compute lane runs the deployed build"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _compute_build_check_script }}"
+          - precis-worker-compute
+          - "{{ precis_worker_git_ref | default('') }}"
+      when: _compute_bounce is not skipped
+      register: _compute_build_check
+      retries: 45
+      delay: 15
+      until: (_compute_build_check.rc | default(1)) == 0
+      changed_when: false
   # `precis` family tag so `--tags precis` fans this out with the other
   # precis-* plays; `precis-worker-compute` for a targeted refresh.
   tags: [precis-worker-compute, precis]
