@@ -4,6 +4,20 @@ CLAUDE.md carries the one-line version of each path and the rules that bite;
 this file is the mechanics. The skills (`/land`, `/go`, `/qland`, `/qgo`,
 `/round`) carry the step-by-step.
 
+When a backlog item ships and its file is deleted, append a shipping comment
+to each associated gripe naming the landed **main commit SHA**, instead of
+using the deleted backlog path as the resolution pointer; the coordinator
+adds this after landing if a task branch is handed off. Preserve earlier
+comments as history. Audit stale citations with
+`scripts/gripe-dangling-backlog --comments comments.jsonl` from the checkout
+being checked: enumerate every page of session MCP
+`search(kind='gripe', status='*', page_size=100, page=N)`, then read each
+`get(kind='gripe', id=ID, view='comments')` and save its full text as a JSONL
+record `{"id":"gr123","text":"<response text>"}`. The advisory report includes
+closed gripes and historical citations even after a SHA follow-up; a subset
+snapshot checks only that subset. Production reads use only those session
+MCP verbs; the checker itself reads local files and never repoints comments.
+
 ## /land — gate on GitHub
 
 `scripts/ship --remote`: commit WIP → sync main → push `ci/<branch>` → wait

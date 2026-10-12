@@ -30,6 +30,13 @@ NFS, so ingest can fold deterministically into the stub the fetch was
 *for* — keeping the stub's good metadata rather than minting a junk-
 metadata twin.
 
+Discord uploads use the same manifest for message and author provenance,
+but never supply an authoritative ``ref_id``. A user-written paper handle
+is recorded in ``discord.paper_id``; its ``pa<id>.pdf`` filename still
+passes through the existing identity gate. Even a numbered ``ref_id`` in
+a Discord manifest is ignored when reading, so provenance cannot bypass
+that gate.
+
 File convention
 ---------------
 For ``<inbox>/continuous83.pdf`` the sidecar is
@@ -71,12 +78,12 @@ SOURCE_FORMATS: frozenset[str] = frozenset(
 class FetchSidecar:
     """Decoded acquisition manifest for one downloaded file."""
 
-    ref_id: int
+    ref_id: int | None
     #: ``id_kind → id_value`` for the stub (doi/arxiv/s2/cite_key). Carried
     #: for provenance and manual recovery; the deterministic fold keys on
     #: ``ref_id`` alone.
     identifiers: dict[str, str]
-    #: The ``fetcher:<provider>`` source that produced the download.
+    #: The ``fetcher:<provider>`` or ``discord`` source of the download.
     source: str
     #: Which producer the trigger file feeds. ``"pdf"`` (default) → the
     #: Marker pipeline; ``"jats"``/``"elsevier_xml"``/``"arxiv_html"``/
@@ -110,6 +117,9 @@ class FetchSidecar:
     #: Source URL of an agent-supplied download (``source='agent_url'``,
     #: ``put(kind='paper', args={'pdf_url': ...})``); provenance only.
     url: str | None = None
+    #: Discord message/author provenance and optional requested paper handle.
+    #: A requested handle is a hint, never an authoritative fold target.
+    discord: dict[str, str] | None = None
 
 
 def sidecar_path(pdf: Path) -> Path:
@@ -120,7 +130,7 @@ def sidecar_path(pdf: Path) -> Path:
 def write_sidecar(
     pdf: Path,
     *,
-    ref_id: int,
+    ref_id: int | None,
     identifiers: dict[str, str],
     source: str,
     source_format: str = "pdf",
@@ -129,6 +139,7 @@ def write_sidecar(
     role: str | None = None,
     si: dict[str, str] | None = None,
     url: str | None = None,
+    discord: dict[str, str] | None = None,
 ) -> None:
     """Atomically write the sidecar next to the trigger file ``pdf``.
 
@@ -145,6 +156,8 @@ def write_sidecar(
     ``os.replace``\\ s it into place so a watcher polling the inbox never
     reads a half-written manifest.
     """
+    if ref_id is None and source != "discord":
+        raise ValueError("Only Discord provenance sidecars may omit ref_id")
     if source_format not in SOURCE_FORMATS:
         log.warning(
             "fetch_sidecar: unknown source_format %r for ref_id=%s — "
@@ -155,7 +168,7 @@ def write_sidecar(
         source_format = "pdf"
     target = sidecar_path(pdf)
     payload: dict[str, Any] = {
-        "ref_id": int(ref_id),
+        "ref_id": int(ref_id) if ref_id is not None else None,
         "identifiers": {k: v for k, v in identifiers.items() if v},
         "source": source,
         "source_format": source_format,
@@ -168,6 +181,8 @@ def write_sidecar(
         payload["url"] = url
     if si:
         payload["si"] = {k: v for k, v in si.items() if v}
+    if discord is not None:
+        payload["discord"] = discord
     tmp = target.with_name(f".{target.name}.tmp")
     try:
         tmp.write_text(json.dumps(payload), encoding="utf-8")
@@ -197,11 +212,11 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         return None
     try:
         data: Any = json.loads(raw)
-        ref_id = int(data["ref_id"])
+        source = str(data.get("source", ""))
+        ref_id = None if source == "discord" else int(data["ref_id"])
         identifiers = {
             str(k): str(v) for k, v in dict(data.get("identifiers", {})).items()
         }
-        source = str(data.get("source", ""))
         # Back-compat: legacy PDF-only sidecars have neither key.
         source_format = str(data.get("source_format", "pdf")) or "pdf"
         if source_format not in SOURCE_FORMATS:
@@ -225,6 +240,12 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         )
         url_raw = data.get("url")
         url = str(url_raw) if url_raw else None
+        discord_raw = data.get("discord")
+        discord = (
+            {str(k): str(v) for k, v in discord_raw.items()}
+            if isinstance(discord_raw, dict)
+            else None
+        )
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("fetch_sidecar: ignoring malformed %s: %s", path.name, exc)
         return None
@@ -238,6 +259,7 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         role=role,
         si=si,
         url=url,
+        discord=discord,
     )
 
 

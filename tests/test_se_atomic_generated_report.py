@@ -5,10 +5,20 @@ design level (gr464342: view=validate said 0 errors while view=block showed
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import numpy as np
+import pytest
+
+from hexfold.report import Finding, Report, Severity
+from precis.dispatch import Hub
+from precis.store import Store
+from precis.structure.cell import Cell
+from precis.structure.scene import Atom, Scene
 from precis_se.atomic import validate as se_atomic_validate
-from precis_se.handler import validate_digest
+from precis_se.atomic.generate import generated_record
+from precis_se.handler import SeHandler, _render_tree, validate_digest
 from precis_se.ops import SeBlock, SeTree
 
 
@@ -62,3 +72,121 @@ def test_clean_or_missing_report_stays_silent() -> None:
             )
             == []
         )
+
+
+def _hexfold_record() -> dict[str, Any]:
+    """Use the producer's serialization, including its uppercase severity names."""
+    report = Report(
+        tuple(
+            Finding("geom.clash", Severity.ERROR, "0.54 A", where=f"b{i}-t{i}")
+            for i in range(4)
+        )
+        + (
+            Finding("angle.dev", Severity.WARN, "angle deviation"),
+            Finding("geom.summary", Severity.INFO, "geometry checked"),
+        )
+    )
+    return generated_record("hexfold_scene", {"report": report.to_dict()})
+
+
+@pytest.mark.parametrize(
+    "block_names", [("pillar_foot",), ("pillar_foot", "other_foot")]
+)
+def test_stored_hexfold_report_reaches_design_views(
+    store: Store, block_names: tuple[str, ...]
+) -> None:
+    record = _hexfold_record()
+    assert record["report"]["findings"][0]["severity"] == "ERROR"
+    scene = Scene(
+        cell=Cell.from_lengths_angles(20, 20, 20, pbc=(False, False, False)),
+        atoms={"aC1": Atom("aC1", "C", np.zeros(3))},
+    )
+    store.structure_save(
+        slug="stored-foot",
+        title="Stored generated foot",
+        scene=scene,
+        version=1,
+        card_text="Stored generated report regression fixture.",
+        meta_extra={"generated": record},
+    )
+    handler = SeHandler(hub=Hub(store=store))
+    ops = []
+    for name in block_names:
+        ops.extend(
+            [
+                {"op": "add_block", "name": name, "envelope": "sphere:r2e-10"},
+                {
+                    "op": "bind_structure",
+                    "block": name,
+                    "design": "stored-foot",
+                    "ports": {},
+                },
+            ]
+        )
+    handler.put(id="stored-report-design", text=json.dumps({"ops": ops}))
+
+    validation = handler.get(id="stored-report-design", view="validate").body
+    for name in block_names:
+        error_line = next(
+            line
+            for line in validation.splitlines()
+            if "generated_report_error" in line and f"block {name!r}" in line
+        )
+        assert "geom.clash x4" in error_line
+        warning_line = next(
+            line
+            for line in validation.splitlines()
+            if "generated_report_warn" in line and f"block {name!r}" in line
+        )
+        assert "angle.dev x1" in warning_line
+    if len(block_names) == 1:
+        drc = handler.get(id="stored-report-design", view="drc").body
+        assert "generated_report_error" in drc and "geom.clash x4" in drc
+        assert "pillar_foot" in drc
+    for view in (None, "tree"):
+        digest = handler.get(id="stored-report-design", view=view).body
+        for name in block_names:
+            block_line = next(
+                line for line in digest.splitlines() if line.startswith(f"- {name} ")
+            )
+            assert "stored report: 4 error(s)" in block_line
+
+
+@pytest.mark.parametrize(
+    ("record", "expected_count"),
+    [
+        (_record(0, 0), 0),
+        (_record(4, 2), 4),
+        ({"generator": "x"}, None),
+        ({"report": "junk"}, None),
+        ({"report": {"findings": "junk"}}, None),
+    ],
+)
+def test_tree_stored_report_count_distinguishes_clean_from_missing(
+    record: dict[str, Any], expected_count: int | None
+) -> None:
+    digest = _render_tree(
+        _tree(), "Stored report", "", generated_records={"d-foot": record}
+    )
+    if expected_count is None:
+        assert "stored report:" not in digest
+    else:
+        assert f"stored report: {expected_count} error(s)" in digest
+
+
+def test_malformed_rows_do_not_hide_valid_stored_findings() -> None:
+    record = _hexfold_record()
+    record["report"]["findings"].extend(
+        [None, "junk", [], {}, {"severity": None}, {"severity": ["ERROR"]}]
+    )
+    findings = se_atomic_validate.validate_atomic(
+        _tree(), generated_records={"d-foot": record}
+    )
+    errors = [f for f in findings if f.rule == "generated_report_error"]
+    assert len(errors) == 1 and "geom.clash x4" in errors[0].detail
+    warnings = [f for f in findings if f.rule == "generated_report_warn"]
+    assert len(warnings) == 1 and "angle.dev x1" in warnings[0].detail
+    digest = _render_tree(
+        _tree(), "Stored report", "", generated_records={"d-foot": record}
+    )
+    assert "stored report: 4 error(s)" in digest

@@ -14,8 +14,11 @@ file's hash and replies with the ``pa<id>`` handle.
   (50 MB cap, ``%PDF`` magic, deadline); a pre-check on the declared size
   refuses an oversize file before any bytes move.
 * **Drop:** staged in ``<inbox>/.staging/`` and renamed into place, so the
-  watcher never sees a half-written PDF. A hash already on a ref is answered
-  from the DB and not re-dropped.
+  watcher never sees a half-written PDF. Discord provenance is published
+  first in a fetch sidecar. A message's paper handle prefixes the filename
+  to use the ingest identity check, never the trusted fetcher fold shortcut.
+  Named drops are re-queued even for known hashes: a ref holding the bytes
+  may still lack a body, or a different wanted stub may need to survive.
 
 Every failure becomes a reply string; nothing here raises into the bot.
 """
@@ -29,6 +32,8 @@ import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+
+from precis.ingest.fetch_sidecar import sidecar_path, write_sidecar
 
 log = logging.getLogger(__name__)
 
@@ -60,10 +65,13 @@ def is_pdf_attachment(att: object) -> bool:
     return name.endswith(".pdf") or ctype.startswith("application/pdf")
 
 
-def _drop_name(att: object, message_id: int | str) -> str:
+def _drop_name(att: object, message_id: int | str, paper_id: str | None) -> str:
     stem = Path(str(getattr(att, "filename", "") or "attachment")).stem
     stem = re.sub(r"[^a-zA-Z0-9._-]", "_", stem.lower())[:60] or "attachment"
-    return f"discord-{message_id}-{stem}.pdf"
+    attachment_id = getattr(att, "id", None)
+    suffix = f"-{attachment_id}" if attachment_id is not None else ""
+    prefix = f"{paper_id}-" if paper_id else ""
+    return f"{prefix}discord-{message_id}{suffix}-{stem}.pdf"
 
 
 async def find_ref_id(dsn: str, sha256: str) -> int | None:
@@ -115,6 +123,8 @@ async def ingest_attachment(
     inbox: Path,
     call_tool: CallTool,
     send: Send,
+    author_id: int | str | None = None,
+    paper_id: str | None = None,
     poll_interval_s: float | None = None,
     poll_timeout_s: float | None = None,
 ) -> None:
@@ -132,7 +142,7 @@ async def ingest_attachment(
         await send(f"`{name}`: {_refusal('too_large', '')}")
         return
 
-    target = inbox / _drop_name(att, message_id)
+    target = inbox / _drop_name(att, message_id, paper_id)
     staging = inbox / ".staging"
     staged = staging / target.name
     try:
@@ -147,24 +157,45 @@ async def ingest_attachment(
             await send(f"`{name}`: {_refusal(exc.reason, exc.detail or '')}")
             return
         existing = await find_ref_id(dsn, sha)
-        if existing is not None:
+        if existing is not None and paper_id is None:
             await send(f"`{name}` is already in the library as {_handle(existing)}.")
             return
-        os.replace(staged, target)
+        provenance = {"message_id": str(message_id), "author": abbrev}
+        if author_id is not None:
+            provenance["author_id"] = str(author_id)
+        if paper_id is not None:
+            provenance["paper_id"] = paper_id
+        write_sidecar(
+            staged, ref_id=None, identifiers={}, source="discord", discord=provenance
+        )
+        # Publishing fails closed if the best-effort sidecar writer failed.
+        os.replace(sidecar_path(staged), sidecar_path(target))
+        try:
+            os.replace(staged, target)
+        except OSError:
+            sidecar_path(target).unlink(missing_ok=True)
+            raise
     except OSError as exc:
         log.exception("attachment ingest: inbox write failed")
         await send(f"`{name}`: could not write to the ingest inbox ({exc.strerror}).")
         return
     finally:
         staged.unlink(missing_ok=True)
+        sidecar_path(staged).unlink(missing_ok=True)
 
-    await send(f"`{name}` queued for ingest; I will post the paper handle when done.")
+    action = (
+        f"fold into {paper_id} if the PDF matches that wanted paper"
+        if paper_id
+        else "ingest"
+    )
+    await send(f"`{name}` queued to {action}; I will post the paper handle when done.")
     waited = 0.0
-    ref_id = await find_ref_id(dsn, sha)
+    # A known twin must not be reported as success before the watcher folds it.
+    ref_id = None if paper_id and target.exists() else await find_ref_id(dsn, sha)
     while ref_id is None and waited < poll_timeout_s:
         await asyncio.sleep(poll_interval_s)
         waited += poll_interval_s
-        ref_id = await find_ref_id(dsn, sha)
+        ref_id = None if paper_id and target.exists() else await find_ref_id(dsn, sha)
     if ref_id is None:
         await send(
             f"`{name}`: no paper after {int(poll_timeout_s // 60)} min. It may "
@@ -172,6 +203,12 @@ async def ingest_attachment(
         )
         return
     handle = _handle(ref_id)
+    if paper_id is not None and handle != paper_id:
+        await send(
+            f"`{name}` is held as {handle}; fold into {paper_id} was not confirmed. "
+            "Check the paper identity and ingest errors folder."
+        )
+        return
     note = ""
     try:
         await call_tool(
@@ -194,19 +231,16 @@ async def handle_message_attachments(
 ) -> bool:
     """Act on a message's attachments; True when any attachment was handled.
 
-    Non-PDF attachments on a message that carries text are left to the normal
-    chat turn (a pasted screenshot is not an ingest request); on an
-    attachment-only message they get a refusal reply instead of silence.
+    Non-PDFs get a refusal even in mixed messages. One distinct paper handle
+    applies to the PDFs; multiple handles are ambiguous and refused.
     """
     atts = list(getattr(message, "attachments", None) or [])
     if not atts:
         return False
-    has_text = bool((getattr(message, "content", "") or "").strip())
     pdfs = [a for a in atts if is_pdf_attachment(a)]
-    if not pdfs:
-        if has_text:
-            return False
+    if len(pdfs) != len(atts):
         await send("Refused: only PDF attachments are ingested.")
+    if not pdfs:
         return True
     if not abbrev:
         await send(
@@ -217,6 +251,13 @@ async def handle_message_attachments(
     if inbox is None:
         await send("Refused: no ingest inbox is configured on this host.")
         return True
+    paper_ids = set(
+        re.findall(r"\bpa[1-9][0-9]*\b", getattr(message, "content", "") or "")
+    )
+    if len(paper_ids) > 1:
+        await send("Refused: name just one pa<id> per message for the PDF fold.")
+        return True
+    paper_id = next(iter(paper_ids), None)
     for att in pdfs:
         await ingest_attachment(
             att,
@@ -226,5 +267,7 @@ async def handle_message_attachments(
             inbox=inbox,
             call_tool=call_tool,
             send=send,
+            author_id=getattr(getattr(message, "author", None), "id", None),
+            paper_id=paper_id,
         )
     return True

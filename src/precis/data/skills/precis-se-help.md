@@ -434,6 +434,10 @@ ops=[{'op':'restore_revision','rev':N}])` puts the design back to
 revision N (a sole op in its call); the restore is itself recorded as a
 new revision, so nothing is rewound. An unknown N names the available range.
 
+The default tree shows each available stored build report's error count beside
+its block. `view='validate'` includes stored ERROR/WARN findings by block, grouped
+by error code and summarised for warnings; these are build-time evidence.
+
 `view='report'` reads stored generate/join build findings (severity, code,
 where, message, span) without recomputation. Omit args for every direct block,
 or use `args={'block': '<label or #uid>'}`. Missing records are unavailable,

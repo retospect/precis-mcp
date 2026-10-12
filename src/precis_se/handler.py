@@ -98,7 +98,7 @@ import math
 import re
 import tempfile
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
@@ -1018,7 +1018,14 @@ class SeHandler(Handler):
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
             return Response(
-                body=_render_tree(tree, ref.title or str(ref.slug), description)
+                body=_render_tree(
+                    tree,
+                    ref.title or str(ref.slug),
+                    description,
+                    generated_records=se_atomic_render.bound_generated_records(
+                        self.store, tree
+                    ),
+                )
             )
         if v in ("block", "surface_deviation"):
             name = (args or {}).get("name")
@@ -2771,7 +2778,13 @@ def _sibling_order(tree: SeTree, names: list[str]) -> list[str]:
     return ordered
 
 
-def _render_tree(tree: SeTree, title: str, description: str) -> str:
+def _render_tree(
+    tree: SeTree,
+    title: str,
+    description: str,
+    *,
+    generated_records: Mapping[str, dict[str, Any]] | None = None,
+) -> str:
     lines = [f"# se design '{title}'  (units: metres)"]
     if description:
         lines.append(description)
@@ -2800,7 +2813,21 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
 
     def _walk(name: str, depth: int, path: tuple[str, ...]) -> None:
         node = tree.blocks[name]
-        lines.append(f"{'  ' * depth}- {_block_line(tree, node)}")
+        block_line = _block_line(tree, node)
+        if (
+            generated_records is not None
+            and node.bound_kind == "structure"
+            and node.bound
+        ):
+            stored = se_atomic_validate.generated_report_rows(
+                generated_records.get(node.bound)
+            )
+            if stored is not None:
+                errors = sum(
+                    str(row.get("severity")).lower() == "error" for row in stored
+                )
+                block_line += f" · stored report: {errors} error(s)"
+        lines.append(f"{'  ' * depth}- {block_line}")
         # An instance's (or array's) subtree is the template's, resolved
         # here at read time — never copied onto the instance row. ``path``
         # carries every expansion source already on the walk — defense in

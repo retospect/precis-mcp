@@ -3016,8 +3016,10 @@ def _frame(
 
 def _winding_normal(pos: np.ndarray, dang: tuple[int, ...]) -> np.ndarray:
     """A rim's least-variance axis, signed so the dangling list winds
-    negatively about it -- the sense every non-flat rim's list has about
-    its outward normal (see ``_place_seeds``' ``_flat_sign``)."""
+    negatively about it.  This chooses a side for a flat rim, which has
+    no physical outward side.  Curved rims can wind either way about
+    their outward normal; use :func:`_rim_sign` to test their handedness
+    without changing that normal to agree with the list."""
     pts = pos[list(dang)]
     c = pts.mean(axis=0)
     d = pts - c

@@ -29,9 +29,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hexfold.build import Net, Port, _flat_bud_sides, _flat_normals, build
-from hexfold.check import _clash_pairs
-from hexfold.report import Profile, Severity
+from hexfold.build import (
+    Net,
+    Port,
+    _flat_bud_sides,
+    _flat_normals,
+    _frame,
+    _fuse_parity,
+    _fuse_transform,
+    _rim_sign,
+    build,
+)
+from hexfold.check import _clash_pairs, check
+from hexfold.report import Finding, Profile, Severity
 from hexfold.stick import stick
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "hexfold" / "examples"
@@ -48,6 +58,93 @@ def _crossing_lengths(net: Net) -> np.ndarray:
 
 def _bond_lengths(net: Net, pos: np.ndarray) -> np.ndarray:
     return np.array([np.linalg.norm(pos[i] - pos[j]) for i, j, _ in net.bonds])
+
+
+def _curved_rim_seed(outward_side: int) -> np.ndarray:
+    angles = np.arange(6) * np.pi / 3
+    rim = np.column_stack((2 * np.cos(angles), 2 * np.sin(angles), np.zeros(6)))
+    return np.vstack((rim, rim - np.array([0.0, 0.0, 3.0 * outward_side])))
+
+
+@pytest.mark.parametrize("outward_side", [-1, 1], ids=["outward-minus", "outward-plus"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["ccw", "cw"])
+@pytest.mark.parametrize("transformed", [False, True], ids=["axis-aligned", "rotated"])
+def test_curved_rim_sign_uses_outward_normal(
+    outward_side: int, reverse: bool, transformed: bool
+) -> None:
+    """gr459812: winding may change; the body's physical outside must not."""
+    pos = _curved_rim_seed(outward_side)
+    outward = np.array([0.0, 0.0, float(outward_side)])
+    if transformed:
+        rotation = np.array([[1.0, -2.0, 2.0], [2.0, 2.0, 1.0], [-2.0, 1.0, 2.0]]) / 3
+        pos = pos @ rotation.T + np.array([7.0, -11.0, 4.0])
+        outward = rotation @ outward
+    dang = (0, 5, 4, 3, 2, 1) if reverse else tuple(range(6))
+    backwards = (dang[0], *reversed(dang[1:]))
+    centroid = pos.mean(axis=0)
+    c, normal = _frame(pos, dang, centroid)
+    c_back, normal_back = _frame(pos, backwards, centroid)
+    np.testing.assert_allclose(c_back, c, atol=1e-12)
+    np.testing.assert_allclose(normal, outward, atol=1e-12)
+    np.testing.assert_allclose(normal_back, outward, atol=1e-12)
+    expected = -outward_side if reverse else outward_side
+    assert _rim_sign(pos, dang, centroid) == expected
+    assert _rim_sign(pos, backwards, centroid) == -expected
+
+
+@pytest.mark.parametrize("reverse_p", [False, True], ids=["host-ccw", "host-cw"])
+@pytest.mark.parametrize("reverse_q", [False, True], ids=["partner-ccw", "partner-cw"])
+def test_curved_fuse_seeds_outward_with_either_dangling_direction(
+    reverse_p: bool, reverse_q: bool
+) -> None:
+    """The achiral partner may reflect, but every registered pair stays sigma apart."""
+    p = _curved_rim_seed(1)
+    q = p + np.array([10.0, 0.0, 0.0])
+    pos = np.vstack((p, q))
+    before = pos.copy()
+    p_dang = (0, 5, 4, 3, 2, 1) if reverse_p else tuple(range(6))
+    q_local = (0, 5, 4, 3, 2, 1) if reverse_q else tuple(range(6))
+    q_dang = tuple(i + len(p) for i in q_local)
+    inst_ords = {"p": list(range(len(p))), "q": list(range(len(p), len(pos)))}
+    inst_of = {i: name for name, indices in inst_ords.items() for i in indices}
+    findings: list[Finding] = []
+    k, sigma = 2, 1.42
+    _fuse_parity(
+        pos,
+        inst_ords,
+        inst_of,
+        set(),
+        set(),
+        {},
+        [("p.out", p_dang, "q.out", q_dang, k, True, False)],
+        "p",
+        findings,
+    )
+    rotation, translation = _fuse_transform(
+        pos,
+        p_dang,
+        q_dang,
+        k,
+        sigma,
+        pos[inst_ords["p"]].mean(axis=0),
+        pos[inst_ords["q"]].mean(axis=0),
+    )
+    pos[inst_ords["q"]] = pos[inst_ords["q"]] @ rotation.T + translation
+    np.testing.assert_array_equal(pos[inst_ords["p"]], p)
+    c_p, n_p = _frame(pos, p_dang, p.mean(axis=0))
+    assert float((pos[inst_ords["q"]].mean(axis=0) - c_p) @ n_p) > sigma
+    lengths = [
+        np.linalg.norm(pos[p_dang[i]] - pos[q_dang[(k - i) % len(q_dang)]])
+        for i in range(len(p_dang))
+    ]
+    np.testing.assert_allclose(lengths, sigma, atol=1e-10)
+    for indices in inst_ords.values():
+        old, new = before[indices], pos[indices]
+        np.testing.assert_allclose(
+            np.linalg.norm(new[:, None] - new[None, :], axis=2),
+            np.linalg.norm(old[:, None] - old[None, :], axis=2),
+            atol=1e-10,
+        )
 
 
 @pytest.mark.parametrize(
@@ -320,6 +417,20 @@ def test_flanged_doughnut_top_wall_bottom_placement_is_exact() -> None:
     )
     assert lengths.size, "no top/wall/bottom crossing bonds found"
     assert lengths.max() < 1.7, (lengths.min(), lengths.max())
+
+
+@pytest.mark.parametrize("name", ["flanged_doughnut.hx", "flanged_doughnut_oh.hx"])
+def test_flanged_doughnut_has_no_geometry_overlap(name: str) -> None:
+    """gr462075: washer contacts in the seed must relax without self-overlap."""
+    report = check((_EXAMPLES / name).read_text(encoding="utf-8"), geometry=True)
+    summary = next(dict(f.data) for f in report.findings if f.code == "geom.summary")
+    assert summary["clash_count"] == 0, summary
+    assert not [
+        f
+        for f in report.findings
+        if f.code in {"geom.seed_overlap", "geom.clash"}
+        and f.severity == Severity.ERROR
+    ]
 
 
 def test_stick_no_longer_telescopes_the_fused_tube() -> None:

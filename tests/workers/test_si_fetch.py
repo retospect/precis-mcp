@@ -118,6 +118,56 @@ def test_found_si_downloads_sidecar_and_records(store, tmp_path, monkeypatch) ->
     assert ("si_fetch", "si_found") in ev
 
 
+@pytest.mark.parametrize("extension", ["zip", "xlsx", "cif"])
+def test_non_pdf_landing_supplement_event_and_overview(
+    store, tmp_path, monkeypatch, extension: str
+) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.paper import PaperHandler
+
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-12T10:00:00.000000Z")
+    url = (
+        "https://journals.aps.org/prb/supplemental/"
+        f"10.1103/PhysRevB.103.014509/data.{extension}"
+    )
+
+    def fetch(request_url: str) -> HttpResult:
+        if request_url == f"https://doi.org/{DOI}":
+            return HttpResult(200, f'<a href="{url}">Data</a>')
+        return HttpResult(404)
+
+    def no_download(*args, **kwargs):
+        pytest.fail("Non-PDF supplements must not enter the PDF downloader")
+
+    monkeypatch.setattr(fetch_oa, "_download_pdf", no_download)
+    result = si_fetch.run_si_pass(store, tmp_path, fetch=fetch)
+    assert result["found"] == 1 and result["fetched"] == 0
+    skipped = [
+        {
+            "url": url,
+            "filename": f"data.{extension}",
+            "source": "landing_page",
+            "reason": "non_pdf",
+        }
+    ]
+    assert _meta(store, pid)["si_skipped"] == skipped
+    with store.pool.connection() as conn:
+        event = conn.execute(
+            "SELECT event, payload FROM ref_events "
+            "WHERE ref_id = %s AND source = 'si_fetch'",
+            (pid,),
+        ).fetchone()
+    assert event is not None
+    assert event[0] == "si_found"
+    assert event[1]["skipped"] == skipped
+    assert event[1]["queued"] == []
+    overview = PaperHandler(hub=Hub(store=store)).get(id="smith2023cat").body
+    assert "supplement exists, not ingested (non_pdf)" in overview
+    assert url in overview
+    assert not list(tmp_path.iterdir())
+
+
 def test_cloudflare_download_is_a_recorded_miss(store, tmp_path, monkeypatch) -> None:
     pid = _seed(store)
     _flag(store, pid, "2026-10-03T10:00:00.000000Z")

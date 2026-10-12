@@ -10,6 +10,14 @@ cache block (``build``), and a spring-relaxed stick preview (``stick``,
 ``xyz``).  Format and semantics live in ``spec.md`` next to this file —
 the spec is the truth, the code follows it.
 
+Rim placement tests curved dangling-list winding against the physical
+outward normal, signed from the owning instance's centroid. Signing that
+normal from the list itself would hide reversed winding and mirror the
+seam. ``build._fuse_parity`` reflects compatible seeds before placement;
+chiral tubes retain their hand and report ``place.mirror_refused``.
+Flat rims have no physical outward side, so their normal instead follows
+the winding and the parity constraints of the fuse graph.
+
 ``join.compose_k3`` adds the equal-120° sp² straight Y over private open
 zigzag segments of resolved planar carbon blocks. Defined endpoints avoid
 pretending a finite segment is a cyclic Port; declaration and SD-pattern

@@ -42,6 +42,11 @@ in a served channel is fetched (``safe_stream``, 50 MB, ``%PDF`` magic) into
 the watch inbox (``$PAPERS_INBOX``) for the normal ingest; asa polls
 ``refs.pdf_sha256`` and replies with the ``pa<id>``, tagged ``user:<abbrev>``.
 Only mapped speakers may ingest; others and non-PDFs get a refusal reply.
+Each drop carries a Discord message/author sidecar. One ``pa<id>`` in the
+message names a wanted stub through the filename convention: Discord sidecars
+never grant the trusted fetcher's fold authority, so ingest still checks PDF
+identity before attaching a body. Sidecars precede the PDF rename to prevent
+the watcher from consuming a drop without provenance.
 
 **Inbound from the cluster.** :mod:`asa_bot.pg_listen` holds a dedicated
 connection ``LISTEN``ing on ``precis.cron`` (a due scheduled tick with

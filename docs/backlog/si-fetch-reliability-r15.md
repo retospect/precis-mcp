@@ -5,6 +5,18 @@ pillar: platform
 
 # R15 SI discovery: HTML landing pages, publisher links, retry evidence
 
+## gr469081 remaining parser work
+
+The 2026-10-12 task starts from the landed Springer MOESM recognition and
+`non_pdf` skip/overview implementation. Complete MDPI `/s1`, AIP supplement
+file and APS supplemental-file recognition using offline, real-shaped HTML
+snippets with source URLs. Publisher-specific paths must work with bare
+filenames/URL labels; ordinary article PDFs and supplement navigation tabs
+must remain excluded. Preserve existing SI tests and add a worker regression
+checking ZIP/XLSX/CIF skip reason, URL and source in both `ref_events` and
+the native overview, with no download. Production replay remains a separate
+coordinator action after deployment.
+
 ## Intake and verified premise
 
 Base: origin/main `0bf2ca6f28c89b420109a421d9acd71d532e4ee3`.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from precis.ingest.fetch_sidecar import (
     SIDECAR_SUFFIX,
     clear_sidecar,
@@ -37,6 +39,52 @@ def test_sidecar_suffix_is_not_pdf(tmp_path: Path) -> None:
     assert p.name == "foo.pdf" + SIDECAR_SUFFIX
     assert p.suffix == ".json"
     assert not p.name.endswith(".pdf")
+
+
+def test_discord_provenance_roundtrip(tmp_path: Path) -> None:
+    pdf = tmp_path / "pa50698.pdf"
+    provenance = {"message_id": "123", "author": "Reto", "paper_id": "pa50698"}
+    write_sidecar(
+        pdf, ref_id=None, identifiers={}, source="discord", discord=provenance
+    )
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.ref_id is None
+    assert got.source == "discord"
+    assert got.discord == provenance
+
+
+def test_discord_null_ref_id_without_metadata_is_valid(tmp_path: Path) -> None:
+    pdf = tmp_path / "upload.pdf"
+    sidecar_path(pdf).write_text(
+        '{"ref_id": null, "source": "discord"}', encoding="utf-8"
+    )
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.ref_id is None
+    assert got.discord is None
+
+
+def test_non_discord_null_ref_id_is_malformed(tmp_path: Path) -> None:
+    pdf = tmp_path / "upload.pdf"
+    sidecar_path(pdf).write_text(
+        '{"ref_id": null, "source": "fetcher:s2"}', encoding="utf-8"
+    )
+    assert read_sidecar(pdf) is None
+    with pytest.raises(ValueError, match="Only Discord"):
+        write_sidecar(pdf, ref_id=None, identifiers={}, source="fetcher:s2")
+
+
+def test_discord_ref_id_cannot_be_an_authoritative_fold_target(tmp_path: Path) -> None:
+    pdf = tmp_path / "pa50698.pdf"
+    sidecar_path(pdf).write_text(
+        '{"ref_id": 50698, "source": "discord", "discord": {"paper_id": "pa50698"}}',
+        encoding="utf-8",
+    )
+    got = read_sidecar(pdf)
+    assert got is not None
+    assert got.ref_id is None
+    assert got.discord == {"paper_id": "pa50698"}
 
 
 def test_empty_identifiers_are_dropped(tmp_path: Path) -> None:

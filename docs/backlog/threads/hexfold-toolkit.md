@@ -409,7 +409,12 @@ removed as met — the transport move it waited on happened 09-29)
      - **gr462075** `flanged_doughnut` (+`_oh`): gr464358's fix (2026-10-11)
        registered the flange to the seam's index-to-index pairing: seed
        pairs under 0.7 Å 22 → 0, stick pairs under 1.0 Å 69 → 13 (min
-       0.27 → 0.40 Å), max seam crossing bond 11.45 → 10.79 Å. Left: the
+       0.27 → 0.40 Å), max seam crossing bond 11.45 → 10.79 Å.
+       **Rechecked 2026-10-12 at 5c692aad3, hexfold 0.3.5:** both examples
+       now have zero default-profile relaxed clashes and no seed-overlap ERROR
+       (45 seed contacts under 1.8 Å, minimum 1.10 Å). The mirror fix and
+       settled 0.3.5 springs already remove the reported overlap; current
+       regression coverage pins this without changing repulsion. Left: the
        two rigid flat washers' outer rims sit ~10 Å apart (the wall is
        between them), and the authored seam phase k=0 is not the best
        (k=17 seeds the flange edge at 2.17 Å). A `place_graph` / curved
@@ -424,7 +429,11 @@ removed as met — the transport move it waited on happened 09-29)
      - **gr459812** `sheet_pill_bump`, `capped_tube`,
        `capped_tube_da_neck`: fixed by gr464358 (2026-10-11), the fuse
        path's mirror. Stick pairs under 1.8 Å 32 → 3 (min 0.90 → 1.65 Å),
-       36 → 0, 48 → 0. A chiral tube is never reflected
+       36 → 0, 48 → 0. All three have zero relaxed clashes and no seed-overlap
+       ERROR on the 2026-10-12 0.3.5 sweep. Winding is tested against the
+       outward normal independently of dangling-list order; direct
+       reversal/rotation regression coverage protects that distinction.
+       A chiral tube is never reflected
        (`place.mirror_refused`).
    - **Then the springs, before any `K_REP` change.** Where the seed is
      fine and stick compresses the junction (buds, DA/DB necks, capped

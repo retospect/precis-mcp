@@ -19,9 +19,10 @@ is not added twice:
    is never touched); stops at the first that does not resolve.
 4. **Landing page** — publisher link patterns (ACS ``suppl_file``,
    Elsevier ``mmc<n>``, RSC ``suppdata``, Wiley ``downloadSupplement``,
-   Springer Nature ``esm/.../MOESM<n>_ESM``),
+   Springer Nature ``esm/.../MOESM<n>_ESM``, MDPI ``s<n>``,
+   AIP ``suppl/doi/.../suppl_file``, APS ``supplemental/.../<file>``),
    minted from a link whose URL/text says supplement/supporting/ESI/suppl/mmc
-   or whose URL is a Springer ESM file (source data can lack those words).
+   or whose publisher-specific URL identifies the supplement by itself.
 
 A blocked source (403, ``cf-mitigated: challenge``) is a recorded miss with
 its URL — never something to get around.
@@ -67,11 +68,28 @@ _SUPP_WORDS_RE = re.compile(
     r"suppl|supporting|\besi\b|mmc\d+|suppdata|[_-]si[_-]", re.IGNORECASE
 )
 #: Publisher SI link shapes (matched against the absolute link URL).
+#: These paths identify supplements even with a filename-only anchor label.
 _PUBLISHER_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"/doi/suppl/.+/suppl_file/", re.IGNORECASE),  # ACS
+    re.compile(r"/doi/suppl/.+/suppl_file/", re.IGNORECASE),  # ACS / legacy AIP
     re.compile(r"mmc\d+", re.IGNORECASE),  # Elsevier
     re.compile(r"suppdata", re.IGNORECASE),  # RSC
     re.compile(r"downloadSupplement", re.IGNORECASE),  # Wiley
+    re.compile(  # MDPI extensionless supplement endpoint (ISSN or DOI URL)
+        r"^https?://(?:www\.)?mdpi\.com/"
+        r"(?:\d{4}-\d{3}[\dx]/\d+/\d+/\d+|article/10\.3390/[^/?#]+)/"
+        r"s\d+(?:[?#].*)?$",
+        re.IGNORECASE,
+    ),
+    re.compile(  # AIP Silverchair file links, excluding supplement tabs
+        r"^https?://pubs\.aip\.org/suppl/doi/10\.\d+/[^/?#]+/suppl_file/"
+        r"[^/?#]+\.[a-z0-9]+(?:[?#].*)?$",
+        re.IGNORECASE,
+    ),
+    re.compile(  # APS file links, excluding the supplemental-material page
+        r"^https?://journals\.aps\.org/[^/?#]+/supplemental/10\.1103/"
+        r"[^/?#]+/[^/?#]+\.[a-z0-9]+(?:[?#].*)?$",
+        re.IGNORECASE,
+    ),
 )
 _SPRINGER_ESM_RE = re.compile(
     r"^https?://(?:static-content\.springer\.com/esm/|"
@@ -306,12 +324,6 @@ def parse_landing_links(html: str, base_url: str) -> list[SiCandidate]:
             re.search(r"\.[a-z0-9]{2,4}$", name, re.IGNORECASE)
         )
         if not (pattern_hit or text_hit or springer_esm):
-            continue
-        # Springer ESM identifies source data by path; other patterns still
-        # need a supplement word so ordinary article files are not collected.
-        if not (
-            springer_esm or _SUPP_WORDS_RE.search(url) or _SUPP_WORDS_RE.search(text)
-        ):
             continue
         seen.add(url)
         out.append(SiCandidate(url=url, source=SOURCE_LANDING, filename=name))

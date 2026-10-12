@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+import pytest
 
 from precis.ingest import si_discovery as sd
 from precis.ingest.si_discovery import HttpResult, SiCandidate, discover
@@ -58,6 +59,70 @@ def test_real_springer_moesm_includes_source_data_not_peer_review() -> None:
         "41467_2023_40259_MOESM3_ESM.xlsx",
     ]
     assert got[0].is_pdf and not got[1].is_pdf
+
+
+@pytest.mark.parametrize(
+    ("fixture", "base", "filenames"),
+    [
+        (
+            "mdpi-processes-7-460.html",
+            "https://www.mdpi.com/2227-9717/7/7/460",
+            ["s1"],
+        ),
+        (
+            "aps-PhysRevB-103-014509.html",
+            "https://journals.aps.org/prb/abstract/10.1103/PhysRevB.103.014509",
+            ["R1902731-supplementary-9.pdf", "go_open_candidate_materials_list.xlsx"],
+        ),
+        (
+            "aip-supplement.html",
+            "https://pubs.aip.org/aip/jcp/article/157/1/014101/1234567/Example",
+            ["appendix.pdf", "data.zip", "structure.cif"],
+        ),
+    ],
+)
+def test_publisher_fixture_reaches_fetch_cascade(
+    fixture: str, base: str, filenames: list[str]
+) -> None:
+    html = (Path(__file__).parents[1] / "fixtures/si" / fixture).read_text(
+        encoding="utf-8"
+    )
+    fetch, _ = _router({f"https://doi.org/{DOI}": HttpResult(200, html, base)})
+    candidates = discover(DOI, fetch).candidates
+    assert [c.filename for c in candidates] == filenames
+    assert all(c.source == "landing_page" for c in candidates)
+    assert all(c.url.startswith("https://") for c in candidates)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.mdpi.com/article/10.3390/pr7070460/s1",
+        "https://www.mdpi.com/2227-9717/7/7/460/s1?download=1",
+        "https://www.mdpi.com/2227-9717/7/7/460/s2#download",
+    ],
+)
+def test_mdpi_supplement_endpoint_needs_no_supplement_word(url: str) -> None:
+    candidates = sd.parse_landing_links(f'<a href="{url}">S1</a>', url)
+    assert len(candidates) == 1
+    assert candidates[0].url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.mdpi.com/2227-9717/7/7/460/pdf",
+        "https://www.mdpi.com/2227-9717/7/7/460/s1/related",
+        "https://example.org/2227-9717/7/7/460/s1",
+        "https://www.mdpi.com.example.org/2227-9717/7/7/460/s1",
+        "https://pubs.aip.org/suppl/doi/10.1063/5.0123456",
+        "https://pubs.aip.org/aip/jcp/article-pdf/157/1/014101/article.pdf",
+        "https://journals.aps.org/prb/supplemental/10.1103/PhysRevB.103.014509",
+        "https://journals.aps.org/prb/pdf/10.1103/PhysRevB.103.014509",
+    ],
+)
+def test_publisher_navigation_and_article_links_are_not_si(url: str) -> None:
+    assert sd.parse_landing_links(f'<a href="{url}">Download</a>', url) == []
 
 
 def _json(obj: object, status: int = 200) -> HttpResult:

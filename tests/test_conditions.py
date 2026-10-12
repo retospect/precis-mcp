@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from psycopg.types.json import Jsonb
@@ -57,7 +58,9 @@ def _seed_heartbeat(store: Store, *, meta: dict | None = None) -> None:
         conn.commit()
 
 
-def _seed_pass_logs(store: Store, handler: str, *, n: int, last_age_s: float) -> None:
+def _seed_pass_logs(
+    store: Store, handler: str, *, n: int, last_age_s: float, process: str = _PROC
+) -> None:
     """n rows over the past 7 days for (host, proc, handler), the newest
     ``last_age_s`` old — the every-cycle BatchResult log shape."""
     with store.pool.connection() as conn:
@@ -77,7 +80,7 @@ def _seed_pass_logs(store: Store, handler: str, *, n: int, last_age_s: float) ->
             {
                 "last": last_age_s,
                 "host": _HOST,
-                "proc": _PROC,
+                "proc": process,
                 "handler": handler,
                 "n": n,
             },
@@ -197,6 +200,110 @@ def test_pass_dead_respects_service_config_off(
                 (_HOST, handler),
             )
             conn.commit()
+
+
+def _unit_snapshot(
+    process: str = _PROC,
+    *,
+    active: str = "inactive",
+    enabled: str = "disabled",
+    age_s: float = 0,
+) -> dict:
+    return {
+        "observed_at": (datetime.now(UTC) - timedelta(seconds=age_s)).isoformat(),
+        "units": {process: {"active_state": active, "unit_file_state": enabled}},
+    }
+
+
+@pytest.mark.parametrize(
+    "process", [_PROC, "precis-worker-compute", "precis-worker-sandbox"]
+)
+def test_pass_dead_parking_clears_next_probe_and_reenable_restores(
+    store: Store, monkeypatch: pytest.MonkeyPatch, process: str
+) -> None:
+    handler = _uniq("parked")
+    other_handler = _uniq("other-process")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600, process=process)
+    _seed_pass_logs(
+        store, other_handler, n=10, last_age_s=4 * 3600, process="precis-worker-other"
+    )
+    assert any(handler in f.key for f in _probe_pass_dead(store))
+
+    _seed_heartbeat(store, meta={"worker_units": _unit_snapshot(process)})
+    found = _probe_pass_dead(store)
+    assert not any(handler in f.key for f in found)
+    assert any(other_handler in f.key for f in found)
+
+    # No history aged out: changing only unit intent restores the alert.
+    _seed_heartbeat(
+        store, meta={"worker_units": _unit_snapshot(process, enabled="enabled")}
+    )
+    assert any(handler in f.key for f in _probe_pass_dead(store))
+
+
+@pytest.mark.parametrize(
+    ("active", "enabled"),
+    [
+        ("failed", "enabled"),
+        ("inactive", "enabled"),
+        ("failed", "disabled"),
+        ("active", "disabled"),
+        ("inactive", "static"),
+    ],
+)
+def test_pass_dead_still_expects_crashed_or_unparked_unit(
+    store: Store, monkeypatch: pytest.MonkeyPatch, active: str, enabled: str
+) -> None:
+    handler = _uniq("crashed")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600)
+    _seed_heartbeat(
+        store, meta={"worker_units": _unit_snapshot(active=active, enabled=enabled)}
+    )
+    assert any(handler in f.key for f in _probe_pass_dead(store))
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        None,
+        {},
+        {"observed_at": "invalid"},
+        {"observed_at": "2026-10-12T00:00:00"},
+        {"observed_at": 123},
+        {"units": {}},
+        {
+            "observed_at": "2020-01-01T00:00:00+00:00",
+            "units": {
+                _PROC: {"active_state": "inactive", "unit_file_state": "disabled"}
+            },
+        },
+    ],
+)
+def test_pass_dead_unknown_or_stale_unit_evidence_does_not_suppress(
+    store: Store, monkeypatch: pytest.MonkeyPatch, snapshot: object
+) -> None:
+    handler = _uniq("unknown-state")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600)
+    _seed_heartbeat(store, meta={"worker_units": snapshot})
+    assert any(handler in f.key for f in _probe_pass_dead(store))
+
+
+def test_pass_wedged_ignores_stale_activity_for_parked_unit(store: Store) -> None:
+    meta = {
+        "activity": {_PROC: {"pass": "classify", "since": "2020-01-01T00:00:00Z"}},
+    }
+    _seed_heartbeat(store, meta=meta)
+    assert any(_HOST in f.key for f in _probe_pass_wedged(store))
+    meta["worker_units"] = _unit_snapshot()
+    _seed_heartbeat(store, meta=meta)
+    assert not any(_HOST in f.key for f in _probe_pass_wedged(store))
 
 
 # ── quest-tick-stalled (gr465967) ─────────────────────────────────────────
@@ -698,6 +805,44 @@ def test_heal_arm_ignores_unwhitelisted_process(
     )
     assert run_condition_heals(store, [f], runner=_runner) == 0
     assert ran == []
+
+
+def test_heal_arm_rechecks_parking_without_spending_attempt(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_RESTART_ONCE_ENABLED", "1")
+    # A finding already queued before the role change must be harmless.
+    finding = _wedged_finding()
+    _seed_heartbeat(store, meta={"platform": "Linux", "worker_units": _unit_snapshot()})
+    key = f"bounded_heal:restart-worker:{_HOST}:{_PROC}"
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key = %s", (key,))
+        conn.commit()
+    ran: list[list[str]] = []
+
+    def runner(cmd: list[str]) -> bool:
+        ran.append(cmd)
+        return True
+
+    assert run_condition_heals(store, [finding], runner=runner) == 0
+    assert ran == []
+    with store.pool.connection() as conn:
+        assert (
+            conn.execute("SELECT 1 FROM app_settings WHERE key = %s", (key,)).fetchone()
+            is None
+        )
+
+    # Enabled but crashed still qualifies for the existing bounded heal.
+    _seed_heartbeat(
+        store,
+        meta={
+            "platform": "Linux",
+            "worker_units": _unit_snapshot(active="failed", enabled="enabled"),
+        },
+    )
+    assert run_condition_heals(store, [finding], runner=runner) == 1
+    assert len(ran) == 1
+    assert ran[0][-2:] == ["restart", "precis-worker"]
 
 
 # ── agent-ticks-toolless (the 2026-08-15 zombie-loop signature) ───────────

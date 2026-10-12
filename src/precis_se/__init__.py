@@ -35,6 +35,10 @@ block convergence never claims physical assembly convergence. The additive
 bound structure metadata for direct design blocks, optionally addressed by
 label or uid (`args={'block': ...}`). It shares the block view's finding
 renderer: a build record is historical evidence, not recomputed validation.
+Design validation aggregates each block's stored errors and warnings, accepting
+both hexfold's uppercase severities and legacy lowercase records. The default
+tree reads only bound structure metadata to show each block's stored error
+count; these historical counts do not claim current geometry is valid.
 Missing records remain explicitly unavailable rather than implying a pass;
 template occurrences are not expanded. `view='catalogue'` is its sibling for
 a join's provenance: the catalogue edge rows a join can see (and the measured

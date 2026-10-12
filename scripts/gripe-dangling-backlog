@@ -1,33 +1,82 @@
-#!/usr/bin/env bash
-# scripts/gripe-dangling-backlog — list live gripes whose title/comments cite a
-# docs/backlog/<f>.md that no longer exists in this checkout (delete-on-ship
-# removed it). Read-only: one agent_ro SELECT via scripts/prod-psql --ro; it
-# repoints/closes nothing — that is a judgment step (gr478804).
-#
-# Why a script, not a `get(kind='gripe')` flag: the runtime image ships only
-# the venv + models, never docs/, so the server cannot see what is gone.
-#
-# Usage: scripts/gripe-dangling-backlog   (run from a tree at/near main)
-# Output: "gr<id> docs/backlog/<f>.md" per dangling citation; exit 0 always
-# unless prod is unreachable.
-set -euo pipefail
-cd "$(dirname "$0")/.."
+#!/usr/bin/env python3
+"""List missing backlog citations in session-MCP gripe comment snapshots.
 
-rows=$(PRECIS_PROD_PSQL_OPTS="-At" scripts/prod-psql --ro "SELECT DISTINCT r.ref_id, m[1]
-FROM refs r
-LEFT JOIN chunks c ON c.ref_id = r.ref_id AND c.retired_at IS NULL,
-LATERAL regexp_matches(r.title || E'\n' || coalesce(c.text, ''),
-    'docs/backlog/([A-Za-z0-9_./-]+\.md)', 'g') AS m
-WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-ORDER BY 1, 2;")
+Enumerate search(kind='gripe', status='*', page_size=100, page=N) through
+the last page, then get(kind='gripe', id=ID, view='comments') for each gripe.
+Save one JSON object per line: {"id": "gr123", "text": "<full response text>"}.
+Do not save search snippets or error responses. A subset checks only that subset.
 
-n=0
-while IFS='|' read -r id f; do
-    [[ "$id" =~ ^[0-9]+$ && -n "$f" ]] || continue
-    # a threads/ citation or nested path is checked verbatim under docs/backlog/
-    if [[ ! -e "docs/backlog/$f" ]]; then
-        echo "gr$id docs/backlog/$f"
-        n=$((n + 1))
-    fi
-done <<<"$rows"
-echo "gripe-dangling-backlog: $n dangling citation(s)" >&2
+Usage: scripts/gripe-dangling-backlog --comments comments.jsonl [--root PATH]
+The default root is this script's checkout. Output remains one
+"gr<id> docs/backlog/<f>.md" per missing citation, including nested paths.
+Findings are advisory (exit 0); invalid input fails (exit 2). Historical
+citations remain findings even after a later comment records the shipping SHA.
+
+This runs in the repo because the runtime image does not contain docs/.
+No production access or writes; the caller supplies only session-MCP reads.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+BACKLOG_PATH = re.compile(r"docs/backlog/[A-Za-z0-9_./-]+\.md\b")
+
+
+def dangling_citations(comments: Path, root: Path) -> list[tuple[int, str]]:
+    """Deduplicate gripe/path pairs, preserving open and closed gripe history."""
+    found: set[tuple[int, str]] = set()
+    with comments.open(encoding="utf-8") as source:
+        for number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"line {number}: invalid JSON: {exc.msg}") from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"line {number}: expected an object with id and text")
+            identifier = str(row.get("id", ""))
+            text = row.get("text")
+            if not re.fullmatch(r"(?:gr)?[1-9][0-9]*", identifier):
+                raise ValueError(f"line {number}: expected a gripe id (gr123 or 123)")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(
+                    f"line {number}: expected nonempty comment response text"
+                )
+            for path in BACKLOG_PATH.findall(text):
+                if not (root / path).is_file():
+                    found.add((int(identifier.removeprefix("gr")), path))
+    return sorted(found)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--comments", type=Path, required=True, help="JSONL from session MCP reads"
+    )
+    parser.add_argument(
+        "--root", type=Path, default=Path(__file__).resolve().parent.parent
+    )
+    args = parser.parse_args()
+    if not (args.root / "docs" / "backlog").is_dir():
+        parser.error("--root must contain docs/backlog/")
+    try:
+        citations = dangling_citations(args.comments, args.root)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    for identifier, path in citations:
+        print(f"gr{identifier} {path}")
+    print(
+        f"gripe-dangling-backlog: {len(citations)} dangling citation(s)",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -65,7 +65,13 @@ SI file is its own ``paper`` ref with ``pdf_role='supplement'``, linked to
 the parent and cited as the parent. :mod:`precis.ingest.si_discovery` is
 the pure discovery layer (Figshare, Crossref relation, component-DOI probe,
 publisher landing-page patterns, ``safe_get`` only; a Cloudflare challenge
-is a recorded miss). :mod:`precis.workers.si_fetch` claims flagged parents
+is a recorded miss). Publisher-specific supplement paths (including Springer
+MOESM, MDPI s1, AIP and APS files) suffice without a supplement word in the
+anchor: labels often contain only filenames. Non-PDF candidates remain in
+discovery so ``si_fetch`` can record ``non_pdf`` with URL/source in metadata
+and ``ref_events``; paper overviews display these skipped supplements without
+sending ZIP/XLSX/CIF files through PDF ingestion.
+:mod:`precis.workers.si_fetch` claims flagged parents
 ahead of the stub backlog inside the fetch pass, downloads into the inbox
 with a ``role: supplement`` sidecar, and records ``meta.si_checked_at`` /
 ``si_found`` so a paper is checked once. :mod:`precis.store.si_links` holds

@@ -1430,6 +1430,17 @@ def _atom_clash_findings(
     return findings
 
 
+def generated_report_rows(
+    record: dict[str, Any] | None,
+) -> list[dict[str, Any]] | None:
+    """Read stored finding rows; distinguish unavailable reports from empty ones."""
+    report = record.get("report") if record else None
+    stored = report.get("findings") if isinstance(report, dict) else None
+    if not isinstance(stored, list):
+        return None
+    return [row for row in stored if isinstance(row, dict)]
+
+
 def generated_report_findings(
     tree: SeTree,
     generated_records: Mapping[str, dict[str, Any]],
@@ -1449,18 +1460,14 @@ def generated_report_findings(
     for node in tree.blocks.values():
         if node.bound_kind != "structure" or not node.bound:
             continue
-        record = generated_records.get(node.bound)
-        report = record.get("report") if record else None
-        stored = report.get("findings") if isinstance(report, dict) else None
-        if not isinstance(stored, list):
+        stored = generated_report_rows(generated_records.get(node.bound))
+        if stored is None:
             continue
         errors: dict[str, list[dict[str, Any]]] = {}
         warns: dict[str, int] = {}
         for f in stored:
-            if not isinstance(f, dict):
-                continue
             code = str(f.get("code", "?"))
-            sev = f.get("severity")
+            sev = str(f.get("severity")).lower()
             if sev == "error":
                 errors.setdefault(code, []).append(f)
             elif sev == "warn":

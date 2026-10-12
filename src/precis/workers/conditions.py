@@ -18,7 +18,9 @@ was invisible for 4 days):
   while that host still heartbeats. Exact because ``runner.py`` logs
   every registered pass EVERY cycle, idle or not — silence means the
   handler is dead/wedged/removed, not merely quiet. Handlers switched
-  off live via ``service_config`` (prio 0) are excluded.
+  off live via ``service_config`` (prio 0) are excluded, as are worker
+  units freshly observed inactive AND disabled by the host heartbeat.
+  Missing/stale unit observations and failed/enabled units still alert.
 * ``rescue-pass-cadence`` — the rescue-critical passes (sweeper,
   nursery, quest_loop_reconcile) have a fleet-wide cadence SLO. For
   sweeper/nursery (system-profile, fast rotation, where a gap IS
@@ -65,6 +67,7 @@ import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import partial
 
 from precis.store import Store
@@ -173,6 +176,46 @@ def _handler_service(handler: str) -> str:
     return handler
 
 
+def _parked_workers(store: Store) -> set[tuple[str, str]]:
+    """Fresh systemd observations of deliberate parking, not crashes.
+
+    A sibling process can keep the host heartbeat fresh, so the unit
+    snapshot needs its own timestamp. Unknown state never suppresses an
+    expectation learned from cycle logs. Disabled alone is insufficient:
+    a manually started disabled unit may still be serving work.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT host, meta->'worker_units' FROM host_heartbeat "
+            "WHERE ts > now() - make_interval(mins => %s) "
+            "AND meta ? 'worker_units'",
+            (_HOST_FRESH_MIN,),
+        ).fetchall()
+    now = datetime.now(UTC)
+    parked: set[tuple[str, str]] = set()
+    for host, snapshot in rows:
+        if not isinstance(snapshot, dict):
+            continue
+        try:
+            observed = datetime.fromisoformat(snapshot["observed_at"])
+            age_s = (now - observed).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= age_s < _HOST_FRESH_MIN * 60:
+            continue
+        units = snapshot.get("units")
+        if not isinstance(units, dict):
+            continue
+        for process, state in units.items():
+            if (
+                isinstance(state, dict)
+                and state.get("active_state") == "inactive"
+                and state.get("unit_file_state") == "disabled"
+            ):
+                parked.add((str(host), str(process)))
+    return parked
+
+
 def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
     budget_s = _env_f("PRECIS_COND_PASS_DEAD_BUDGET_S", 4 * 3600.0)
     # ≥ ~1 row/hour over 7d — excludes one-off/manual handlers so a
@@ -184,8 +227,11 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
             {"fresh_min": _HOST_FRESH_MIN, "budget_s": budget_s, "min_rows": min_rows},
         ).fetchall()
     disabled = _disabled_services(store)
+    parked = _parked_workers(store)
     out: list[ConditionFinding] = []
     for host, process, handler, silent_h in rows:
+        if (str(host), str(process)) in parked:
+            continue
         service = _handler_service(str(handler))
         if (str(host), service) in disabled or ("*", service) in disabled:
             continue  # switched off on purpose — not a death
@@ -411,6 +457,7 @@ def _probe_pass_wedged(store: Store) -> list[ConditionFinding]:
         rows = conn.execute(
             _PASS_WEDGED_SQL, {"fresh_min": _HOST_FRESH_MIN, "budget_s": budget_s}
         ).fetchall()
+    parked = _parked_workers(store)
     return [
         ConditionFinding(
             key=f"pass-wedged:{r[0]}/{r[1]}",
@@ -422,6 +469,7 @@ def _probe_pass_wedged(store: Store) -> list[ConditionFinding]:
             heal=HealRequest("restart-worker", str(r[0]), str(r[1])),
         )
         for r in rows
+        if (str(r[0]), str(r[1])) not in parked
     ]
 
 
@@ -782,6 +830,10 @@ def run_condition_heals(
             continue
         seen.add(key)
         try:
+            # Findings can predate a role change. Recheck before consuming
+            # the heal budget, including findings from stale activity maps.
+            if (h.host, h.process) in _parked_workers(store):
+                continue
             platform = _host_platform(store, h.host)
             cmd = _restart_worker_cmd(h.host, platform)
             spec = HealSpec(

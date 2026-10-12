@@ -330,6 +330,13 @@ the stub's handle: `pa<id>.pdf` or `pa<id>-<anything>.pdf` (e.g.
 instead of minting a twin. A handle that names a paper which already has a
 body, a retired ref or a non-paper is ignored and the file ingests as a new
 paper.
+You can also attach a PDF to a Discord message to asa in a served channel
+after linking your Discord identity on `/account`. Asa queues it in the paper
+inbox and replies with the resulting paper handle. Include one `pa<id>` in
+the message to request a fold into that wanted stub; ingest checks the PDF's
+identity before folding. The sidecar records the message id, author and
+requested handle. Multiple distinct handles are refused as ambiguous. PDFs
+must pass the 50 MB cap and PDF-header check; other attachments are refused.
 To declare an existing record as an SI after the fact, run
 `edit(kind="paper", id="<si handle>", mode="replace",
 args={"supplement_of": "<parent slug or paN>"})`; it refuses when the record

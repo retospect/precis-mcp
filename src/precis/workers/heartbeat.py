@@ -66,6 +66,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -361,6 +362,108 @@ def _probe_nas() -> dict[str, Any]:
 def _in_container() -> bool:
     """True inside a Docker/Podman container — no host TCC grant applies there."""
     return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
+_WORKER_UNIT_RE = re.compile(
+    r"precis-worker(?:-[A-Za-z0-9][A-Za-z0-9_.@-]*)?\.service\Z"
+)
+
+
+def collect_worker_units() -> dict[str, Any]:
+    """Return a bounded snapshot of installed precis worker systemd units.
+
+    Unit state is useful only when observed from the host, so containers and
+    non-Linux systems report no snapshot. Any unavailable or malformed
+    systemctl result also returns ``{}``; callers must treat that as unknown.
+    """
+    if platform.system() != "Linux" or _in_container():
+        return {}
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return {}
+
+    observed_at = datetime.now(UTC).isoformat()
+    try:
+        listed = subprocess.run(
+            [
+                systemctl,
+                "list-unit-files",
+                "precis-worker*.service",
+                "--no-legend",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+        )
+        if listed.returncode != 0:
+            return {}
+
+        names: list[str] = []
+        for line in listed.stdout.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            name = fields[0]
+            if name.startswith("precis-worker"):
+                if not _WORKER_UNIT_RE.fullmatch(name):
+                    return {}
+                names.append(name)
+        names = sorted(set(names))
+        if not names:
+            return {"observed_at": observed_at, "units": {}}
+
+        shown = subprocess.run(
+            [
+                systemctl,
+                "show",
+                *names,
+                "--property=Id,ActiveState,UnitFileState",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+        )
+        if shown.returncode != 0:
+            return {}
+        units: dict[str, dict[str, str]] = {}
+        current: dict[str, str] = {}
+        blocks: list[dict[str, str]] = []
+        for line in shown.stdout.splitlines() + [""]:
+            if not line.strip():
+                if current:
+                    blocks.append(current)
+                    current = {}
+                continue
+            key, sep, value = line.partition("=")
+            if not sep or key not in {"Id", "ActiveState", "UnitFileState"}:
+                return {}
+            current[key] = value
+        for block in blocks:
+            name = block.get("Id", "")
+            if (
+                not _WORKER_UNIT_RE.fullmatch(name)
+                or name not in names
+                or name.removesuffix(".service") in units
+                or not block.get("ActiveState")
+                or not block.get("UnitFileState")
+            ):
+                return {}
+            units[name.removesuffix(".service")] = {
+                "active_state": block["ActiveState"],
+                "unit_file_state": block["UnitFileState"],
+            }
+        if len(units) != len(names):
+            return {}
+        return {"observed_at": observed_at, "units": units}
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        log.warning("heartbeat: worker-unit probe failed", exc_info=True)
+        return {}
 
 
 def _responsible_process() -> tuple[int, str] | None:
@@ -800,6 +903,9 @@ def _collect_and_upsert(
         "platform": platform.system(),
         "release": platform.release(),
         "top_cpu": collect_top_cpu(),
+        # Empty snapshots clear stale unit state after a failed/unsupported
+        # probe; consumers can distinguish unknown from a fresh observation.
+        "worker_units": collect_worker_units(),
     }
     if ephemeral:
         meta["ephemeral"] = True

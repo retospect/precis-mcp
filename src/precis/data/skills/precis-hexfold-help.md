@@ -155,14 +155,15 @@ junction bonds (worst bond +0.4 Å on [9-6], +0.5 Å on [8-7],
 `geom.bond.long` WARN). A fused
 part whose seed winds against its fuses is reflected before placement
 (`place.mirrored` INFO; a chiral tube is refused, `place.mirror_refused`
-WARN). These shipped specs still overlap, are known, and are not yet
-fixed: `tube_ring_closure` (0.49 Å, gr462074) and `flanged_doughnut`
-(0.40 Å, the two flat washers' rims seeded ~10 Å apart, gr462075).
+WARN). On hexfold 0.3.5, `flanged_doughnut` and `_oh` have no relaxed
+clash under the default profile; their rigid washer seeds still carry a
+`seam.cycle` strain warning (gr462075). `tube_ring_closure` remains overlapping:
+106 relaxed pairs under 1.8 Å, minimum 1.39 Å (gr462074).
 `geom.seed_overlap` ERROR: atoms under 0.7 Å in the placed seed, before
-stick. A clean relaxed geometry does not clear it. Raised by
-`tube_ring_closure`, `sheet_sw`, `flanged_doughnut` and
-`sheet_pill_bump` (their seeds stack atoms; `sheet_sw`, gr462144, relaxes
-clean anyway). Their ERROR is real ·
+stick. A clean relaxed geometry does not clear it. Of the shipped
+examples on 0.3.5, only `tube_ring_closure` raises it (coincident seed
+atoms); `sheet_sw`, both flanged doughnuts and `sheet_pill_bump` have
+no seed-overlap ERROR. ·
 `annot.sublattice`/`annot.host_sublattices` INFO.
 
 ## Rim types (spec §10)
