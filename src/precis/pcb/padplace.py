@@ -191,6 +191,33 @@ def place_pad_point(pad: dict[str, Any], inst: dict[str, Any]) -> tuple[float, f
     return _pose.to_world(lx, ly, inst)
 
 
+def _slot_centre_line(
+    pad: dict[str, Any], inst: dict[str, Any], bx: float, by: float
+) -> list[list[float]] | None:
+    """Board-frame end-centre points of a slotted pad's hole, or ``None``.
+
+    ``pad["slot"] = {"w", "h"}`` is the hole's full extent in the pad-local
+    frame (same frame as the pad's own ``w``/``h``). The cutter is a round
+    tool of ``drill`` (= the short axis) swept between two end centres
+    ``(long - short)`` apart. The axis is turned by the pad's own ``rot``
+    then by the instance's mirror/rotate, the same order ``w``/``h`` follow
+    (they swap exactly when the sum is 90 mod 180)."""
+    slot = pad.get("slot")
+    if not isinstance(slot, dict):
+        return None
+    sw, sh = float(slot["w"]), float(slot["h"])
+    if sw == sh:
+        return None
+    half = abs(sw - sh) / 2.0
+    dx, dy = (half, 0.0) if sw > sh else (0.0, half)
+    dx, dy = _rotate_cw(dx, dy, float(pad.get("rot") or 0.0))
+    dx, dy = _transform_local_point(dx, dy, inst)
+    return [
+        [round(bx - dx, 4), round(by - dy, 4)],
+        [round(bx + dx, 4), round(by + dy, 4)],
+    ]
+
+
 def place_footprint_pads(
     pads: list[dict[str, Any]],
     inst: dict[str, Any],
@@ -298,6 +325,9 @@ def place_footprint_pads(
             # coordinate against ``model["drills"]`` would be re-deriving a
             # fact we chose to throw away, at rounding-tolerance risk.
             base["drill"] = float(drill)
+            slot_line = _slot_centre_line(pad, inst, bx, by)
+            if slot_line is not None:
+                base["slot"] = slot_line
 
         target_layers = (
             list(layers)
@@ -308,14 +338,15 @@ def place_footprint_pads(
             out_pads.append({"layer": layer, **base})
 
         if drill:
-            out_drills.append(
-                {
-                    "x": round(bx, 4),
-                    "y": round(by, 4),
-                    "dia_mm": float(drill),
-                    "plated": True,
-                }
-            )
+            hole: dict[str, Any] = {
+                "x": round(bx, 4),
+                "y": round(by, 4),
+                "dia_mm": float(drill),
+                "plated": True,
+            }
+            if "slot" in base:
+                hole["slot"] = base["slot"]
+            out_drills.append(hole)
     return out_pads, out_drills
 
 

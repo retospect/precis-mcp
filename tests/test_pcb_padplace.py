@@ -359,3 +359,60 @@ def test_board_pads_wires_pin_to_net_per_refdes():
         pin_to_net={("U1", "VDD"): "3V3"},
     )
     assert pads[0]["net"] == "3V3"
+
+
+# ── slot holes (gr461213) ───────────────────────────────────────────────
+def _slot_pad(**kw: object) -> dict:
+    return _pad(
+        shape="OVAL",
+        x=0.0,
+        y=0.0,
+        w=2.4,
+        h=1.4,
+        drill=0.5,
+        slot={"w": 1.5, "h": 0.5},
+        **kw,
+    )
+
+
+def test_round_hole_has_no_slot_key():
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "top"}
+    pads, drills = padplace.place_footprint_pads(
+        [_pad(shape="ELLIPSE", drill=0.3)], inst, layers=_LAYERS
+    )
+    assert all("slot" not in p for p in pads)
+    assert "slot" not in drills[0]
+
+
+def test_slot_centre_line_rot_0():
+    inst = {"x": 10.0, "y": 5.0, "rot": 0.0, "layer": "top"}
+    pads, drills = padplace.place_footprint_pads([_slot_pad()], inst, layers=_LAYERS)
+    # long 1.5 - width 0.5 = 1.0 between end centres, along x
+    assert drills[0]["slot"] == [[9.5, 5.0], [10.5, 5.0]]
+    assert drills[0]["dia_mm"] == 0.5
+    assert all(p["slot"] == drills[0]["slot"] and p["drill"] == 0.5 for p in pads)
+
+
+def test_slot_centre_line_rot_90_turns_with_the_pad_wh():
+    inst = {"x": 10.0, "y": 5.0, "rot": 90.0, "layer": "top"}
+    pads, drills = padplace.place_footprint_pads([_slot_pad()], inst, layers=_LAYERS)
+    (x1, y1), (x2, y2) = drills[0]["slot"]
+    assert x1 == pytest.approx(10.0) and x2 == pytest.approx(10.0)
+    assert abs(y2 - y1) == pytest.approx(1.0)
+    # the pad's w/h swapped the same way
+    assert (pads[0]["w"], pads[0]["h"]) == (1.4, 2.4)
+
+
+def test_slot_follows_the_pad_own_rotation_and_the_bottom_flip():
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "top"}
+    _, drills = padplace.place_footprint_pads(
+        [_slot_pad(rot=90.0)], inst, layers=_LAYERS
+    )
+    (x1, _), (x2, _) = drills[0]["slot"]
+    assert x1 == pytest.approx(0.0) and x2 == pytest.approx(0.0)
+    # bottom side mirrors x before rotating: a 0-degree slot stays on x
+    bot = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "bottom"}
+    _, drills = padplace.place_footprint_pads([_slot_pad()], bot, layers=_LAYERS)
+    (x1, y1), (x2, y2) = drills[0]["slot"]
+    assert sorted([x1, x2]) == pytest.approx([-0.5, 0.5])
+    assert y1 == y2 == 0.0

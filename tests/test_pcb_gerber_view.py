@@ -514,7 +514,7 @@ def test_document_reserves_the_legend_gutter_and_covers_a_short_boards_legend() 
     # same private helpers other tests in this file already reach into) to
     # get the scaled board size the doc geometry is supposed to build on.
     arts: dict[str, gerber_view.LayerArt] = {}
-    drills: dict[str, list[tuple[float, float, float]]] = {}
+    drills: dict[str, list[tuple[float, ...]]] = {}
     for name, text in sorted(files.items()):
         key = gerber_view._layer_key(name)
         if name.endswith(".drl"):
@@ -964,3 +964,27 @@ def test_polygon_pad_renders_as_a_pad_with_the_pad_handle() -> None:
     # the pour keeps its net handle and its "pour" wording
     assert "pour · net GND" in svg
     assert 'data-handle="net:GND"' in svg
+
+
+def test_slot_hole_is_g85_in_the_drill_file_and_drawn_in_the_svg() -> None:
+    model = _model(
+        drills=[
+            {
+                "x": 5.0,
+                "y": 6.0,
+                "dia_mm": 0.5,
+                "plated": True,
+                "slot": [[4.5, 6.0], [5.5, 6.0]],
+            }
+        ]
+    )
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    assert "X4.5000Y6.0000G85X5.5000Y6.0000" in files["t-PTH.drl"]
+    holes = gerber_view.parse_excellon(files["t-PTH.drl"])
+    slots = [h for h in holes if len(h) == 5]
+    assert slots == [pytest.approx((4.5, 6.0, 0.5, 5.5, 6.0))]
+    assert len(holes) == 2  # the via + the slot, nothing dropped
+    svg = gerber_view.render_fab_svg(files, title="t")
+    assert 'class="drill-slot"' in svg
+    assert 'd="M 4.5000 6.0000 L 5.5000 6.0000"' in svg
+    assert 'stroke-width="0.5000" stroke-linecap="round"' in svg

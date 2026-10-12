@@ -432,6 +432,16 @@ def _pad_record(
     if pad.get("drill"):
         d = to_mils(float(pad["drill"]))
         body["hole"] = {"holeType": "ROUND", "width": d, "height": d}
+        slot = pad.get("slot")
+        if slot:
+            # padAngle is written 0 (board frame), so only a slot along a
+            # board axis can be expressed; an oblique one stays round.
+            (sx1, sy1), (sx2, sy2) = slot
+            long_ = to_mils(math.hypot(sx2 - sx1, sy2 - sy1) + float(pad["drill"]))
+            if abs(sy2 - sy1) < 1e-6:
+                body["hole"] = {"holeType": "SLOT", "width": long_, "height": d}
+            elif abs(sx2 - sx1) < 1e-6:
+                body["hole"] = {"holeType": "SLOT", "width": d, "height": long_}
     body["plated"] = True
     body["padType"] = "NORMAL"
     return body
@@ -1016,6 +1026,24 @@ def epro_files(
             f"{'…' if len(oblique) > 8 else ''}): pad CENTRES are right, pad "
             "SHAPES are written unrotated (padAngle 0) — fix their pad angle "
             "in Pro before fabricating"
+        )
+    oblique_slots = sorted(
+        r
+        for r, part in parts.items()
+        if any(
+            p.get("slot")
+            and abs(p["slot"][1][0] - p["slot"][0][0]) >= 1e-6
+            and abs(p["slot"][1][1] - p["slot"][0][1]) >= 1e-6
+            for p in part.pads
+        )
+    )
+    if oblique_slots:
+        warnings.append(
+            f"{len(oblique_slots)} part(s) have a slot hole at a non-right-angle "
+            f"({', '.join(oblique_slots[:8])}"
+            f"{'…' if len(oblique_slots) > 8 else ''}): written as a ROUND hole "
+            "of the slot width (padAngle 0) — redraw the slot in Pro before "
+            "fabricating"
         )
     dropped_nets = sorted(
         {str(p["net"]) for p in model.get("pads") or [] if p.get("net")} - set(nets)

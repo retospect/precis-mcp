@@ -219,3 +219,76 @@ def test_fab_preview_paste_layer_is_not_byte_identical_to_copper(pcb):
     # stencil opening, independent of `paste`).
     assert f_cu.count("D03*") == 3
     assert f_paste.count("D03*") == 1
+
+
+def _slot_footprint(pad_rot: float) -> dict:
+    return {
+        "pads": [
+            {
+                "number": "1",
+                "shape": "OVAL",
+                "x": 0.7,
+                "y": 0.3,
+                "w": 6.0,
+                "h": 4.0,
+                "rot": pad_rot,
+                "layer": "F.Cu",
+                "drill": 1.0,
+                "slot": {"w": 3.0, "h": 1.0},
+            }
+        ],
+        "pin_map": {"1": {"name": "1", "tags": []}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("layer", "inst_rot", "pad_rot"),
+    [
+        ("top", 0.0, 45.0),
+        ("top", 90.0, 30.0),
+        ("bottom", 0.0, 45.0),
+        ("bottom", 90.0, 30.0),
+    ],
+)
+def test_pads_for_ir_slot_matches_padplace_on_both_sides(pcb, layer, inst_rot, pad_rot):
+    """The IR path (DRC/preview) and the fab path must agree on an oblique
+    slot's end centres, including on a mirrored bottom-side part."""
+    from precis.pcb import padplace
+
+    fp = _slot_footprint(pad_rot)
+    pcb.store.part_footprint_put("CSLOT1", fp)
+    pcb.put(
+        id="slot-parity",
+        args={
+            "components": [
+                {
+                    "refdes": "J1",
+                    "label": "slot part",
+                    "part": "CSLOT1",
+                    "footprint": "SLOT-1",
+                    "x": 10.0,
+                    "y": 8.0,
+                    "rot": inst_rot,
+                    "layer": layer,
+                    "pins": [{"name": "1"}],
+                },
+            ],
+            "nets": [{"name": "N1"}],
+            "connections": [{"net": "N1", "refdes": "J1", "pin": "1"}],
+            "features": [
+                {
+                    "ftype": "outline",
+                    "geom": {"path": [[0, 0], [20, 0], [20, 20], [0, 20]]},
+                },
+            ],
+        },
+    )
+    ref = pcb.store.get_ref(kind="pcb", id="slot-parity")
+    assert ref is not None
+    ir_pad = next(p for p in pcb._drc_pads(ref.id, _LAYERS) if p["refdes"] == "J1")
+    inst = {"x": 10.0, "y": 8.0, "rot": inst_rot, "layer": layer}
+    _, drills = padplace.place_footprint_pads(fp["pads"], inst, layers=_LAYERS)
+    want = drills[0]["slot"]
+    assert ir_pad["drill"] == pytest.approx(1.0)
+    for got_pt, want_pt in zip(ir_pad["slot"], want, strict=True):
+        assert got_pt == pytest.approx(want_pt, abs=1e-4)

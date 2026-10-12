@@ -588,6 +588,13 @@ def _excellon_file(holes: list[dict[str, Any]]) -> str:
         if t != cur_tool:
             lines.append(f"T{t:02d}")
             cur_tool = t
+        if h.get("slot"):
+            # Routed slot: the standard Excellon canned slot, tool = width.
+            (x1, y1), (x2, y2) = h["slot"]
+            lines.append(
+                f"X{float(x1):.4f}Y{float(y1):.4f}G85X{float(x2):.4f}Y{float(y2):.4f}"
+            )
+            continue
         lines.append(f"X{float(h['x']):.4f}Y{float(h['y']):.4f}")
     lines.append("M30")
     return "\n".join(lines) + "\n"

@@ -412,3 +412,28 @@ def test_capability_map_no_text_element_falls_outside_the_viewbox():
             if el.tag.endswith("text") and "x" in el.attrib:
                 x = float(el.attrib["x"])
                 assert vb_x - 1e-6 <= x <= vb_x + vb_w + 1e-6, (grid, el.attrib)
+
+
+def test_slot_drill_and_slotted_pad_draw_as_round_capped_strokes() -> None:
+    line = [[4.5, 5.0], [5.5, 5.0]]
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "outline": [[0, 0], [10, 0], [10, 10], [0, 10]],
+        "pads": [
+            {
+                "layer": "F.Cu",
+                "net": "",
+                "shape": "obround",
+                "x": 5.0,
+                "y": 5.0,
+                "w": 2.4,
+                "h": 1.4,
+                "drill": 0.5,
+                "slot": line,
+            }
+        ],
+        "drills": [{"x": 5.0, "y": 5.0, "dia_mm": 0.5, "plated": True, "slot": line}],
+    }
+    text = svg.render_board(model)
+    assert text.count('d="M 4.5 5 L 5.5 5"') >= 2
+    assert 'stroke-linecap="round"' in text

@@ -621,3 +621,36 @@ def test_a_footprint_courtyard_comes_from_its_component_shape_layer(project):
     assert by_name["SOT-23-3_L2.9-W1.3-P0.95"]["courtyard"]["bbox"] == pytest.approx(
         [-1.774, -1.52, 1.901, 1.52]
     )
+
+
+def test_slot_hole_imports_as_a_slot_not_a_round_hole():
+    body = {
+        "num": "23",
+        "centerX": 100.0,
+        "centerY": -50.0,
+        "padAngle": 0,
+        "defaultPad": {"padType": "RECT", "width": 120.0, "height": 70.0},
+        "hole": {"holeType": "SLOT", "width": 81.89, "height": 39.37},
+    }
+    pad, warns = epro._pad_to_precis(body, "fp")
+    assert pad is not None and warns == []
+    assert pad["drill"] == pytest.approx(39.37 * _MIL)
+    assert pad["slot"] == {
+        "w": pytest.approx(81.89 * _MIL),
+        "h": pytest.approx(39.37 * _MIL),
+    }
+
+
+def test_round_hole_has_no_slot_and_unknown_hole_type_warns():
+    base = {
+        "num": "1",
+        "defaultPad": {"padType": "ELLIPSE", "width": 60.0, "height": 60.0},
+    }
+    pad, warns = epro._pad_to_precis(
+        {**base, "hole": {"holeType": "ROUND", "width": 30.0, "height": 30.0}}, "fp"
+    )
+    assert pad is not None and "slot" not in pad and warns == []
+    _, warns = epro._pad_to_precis(
+        {**base, "hole": {"holeType": "HEX", "width": 30.0, "height": 30.0}}, "fp"
+    )
+    assert any("unknown holeType" in w for w in warns)

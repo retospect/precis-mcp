@@ -1387,6 +1387,31 @@ def check_annular_ring(
         dia = float(pad.get("land_min_mm") or min(w, h))
         drill = float(pad["drill"])
         ring = (dia - drill) / 2.0
+        note = ""
+        slot = pad.get("slot")
+        if slot:
+            # A slotted hole: the ring is the copper left around the slot
+            # capsule (end-centre line + round cutter of width ``drill``).
+            (sx1, sy1), (sx2, sy2) = slot
+            length = math.hypot(sx2 - sx1, sy2 - sy1) + drill
+            ang = math.atan2(abs(sy2 - sy1), abs(sx2 - sx1))  # 0..pi/2
+            plain = not pad.get("oblique_rot") and not pad.get("land_min_mm")
+            if (
+                plain
+                and pad.get("shape") != "polygon"
+                and (ang < 1e-6 or abs(ang - math.pi / 2) < 1e-6)
+            ):
+                horizontal = ang < 1e-6
+                along, across = (w, h) if horizontal else (h, w)
+                ring = min((along - length) / 2.0, (across - drill) / 2.0)
+            else:
+                # Oblique slot vs pad: keep the conservative round of the
+                # slot's long axis.
+                ring = (dia - length) / 2.0
+                note = (
+                    " (slot not axis-aligned with the pad: conservatively "
+                    "checked as a round hole of the slot's long axis)"
+                )
         result = _two_tier(ring, jlc_min, house)
         if result is None:
             continue
@@ -1400,7 +1425,8 @@ def check_annular_ring(
                 where=where,
                 detail=_margin_detail(
                     "THT pad annular ring", ring, capability, field, severity, margin
-                ),
+                )
+                + note,
                 objects=({"net": net, "x": pad.get("x"), "y": pad.get("y")},),
                 margin_mm=margin,
             )

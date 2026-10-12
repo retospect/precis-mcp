@@ -538,12 +538,14 @@ def _layer_key(filename: str) -> str:
     return stem.rsplit("-", 1)[-1] if "-" in stem else stem
 
 
-def parse_excellon(text: str) -> list[tuple[float, float, float]]:
-    """``(x, y, diameter)`` per hole, from the Excellon this project writes
-    (METRIC, decimal-point coordinates — so no zero-suppression ambiguity
-    to get wrong)."""
+def parse_excellon(text: str) -> list[tuple[float, ...]]:
+    """``(x, y, diameter)`` per round hole, from the Excellon this project
+    writes (METRIC, decimal-point coordinates — so no zero-suppression
+    ambiguity to get wrong). A routed slot (``X<x1>Y<y1>G85X<x2>Y<y2>``)
+    is ``(x1, y1, diameter, x2, y2)`` — five floats, so a slot can never
+    be mistaken for (or drawn as) a round hole."""
     tools: dict[int, float] = {}
-    holes: list[tuple[float, float, float]] = []
+    holes: list[tuple[float, ...]] = []
     cur = 0.0
     for raw in text.splitlines():
         line = raw.strip()
@@ -554,6 +556,11 @@ def parse_excellon(text: str) -> list[tuple[float, float, float]]:
         m = re.match(r"^T(\d+)$", line)
         if m:
             cur = tools.get(int(m.group(1)), 0.0)
+            continue
+        m = re.match(r"^X(-?[\d.]+)Y(-?[\d.]+)G85X(-?[\d.]+)Y(-?[\d.]+)$", line)
+        if m:
+            x1, y1, x2, y2 = (float(m.group(i)) for i in range(1, 5))
+            holes.append((x1, y1, cur, x2, y2))
             continue
         m = re.match(r"^X(-?[\d.]+)Y(-?[\d.]+)$", line)
         if m:
@@ -987,7 +994,7 @@ def _path_d(points: list[tuple[float, float]], *, close: bool = False) -> str:
 
 
 def _bounds(
-    arts: dict[str, LayerArt], drills: dict[str, list[tuple[float, float, float]]]
+    arts: dict[str, LayerArt], drills: dict[str, list[tuple[float, ...]]]
 ) -> tuple[float, float, float, float]:
     xs: list[float] = []
     ys: list[float] = []
@@ -1004,6 +1011,8 @@ def _bounds(
     for holes in drills.values():
         xs += [h[0] for h in holes]
         ys += [h[1] for h in holes]
+        xs += [h[3] for h in holes if len(h) == 5]
+        ys += [h[4] for h in holes if len(h) == 5]
     if not xs or not ys:
         return (0.0, 0.0, 10.0, 10.0)
     return (min(xs), min(ys), max(xs), max(ys))
@@ -1028,7 +1037,7 @@ def render_fab_svg(
     starts visible, so the file is never blank in a static renderer.
     """
     arts: dict[str, LayerArt] = {}
-    drills: dict[str, list[tuple[float, float, float]]] = {}
+    drills: dict[str, list[tuple[float, ...]]] = {}
     for name, text in sorted(files.items()):
         key = _layer_key(name)
         if name.endswith(".drl"):
@@ -1086,7 +1095,27 @@ def render_fab_svg(
         # key's position in _STACK_ORDER), so it reads as a hole PUNCHED
         # OUT of whatever is beneath, same as precis.pcb.svg's _via_el.
         dash = f' stroke-dasharray="{_DRILL_DASH_NPTH}"' if key == "NPTH" else ""
-        for hx, hy, dia in drills.get(key, ()):
+        for hole in drills.get(key, ()):
+            hx, hy, dia = hole[0], hole[1], hole[2]
+            if len(hole) == 5:
+                # A routed slot: a round-capped stroke of the cutter width,
+                # outlined like a drill circle (a wider dark underlay, then
+                # the light fill on top).
+                sx2, sy2 = hole[3], hole[4]
+                d = f"M {hx:.4f} {hy:.4f} L {sx2:.4f} {sy2:.4f}"
+                body.append(
+                    f'<path d="{d}" fill="none" stroke="{_DRILL_STROKE}" '
+                    f'stroke-width="{dia + 2 * _DRILL_STROKE_WIDTH:.4f}" '
+                    f'stroke-linecap="round" class="drill-slot-edge"{dash}/>'
+                )
+                body.append(
+                    f'<path d="{d}" fill="none" stroke="{_DRILL_FILL}" '
+                    f'stroke-width="{dia:.4f}" stroke-linecap="round" '
+                    f'class="drill-slot">'
+                    f"<title>{_pt(hx, hy)} → {_pt(sx2, sy2)} · "
+                    f"slot Ø{dia:.4f}mm</title></path>"
+                )
+                continue
             body.append(
                 f'<circle cx="{hx:.4f}" cy="{hy:.4f}" r="{dia / 2:.4f}" '
                 f'fill="{_DRILL_FILL}" stroke="{_DRILL_STROKE}" '

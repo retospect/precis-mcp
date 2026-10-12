@@ -941,18 +941,22 @@ def _pad_to_precis(
 
     hole = b.get("hole")
     if isinstance(hole, dict) and hole.get("width"):
-        # Through-hole. ROUND is the only holeType seen (111 of the spike
-        # board's 403 pads); a slot would need width != height, which
-        # precis' single ``drill`` diameter cannot express.
+        # Through-hole. ``drill`` is the round tool diameter; a SLOT (or any
+        # width != height hole) keeps the SHORT axis there (the cutter
+        # width) and the full extent in ``slot`` {w, h}, in the same
+        # pad-local frame as the pad's own ``w``/``h`` (EasyEDA authors the
+        # hole in the unrotated pad frame; ``padAngle`` turns both).
         hw = float(hole["width"])
         hh = float(hole.get("height") or hole["width"])
-        pad["drill"] = Frame.length(hw)
-        if str(hole.get("holeType") or "ROUND").upper() != "ROUND" or hw != hh:
+        htype = str(hole.get("holeType") or "ROUND").upper()
+        if htype not in ("ROUND", "SLOT"):
             warnings.append(
-                f"{where}: pad {num!r} has a {hole.get('holeType')} hole "
-                f"{hw}x{hh} mil; precis carries one drill diameter, imported "
-                f"as round {hw} mil"
+                f"{where}: pad {num!r} has an unknown holeType {htype!r} "
+                f"({hw}x{hh} mil); imported by its hole extents"
             )
+        pad["drill"] = Frame.length(min(hw, hh))
+        if hw != hh:
+            pad["slot"] = {"w": Frame.length(hw), "h": Frame.length(hh)}
     return pad, warnings
 
 

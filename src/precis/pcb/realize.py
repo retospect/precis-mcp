@@ -6345,6 +6345,10 @@ class PadGeom:
     #: only :func:`oblique_pad_ring` reads it, to build the true outline of
     #: a rect/obround pad whose total rotation is not a 90-multiple.
     pad_rot_deg: float = 0.0
+    #: A slotted hole's two end-centre points RELATIVE to the pad centre,
+    #: board frame (``padplace`` ``slot`` minus the pad's x/y); ``None`` for
+    #: a round hole. ``drill_mm`` is then the slot width.
+    slot_off: list[list[float]] | None = None
 
 
 #: Which pin a raw footprint pad belongs to — :func:`precis.pcb.padplace.
@@ -6370,6 +6374,7 @@ def _real_pad_sizes(
         float | None,
         bool,
         float,
+        list[list[float]] | None,
     ],
 ]:
     """This one instance's REAL per-pin pad size (plus
@@ -6476,6 +6481,22 @@ def _real_pad_sizes(
         if name in raw_rot_by_name:
             continue
         raw_rot_by_name[name] = float(raw.get("rot") or 0.0)
+    # Slot end-centres relative to the pad centre, through the instance's
+    # REAL side: the probe above is never mirrored, but an oblique slot on
+    # a bottom-side part must match padplace's (fab/Excellon) diagonal.
+    side_inst = {
+        "x": 0.0,
+        "y": 0.0,
+        "rot": inst_rot,
+        "layer": "bottom" if bool(ir.inst_bottom[inst_id]) else "top",
+    }
+    raw_slot_by_name: dict[str, list[list[float]] | None] = {}
+    for raw in fp.get("pads") or []:
+        name = _footprint_pad_label(raw, pin_map)
+        if name not in raw_slot_by_name:
+            raw_slot_by_name[name] = padplace._slot_centre_line(
+                raw, side_inst, 0.0, 0.0
+            )
     out: dict[
         str,
         tuple[
@@ -6489,6 +6510,7 @@ def _real_pad_sizes(
             float | None,
             bool,
             float,
+            list[list[float]] | None,
         ],
     ] = {}
     for pad in pads:
@@ -6519,6 +6541,7 @@ def _real_pad_sizes(
             float(drill) if drill is not None else None,
             padplace.pad_axis_aligned(total_rot),
             raw_rot_by_name.get(name, 0.0),
+            raw_slot_by_name.get(name),
         )
     return out
 
@@ -6564,6 +6587,7 @@ def pad_geometry(
                 float | None,
                 bool,
                 float,
+                list[list[float]] | None,
             ],
         ],
     ] = {}
@@ -6577,7 +6601,19 @@ def pad_geometry(
         inst_id = int(ir.pin_instance[pid])
         real = real_by_inst.get(inst_id, {}).get(str(ir.pin_label[pid]))
         if real is not None:
-            w, h, shape, poly, role, mask, paste, drill, axis_aligned, pad_rot = real
+            (
+                w,
+                h,
+                shape,
+                poly,
+                role,
+                mask,
+                paste,
+                drill,
+                axis_aligned,
+                pad_rot,
+                slot_off,
+            ) = real
             out.append(
                 PadGeom(
                     w,
@@ -6591,6 +6627,7 @@ def pad_geometry(
                     drill_mm=drill,
                     axis_aligned=axis_aligned,
                     pad_rot_deg=pad_rot,
+                    slot_off=slot_off,
                 )
             )
         else:
@@ -7024,6 +7061,11 @@ def pads_for_ir(
             pad["paste"] = geom.paste
         if geom.drill_mm:
             pad["drill"] = geom.drill_mm
+            if geom.slot_off:
+                pad["slot"] = [
+                    [round(point[0] + ox, 4), round(point[1] + oy, 4)]
+                    for ox, oy in geom.slot_off
+                ]
         out.append(pad)
     # A PLATED mounting hole's copper annulus (a solder-on nut's land) is
     # real pad copper on EVERY copper layer — emitted here because this

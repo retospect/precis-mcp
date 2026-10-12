@@ -31,9 +31,9 @@ The whole write path (export) is unbuilt.
 **On prod since 2026-10-02:** the real board is imported as pcb
 `heater-base-test`, APWR/BPWR annotated (td458070 closed), all 89 nets
 unrouted. Dogfooding it found a courtyard bug (courtyards from synthesized pad
-sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones). DRC still shows 4 annular-ring errors on the SATA connector's
-slot holes (imported as round, with a warning; no slot model yet —
-gr461213, Horizon 14).
+sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones). The SATA connector's slot holes (gr461213) import as
+slots now (pad `slot`, Excellon G85, slot-aware annular ring); re-import
+the board to clear its 4 false annular-ring errors.
 Reto's 2026-10-02 look found the CN1/CN2 standoff rings around no hole
 and C27–29 with pad-strip courtyards: the reader dropped footprint FILLs
 on the multi layer (KiCad maps them to Edge.Cuts) and `--update` never
@@ -244,11 +244,7 @@ export/fab if this file outgrows itself.
 13. **backlog/pcb-guided-place-route.md** slice 9 (JLCPCB ordering) — the
     workflow's endpoint; gated on a human granting Components/PCB scope in
     the JLCPCB Open API console.
-14. **gr461213** — slot holes: precis carries one drill diameter, so an
-    imported slot drills round at its long axis (Reto's SATA pads 23/24)
-    and DRC flags a ring the real slot has. Waits on nothing; fab-correctness
-    blocker before ordering that board.
-15. **backlog/pcb-keepout-does-not-bind.md** — `ftype='keepout'` binds
+14. **backlog/pcb-keepout-does-not-bind.md** — `ftype='keepout'` binds
     nothing in placer, router or DRC. Demoted from Do next 2026-10-02:
     the real board's "keepout" records look like its rule table (Do next
     2). The placer half belongs to ewod-pcb's obstacle-set item; this

@@ -86,6 +86,23 @@ _POLY_FP = {
     ],
 }
 
+_SLOT_FP = {
+    "pads": [
+        {
+            "number": "1",
+            "shape": "OVAL",
+            "x": 0.0,
+            "y": 0.0,
+            "w": 4.0,
+            "h": 2.0,
+            "rot": 0.0,
+            "layer": "F.Cu",
+            "drill": 1.0,
+            "slot": {"w": 3.0, "h": 1.0},
+        },
+    ],
+}
+
 _OUTLINE = [[0.0, 0.0], [30.0, 0.0], [30.0, 20.0], [0.0, 20.0]]
 
 
@@ -123,7 +140,7 @@ def _model(
     """A fab model assembled the way ``_fab_model`` does it — pads through
     :func:`padplace.place_footprint_pads`, no DB."""
     insts = list(_INSTANCES if instances is None else instances)
-    fps = {"ASYM3": _ASYM_FP, "POLY1": _POLY_FP}
+    fps = {"ASYM3": _ASYM_FP, "POLY1": _POLY_FP, "SLOT1": _SLOT_FP}
     pads: list[dict[str, Any]] = []
     drills: list[dict[str, Any]] = []
     for inst in insts:
@@ -1315,3 +1332,38 @@ def test_real_board_copper_and_bottom_pads_round_trip():
         f"{worst_cu:.3f} um, {n} bottom pads worst {worst_pad * 1000:.3f} um"
     )
     assert worst_pad < _TOL_MM, f"worst bottom-pad error {worst_pad * 1000:.3f} um"
+
+
+def test_slot_hole_is_written_back_as_a_slot_that_the_reader_reads_again():
+    from types import SimpleNamespace
+
+    pad = {
+        "x": 5.0,
+        "y": 5.0,
+        "w": 2.4,
+        "h": 1.4,
+        "shape": "obround",
+        "drill": 0.5,
+        "slot": [[4.5, 5.0], [5.5, 5.0]],
+    }
+    body = epro_write._pad_record(pad, "1", SimpleNamespace(bottom=False), (0.0, 0.0))  # type: ignore[arg-type]
+    hole = body["hole"]
+    assert hole["holeType"] == "SLOT"
+    back, warns = epro._pad_to_precis(body, "fp")
+    assert back is not None and warns == []
+    assert back["drill"] == pytest.approx(0.5, abs=0.01)
+    assert back["slot"]["w"] == pytest.approx(1.5, abs=0.01)
+    assert back["slot"]["h"] == pytest.approx(0.5, abs=0.01)
+
+
+def test_an_oblique_slot_warns_that_it_is_written_round():
+    ex = _export(_model([_inst("S1", 10.0, 10.0, 45.0, "top", fp="SLOT1")]))
+    assert any(
+        "slot hole at a non-right-angle" in w and "S1" in w and "ROUND" in w
+        for w in ex.warnings
+    )
+
+
+def test_a_right_angle_slot_writes_slot_and_does_not_warn():
+    ex = _export(_model([_inst("S1", 10.0, 10.0, 90.0, "top", fp="SLOT1")]))
+    assert not any("slot hole" in w for w in ex.warnings)

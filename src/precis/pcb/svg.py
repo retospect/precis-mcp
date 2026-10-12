@@ -203,6 +203,13 @@ def _stroke_el(
     )
 
 
+def _slot_d(slot: Any) -> str:
+    (x1, y1), (x2, y2) = slot
+    return (
+        f"M {_fmt(float(x1))} {_fmt(float(y1))} L {_fmt(float(x2))} {_fmt(float(y2))}"
+    )
+
+
 def _pad_el(pad: dict[str, Any], *, fill: str) -> str:
     """A pad's outline, plus — when ``pad["drill"]`` is set — the hole
     through it, using the SAME annulus-with-a-white-punched-centre
@@ -218,7 +225,13 @@ def _pad_el(pad: dict[str, Any], *, fill: str) -> str:
     hole = ""
     if drill:
         r_drill = float(drill) / 2
-        hole = f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r_drill)}" fill="#ffffff"/>'
+        if pad.get("slot"):
+            hole = (
+                f'<path d="{_slot_d(pad["slot"])}" fill="none" stroke="#ffffff" '
+                f'stroke-width="{_fmt(float(drill))}" stroke-linecap="round"/>'
+            )
+        else:
+            hole = f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r_drill)}" fill="#ffffff"/>'
     if shape == "polygon" and pad.get("poly"):
         pts = " ".join(f"{_fmt(float(p[0]))},{_fmt(float(p[1]))}" for p in pad["poly"])
         return f'<polygon points="{pts}" fill="{fill}"/>' + hole
@@ -266,6 +279,14 @@ def _drill_el(hole: dict[str, Any]) -> str:
     if r <= 0.0:
         return ""
     dash = "" if hole.get("plated", True) else ' stroke-dasharray="0.3,0.2"'
+    if hole.get("slot"):
+        d = _slot_d(hole["slot"])
+        return (
+            f'<path d="{d}" fill="none" stroke="#000000" '
+            f'stroke-width="{_fmt(2 * r + 0.1)}" stroke-linecap="round"{dash}/>'
+            f'<path d="{d}" fill="none" stroke="#ffffff" '
+            f'stroke-width="{_fmt(2 * r)}" stroke-linecap="round"/>'
+        )
     return (
         f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r)}" '
         f'fill="#ffffff" stroke="#000000" stroke-width="0.05"{dash}/>'

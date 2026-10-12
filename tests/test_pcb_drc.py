@@ -2366,3 +2366,50 @@ def test_coating_extent_fits_either_orientation_and_skips_no_outline():
         drc.check_coating_extent(_OUT, ewod_components=["A"], extent_mm=(20, 50)) == []
     )
     assert drc.check_coating_extent(None, ewod_components=["A"], extent_mm=(1, 1)) == []
+
+
+def _slot_pads(pad_w: float, pad_h: float, inst_rot: float = 0.0, pad_rot: float = 0.0):
+    from precis.pcb import padplace
+
+    inst = {"x": 10.0, "y": 5.0, "rot": inst_rot, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads(
+        [
+            {
+                "number": "1",
+                "shape": "OVAL",
+                "x": 0.0,
+                "y": 0.0,
+                "w": pad_w,
+                "h": pad_h,
+                "rot": pad_rot,
+                "drill": 0.5,
+                "slot": {"w": 1.5, "h": 0.5},
+            }
+        ],
+        inst,
+        layers=["F.Cu", "B.Cu"],
+    )
+    return pads
+
+
+def _slot_ring_findings(pad_w: float, pad_h: float, inst_rot: float = 0.0):
+    pads = _slot_pads(pad_w, pad_h, inst_rot)
+    return drc.check_annular_ring({"layers": ["F.Cu", "B.Cu"], "pads": pads}, _CAP4)
+
+
+@pytest.mark.parametrize("rot", [0.0, 90.0])
+def test_annular_ring_slot_ok_when_pad_wraps_the_capsule(rot):
+    assert _slot_ring_findings(2.4, 1.4, rot) == []
+
+
+@pytest.mark.parametrize("rot", [0.0, 90.0])
+def test_annular_ring_slot_too_narrow_along_the_slot_errors(rot):
+    # 1.6 along vs 1.5 slot: 0.05 mm ring on the end caps.
+    findings = _slot_ring_findings(1.6, 1.4, rot)
+    assert len(findings) == 1 and findings[0].severity == "error"
+
+
+def test_annular_ring_oblique_slot_is_conservative_and_says_so():
+    pads = _slot_pads(2.4, 1.4, pad_rot=45.0)
+    findings = drc.check_annular_ring({"layers": ["F.Cu", "B.Cu"], "pads": pads}, _CAP4)
+    assert findings and "conservatively" in findings[0].detail
