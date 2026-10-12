@@ -749,8 +749,10 @@ def _run_mint(args: argparse.Namespace) -> None:
     from precis.errors import BadInput
     from precis.store import Store
     from precis.taproot.authoring import seed_claim_hub
+    from precis.taproot.canon import MintCap, MintCapped
 
     claims = _load_spec(args)
+    mint_cap = MintCap()  # one per run: per-chunk hub cap spans all claims
     store = Store.connect(resolve_dsn(args.database_url))
     results: list[dict[str, Any]] = []
 
@@ -768,13 +770,20 @@ def _run_mint(args: argparse.Namespace) -> None:
                 continue
             scope = entry.get("scope") or {}
             supporters = entry.get("supporters", [])
-            out = seed_claim_hub(
-                store,
-                sentence=sentence,
-                scope=scope,
-                supporters=supporters,
-                set_by=args.set_by,
-            )
+            try:
+                out = seed_claim_hub(
+                    store,
+                    sentence=sentence,
+                    scope=scope,
+                    supporters=supporters,
+                    set_by=args.set_by,
+                    mint_cap=mint_cap,
+                )
+            except MintCapped as exc:
+                print(
+                    f"taproot mint: skipped {sentence!r}: {exc.cause}", file=sys.stderr
+                )
+                continue
             out["sentence"] = sentence
             results.append(out)
     except BadInput as exc:

@@ -869,3 +869,29 @@ def test_put_parented_llm_tier_none_opts_out_of_dispatch(
     r2 = handler.put(text="armed child", parent_id=parent)
     ref2 = handler.store.get_ref(kind="todo", id=_id_of(r2.body))
     assert ref2 is not None and ref2.meta.get("llm_tier") == "opus"
+
+
+def test_links_view_of_kind_filters_neighbours(handler: TodoHandler, hub: Hub) -> None:
+    """gr472990 case b: ``args={'of_kind': K}`` keeps only links whose other
+    endpoint is a ref of kind K, in both directions, parent edge included."""
+    root_id = _id_of(handler.put(text="root").body)
+    a_id = _id_of(handler.put(text="A", parent_id=root_id).body)
+    b_id = _id_of(handler.put(text="B").body)
+    from precis.handlers.gripe import GripeHandler
+
+    g_id = _id_of(GripeHandler(hub=hub).put(text="a gripe").body)
+    handler.link(id=a_id, target=f"todo:{b_id}", rel="related-to")
+    handler.link(id=a_id, target=f"gripe:{g_id}", rel="related-to")
+
+    out = handler.get(id=a_id, view="links", of_kind="gripe").body
+    assert "(kind=gripe)" in out
+    assert f"gripe:{g_id}" in out or f"gr{g_id}" in out
+    assert f"todo:{b_id}" not in out and f"td{b_id}" not in out
+    assert "## parent" not in out  # parent is a todo
+
+    out = handler.get(id=a_id, view="links", of_kind="todo").body
+    assert "## parent" in out
+    assert f"gripe:{g_id}" not in out and f"gr{g_id}" not in out
+
+    out = handler.get(id=a_id, view="links", of_kind="pathway").body
+    assert "(no links to kind 'pathway')" in out

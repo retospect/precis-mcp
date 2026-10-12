@@ -16,6 +16,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
 from precis.taproot.canon import CanonicalClaim
@@ -75,26 +76,31 @@ def test_smartdraft_reader_renders_claim_anchor(
     assert _CLAIM.sentence in r.text  # the right-rail Claims panel
 
 
-def _flag_rail_only(hub: Hub, slug: str) -> None:
+def _flag_rail_only(hub: Hub, slug: str, meta: dict[str, str]) -> None:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
     with hub.live_store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb)"
-            ' || \'{"cite_render": "rail"}\'::jsonb'
+            " || %s::jsonb"
             " WHERE ref_id = %s",
-            (ref.id,),
+            (Jsonb(meta), ref.id),
         )
 
 
+@pytest.mark.parametrize(
+    "meta",
+    [{"cite_render": "rail"}, {"cast": "reading"}],
+    ids=["explicit", "legacy-cast"],
+)
 def test_rail_only_draft_hides_inline_anchor_but_rail_and_editor_keep_cite(
-    reader_client: TestClient, hub: Hub
+    reader_client: TestClient, hub: Hub, meta: dict[str, str]
 ) -> None:
     from precis_web import smartdraft
 
     slug = _draft_citing_a_hub(hub)
     normal = reader_client.get(f"/smartdraft/{slug}").text
-    _flag_rail_only(hub, slug)
+    _flag_rail_only(hub, slug, meta)
     store = hub.live_store
     ref = store.get_ref(kind="draft", id=slug)
     assert ref is not None

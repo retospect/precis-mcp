@@ -567,6 +567,24 @@ def test_unrecognised_display_target_stays_literal() -> None:
     assert "[see](note)" in out and "<a" not in out
 
 
+def test_internal_display_link_renders_anchor() -> None:
+    # The morning brief's ``[name](/clusters?…)`` tile links (gr415941): a
+    # site-rooted target is an internal link — same tab, no nofollow.
+    out = str(
+        linkify_refs("the [azobenzene photoswitch](/clusters?scope=paper&path=4.7)")
+    )
+    assert 'href="/clusters?scope=paper&amp;path=4.7"' in out
+    assert ">azobenzene photoswitch<" in out
+    assert "nofollow" not in out and "_blank" not in out
+
+
+def test_protocol_relative_display_target_stays_literal() -> None:
+    # ``//host`` is network-path-relative (external) — NOT an internal path;
+    # it must not anchor into the site.
+    out = str(linkify_refs("a [x](//evil.example/x) here"))
+    assert "<a" not in out
+
+
 def test_marker_page_anchor_cite_renders_clean_bracket() -> None:
     # Marker turns an inline citation "[11]" into a link [11](#page-5-0) whose
     # target is inert PDF-viewer nav chrome. It must render as a plain "[11]",

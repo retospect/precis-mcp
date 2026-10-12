@@ -10,6 +10,7 @@ stub function) — no live model, no DB. The live-model eval harness itself
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,15 +39,18 @@ from precis.taproot.eval_canon import (
     eval_canonicalization,
     eval_extraction,
 )
-from precis.utils.llm.router import Tier
+from precis.utils.llm.router import LlmRequest, Tier
 
 
 def _result(
-    *, data: dict[str, Any] | None = None, text: str = "", error: str | None = None
+    *,
+    data: dict[str, Any] | None = None,
+    text: str = "",
+    error: str | None = None,
+    stop_reason: str | None = None,
 ) -> Any:
-    """A stand-in for ``LlmResult`` — route() callers only read
-    ``.error``, ``.data``, and ``.text``."""
-    return SimpleNamespace(text=text, data=data, error=error)
+    """A stand-in carrying the extraction fields of ``LlmResult``."""
+    return SimpleNamespace(text=text, data=data, error=error, stop_reason=stop_reason)
 
 
 def _verdict(v: canon.Verdict3, confidence: float, rationale: str = "") -> Verdict:
@@ -307,6 +311,101 @@ _TRUNCATED_TEXT = (
     '{"claim": "DFT shows the third'
 )
 _LAST_ITEM = {"claim": "DFT shows the second atom holds.", "material": "graphene"}
+
+
+@pytest.mark.parametrize(
+    "extract",
+    [
+        extract_claim,
+        extract_claim_strict,
+        extract_claim_strict_big,
+        canon.extract_claim_strict_medium,
+    ],
+)
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "length", "stop", None])
+def test_extract_retries_token_stops_but_not_complete_replies(
+    monkeypatch: pytest.MonkeyPatch,
+    extract: Callable[[str], ClaimExtraction],
+    stop_reason: str | None,
+) -> None:
+    """A parseable single atom with a cap stop is still an incomplete verdict."""
+    seen: list[LlmRequest] = []
+    payload = {"claims": [dict(_LAST_ITEM)]}
+    complete = {"claims": [dict(_LAST_ITEM), {"claim": "DFT shows another atom."}]}
+
+    def fake(req: LlmRequest) -> Any:
+        seen.append(req)
+        data = payload if len(seen) == 1 else complete
+        return _result(
+            data=data,
+            text=json.dumps(data),
+            stop_reason=stop_reason if len(seen) == 1 else "stop",
+        )
+
+    monkeypatch.setattr(canon, "route", fake)
+    result = extract("some passage")
+    if stop_reason in {"max_tokens", "length"}:
+        assert len(result.atoms) == 2
+        assert [req.max_tokens for req in seen] == [1536, 3072]
+        assert seen[0].prompt == seen[1].prompt
+        assert seen[0].source == seen[1].source
+        assert seen[0].tier == seen[1].tier
+        assert seen[0].timeout_s == seen[1].timeout_s
+    else:
+        assert len(result.atoms) == 1
+        assert [req.max_tokens for req in seen] == [1536]
+
+
+@pytest.mark.parametrize(
+    "extract",
+    [extract_claim_strict, extract_claim_strict_big, canon.extract_claim_strict_medium],
+)
+def test_extract_repeated_token_stop_is_bounded_and_raises(
+    monkeypatch: pytest.MonkeyPatch, extract: Callable[[str], ClaimExtraction]
+) -> None:
+    seen: list[int | None] = []
+
+    def fake(req: LlmRequest) -> Any:
+        seen.append(req.max_tokens)
+        return _result(data=dict(_LAST_ITEM), stop_reason="max_tokens")
+
+    monkeypatch.setattr(canon, "route", fake)
+    with pytest.raises(ExtractionUnavailable, match="stop_reason=max_tokens"):
+        extract("some passage")
+    assert seen == [1536, 3072]
+
+
+def test_extract_lenient_repeated_token_stop_never_accepts_an_atom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[int | None] = []
+
+    def fake(req: LlmRequest) -> Any:
+        seen.append(req.max_tokens)
+        return _result(data=dict(_LAST_ITEM), stop_reason="length")
+
+    monkeypatch.setattr(canon, "route", fake)
+    assert extract_claim("some passage").is_empty
+    assert seen == [1536, 3072]
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_extract_retries_structural_and_empty_capped_replies(
+    monkeypatch: pytest.MonkeyPatch, empty: bool
+) -> None:
+    seen: list[int | None] = []
+
+    def fake(req: LlmRequest) -> Any:
+        seen.append(req.max_tokens)
+        if len(seen) == 1:
+            if empty:
+                return _result(error="empty completion", stop_reason="length")
+            return _result(data=dict(_LAST_ITEM), text=_TRUNCATED_TEXT)
+        return _result(data={"claims": [dict(_LAST_ITEM)]}, stop_reason="stop")
+
+    monkeypatch.setattr(canon, "route", fake)
+    assert len(extract_claim_strict("some passage").atoms) == 1
+    assert seen == [1536, 3072]
 
 
 def test_extract_claim_strict_refuses_a_truncated_reply(
@@ -1355,6 +1454,13 @@ def test_mint_cap_is_all_or_nothing() -> None:
     cap = canon.MintCap(limit=2)
     assert not cap.admit("pc1", 3)
     assert cap.admit("pc1", 2)  # the refused request reserved nothing
+
+
+def test_mint_cap_admit_all_reserves_nothing_on_refusal() -> None:
+    cap = canon.MintCap(limit=2)
+    assert cap.admit("pc1", 2)
+    assert not cap.admit_all({"pc2": 1, "pc1": 1})
+    assert cap.admit("pc2", 2)  # pc2 was not reserved by the refused call
 
 
 def test_mint_cap_default_limit_is_module_constant() -> None:

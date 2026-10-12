@@ -157,14 +157,15 @@ Bundled in the 2026-10-11 gripe triage. A single review-article paragraph
 became several claim hubs, each grounded on the same proxy passage. Asks
 (a) and (b) shipped in `extract_claim` (ec03854c); the proxy-deferral
 rejection (`canon.is_proxy_deferral`) and the per-chunk mint cap
-(`canon.MintCap`, wired in `backfill.apply_chunk`) shipped after. Remaining:
+(`canon.MintCap`, wired in `backfill.apply_chunk`, `authoring.seed_claim_hub`
+/ `taproot mint`, `apply_migrate.apply_dry_run` and `put_hypothesis`) shipped
+after. Remaining:
 
 - Audit the ~1,346 existing hubs for same-chunk multi-mint; merge or retire
   the duplicates (prod data; read-only audit first).
-- Known gaps in the shipped gates: the mint cap covers only
-  `backfill.apply_chunk`; chase (`authoring.py`), `apply_migrate` and the
-  hypothesis handler mint uncapped. The proxy detector is regex-only and
-  misses paraphrased deferrals ("has been widely studied [3]", "Recent work
+- Known gaps in the shipped gates: the cap is per run (caller-shared
+  `MintCap`); single-call MCP mints (`put` of one hub) get no run to span.
+  The proxy detector is regex-only and misses paraphrased deferrals ("has been widely studied [3]", "Recent work
   on X [5-9]").
 
 Who: ops for the audit and repair.

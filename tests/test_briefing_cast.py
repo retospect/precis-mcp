@@ -13,6 +13,7 @@ from precis.reading.briefing_cast import (
     _cite_token,
     _doctor_report_line,
     _dormant_nudge,
+    _filter_finding_cites,
     _lane_quest,
     _lane_reading,
     _lane_recall,
@@ -21,6 +22,15 @@ from precis.reading.briefing_cast import (
     build_reading_briefing,
 )
 from precis.workers.doctor_report import DoctorReport
+
+
+def test_finding_cite_filter_preserves_other_lanes_and_paragraph_boundaries() -> None:
+    lanes = {"system_activity": "Finding [fi1]", "quest": "Latest deed [fi2]"}
+    assert (
+        _filter_finding_cites("Finding [fi1].\n\nQuest [fi2]. Ghost [fi3].", lanes)
+        == "Finding [fi1].\n\nQuest [fi2]. Ghost."
+    )
+    assert _filter_finding_cites(" [fi3]\n\n[fi4] ", lanes) == ""
 
 
 class _FakeClient:
@@ -151,6 +161,93 @@ class TestPaperLane:
         out = _render_papers(papers, total=10000, new=12)
         assert out.startswith("Papers newly acquired (12); 9988 older papers")
         assert "background jobs (automated, not reads by you)" in out
+
+
+class TestPaperClusterLinks:
+    """gr415941: each paper's cluster rides a ``[label](/clusters?…)`` display
+    link beside its ``[[pa<id>]]`` cite marker — linked on the page, silent
+    but for its anchor text in the audio."""
+
+    def test_depth_paper_carries_cluster_display_link(self) -> None:
+        papers = [SimpleNamespace(id=42, title="Azo paper", meta={})]
+        out = _render_papers(
+            papers,
+            clusters={42: "[azobenzene photoswitch](/clusters?scope=paper&path=4.7)"},
+        )
+        assert "[[pa42]]" in out
+        assert (
+            "cluster: [azobenzene photoswitch](/clusters?scope=paper&path=4.7)" in out
+        )
+
+    def test_paper_without_a_cluster_renders_as_before(self) -> None:
+        papers = [SimpleNamespace(id=1, title="Solo", meta={})]
+        out = _render_papers(papers, clusters={})
+        assert "cluster:" not in out
+
+    def test_tail_papers_carry_cluster_links_too(self) -> None:
+        papers = [SimpleNamespace(id=i, title=f"Paper {i}", meta={}) for i in range(8)]
+        out = _render_papers(
+            papers, clusters={7: "[gnr bandgap](/clusters?scope=paper&path=9.2)"}
+        )
+        assert "Paper 7 [[pa7]] [gnr bandgap](/clusters?scope=paper&path=9.2)" in out
+
+    def test_lookup_picks_the_plurality_leaf_and_labels_it(self, store: Any) -> None:
+        import json
+
+        from precis.reading.briefing_cast import _paper_cluster_links
+
+        paper = store.insert_ref(
+            kind="paper", slug=f"paper-{uuid.uuid4().hex[:8]}", title="P"
+        )
+        chunks = store.drafts.add_chunks(
+            ref_id=paper.id,
+            chunk_kind="paragraph",
+            text="one\n\ntwo\n\nthree",
+            split=True,
+            kind="paper",
+        )
+        with store.pool.connection() as conn:
+            run_id = conn.execute(
+                "INSERT INTO cluster_runs (scope, status, finished_at) "
+                "VALUES ('paper', 'ok', now()) RETURNING run_id"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO cluster_cells "
+                "(run_id, path, depth, grid_row, grid_col, words) "
+                "VALUES (%s, '4.7', 1, 0, 0, %s), (%s, '2.1', 1, 0, 1, %s)",
+                (
+                    run_id,
+                    json.dumps(
+                        [
+                            {"w": "azobenzene", "s": 1.0},
+                            {"w": "photoswitch", "s": 0.5},
+                            {"w": "dendrimer", "s": 0.2},
+                        ]
+                    ),
+                    run_id,
+                    json.dumps([{"w": "graphene", "s": 1.0}]),
+                ),
+            )
+            # Two of three chunks on leaf 4.7 — the plurality wins the link.
+            for i, ch in enumerate(chunks):
+                conn.execute(
+                    "INSERT INTO cluster_assignments "
+                    "(run_id, chunk_id, ref_id, leaf_path) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (run_id, ch.chunk_id, paper.id, "4.7" if i < 2 else "2.1"),
+                )
+
+        links = _paper_cluster_links(store, [int(paper.id)])
+        assert links == {
+            int(paper.id): ("[azobenzene photoswitch](/clusters?scope=paper&path=4.7)")
+        }
+
+    def test_lookup_degrades_when_ref_is_unclustered(self, store: Any) -> None:
+        from precis.reading.briefing_cast import _paper_cluster_links
+
+        # No assignments for these refs anywhere → {} (or nothing for them).
+        links = _paper_cluster_links(store, [-1, -2])
+        assert links.get(-1) is None and links.get(-2) is None
 
 
 class TestReadingLane:
@@ -404,6 +501,53 @@ class TestBuild:
         assert f"[fi{f1.id}]" in by_dst[f1.id]
         assert f"[fi{f2.id}]" in by_dst[f2.id]
         assert ghost[0] == 0
+        assert f"[fi{bogus}]" not in by_dst[f2.id]
+
+    def test_unsupplied_existing_finding_is_removed_before_storage(
+        self, store: Any
+    ) -> None:
+        supplied = store.insert_ref(kind="finding", slug=None, title="Supplied result")
+        unrelated = store.insert_ref(
+            kind="finding", slug=None, title="Unrelated result"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - interval '30 days' WHERE ref_id=%s",
+                (unrelated.id,),
+            )
+            conn.commit()
+        client = _FakeClient(
+            f"Opening.\n\nFirst result [fi{supplied.id}][fi{supplied.id}].\n\n"
+            f"Again [fi{supplied.id}]. Unrelated [fi{unrelated.id}]."
+        )
+        draft_id = build_reading_briefing(
+            store, client=client, date_tag=f"cite-check-{uuid.uuid4().hex[:8]}"
+        )
+        assert draft_id is not None
+        assert f"[fi{supplied.id}]" in client.calls[0][1]["content"]
+        assert f"[fi{unrelated.id}]" not in client.calls[0][1]["content"]
+        with store.pool.connection() as conn:
+            chunks = conn.execute(
+                "SELECT chunk_id, text FROM chunks WHERE ref_id=%s AND ord>=0 ORDER BY ord",
+                (draft_id,),
+            ).fetchall()
+            links = conn.execute(
+                "SELECT src_chunk_id, dst_ref_id FROM links "
+                "WHERE src_ref_id=%s AND relation='cites' AND src_chunk_id IS NOT NULL",
+                (draft_id,),
+            ).fetchall()
+            meta = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id=%s", (draft_id,)
+            ).fetchone()[0]
+        paragraphs = [
+            (cid, text) for cid, text in chunks if text and text != "Opening."
+        ]
+        assert len(paragraphs) == 2
+        assert all(f"[fi{unrelated.id}]" not in text for _, text in paragraphs)
+        assert all(f"[fi{supplied.id}]" in text for _, text in paragraphs)
+        assert set(links) == {(cid, supplied.id) for cid, _ in paragraphs}
+        assert len(links) == 2  # repeated markers dedupe within each paragraph
+        assert meta["cite_render"] == "rail"
 
     def test_idempotent_second_call_skips_compose(self, store: Any) -> None:
         date_tag = f"2026-08-{uuid.uuid4().hex[:2]}"

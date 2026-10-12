@@ -24,7 +24,7 @@ from precis.taproot.authoring import (
     resolve_paper_ref_id,
     seed_claim_hub,
 )
-from precis.taproot.canon import CanonicalClaim
+from precis.taproot.canon import CanonicalClaim, MintCap, MintCapped
 from precis.taproot.hub import mint_hub
 from precis.taproot.seniority import derive_evidence
 from precis.utils import handle_registry
@@ -1074,3 +1074,29 @@ def test_cli_backfill_grounding_smoke(store: Any, capsys: Any) -> None:
     out = capsys.readouterr().out
     assert "drafts:" in out
     assert "paper/patent evidence:" in out
+
+
+# ── per-chunk mint cap (gr204874) ───────────────────────────────────────
+
+
+def test_seed_claim_hub_mint_cap_refuses_overmined_chunk(store: Any) -> None:
+    paper = seed_ref(store, title="Review", kind="paper")
+    cap = MintCap(limit=2)
+
+    def _seed(sentence: str, handle: str = "pc777") -> dict[str, Any]:
+        return seed_claim_hub(
+            store,
+            sentence=sentence,
+            scope={},
+            supporters=[{"paper": paper, "source_handle": handle}],
+            mint_cap=cap,
+        )
+
+    first = _seed("Pd/C catalyzes Suzuki coupling at 25 C.")
+    _seed("Pd/C catalyzes Heck coupling at 80 C.")
+    with pytest.raises(MintCapped):
+        _seed("Pd/C catalyzes Stille coupling at 60 C.")
+    # other chunk unaffected; re-seeding an existing hub converges, uncounted
+    assert _seed("Pd/C catalyzes Negishi coupling at 40 C.", "pc778")["attached"] == 1
+    again = _seed("Pd/C catalyzes Suzuki coupling at 25 C.")
+    assert again["hub_ref_id"] == first["hub_ref_id"]

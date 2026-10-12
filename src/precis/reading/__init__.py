@@ -18,8 +18,12 @@ package holds the concept-graph layer:
   taxonomy), gating both the glossary build and the promotion chokepoint so
   topic-labels / stock phrases / front-matter never become concepts
   (gripe 186183).
+- `briefing_cast` — lane-supplied finding handles stay in their discussing
+  paragraphs, with chunk-level cites and rail-only reader display. Validate
+  markers before storing prose: the Claims rail resolves text directly, so
+  omitting an unsupplied handle's graph edge alone cannot prevent attribution.
 
 Remaining: graph-edge inference, mastery-from-Anki, embedding routing,
-booklet, briefing+audio. Anki is a **renderer, not the brain** — the concept
+booklet. Anki is a **renderer, not the brain** — the concept
 graph is the source of truth; leaf cards sync down.
 """

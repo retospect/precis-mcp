@@ -473,6 +473,12 @@ def _render_ext_anchor(url: str, label: str) -> str:
     )
 
 
+def _render_int_anchor(url: str, label: str) -> str:
+    """A site-internal ``[text](/path)`` link — same surface, same tab, so no
+    ``_blank``/``nofollow`` (e.g. a reading-brief ``/clusters`` tile link)."""
+    return f'<a class="{_LINK_CLASS}" href="{escape(url)}">{escape(label)}</a>'
+
+
 def _render_display_link(disp: str, tgt: str, raw: str) -> str:
     """``[disp](target)`` — render an anchor showing ``disp`` when the
     target is a recognised reference; otherwise leave the literal text
@@ -488,6 +494,11 @@ def _render_display_link(disp: str, tgt: str, raw: str) -> str:
             )
     if tgt.startswith(("http://", "https://")):
         return _render_ext_anchor(tgt, label)
+    if tgt.startswith("/") and not tgt.startswith("//"):
+        # Site-rooted path — an internal link a producer deliberately wrote
+        # (the morning brief's ``[name](/clusters?…)`` tile links). A bare
+        # ``[see](note)`` relative target still falls through to literal.
+        return _render_int_anchor(tgt, label)
     universal = _render_universal_handle(tgt, label)
     if universal is not None:
         return universal

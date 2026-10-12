@@ -44,6 +44,13 @@ Three layers, one domain (glossary "finding / taproot / nanopub"):
 freezes an approved hub into a signed nanopublication, is owned by
 :mod:`precis.nanopub`. This module owns the claim-graph layer only.
 
+Extraction starts with a measured 1536-token budget and retries a truncated
+reply once at 3072. Provider ``length``/``max_tokens`` stops override even
+parseable JSON: the router can recover an inner atom from an incomplete
+payload. Structural checks cover transports without stop metadata. Repeated
+truncation raises in strict callers and returns empty in lenient callers;
+route-log features retain the provider stop, ``truncated`` and ``max_tokens``.
+
 **Lifecycle — ten stages**, extract -> admit -> place -> ground -> widen ->
 weigh -> oppose -> adjudicate -> gate -> publish:
 

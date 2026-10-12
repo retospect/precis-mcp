@@ -347,9 +347,9 @@ def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
       and saturated the DB host. Xact-scoped: released at commit/rollback.
     * **Skip when idle** — the orphan-blob sweep only runs when this pass
       actually deleted call rows. No deleted calls → no newly-orphaned blobs, so
-      the anti-join (indexed on ``request_hash``/``response_hash``, migration
-      0077) is skipped entirely on the common no-op pass. When it does run, it
-      still clears *any* orphan, so a one-off backlog is reclaimed next sweep.
+      the anti-join on ``request_hash``/``response_hash`` is skipped entirely
+      on the common no-op pass. When it does run, it still clears *any* orphan,
+      so a one-off backlog is reclaimed next sweep.
     """
     with store.pool.connection() as conn:
         got = conn.execute(

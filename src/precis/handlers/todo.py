@@ -1452,7 +1452,7 @@ class TodoHandler(NumericRefHandler):
 
     # ── links view: synthesize the virtual parent edge ───────────
 
-    def _render_links_view(self, ref: Ref) -> Response:
+    def _render_links_view(self, ref: Ref, *, of_kind: str | None = None) -> Response:
         """Prepend the virtual ``parent`` edge to the stored-link view.
 
         ``parent`` lives in the ``refs.parent_id`` column, not the
@@ -1463,22 +1463,22 @@ class TodoHandler(NumericRefHandler):
         Children aren't synthesized — ``view='tree'`` already shows the
         full subtree downward.
         """
-        base = super()._render_links_view(ref)
+        base = super()._render_links_view(ref, of_kind=of_kind)
         if ref.parent_id is None:
             return base
-        header = f"# {self._sense()} {ref.id} - links"
-        rest = base.body
-        if rest.startswith(header):
-            rest = rest[len(header) :].lstrip("\n")
+        header, _, rest = base.body.partition("\n")
+        rest = rest.lstrip("\n")
         # With a parent edge present the ref is never link-less, so the
         # base "(no links)" placeholder (and its add-a-link hint) is
         # dropped in favour of the synthesized section.
-        if rest.startswith("(no links)"):
+        if rest.startswith(("(no links)", "(no links to kind")):
             rest = ""
         # The parent may be a todo (tree) or a folder (placement) —
         # render the actual kind so the handle round-trips.
         parent_ref = self.store.fetch_refs_by_ids({ref.parent_id}).get(ref.parent_id)
         parent_kind = parent_ref.kind if parent_ref is not None else "todo"
+        if of_kind is not None and parent_kind != of_kind:
+            return base
         parts = [
             header,
             "",

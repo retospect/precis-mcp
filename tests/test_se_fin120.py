@@ -177,7 +177,7 @@ def test_public_seam_tube_tethered_test_db_roundtrip(
     assert len(rings["rings"]) == 9 and len(rings["fuse_pairs"]) == 6
     assert record["terminated"]["count"] > 0
     unknown = handler.get(id=slug, view="surface_deviation", args={"name": "y"}).body
-    assert "unknown: stored authored target unavailable" in unknown
+    assert "unknown: no stored or spec-derivable authored target" in unknown
     block = handler.get(id=slug, view="block", args={"name": "y"}).body
     assert "tube.cross_section" in block and "tethered" in block
 

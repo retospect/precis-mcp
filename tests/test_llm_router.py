@@ -1936,6 +1936,33 @@ def test_openai_compat_empty_completion_is_an_error(
     assert out.error == "empty completion (finish_reason=stop)"
 
 
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens", "stop", None])
+def test_openai_completion_stop_reaches_route_log(
+    monkeypatch: pytest.MonkeyPatch, finish_reason: str | None
+) -> None:
+    """Keep cap evidence even when the trailing JSON parser recovers an atom."""
+    recorded = _capture_route_log(monkeypatch)
+    text = '{"claims": [{"claim": "first"}, {"claim": "cut'
+    out = _openai_compat_with_body(
+        monkeypatch,
+        {"choices": [{"message": {"content": text}, "finish_reason": finish_reason}]},
+    )
+    assert out.stop_reason == finish_reason
+    assert out.data == {"claim": "first"}
+    router.record_dispatch(
+        LlmRequest(tier=Tier.SMALL, source="taproot:extract", max_tokens=1536),
+        out,
+        transport=Transport.OPENAI_COMPAT,
+        duration_ms=1,
+    )
+    assert len(recorded) == 1
+    assert recorded[0].features["stop_reason"] == finish_reason
+    assert recorded[0].features["truncated"] is (
+        finish_reason in {"length", "max_tokens"}
+    )
+    assert recorded[0].features["max_tokens"] == 1536
+
+
 def test_openai_compat_empty_completion_length_still_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

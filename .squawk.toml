@@ -7,6 +7,8 @@ excluded_rules = [
     # applies them while the daemons bounce), so lock-contention rules
     # are noise here:
     "require-concurrent-index-creation",
+    # Drops share this window; the migration transaction forbids CONCURRENTLY.
+    "require-concurrent-index-deletion",
     "require-lock-timeout",
     "require-statement-timeout",
     # House style: serial PKs predate identity columns, and BIGINT is

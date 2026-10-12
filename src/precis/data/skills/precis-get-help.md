@@ -64,6 +64,18 @@ get(
 Reserved keys (`kind`, `id`, `view`, `q`) inside `args=` raise
 `BadInput` — pass them as explicit kwargs.
 
+## List only the neighbours of one kind
+## Which pathways / structures / gripes are linked to this quest or todo?
+
+```python
+get(kind="quest", id=164903, view="links", args={"of_kind": "pathway"})
+```
+
+`of_kind` keeps only links whose other endpoint is a ref of that kind, in
+both directions. It works on the numeric-id kinds (quest, todo, gripe,
+finding, memory, …); paper, draft, plan, pres, patent, pcb, structure,
+make, cad and se do not accept it yet and reject the key.
+
 ## Browse what's in a kind without knowing any id
 ## List the default page for a kind
 ## What if I don't have a slug yet?

@@ -954,10 +954,10 @@ class LlmResult:
     #: a clean run — so a caller maps a recovered exhaustion onto a resumable
     #: outcome without re-parsing the stream. ``None`` for non-agent transports.
     terminal_reason: str | None = None
-    #: The OSS ``tools=`` loop's raw ``stop_reason`` (``'stop'``/``'max_turns'``/
-    #: ``'error'``), mirroring ``terminal_reason`` for the claude lane so the
-    #: planner tick can tell a clean answer from a resumable exhaustion.
-    #: ``None`` for non-OSS transports.
+    #: The OSS tool loop's raw ``stop_reason`` or a one-shot OpenAI
+    #: ``finish_reason`` (including ``'length'``/``'max_tokens'``). Preserve
+    #: the provider signal even when the partial text parses as valid JSON.
+    #: ``None`` when the transport does not report it.
     stop_reason: str | None = None
     #: Token telemetry from a ``claude_agent`` run's trailing ``result`` event
     #: (:func:`~precis.utils.claude_agent.AgentResult`'s matching fields —
@@ -1126,6 +1126,7 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
         total_tokens=getattr(res, "total_tokens", None),
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,
+        stop_reason=getattr(res, "finish_reason", None),
     )
 
 
@@ -2912,6 +2913,7 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         "work_class": _resolve_work_class(req.work_class).value,
         "has_system": bool(req.system_prompt),
         "has_mcp": bool(req.mcp_config),
+        "max_tokens": req.max_tokens,
     }
     if req.degraded_from:
         feats["degraded_from"] = req.degraded_from
@@ -2920,6 +2922,9 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         terminal = result.terminal_reason
         feats["stop_reason"] = stop
         feats["terminal_reason"] = terminal
+        # Separate from turn exhaustion: a capped JSON reply may still
+        # parse as a complete inner object, but is not a complete verdict.
+        feats["truncated"] = stop in {"length", "max_tokens"}
         # A turn-ceiling stop on either lane. Deliberately a stored boolean, not
         # a query-time expression: the two lanes spell it differently and a
         # consumer that has to remember both spellings gets it wrong once.

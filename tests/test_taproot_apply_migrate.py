@@ -1460,3 +1460,52 @@ def test_place_atom_new_contradicts_files_disputes_not_contradicts(
             (atom_id, opposite),
         ).fetchone()
     assert row is not None and row[0] == "disputes"
+
+
+def test_split_mint_cap_skips_hub_whose_atoms_overflow_a_chunk(store: Any) -> None:
+    """gr204874: two new atoms grounded on one chunk exceed a limit-1 cap —
+    the whole hub is skipped (no atom hubs, no stamp), retryable."""
+    from precis.taproot.canon import MintCap
+
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=composite,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    chunk = seed_chunk(store, ref_id=paper, text="X shows A and X shows B.")
+    atom_a, atom_b = "X shows A.", "X shows B."
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _grounded_atom_entry(atom_a, paper_ref_id=paper, chunk_id=chunk),
+            _grounded_atom_entry(atom_b, paper_ref_id=paper, chunk_id=chunk),
+        ],
+    }
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        todo_fn=_TodoCollector(),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map(set()),
+        mint_cap=MintCap(limit=1),
+    )
+
+    assert report.split_applied == 0
+    assert report.partial_failures == 1
+    assert "taproot_decomposed_at" not in _meta(store, composite)
+    with store.pool.connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM refs WHERE title IN (%s, %s)", (atom_a, atom_b)
+            ).fetchone()
+            is None
+        )

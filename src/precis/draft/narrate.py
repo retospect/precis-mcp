@@ -122,10 +122,14 @@ class NarrationSegment:
 def speakable(text: str) -> str:
     """Strip draft markup so the ear gets clean prose.
 
-    Handles/citations vanish; display math becomes a spoken "equation" cue;
-    inline math + emphasis markers are unwrapped; whitespace collapses.
+    Handles/citations vanish; a ``[text](target)`` display link keeps only
+    its anchor (the reading brief's cluster links ride that form — the page
+    shows the link, the ear hears the thread name); display math becomes a
+    spoken "equation" cue; inline math + emphasis markers are unwrapped;
+    whitespace collapses.
     """
-    t = _REF.sub("", text)
+    t = _MD_LINK.sub(r"\1", text)
+    t = _REF.sub("", t)
     t = _DISPLAY_MATH.sub(" equation, ", t)
     t = _INLINE_MATH.sub("", t)
     t = _CODE.sub(r"\1", t)

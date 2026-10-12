@@ -367,6 +367,7 @@ class NumericRefHandler(Handler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        of_kind: str | None = None,
         **_kw: Any,
     ) -> Response:
         if isinstance(id, list):
@@ -429,7 +430,7 @@ class NumericRefHandler(Handler):
                     ),
                 )
             if view == "links":
-                return self._render_links_view(ref)
+                return self._render_links_view(ref, of_kind=of_kind)
             if view == "log":
                 from precis.handlers._event_log_render import render_event_log
 
@@ -2060,8 +2061,12 @@ class NumericRefHandler(Handler):
 
     # ── rendering hooks (subclasses may override) ─────────────────
 
-    def _render_links_view(self, ref: Ref) -> Response:
+    def _render_links_view(self, ref: Ref, *, of_kind: str | None = None) -> Response:
         """Render `view='links'`: outbound + inbound link graph for a ref.
+
+        ``of_kind`` (``args={'of_kind': 'pathway'}``) keeps only links whose
+        other endpoint is a ref of that kind (gr472990 case b); every
+        neighbour is still resolved, so the filter costs no extra query.
 
         Outbound rows ("→") are stored on this ref as ``src_ref_id``.
         Inbound rows ("←") have this ref as ``dst_ref_id`` — they
@@ -2104,6 +2109,22 @@ class NumericRefHandler(Handler):
         for link in in_links:
             endpoint_ids.add(link.src_ref_id)
         endpoints = self._fetch_endpoints(endpoint_ids)
+
+        if of_kind is not None:
+            out_links = [
+                lk
+                for lk in out_links
+                if getattr(endpoints.get(lk.dst_ref_id), "kind", None) == of_kind
+            ]
+            in_links = [
+                lk
+                for lk in in_links
+                if getattr(endpoints.get(lk.src_ref_id), "kind", None) == of_kind
+            ]
+            lines[0] += f" (kind={of_kind})"
+            if not out_links and not in_links:
+                lines += ["", f"(no links to kind {of_kind!r})"]
+                return Response(body="\n".join(lines))
 
         if out_links:
             lines.append("")

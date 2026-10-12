@@ -200,7 +200,7 @@ def test_public_fin_scene_tethered_test_db_roundtrip(
     block = handler.get(id=slug, view="block", args={"name": "f"}).body
     assert "graft.rings" in block and "geom.summary" in block and "tethered" in block
     unknown = handler.get(id=slug, view="surface_deviation", args={"name": "f"}).body
-    assert "unknown: stored authored target unavailable" in unknown
+    assert "unknown: no stored or spec-derivable authored target" in unknown
 
 
 def test_public_inward_misfit_refuses_without_persistence(

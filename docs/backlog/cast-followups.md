@@ -48,11 +48,3 @@ operators); accessibility-grade = MathSpeak/ClearSpeak via the Speech Rule
 Engine over MathML (latex2mathml in hand; MathML→speech is a node shell-out);
 per-equation author override (pronunciation-lexicon pattern). Default stays
 brief. Owner `src/precis/draft/narrate.py`.
-
-## Briefing cast links findings at document level only (gr372773)
-
-Bundled in the 2026-10-11 gripe triage. The briefing cast's findings lane
-(`src/precis/reading/briefing_cast.py`) now hands the composer `[fi]` handles and writes per-paragraph `cites` edges
-(shipped).
-
-Who: agent-code.

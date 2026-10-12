@@ -30,6 +30,12 @@ draft is then linked back to them (papers/findings ``cites``, drafts/quests
 ``related-to``) — the durable graph edges that reopen a source from the
 Connections panel.
 
+Finding handles stay in the paragraphs that discuss them and gain chunk-level
+``cites`` edges. Unsupplied finding markers are removed before storage: skipping
+only their edges is insufficient because the reader resolves prose citations
+directly. Reading casts display these citations in the Claims rail, while the
+stored/editor text retains them and narration strips them.
+
 The *paper* lane additionally hands the model a bracketed ``[[pa<id>]]``
 citation token per named paper and asks it to drop that marker inline after any
 claim it draws from that paper. The marker renders as a compact ``§`` citation
@@ -118,8 +124,8 @@ def _alert_is_fresh(alert: dict[str, Any], cutoff: datetime) -> bool:
 
 # ``CitedRef`` (a ``(ref_id, relation)`` a lane surfaced) + ``link_sources`` live in
 # cast_common — shared with the nidra producer. Lanes collect the sources they
-# render; the composed draft is then linked back to them (nothing is cited inline
-# because the brief reads no URL aloud, so the link is the durable pointer back).
+# render; the composed draft is then linked back to them. Finding citations also
+# link their own paragraphs; narration strips the stored citation markers.
 
 _MORNING_CONTRACT = (
     "You are composing a spoken MORNING BRIEFING — a roughly {minutes}-minute "
@@ -148,7 +154,13 @@ _MORNING_CONTRACT = (
     "a paper, place that paper's marker inline immediately after the sentence it "
     "supports, copied verbatim (brackets and all). These markers are SILENT — "
     "they become a citation link on the page and are removed entirely from the "
-    "audio — so cite freely; they never disrupt what is read aloud.\n"
+    "audio — so cite freely; they never disrupt what is read aloud. A paper "
+    "may also carry a 'cluster: [name](/clusters?…)' link — the thread it sits "
+    "in on the corpus cluster map (e.g. the azobenzene/photoswitch work). When "
+    "the cluster is worth naming — several listed papers sharing one thread, "
+    "or the thread itself being the story — write the cluster's name and keep "
+    "its markdown link on it, copied verbatim. The anchor text is what the "
+    "ear hears; the URL is silent (it becomes the link on the page).\n"
     "- FINDINGS: each new finding is given with a bracketed handle like "
     "'[fi1234]'. When a sentence draws on a finding, put that handle (single "
     "brackets, copied verbatim) at the end of the sentence, inside the SAME "
@@ -185,8 +197,8 @@ _MORNING_CONTRACT = (
     "markers described above — those are invisible to the ear (stripped from the "
     "audio), so keep them exactly as given. If a lane is empty, simply don't "
     "mention it. Return plain paragraphs separated by blank lines — no headings, "
-    "no markup, no bullet points (the '[[pa…]]' citation markers are allowed "
-    "inline)."
+    "no markup, no bullet points (the '[[pa…]]' citation markers and the "
+    "'[name](/clusters?…)' cluster links are allowed inline)."
 )
 
 #: How many overnight papers get the full claim/method/significance treatment
@@ -287,6 +299,26 @@ def _handled_titles(refs: list[Any], cap: int = _LANE_ITEM_CAP) -> list[str]:
 _FINDING_CITE_RE = re.compile(r"\[(fi\d+)\]")
 
 
+def _filter_finding_cites(script: str, lanes: dict[str, str]) -> str:
+    """Keep only finding markers supplied to the composer, before persistence.
+
+    Include handles from every lane (for example a quest's latest deed), not
+    just the new-findings lane. Never guess which source an uncited claim uses.
+    """
+    supplied = set(_FINDING_CITE_RE.findall("\n".join(lanes.values())))
+
+    def keep_supplied(match: re.Match[str]) -> str:
+        handle = match.group(1)
+        if handle in supplied:
+            return match.group(0)
+        log.warning("reading brief: dropping unsupplied finding handle [%s]", handle)
+        return ""
+
+    # Consume preceding horizontal whitespace with a dropped marker without
+    # joining paragraphs or stripping spaces around markers that survive.
+    return re.sub(r"[ \t]*\[(fi\d+)\]", keep_supplied, script).strip()
+
+
 def _link_finding_cites(
     store: Store,
     draft_id: int,
@@ -364,22 +396,105 @@ def _cite_token(ref: Any) -> str:
     return f"[[{handle}]]" if handle else ""
 
 
+#: Words a cluster-cell label takes from the leaf's c-TF-IDF cloud — enough to
+#: name the thread ("azobenzene photoswitch") without reading the whole cloud.
+_CLUSTER_LABEL_WORDS = 2
+
+
+def _cluster_link_marker(path: str, words: Any) -> str:
+    """The ``[label](/clusters?scope=paper&path=…)`` display link for one leaf.
+
+    The grammar's display-link form — the same ``[text](target)`` every other
+    surface resolves: the draft reader anchors it to the SOM tile (the
+    ``/clusters`` grid's canonical ``scope=…&path=…`` address), and
+    :func:`precis.draft.narrate.speakable` keeps only the anchor for the ear.
+    Label = the leaf's top c-TF-IDF words, so it reads as a thread name.
+    """
+    tops = [
+        str(w.get("w") or "").strip()
+        for w in (words or [])[:_CLUSTER_LABEL_WORDS]
+        if isinstance(w, dict) and str(w.get("w") or "").strip()
+    ]
+    label = " ".join(tops) or f"cluster {path}"
+    return f"[{label}](/clusters?scope=paper&path={path})"
+
+
+def _paper_cluster_links(store: Any, ref_ids: list[int]) -> dict[int, str]:
+    """``{ref_id: cluster display link}`` off the newest ok paper-scope run.
+
+    A paper's chunks can split across leaves — the link names the leaf holding
+    the plurality (the tile a listener would call *that paper's cluster*).
+    Degrades to ``{}`` on any read problem or absent ``cluster_*`` tables —
+    the paper lane renders without links rather than lose the brief.
+    """
+    if not ref_ids:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            run = conn.execute(
+                "SELECT run_id FROM cluster_runs "
+                "WHERE scope='paper' AND status='ok' "
+                "ORDER BY finished_at DESC LIMIT 1"
+            ).fetchone()
+            if run is None:
+                return {}
+            run_id = int(run[0])
+            rows = conn.execute(
+                "SELECT ref_id, leaf_path, count(*) AS n "
+                "FROM cluster_assignments "
+                "WHERE run_id = %s AND ref_id = ANY(%s) "
+                "GROUP BY ref_id, leaf_path "
+                "ORDER BY ref_id, n DESC, leaf_path",
+                (run_id, ref_ids),
+            ).fetchall()
+            leaf_of: dict[int, str] = {}
+            for ref_id, leaf_path, _n in rows:
+                leaf_of.setdefault(int(ref_id), str(leaf_path))
+            cells = conn.execute(
+                "SELECT path, words FROM cluster_cells "
+                "WHERE run_id = %s AND path = ANY(%s)",
+                (run_id, sorted(set(leaf_of.values()))),
+            ).fetchall()
+            words_of = {str(p): w for p, w in cells}
+        return {
+            rid: _cluster_link_marker(leaf, words_of.get(leaf))
+            for rid, leaf in leaf_of.items()
+        }
+    except Exception:  # pragma: no cover - cluster tables optional
+        log.debug("reading brief: cluster link lookup unavailable", exc_info=True)
+        return {}
+
+
 def _render_papers(
-    papers: list[Any], *, total: int | None = None, new: int | None = None
+    papers: list[Any],
+    *,
+    total: int | None = None,
+    new: int | None = None,
+    clusters: dict[int, str] | None = None,
 ) -> str:
     """The overnight papers, rendered claim-first: the top few carry their
     abstracts (so the model can go deep), any tail is named for context.
 
     Each named paper carries its ``[[pa<id>]]`` citation marker so the model
-    can cite it inline. ``total`` is the true overnight count (which may exceed
-    the naming cap): the header reports it, and any un-named remainder is noted
-    so the brief never under-counts the night's reading. ``new`` is how many of
-    ``total`` were created since the cutoff; the rest are older papers a
-    background job re-processed (enrichment, ranking, ...), so the header says
-    so rather than presenting the whole count as acquisitions or human reads
+    can cite it inline, and — when ``clusters`` has one — a ``[label](/clusters…)``
+    display link naming the SOM thread the paper sits in (gr415941: the
+    azobenzene/photoswitch-style cluster link in the report body). ``total``
+    is the true overnight count (which may exceed the naming cap): the header
+    reports it, and any un-named remainder is noted so the brief never
+    under-counts the night's reading. ``new`` is how many of ``total`` were
+    created since the cutoff; the rest are older papers a background job
+    re-processed (enrichment, ranking, ...), so the header says so rather
+    than presenting the whole count as acquisitions or human reads
     (gr434185)."""
     if not papers:
         return ""
+
+    def _cluster_of(r: Any) -> str:
+        rid = getattr(r, "id", None)
+        if rid is None or not clusters:
+            return ""
+        return clusters.get(int(rid), "")
+
     lines: list[str] = []
     for r in papers[:_PAPER_DEPTH_CAP]:
         title = (getattr(r, "title", "") or "").strip()
@@ -387,13 +502,16 @@ def _render_papers(
             continue
         cite = _cite_token(r)
         head = f"  * {title}" + (f" — cite as {cite}" if cite else "")
+        if cluster := _cluster_of(r):
+            head += f" — cluster: {cluster}"
         snippet = _abstract_snippet(getattr(r, "meta", None))
         lines.append(head + (f"\n    abstract: {snippet}" if snippet else ""))
     tail = [
-        f"{title} {cite}".strip()
+        f"{title} {cite} {cluster}".strip()
         for r in papers[_PAPER_DEPTH_CAP:]
         if (title := (getattr(r, "title", "") or "").strip())
         for cite in (_cite_token(r),)
+        for cluster in (_cluster_of(r),)
     ]
     if tail:
         lines.append("  * also acquired (title + cite marker): " + "; ".join(tail))
@@ -526,6 +644,9 @@ def _lane_system_activity(
         papers,
         total=total_papers,
         new=_count_new_papers_since(store, cutoff) if total_papers else None,
+        clusters=_paper_cluster_links(
+            store, [int(r.id) for r in papers if getattr(r, "id", None) is not None]
+        ),
     )
     if rendered_papers:
         parts.append(rendered_papers)
@@ -656,7 +777,7 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
     except Exception:  # pragma: no cover - anki_stats may be absent
         log.debug("reading brief: anki leech lane unavailable", exc_info=True)
 
-    # This morning's card work (the card_forge pass runs at 03:30, before us):
+    # This morning's card work (the card_forge pass runs at 01:30, before us):
     # fresh cards to expect on the phone + concepts escalated to the human.
     try:
         with store.pool.connection() as conn:
@@ -1062,6 +1183,7 @@ def build_reading_briefing(
         log_call=True,
     )
     script = _compose(llm, lanes, date_tag=date_tag, profile=profile)
+    script = _filter_finding_cites(script, lanes)
     if not script:
         log.warning("reading brief: model returned no script")
         return None
@@ -1073,8 +1195,7 @@ def build_reading_briefing(
         ref_id=ref.id, chunk_kind="paragraph", text=script, split=True
     )
     n_cites = _link_finding_cites(store, int(ref.id), chunks, lanes, date_tag=date_tag)
-    # Link the draft back to its sources — the brief names them but reads no URL
-    # aloud, so these edges are the only way to reach the paper/finding later.
+    # Retain document-level source navigation alongside paragraph citations.
     n_links = link_sources(
         store, int(ref.id), sources, via="reading_brief", date_tag=date_tag
     )

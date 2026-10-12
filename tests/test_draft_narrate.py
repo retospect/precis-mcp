@@ -73,6 +73,16 @@ def test_speakable_strips_finding_and_paper_citation_handles():
     assert out == "Results agree with and , per [note]."
 
 
+def test_speakable_display_link_keeps_anchor_text():
+    # gr415941: the reading brief's cluster links ride the ``[text](target)``
+    # display-link form — the page carries the link, the ear hears only the
+    # anchor (the thread name), never the URL or the brackets.
+    assert (
+        speakable("the [azobenzene photoswitch](/clusters?scope=paper&path=4.7) thread")
+        == "the azobenzene photoswitch thread"
+    )
+
+
 def test_speakable_collapses_whitespace():
     assert speakable("a   b\n\nc") == "a b c"
 

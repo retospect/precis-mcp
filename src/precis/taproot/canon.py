@@ -35,11 +35,11 @@ import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from precis.embedder import EmbedderUnavailable
-from precis.errors import Upstream
+from precis.errors import BadInput, Upstream
 from precis.store._chunks_ops import _prepare_filtered_ann
 from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 
@@ -497,6 +497,23 @@ class MintCap:
         self._used[source_key] = used + n_new
         return True
 
+    def admit_all(self, wanted: dict[str, int]) -> bool:
+        """All-or-nothing :meth:`admit` over several source keys: reserves
+        every ``{source_key: n_new}`` entry, or none if any would exceed
+        the limit."""
+        if any(
+            self._used.get(k, 0) + n > self.limit for k, n in wanted.items() if n > 0
+        ):
+            return False
+        for k, n in wanted.items():
+            self.admit(k, n)
+        return True
+
+
+class MintCapped(BadInput):
+    """A mint was refused because its source chunk already seeded
+    :data:`MAX_HUBS_PER_CHUNK_PER_RUN` new hubs this run (gr204874)."""
+
 
 # ── extract_claim — SMALL/local ─────────────────────────────────────────
 
@@ -517,10 +534,10 @@ _EXTRACT_MAX_TOKENS = 1536
 
 
 class ExtractionTruncated(ValueError):
-    """The extract reply was cut off before its top-level object closed.
+    """The extract reply hit its output cap or has an incomplete object.
 
-    Detected without a finish reason (the routed result carries none), by
-    either of two arms:
+    A provider stop reason of ``length``/``max_tokens`` takes precedence
+    over parseable JSON. Without that signal, detect either of two arms:
 
     * the reply opens a top-level object (stripped text, after any code
       fence, begins with ``{``) and the whole text does not parse to one —
@@ -542,8 +559,12 @@ _CODE_FENCE_RE = re.compile(r"^```[A-Za-z]*\s*")
 def _top_level_payload(res: Any) -> dict[str, Any] | None:
     """The reply's top-level JSON object, refusing a truncated one.
 
-    Raises :class:`ExtractionTruncated` on either arm documented there.
+    Raises :class:`ExtractionTruncated` on a token-cap stop or either
+    structural arm documented there.
     ``None`` when nothing parses and the reply never opened an object."""
+    stop = getattr(res, "stop_reason", None)
+    if stop in {"length", "max_tokens"}:
+        raise ExtractionTruncated(f"extract reply cut off (stop_reason={stop})")
     text = res.text or ""
     whole = _parse_json_object(text)
     data = res.data if isinstance(res.data, dict) else None
@@ -564,6 +585,36 @@ def _top_level_payload(res: Any) -> dict[str, Any] | None:
             "extract reply cut off before its top-level object closed"
         )
     return data
+
+
+def _route_extract_payload(
+    req: LlmRequest, *, origin: str | None = None
+) -> tuple[LlmResult, dict[str, Any] | None]:
+    """Reject partial verdicts and retry once with twice the measured budget.
+
+    Each attempt goes through route so both caps and stop reasons reach the
+    ledger. Check a token stop before dispatch errors: an empty capped reply
+    is also an error from the OpenAI transport and needs the larger budget.
+    """
+    for budget in (_EXTRACT_MAX_TOKENS, 2 * _EXTRACT_MAX_TOKENS):
+        res = route(replace(req, max_tokens=budget))
+        try:
+            if res.error and getattr(res, "stop_reason", None) not in {
+                "length",
+                "max_tokens",
+            }:
+                return res, None
+            return res, _top_level_payload(res)
+        except ExtractionTruncated as exc:
+            log.warning(
+                "taproot: extract_claim reply truncated (origin=%s, max_tokens=%d): %s",
+                origin or "unknown",
+                budget,
+                exc,
+            )
+            if budget != _EXTRACT_MAX_TOKENS:
+                raise
+    raise AssertionError("extraction retry budget exhausted without a result")
 
 
 _EXTRACT_SYS = (
@@ -965,19 +1016,21 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
 
     extraction = _EMPTY_EXTRACTION
     for attempt in range(2):
-        res = route(
-            LlmRequest(
-                tier=Tier.MEDIUM,
-                messages=[
-                    {"role": "system", "content": _EXTRACT_SYS},
-                    {"role": "user", "content": prompt},
-                ],
-                prompt=prompt,
-                source="taproot:extract-medium",
-                timeout_s=_MEDIUM_EXTRACT_TIMEOUT_S,
-                max_tokens=_EXTRACT_MAX_TOKENS,
+        try:
+            res, data = _route_extract_payload(
+                LlmRequest(
+                    tier=Tier.MEDIUM,
+                    messages=[
+                        {"role": "system", "content": _EXTRACT_SYS},
+                        {"role": "user", "content": prompt},
+                    ],
+                    prompt=prompt,
+                    source="taproot:extract-medium",
+                    timeout_s=_MEDIUM_EXTRACT_TIMEOUT_S,
+                )
             )
-        )
+        except ExtractionTruncated as exc:
+            raise ExtractionUnavailable(str(exc)) from exc
         if res.error:
             if res.timed_out:
                 raise _unavailable(res)
@@ -992,10 +1045,6 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
                 continue
             raise _unavailable(res)
 
-        try:
-            data = _top_level_payload(res)
-        except ExtractionTruncated as exc:
-            raise ExtractionUnavailable(str(exc)) from exc
         if not isinstance(data, dict):
             if attempt == 0:
                 log.info(
@@ -1040,41 +1089,36 @@ def _extract_claim_impl(
         return _EMPTY_EXTRACTION
     excerpt = text[:_EXTRACT_EXCERPT_CHARS]
     prompt = _EXTRACT_PROMPT.format(excerpt=excerpt)
-    res = route(
-        LlmRequest(
-            tier=tier,
-            messages=[
-                {"role": "system", "content": _EXTRACT_SYS},
-                {"role": "user", "content": prompt},
-            ],
-            prompt=prompt,
-            source="taproot:extract" if tier is Tier.SMALL else "taproot:extract-big",
-            max_tokens=_EXTRACT_MAX_TOKENS,
-            timeout_s=(
-                _SMALL_STRICT_EXTRACT_TIMEOUT_S
-                if strict and tier is Tier.SMALL
-                else None
+    try:
+        res, data = _route_extract_payload(
+            LlmRequest(
+                tier=tier,
+                messages=[
+                    {"role": "system", "content": _EXTRACT_SYS},
+                    {"role": "user", "content": prompt},
+                ],
+                prompt=prompt,
+                source="taproot:extract"
+                if tier is Tier.SMALL
+                else "taproot:extract-big",
+                timeout_s=(
+                    _SMALL_STRICT_EXTRACT_TIMEOUT_S
+                    if strict and tier is Tier.SMALL
+                    else None
+                ),
             ),
+            origin=origin,
         )
-    )
+    except ExtractionTruncated as exc:
+        # Still cut off after the larger-budget retry: never accept an atom
+        # from the fragment. Strict backfill leaves the span un-checkpointed.
+        if strict:
+            raise ExtractionUnavailable(str(exc)) from exc
+        return _EMPTY_EXTRACTION
     if res.error:
         log.warning("taproot: extract_claim dispatch failed: %s", res.error)
         if strict:
             raise _unavailable(res)
-        return _EMPTY_EXTRACTION
-    try:
-        data = _top_level_payload(res)
-    except ExtractionTruncated as exc:
-        # A cut-off reply is an infra outcome, not a verdict: strict callers
-        # retry (backfill leaves the span un-checkpointed); the lenient
-        # path degrades to empty, never to a single surviving atom.
-        log.warning(
-            "taproot: extract_claim reply truncated (origin=%s): %s",
-            origin or "unknown",
-            exc,
-        )
-        if strict:
-            raise ExtractionUnavailable(str(exc)) from exc
         return _EMPTY_EXTRACTION
     if not isinstance(data, dict):
         return _EMPTY_EXTRACTION
@@ -1649,6 +1693,7 @@ __all__ = [
     "ExtractionUnavailable",
     "MergeCandidate",
     "MintCap",
+    "MintCapped",
     "NotClaim",
     "Placement",
     "Verdict",

@@ -62,6 +62,26 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     assert expected.issubset(names), f"missing tables: {expected - names}"
 
 
+def test_llm_call_log_hash_indexes_removed_but_foreign_keys_kept(fresh_db: str) -> None:
+    Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
+    indexes = _fetch(
+        fresh_db,
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+        "AND indexname IN ('llm_call_log_request_hash_idx', "
+        "'llm_call_log_response_hash_idx')",
+    )
+    assert indexes == []
+    foreign_keys = _fetch(
+        fresh_db,
+        "SELECT conname FROM pg_constraint "
+        "WHERE conrelid = 'public.llm_call_log'::regclass AND contype = 'f'",
+    )
+    assert {
+        "llm_call_log_request_hash_fkey",
+        "llm_call_log_response_hash_fkey",
+    }.issubset({row["conname"] for row in foreign_keys})
+
+
 def test_seeds_populated(fresh_db: str) -> None:
     Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
     actors = {r["slug"] for r in _fetch(fresh_db, "SELECT slug FROM actors")}

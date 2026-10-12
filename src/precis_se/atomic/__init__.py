@@ -21,7 +21,12 @@ is used: analytic meridians and the applied canonicalization inverse including
 reflection, never requested radius, fitting or planner reconstruction. Receipt
 and geometry commit together; ref/version, cell and ordered atom-row identity
 bind the receipt, so even byte-identical row replacement makes it unavailable.
-Legacy, ambiguous or invalid receipts are unknown with explicit-target guidance.
+Legacy, ambiguous or invalid receipts fall back to a spec-derived target: the
+stored hexfold spec rebuilt without relaxing, the authored meridians from
+scene/plan, and placement measured on the named instances' stored atoms — a
+looser element-order binding than the receipt's row digest, labelled derived.
+A block that is neither a valid receipt nor a derivable scene is unknown with
+explicit-target guidance.
 SE pose is display placement and does not alter the measured target frame.
 Structure identity/version, receipt, lattice and live positions come from one SQL
 statement snapshot. Version brackets were refused: import saves can rewrite

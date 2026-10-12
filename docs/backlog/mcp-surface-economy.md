@@ -150,7 +150,10 @@ checkout ⇒ no doc), i.e. `get(kind='schema', id='<table>')`.
    facet counts by tag/state/kind. "How many claim hubs have no evidence
    edge" needed SQL; it should be one call. gr472990 (2026-10-08): 133
    `scripts/prod-psql` calls in 24 h fell back to SQL for count/group-by and
-   for kind-filtered neighbour walks (a `links` view filtered by kind).
+   for kind-filtered neighbour walks. Kind-filtered neighbours landed for the
+   numeric-id kinds as `get(view='links', args={'of_kind': K})`; left: the same
+   key on the Handler-direct kinds (paper, draft, plan, pres, patent, pcb,
+   structure, make, cad, se).
    RULED (Reto 2026-10-11): agents get `worker_logs` read access; it is in
    scope (by host + time window around a job; gr472990 case c).
 

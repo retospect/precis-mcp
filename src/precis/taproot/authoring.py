@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import ActorSlug
-from precis.taproot.canon import CanonicalClaim, claim_sha
+from precis.taproot.canon import CanonicalClaim, MintCap, MintCapped, claim_sha
 from precis.taproot.hub import (
     _DEFAULT_ROLE,
     EVIDENCE_SRC_KINDS,
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from precis.store.store import Store
 
 __all__ = [
+    "admit_new_hub",
     "resolve_hub_ref_id",
     "resolve_merge_loser_ref_id",
     "resolve_paper_ref_id",
@@ -336,6 +337,32 @@ def find_hub_by_pub_id(store: Store, pub_id: str) -> int | None:
     return int(row[0]) if row is not None else None
 
 
+def admit_new_hub(
+    store: Store,
+    mint_cap: MintCap | None,
+    claim: CanonicalClaim,
+    source_keys: list[str],
+) -> None:
+    """Per-chunk mint cap (gr204874) for the direct-mint doors (chase /
+    ``taproot mint`` / hypothesis): reserve one new hub against every
+    ``source_keys`` entry (grounding-chunk handles), or raise
+    :class:`~precis.taproot.canon.MintCapped`. A no-op without a ``mint_cap``,
+    without source keys (nothing to attribute the hub to), or when the claim
+    converges onto an existing hub (attaches are never counted)."""
+    keys = list(dict.fromkeys(k for k in source_keys if k))
+    if mint_cap is None or not keys:
+        return
+    pub_id = make_pub_id(make_taproot_hub_paper_id(claim.sentence, claim.scope))
+    if find_hub_by_pub_id(store, pub_id) is not None:
+        return
+    if not mint_cap.admit_all(dict.fromkeys(keys, 1)):
+        raise MintCapped(
+            f"source chunk(s) {', '.join(keys)} already seeded "
+            f"{mint_cap.limit} new hub(s) this run - mint refused",
+            next="attach the supporter to an existing hub instead of minting",
+        )
+
+
 def seed_claim_hub(
     store: Store,
     *,
@@ -343,6 +370,7 @@ def seed_claim_hub(
     scope: dict[str, str],
     supporters: list[dict[str, Any]],
     set_by: ActorSlug = "agent",
+    mint_cap: MintCap | None = None,
 ) -> dict[str, Any]:
     """Mint (or converge onto) a claim hub for ``sentence``/``scope`` and
     attach each of ``supporters`` as evidence.
@@ -411,6 +439,10 @@ def seed_claim_hub(
     race, a store-layer bug) rolls the mint back too, not just a partial
     attach set.
 
+    ``mint_cap`` (a run-shared :class:`~precis.taproot.canon.MintCap`) caps
+    NEW hubs per first-supporter grounding chunk; a refused mint raises
+    :class:`~precis.taproot.canon.MintCapped` with nothing written.
+
     Raises:
         BadInput: one or more supporters' ``paper`` doesn't resolve (or
             resolves to a non-paper/patent ref), or a ``role`` isn't in
@@ -435,6 +467,13 @@ def seed_claim_hub(
             "validation — nothing minted or attached:\n" + "\n".join(errors),
             next="fix every listed supporter and retry",
         )
+
+    admit_new_hub(
+        store,
+        mint_cap,
+        claim,
+        [str(s["source_handle"]) for s in resolved if s.get("source_handle")][:1],
+    )
 
     attached = 0
     already = 0

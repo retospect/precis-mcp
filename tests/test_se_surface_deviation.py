@@ -11,14 +11,20 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
+from hexfold.build import build
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
 from precis.structure.cell import Cell
 from precis.structure.scene import Atom, Scene
 from precis_se import persist
+from precis_se.atomic.derived_target import derived_target
 from precis_se.atomic.generate import PendingGenerate, finish_generate, generated_cell
-from precis_se.atomic.generators.authored_foot import _top_meridian
+from precis_se.atomic.generators.authored_foot import (
+    SceneFeature,
+    _top_meridian,
+    scene_text,
+)
 from precis_se.atomic.generators.hexfold_spec import _canonical_frame
 from precis_se.atomic.surface_deviation import render_surface_deviation
 from precis_se.atomic.surface_target import (
@@ -110,8 +116,8 @@ def test_metrics_in_angstrom_and_only_supplied_rigid_z_removed() -> None:
 
 
 def test_no_target_is_unknown_not_inferred_from_atoms() -> None:
-    assert "unknown: stored authored target unavailable" in render_surface_deviation(
-        ReadStore([[0, 0, 0]]), node(), {}
+    assert "unknown: no stored or spec-derivable authored target" in (
+        render_surface_deviation(ReadStore([[0, 0, 0]]), node(), {})
     )
 
 
@@ -443,8 +449,8 @@ def test_public_get_invalid_stored_receipt_is_unavailable(
     body = fn(
         kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
     )
-    assert "unknown: stored authored target unavailable" in body
-    assert "target.features" in body and "legacy data is never fitted" in body
+    assert "unknown: no stored or spec-derivable authored target" in body
+    assert "target.features" in body and "structure-local Å" in body
     assert "{region" not in body and "generated-exact" not in body
 
 
@@ -521,7 +527,145 @@ def test_public_get_receipt_and_atoms_stay_on_same_snapshot(
     second = fn(
         kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
     )
-    assert "unknown: stored authored target unavailable" in second
+    assert "unknown: no stored or spec-derivable authored target" in second
+
+
+def derived_fixture(
+    top: str = "open",
+    top_fillet: float | None = None,
+    *,
+    sheet: tuple[int, int] = (16, 16),
+    at: tuple[int, int] = (8, 8),
+) -> tuple[dict[str, Any], np.ndarray]:
+    """A receiptless hexfold_scene block (sheet + a cap-foot + tube, with an
+    optional cap top): the deterministic spec build run through the same
+    canonicalization stands in for the minted tethered geometry."""
+    feature: dict[str, Any] = {
+        "name": "q",
+        "at": list(at),
+        "n": 12,
+        "radius": 3.0,
+        "tube_len": 3,
+        "top": top,
+    }
+    if top_fillet is not None:
+        feature["top_fillet"] = top_fillet
+    f = SceneFeature("q", at, 12, 3.0, 3, top, top_fillet=top_fillet)
+    text = scene_text(sheet, (f,), {"q": 6}, "")
+    net = build(text, strict=False)
+    framed, _ = _canonical_frame(np.asarray(net.seed3, dtype=float))
+    cell = generated_cell(framed)
+    plan: dict[str, Any] = {"ks": {"q": 6}, "rows": {}, "tops": {}, "passes": 3}
+    if top_fillet is not None:
+        plan["top_plans"] = {
+            "q": {"kind": "lid", "R": 4.7, "fillet": top_fillet, "drop": 1.5}
+        }
+    snapshot = {
+        "ref_id": 7,
+        "version": 4,
+        "lattice": cell.lattice.tolist(),
+        "pbc": [False] * 3,
+        "has_lattice": True,
+        "fractional": [cell.cart_to_frac(p).tolist() for p in framed],
+        "atom_ids": [11 + i for i in range(len(framed))],
+        "elements": [a.element for a in net.atoms],
+        "generated": {
+            "generator": "hexfold_scene",
+            "spec": text,
+            "n_atoms": len(net.atoms),
+            "terminated": {
+                "element": "H",
+                "mode": "none",
+                "count": 0,
+                "hosts": [],
+                "clashes": 0,
+                "bond_A": 1.09,
+                "why": "fixture",
+            },
+            "scene": {
+                "sheet": list(sheet),
+                "features": [feature],
+                "extra": "",
+                "k_tether": 1.0,
+            },
+            "plan": plan,
+        },
+    }
+    return snapshot, framed
+
+
+@pytest.mark.parametrize(
+    ("top", "fillet"), [("open", None), ("lid", None), ("lid", 2.0)]
+)
+def test_public_get_spec_derived_target_for_receiptless_scene(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch, top: str, fillet: float | None
+) -> None:
+    fn, store = public_get
+    snapshot, framed = derived_fixture(top, fillet)
+
+    def no_compute(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("spec-derived read attempted planning or canonicalization")
+
+    monkeypatch.setattr(
+        "precis_se.atomic.generators.hexfold_scene.plan_scene", no_compute
+    )
+    monkeypatch.setattr(
+        "precis_se.atomic.generators.hexfold_spec._canonical_frame", no_compute
+    )
+    monkeypatch.setattr(
+        store, "structure_positions_snapshot", lambda _id: copy.deepcopy(snapshot)
+    )
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "{region" in body and "spec-derived" in body
+    assert "generated-exact" not in body
+    features, q, b = derived_target(snapshot)
+    distances, owners = surface_distance(framed @ q + b, features, ds=1.0)
+    expected = summary(distances, owners, features)
+    for name, row in expected.items():
+        actual = next(
+            line.split("\t")
+            for line in body.splitlines()
+            if line.startswith(name + "\t")
+        )
+        assert int(actual[1]) == row["atoms"]
+        assert [float(v) for v in actual[2:]] == pytest.approx(
+            [row[k] for k in ("mean", "p95", "max")], abs=1e-12
+        )
+    assert "q\t" in body
+    assert float(body.split("determinant=", 1)[1].split(";", 1)[0]) == pytest.approx(-1)
+
+
+def test_public_get_spec_derived_refuses_a_non_scene_frame(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fn, store = public_get
+    # An 8x8 sheet's canonical frame picks an in-plane axis: the sheet
+    # instance's atoms span tens of Å in stored z, so no scene frame exists
+    # to place a derived target in and the read must refuse.
+    snapshot, _framed = derived_fixture(sheet=(8, 8), at=(4, 4))
+    monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snapshot)
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "unknown: no stored or spec-derivable authored target" in body
+    assert "not the scene frame" in body and "target.features" in body
+    assert "{region" not in body
+
+
+def test_public_get_spec_derived_refuses_reordered_or_replaced_rows(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fn, store = public_get
+    snapshot, _framed = derived_fixture()
+    snapshot["elements"][0] = "N"
+    monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snapshot)
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "unknown: no stored or spec-derivable authored target" in body
+    assert "atoms in order" in body and "{region" not in body
 
 
 @pytest.mark.parametrize(
@@ -625,7 +769,7 @@ def test_persisted_row_receipt_rejects_same_version_replacement(
         kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
     )
     assert (
-        "unknown: stored authored target unavailable" in after_body
+        "unknown: no stored or spec-derivable authored target" in after_body
         and "{region" not in after_body
     )
 
@@ -682,7 +826,7 @@ def test_ambiguous_sheet_feature_preserves_generation_but_read_is_unknown(
         kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
     )
     assert tree.blocks["tube"].bound == pending.struct_slug
-    assert "unknown: stored authored target unavailable" in body
+    assert "unknown: no stored or spec-derivable authored target" in body
     assert "ambiguous generated feature name" in body and "{region" not in body
 
 

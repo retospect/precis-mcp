@@ -64,8 +64,9 @@ from precis.errors import BadInput
 from precis.response import Response
 from precis.store import Store
 from precis.store.types import Tag
+from precis.taproot import authoring
 from precis.taproot import hub as hublib
-from precis.taproot.canon import CanonicalClaim
+from precis.taproot.canon import CanonicalClaim, MintCap
 from precis.utils import handle_registry
 
 log = logging.getLogger(__name__)
@@ -148,8 +149,10 @@ def put_hypothesis(
     llm_models: list[str] | None = None,
     from_memory: str | None = None,
     set_by: str = "agent",
+    mint_cap: MintCap | None = None,
 ) -> Response:
-    """Mint a hypothesis claim hub and park its prepared mint payload."""
+    """Mint a hypothesis claim hub and park its prepared mint payload.
+    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874)."""
     # Local import: `nanopub.gates` pulls the evidence/mint stack, which
     # imports handlers back. Same reason `_finding_mint_preflight` does it.
     from precis.nanopub.gates import check_claim_sentence
@@ -307,6 +310,9 @@ def put_hypothesis(
     # payload may already be open in front of a reviewer, and a re-run must
     # not rewrite what they are reading. Reword the sentence to propose
     # something genuinely different.
+    authoring.admit_new_hub(
+        store, mint_cap, claim, [h for _rid, h in resolved if h is not None]
+    )
     hub_ref_id = hublib.mint_hub(
         store,
         claim,

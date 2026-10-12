@@ -91,6 +91,7 @@ from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     CanonicalClaim,
     MergeCandidate,
+    MintCap,
     Placement,
     Verdict,
     block,
@@ -691,6 +692,7 @@ def apply_dry_run(
     merge_confirm_fn: MergeConfirmFn = merge_confirm,
     todo_fn: NeedsReviewFn | None = None,
     set_by: ActorSlug = "agent",
+    mint_cap: MintCap | None = None,
 ) -> ApplyReport:
     """Phase 2: apply a Phase-1 dry-run report's outcomes to production
     hubs — one transaction per hub, resumable (module docstring).
@@ -733,6 +735,10 @@ def apply_dry_run(
                 reason,
                 detail,
             )
+
+    # Per-chunk mint cap (gr204874), run-wide: one MintCap spans every hub.
+    if mint_cap is None:
+        mint_cap = MintCap()
 
     stamped_passthrough = 0
     split_applied = 0
@@ -887,6 +893,38 @@ def apply_dry_run(
             )
             for i, atom in enumerate(atoms)
         ]
+        # A split hub that would push a source chunk past the cap is skipped
+        # whole (a partial atom set would orphan its composite): no stamp,
+        # so a later run retries it.
+        wanted: dict[str, int] = {}
+        for i, pl in enumerate(placements):
+            if pl is None or pl.action not in ("new", "new_contradicts"):
+                continue
+            chunks = sorted(
+                c for (a_i, _p), c in grounded_chunk_anchors.items() if a_i == i
+            )
+            if not chunks:
+                continue  # no grounding chunk to attribute the atom to
+            key = f"pc{chunks[0]}"
+            wanted[key] = wanted.get(key, 0) + 1
+        if not mint_cap.admit_all(wanted):
+            log.warning(
+                "taproot-apply: hub_ref_id=%s skipped, mint cap %s per source "
+                "chunk reached (%s)",
+                hub_ref_id,
+                mint_cap.limit,
+                wanted,
+            )
+            partial_failures += 1
+            hub_rows.append(
+                HubApplyOutcome(
+                    hub_ref_id,
+                    "error",
+                    f"mint-capped: source chunk already seeded {mint_cap.limit} "
+                    "new hub(s) this run - not stamped, retryable",
+                )
+            )
+            continue
         passages = [_passage_text(store, e) for e in edges]
         # edge index -> atom indices whose sentence the passage supports.
         verified_atoms: list[list[int]] = []

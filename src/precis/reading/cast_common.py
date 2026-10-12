@@ -117,10 +117,13 @@ CAST_PROFILES: dict[str, CastProfile] = {
         voice="bm_george",
         wpm=150,
         target_minutes=20,
-        # 04:30 UTC compose so the (short) render lands the episode ~05:00 — the
-        # cron is the *start*, and the schedule is UTC-anchored (no tz), so this
-        # buys the compose+narrate pipeline a lead over the target land time.
-        cron="30 4 * * 1",
+        # 02:30 UTC compose — 03:30 Irish summer time (IST, UTC+1), two hours
+        # earlier than the old 04:30 UTC / 05:30 IST fire (gr415941) — so the
+        # (short) render lands the episode ~03:00 UTC. The cron is the *start*,
+        # and the schedule is UTC-anchored (no tz): under winter GMT the same
+        # fire reads 02:30 local. The lead still buys the compose+narrate
+        # pipeline ahead of the target land time.
+        cron="30 2 * * 1",
         job_type="reading_brief",
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅

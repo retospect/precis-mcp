@@ -1,9 +1,13 @@
 """Expose the built S1 judge over stored atoms and an explicit authored target.
 
 Explicit targets retain caller authoring and rigid-z semantics. Omitted
-targets use only a generated-exact row-bound receipt from the same SQL
-snapshot as the atoms; legacy scene/plan is not enough. The recorded affine
-isometry includes reflection, never fitting/PCA/reconstruction on read.
+targets first use a generated-exact row-bound receipt from the same SQL
+snapshot as the atoms; the recorded affine isometry includes reflection,
+never fitting/PCA/reconstruction on read. Without a usable receipt a
+``hexfold_scene`` block's stored spec is rebuilt — never relaxed — and its
+authored surfaces placed by measuring the named instances' stored atoms
+(:mod:`precis_se.atomic.derived_target`); anything less is refused with
+explicit-target guidance.
 """
 
 from __future__ import annotations
@@ -142,14 +146,35 @@ def render_surface_deviation(
         try:
             features, q, b = stored_target(snapshot)
             mapping = (q, b)
-        except (ValueError, TypeError, KeyError, OverflowError) as exc:
-            return (
-                header + f"\n\nunknown: stored authored target unavailable: {exc}. "
-                "Supply target.features explicitly in structure-local Å, or use a future generation with an exact target receipt; "
-                "legacy data is never fitted, rebuilt or relaxed automatically."
+        except (ValueError, TypeError, KeyError, OverflowError) as stored_exc:
+            from precis_se.atomic.derived_target import derived_target
+
+            try:
+                features, q, b = derived_target(snapshot)
+            except (ValueError, TypeError, KeyError, OverflowError) as exc:
+                return (
+                    header + "\n\nunknown: no stored or spec-derivable authored "
+                    f"target: {stored_exc}; {exc}. Supply target.features "
+                    "explicitly in structure-local Å "
+                    "([{name, centre_A, r0_A, pieces}] over the z=0 sheet), or "
+                    "use a generation carrying an exact target receipt."
+                )
+            mapping = (q, b)
+            target_label = (
+                "target: spec-derived (rebuilt stored spec + measured instance "
+                f"placement) for a legacy block without a receipt, "
+                f"ref_id={ref_id}, version={version}; derived placement, not "
+                "recorded generation provenance"
             )
-        target_label = f"target: generated-exact receipt format=1, bound ref_id={ref_id}, version={version}; actual evaluated target, not requested top_R"
-        alignment = f"alignment: recorded row-vector y=x@Q+b in Å; Q={q.tolist()!r}, b={b.tolist()!r}; determinant={float(np.linalg.det(q))!r}; no fitted map"
+            alignment = (
+                f"alignment: derived row-vector y=x@Q+b in Å; Q={q.tolist()!r}, "
+                f"b={b.tolist()!r}; determinant={float(np.linalg.det(q))!r}; "
+                "sheet plane, grow side and centres measured on stored instance "
+                "atoms; no relax or surface fit"
+            )
+        else:
+            target_label = f"target: generated-exact receipt format=1, bound ref_id={ref_id}, version={version}; actual evaluated target, not requested top_R"
+            alignment = f"alignment: recorded row-vector y=x@Q+b in Å; Q={q.tolist()!r}, b={b.tolist()!r}; determinant={float(np.linalg.det(q))!r}; no fitted map"
     try:
         cell = Cell(np.asarray(snapshot["lattice"], dtype=np.float64))
         points = np.asarray(
