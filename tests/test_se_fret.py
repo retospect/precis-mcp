@@ -261,7 +261,12 @@ def _base_ops(
         {"op": "connect", "a": "donor.p", "b": "acceptor.p"},
         _chromophore_op("donor", dipole=[1, 0, 0], acceptor=False),
         _chromophore_op("acceptor", dipole=acceptor_dipole, acceptor=True),
-        {"op": "set_pose", "block": "acceptor", "pose": [0, 0, separation_m]},
+        {
+            "op": "set_pose",
+            "block": "acceptor",
+            "pose": [0, 0, separation_m],
+            "pose_unit": "m",
+        },
         {
             "op": "set_optical_link",
             "a": "donor.p",
@@ -303,7 +308,7 @@ def test_undeclared_strongly_coupled_pair_is_a_crosstalk_finding() -> None:
         # No connect/optical link to 'bystander' at all — an undeclared
         # pair, placed at R0 (50% efficiency) so it clears the notable
         # threshold easily.
-        {"op": "set_pose", "block": "bystander", "pose": [0, 0, r0]},
+        {"op": "set_pose", "block": "bystander", "pose": [0, 0, r0], "pose_unit": "m"},
     ]
     body = _render_fret(_tree(ops))
     assert "undeclared crosstalk" in body
@@ -334,7 +339,7 @@ def test_header_says_assumed_when_optics_undeclared() -> None:
             {"op": "add_block", "name": "b"},
             _chromophore_op("a", dipole=[1, 0, 0], acceptor=False),
             _chromophore_op("b", dipole=[1, 0, 0], acceptor=True),
-            {"op": "set_pose", "block": "b", "pose": [0, 0, 5e-9]},
+            {"op": "set_pose", "block": "b", "pose": "[0 0 5e-9] m"},
         ]
     )
     body = _render_fret(tree)
@@ -348,7 +353,7 @@ def test_header_does_not_say_assumed_when_optics_declared() -> None:
             {"op": "add_block", "name": "b"},
             _chromophore_op("a", dipole=[1, 0, 0], acceptor=False),
             _chromophore_op("b", dipole=[1, 0, 0], acceptor=True),
-            {"op": "set_pose", "block": "b", "pose": [0, 0, 5e-9]},
+            {"op": "set_pose", "block": "b", "pose": "[0 0 5e-9] m"},
             {"op": "set_optics", "medium_index": 1.33},
         ]
     )

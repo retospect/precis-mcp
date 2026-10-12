@@ -98,7 +98,7 @@ def test_uid_survives_an_edit(handler: SeHandler, store: Store) -> None:
     handler.put(id="caster1", text=_ALL_REFS)
     before = _uids(store, "caster1")
     handler.edit(
-        id="caster1", ops=[{"op": "set_pose", "block": "hub", "pose": [0, 0, 1]}]
+        id="caster1", ops=[{"op": "set_pose", "block": "hub", "pose": "[0 0 1] m"}]
     )
     assert _uids(store, "caster1") == before
 
@@ -141,7 +141,7 @@ def test_retired_rows_keep_the_same_uid(handler: SeHandler, store: Store) -> Non
     handler.put(id="caster1", text=_ALL_REFS)
     live = _uids(store, "caster1")["hub"]
     handler.edit(
-        id="caster1", ops=[{"op": "set_pose", "block": "hub", "pose": [1, 0, 0]}]
+        id="caster1", ops=[{"op": "set_pose", "block": "hub", "pose": "[1 0 0] m"}]
     )
     with store.pool.connection() as c:
         rows = c.execute(
@@ -461,7 +461,7 @@ def test_ops_address_existing_blocks_by_uid(handler: SeHandler, store: Store) ->
     handler.edit(
         id="caster1",
         ops=[
-            {"op": "set_pose", "block": f"#{hub}", "pose": [0, 0, 0.1]},
+            {"op": "set_pose", "block": f"#{hub}", "pose": "[0 0 0.1] m"},
             {"op": "set_envelope", "block": f"uid:{hub}", "envelope": "cyl:r0.01h0.03"},
             {"op": "add_port", "block": hub, "name": "tip", "roles": ["mates"]},
             {"op": "add_port", "block": f"#{wheel}", "name": "rim", "roles": ["mates"]},
@@ -558,10 +558,10 @@ def test_an_op_by_ambiguous_label_reports_both_uids(handler: SeHandler) -> None:
     tree.blocks["strut"] = SeBlock(name="strut", uid=7)
     tree.blocks["strut-2"] = SeBlock(name="strut", uid=9)
     with pytest.raises(AmbiguousLabel) as exc:
-        apply_ops(tree, [{"op": "set_pose", "block": "strut", "pose": [1, 0, 0]}])
+        apply_ops(tree, [{"op": "set_pose", "block": "strut", "pose": "[1 0 0] m"}])
     assert isinstance(exc.value, OpError)
     assert exc.value.uids == [7, 9]
-    apply_ops(tree, [{"op": "set_pose", "block": "#9", "pose": [1, 0, 0]}])
+    apply_ops(tree, [{"op": "set_pose", "block": "#9", "pose": "[1 0 0] m"}])
     assert tree.blocks["strut-2"].pose == [1.0, 0.0, 0.0]
 
 

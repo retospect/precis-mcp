@@ -139,7 +139,7 @@ def test_se_edit_records_one_revision_whose_snapshot_round_trips(
     assert [r.rev for r in before] == [1]
     assert before[0].ops == _CASTER_OPS
 
-    ops = [{"op": "add_block", "name": "cap", "parent": "hub", "pose": [0, 0, 0.02]}]
+    ops = [{"op": "add_block", "name": "cap", "parent": "hub", "pose": "[0 0 0.02] m"}]
     se.edit(id="caster1", ops=ops)
 
     after = history.list_revisions(store, ref_id)
@@ -256,7 +256,9 @@ def test_se_restore_revision_brings_back_rev_n_and_records_itself(
     ref_id = _ref_id(store, "se", "caster1")
     se.edit(
         id="caster1",
-        ops=[{"op": "add_block", "name": "cap", "parent": "hub", "pose": [0, 0, 0.02]}],
+        ops=[
+            {"op": "add_block", "name": "cap", "parent": "hub", "pose": "[0 0 0.02] m"}
+        ],
     )
     assert _block_set(store, ref_id) == {"fork", "hub", "cap"}
     # Wipe the design down to a single block, then restore rev 2.

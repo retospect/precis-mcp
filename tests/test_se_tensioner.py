@@ -58,7 +58,7 @@ def test_nipple_turns_needs_preload_and_rate() -> None:
 def _tree(params: dict[str, Any]) -> SeTree:
     ops: list[dict[str, Any]] = []
     for name, pose in (("a", [0.0, 0.0, 0.0]), ("b", [1.0, 0.0, 0.0])):
-        ops.append({"op": "add_block", "name": name, "pose": pose})
+        ops.append({"op": "add_block", "name": name, "pose": pose, "pose_unit": "m"})
         ops.append({"op": "add_port", "block": name, "name": "pin"})
     ops.append(
         {

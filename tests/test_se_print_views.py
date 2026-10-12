@@ -151,7 +151,7 @@ class TestPrintExport:
                             "op": "add_block",
                             "name": "spoke",
                             "envelope": "box:w0.002d0.002h0.05",
-                            "pose": [0.03, 0, 0],
+                            "pose": "[0.03 0 0] m",
                         },
                         {
                             "op": "array_block",

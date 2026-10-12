@@ -57,7 +57,7 @@ _CASTER_OPS: list[dict[str, Any]] = [
         "op": "add_block",
         "name": "hub",
         "parent": "fork",
-        "pose": [0, 0, -0.05],
+        "pose": "[0 0 -0.05] m",
         "envelope": "cyl:r0.008h0.03",
     },
 ]
@@ -66,7 +66,7 @@ _CAP_OPS: list[dict[str, Any]] = [
         "op": "add_block",
         "name": "cap",
         "parent": "hub",
-        "pose": [0, 0, -0.07],
+        "pose": "[0 0 -0.07] m",
         "envelope": "sphere:r0.005",
     }
 ]

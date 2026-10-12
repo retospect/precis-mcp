@@ -42,7 +42,7 @@ _CASTER = json.dumps(
                 "envelope": "cyl:r0.008h0.03",
                 "use": "axle seat",
             },
-            {"op": "add_block", "name": "cap", "parent": "hub", "pose": [0, 0, 0.02]},
+            {"op": "add_block", "name": "cap", "parent": "hub", "pose": "[0 0 0.02] m"},
         ],
     }
 )
@@ -311,7 +311,7 @@ def test_set_desc_on_instance_rejected() -> None:
 def test_set_pose_moves_a_block(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
     resp = handler.edit(
-        id="caster1", ops=[{"op": "set_pose", "block": "cap", "pose": [0, 0, 0.05]}]
+        id="caster1", ops=[{"op": "set_pose", "block": "cap", "pose": "[0 0 0.05] m"}]
     )
     assert "0.05" in resp.body
 
@@ -328,7 +328,7 @@ def test_instance_resolves_envelope_from_template(handler: SeHandler) -> None:
                 "op": "instance_block",
                 "name": "hub2",
                 "template": "hub",
-                "pose": [0.02, 0, 0],
+                "pose": "[0.02 0 0] m",
             }
         ],
     )
@@ -1011,7 +1011,7 @@ def _wheel_on_hub(handler: SeHandler) -> None:
                         "op": "add_block",
                         "name": "wheel",
                         "envelope": "cyl:r0.04h0.02",
-                        "pose": [0.2, 0, 0],
+                        "pose": "[0.2 0 0] m",
                     },
                     {
                         "op": "add_port",
@@ -1051,6 +1051,7 @@ def _linear_chain(handler: SeHandler) -> None:
                 "name": name,
                 "envelope": "box:w0.005d0.005h0.005",
                 "pose": [x, 0, 0],
+                "pose_unit": "m",
             }
         )
         ops.append({"op": "add_port", "block": name, "name": "l", "roles": ["mates"]})
@@ -1060,7 +1061,7 @@ def _linear_chain(handler: SeHandler) -> None:
             "op": "add_block",
             "name": "loose",
             "envelope": "box:w0.005d0.005h0.005",
-            "pose": [0.1, 0, 0],
+            "pose": "[0.1 0 0] m",
         }
     )
     ops.append({"op": "add_port", "block": "loose", "name": "l", "roles": ["mates"]})
@@ -1439,13 +1440,13 @@ def test_clearance_digest_lists_pairs_worst_first(handler: SeHandler) -> None:
                         "op": "add_block",
                         "name": "wheel",
                         "envelope": "cyl:r0.04h0.02",
-                        "pose": [0.2, 0, 0],
+                        "pose": "[0.2 0 0] m",
                     },
                     {
                         "op": "add_block",
                         "name": "axle",
                         "envelope": "cyl:r0.005h0.05",
-                        "pose": [0.01, 0, 0],
+                        "pose": "[0.01 0 0] m",
                     },
                     {"op": "add_port", "block": "hub", "name": "shaft"},
                     {"op": "add_port", "block": "wheel", "name": "bore"},
@@ -1578,7 +1579,7 @@ def _l2_tree() -> SeTree:
                 "op": "add_block",
                 "name": "wheel",
                 "envelope": "cyl:r0.04h0.02",
-                "pose": [0.2, 0, 0],
+                "pose": "[0.2 0 0] m",
             },
             {"op": "add_port", "block": "hub", "name": "shaft"},
             {"op": "add_port", "block": "wheel", "name": "bore"},
@@ -2711,7 +2712,7 @@ def test_prismatic_unbounded_both_ways_warns() -> None:
                 "op": "add_block",
                 "name": "carriage",
                 "envelope": "box:w0.02d0.02h0.01",
-                "pose": [0, 0, 0.02],
+                "pose": "[0 0 0.02] m",
             },
             {"op": "add_port", "block": "track", "name": "rail"},
             {"op": "add_port", "block": "carriage", "name": "slider"},

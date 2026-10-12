@@ -39,12 +39,12 @@ def _rotor_ops(
     arm_port_pose: bool = True,
     arm_envelope: bool = True,
 ) -> list[dict[str, Any]]:
-    arm: dict[str, Any] = {"op": "add_block", "name": "arm", "pose": [0.03, 0.0, 0.0]}
+    arm: dict[str, Any] = {"op": "add_block", "name": "arm", "pose": "[0.03 0.0 0.0] m"}
     if arm_envelope:
         arm["envelope"] = "box:w0.04d0.01h0.01"
     arm_port: dict[str, Any] = {"op": "add_port", "block": "arm", "name": "p"}
     if arm_port_pose:
-        arm_port["pose"] = [-0.03, 0.0, 0.0]  # the pivot: world origin
+        arm_port["pose"] = "[-0.03 0.0 0.0] m"  # the pivot: world origin
     joint: dict[str, Any] = {"class": "revolute", "axis": [0.0, 0.0, 1.0]}
     if joint_params is not None:
         # The arm is the end that turns; a test passing 'moves' overrides.
@@ -54,16 +54,16 @@ def _rotor_ops(
             "op": "add_block",
             "name": "frame_box",
             "envelope": "box:w0.01d0.01h0.01",
-            "pose": [0.0, 0.0, -0.012],
+            "pose": "[0.0 0.0 -0.012] m",
         },
-        {"op": "add_port", "block": "frame_box", "name": "q", "pose": [0, 0, 0.012]},
+        {"op": "add_port", "block": "frame_box", "name": "q", "pose": "[0 0 0.012] m"},
         arm,
         arm_port,
         {
             "op": "add_block",
             "name": "post",
             "envelope": "box:w0.006d0.006h0.01",
-            "pose": [0.0, 0.03, 0.0],
+            "pose": "[0.0 0.03 0.0] m",
         },
         {"op": "connect", "a": "frame_box.q", "b": "arm.p", "joint": joint},
     ]
@@ -265,16 +265,16 @@ def test_prismatic_slide_reports_first_colliding_travel_in_length(
             "op": "add_block",
             "name": "rail",
             "envelope": "box:w0.01d0.01h0.01",
-            "pose": [0.0, 0.0, -0.012],
+            "pose": "[0.0 0.0 -0.012] m",
         },
-        {"op": "add_port", "block": "rail", "name": "q", "pose": [0, 0, 0.012]},
+        {"op": "add_port", "block": "rail", "name": "q", "pose": "[0 0 0.012] m"},
         {"op": "add_block", "name": "slider", "envelope": "box:w0.01d0.01h0.01"},
         {"op": "add_port", "block": "slider", "name": "p", "pose": [0, 0, 0]},
         {
             "op": "add_block",
             "name": "post",
             "envelope": "box:w0.006d0.006h0.01",
-            "pose": [0.03, 0.0, 0.0],
+            "pose": "[0.03 0.0 0.0] m",
         },
         {
             "op": "connect",
@@ -308,16 +308,16 @@ def test_joints_past_the_evaluation_budget_are_named(
             "op": "add_block",
             "name": "arm2",
             "envelope": "box:w0.01d0.01h0.01",
-            "pose": [0.2, 0.0, 0.0],
+            "pose": "[0.2 0.0 0.0] m",
         },
         {"op": "add_port", "block": "arm2", "name": "p", "pose": [0, 0, 0]},
         {
             "op": "add_block",
             "name": "base2",
             "envelope": "box:w0.01d0.01h0.01",
-            "pose": [0.2, 0.0, -0.012],
+            "pose": "[0.2 0.0 -0.012] m",
         },
-        {"op": "add_port", "block": "base2", "name": "q", "pose": [0, 0, 0.012]},
+        {"op": "add_port", "block": "base2", "name": "q", "pose": "[0 0 0.012] m"},
         {
             "op": "connect",
             "a": "base2.q",
@@ -440,14 +440,14 @@ def _rider_ops(rider_joint: dict[str, Any] | None) -> list[dict[str, Any]]:
             "op": "add_block",
             "name": "rider",
             "envelope": "box:w0.006d0.006h0.01",
-            "pose": [0.03, 0.0, 0.02],
+            "pose": "[0.03 0.0 0.02] m",
         },
         {"op": "add_port", "block": "rider", "name": "p", "pose": [0, 0, 0]},
         {
             "op": "add_block",
             "name": "obstacle",
             "envelope": "box:w0.006d0.006h0.01",
-            "pose": [0.0, 0.03, 0.02],
+            "pose": "[0.0 0.03 0.02] m",
         },
     ]
     if rider_joint is not None:

@@ -209,7 +209,14 @@ def test_patch_resolves_to_its_centre_on_the_face_plane() -> None:
 
 
 def test_patch_moves_with_the_block_pose() -> None:
-    tree = _tree({**_BOX, "pose": [1.0, 2.0, 3.0], "rot": [0.0, 0.0, float(np.pi / 2)]})
+    tree = _tree(
+        {
+            **_BOX,
+            "pose": "[1.0 2.0 3.0] m",
+            "rot": [0.0, 0.0, float(np.pi / 2)],
+            "rot_unit": "rad",
+        }
+    )
     r = resolve(tree, tree.blocks["b"], _PATCH)
     # Rz(90°) takes (0.02, -0.01, 0.01) to (0.01, 0.02, 0.01)
     np.testing.assert_allclose(r.point, [1.01, 2.02, 3.01], atol=1e-12)

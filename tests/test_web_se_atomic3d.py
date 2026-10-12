@@ -392,7 +392,7 @@ def test_atomic3d_far_from_origin_keeps_sub_angstrom_resolution(
                         "op": "add_block",
                         "name": "hub",
                         "envelope": "sphere:r5e-9",
-                        "pose": [1.0, 0.0, 0.0],
+                        "pose": "[1.0 0.0 0.0] m",
                     },
                     {"op": "bind_structure", "block": "hub", "design": "farpair"},
                 ]

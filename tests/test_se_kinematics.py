@@ -57,7 +57,7 @@ def _lines(body: str) -> list[str]:
 def _hinge_ops(*, no_pose: bool = False) -> list[dict[str, Any]]:
     add_port: dict[str, Any] = {"op": "add_port", "block": "hinge", "name": "p1"}
     if not no_pose:
-        add_port["pose"] = [0.0, 0.0, 0.01]
+        add_port["pose"] = "[0.0 0.0 0.01] m"
     return [
         {"op": "add_block", "name": "hinge", "envelope": "box:w0.02d0.02h0.02"},
         add_port,
@@ -107,7 +107,7 @@ def test_unchanged_port_reads_as_no_change(handler: SeHandler) -> None:
     ``port_pose_overrides`` — its frame never moves, so it reads ``—``,
     never ``no pose`` (it DOES carry a pose)."""
     ops = _hinge_ops() + [
-        {"op": "add_port", "block": "hinge", "name": "p_static", "pose": [0.01, 0, 0]}
+        {"op": "add_port", "block": "hinge", "name": "p_static", "pose": "[0.01 0 0] m"}
     ]
     handler.put(id="hinge_static", text=json.dumps({"ops": ops}))
     body = handler.get(id="hinge_static", view="kinematics").body
@@ -174,7 +174,7 @@ def test_revolute_axis_mismatch_transforms_through_the_block_placement(
     consistently in world coordinates draws no finding (the transform
     itself is under test, not just its absence)."""
     ops = _hinge_ops()
-    ops[0] = {**ops[0], "rot": [0.0, math.pi / 2.0, 0.0]}
+    ops[0] = {**ops[0], "rot": [0.0, math.pi / 2.0, 0.0], "rot_unit": "rad"}
     ops += [
         {"op": "add_block", "name": "wall", "envelope": "box:w0.01d0.01h0.01"},
         {"op": "add_port", "block": "wall", "name": "q"},

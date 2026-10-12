@@ -95,6 +95,8 @@ from precis.blocktree.types import (
     parse_template_ref,
 )
 from precis.cad import dsl as cad_dsl
+from precis.errors import BadInput
+from precis.utils.units import parse_vector_quantity
 
 #: An op implementation: ``(tree, op) -> None``, mutating ``tree`` in
 #: place. Typed against ``Any`` for the tree parameter rather than
@@ -228,6 +230,27 @@ def _as_vec3(value: Any, what: str) -> list[float]:
     return vec
 
 
+def _pose_vec(op: dict[str, Any], key: str, what: str) -> list[float]:
+    """``op[key]`` (``pose`` → length, ``rot`` → angle) → SI floats
+    (metres / radians) through :func:`~precis.utils.units.parse_vector_quantity`
+    — the single pose/rot ingest, so se and nm are identical by
+    construction. Absent → zeros. Strict: a bare nonzero vector is
+    rejected with the echo-the-caller's-vector unit hint; the external
+    unit form is ``pose_unit`` / ``rot_unit`` beside the vector."""
+    value = op.get(key)
+    if value is None:
+        return [0.0, 0.0, 0.0]
+    try:
+        return parse_vector_quantity(
+            value,
+            "length" if key == "pose" else "angle",
+            unit=op.get(f"{key}_unit"),
+            arg_name=what,
+        )
+    except BadInput as exc:
+        raise OpError(f"{exc} — {exc.next}" if exc.next else str(exc)) from exc
+
+
 def _unit_vec(vec: list[float], *, what: str) -> list[float]:
     norm = math.sqrt(sum(x * x for x in vec))
     if norm == 0.0:
@@ -252,8 +275,8 @@ def _port_pose_args(
                 "no origin is meaningless"
             )
         return None, None
-    pose = _as_vec3(pose_raw, f"{opname} pose for {what}")
-    rot = None if rot_raw is None else _as_vec3(rot_raw, f"{opname} rot for {what}")
+    pose = _pose_vec(op, "pose", f"{opname} pose for {what}")
+    rot = None if rot_raw is None else _pose_vec(op, "rot", f"{opname} rot for {what}")
     return pose, rot
 
 
@@ -653,8 +676,8 @@ def _commit_instance(
         name=name,
         parent=parent,
         template=template,
-        pose=_as_vec3(op.get("pose"), "pose"),
-        rot=_as_vec3(op.get("rot"), "rot"),
+        pose=_pose_vec(op, "pose", "pose"),
+        rot=_pose_vec(op, "rot", "rot"),
         **(extra or {}),
     )
     cycle = _find_instance_cycle(tree)
@@ -682,8 +705,8 @@ def op_add_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
         name=name,
         parent=parent,
         template=None,
-        pose=_as_vec3(op.get("pose"), "pose"),
-        rot=_as_vec3(op.get("rot"), "rot"),
+        pose=_pose_vec(op, "pose", "pose"),
+        rot=_pose_vec(op, "rot", "rot"),
         envelope=envelope,
         descr=_opt_str(op.get("desc")),
         use=_opt_str(op.get("use")),
@@ -700,9 +723,9 @@ def op_set_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     if "pose" not in op and "rot" not in op:
         raise OpError("set_pose needs 'pose' and/or 'rot'")
     if "pose" in op:
-        node.pose = _as_vec3(op.get("pose"), "pose")
+        node.pose = _pose_vec(op, "pose", "pose")
     if "rot" in op:
-        node.rot = _as_vec3(op.get("rot"), "rot")
+        node.rot = _pose_vec(op, "rot", "rot")
 
 
 def op_remove_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
@@ -860,7 +883,7 @@ def op_set_port_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
         # its value didn't change either.
         if op.get("rot") is None:
             raise OpError("set_port_pose needs 'pose' and/or 'rot' (or clear=True)")
-        port.rot = _as_vec3(op.get("rot"), f"set_port_pose rot for {what}")
+        port.rot = _pose_vec(op, "rot", f"set_port_pose rot for {what}")
         port.rot_source = "declared"
         return
     pose, rot = _port_pose_args(op, opname="set_port_pose", what=what)

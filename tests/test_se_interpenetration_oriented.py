@@ -37,8 +37,8 @@ def test_parallel_45deg_rods_with_overlapping_aabbs_do_not_interpenetrate() -> N
     # perpendicular separation 0.06 > 2r = 0.04, yet the AABBs overlap
     assert (
         _pair(
-            {"pose": [0, 0, 0], "rot": [0, _Q, 0]},
-            {"pose": [0.0424, 0, -0.0424], "rot": [0, _Q, 0]},
+            {"pose": [0, 0, 0], "rot": [0, _Q, 0], "rot_unit": "rad"},
+            {"pose": "[0.0424 0 -0.0424] m", "rot": [0, _Q, 0], "rot_unit": "rad"},
         )
         == []
     )
@@ -47,8 +47,8 @@ def test_parallel_45deg_rods_with_overlapping_aabbs_do_not_interpenetrate() -> N
 def test_parallel_45deg_rods_that_really_overlap_are_flagged() -> None:
     # perpendicular separation 0.03 < 2r
     out = _pair(
-        {"pose": [0, 0, 0], "rot": [0, _Q, 0]},
-        {"pose": [0.0212, 0, -0.0212], "rot": [0, _Q, 0]},
+        {"pose": [0, 0, 0], "rot": [0, _Q, 0], "rot_unit": "rad"},
+        {"pose": "[0.0212 0 -0.0212] m", "rot": [0, _Q, 0], "rot_unit": "rad"},
     )
     assert [(a, b) for a, b, _ in out] == [("a", "b")]
     assert out[0][2] < 0
@@ -58,8 +58,8 @@ def test_rods_rotated_about_different_axes_do_not_interpenetrate() -> None:
     # a spans x -0.1..0 (rot about y); b spans y 0.04..0.14 (rot about x)
     assert (
         _pair(
-            {"pose": [0, 0, 0], "rot": [0, -_H, 0]},
-            {"pose": [0.05, 0.04, 0], "rot": [-_H, 0, 0]},
+            {"pose": [0, 0, 0], "rot": [0, -_H, 0], "rot_unit": "rad"},
+            {"pose": "[0.05 0.04 0] m", "rot": [-_H, 0, 0], "rot_unit": "rad"},
         )
         == []
     )
@@ -80,36 +80,39 @@ def test_bolts_under_cranks_use_composed_placement() -> None:
                 "op": "add_block",
                 "name": "crank_l",
                 "envelope": crank,
-                "pose": [0, 0.1, 0.254],
+                "pose": "[0 0.1 0.254] m",
             },
             {
                 "op": "add_block",
                 "name": "crank_r",
                 "envelope": crank,
-                "pose": [0, -0.1, 0.254],
+                "pose": "[0 -0.1 0.254] m",
             },
             {
                 "op": "add_block",
                 "name": "bolt_l",
                 "parent": "crank_l",
                 "envelope": bolt,
-                "pose": [0, 0, 0.016],
+                "pose": "[0 0 0.016] m",
                 "rot": [math.pi, 0, 0],
+                "rot_unit": "rad",
             },
             {
                 "op": "add_block",
                 "name": "bolt_r",
                 "parent": "crank_r",
                 "envelope": bolt,
-                "pose": [0, 0, 0.016],
+                "pose": "[0 0 0.016] m",
                 "rot": [math.pi, 0, 0],
+                "rot_unit": "rad",
             },
             {
                 "op": "add_block",
                 "name": "wheel",
                 "envelope": "cyl:r0.254h0.045",
-                "pose": [0, 0.0225, 0.254],
+                "pose": "[0 0.0225 0.254] m",
                 "rot": [_H, 0, 0],
+                "rot_unit": "rad",
             },
         ],
     )

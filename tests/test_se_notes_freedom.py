@@ -262,18 +262,18 @@ def test_facet_origin_stamped_on_envelope_and_pose() -> None:
             {
                 "op": "set_pose",
                 "block": "hub",
-                "pose": [0, 0, 0.1],
+                "pose": "[0 0 0.1] m",
                 "origin": "proposed",
             },
         ]
     )
     assert tree.blocks["hub"].origins == {"envelope": "proposed", "pose": "proposed"}
     # re-authoring as user clears the stamp; omitting origin keeps it.
-    apply_ops(tree, [{"op": "set_pose", "block": "hub", "pose": [0, 0, 0.2]}])
+    apply_ops(tree, [{"op": "set_pose", "block": "hub", "pose": "[0 0 0.2] m"}])
     assert tree.blocks["hub"].origins["pose"] == "proposed"
     apply_ops(
         tree,
-        [{"op": "set_pose", "block": "hub", "pose": [0, 0, 0.3], "origin": "user"}],
+        [{"op": "set_pose", "block": "hub", "pose": "[0 0 0.3] m", "origin": "user"}],
     )
     assert "pose" not in tree.blocks["hub"].origins
 

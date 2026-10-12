@@ -40,29 +40,29 @@ _BOXEL_OPS: list[dict[str, Any]] = [
         "name": "panel",
         "parent": "cage",
         "envelope": "box:w0.000000003d0.000000003h0.0000000003",
-        "pose": [0, 0, -1.5e-09],
+        "pose": "[0 0 -1.5e-09] m",
     },
     {
         "op": "add_block",
         "name": "vtx",
         "parent": "cage",
         "envelope": "box:w0.000000001d0.000000001h0.000000001",
-        "pose": [-1e-09, -1e-09, -1.5e-09],
+        "pose": "[-1e-09 -1e-09 -1.5e-09] m",
     },
     {
         "op": "instance_block",
         "name": "panel_xm",
         "template": "panel",
         "parent": "cage",
-        "pose": [-1.35e-09, 0, -1.5e-09],
-        "rot": [0, 90, 0],
+        "pose": "[-1.35e-09 0 -1.5e-09] m",
+        "rot": "[0 90 0] rad",
     },
     {
         "op": "add_block",
         "name": "site",
         "parent": "panel",
         "envelope": "sphere:r0.0000000002",
-        "pose": [-1e-09, 0, 0],
+        "pose": "[-1e-09 0 0] m",
     },
     {
         "op": "array_block",
@@ -106,7 +106,7 @@ def test_in_band_designs_scale_exactly_one() -> None:
                 "op": "add_block",
                 "name": "hub",
                 "envelope": "cyl:r0.008h0.03",
-                "pose": [0, 0, 0.05],
+                "pose": "[0 0 0.05] m",
             },
         ],
     )
@@ -141,7 +141,7 @@ def test_mixed_scale_pair_is_refused_not_wrong() -> None:
                 "op": "add_block",
                 "name": "bolt",
                 "envelope": "box:w0.000000002d0.000000002h0.000000002",
-                "pose": [0, 0, 0.0005],
+                "pose": "[0 0 0.0005] m",
             },
         ],
     )
@@ -245,7 +245,7 @@ def test_design_extent_at_nano_returns_metres() -> None:
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w0.000000001d0.000000001h0.000000001",
-                "pose": [0, 0, 4e-09],
+                "pose": "[0 0 4e-09] m",
             },
         ],
     )
@@ -262,7 +262,13 @@ def _jointed_pair_ops(
 ) -> list[dict[str, Any]]:
     return [
         {"op": "add_block", "name": "a", "envelope": a_env},
-        {"op": "add_block", "name": "b", "envelope": b_env, "pose": b_pose},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": b_env,
+            "pose": b_pose,
+            "pose_unit": "m",
+        },
         {"op": "add_port", "block": "a", "name": "p"},
         {"op": "add_port", "block": "b", "name": "p"},
         {"op": "connect", "a": "a.p", "b": "b.p"},

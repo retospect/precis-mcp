@@ -44,7 +44,7 @@ def _pin_structure(
     port), one axial connect per member."""
     ops: list[dict[str, Any]] = []
     for name, pose in nodes.items():
-        ops.append({"op": "add_block", "name": name, "pose": pose})
+        ops.append({"op": "add_block", "name": name, "pose": pose, "pose_unit": "m"})
         ops.append({"op": "add_port", "block": name, "name": "pin"})
     for a, b, params in members:
         ops.append(
@@ -290,7 +290,7 @@ def test_fixed_on_a_connect_is_rejected_on_both_write_paths() -> None:
     # the second write path: connect's own objectives= (reviewer finding —
     # a stored 'fixed' on a connect would be read by nothing, forever).
     ops: list[dict[str, Any]] = [
-        {"op": "add_block", "name": "c", "pose": [2.0, 0.0, 0.0]},
+        {"op": "add_block", "name": "c", "pose": "[2.0 0.0 0.0] m"},
         {"op": "add_port", "block": "c", "name": "pin"},
         {
             "op": "connect",
@@ -463,7 +463,7 @@ def test_loaded_block_outside_subgraph_appears_in_the_header() -> None:
     apply_ops(
         tree,
         [
-            {"op": "add_block", "name": "saddle", "pose": [2.0, 0.0, 0.0]},
+            {"op": "add_block", "name": "saddle", "pose": "[2.0 0.0 0.0] m"},
             {"op": "set_load", "block": "saddle", "force": [10.0, 0.0, 0.0]},
         ],
     )
@@ -766,7 +766,7 @@ def test_drc_carries_prestress_state_findings() -> None:
 def test_stability_view_round_trips_through_the_store(handler: SeHandler) -> None:
     ops: list[dict[str, Any]] = []
     for name, pose in _PRISM_NODES.items():
-        ops.append({"op": "add_block", "name": name, "pose": pose})
+        ops.append({"op": "add_block", "name": name, "pose": pose, "pose_unit": "m"})
         ops.append({"op": "add_port", "block": name, "name": "pin"})
     for a, b in _PRISM_CABLES:
         ops.append(
@@ -811,7 +811,7 @@ def test_stability_view_renders_the_prestress_section(handler: SeHandler) -> Non
     ops: list[dict[str, Any]] = [
         {"op": "add_block", "name": "a", "pose": [0.0, 0.0, 0.0]},
         {"op": "add_port", "block": "a", "name": "pin"},
-        {"op": "add_block", "name": "b", "pose": [0.0, 0.0, 0.05]},
+        {"op": "add_block", "name": "b", "pose": "[0.0 0.0 0.05] m"},
         {"op": "add_port", "block": "b", "name": "pin"},
         {
             "op": "connect",
@@ -838,7 +838,7 @@ def test_stability_view_zero_preload_reports_nothing_to_verify(
     ops: list[dict[str, Any]] = [
         {"op": "add_block", "name": "a", "pose": [0.0, 0.0, 0.0]},
         {"op": "add_port", "block": "a", "name": "pin"},
-        {"op": "add_block", "name": "b", "pose": [0.0, 0.0, 0.05]},
+        {"op": "add_block", "name": "b", "pose": "[0.0 0.0 0.05] m"},
         {"op": "add_port", "block": "b", "name": "pin"},
         {
             "op": "connect",
@@ -897,7 +897,7 @@ def _walls_tree() -> SeTree:
     ops: list[dict[str, Any]] = []
     for name, pose in _WALLS.items():
         ops += [
-            {"op": "add_block", "name": name, "pose": pose},
+            {"op": "add_block", "name": name, "pose": pose, "pose_unit": "m"},
             {"op": "add_port", "block": name, "name": "pin"},
             {"op": "set_load", "block": name, "fixed": True},
         ]
@@ -918,7 +918,7 @@ def _grouped(n_bars: int) -> SeTree:
     ops: list[dict[str, Any]] = [
         {"op": "add_block", "name": "g1", "pose": [0.0, 0.0, 0.0]},
         {"op": "add_port", "block": "g1", "name": "pin"},
-        {"op": "add_block", "name": "g2", "pose": [0.4, 0.1, -0.2]},
+        {"op": "add_block", "name": "g2", "pose": "[0.4 0.1 -0.2] m"},
         {"op": "add_port", "block": "g2", "name": "pin"},
     ]
     for k, wall in enumerate(list(_WALLS)[:n_bars]):
@@ -931,7 +931,7 @@ def _single(n_bars: int) -> SeTree:
     ops: list[dict[str, Any]] = [
         {"op": "add_block", "name": "g1", "pose": [0.0, 0.0, 0.0]},
         {"op": "add_port", "block": "g1", "name": "pin"},
-        {"op": "add_port", "block": "g1", "name": "q", "pose": [0.4, 0.1, -0.2]},
+        {"op": "add_port", "block": "g1", "name": "q", "pose": "[0.4 0.1 -0.2] m"},
     ]
     for k, wall in enumerate(list(_WALLS)[:n_bars]):
         ops.append(_bar("g1", "pin" if k % 2 == 0 else "q", wall))
@@ -1031,7 +1031,7 @@ def test_rigid_group_with_axial_elsewhere_classifies() -> None:
     tree = apply_ops(
         tree,
         [
-            {"op": "add_block", "name": "t", "pose": [5.0, 0.0, 0.0]},
+            {"op": "add_block", "name": "t", "pose": "[5.0 0.0 0.0] m"},
             {"op": "add_port", "block": "t", "name": "pin"},
             _bar("t", "pin", "w5"),
             _bar("t", "pin", "w6"),
@@ -1075,6 +1075,7 @@ def _hub_wheel(tangential: float) -> SeTree:
                     "block": "hub",
                     "name": f"h{k}",
                     "pose": [0.03 * math.cos(phi), 0.03 * math.sin(phi), z],
+                    "pose_unit": "m",
                 }
             )
             psi = phi + flange * tangential
@@ -1083,6 +1084,7 @@ def _hub_wheel(tangential: float) -> SeTree:
                     "op": "add_block",
                     "name": f"rim{k}",
                     "pose": [math.cos(psi), math.sin(psi), 0.0],
+                    "pose_unit": "m",
                 },
                 {"op": "add_port", "block": f"rim{k}", "name": "pin"},
                 {"op": "set_load", "block": f"rim{k}", "fixed": True},
@@ -1132,10 +1134,11 @@ def test_port_offset_follows_the_block_rotation() -> None:
             {
                 "op": "add_block",
                 "name": "a",
-                "pose": [1.0, 0.0, 0.0],
+                "pose": "[1.0 0.0 0.0] m",
                 "rot": [0.0, 0.0, math.pi / 2],
+                "rot_unit": "rad",
             },
-            {"op": "add_port", "block": "a", "name": "p", "pose": [1.0, 0.0, 0.0]},
+            {"op": "add_port", "block": "a", "name": "p", "pose": "[1.0 0.0 0.0] m"},
         ],
     )
     got = se_stability.port_world(tree, "a", "p")
@@ -1155,11 +1158,11 @@ def _offset_bar_body(fixed: Any) -> SeTree:
     return apply_ops(
         SeTree(),
         [
-            {"op": "add_block", "name": "wall", "pose": [2.0, 0.0, 0.0]},
+            {"op": "add_block", "name": "wall", "pose": "[2.0 0.0 0.0] m"},
             {"op": "add_port", "block": "wall", "name": "pin"},
             {"op": "set_load", "block": "wall", "fixed": True},
             {"op": "add_block", "name": "body", "pose": [0.0, 0.0, 0.0]},
-            {"op": "add_port", "block": "body", "name": "p", "pose": [0.0, 1.0, 0.0]},
+            {"op": "add_port", "block": "body", "name": "p", "pose": "[0.0 1.0 0.0] m"},
             {"op": "set_load", "block": "body", "fixed": fixed},
             {
                 "op": "connect",
@@ -1244,13 +1247,13 @@ def _footed_group(
     the group is one 6-DOF body. n = 9, b = 1."""
     poses = foot_poses or [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     ops: list[dict[str, Any]] = [
-        {"op": "add_block", "name": "w", "pose": wall},
+        {"op": "add_block", "name": "w", "pose": wall, "pose_unit": "m"},
         {"op": "add_port", "block": "w", "name": "pin"},
         {"op": "set_load", "block": "w", "fixed": True},
     ]
     for k, pose in enumerate(poses, start=1):
         ops += [
-            {"op": "add_block", "name": f"f{k}", "pose": pose},
+            {"op": "add_block", "name": f"f{k}", "pose": pose, "pose_unit": "m"},
             {"op": "add_port", "block": f"f{k}", "name": "pin"},
         ]
     ops.append(_bar("w", "pin", "f1"))
@@ -1328,14 +1331,19 @@ def test_stress_matrix_matches_finite_difference_hessian() -> None:
             {
                 "op": "add_block",
                 "name": "body",
-                "pose": [0.1, 0.2, -0.1],
-                "rot": [0.3, -0.4, 0.5],
+                "pose": "[0.1 0.2 -0.1] m",
+                "rot": "[0.3 -0.4 0.5] rad",
             },
-            {"op": "add_port", "block": "body", "name": "p", "pose": [0.2, 0.1, 0.3]},
-            {"op": "add_port", "block": "body", "name": "q", "pose": [-0.3, 0.2, 0.1]},
-            {"op": "add_block", "name": "w1", "pose": [1.5, 0.3, 0.2]},
+            {"op": "add_port", "block": "body", "name": "p", "pose": "[0.2 0.1 0.3] m"},
+            {
+                "op": "add_port",
+                "block": "body",
+                "name": "q",
+                "pose": "[-0.3 0.2 0.1] m",
+            },
+            {"op": "add_block", "name": "w1", "pose": "[1.5 0.3 0.2] m"},
             {"op": "add_port", "block": "w1", "name": "pin"},
-            {"op": "add_block", "name": "w2", "pose": [-0.4, 1.7, 0.5]},
+            {"op": "add_block", "name": "w2", "pose": "[-0.4 1.7 0.5] m"},
             {"op": "add_port", "block": "w2", "name": "pin"},
             {
                 "op": "connect",

@@ -15,6 +15,8 @@ kinds: [cad]
 
 # precis-cad-help — design solids the LLM can *read*
 
+**Never convert units yourself — always through the tools.** Write each quantity in the unit you have (`"[3 0 0] nm"`, `12 lbf`) and let the tool convert; for a conversion you need, use `calc` (`3 ft to m`). A hand conversion is a silent-error site this policy exists to remove.
+
 A `cad` design is a **boolean DAG of placed analytic primitives** (ADR
 0041). You author it as text, and instead of staring at a render you
 **probe it analytically** — "what's along this ray?", "what's the gap

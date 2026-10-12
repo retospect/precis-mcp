@@ -289,7 +289,7 @@ def prepare_generate(
         "envelope": ingest_envelope(block.envelope),
         "desc": block.provenance,
     }
-    for passthrough in ("parent", "pose", "rot"):
+    for passthrough in ("parent", "pose", "rot", "pose_unit", "rot_unit"):
         if op.get(passthrough) is not None:
             add_op[passthrough] = op[passthrough]
     try:

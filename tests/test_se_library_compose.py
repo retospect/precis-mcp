@@ -161,6 +161,7 @@ def _hinge(
             "block": block,
             "name": "p1",
             "pose": [0.0, 0.0, _HINGE_HALF_WIDTH_M],
+            "pose_unit": "m",
             "roles": list(roles),
         },
         {

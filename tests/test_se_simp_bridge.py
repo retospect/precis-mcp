@@ -309,7 +309,7 @@ def test_idem_key_follows_a_moved_load_port(
             "op": "add_port",
             "block": "beam",
             "name": "tip",
-            "pose": [0.024, 0.006, 0.006],
+            "pose": "[0.024 0.006 0.006] m",
         },
     ]
     handler.put(id="simp-idem", text=json.dumps({"ops": ops}))
@@ -331,7 +331,7 @@ def test_idem_key_follows_a_moved_load_port(
                 "op": "set_port_pose",
                 "block": "beam",
                 "name": "tip",
-                "pose": [0.024, 0.006, 0.010],
+                "pose": "[0.024 0.006 0.010] m",
             }
         ],
     )
@@ -666,7 +666,7 @@ def test_port_placed_load_uses_the_nearest_active_element() -> None:
                 "op": "add_port",
                 "block": "beam",
                 "name": "tip",
-                "pose": [0.024, 0.006, 0.006],
+                "pose": "[0.024 0.006 0.006] m",
             },
         ]
     )

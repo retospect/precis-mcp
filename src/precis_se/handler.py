@@ -316,8 +316,8 @@ class SeHandler(Handler):
             "that port in the state: direction outright, pose/rot as a "
             "rigid DELTA in the block frame (applied only to a port that "
             "carries a pose of its own); add_port/set_port_pose "
-            "pose=[x,y,z] rot=[rx,ry,rz] place the port itself in the "
-            "block's local frame (m/rad; rot needs pose); "
+            'pose="[x y z] mm" rot="[rx ry rz] deg" place the port itself '
+            "in the block's local frame (rot needs pose); "
             "declare_transitions block= transitions=[{'from_state',"
             "'to_state','driver_kind','driver_ref'?,'params'?}] adds "
             "DIRECTED stimulus-labelled edges (driver_kind: light|"

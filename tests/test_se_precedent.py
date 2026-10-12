@@ -252,7 +252,7 @@ def test_precedent_resolves_through_instance_to_template_transitions(
                         "op": "add_block",
                         "name": "other",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [0.02, 0.0, 0.0],
+                        "pose": "[0.02 0.0 0.0] m",
                     },
                     {
                         "op": "add_port",

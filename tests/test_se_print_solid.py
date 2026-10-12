@@ -325,7 +325,7 @@ class TestAbstractJoints:
                     "op": "add_block",
                     "name": "b",
                     "envelope": "box:w0.01d0.01h0.01",
-                    "pose": [0, 0, 0.01],
+                    "pose": "[0 0 0.01] m",
                 },
                 {"op": "add_port", "block": "a", "name": "top"},
                 {"op": "add_port", "block": "b", "name": "bottom"},

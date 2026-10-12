@@ -844,7 +844,7 @@ def test_state_arg_poses_block_for_clearance_probe(handler: SeHandler) -> None:
                         "op": "add_block",
                         "name": "wall",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [0.01, 0.0, 0.0],
+                        "pose": "[0.01 0.0 0.0] m",
                     },
                 ]
             }
@@ -1069,7 +1069,7 @@ def test_port_pose_overrides_accept_direction_pose_and_rot_together(
                         "block": "switch",
                         "name": "p1",
                         "direction": [1, 0, 0],
-                        "pose": [0.001, 0, 0],
+                        "pose": "[0.001 0 0] m",
                     },
                     {
                         "op": "declare_states",
@@ -1228,7 +1228,7 @@ def test_sweep_finds_the_collision_only_in_the_state_that_has_one(
                         "op": "add_block",
                         "name": "wall",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [0.01, 0.0, 0.0],
+                        "pose": "[0.01 0.0 0.0] m",
                     },
                 ]
             }
@@ -1292,7 +1292,7 @@ def test_sweep_two_state_carrying_blocks_is_the_cross_product(
                         "op": "add_block",
                         "name": "b",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [1.0, 0.0, 0.0],
+                        "pose": "[1.0 0.0 0.0] m",
                     },
                     {
                         "op": "declare_states",
@@ -1340,7 +1340,7 @@ def test_sweep_single_declared_state_does_not_enter_the_product(
                         "op": "add_block",
                         "name": "b",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [1.0, 0.0, 0.0],
+                        "pose": "[1.0 0.0 0.0] m",
                     },
                     {
                         "op": "declare_states",
@@ -1384,7 +1384,7 @@ def test_sweep_reports_budget_exceeded_honestly(
                         "op": "add_block",
                         "name": "b",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [1.0, 0.0, 0.0],
+                        "pose": "[1.0 0.0 0.0] m",
                     },
                     {
                         "op": "declare_states",
@@ -1470,7 +1470,7 @@ def test_sweep_reports_wall_clock_budget_exceeded_honestly(
                         "op": "add_block",
                         "name": "b",
                         "envelope": "box:w0.01d0.01h0.01",
-                        "pose": [1.0, 0.0, 0.0],
+                        "pose": "[1.0 0.0 0.0] m",
                     },
                     {
                         "op": "declare_states",

@@ -209,6 +209,7 @@ def test_settled_poses_are_proposed_and_a_user_pose_needs_move() -> None:
                 "op": "set_pose",
                 "block": "h1.s0",
                 "pose": [float(v) for v in tree.blocks["h1.s0"].local_pose],
+                "pose_unit": "m",
                 "origin": "user",
             }
         ],
@@ -373,6 +374,7 @@ def test_every_user_pose_and_no_move_is_refused_rather_than_settling_nothing() -
                     "op": "set_pose",
                     "block": name,
                     "pose": [float(v) for v in tree.blocks[name].local_pose],
+                    "pose_unit": "m",
                     "origin": "user",
                 }
             ],

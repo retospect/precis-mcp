@@ -1230,6 +1230,7 @@ def test_validate_connect_cycle_warns_with_the_path(handler: SeHandler) -> None:
                 "name": n,
                 "envelope": f"sphere:r{sphere_r:g}",
                 "pose": pos,
+                "pose_unit": "m",
             }
         )
         ops.append({"op": "add_port", "block": n, "name": "p1", "roles": ["covalent"]})
@@ -1273,7 +1274,7 @@ def test_validate_bond_length_sanity_warns_on_a_wildly_long_bond(
             "op": "add_block",
             "name": "b",
             "envelope": "sphere:r5e-10",
-            "pose": [48.5, 0, 0],
+            "pose": "[48.5 0 0] m",
         },
         {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
         {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
@@ -1294,7 +1295,7 @@ def test_validate_bond_length_sanity_stays_quiet_on_a_plausible_bond(
             "op": "add_block",
             "name": "b",
             "envelope": "sphere:r3e-10",
-            "pose": [8e-10, 0, 0],
+            "pose": "[8e-10 0 0] m",
         },
         {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
         {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
@@ -1314,7 +1315,9 @@ def _vector_ops(
             "name": "b",
             "envelope": "sphere:r2e-10",
             "pose": b_pose,
+            "pose_unit": "m",
             "rot": b_rot,
+            "rot_unit": "rad",
         },
         {
             "op": "add_port",
@@ -1378,12 +1381,13 @@ def test_validate_bond_vector_alignment_clean_after_a_rotation_that_aligns_them(
             "name": "a",
             "envelope": "sphere:r2e-10",
             "rot": [0, 0, math.radians(90)],
+            "rot_unit": "rad",
         },
         {
             "op": "add_block",
             "name": "b",
             "envelope": "sphere:r2e-10",
-            "pose": [0, 4e-10, 0],
+            "pose": "[0 4e-10 0] m",
         },
         {
             "op": "add_port",
@@ -1419,7 +1423,7 @@ def test_validate_undeclared_interpenetration_supersedes_nms_envelope_overlap(
             "op": "add_block",
             "name": "b",
             "envelope": "sphere:r5e-10",
-            "pose": [1e-10, 0, 0],
+            "pose": "[1e-10 0 0] m",
         },
     ]
     handler.put(id="overlap1", text=json.dumps({"ops": ops}))
@@ -1650,7 +1654,7 @@ def test_mechanics_view_says_not_fused_for_ports_in_two_designs(
             "op": "add_block",
             "name": "b",
             "envelope": "sphere:r5e-10",
-            "pose": [1e-9, 0, 0],
+            "pose": "[1e-9 0 0] m",
         },
         {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
         {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
@@ -1683,7 +1687,7 @@ def test_mechanics_view_reports_unfilled_for_an_unbound_bond(
             "op": "add_block",
             "name": "b",
             "envelope": "sphere:r5e-10",
-            "pose": [1e-9, 0, 0],
+            "pose": "[1e-9 0 0] m",
         },
         {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
         {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
@@ -1991,7 +1995,7 @@ def test_bind_keeps_a_declared_target_and_reports_the_gap(
             "op": "add_port",
             "block": "hub",
             "name": "p1",
-            "pose": [8e-10, 0.0, 0.0],
+            "pose": "[8e-10 0.0 0.0] m",
         },
         {
             "op": "bind_structure",
@@ -2027,7 +2031,7 @@ def test_a_declared_target_within_the_block_scale_is_not_flagged(
             "op": "add_port",
             "block": "hub",
             "name": "p1",
-            "pose": [1.4e-10, 0.0, 0.0],
+            "pose": "[1.4e-10 0.0 0.0] m",
         },
         {
             "op": "bind_structure",
@@ -2090,7 +2094,7 @@ def test_unbind_drops_measured_poses_and_keeps_declared_ones(
     c_label, n_label = _make_cn_structure(structure, "posefrag5")
     ops = [
         {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
-        {"op": "add_port", "block": "hub", "name": "p1", "pose": [1.4e-10, 0.0, 0.0]},
+        {"op": "add_port", "block": "hub", "name": "p1", "pose": "[1.4e-10 0.0 0.0] m"},
         {"op": "add_port", "block": "hub", "name": "p2"},
         {
             "op": "bind_structure",
@@ -2272,7 +2276,7 @@ def test_bind_declared_rot_mismatch_past_10deg_is_kept_and_flagged(
             "block": "hub",
             "name": "p1",
             "pose": [0.0, 0.0, 0.0],
-            "rot": [0.0, 0.5, 0.0],
+            "rot": "[0.0 0.5 0.0] rad",
         },
         {
             "op": "bind_structure",
@@ -2312,7 +2316,7 @@ def test_bind_declared_rot_within_10deg_is_not_flagged(
             "block": "hub",
             "name": "p1",
             "pose": [0.0, 0.0, 0.0],
-            "rot": [0.0, 0.1, 0.0],
+            "rot": "[0.0 0.1 0.0] rad",
         },
         {
             "op": "bind_structure",
@@ -2494,8 +2498,8 @@ def test_unbind_drops_measured_rot_and_keeps_a_declared_one(
             "op": "add_port",
             "block": "hub",
             "name": "p2",
-            "pose": [1.0e-10, 0.0, 0.0],
-            "rot": [0.0, 0.3, 0.0],
+            "pose": "[1.0e-10 0.0 0.0] m",
+            "rot": "[0.0 0.3 0.0] rad",
         },
         {
             "op": "bind_structure",
@@ -2659,7 +2663,7 @@ def test_set_port_pose_rot_only_flips_rot_source_and_a_rebind_compares(
                 "op": "set_port_pose",
                 "block": "hub",
                 "name": "p1",
-                "rot": [0.0, 0.5, 0.0],  # ~28.6° off the measured identity
+                "rot": "[0.0 0.5 0.0] rad",  # ~28.6° off the measured identity
             }
         ],
     )
@@ -2737,7 +2741,13 @@ def _two_posed_blocks(
     _make_structure(structure, f"{slug}-sb", carts=[b_cart])
     ops: list[dict[str, object]] = [
         {"op": "add_block", "name": "a", "envelope": "sphere:r5e-10"},
-        {"op": "add_block", "name": "b", "envelope": "sphere:r5e-10", "pose": b_pose},
+        {
+            "op": "add_block",
+            "name": "b",
+            "envelope": "sphere:r5e-10",
+            "pose": b_pose,
+            "pose_unit": "m",
+        },
         {"op": "bind_structure", "block": "a", "design": f"{slug}-sa"},
         {"op": "bind_structure", "block": "b", "design": f"{slug}-sb"},
     ]
@@ -2789,7 +2799,7 @@ def test_atom_clash_uses_the_block_pose(
     assert "at 0.00 Å" in f.detail
     reply = handler.edit(
         id="clash2",
-        ops=[{"op": "set_pose", "block": "b", "pose": [5e-10, 0, 0]}],
+        ops=[{"op": "set_pose", "block": "b", "pose": "[5e-10 0 0] m"}],
     ).body
     assert _clash_findings(handler, "clash2") == []
     assert "atom_clash" not in reply.rstrip().splitlines()[-1]

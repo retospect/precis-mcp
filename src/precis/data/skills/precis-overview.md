@@ -21,6 +21,8 @@ Address by **`id=` for names, `q=` for content**. Seven verbs apply
 to every kind that supports them.
 
 ## What are the seven verbs?
+**Never convert units yourself — always through the tools.** Write each quantity in the unit you have (`"[3 0 0] nm"`, `12 lbf`) and let the tool convert; for a conversion you need, use `calc` (`3 ft to m`). A hand conversion is a silent-error site this policy exists to remove.
+
 ## Verb cheat-sheet
 ## When do I use get vs search vs put?
 

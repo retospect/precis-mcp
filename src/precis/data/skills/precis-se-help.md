@@ -55,23 +55,22 @@ FRET links between blocks — see `precis-se-fret-help`.
 
 ## Units and geometry conventions — read first
 
-- **Everything is metres, newtons, radians.** `envelope`/`pose`/`rot` are
-  bare numbers, **not** run through `precis/utils/units.py`'s
-  unit-required ingest boundary (that boundary is for `cad`'s own
-  hand-authored text; `se` parses/stores its envelope DSL and pose/rot
-  vectors in the pre-existing bare-SI convention — see
-  `precis/utils/units.py`'s module docstring). `cyl:r0.02h0.01` is a
-  2 cm × 1 cm cylinder — the cad kernel is unit-agnostic; `se` stores
-  metres.
+- **`pose`/`rot` input carries units** (storage stays m/N/rad). A bare
+  nonzero vector is rejected with a hint echoing it under plausible units.
+  Canonical: `"pose": "[3 0 0] nm"`, `"rot": "[0 0 90] deg"`. Also:
+  per-component (`["3nm", "0nm", "2Å"]`) or `"pose_unit": "km"` /
+  `"rot_unit": "deg"` beside a numeric vector. Bare `0` is legal,
+  e-notation fine; mixing united and bare-nonzero components rejects.
+  `envelope` DSL: unchanged (`cyl:r0.02h0.01`, metres).
+- **Never convert units yourself** — state your unit; `calc` converts.
 - **Envelope `box` `w`/`d`/`h` are FULL dimensions**: `box:w0.028d0.240
   h0.020` is a 28 × 240 × 20 mm block — centred in x/y, **base at
   `z=0`** (spans z=0..h, like `cyl`) — verified against the kernel;
   not half-extents.
 - `cyl` has its **base at the pose** (not centred); `sphere` is centred.
-- `rot` is a bare **radians** vector (Euler, composed `Rz@Ry@Rx`) — reads
-  render degrees, but you author radians. `90°` about z is
-  `rot: [0, 0, 1.5707963267948966]` (`math.pi / 2`), not `[0, 0, 90]`.
-- `pose` is the block origin in the parent frame, bare **metres**.
+- `rot` is an Euler vector (composed `Rz@Ry@Rx`), written with `deg` or
+  `rad`: `90°` about z is `"rot": "[0 0 90] deg"`.
+- `pose` is the block origin in the parent frame, e.g. `"[0 0 4] mm"`.
 
 ## put vs edit — put is a full REPLACE
 
@@ -122,8 +121,8 @@ the last four delimit region selectors, `precis-se-regions-help`.)
 
 ## Ops — blocks and ports
 
-- `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m (bare) · `rot`
-  [x,y,z] rad (bare, Euler `Rz@Ry@Rx`; see "Units") · `envelope`
+- `add_block` — `name` (req) · `parent` · `pose` `"[x y z] mm"` · `rot`
+  `"[x y z] deg"` (Euler `Rz@Ry@Rx`; see "Units") · `envelope`
   (DSL string) · `desc` · `use`
 - `instance_block` — `name`, `template` (req) · `parent`/`pose`/`rot`.
   Rejects envelope/desc/use (they live on the template).
@@ -135,8 +134,8 @@ the last four delimit region selectors, `precis-se-regions-help`.)
   `'user'|'proposed'`. Rejects instances/arrays.
 - `remove_block` — `block`
 - `add_port` — `block`, `name` (req; no dots) · `roles` [str] ·
-  `direction` [x,y,z] (normalised) · `pose` [x,y,z] · `rot` [rx,ry,rz]
-  (block-local, m/rad; `rot` needs `pose`) · `annotations` dict · **atomic
+  `direction` [x,y,z] (normalised) · `pose` `"[x y z] mm"` · `rot`
+  `"[rx ry rz] deg"` (block-local; `rot` needs `pose`) · `annotations` dict · **atomic
   mode:** `expected_element`/`expected_hybridization` (checked
   by `bind_structure`). `roles` is a
   capability set the caller asserts, never checked against real

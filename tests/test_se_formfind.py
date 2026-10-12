@@ -35,7 +35,7 @@ def _pin_structure(
 ) -> SeTree:
     ops: list[dict[str, Any]] = []
     for name, pose in nodes.items():
-        ops.append({"op": "add_block", "name": name, "pose": pose})
+        ops.append({"op": "add_block", "name": name, "pose": pose, "pose_unit": "m"})
         ops.append({"op": "add_port", "block": name, "name": "pin"})
     for a, b, params in members:
         joint: dict[str, Any] = {"class": "axial"}
@@ -88,7 +88,7 @@ def test_already_proposed_poses_move_without_explicit_authorization() -> None:
             {
                 "op": "set_pose",
                 "block": "apex",
-                "pose": [9.0, 9.0, 9.0],
+                "pose": "[9.0 9.0 9.0] m",
                 "origin": "proposed",
             }
         ],
@@ -136,8 +136,13 @@ def test_rot_and_non_axial_blocks_are_untouched() -> None:
     apply_ops(
         tree,
         [
-            {"op": "set_pose", "block": "apex", "pose": [0, 0, 5], "rot": [0, 0, 45]},
-            {"op": "add_block", "name": "bystander", "pose": [7.0, 7.0, 7.0]},
+            {
+                "op": "set_pose",
+                "block": "apex",
+                "pose": "[0 0 5] m",
+                "rot": "[0 0 45] rad",
+            },
+            {"op": "add_block", "name": "bystander", "pose": "[7.0 7.0 7.0] m"},
         ],
     )
     apply_ops(tree, [{"op": "formfind", "move": "all"}])
@@ -342,7 +347,7 @@ def test_self_loop_axial_member_rejects() -> None:
 def test_formfind_round_trips_through_the_store(handler: SeHandler) -> None:
     ops: list[dict[str, Any]] = []
     for name, pose in dict(_BASE, apex=[0.0, 0.0, 5.0]).items():
-        ops.append({"op": "add_block", "name": name, "pose": pose})
+        ops.append({"op": "add_block", "name": name, "pose": pose, "pose_unit": "m"})
         ops.append({"op": "add_port", "block": name, "name": "pin"})
     for name in _BASE:
         ops.append(

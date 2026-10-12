@@ -82,7 +82,7 @@ def _clamp_group_ops(screw_slug: str, *, intent: str | None = "model") -> list[d
             "op": "add_block",
             "name": "rail",
             "envelope": "box:w0.03d0.02h0.004",
-            "pose": [0, 0, 0.004],
+            "pose": "[0 0 0.004] m",
         },
         {"op": "set_mode", "block": "rail", "mode": "fdm/asa"},
         {
@@ -90,10 +90,10 @@ def _clamp_group_ops(screw_slug: str, *, intent: str | None = "model") -> list[d
             "name": "clamp",
             "parent": "assy",
             "envelope": "box:w0.03d0.02h0.012",
-            "pose": [0, 0, 0.008],
+            "pose": "[0 0 0.008] m",
         },
         {"op": "set_mode", "block": "clamp", "mode": "fdm/asa"},
-        {"op": "add_block", "name": "bolt", "parent": "assy", "pose": [0, 0, 0.004]},
+        {"op": "add_block", "name": "bolt", "parent": "assy", "pose": "[0 0 0.004] m"},
         {"op": "set_mode", "block": "bolt", "mode": "purchase"},
         {
             "op": "set_binding",
@@ -302,7 +302,7 @@ def test_unbound_purchase_member_is_a_no_stand_in_finding(
 ) -> None:
     screw_slug = _mint_slug(hub, "iso-10642", "M4x12")
     ops = _clamp_group_ops(screw_slug) + [
-        {"op": "add_block", "name": "nut", "parent": "assy", "pose": [0, 0, 0.02]},
+        {"op": "add_block", "name": "nut", "parent": "assy", "pose": "[0 0 0.02] m"},
         {"op": "set_mode", "block": "nut", "mode": "purchase"},
     ]
     handler.put(id="pi-nostandin", text=json.dumps({"ops": ops}))
@@ -336,6 +336,7 @@ def _simp_group_ops(beams: list[str]) -> list[dict[str, Any]]:
                 "parent": "frame",
                 "envelope": "box:w0.024d0.012h0.012",
                 "pose": [0, 0.03 * i, 0],
+                "pose_unit": "m",
             },
             {
                 "op": "set_load",
@@ -450,7 +451,7 @@ def _nested_ops() -> list[dict[str, Any]]:
             "name": "arm",
             "parent": "hub",
             "envelope": "box:w0.03d0.004h0.004",
-            "pose": [0.03, 0, 0],
+            "pose": "[0.03 0 0] m",
         },
         {"op": "set_mode", "block": "arm", "mode": "fdm/pla"},
         {
@@ -458,7 +459,7 @@ def _nested_ops() -> list[dict[str, Any]]:
             "name": "sub",
             "parent": "arm",
             "envelope": "box:w0.01d0.01h0.004",
-            "pose": [0.06, 0, 0],
+            "pose": "[0.06 0 0] m",
         },
         {"op": "set_mode", "block": "sub", "mode": "fdm/pla", "intent": "model"},
         {
@@ -466,7 +467,7 @@ def _nested_ops() -> list[dict[str, Any]]:
             "name": "leaf",
             "parent": "sub",
             "envelope": "box:w0.004d0.004h0.01",
-            "pose": [0.06, 0, 0.004],
+            "pose": "[0.06 0 0.004] m",
         },
         {"op": "set_mode", "block": "leaf", "mode": "fdm/pla"},
     ]

@@ -97,10 +97,20 @@ def _walker_ops(
             "op": "add_block",
             "name": "w",
             "envelope": "box:w2e-9d2e-9h1e-9",
-            "pose": [3.0e-9, 0.0, 7.0e-9],
+            "pose": "[3.0e-9 0.0 7.0e-9] m",
         },
-        {"op": "add_port", "block": "w", "name": "pa", "pose": [-1.0e-9, 0.0, -0.5e-9]},
-        {"op": "add_port", "block": "w", "name": "pb", "pose": [1.0e-9, 0.0, -0.5e-9]},
+        {
+            "op": "add_port",
+            "block": "w",
+            "name": "pa",
+            "pose": "[-1.0e-9 0.0 -0.5e-9] m",
+        },
+        {
+            "op": "add_port",
+            "block": "w",
+            "name": "pb",
+            "pose": "[1.0e-9 0.0 -0.5e-9] m",
+        },
     ]
     for leg, port, foot in (("la", "pa", "f0"), ("lb", "pb", "f1")):
         ops += [
@@ -209,7 +219,9 @@ def test_declare_states_vets_occupancy_and_refuses_an_authored_pose() -> None:
                 {
                     "op": "declare_states",
                     "block": "w",
-                    "states": [{"name": "x", "pose": {"xyz": [0, 0, 0]}}],
+                    "states": [
+                        {"name": "x", "pose": {"xyz": [0, 0, 0]}, "pose_unit": "m"}
+                    ],
                 }
             ],
         )
@@ -730,20 +742,20 @@ def test_view_stations_reports_the_cursor_per_settled_station(
             "op": "add_port",
             "block": "w",
             "name": "cursor",
-            "pose": [0.0, 0.0, 0.5e-9],
+            "pose": "[0.0 0.0 0.5e-9] m",
             "direction": [0.0, 0.0, 1.0],
         },
         {
             "op": "add_block",
             "name": "site",
             "envelope": "box:w1e-9d1e-9h1e-9",
-            "pose": [12.0e-9, 0.0, 12.0e-9],
+            "pose": "[12.0e-9 0.0 12.0e-9] m",
         },
         {
             "op": "add_port",
             "block": "site",
             "name": "s",
-            "pose": [0.0, 0.0, -0.5e-9],
+            "pose": "[0.0 0.0 -0.5e-9] m",
             "direction": [0.0, 0.0, -1.0],
         },
     ]

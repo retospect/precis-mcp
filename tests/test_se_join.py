@@ -166,7 +166,15 @@ def test_join_composite_takes_over_as_pre_join_pose_net_a_unchanged(
     p = [1e-9, 2e-9, 3e-9]
     apply_ops(
         tree,
-        [{"op": "set_pose", "block": "tube_a", "pose": p, "rot": [0.0, 0.0, 0.0]}],
+        [
+            {
+                "op": "set_pose",
+                "block": "tube_a",
+                "pose": p,
+                "pose_unit": "m",
+                "rot": [0.0, 0.0, 0.0],
+            }
+        ],
     )
     a_world_before = list(tree.blocks["tube_a"].pose)
     assert a_world_before == p
@@ -177,7 +185,7 @@ def test_join_composite_takes_over_as_pre_join_pose_net_a_unchanged(
             {
                 "op": "set_pose",
                 "block": "tube_b",
-                "pose": [9e-9, 0.0, 0.0],
+                "pose": "[9e-9 0.0 0.0] m",
                 "rot": [0.0, 0.0, 0.0],
             }
         ],

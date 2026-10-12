@@ -46,6 +46,7 @@ def _spread_ops(n: int, *, pitch: float = 10.0) -> list[dict]:
             "name": f"b{i}",
             "envelope": "box:w1d1h1",
             "pose": [i * pitch, 0, 0],
+            "pose_unit": "m",
         }
         for i in range(n)
     ]
@@ -105,7 +106,7 @@ def test_close_overlapping_pair_still_gets_a_real_clearance_gap() -> None:
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
         ],
     )
@@ -137,13 +138,13 @@ def test_overlap_budget_exceeded_marks_the_result_partial_not_silent() -> None:
                 "op": "add_block",
                 "name": "c1",
                 "envelope": "box:w1d1h1",
-                "pose": [100, 0, 0],
+                "pose": "[100 0 0] m",
             },
             {
                 "op": "add_block",
                 "name": "c2",
                 "envelope": "box:w1d1h1",
-                "pose": [100.5, 0, 0],
+                "pose": "[100.5 0 0] m",
             },
         ],
     )
@@ -228,7 +229,7 @@ def test_subcontact_gap_is_not_aabb_cleared_reaches_narrow_phase() -> None:
                 "op": "add_block",
                 "name": "q",
                 "envelope": "box:w1d1h1",
-                "pose": [1.001, 0, 0],
+                "pose": "[1.001 0 0] m",
             },
         ],
     )
@@ -261,13 +262,13 @@ def test_aabb_cleared_pair_does_not_stop_the_inner_loop() -> None:
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [1000, 0, 0],
+                "pose": "[1000 0 0] m",
             },
             {
                 "op": "add_block",
                 "name": "c",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
         ],
     )
@@ -296,13 +297,13 @@ def test_budget_exceeded_reports_every_non_cleared_pair_not_just_the_first() -> 
                 "op": "add_block",
                 "name": "m",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
             {
                 "op": "add_block",
                 "name": "z",
                 "envelope": "box:w1d1h1",
-                "pose": [-0.5, 0, 0],
+                "pose": "[-0.5 0 0] m",
             },
         ],
     )
@@ -335,7 +336,7 @@ def test_unbounded_budget_never_marks_a_close_pair_unchecked() -> None:
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
         ],
     )
@@ -363,7 +364,7 @@ def test_zero_budget_single_close_pair_is_unchecked_not_computed() -> None:
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
         ],
     )
@@ -458,13 +459,13 @@ def test_aabb_diag_margin_is_translation_invariant_off_origin() -> None:
                 "op": "add_block",
                 "name": "a",
                 "envelope": "box:w1d1h1",
-                "pose": [-0.9995, 0, 0],
+                "pose": "[-0.9995 0 0] m",
             },
             {
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [0.001, 0, 0],
+                "pose": "[0.001 0 0] m",
             },
         ],
     )
@@ -498,7 +499,7 @@ def test_generous_budget_still_computes_a_real_overlap_not_unchecked() -> None:
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
         ],
     )
@@ -536,13 +537,13 @@ def test_ancestor_skip_continue_does_not_stop_the_inner_loop() -> None:
                 "name": "a_child",
                 "envelope": "box:w1d1h1",
                 "parent": "a",
-                "pose": [1000, 0, 0],
+                "pose": "[1000 0 0] m",
             },
             {
                 "op": "add_block",
                 "name": "b",
                 "envelope": "box:w1d1h1",
-                "pose": [0.5, 0, 0],
+                "pose": "[0.5 0 0] m",
             },
         ],
     )
@@ -585,7 +586,7 @@ def test_segment_vs_plain_block_overlap_still_surfaces() -> None:
                 "op": "add_block",
                 "name": "x",
                 "envelope": "sphere:r1e-9",
-                "pose": [0.0, 0.0, 1e-9],
+                "pose": "[0.0 0.0 1e-9] m",
             },
             {"op": "add_block", "name": "h2"},
             {"op": "declare_helix", "block": "h2", "n_units": 8, **_HELIX_WAYPOINTS},

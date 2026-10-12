@@ -32,6 +32,7 @@ def _blocks(b_x: float) -> list[dict[str, object]]:
             "name": "b",
             "envelope": "box:w0.01d0.01h0.01",
             "pose": [b_x, 0.0, 0.0],
+            "pose_unit": "m",
         },
     ]
 

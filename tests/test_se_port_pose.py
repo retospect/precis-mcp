@@ -78,8 +78,8 @@ def test_add_port_pose_round_trips_and_renders_with_its_provenance(
                 "block": "arm",
                 "name": "tip",
                 "roles": ["covalent"],
-                "pose": [0.004, 0.0, 0.0],
-                "rot": [0.0, 1.5708, 0.0],
+                "pose": "[0.004 0.0 0.0] m",
+                "rot": "[0.0 1.5708 0.0] rad",
             },
         ],
     )
@@ -107,7 +107,7 @@ def test_add_port_pose_without_rot_renders_no_rot_clause(
         "portpose2",
         [
             {"op": "add_block", "name": "arm", "envelope": "box:w0.01d0.01h0.01"},
-            {"op": "add_port", "block": "arm", "name": "tip", "pose": [0.004, 0, 0]},
+            {"op": "add_port", "block": "arm", "name": "tip", "pose": "[0.004 0 0] m"},
         ],
     )
     body = handler.get(id="portpose2", view="block", args={"name": "arm"}).body
@@ -126,7 +126,7 @@ def test_add_port_rot_without_pose_is_refused_naming_the_fix(
             "portposebad1",
             [
                 {"op": "add_block", "name": "arm", "envelope": "box:w0.01d0.01h0.01"},
-                {"op": "add_port", "block": "arm", "name": "tip", "rot": [0, 1, 0]},
+                {"op": "add_port", "block": "arm", "name": "tip", "rot": "[0 1 0] rad"},
             ],
         )
 
@@ -195,7 +195,7 @@ def test_set_port_pose_sets_updates_and_clears(
                         "op": "set_port_pose",
                         "block": "arm",
                         "name": "tip",
-                        "pose": [0.005, 0, 0],
+                        "pose": "[0.005 0 0] m",
                     }
                 ]
             }
@@ -214,8 +214,8 @@ def test_set_port_pose_sets_updates_and_clears(
                         "op": "set_port_pose",
                         "block": "arm",
                         "name": "tip",
-                        "pose": [0.006, 0, 0],
-                        "rot": [0, 0, 0.5],
+                        "pose": "[0.006 0 0] m",
+                        "rot": "[0 0 0.5] rad",
                     }
                 ]
             }
@@ -270,7 +270,7 @@ def test_set_port_pose_keeps_the_se_port_spec(handler: SeHandler, store: Store) 
                         "op": "set_port_pose",
                         "block": "arm",
                         "name": "tip",
-                        "pose": [1e-10, 0, 0],
+                        "pose": "[1e-10 0 0] m",
                     }
                 ]
             }
@@ -296,7 +296,7 @@ def test_set_port_pose_refuses_an_instance_block(handler: SeHandler) -> None:
                     "op": "set_port_pose",
                     "block": "arm2",
                     "name": "tip",
-                    "pose": [0.001, 0, 0],
+                    "pose": "[0.001 0 0] m",
                 },
             ],
         )
@@ -316,7 +316,7 @@ def test_set_port_pose_on_an_unknown_port_names_the_roster(
                     "op": "set_port_pose",
                     "block": "arm",
                     "name": "typo",
-                    "pose": [0.001, 0, 0],
+                    "pose": "[0.001 0 0] m",
                 },
             ],
         )
@@ -339,7 +339,7 @@ def test_set_port_pose_rot_alone_on_a_poseless_port_is_refused(
                     "op": "set_port_pose",
                     "block": "arm",
                     "name": "tip",
-                    "rot": [0, 0, 1],
+                    "rot": "[0 0 1] rad",
                 },
             ],
         )
@@ -368,8 +368,13 @@ def test_set_port_pose_rot_alone_rewrites_the_frame_over_a_stored_origin(
         "setpose3",
         [
             {"op": "add_block", "name": "arm", "envelope": "box:w0.01d0.01h0.01"},
-            {"op": "add_port", "block": "arm", "name": "tip", "pose": [0.004, 0, 0]},
-            {"op": "set_port_pose", "block": "arm", "name": "tip", "rot": [0, 0, 0.25]},
+            {"op": "add_port", "block": "arm", "name": "tip", "pose": "[0.004 0 0] m"},
+            {
+                "op": "set_port_pose",
+                "block": "arm",
+                "name": "tip",
+                "rot": "[0 0 0.25] rad",
+            },
         ],
     )
     port = _tree(store, "setpose3").blocks["arm"].ports["tip"]
@@ -385,7 +390,7 @@ _DELTA_OPS: list[dict[str, Any]] = [
         "op": "add_port",
         "block": "switch",
         "name": "far",
-        "pose": [0.001, 0.0, 0.0],
+        "pose": "[0.001 0.0 0.0] m",
         "rot": [0.0, 0.0, 0.0],
     },
     {
@@ -500,8 +505,8 @@ def test_state_rot_delta_composes_rather_than_replacing(
                 "op": "add_port",
                 "block": "switch",
                 "name": "far",
-                "pose": [0.001, 0, 0],
-                "rot": [0, 0, 0.25],
+                "pose": "[0.001 0 0] m",
+                "rot": "[0 0 0.25] rad",
             },
             {
                 "op": "declare_states",
@@ -548,8 +553,9 @@ def test_state_rot_delta_is_applied_in_the_block_frame(
                 "op": "add_port",
                 "block": "switch",
                 "name": "far",
-                "pose": [0.001, 0, 0],
+                "pose": "[0.001 0 0] m",
                 "rot": base,
+                "rot_unit": "rad",
             },
             {
                 "op": "declare_states",
@@ -565,7 +571,9 @@ def test_state_rot_delta_is_applied_in_the_block_frame(
     uid = tree.blocks["switch"].uid
     assert uid is not None
     cis = design_states.BlockState(
-        block_uid=uid, name="cis", port_pose_overrides={"far": {"rot": delta}}
+        block_uid=uid,
+        name="cis",
+        port_pose_overrides={"far": {"rot": delta, "rot_unit": "rad"}},
     )
     _pose_sweep_combo(
         tree, _snapshot_sweep_domain(tree, ["switch"]), ["switch"], (cis,)
@@ -593,8 +601,8 @@ def test_set_port_pose_origin_nudge_keeps_the_stored_rot(
                 "op": "add_port",
                 "block": "arm",
                 "name": "tip",
-                "pose": [0.004, 0, 0],
-                "rot": [0, 0, 0.25],
+                "pose": "[0.004 0 0] m",
+                "rot": "[0 0 0.25] rad",
             },
         ],
     )
@@ -607,7 +615,7 @@ def test_set_port_pose_origin_nudge_keeps_the_stored_rot(
                         "op": "set_port_pose",
                         "block": "arm",
                         "name": "tip",
-                        "pose": [0.0041, 0, 0],
+                        "pose": "[0.0041 0 0] m",
                     }
                 ]
             }
@@ -637,21 +645,21 @@ def test_bond_length_uses_the_exact_port_to_port_distance_when_both_posed(
                 "op": "add_block",
                 "name": "b",
                 "envelope": "sphere:r5e-10",
-                "pose": [2e-9, 0, 0],
+                "pose": "[2e-9 0 0] m",
             },
             {
                 "op": "add_port",
                 "block": "a",
                 "name": "p1",
                 "roles": ["covalent"],
-                "pose": [9.25e-10, 0, 0],
+                "pose": "[9.25e-10 0 0] m",
             },
             {
                 "op": "add_port",
                 "block": "b",
                 "name": "p1",
                 "roles": ["covalent"],
-                "pose": [-9.25e-10, 0, 0],
+                "pose": "[-9.25e-10 0 0] m",
             },
             {"op": "connect", "a": "a.p1", "b": "b.p1", "kind": "bond"},
         ],
@@ -674,21 +682,21 @@ def test_bond_length_flags_a_long_port_to_port_span_with_the_new_wording(
                 "op": "add_block",
                 "name": "b",
                 "envelope": "sphere:r5e-10",
-                "pose": [2e-9, 0, 0],
+                "pose": "[2e-9 0 0] m",
             },
             {
                 "op": "add_port",
                 "block": "a",
                 "name": "p1",
                 "roles": ["covalent"],
-                "pose": [-9e-10, 0, 0],
+                "pose": "[-9e-10 0 0] m",
             },
             {
                 "op": "add_port",
                 "block": "b",
                 "name": "p1",
                 "roles": ["covalent"],
-                "pose": [9e-10, 0, 0],
+                "pose": "[9e-10 0 0] m",
             },
             {"op": "connect", "a": "a.p1", "b": "b.p1", "kind": "bond"},
         ],
@@ -713,7 +721,7 @@ def test_bond_length_falls_back_and_says_the_ports_have_no_pose(
                 "op": "add_block",
                 "name": "b",
                 "envelope": "sphere:r5e-10",
-                "pose": [48.5, 0, 0],
+                "pose": "[48.5 0 0] m",
             },
             {"op": "add_port", "block": "a", "name": "p1", "roles": ["covalent"]},
             {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
@@ -740,14 +748,14 @@ def test_bond_length_falls_back_when_only_one_end_is_posed(
                 "op": "add_block",
                 "name": "b",
                 "envelope": "sphere:r5e-10",
-                "pose": [48.5, 0, 0],
+                "pose": "[48.5 0 0] m",
             },
             {
                 "op": "add_port",
                 "block": "a",
                 "name": "p1",
                 "roles": ["covalent"],
-                "pose": [1e-10, 0, 0],
+                "pose": "[1e-10 0 0] m",
             },
             {"op": "add_port", "block": "b", "name": "p1", "roles": ["covalent"]},
             {"op": "connect", "a": "a.p1", "b": "b.p1", "kind": "bond"},

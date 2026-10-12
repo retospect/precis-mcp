@@ -411,6 +411,193 @@ def format_angle_in_kind(radians: float, unit: str | None) -> str:
     return format_angle_both(radians)
 
 
+#: Plausible unit readings offered for a bare nonzero VECTOR (the canonical
+#: trailing-unit form echoes the caller's own vector under each). Angle
+#: reuses :data:`_HINT_UNITS`.
+_VEC_HINT_UNITS: Final[dict[Dimension, tuple[str, ...]]] = {
+    **_HINT_UNITS,
+    "length": ("nm", "mm", "m"),
+}
+
+_NUM = r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?"
+_NUMERAL_RE: Final[re.Pattern[str]] = re.compile(rf"^{_NUM}$")
+_NUM_UNIT_RE: Final[re.Pattern[str]] = re.compile(rf"^({_NUM})\s+(\S.*)$")
+_BRACKETED_RE: Final[re.Pattern[str]] = re.compile(r"^\s*[\[(](.*?)[\])]\s*(.*)$", re.S)
+
+
+def _is_numeral(c: object) -> bool:
+    """A bare number: a non-bool int/float, or a unit-less numeral string."""
+    if isinstance(c, bool):
+        return False
+    if isinstance(c, (int, float)):
+        return True
+    return isinstance(c, str) and bool(_NUMERAL_RE.match(c.strip()))
+
+
+def vector_canonical(components: list[float], unit: str) -> str:
+    """The canonical trailing-unit spelling of a vector whose components
+    are already in ``unit``: ``[3 0 0] nm``."""
+    return f"[{' '.join(format_dsl_number(c) for c in components)}] {unit}"
+
+
+def _bare_vector_hint(components: list[float], dimension: Dimension) -> str:
+    units = _VEC_HINT_UNITS[dimension]
+    readings = "? ".join(f'"{vector_canonical(components, u)}"' for u in units)
+    return f"state units — {readings}?"
+
+
+def _example_hint(n: int, dimension: Dimension) -> str:
+    unit = _VEC_HINT_UNITS[dimension][0]
+    return f'e.g. "{vector_canonical([3.0, 0.0, 0.0][:n], unit)}"'
+
+
+def _split_vector_text(text: str) -> tuple[list[str], str | None]:
+    """Vector text → (component strings, trailing unit or None). Accepts
+    ``"[3 0 0] nm"``, ``"3 0 0 nm"``, ``"[3nm, 0nm, 2Å]"``, ``"3, 0, 0 nm"``."""
+    trailing: str | None = None
+    m = _BRACKETED_RE.match(text)
+    if m:
+        inner, rest = m.group(1), m.group(2).strip()
+        trailing = rest or None
+    else:
+        inner = text
+    parts = [p.strip() for p in (inner.split(",") if "," in inner else inner.split())]
+    if m is None and parts and not _is_numeral(parts[-1]):
+        # unbracketed: the unit is its own token ("3 0 0 nm") or glued to
+        # the last component by a space ("3, 0, 0 nm")
+        nu = _NUM_UNIT_RE.match(parts[-1])
+        head = parts[:-1]
+        if nu and all(_is_numeral(p) for p in head):
+            trailing, parts = nu.group(2), [*head, nu.group(1)]
+        elif all(_is_numeral(p) for p in head) and not re.match(
+            r"^[+-]?[\d.]", parts[-1]
+        ):
+            trailing, parts = parts[-1], head
+    return parts, trailing
+
+
+def parse_vector_quantity(
+    value: object,
+    dimension: Dimension,
+    *,
+    unit: str | None = None,
+    n: int = 3,
+    arg_name: str | None = None,
+    warnings: list[str] | None = None,
+) -> list[float]:
+    """Ingest an n-vector of ``dimension`` quantities → SI floats (the
+    ONE vector grammar; ``blocktree.ops._as_vec3`` and so se/nm ride it).
+
+    Accepted: (1) trailing unit — ``"[3 0 0] nm"`` / ``"3 0 0 nm"``, the
+    CANONICAL form; (2) per-component — ``["3nm", "0nm", "2Å"]``, units
+    may differ; (3) ``unit=`` supplied beside a bare-numeric vector.
+    A bare ``0`` component is always legal; e-notation mantissas are fine.
+    A bare nonzero vector rejects with a hint echoing the caller's own
+    vector under plausible unit readings; mixing a unit-carrying
+    component with a bare nonzero one (or a trailing/``unit=`` unit on
+    top of per-component units) rejects. Each component goes through
+    :func:`parse_quantity` — pint owns the unit words.
+    """
+    who = arg_name or "vector"
+    trailing = unit.strip() if isinstance(unit, str) and unit.strip() else None
+    comps: list[object]
+    if isinstance(value, str):
+        if not value.strip():
+            raise BadInput(f"{who} is empty", next=_example_hint(n, dimension))
+        parts, text_unit = _split_vector_text(value.strip())
+        if text_unit is not None:
+            if trailing is not None:
+                raise BadInput(
+                    f"{who} states its unit twice ({text_unit!r} and {trailing!r})"
+                )
+            trailing = text_unit
+        comps = list(parts)
+    elif isinstance(value, (list, tuple)):
+        comps = list(value)
+    else:
+        raise BadInput(
+            f"{who} must be a {n}-vector, got {value!r}",
+            next=_example_hint(n, dimension),
+        )
+    if len(comps) != n:
+        raise BadInput(
+            f"{who} must be a {n}-vector, got {value!r}",
+            next=_example_hint(n, dimension),
+        )
+    for c in comps:
+        if isinstance(c, bool) or not isinstance(c, (int, float, str)):
+            raise BadInput(f"{who} component {c!r} is not a number or quantity string")
+        if isinstance(c, (int, float)) and not math.isfinite(c):
+            raise BadInput(f"{who} component {c!r} must be finite")
+
+    bare = [_is_numeral(c) for c in comps]
+    if trailing is not None:
+        if not all(bare):
+            raise BadInput(
+                f"{who} states a unit ({trailing!r}) AND per-component units — "
+                "use one form",
+                next=f'"{vector_canonical([3.0, 0.0, 0.0][:n], trailing)}" or '
+                "per-component units with no trailing one",
+            )
+        return [
+            parse_quantity(
+                f"{float(str(c).strip())!r} {trailing}",
+                dimension,
+                arg_name=f"{who}[{i}]",
+                warnings=warnings,
+            )
+            for i, c in enumerate(comps)
+        ]
+
+    nums = [
+        float(str(c).strip()) if is_bare else 0.0
+        for c, is_bare in zip(comps, bare, strict=True)
+    ]
+    if all(bare):
+        if all(x == 0 for x in nums):
+            return [0.0] * n
+        raise BadInput(
+            f"{who} needs an explicit unit — bare nonzero vectors are rejected "
+            f"for {dimension} quantities (zero-counting guard)",
+            next=_bare_vector_hint(nums, dimension),
+        )
+    if any(b and x != 0 for b, x in zip(bare, nums, strict=True)):
+        raise BadInput(
+            f"{who} mixes united and bare nonzero components — give every "
+            "nonzero component its own unit, or one trailing unit for all",
+            next=_example_hint(n, dimension) + " or per-component units",
+        )
+    return [
+        0.0
+        if b
+        else parse_quantity(
+            str(c), dimension, arg_name=f"{who}[{i}]", warnings=warnings
+        )
+        for i, (c, b) in enumerate(zip(comps, bare, strict=True))
+    ]
+
+
+def _trim(x: float) -> float:
+    """4 significant figures, -0 → 0 (display only)."""
+    return 0.0 if x == 0 else float(f"{x:.4g}")
+
+
+def format_vector(values: list[float], dimension: Dimension) -> str:
+    """Canonical neat display of an SI vector with ONE common unit for the
+    whole vector (picked off the largest component): ``[3 0 0] nm``,
+    ``[0 0 90] deg``. The echo-on-write spelling."""
+    if dimension == "angle":
+        return vector_canonical([_trim(math.degrees(v)) for v in values], "deg")
+    factor, base_sym = _DISPLAY_BASE[dimension]
+    big = max((abs(v) for v in values), default=0.0)
+    ref = format_quantity(big, dimension)
+    if big == 0 or "e" in ref:
+        return vector_canonical([_trim(v * factor) for v in values], base_sym)
+    sym = ref.split(" ", 1)[1]
+    exp = next(e for e, p in _PREFIX_LADDER if p + base_sym == sym)
+    return vector_canonical([_trim(v * factor / 10.0**exp) for v in values], sym)
+
+
 def format_quantity(value: float, dimension: Dimension) -> str:
     """Neat human display: scale-appropriate SI-prefixed unit string —
     ``2.3 nm``, ``1.2 kN``, ``350 ml``. E-notation fallback outside the

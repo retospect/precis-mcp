@@ -218,7 +218,7 @@ _CASTER_OPS: list[dict[str, Any]] = [
         "op": "add_block",
         "name": "hub",
         "parent": "fork",
-        "pose": [0, 0, -0.05],
+        "pose": "[0 0 -0.05] m",
         "envelope": "cyl:r0.008h0.03",
     },
 ]
@@ -227,7 +227,7 @@ _CAP_OPS: list[dict[str, Any]] = [
         "op": "add_block",
         "name": "cap",
         "parent": "hub",
-        "pose": [0, 0, -0.07],
+        "pose": "[0 0 -0.07] m",
         "envelope": "sphere:r0.005",
     }
 ]
@@ -351,7 +351,7 @@ def test_se_scrubber_flags_a_moved_block(se_client, runtime_with_store, store) -
     ref_id = _seed_se(runtime_with_store, store)
     SeHandler(hub=runtime_with_store.hub).edit(
         id="caster_scrub",
-        ops=[{"op": "set_pose", "block": "cap", "pose": [0, 0, -0.09]}],
+        ops=[{"op": "set_pose", "block": "cap", "pose": "[0 0 -0.09] m"}],
     )
     uids = _uid_by_name(store, ref_id)
     body = se_client.get("/se/caster_scrub/scene3d.json?rev=3").json()

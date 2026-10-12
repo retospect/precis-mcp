@@ -210,14 +210,15 @@ def seed_ports(runtime, slug="validation_ports"):
                 "op": "add_block",
                 "name": name,
                 "pose": [i * 3, 0, 0],
+                "pose_unit": "m",
                 "envelope": "sphere:r0.5",
             }
         )
         ops.append(
-            {"op": "add_port", "block": name, "name": "s_rim", "pose": [0.5, 0, 0]}
+            {"op": "add_port", "block": name, "name": "s_rim", "pose": "[0.5 0 0] m"}
         )
     ops.append(
-        {"op": "add_port", "block": "cyl12open", "name": "q_out", "pose": [0, 0, 0.5]}
+        {"op": "add_port", "block": "cyl12open", "name": "q_out", "pose": "[0 0 0.5] m"}
     )
     return SeHandler(hub=runtime.hub).put(id=slug, text=json.dumps({"ops": ops}))
 
@@ -236,8 +237,9 @@ def test_legacy_target_matches_the_rendered_pinned_atomic_payload(
             {
                 "op": "set_pose",
                 "block": "hub",
-                "pose": [6e-9, 2e-9, 0],
+                "pose": "[6e-9 2e-9 0] m",
                 "rot": [0, 0, math.pi / 2],
+                "rot_unit": "rad",
             },
         ],
     )
@@ -353,7 +355,7 @@ def test_page_and_click_recheck_the_same_snapshot(
         )
     SeHandler(hub=runtime_with_store.hub).edit(
         id="validation_ports",
-        ops=[{"op": "set_pose", "block": "ball12", "pose": [0, 3, 0]}],
+        ops=[{"op": "set_pose", "block": "ball12", "pose": "[0 3 0] m"}],
     )
     stale = blocktree_client.get(url, params=params)
     assert stale.status_code == 409

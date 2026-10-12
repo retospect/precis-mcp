@@ -841,7 +841,9 @@ def _hexfold_join(
         "desc": f"join: {a_block}.{a_port_name} --{motif} k={k}--> {b_block}.{b_port_name}",
         "parent": op["parent"] if op.get("parent") is not None else old_a_parent,
         "pose": old_a_local_pose,
+        "pose_unit": "m",
         "rot": old_a_local_rot,
+        "rot_unit": "rad",
     }
 
     try:
@@ -851,7 +853,19 @@ def _hexfold_join(
             apply_ops(tree, [port_op])
         t_m = [A_to_m(float(x)) for x in t]
         rot = [float(x) for x in euler_rad_from_matrix(R)]
-        apply_ops(tree, [{"op": "set_pose", "block": b_block, "pose": t_m, "rot": rot}])
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_pose",
+                    "block": b_block,
+                    "pose": t_m,
+                    "pose_unit": "m",
+                    "rot": rot,
+                    "rot_unit": "rad",
+                }
+            ],
+        )
         apply_ops(
             tree,
             [
@@ -859,7 +873,9 @@ def _hexfold_join(
                     "op": "set_pose",
                     "block": a_block,
                     "pose": [0.0, 0.0, 0.0],
+                    "pose_unit": "m",
                     "rot": [0.0, 0.0, 0.0],
+                    "rot_unit": "rad",
                 }
             ],
         )

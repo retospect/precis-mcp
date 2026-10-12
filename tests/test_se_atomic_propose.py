@@ -166,14 +166,14 @@ _NESTED_POSE_OPS = [
         "op": "add_block",
         "name": "base",
         "envelope": "sphere:r3e-10",
-        "pose": [0.0, 0.1, 0.254],
+        "pose": "[0.0 0.1 0.254] m",
     },
     {
         "op": "add_block",
         "name": "child",
         "parent": "base",
         "envelope": "sphere:r3e-10",
-        "pose": [0.0, 0.0, 0.016],
+        "pose": "[0.0 0.0 0.016] m",
     },
 ]
 

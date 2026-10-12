@@ -21,6 +21,8 @@ kinds: structure
 
 # precis-structure-help — atoms the LLM can *read*
 
+**Never convert units yourself — always through the tools.** Write each quantity in the unit you have (`"[3 0 0] nm"`, `12 lbf`) and let the tool convert; for a conversion you need, use `calc` (`3 ft to m`). A hand conversion is a silent-error site this policy exists to remove.
+
 A `structure` design is a **periodic cell filled with atoms + an explicit
 bond graph** (ADR 0043) — the materials sibling of `cad` (0041) /
 `pcb` (0042). You author it as **typed ops** and, instead of staring at a

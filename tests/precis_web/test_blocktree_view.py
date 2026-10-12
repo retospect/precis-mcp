@@ -64,7 +64,7 @@ _UNICYCLE_OPS: list[dict[str, Any]] = [
     {
         "op": "add_block",
         "name": "rim",
-        "pose": [0, 0, 0.3],
+        "pose": "[0 0 0.3] m",
         "envelope": "torus:R0.3r0.01",
     },
     {"op": "add_port", "block": "rim", "name": "pin"},
@@ -80,21 +80,21 @@ _UNICYCLE_OPS: list[dict[str, Any]] = [
     {
         "op": "add_block",
         "name": "fork",
-        "pose": [0, 0, -0.1],
+        "pose": "[0 0 -0.1] m",
         "envelope": "box:w0.04d0.02h0.08",
     },
     {
         "op": "add_block",
         "name": "fork_arm",
         "parent": "fork",
-        "pose": [0, 0, -0.15],
+        "pose": "[0 0 -0.15] m",
         "envelope": "box:w0.01d0.01h0.05",
     },
     {
         "op": "add_block",
         "name": "fork_tip",
         "parent": "fork_arm",
-        "pose": [0, 0, -0.18],
+        "pose": "[0 0 -0.18] m",
         "envelope": "sphere:r0.005",
     },
 ]
@@ -193,7 +193,7 @@ def test_stability_tier_rigid_and_prestress_and_no_members_are_ok() -> None:
 #: CONFIRMED "NOT stabilized" verdict, not the tripwire line.
 _OPEN_FOUR_BAR_OPS: list[dict[str, Any]] = [
     *[
-        {"op": "add_block", "name": n, "pose": p}
+        {"op": "add_block", "name": n, "pose": p, "pose_unit": "m"}
         for n, p in {
             "g0": [0.0, 0.0, 0.0],
             "g1": [1.0, 0.0, 0.0],
@@ -935,7 +935,7 @@ def test_scene3d_forces_carry_declared_preload_when_solved(
     report, and they reach the hover payload."""
     ops = [
         {"op": "add_block", "name": "a", "pose": [0, 0, 0]},
-        {"op": "add_block", "name": "b", "pose": [1, 0, 0]},
+        {"op": "add_block", "name": "b", "pose": "[1 0 0] m"},
         {"op": "add_port", "block": "a", "name": "pin"},
         {"op": "add_port", "block": "b", "name": "pin"},
         {

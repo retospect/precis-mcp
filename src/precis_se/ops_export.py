@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from precis.utils.units import vector_canonical
 from precis_se.measures import measurand_name
 from precis_se.ops import SeTree
 
@@ -105,12 +106,13 @@ def _op(op_name: str, /, **fields: Any) -> dict[str, Any]:
     return {"op": op_name, **{k: v for k, v in fields.items() if _live(v)}}
 
 
-def _vec(value: list[float] | None) -> list[float] | None:
+def _vec(value: list[float] | None, unit: str) -> str | None:
     """An all-zero pose/rot is the op default — emit nothing rather than
-    a line of zeros on every block."""
+    a line of zeros on every block. Else the canonical trailing-unit form
+    at full float64 precision (``[0.02 0 0.11] m``), so the replay is exact."""
     if not value or not any(value):
         return None
-    return [float(x) for x in value]
+    return vector_canonical([float(x) for x in value], unit)
 
 
 def _block_order(tree: SeTree) -> list[str]:
@@ -146,7 +148,7 @@ def _block_ops(tree: SeTree) -> list[dict[str, Any]]:
     ops: list[dict[str, Any]] = []
     for name in _block_order(tree):
         node = tree.blocks[name]
-        pose, rot = _vec(node.local_pose), _vec(node.local_rot)
+        pose, rot = _vec(node.local_pose, "m"), _vec(node.local_rot, "rad")
         if node.template is not None:
             fields: dict[str, Any] = {
                 "name": node.name,
@@ -203,8 +205,11 @@ def _port_ops(tree: SeTree) -> list[dict[str, Any]]:
                     roles=list(port.roles),
                     direction=port.direction,
                     annotations=dict(port.annotations),
-                    pose=port.pose,
-                    rot=port.rot,
+                    # a port's all-zero origin is a real declared answer, never "unset"
+                    pose=None
+                    if port.pose is None
+                    else vector_canonical(port.pose, "m"),
+                    rot=None if port.rot is None else vector_canonical(port.rot, "rad"),
                     expected_element=port.expected_element,
                     expected_hybridization=port.expected_hybridization,
                 )

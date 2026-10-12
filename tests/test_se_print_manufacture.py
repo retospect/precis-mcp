@@ -94,8 +94,9 @@ def _hinge_ops(
             "name": "pin",
             "parent": "hinge",
             "envelope": f"cyl:r{_PIN_R}h0.03",
-            "pose": [-0.015, 0, 0.006],
+            "pose": "[-0.015 0 0.006] m",
             "rot": [0, math.pi / 2, 0],
+            "rot_unit": "rad",
         },
         {"op": "set_mode", "block": "pin", "mode": "fdm/pla"},
         {"op": "add_port", "block": "knuckle", "name": "bore"},
@@ -321,7 +322,7 @@ def _ell_ops(*, intent: str | None = "manufacture") -> list[dict[str, Any]]:
             "name": "post",
             "parent": "ell",
             "envelope": "box:w0.01d0.01h0.02",
-            "pose": [0.015, 0, 0],
+            "pose": "[0.015 0 0] m",
         },
         {"op": "set_mode", "block": "post", "mode": "fdm/pla"},
         {"op": "add_port", "block": "foot", "name": "end"},
@@ -398,15 +399,16 @@ def _clamp_ops(
             "name": "clamp",
             "parent": "assy",
             "envelope": "box:w0.03d0.02h0.012",
-            "pose": [0, 0, 0.008],
+            "pose": "[0 0 0.008] m",
         },
         {"op": "set_mode", "block": "clamp", "mode": "fdm/asa"},
         {
             "op": "add_block",
             "name": "bolt",
             "parent": "assy",
-            "pose": [0, 0, 0.008],
+            "pose": "[0 0 0.008] m",
             "rot": list(bolt_rot),
+            "rot_unit": "rad",
         },
         {"op": "set_mode", "block": "bolt", "mode": "purchase"},
         {
@@ -509,10 +511,10 @@ def _plates_ops(screw_slug: str, *, intent: str) -> list[dict[str, Any]]:
             "name": "upper",
             "parent": "stack",
             "envelope": "box:w0.03d0.02h0.004",
-            "pose": [0, 0, 0.004],
+            "pose": "[0 0 0.004] m",
         },
         {"op": "set_mode", "block": "upper", "mode": "fdm/asa"},
-        {"op": "add_block", "name": "bolt", "parent": "stack", "pose": [0.008, 0, 0]},
+        {"op": "add_block", "name": "bolt", "parent": "stack", "pose": "[0.008 0 0] m"},
         {"op": "set_mode", "block": "bolt", "mode": "purchase"},
         {
             "op": "set_binding",
@@ -698,7 +700,7 @@ def test_stale_fuse_is_flagged_after_a_member_moves(handler: SeHandler) -> None:
     handler.edit(id="mf-stale", ops=[_mfg(gap=_GAP)])
     handler.edit(
         id="mf-stale",
-        ops=[{"op": "set_pose", "block": "pin", "pose": [-0.015, 0, 0.007]}],
+        ops=[{"op": "set_pose", "block": "pin", "pose": "[-0.015 0 0.007] m"}],
     )
     report = se_printgroup.report_for(
         _load(handler, "mf-stale"), "hinge", cad_store_reader=handler.store
@@ -789,7 +791,7 @@ def _based_hinge_ops(*, bridge: bool) -> list[dict[str, Any]]:
             "name": "base",
             "parent": "hinge",
             "envelope": "box:w0.02d0.02h0.004",
-            "pose": [0, 0, -0.004],
+            "pose": "[0 0 -0.004] m",
         },
         {"op": "set_mode", "block": "base", "mode": "fdm/pla"},
     ]
@@ -1350,7 +1352,7 @@ def _tri_ops() -> list[dict[str, Any]]:
             "name": "cap",
             "parent": "ell",
             "envelope": "box:w0.01d0.01h0.005",
-            "pose": [0.015, 0, 0.02],
+            "pose": "[0.015 0 0.02] m",
         },
         {"op": "set_mode", "block": "cap", "mode": "fdm/pla"},
         {"op": "add_port", "block": "post", "name": "top"},

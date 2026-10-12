@@ -199,8 +199,8 @@ def test_c4_pose_invariant() -> None:
             {
                 "op": "set_pose",
                 "block": "b",
-                "pose": [0.5, 0.5, 0.5],
-                "rot": [0.0, 0.0, 0.7],
+                "pose": "[0.5 0.5 0.5] m",
+                "rot": "[0.0 0.0 0.7] rad",
             }
         ],
     )

@@ -223,7 +223,7 @@ def _dumbbell_ops(design: str, a_atom: str, b_atom: str) -> list[dict[str, objec
             "op": "add_block",
             "name": "headB",
             "envelope": "sphere:r2e-10",
-            "pose": [1e-9, 0, 0],
+            "pose": "[1e-9 0 0] m",
         },
         {
             "op": "add_port",

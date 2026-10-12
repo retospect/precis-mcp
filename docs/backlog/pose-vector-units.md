@@ -5,111 +5,36 @@ prio: high
 pillar: 3d-design
 ---
 
-# pose/rot vector unit ingest
+# pose/rot vector unit ingest — remaining rounds
 
-Carved out of `units-policy-cutover.md` (shipped 2026-09-12, deleted) —
-its one OPEN question. Pose/rot vectors are today bare numbers meaning
-SI (metres / radians) through the shared `precis.blocktree.ops._as_vec3`
-path se and nm both use. That is the zero-counting hazard
-(`pose: [0.000000003, 0, 0]`) on the most-used arg, deliberately left
-out of the cutover because tightening it changes se's op surface too.
+SHIPPED (2026-10-12): `precis.utils.units.parse_vector_quantity` (+
+`format_vector`, `vector_canonical`); se/nm `pose`/`rot` ride it through
+`blocktree.ops._pose_vec` — strict (bare nonzero rejects with a hint
+echoing the caller's vector under nm/mm/m or deg/rad), three forms
+(trailing unit = canonical; per-component; `pose_unit`/`rot_unit` beside
+the vector), bare `0` legal, e-notation fine, mixing rejects. Fixtures,
+`precis-se-help`/`-fasten-`/`-print-help` examples and the
+never-convert-yourself directive (overview, se, cad, structure, calc help)
+swept. Not touched: `declare_states` `port_pose_overrides` pose/rot
+deltas (separate path, still bare SI), `add_port` `direction` (unitless).
 
-**RULED (Reto 2026-09-12): strict — reject bare, accept three forms,
-one canonical form in every hint.**
+OPEN, ruled by Reto 2026-09-12 (design stands, build what is left):
 
-Accepted input forms (broadly accepting):
-1. **Trailing/external unit** — `[3, 0, 0] nm` (string form
-   `"[3 0 0] nm"` / `"3 0 0 nm"`); the unit distributes over all
-   components. This is the CANONICAL form — every hint and every doc
-   example uses it.
-2. **Per-component units** — `["3nm", "0nm", "0nm"]`; components may
-   mix units (`["3nm", "0nm", "2Å"]` — each converts independently).
-3. **External unit arg** — the unit supplied beside the vector where
-   an op's arg shape allows (e.g. `pose=[4,0,0]` + `(km)`;
-   rot analogously with `deg`/`rad`).
-
-Ergonomic carve-outs: a bare `0` component is always legal (zero
-needs no unit); e-notation mantissas are fine in every form
-(`[3e-9, 0, 0] m` ≡ `[3, 0, 0] nm` — Reto 2026-09-12; the
-shipped awkward-mantissa advisory — `parse_quantity(warnings=[...])`,
-surfaced on cad put/derive as `⚠ units:` via `SceneSpec.warnings` —
-nudges toward the neat prefix, warn-only). Mixing form 1
-and form 2 in one vector (some components united, others bare-nonzero
-relying on a trailing unit) rejects.
-
-Rejection: a bare nonzero numeric vector rejects with the standard
-structured hint, which ECHOES THE CALLER'S OWN VECTOR in canonical
-form under 2–3 plausible unit readings: `pose=[3,0,0]` →
-`state units — "[3 0 0] nm"? "[3 0 0] m"?`. Heavy hinting, one-edit
-retry. `rot` follows the shipped angle ruling (`deg`/`rad`; radians
-internal, degrees in display).
-
-**DRY + echo + tables policy (Reto 2026-09-12, applies to the whole
-bundled round):**
-- ONE helper: `precis/utils/units.py` gains `parse_vector_quantity`
-  beside `parse_quantity`, reusing it per component (pint owns unit
-  words; only the bracket/trailing-unit/mixing/bare-zero rules are
-  new, written once). `_as_vec3` calls it — se and nm identical by
-  construction; calc and future vector args use the same helper. No
-  surface parses units itself.
-- ECHO ON WRITE, canonical form, throughout: every op that ingests
-  quantities acknowledges with what it understood in neat canonical
-  form (`understood: pose = [3 0 0] nm`) — per-turn reinforcement of
-  the preferred syntax + an immediate mis-parse tripwire. Query
-  ANSWERS follow gr336352's respond-in-kind rule instead (caller's
-  unit, or both when ambiguous).
-- TOON TABLES: a column-mode formatter (in units.py, written once)
-  picks one common unit per homogeneous column such that every
-  mantissa lands in ~0.001–10000 → unit in the HEADER (`gap (nm)`),
-  bare aligned cells. If the spread can't fit one unit without
-  zero-runs, per-value neat units in cells and no header unit. Never
-  header unit + divergent cell suffixes.
-
-- **prefunits (Reto 2026-09-12), per-call — IN SCOPE this round:**
-  any op/view accepts `prefunits=nm,deg,kg` (one preferred unit per
-  dimension); output renders in those units, ALWAYS still stated
-  (`0.15 nm`, never bare). Implementation: a preferred-unit override
-  threaded into `format_quantity`/the column formatter — display
-  only, ingest unchanged, no second prefix table. Overrides the neat
-  auto-prefix; respond-in-kind still wins for query answers when the
-  caller's own unit is clear. WHY (Reto): this closes the
-  no-model-side-conversion loop — unit-required input means the LLM
-  never converts writing; prefunits means it never converts reading.
-  It works in one unit end to end; every conversion happens once, in
-  code.
-- **Sticky prefunits — design-scoped, NOT session state (backlog
-  consideration):** "set until disregard" lives as `meta.prefunits`
-  ON THE DESIGN/REF (a crystal design sets Å once; every later view
-  of it renders Å) — durable, survives sessions, no protocol state;
-  per-call prefunits overrides it. This RESOLVES the parked
-  "Å display hint for structure views" question. Weigh at this
-  round's build whether design-meta ships now (small) or waits.
-
-- **conv kind + never-convert rule (Reto 2026-09-12):** checked —
-  `conv` (handlers/conversation.py) stores free-text chat turns and
-  has NO quantity machinery; nothing to wire. The notation reaches
-  conversations via convention only: agents writing prose use the
-  canonical forms — covered by the skills directive below, no
-  conv-handler work. And the skills get a
-  standing directive, stated once in `precis-overview` and echoed in
-  the cad/se/nm/structure/calc help skills: **never convert units
-  yourself — always through the tools** (calc's conversion path
-  `3 ft to m`, or better, prefunits so no conversion is needed at
-  all). An LLM-performed unit conversion is a silent-error site the
-  whole policy exists to eliminate; the skills must say so explicitly
-  rather than assume it.
-
-No data migration (stored pose/rot already SI: metres always, radians
-via `0006_units_se_pose_rot_rad.sql`). Implementation: extend the
-shared `_as_vec3` ingest path (ONE place — se and nm both ride it)
-with the vector grammar from `precis/utils/units.py`'s parse + hint
-machinery; sweep se/nm op docstrings + skills examples to the
-canonical form; fixture sweep for authored pose literals. Natural
-bundle: ship as one "interface explicitness" round together with
-gr336352 (MCP-wide angle explicitness — calc's deg/rad triple
-convention, pcb `rot` self-naming). RULED (Reto 2026-10-11): the explicit
-angle-unit change ships bundled with the pose-vector work, not alone. SEQUENCE AFTER the prompt-surface audit fixes land (they touch
-the same hint machinery/files).
+- **Echo on write**: every quantity-ingesting op acknowledges in canonical
+  form (`understood: pose = [3 0 0] nm`, via `format_vector`). Blocked
+  on a result channel: blocktree op functions return `None`
+  (`apply_ops`), so it needs a per-op notes list threaded to the handler.
+  Tree-view `pose=[...]` rendering (`precis_se/handler.py`) is still bare
+  SI numbers.
+- **TOON column formatter** in `units.py`: one common unit per
+  homogeneous column (mantissas ~0.001–10000) in the header
+  (`gap (nm)`), bare cells; per-value neat units with no header unit when
+  no common unit fits. Never header unit + divergent cell suffixes.
+- **prefunits** per call (`prefunits=nm,deg,kg`): preferred-unit override
+  threaded into `format_quantity` / the column formatter, display only.
+  **Sticky** form: `meta.prefunits` on the design/ref (per-call
+  overrides); decide at build whether design-meta ships with it.
+- **Respond-in-kind** for cad/se/nm query answers (gr336352's rule).
 
 ## Angle units across every MCP surface (gr336352)
 
@@ -121,12 +46,10 @@ strings accepted, `rot_deg` alias); structure `add_adsorbate rotate`
 (unit required). Already explicit: cad/se joint `state`/`limits`, cad
 `rot:` DSL. Self-named, left: draft `camera.*_deg`, cad `sweep_deg`.
 
-OPEN (rides the pose-vector ingest above): se/nm `rot` vectors still go
-through bare-radian `_as_vec3`; make them per-component angle quantities
-with the same helper. pcb `group_offset.rot` still takes bare degrees only.
-Respond-in-kind for cad/se/nm query
-answers (echo the caller's unit) is not yet threaded through.
-Who: agent-code.
+OPEN: pcb `group_offset.rot` still takes bare degrees only; respond-in-kind
+for cad/se/nm query answers (above) is not yet threaded through.
+(se/nm `rot` vectors are now per-component angle quantities via
+`parse_vector_quantity`.) Who: agent-code.
 
 ## Notation robustness eval (gr336349)
 

@@ -11,16 +11,8 @@
    "op": "add_block",
    "name": "wheel",
    "parent": "unicycle",
-   "pose": [
-    0.0,
-    0.0225,
-    0.254
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.0225 0.254] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.254h0.045",
    "desc": "20 in (508 mm OD) wheel: rim + spokes + tire, bought pre-built.",
    "use": "rolling contact with the ground; keyed to the axle"
@@ -29,16 +21,8 @@
    "op": "add_block",
    "name": "axle",
    "parent": "unicycle",
-   "pose": [
-    0.0,
-    0.085,
-    0.254
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.085 0.254] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.010h0.170",
    "desc": "20 mm dia steel axle, turned from stock round bar with flats at both ends for the crank clamps; keyed to the wheel hub; runs through the two fork bearings.",
    "use": "carries wheel + crank torque; located by two ball bearings in the fork legs"
@@ -47,16 +31,8 @@
    "op": "add_block",
    "name": "bearing_left",
    "parent": "unicycle",
-   "pose": [
-    0.0,
-    0.065,
-    0.254
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.065 0.254] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.0235h0.014",
    "desc": "6204-2RS deep-groove ball bearing, left side.",
    "use": "locates axle in fork_left, carries radial load"
@@ -65,16 +41,8 @@
    "op": "add_block",
    "name": "bearing_right",
    "parent": "unicycle",
-   "pose": [
-    0.0,
-    -0.065,
-    0.254
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 -0.065 0.254] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.0235h0.014",
    "desc": "6204-2RS deep-groove ball bearing, right side.",
    "use": "locates axle in fork_right, carries radial load"
@@ -83,11 +51,7 @@
    "op": "add_block",
    "name": "fork_left",
    "parent": "unicycle",
-   "pose": [
-    -0.015,
-    0.05,
-    0.254
-   ],
+   "pose": "[-0.015 0.05 0.254] m",
    "envelope": "box:w0.030d0.045h0.42",
    "desc": "Left fork leg, fdm/asa: bearing housing at the bottom (press-fits bearing_left's 47 mm OD), rises to a bolted flange at the crown.",
    "use": "carries wheel-side bearing load up to the crown"
@@ -96,11 +60,7 @@
    "op": "add_block",
    "name": "fork_right",
    "parent": "unicycle",
-   "pose": [
-    -0.015,
-    -0.05,
-    0.254
-   ],
+   "pose": "[-0.015 -0.05 0.254] m",
    "envelope": "box:w0.030d0.045h0.42",
    "desc": "Right fork leg, fdm/asa, mirror of fork_left.",
    "use": "carries wheel-side bearing load up to the crown"
@@ -109,11 +69,7 @@
    "op": "add_block",
    "name": "crown",
    "parent": "unicycle",
-   "pose": [
-    -0.015,
-    0.0,
-    0.674
-   ],
+   "pose": "[-0.015 0.0 0.674] m",
    "envelope": "box:w0.045d0.13h0.06",
    "desc": "Crown, fdm/asa: bolts both fork legs together and carries the seat-tube socket with an integral pinch collar for seat-height clamping.",
    "use": "joins fork_left + fork_right; hosts the seatpost socket"
@@ -122,16 +78,8 @@
    "op": "add_block",
    "name": "flange_bolt_left",
    "parent": "crown",
-   "pose": [
-    0.0,
-    0.05,
-    0.016
-   ],
-   "rot": [
-    3.14159265,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.05 0.016] m",
+   "rot": "[3.14159265 0.0 0.0] rad",
    "envelope": "cyl:r0.0025h0.016",
    "desc": "Crown-to-fork_left flange bolt (x4 in the real pattern; one instance modelled, BOM carries the count)."
   },
@@ -139,16 +87,8 @@
    "op": "add_block",
    "name": "flange_bolt_right",
    "parent": "crown",
-   "pose": [
-    0.0,
-    -0.05,
-    0.016
-   ],
-   "rot": [
-    3.14159265,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 -0.05 0.016] m",
+   "rot": "[3.14159265 0.0 0.0] rad",
    "envelope": "cyl:r0.0025h0.016",
    "desc": "Crown-to-fork_right flange bolt (x4 in the real pattern; one instance modelled)."
   },
@@ -156,11 +96,7 @@
    "op": "add_block",
    "name": "seatpost",
    "parent": "unicycle",
-   "pose": [
-    -0.015,
-    0.0,
-    0.704
-   ],
+   "pose": "[-0.015 0.0 0.704] m",
    "envelope": "cyl:r0.0135h0.30",
    "desc": "27.2 mm OD aluminium 6061 tube, cut to length from stock round tube; slides in the crown's seat-tube socket, height locked by seatpost_clamp_bolt.",
    "use": "adjustable-height rider support"
@@ -169,16 +105,8 @@
    "op": "add_block",
    "name": "seatpost_clamp_bolt",
    "parent": "crown",
-   "pose": [
-    0.0,
-    0.07,
-    0.03
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.07 0.03] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.003h0.03",
    "desc": "Pinch bolt closing the crown's integral collar around the seatpost tube to lock ride height."
   },
@@ -186,11 +114,7 @@
    "op": "add_block",
    "name": "seatpost_head",
    "parent": "unicycle",
-   "pose": [
-    -0.015,
-    0.0,
-    1.004
-   ],
+   "pose": "[-0.015 0.0 1.004] m",
    "envelope": "box:w0.10d0.24h0.03",
    "desc": "fdm/asa saddle cradle, press-fit + pinned onto the seatpost top, clamps the saddle's steel rails.",
    "use": "adapts round seatpost to bicycle saddle rails"
@@ -199,11 +123,7 @@
    "op": "add_block",
    "name": "saddle",
    "parent": "unicycle",
-   "pose": [
-    -0.015,
-    0.0,
-    1.034
-   ],
+   "pose": "[-0.015 0.0 1.034] m",
    "envelope": "box:w0.10d0.26h0.05",
    "desc": "Standard bicycle saddle, bought, 7 mm steel rails.",
    "use": "rider contact surface"
@@ -212,11 +132,7 @@
    "op": "add_block",
    "name": "crank_left",
    "parent": "unicycle",
-   "pose": [
-    0.0,
-    0.1,
-    0.254
-   ],
+   "pose": "[0.0 0.1 0.254] m",
    "envelope": "box:w0.17d0.02h0.03",
    "desc": "fdm/asa crank arm, split-boss pinch-clamped onto the axle's keyed flat.",
    "use": "converts pedal force to axle torque"
@@ -225,16 +141,8 @@
    "op": "add_block",
    "name": "crank_bolt_left",
    "parent": "crank_left",
-   "pose": [
-    0.0,
-    0.0,
-    0.016
-   ],
-   "rot": [
-    3.14159265,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.0 0.016] m",
+   "rot": "[3.14159265 0.0 0.0] rad",
    "envelope": "cyl:r0.002h0.02",
    "desc": "Pinch bolt closing crank_left's split boss onto the axle."
   },
@@ -242,16 +150,8 @@
    "op": "add_block",
    "name": "pedal_left",
    "parent": "unicycle",
-   "pose": [
-    0.17,
-    0.13,
-    0.254
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.17 0.13 0.254] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.007h0.09",
    "desc": "Bicycle pedal, bought, 9/16 in threaded spindle with sealed bearing.",
    "use": "rider foot contact; spins on its own spindle bearing"
@@ -260,11 +160,7 @@
    "op": "add_block",
    "name": "crank_right",
    "parent": "unicycle",
-   "pose": [
-    0.0,
-    -0.1,
-    0.254
-   ],
+   "pose": "[0.0 -0.1 0.254] m",
    "envelope": "box:w0.17d0.02h0.03",
    "desc": "fdm/asa crank arm, mirror of crank_left.",
    "use": "converts pedal force to axle torque"
@@ -273,16 +169,8 @@
    "op": "add_block",
    "name": "crank_bolt_right",
    "parent": "crank_right",
-   "pose": [
-    0.0,
-    0.0,
-    0.016
-   ],
-   "rot": [
-    3.14159265,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.0 0.0 0.016] m",
+   "rot": "[3.14159265 0.0 0.0] rad",
    "envelope": "cyl:r0.002h0.02",
    "desc": "Pinch bolt closing crank_right's split boss onto the axle."
   },
@@ -290,16 +178,8 @@
    "op": "add_block",
    "name": "pedal_right",
    "parent": "unicycle",
-   "pose": [
-    0.17,
-    -0.13,
-    0.254
-   ],
-   "rot": [
-    1.5707963267948966,
-    0.0,
-    0.0
-   ],
+   "pose": "[0.17 -0.13 0.254] m",
+   "rot": "[1.5707963267948966 0.0 0.0] rad",
    "envelope": "cyl:r0.007h0.09",
    "desc": "Bicycle pedal, bought, mirror of pedal_left.",
    "use": "rider foot contact; spins on its own spindle bearing"
@@ -381,11 +261,7 @@
    "op": "add_port",
    "block": "fork_left",
    "name": "crown_flange",
-   "pose": [
-    0.0,
-    0.0,
-    0.42
-   ]
+   "pose": "[0.0 0.0 0.42] m"
   },
   {
    "op": "add_port",
@@ -396,11 +272,7 @@
    "op": "add_port",
    "block": "fork_right",
    "name": "crown_flange",
-   "pose": [
-    0.0,
-    0.0,
-    0.42
-   ]
+   "pose": "[0.0 0.0 0.42] m"
   },
   {
    "op": "add_port",
@@ -436,11 +308,7 @@
    "op": "add_port",
    "block": "seatpost",
    "name": "top",
-   "pose": [
-    0.0,
-    0.0,
-    0.3
-   ]
+   "pose": "[0.0 0.0 0.3] m"
   },
   {
    "op": "add_port",

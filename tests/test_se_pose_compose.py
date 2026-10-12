@@ -139,15 +139,15 @@ _NESTED = json.dumps(
                 "op": "add_block",
                 "name": "crank_left",
                 "envelope": "box:w0.02d0.02h0.03",
-                "pose": [0.0, 0.1, 0.254],
+                "pose": "[0.0 0.1 0.254] m",
             },
             {
                 "op": "add_block",
                 "name": "crank_bolt_left",
                 "parent": "crank_left",
                 "envelope": "cyl:r0.002h0.01",
-                "pose": [0.0, 0.0, 0.016],
-                "rot": [0.1, 0.0, 0.3],
+                "pose": "[0.0 0.0 0.016] m",
+                "rot": "[0.1 0.0 0.3] rad",
             },
         ]
     }
@@ -199,7 +199,9 @@ def test_edit_set_pose_stores_relative_not_world(
     ref_id = _ref_id(store, "rt3")
     handler.edit(
         id="rt3",
-        ops=[{"op": "set_pose", "block": "crank_bolt_left", "pose": [0.0, 0.0, 0.02]}],
+        ops=[
+            {"op": "set_pose", "block": "crank_bolt_left", "pose": "[0.0 0.0 0.02] m"}
+        ],
     )
     tree = persist.load_tree(store, ref_id)
     node = tree.blocks["crank_bolt_left"]

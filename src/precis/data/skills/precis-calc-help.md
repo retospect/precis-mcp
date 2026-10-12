@@ -16,6 +16,8 @@ tags: [workflow]
 
 # precis-calc-help — exact local math via SymPy
 
+**Never convert units yourself — always through the tools.** Write each quantity in the unit you have (`"[3 0 0] nm"`, `12 lbf`) and let the tool convert; for a conversion you need, use `calc` (`3 ft to m`). A hand conversion is a silent-error site this policy exists to remove.
+
 `calc` is a **local, free, exact** computer-algebra system (SymPy). Pass
 an expression as `q=` (or `id=`) and the value comes back — no rounding,
 no API, no cost. It is *not* a four-function calculator: it integrates,
