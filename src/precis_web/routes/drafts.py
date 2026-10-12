@@ -3102,7 +3102,11 @@ async def set_title(
     )
     if is_error:
         # The lookup above is not in the write transaction, so a concurrent
-        # delete between the two lands here — surface the verb's message.
+        # delete between the two lands here — 404 like the miss above, not 422.
+        if _draft_ref(store, ident) is None:
+            return JSONResponse(
+                {"ok": False, "error": "draft not found"}, status_code=404
+            )
         return JSONResponse({"ok": False, "error": body}, status_code=422)
     # Belt-and-braces, matching the other smartdraft write route: the heading is
     # edited IN PLACE, which `_cache_version`'s content digest now covers, so

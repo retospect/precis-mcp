@@ -18,7 +18,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 
@@ -188,18 +188,9 @@ def test_a_draft_with_no_meta_still_renders(tmp_path) -> None:
 
 
 def test_rename_writes_through_and_answers_json(tmp_path) -> None:
-    store = MetaFakeStore()
-    calls: list[tuple[int, str]] = []
-
-    def fake_set(ref_id, title, *, source=None):
-        calls.append((ref_id, title))
-        return "Smartdraft reader draft", True
-
-    store.set_draft_title = fake_set  # type: ignore[method-assign]
+    rt = FakeRuntime(MetaFakeStore())
     client = TestClient(
-        create_app(
-            runtime=FakeRuntime(store), web_config=WebConfig(corpus_dir=tmp_path)
-        )
+        create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
     )
     resp = client.post("/drafts/sdt/title", data={"title": "  A new name  "})
     assert resp.status_code == 200
@@ -209,7 +200,9 @@ def test_rename_writes_through_and_answers_json(tmp_path) -> None:
         "old": "Smartdraft reader draft",
         "heading_synced": True,
     }
-    assert calls == [(700, "  A new name  ")]
+    assert rt.calls == [
+        ("edit", {"kind": "draft", "id": "sdt", "title": "  A new name  "})
+    ]
 
 
 def test_rename_of_a_missing_draft_is_404(meta_client: TestClient) -> None:
@@ -239,15 +232,18 @@ def test_a_draft_deleted_mid_rename_is_404_not_500(tmp_path) -> None:
     (worker or sibling agent — routine here) surfaces as ``NotFound`` from
     the store. That must degrade to the same 404 as a missed lookup."""
     store = MetaFakeStore()
+    rt = FakeRuntime(store)
+    rt.error_verbs.add("edit")
+    real_get_ref = store.get_ref
+    calls = {"n": 0}
 
-    def fake_set(ref_id, title, *, source=None):
-        raise NotFound(f"no draft ref {ref_id}")
+    def vanishing_get_ref(*, kind, id):
+        calls["n"] += 1
+        return real_get_ref(kind=kind, id=id) if calls["n"] == 1 else None
 
-    store.set_draft_title = fake_set  # type: ignore[method-assign]
+    store.get_ref = vanishing_get_ref  # type: ignore[method-assign]
     client = TestClient(
-        create_app(
-            runtime=FakeRuntime(store), web_config=WebConfig(corpus_dir=tmp_path)
-        )
+        create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
     )
     resp = client.post("/drafts/sdt/title", data={"title": "Renamed"})
     assert resp.status_code == 404
