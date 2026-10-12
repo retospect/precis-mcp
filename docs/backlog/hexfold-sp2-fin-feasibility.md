@@ -1036,7 +1036,7 @@ retaining ports establishes positive exposure intent.
 Read-slice priority is already satisfied locally: immutable490b3819b,
 receipt `cycle2/hexfold-review-corrections-final.json` SHA256
 5d814be431b2dd2fffd740bba9d89ae6664839bbcff1339a9bd2bf5c783f5262.
-H1/H2/H3 corrected; full suite 29420 pass, types 2594, focused 129, all exit 0.
+H1/H2/H3 corrected; full 29420 pass, types 2594, focused 129, all exit0.
 Green34 and its historical failures remain preserved. Await corrected
 source acceptance, not first review or permission to apply those fixes.
 
@@ -1215,3 +1215,30 @@ Read490b3819 is already SOURCE ACCEPTED (a690e248); H1–H3 closed and
 full29420 verified. No read-gate repeat. This packet adds only the JSON and
 table; implementation/builders/runtime fixtures/compute/version/ship remain
 unassigned, viewer25 retains exclusive8.35.24.
+
+
+## Assigned internal helper implementation
+
+Root f1dd1859 accepts the serialization design and assigns private helpers/tests from accepted490. Pre-cap binding is always an unsaved artifact, with ordinal identities and domain-separated exact preimages; only captured real rows receive structure.geometry tokens. Metadata producer/trusted flags never establish trust. Complete-graph tests replace illustrative fragments. Public join/default/rebuild/finish behavior remains unchanged. Helpers are opt-in, with caller/persistence integration deferred to source review; no store, web, schema, registry, version, ship or operational generation.
+
+### HP1/HP2 bounded corrections
+
+Root source review found that copying verified parent bindings did not prove
+candidate ancestry, and that replay lost custom contact thresholds. Preserve
+the earlier source/gate receipts; they do not waive these findings.
+
+Lineage now requires independently supplied source-token-bound carbon ordinal
+maps and translations. Each actual source coordinate and bond must account for
+the complete candidate exactly once. Revision one supports translated disjoint
+unions with no carbon topology change only: fusion, cuts, added seam bonds,
+rotations and deformation are unavailable rather than inferred. Nested tests
+derive a new larger union from the verified inner artifact, not an unrelated
+net carrying its hashes. This bounded proof is not a public composition builder
+or a claim that joined-seam ancestry is implemented.
+
+Preparation retains the diagnostic method/revision, strict-distance comparison,
+covalent-host-only exclusion and effective H–C/H–H thresholds. Replay checks
+those values and contacts against the independently supplied expected profile;
+the untrusted record cannot select a different diagnostic policy. Geometry
+identities remain independent of diagnostic thresholds. No caller/store wiring,
+schema, trust registry, web, physical compute, version or ship is added.

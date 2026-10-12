@@ -329,7 +329,11 @@ def _h_directions(unit: np.ndarray, missing: int, hyb: str) -> list[np.ndarray]:
 
 
 def _terminate_open_edges(
-    net: Net, coords: np.ndarray, mode: str
+    net: Net,
+    coords: np.ndarray,
+    mode: str,
+    *,
+    eligible_hosts: frozenset[int] | None = None,
 ) -> tuple[list[int], list[np.ndarray]]:
     """Which carbons get an H and where: every atom short of its
     valence (3 for sp2, 4 for sp3), skipping ports' rim atoms under
@@ -351,6 +355,8 @@ def _terminate_open_edges(
     hosts: list[int] = []
     positions: list[np.ndarray] = []
     for a in net.atoms:
+        if eligible_hosts is not None and a.ord not in eligible_hosts:
+            continue
         if a.element != "C" or a.hyb not in ("sp2", "sp3") or a.ord in skip:
             continue
         want = 4 if a.hyb == "sp3" else 3

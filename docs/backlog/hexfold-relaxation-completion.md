@@ -907,3 +907,172 @@ owner fixtures, not executed implementation/browser acceptance.
 The companion JSON includes seven additional synthetic geometry/diagnostic
 projections under `geometry_supplement_cases`, using the same explicitly partial
 representation as the original examples.
+
+
+## Interface refinement after coordinator reviews 21:53Z and 21:58Z
+
+Adopts control revision SHA256
+`49a8b87f856e67fa9307754dd76ef2881cce591aef731cd26a960e0e1b3cbd49`,
+which supersedes the relayed `d86f7ab3` review without removing this document's
+prior contract history. The frozen `80d1d95ce` and `5a0246b` reviews accept the
+current/history, SE aggregation and geometry supplement contracts with the
+following refinements. Narrow current snapshot and exact codec source work is
+authorized independently. Classifier and public MCP adapters wait review of
+this interface packet. No writer/optimizer, migration, generation, web, version
+or shipping change is included.
+
+### Requested display and resolution
+
+`DisplaySelector` is an explicit discriminated caller request: `current`,
+`persisted` (exact GeometryIdentity, input-request or adopted-output role and
+nullable run ID), or `artifact` (exact ArtifactIdentity, unadopted-artifact role
+and nullable run ID). Reader/service and pure envelope accept it and echo it in
+both snapshot and envelope. An omitted reader selector defaults to current;
+an omitted pure-envelope selector uses the captured snapshot selector. It never
+replaces an explicit request with current. A supplied pure selector must equal
+the captured selector; mismatch is conflict and cannot qualify evidence.
+
+`DisplayResolution` records resolution independently: exact, stale, unsupported,
+missing, conflict or invalid, with resolved geometry/artifact, role and reason.
+An unsupported artifact retains its requested artifact identity as labelled
+evidence, never a fabricated persisted identity. Unsupported or missing geometry
+has null shown_geometry. A malformed selector is invalid, not a current default.
+The requested persisted identity must match ref ID, version and full token; an
+old identity alone does not establish an available historical snapshot.
+
+A non-null selector run_id and separately supplied selected_run_id must agree;
+otherwise resolution is conflict. When only one is supplied it determines the
+captured explicit run lookup; it must belong to this structure. The pure call
+must agree with snapshot.selected_run.requested_run_id. A current selector may
+independently inspect a run, but that run never silently chooses input/output.
+Persisted roles remain distinct even when input and output geometry identities
+are equal. `selected_geometry_role` describes the captured historical snapshot,
+not the caller's request. A role without corresponding verified evidence cannot
+borrow an available snapshot of another role.
+
+The existing shown_geometry_token is an additional presentation consistency
+check, not a selection mechanism: a conflicting token is stale, never fallback.
+These request and resolution fields participate in the status token. First-slice
+historical/artifact rendering may explicitly remain unsupported; no loader or
+adopter is introduced. Selection failure does not destroy an independently valid
+current geometry snapshot or prevent its separately requested display.
+
+### Lossless transport, independently of scientific hashes
+
+`completion_codec` encodes every Python integer, including IDs, versions, counts
+and format numbers, as `{"$int":"<canonical decimal>"}`. JSON clients must decode
+that to arbitrary precision or retain the validated decimal string; Number
+coercion is not allowed. Every finite float, Decimal and Fraction is encoded as
+`{"$rational":{"n":"<signed decimal>","d":"<positive decimal>"}}`, reduced to
+coprime terms, with zero represented as 0/1. Float uses its exact binary ratio;
+Decimal uses its exact decimal ratio. Negative zero normalizes to zero. Decoder
+returns int or Fraction: exact numeric value is preserved, not source runtime
+numeric class. Scientific canonicalization explicitly calls canonical_number;
+it does not confuse an integer-valued scientific quantity with an integer ID.
+
+Booleans are only JSON booleans, never numbers; null is explicit unknown and is
+not a missing required key. Strings remain exact. Lists and tuples encode to
+arrays, dictionaries require string keys. Reserved tag keys in ordinary data,
+extra tag fields, raw JSON numbers, noncanonical integer strings, unreduced
+ratios, nonpositive denominators, nonfinite values and duplicate JSON keys are
+rejected. Transport limits bound depth, item count, numeric digits and UTF-8
+text size. These are decoding resource limits, not scientific truncation; an
+exceeded limit fails the payload rather than dropping evidence.
+
+The complete wire fixture file is separate from the earlier 47 explanatory
+projections. Its builder validates all required typed keys recursively before
+encoding and after decoding and checks wire round trips, including a large ID
+and exact decimal/binary values. Positive proof records in fixtures are synthetic
+verifier outputs; parsing fixture JSON does not make any DB receipt trusted.
+This fixture validation is shape/transport evidence, not classifier execution.
+
+### Periodic comparison proof and noncircular graph tokens
+
+A receipt comparison graph additionally requires `periodic_mapping` with exact
+source/target geometry, source/target cell digests, endpoint-image mapping digest,
+cell/basis correspondence digest, compared endpoint count, complete-population
+flag and verified proof. This proves every compared endpoint's absolute image
+and basis correspondence, not just atom labels. Geometry tokens and digests must
+agree with the enclosing graph, source identity and displayed target snapshot.
+Missing or mismatched proof makes comparison graph and dependent diagnostics
+unavailable. Wrapped atoms can require changed endpoint images even with the
+same lattice; changed bases require independently evidenced basis correspondence.
+A first slice without such a mapper deliberately returns unavailable. No mapper,
+rebonding or new diagnostic computation is introduced.
+
+Graph canonical preimages exclude their own token/digest and every derived
+PhysicalBondKey.graph_token. Hash ordered exact source edges and provenance
+first, then attach that resulting token to selection keys. Identity mismatch
+disables affected graph selection/diagnostics while valid atom geometry remains
+drawable. Completion transport failure likewise leaves valid geometry drawable.
+
+### Current source seam
+
+`StructureMixin.structure_completion_geometry_snapshot(ref_id, *, conn=None)`
+provides only raw current geometry input to the later complete reader. One SQL
+statement captures live ref metadata and independent ordered atom/bond aggregates,
+including row IDs. Metadata JSON text is decoded with Decimal; SQL float columns use float8send
+hex and exact binary decoding (real promotes exactly to double), avoiding
+text-output rounding and preserving their different numeric semantics. Missing/retired/wrong-kind
+returns None; no current-cell fallback or historical mixture. It does not claim
+a CompletionSnapshot or load run/request evidence yet. The full reader and pure
+classifier remain the reviewed next source seam, with next.can_submit=false.
+
+
+## Accepted first read slice implementation
+
+Root concrete-interface acceptance: control SHA256
+`4c4d78cf75e1ff8ccdeffb747662b8610187d6e4c1cd4774f13db0536226d6ad`.
+Frozen e38 types/selector/wire/periodic requirements are closed; historical
+proposal bytes above remain. The bounded implementation reuses existing stores:
+
+- `store._structure_completion.read_completion_snapshot`, exposed by the typed
+  `Store.structure_completion_snapshot`, captures geometry, bounded runs/jobs
+  and an independently selected run in one statement. No trusted legacy producer
+  exists; raw completion JSON never becomes a verified receipt.
+- `structure.completion_types` and `tests/fixtures/structure/completion-wire.json`
+  hold durable types and complete payload fixtures independently of this backlog.
+- `structure.completion_identity` hashes exact scientific rows and stored graphs;
+  graph preimages contain no own token. Hashing has a separate bounded budget
+  from wire transport, accommodating the existing 5,790-atom Y structure.
+- Pure `completion_envelope` separates request/policy/evidence, role and geometry,
+  cap versus convergence, free versus constrained force criteria, verified cache
+  origin and policy postchecks bound to the exact stored graph.
+- `precis_se.completion.se_completion_snapshot` captures the all-block binding
+  inventory and structure rows in one statement. Pure `se_completion_envelope`
+  never treats empty/incomplete/unknown bindings as finished, or independent
+  block relaxation as physical assembly relaxation.
+- Additive MCP `completion`/`completion_digest` views use the shared decoder and
+  derivation. Numeric request args require exact wire tags. Unsupported historic
+  or artifact roles remain explicit; no loader/adopter is added.
+
+No read performs generation, compute, model discovery, mutation or dispatch.
+Every `next.can_submit` remains false. No schema, optimizer/writer, web route,
+version or ship changes belong to this slice. Synthetic verified fixtures test
+scientific predicates; they are not production producer or geometry acceptance.
+
+## Bounded source-review corrections H1–H3
+
+Coordinator review4054719a of710cde0cd is applied after the newer34d139902
+full suite terminated (29404PASS/exit0). Original frozen manifests, e38/710
+failures and all raw gate logs remain preserved. No active gate was interrupted.
+
+- H1: when automatic selection has no matching captured request, incomplete
+  request coverage cannot qualify an older run as the current result. Keep
+  qualified earlier evidence visible. Exact explicit run selection and a
+  complete no-request window retain their independent semantics.
+- H2: absent/unrecognized SE binding is unknown applicability, not evidence
+  of a non-atomistic block. Supported authored cad/component/part bindings
+  with a design provide positive non-atomistic evidence; atomic bindings,
+  atomic mode and structure port references retain atomistic precedence.
+  Unresolved templates/arrays remain unknown.
+- H3: exact complete empty SE inventory is not-applicable, with both finished
+  flags false. Incomplete/incoherent/stale empty captures remain unknown.
+
+Deterministic tests reproduce8failures/8passes on original34 source, including
+bounded/unknown/truncated request windows, supported and unknown block kinds,
+mixed finished+unknown inventory, and exact/incomplete/incoherent/stale empty
+captures. Corrections remain within accepted types and read-only boundaries:
+zero trusted legacy producers, next.can_submit=false, no writer/optimizer/
+adoption/generation/schema/web/compute/version/ship. Focused, types, lint and
+full canonical regression validate the corrected frozen source.

@@ -1,5 +1,19 @@
 """``se`` **atomic mode** — the molecular-machine domain layer.
 
+Private ``termination`` helpers prepare exposed-edge H only from complete
+graphs, explicit boundary intent and independently verified parent incidence.
+Unsaved pre-cap/final candidates have ordinal artifact tokens, never invented
+persisted rows. Exact replay retains unknown legacy requests and rederives cap
+maps rather than trusting producer flags. Public join/default/save paths do
+not adopt these helpers yet: supported exposure acquisition and transactional
+row binding require a separate integration review. Keeping preparation pure
+avoids both phantom saves and accidental physical work on a read/poll path.
+Lineage promotion requires a checked source-to-candidate carbon mapping; this
+revision supports translated disjoint unions only and refuses carbon topology
+changes. A roundtrip of attached parent hashes is not ancestry proof. Contact
+method and effective species thresholds are retained separately from geometry
+identity and replayed against an independently supplied diagnostic policy.
+
 Read-only S1 surface deviation exposes the existing precis_surface judge over
 stored structure-local Å atoms. Explicit caller targets retain rigid-z-only
 alignment. With target omitted, only an exact evaluated hexfold_scene receipt

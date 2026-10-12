@@ -17,7 +17,8 @@
     "existing_generated_projection contains only fields already stored today. proposed_generated_addition is a proposed new generated.termination_v1 member; it is not a current producer, and its presence alone establishes no trust.",
     "References are document-local JSON references. In a future stored record the referenced values must be embedded immutable values, never mutable lookups or references into this example file.",
     "Prospective output row IDs illustrate post-save binding only. Preparation binds an exact candidate artifact; final persisted-row identity is attached only inside the same save transaction after row allocation. No claimed persisted identity exists before saving.",
-    "Absent intent and parent policy conflicts reject before composition. Stored-provenance replay does not apply current-operation defaults."
+    "Absent intent and parent policy conflicts reject before composition. Stored-provenance replay does not apply current-operation defaults.",
+    "Root implementation clarification: every pre-cap binding is an UNSAVED artifact, not a persisted GeometryIdentity. No phantom save or synthetic production row IDs."
   ],
   "identity_contract": {
     "canonical_owner": "src/precis/structure/completion_identity.py at accepted490b3819b",
@@ -125,13 +126,13 @@
       "graph_token": "synthetic:graph:parent-B"
     },
     "precap_candidate": {
-      "geometry": {
-        "format": 1,
-        "ref_id": 9003,
-        "version": 1,
-        "token": "synthetic:geometry:precap"
-      },
-      "graph_token": "synthetic:graph:precap"
+      "artifact_id": "synthetic:precap_candidate",
+      "snapshot_codec": "illustrative-only-unavailable",
+      "snapshot_digest": "synthetic:artifact:precap_candidate",
+      "atom_identity_digest": "synthetic:atoms:precap_candidate",
+      "graph_digest": "synthetic:graph:precap_candidate",
+      "cell_digest": "synthetic:cell:precap_candidate",
+      "natoms": 4
     },
     "final_candidate": {
       "geometry": {
@@ -152,13 +153,13 @@
       "graph_token": "synthetic:graph:final-edited"
     },
     "nested_pre": {
-      "geometry": {
-        "format": 1,
-        "ref_id": 9004,
-        "version": 1,
-        "token": "synthetic:geometry:nested-pre"
-      },
-      "graph_token": "synthetic:graph:nested-pre"
+      "artifact_id": "synthetic:nested_pre",
+      "snapshot_codec": "illustrative-only-unavailable",
+      "snapshot_digest": "synthetic:artifact:nested_pre",
+      "atom_identity_digest": "synthetic:atoms:nested_pre",
+      "graph_digest": "synthetic:graph:nested_pre",
+      "cell_digest": "synthetic:cell:nested_pre",
+      "natoms": 6
     },
     "nested_final": {
       "geometry": {
@@ -392,12 +393,957 @@
     "otherwise": "Any unequal known parent modes, malformed request pair, unknown required policy or incomplete exposure returns unavailable before persistence."
   },
   "cases": [
-    {"id": "legacy-bare","existing_generated_projection": {"generator": "join","lattice": "sp2-hex","parts": [{"block": "a","structure": "synthetic-parent-a","version": 1,"port": "a.end","n_atoms": 2,"frame": [[[1,0,0],[0,1,0],[0,0,1]],[0,0,0]]},{"block": "b","structure": "synthetic-parent-b","version": 1,"port": "b.end","n_atoms": 2,"frame": [[[1,0,0],[0,1,0],[0,0,1]],[0,0,2]]}],"seam": {"k": 2},"seam_radius": null,"relaxer": "stick","report": {"findings": []},"n_atoms": 4,"n_bonds": 3},"termination_member_present": false,"identity": {"$ref": "#/identities/legacy_bare"},"reconstruction": {"status": "legacy-bare-replay","effective_mode": null,"request": {"present": null,"mode": null,"knowledge": "unavailable"},"caps": [],"apply_current_default": false},"new_finalization": {"status": "unavailable","reason": "legacy record has no finalization policy/exposure authority","compose_called": false,"preview_called": false,"pending_output": null,"persisted_output": null,"original_identities_unchanged": true}},
-    {"id": "authored-H","existing_generated_projection": {"generator": "hexfold","spec": "hexfold 0.2\nt: tube(8,8, len=4)\nterminate: t.* = H\n","terminated": {"element": "H","mode": "H","count": 0,"hosts": [],"clashes": 0,"bond_A": 1.09}},"observed_example": {"saved_H_count": 32,"generated_cap_count": 0},"expected": {"status": "unavailable","reason": "authored spec H is not a disposable generated cap","compose_called": false,"preview_called": false,"pending_output": null,"persisted_output": null,"original_identities_unchanged": true}},
-    {"id": "unknown-H","existing_generated_projection": {"generator": "join"},"observed_example": {"H_present": true,"ordered_cap_provenance": null},"expected": {"status": "unavailable","reason": "unknown H origin; tag/count/tail cannot authorize stripping","compose_called": false,"preview_called": false,"pending_output": null,"persisted_output": null,"original_identities_unchanged": true}},
-    {"id": "verified-generated-H-and-final-output","existing_generated_projection": {"generator": "hexfold","terminated": {"element": "H","mode": "H","count": 4,"hosts": [0,1],"clashes": 0,"bond_A": 1.09}},"verified_input": {"state": "hypothetical-all-cross-field-checks-passed","source_identity": {"$ref": "#/identities/generated_parent"},"request": {"present": null,"mode": null,"knowledge": "legacy generic record cannot distinguish omission from explicit H"},"effective_mode": "H","carbon_ordinal_to_row": [[0,100],[1,101]],"noncap_bonds": [{"row_id": 500,"i": 100,"j": 101,"image": [0,0,0],"order": {"$rational": {"n": "4","d": "3"}},"kind": "aromatic","provenance": "synthetic-declared"}],"ordered_caps": [{"h_ordinal": 2,"host_ordinal": 0,"h_row_id": 102,"host_row_id": 100,"bond_row_id": 501,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 3,"host_ordinal": 0,"h_row_id": 103,"host_row_id": 100,"bond_row_id": 502,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 4,"host_ordinal": 1,"h_row_id": 104,"host_row_id": 101,"bond_row_id": 503,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 5,"host_ordinal": 1,"h_row_id": 105,"host_row_id": 101,"bond_row_id": 504,"kind": "pairwise","order": 1,"image": [0,0,0]}],"host_multiplicity": [[0,2],[1,2]],"count": 4,"unique_hosts": [0,1],"checks": ["bare graph/spec and all noncap incidence match","H/s each has exactly one C neighbour and pairwise order1","stored cap count and unique-host projection agree","source geometry+graph identity exact","no authored/unknown H in removable set"],"original_unchanged": true},"proposed_generated_addition": {"termination_v1": {"format": 1,"policy": {"id": "post-join-exposed-H-v1","revision": 1,"source": "reviewed c05eea95/ffbea679 intent; future supported preparation caller","producer": "synthetic:unimplemented-writer","trusted": false},"requested": {"present": false,"mode": null},"effective_mode": "H","resolution": "default-H-with-compatible-known-parent-modes-and-complete-exposure","parent_modes": ["H","H"],"sources": [{"$ref": "#/identities/generated_parent"},{"$ref": "#/identities/second_parent"}],"boundary": {"authority": {"kind": "validated-preparation-intent","reference": "synthetic:caller-intent-1","available_on_current_public_join": false},"consumed_ports": [{"source": 0,"name": "a.end","hosts_before": [1]},{"source": 1,"name": "b.end","hosts_before": [0]}],"reserved_ports": [{"name": "a.other","hosts_after": [1]},{"name": "b.other","hosts_after": [2]}],"eligible_hosts": [0,3],"reserved_hosts": [1,2],"coverage": "complete-hypothetical","all_relevant_deficits_dispositioned": true},"ordinal_transform": {"parent_a_to_composite": [[0,0],[1,1]],"parent_b_to_composite": [[0,2],[1,3]],"noncap_atom_rows_preserved_in_inputs": true},"precap_identity": {"$ref": "#/identities/precap_candidate"},"prepared_artifact": {"$ref": "#/identity_contract/candidate_before_save"},"ordered_caps": [{"h_ordinal": 4,"host_ordinal": 0,"h_row_id": 304,"host_row_id": 300,"bond_row_id": 803,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 5,"host_ordinal": 0,"h_row_id": 305,"host_row_id": 300,"bond_row_id": 804,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 6,"host_ordinal": 3,"h_row_id": 306,"host_row_id": 303,"bond_row_id": 805,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 7,"host_ordinal": 3,"h_row_id": 307,"host_row_id": 303,"bond_row_id": 806,"kind": "pairwise","order": 1,"image": [0,0,0]}],"count": 4,"unique_hosts": [0,3],"host_multiplicity": [[0,2],[3,2]],"old_cap_disposition": [{"source": 0,"old_h_ordinals": [2,3],"old_host": 0,"new_h_ordinals": [4,5],"reason": "regenerated on candidate after preview"},{"source": 0,"old_h_ordinals": [4,5],"old_host": 1,"new_h_ordinals": [],"reason": "consumed/reserved host; originals retained"},{"source": 1,"old_h_ordinals": [2,3],"old_host": 0,"new_h_ordinals": [],"reason": "consumed/reserved host; originals retained"},{"source": 1,"old_h_ordinals": [4,5],"old_host": 1,"new_h_ordinals": [6,7],"reason": "regenerated on candidate after preview"}],"final_identity": {"$ref": "#/identities/final_candidate"},"identity_binding_phase": "illustrated post-save transaction; preparation contains artifact only","validation": {"species_valence": "hypothetical-pass","cap_contact_findings": [],"physical_force_convergence": null,"postcheck_proof": null},"inherited": {"last_relax": null,"run_id": null,"force_proof": null,"cache_origin": null,"completion_qualification": false},"replay": {"use_recorded_policy_revision": true,"use_current_default": false,"require_exact_parent_graph_and_geometry": true,"require_ordered_cap_bond_map": true}}},"expected": {"status": "hypothetical-prepared-only","executed": false,"pending_output": null,"persisted_output": null,"current_real_api": "unavailable until supported caller/producer implemented and reviewed"}},
-    {"id": "nested-replay","recorded_transformations": [{"depth": 1,"termination_record": {"$ref": "#/cases/3/proposed_generated_addition/termination_v1"}},{"depth": 2,"termination_record": {"format": 1,"policy": {"id": "post-join-exposed-H-v1","revision": 1,"source": "reviewed c05eea95/ffbea679 intent; future supported preparation caller","producer": "synthetic:unimplemented-writer","trusted": false},"requested": {"present": true,"mode": "H"},"effective_mode": "H","resolution": "explicit-compatible-H-with-complete-recorded-exposure","parent_modes": ["H","H"],"sources": [{"$ref": "#/identities/final_candidate"},{"$ref": "#/identities/second_parent"}],"boundary": {"authority": {"kind": "validated-preparation-intent","reference": "synthetic:caller-intent-2","available_on_current_public_join": false},"consumed_ports": [{"source": 0,"name": "b.other","hosts_before": [2]},{"source": 1,"name": "b.end","hosts_before": [0]}],"reserved_ports": [{"name": "a.other","hosts_after": [1]}],"eligible_hosts": [0,3,5],"reserved_hosts": [1],"coverage": "complete-hypothetical","all_relevant_deficits_dispositioned": true},"ordinal_transform": {"parent_a_to_composite": [[0,0],[1,1],[2,2],[3,3]],"parent_b_to_composite": [[0,4],[1,5]],"noncap_atom_rows_preserved_in_inputs": true},"precap_identity": {"$ref": "#/identities/nested_pre"},"prepared_artifact": {"artifact_id": "synthetic:candidate:nested-H","snapshot_codec": "illustrative-only-unavailable","snapshot_digest": "synthetic:artifact:nested-H","atom_identity_digest": "synthetic:atom-order:nested-H","graph_digest": "synthetic:artifact-graph:nested-H","cell_digest": "synthetic:cell:nested-H","natoms": 12},"ordered_caps": [{"h_ordinal": 6,"host_ordinal": 0,"h_row_id": 406,"host_row_id": 400,"bond_row_id": 905,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 7,"host_ordinal": 0,"h_row_id": 407,"host_row_id": 400,"bond_row_id": 906,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 8,"host_ordinal": 3,"h_row_id": 408,"host_row_id": 403,"bond_row_id": 907,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 9,"host_ordinal": 3,"h_row_id": 409,"host_row_id": 403,"bond_row_id": 908,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 10,"host_ordinal": 5,"h_row_id": 410,"host_row_id": 405,"bond_row_id": 909,"kind": "pairwise","order": 1,"image": [0,0,0]},{"h_ordinal": 11,"host_ordinal": 5,"h_row_id": 411,"host_row_id": 405,"bond_row_id": 910,"kind": "pairwise","order": 1,"image": [0,0,0]}],"count": 6,"unique_hosts": [0,3,5],"host_multiplicity": [[0,2],[3,2],[5,2]],"old_cap_disposition": [{"source": 0,"old_h_ordinals": [4,5],"old_host": 0,"new_h_ordinals": [6,7],"reason": "regenerate verified generated caps"},{"source": 0,"old_h_ordinals": [6,7],"old_host": 3,"new_h_ordinals": [8,9],"reason": "regenerate verified generated caps"},{"source": 1,"old_h_ordinals": [2,3],"old_host": 0,"new_h_ordinals": [],"reason": "consumed; originals unchanged"},{"source": 1,"old_h_ordinals": [4,5],"old_host": 1,"new_h_ordinals": [10,11],"reason": "regenerate verified generated caps"}],"final_identity": {"$ref": "#/identities/nested_final"},"identity_binding_phase": "illustrated post-save transaction; preparation contains artifact only","validation": {"species_valence": "hypothetical-pass","cap_contact_findings": [],"physical_force_convergence": null,"postcheck_proof": null},"inherited": {"last_relax": null,"run_id": null,"force_proof": null,"cache_origin": null,"completion_qualification": false},"replay": {"use_recorded_policy_revision": true,"use_current_default": false,"require_exact_parent_graph_and_geometry": true,"require_ordered_cap_bond_map": true}}}],"expected": {"status": "hypothetical-recorded-replay-accepted","executed": false,"persisted_output": null,"per_layer_policy_and_identity_required": true,"current_default_change_ignored": true},"negative_variant": {"replace_second_parent_with": {"$ref": "#/identities/legacy_bare"},"expected": {"status": "unavailable","reason": "unknown inner policy is not filled from current default","compose_called": false,"pending_output": null,"persisted_output": null}}},
-    {"id": "malformed-cap","base": {"$ref": "#/cases/3/verified_input"},"variants": [{"change": {"count": 3},"reason": "count differs from ordered map length4"},{"change": {"h_ordinal": 3,"host_ordinal": 1,"bond_row_id": 502},"reason": "cap host disagrees with stored bond endpoint"},{"change": {"h_ordinal": 3,"additional_bond_row_id": 599},"reason": "H degree exceeds1"},{"change": {"h_ordinal": 5,"element": "C"},"reason": "claimed H tail contains carbon"},{"change": {"count": -1},"reason": "negative count"},{"change": {"ordered_caps": "duplicate H ordinal2"},"reason": "mapping not one-to-one on H"}],"expected": {"status": "unavailable","reason": "malformed record; no coercion, slicing or auto-repair","compose_called": false,"preview_called": false,"pending_output": null,"persisted_output": null,"original_identities_unchanged": true}},
-    {"id": "same-version-edit","expected_identity": {"$ref": "#/identities/final_candidate"},"observed_identity": {"$ref": "#/identities/same_version_edited"},"same_ref_id": 9003,"same_version": 1,"change": "stored bond endpoint or row identity differs; canonical geometry/graph tokens must both be recomputed","expected": {"status": "unavailable","reason": "exact identity mismatch despite equal version; retain prior evidence as history","compose_called": false,"preview_called": false,"pending_output": null,"persisted_output": null,"original_identities_unchanged": true}}
+    {
+      "id": "legacy-bare",
+      "existing_generated_projection": {
+        "generator": "join",
+        "lattice": "sp2-hex",
+        "parts": [
+          {
+            "block": "a",
+            "structure": "synthetic-parent-a",
+            "version": 1,
+            "port": "a.end",
+            "n_atoms": 2,
+            "frame": [
+              [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          {
+            "block": "b",
+            "structure": "synthetic-parent-b",
+            "version": 1,
+            "port": "b.end",
+            "n_atoms": 2,
+            "frame": [
+              [
+                [
+                  1,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1,
+                  0
+                ],
+                [
+                  0,
+                  0,
+                  1
+                ]
+              ],
+              [
+                0,
+                0,
+                2
+              ]
+            ]
+          }
+        ],
+        "seam": {
+          "k": 2
+        },
+        "seam_radius": null,
+        "relaxer": "stick",
+        "report": {
+          "findings": []
+        },
+        "n_atoms": 4,
+        "n_bonds": 3
+      },
+      "termination_member_present": false,
+      "identity": {
+        "$ref": "#/identities/legacy_bare"
+      },
+      "reconstruction": {
+        "status": "legacy-bare-replay",
+        "effective_mode": null,
+        "request": {
+          "present": null,
+          "mode": null,
+          "knowledge": "unavailable"
+        },
+        "caps": [],
+        "apply_current_default": false
+      },
+      "new_finalization": {
+        "status": "unavailable",
+        "reason": "legacy record has no finalization policy/exposure authority",
+        "compose_called": false,
+        "preview_called": false,
+        "pending_output": null,
+        "persisted_output": null,
+        "original_identities_unchanged": true
+      }
+    },
+    {
+      "id": "authored-H",
+      "existing_generated_projection": {
+        "generator": "hexfold",
+        "spec": "hexfold 0.2\nt: tube(8,8, len=4)\nterminate: t.* = H\n",
+        "terminated": {
+          "element": "H",
+          "mode": "H",
+          "count": 0,
+          "hosts": [],
+          "clashes": 0,
+          "bond_A": 1.09
+        }
+      },
+      "observed_example": {
+        "saved_H_count": 32,
+        "generated_cap_count": 0
+      },
+      "expected": {
+        "status": "unavailable",
+        "reason": "authored spec H is not a disposable generated cap",
+        "compose_called": false,
+        "preview_called": false,
+        "pending_output": null,
+        "persisted_output": null,
+        "original_identities_unchanged": true
+      }
+    },
+    {
+      "id": "unknown-H",
+      "existing_generated_projection": {
+        "generator": "join"
+      },
+      "observed_example": {
+        "H_present": true,
+        "ordered_cap_provenance": null
+      },
+      "expected": {
+        "status": "unavailable",
+        "reason": "unknown H origin; tag/count/tail cannot authorize stripping",
+        "compose_called": false,
+        "preview_called": false,
+        "pending_output": null,
+        "persisted_output": null,
+        "original_identities_unchanged": true
+      }
+    },
+    {
+      "id": "verified-generated-H-and-final-output",
+      "existing_generated_projection": {
+        "generator": "hexfold",
+        "terminated": {
+          "element": "H",
+          "mode": "H",
+          "count": 4,
+          "hosts": [
+            0,
+            1
+          ],
+          "clashes": 0,
+          "bond_A": 1.09
+        }
+      },
+      "verified_input": {
+        "state": "hypothetical-all-cross-field-checks-passed",
+        "source_identity": {
+          "$ref": "#/identities/generated_parent"
+        },
+        "request": {
+          "present": null,
+          "mode": null,
+          "knowledge": "legacy generic record cannot distinguish omission from explicit H"
+        },
+        "effective_mode": "H",
+        "carbon_ordinal_to_row": [
+          [
+            0,
+            100
+          ],
+          [
+            1,
+            101
+          ]
+        ],
+        "noncap_bonds": [
+          {
+            "row_id": 500,
+            "i": 100,
+            "j": 101,
+            "image": [
+              0,
+              0,
+              0
+            ],
+            "order": {
+              "$rational": {
+                "n": "4",
+                "d": "3"
+              }
+            },
+            "kind": "aromatic",
+            "provenance": "synthetic-declared"
+          }
+        ],
+        "ordered_caps": [
+          {
+            "h_ordinal": 2,
+            "host_ordinal": 0,
+            "h_row_id": 102,
+            "host_row_id": 100,
+            "bond_row_id": 501,
+            "kind": "pairwise",
+            "order": 1,
+            "image": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "h_ordinal": 3,
+            "host_ordinal": 0,
+            "h_row_id": 103,
+            "host_row_id": 100,
+            "bond_row_id": 502,
+            "kind": "pairwise",
+            "order": 1,
+            "image": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "h_ordinal": 4,
+            "host_ordinal": 1,
+            "h_row_id": 104,
+            "host_row_id": 101,
+            "bond_row_id": 503,
+            "kind": "pairwise",
+            "order": 1,
+            "image": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "h_ordinal": 5,
+            "host_ordinal": 1,
+            "h_row_id": 105,
+            "host_row_id": 101,
+            "bond_row_id": 504,
+            "kind": "pairwise",
+            "order": 1,
+            "image": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "host_multiplicity": [
+          [
+            0,
+            2
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        "count": 4,
+        "unique_hosts": [
+          0,
+          1
+        ],
+        "checks": [
+          "bare graph/spec and all noncap incidence match",
+          "H/s each has exactly one C neighbour and pairwise order1",
+          "stored cap count and unique-host projection agree",
+          "source geometry+graph identity exact",
+          "no authored/unknown H in removable set"
+        ],
+        "original_unchanged": true
+      },
+      "proposed_generated_addition": {
+        "termination_v1": {
+          "format": 1,
+          "policy": {
+            "id": "post-join-exposed-H-v1",
+            "revision": 1,
+            "source": "reviewed c05eea95/ffbea679 intent; future supported preparation caller",
+            "producer": "synthetic:unimplemented-writer",
+            "trusted": false
+          },
+          "requested": {
+            "present": false,
+            "mode": null
+          },
+          "effective_mode": "H",
+          "resolution": "default-H-with-compatible-known-parent-modes-and-complete-exposure",
+          "parent_modes": [
+            "H",
+            "H"
+          ],
+          "sources": [
+            {
+              "$ref": "#/identities/generated_parent"
+            },
+            {
+              "$ref": "#/identities/second_parent"
+            }
+          ],
+          "boundary": {
+            "authority": {
+              "kind": "validated-preparation-intent",
+              "reference": "synthetic:caller-intent-1",
+              "available_on_current_public_join": false
+            },
+            "consumed_ports": [
+              {
+                "source": 0,
+                "name": "a.end",
+                "hosts_before": [
+                  1
+                ]
+              },
+              {
+                "source": 1,
+                "name": "b.end",
+                "hosts_before": [
+                  0
+                ]
+              }
+            ],
+            "reserved_ports": [
+              {
+                "name": "a.other",
+                "hosts_after": [
+                  1
+                ]
+              },
+              {
+                "name": "b.other",
+                "hosts_after": [
+                  2
+                ]
+              }
+            ],
+            "eligible_hosts": [
+              0,
+              3
+            ],
+            "reserved_hosts": [
+              1,
+              2
+            ],
+            "coverage": "complete-hypothetical",
+            "all_relevant_deficits_dispositioned": true
+          },
+          "ordinal_transform": {
+            "parent_a_to_composite": [
+              [
+                0,
+                0
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            "parent_b_to_composite": [
+              [
+                0,
+                2
+              ],
+              [
+                1,
+                3
+              ]
+            ],
+            "noncap_atom_rows_preserved_in_inputs": true
+          },
+          "precap_identity": {
+            "$ref": "#/identities/precap_candidate"
+          },
+          "prepared_artifact": {
+            "$ref": "#/identity_contract/candidate_before_save"
+          },
+          "ordered_caps": [
+            {
+              "h_ordinal": 4,
+              "host_ordinal": 0,
+              "h_row_id": 304,
+              "host_row_id": 300,
+              "bond_row_id": 803,
+              "kind": "pairwise",
+              "order": 1,
+              "image": [
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "h_ordinal": 5,
+              "host_ordinal": 0,
+              "h_row_id": 305,
+              "host_row_id": 300,
+              "bond_row_id": 804,
+              "kind": "pairwise",
+              "order": 1,
+              "image": [
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "h_ordinal": 6,
+              "host_ordinal": 3,
+              "h_row_id": 306,
+              "host_row_id": 303,
+              "bond_row_id": 805,
+              "kind": "pairwise",
+              "order": 1,
+              "image": [
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "h_ordinal": 7,
+              "host_ordinal": 3,
+              "h_row_id": 307,
+              "host_row_id": 303,
+              "bond_row_id": 806,
+              "kind": "pairwise",
+              "order": 1,
+              "image": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "count": 4,
+          "unique_hosts": [
+            0,
+            3
+          ],
+          "host_multiplicity": [
+            [
+              0,
+              2
+            ],
+            [
+              3,
+              2
+            ]
+          ],
+          "old_cap_disposition": [
+            {
+              "source": 0,
+              "old_h_ordinals": [
+                2,
+                3
+              ],
+              "old_host": 0,
+              "new_h_ordinals": [
+                4,
+                5
+              ],
+              "reason": "regenerated on candidate after preview"
+            },
+            {
+              "source": 0,
+              "old_h_ordinals": [
+                4,
+                5
+              ],
+              "old_host": 1,
+              "new_h_ordinals": [],
+              "reason": "consumed/reserved host; originals retained"
+            },
+            {
+              "source": 1,
+              "old_h_ordinals": [
+                2,
+                3
+              ],
+              "old_host": 0,
+              "new_h_ordinals": [],
+              "reason": "consumed/reserved host; originals retained"
+            },
+            {
+              "source": 1,
+              "old_h_ordinals": [
+                4,
+                5
+              ],
+              "old_host": 1,
+              "new_h_ordinals": [
+                6,
+                7
+              ],
+              "reason": "regenerated on candidate after preview"
+            }
+          ],
+          "final_identity": {
+            "$ref": "#/identities/final_candidate"
+          },
+          "identity_binding_phase": "illustrated post-save transaction; preparation contains artifact only",
+          "validation": {
+            "species_valence": "hypothetical-pass",
+            "cap_contact_findings": [],
+            "physical_force_convergence": null,
+            "postcheck_proof": null
+          },
+          "inherited": {
+            "last_relax": null,
+            "run_id": null,
+            "force_proof": null,
+            "cache_origin": null,
+            "completion_qualification": false
+          },
+          "replay": {
+            "use_recorded_policy_revision": true,
+            "use_current_default": false,
+            "require_exact_parent_graph_and_geometry": true,
+            "require_ordered_cap_bond_map": true
+          }
+        }
+      },
+      "expected": {
+        "status": "hypothetical-prepared-only",
+        "executed": false,
+        "pending_output": null,
+        "persisted_output": null,
+        "current_real_api": "unavailable until supported caller/producer implemented and reviewed"
+      }
+    },
+    {
+      "id": "nested-replay",
+      "recorded_transformations": [
+        {
+          "depth": 1,
+          "termination_record": {
+            "$ref": "#/cases/3/proposed_generated_addition/termination_v1"
+          }
+        },
+        {
+          "depth": 2,
+          "termination_record": {
+            "format": 1,
+            "policy": {
+              "id": "post-join-exposed-H-v1",
+              "revision": 1,
+              "source": "reviewed c05eea95/ffbea679 intent; future supported preparation caller",
+              "producer": "synthetic:unimplemented-writer",
+              "trusted": false
+            },
+            "requested": {
+              "present": true,
+              "mode": "H"
+            },
+            "effective_mode": "H",
+            "resolution": "explicit-compatible-H-with-complete-recorded-exposure",
+            "parent_modes": [
+              "H",
+              "H"
+            ],
+            "sources": [
+              {
+                "$ref": "#/identities/final_candidate"
+              },
+              {
+                "$ref": "#/identities/second_parent"
+              }
+            ],
+            "boundary": {
+              "authority": {
+                "kind": "validated-preparation-intent",
+                "reference": "synthetic:caller-intent-2",
+                "available_on_current_public_join": false
+              },
+              "consumed_ports": [
+                {
+                  "source": 0,
+                  "name": "b.other",
+                  "hosts_before": [
+                    2
+                  ]
+                },
+                {
+                  "source": 1,
+                  "name": "b.end",
+                  "hosts_before": [
+                    0
+                  ]
+                }
+              ],
+              "reserved_ports": [
+                {
+                  "name": "a.other",
+                  "hosts_after": [
+                    1
+                  ]
+                }
+              ],
+              "eligible_hosts": [
+                0,
+                3,
+                5
+              ],
+              "reserved_hosts": [
+                1
+              ],
+              "coverage": "complete-hypothetical",
+              "all_relevant_deficits_dispositioned": true
+            },
+            "ordinal_transform": {
+              "parent_a_to_composite": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  3,
+                  3
+                ]
+              ],
+              "parent_b_to_composite": [
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  5
+                ]
+              ],
+              "noncap_atom_rows_preserved_in_inputs": true
+            },
+            "precap_identity": {
+              "$ref": "#/identities/nested_pre"
+            },
+            "prepared_artifact": {
+              "artifact_id": "synthetic:candidate:nested-H",
+              "snapshot_codec": "illustrative-only-unavailable",
+              "snapshot_digest": "synthetic:artifact:nested-H",
+              "atom_identity_digest": "synthetic:atom-order:nested-H",
+              "graph_digest": "synthetic:artifact-graph:nested-H",
+              "cell_digest": "synthetic:cell:nested-H",
+              "natoms": 12
+            },
+            "ordered_caps": [
+              {
+                "h_ordinal": 6,
+                "host_ordinal": 0,
+                "h_row_id": 406,
+                "host_row_id": 400,
+                "bond_row_id": 905,
+                "kind": "pairwise",
+                "order": 1,
+                "image": [
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "h_ordinal": 7,
+                "host_ordinal": 0,
+                "h_row_id": 407,
+                "host_row_id": 400,
+                "bond_row_id": 906,
+                "kind": "pairwise",
+                "order": 1,
+                "image": [
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "h_ordinal": 8,
+                "host_ordinal": 3,
+                "h_row_id": 408,
+                "host_row_id": 403,
+                "bond_row_id": 907,
+                "kind": "pairwise",
+                "order": 1,
+                "image": [
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "h_ordinal": 9,
+                "host_ordinal": 3,
+                "h_row_id": 409,
+                "host_row_id": 403,
+                "bond_row_id": 908,
+                "kind": "pairwise",
+                "order": 1,
+                "image": [
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "h_ordinal": 10,
+                "host_ordinal": 5,
+                "h_row_id": 410,
+                "host_row_id": 405,
+                "bond_row_id": 909,
+                "kind": "pairwise",
+                "order": 1,
+                "image": [
+                  0,
+                  0,
+                  0
+                ]
+              },
+              {
+                "h_ordinal": 11,
+                "host_ordinal": 5,
+                "h_row_id": 411,
+                "host_row_id": 405,
+                "bond_row_id": 910,
+                "kind": "pairwise",
+                "order": 1,
+                "image": [
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ],
+            "count": 6,
+            "unique_hosts": [
+              0,
+              3,
+              5
+            ],
+            "host_multiplicity": [
+              [
+                0,
+                2
+              ],
+              [
+                3,
+                2
+              ],
+              [
+                5,
+                2
+              ]
+            ],
+            "old_cap_disposition": [
+              {
+                "source": 0,
+                "old_h_ordinals": [
+                  4,
+                  5
+                ],
+                "old_host": 0,
+                "new_h_ordinals": [
+                  6,
+                  7
+                ],
+                "reason": "regenerate verified generated caps"
+              },
+              {
+                "source": 0,
+                "old_h_ordinals": [
+                  6,
+                  7
+                ],
+                "old_host": 3,
+                "new_h_ordinals": [
+                  8,
+                  9
+                ],
+                "reason": "regenerate verified generated caps"
+              },
+              {
+                "source": 1,
+                "old_h_ordinals": [
+                  2,
+                  3
+                ],
+                "old_host": 0,
+                "new_h_ordinals": [],
+                "reason": "consumed; originals unchanged"
+              },
+              {
+                "source": 1,
+                "old_h_ordinals": [
+                  4,
+                  5
+                ],
+                "old_host": 1,
+                "new_h_ordinals": [
+                  10,
+                  11
+                ],
+                "reason": "regenerate verified generated caps"
+              }
+            ],
+            "final_identity": {
+              "$ref": "#/identities/nested_final"
+            },
+            "identity_binding_phase": "illustrated post-save transaction; preparation contains artifact only",
+            "validation": {
+              "species_valence": "hypothetical-pass",
+              "cap_contact_findings": [],
+              "physical_force_convergence": null,
+              "postcheck_proof": null
+            },
+            "inherited": {
+              "last_relax": null,
+              "run_id": null,
+              "force_proof": null,
+              "cache_origin": null,
+              "completion_qualification": false
+            },
+            "replay": {
+              "use_recorded_policy_revision": true,
+              "use_current_default": false,
+              "require_exact_parent_graph_and_geometry": true,
+              "require_ordered_cap_bond_map": true
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "hypothetical-recorded-replay-accepted",
+        "executed": false,
+        "persisted_output": null,
+        "per_layer_policy_and_identity_required": true,
+        "current_default_change_ignored": true
+      },
+      "negative_variant": {
+        "replace_second_parent_with": {
+          "$ref": "#/identities/legacy_bare"
+        },
+        "expected": {
+          "status": "unavailable",
+          "reason": "unknown inner policy is not filled from current default",
+          "compose_called": false,
+          "pending_output": null,
+          "persisted_output": null
+        }
+      }
+    },
+    {
+      "id": "malformed-cap",
+      "base": {
+        "$ref": "#/cases/3/verified_input"
+      },
+      "variants": [
+        {
+          "change": {
+            "count": 3
+          },
+          "reason": "count differs from ordered map length4"
+        },
+        {
+          "change": {
+            "h_ordinal": 3,
+            "host_ordinal": 1,
+            "bond_row_id": 502
+          },
+          "reason": "cap host disagrees with stored bond endpoint"
+        },
+        {
+          "change": {
+            "h_ordinal": 3,
+            "additional_bond_row_id": 599
+          },
+          "reason": "H degree exceeds1"
+        },
+        {
+          "change": {
+            "h_ordinal": 5,
+            "element": "C"
+          },
+          "reason": "claimed H tail contains carbon"
+        },
+        {
+          "change": {
+            "count": -1
+          },
+          "reason": "negative count"
+        },
+        {
+          "change": {
+            "ordered_caps": "duplicate H ordinal2"
+          },
+          "reason": "mapping not one-to-one on H"
+        }
+      ],
+      "expected": {
+        "status": "unavailable",
+        "reason": "malformed record; no coercion, slicing or auto-repair",
+        "compose_called": false,
+        "preview_called": false,
+        "pending_output": null,
+        "persisted_output": null,
+        "original_identities_unchanged": true
+      }
+    },
+    {
+      "id": "same-version-edit",
+      "expected_identity": {
+        "$ref": "#/identities/final_candidate"
+      },
+      "observed_identity": {
+        "$ref": "#/identities/same_version_edited"
+      },
+      "same_ref_id": 9003,
+      "same_version": 1,
+      "change": "stored bond endpoint or row identity differs; canonical geometry/graph tokens must both be recomputed",
+      "expected": {
+        "status": "unavailable",
+        "reason": "exact identity mismatch despite equal version; retain prior evidence as history",
+        "compose_called": false,
+        "preview_called": false,
+        "pending_output": null,
+        "persisted_output": null,
+        "original_identities_unchanged": true
+      }
+    }
   ]
 }

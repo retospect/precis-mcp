@@ -9,6 +9,7 @@ No trajectories, per-step force arrays or recursive cache traversal on reads.
 """
 
 from decimal import Decimal
+from fractions import Fraction
 from typing import Literal, TypedDict
 
 from psycopg import Connection
@@ -41,8 +42,10 @@ State = Literal[
 Binding = Literal["exact", "unknown", "stale", "historical-unavailable"]
 DisplayRole = Literal["input-request", "adopted-output", "unadopted-artifact"]
 ProofStatus = Literal["verified", "unavailable", "invalid"]
-ExactNumber = int | float | Decimal  # codec rejects bool/nonfinite, preserves ratios
-Scalar = str | int | float | Decimal | bool | None
+ExactNumber = (
+    int | float | Decimal | Fraction
+)  # codec rejects bool/nonfinite, preserves ratios
+Scalar = str | int | float | Decimal | Fraction | bool | None
 Vector3 = tuple[ExactNumber, ExactNumber, ExactNumber]
 Image3 = tuple[int, int, int]
 Lattice3 = tuple[Vector3, Vector3, Vector3]
@@ -89,6 +92,30 @@ class ArtifactIdentity(TypedDict):
     graph_digest: str | None
     cell_digest: str
     natoms: int
+
+class CurrentDisplay(TypedDict):
+    kind: Literal["current"]
+
+class PersistedDisplay(TypedDict):
+    kind: Literal["persisted"]
+    role: Literal["input-request", "adopted-output"]
+    geometry: GeometryIdentity
+    run_id: int | None
+
+class ArtifactDisplay(TypedDict):
+    kind: Literal["artifact"]
+    role: Literal["unadopted-artifact"]
+    artifact: ArtifactIdentity
+    run_id: int | None
+
+DisplaySelector = CurrentDisplay | PersistedDisplay | ArtifactDisplay
+
+class DisplayResolution(TypedDict):
+    status: Literal["exact", "stale", "unsupported", "missing", "conflict", "invalid"]
+    geometry: GeometryIdentity | None
+    artifact: ArtifactIdentity | None
+    role: DisplayRole | None
+    reason: str | None
 
 class InputIdentity(TypedDict):
     persisted: GeometryIdentity | None
@@ -180,29 +207,29 @@ class Termination(TypedDict):
     criterion: ForceCriterion | None
     forces: ForceObservation
     cell_criterion: dict[str, Scalar] | None  # fixed cell needs no cell target
-    initial_energy_eV: float | None
-    final_energy_eV: float | None
+    initial_energy_eV: ExactNumber | None
+    final_energy_eV: ExactNumber | None
 
 class ResourceCaps(TypedDict):
     steps: int | None
-    wall_seconds: float | None
+    wall_seconds: ExactNumber | None
     cpu_threads: int | None
     memory_bytes: int | None
-    external_usd: float | None
-    cloud_usd: float | None
+    external_usd: ExactNumber | None
+    cloud_usd: ExactNumber | None
 
 class ResourceUsage(TypedDict):
     steps: int | None
-    wall_seconds: float | None
+    wall_seconds: ExactNumber | None
     peak_memory_bytes: int | None
-    external_usd: float | None
-    cloud_usd: float | None
+    external_usd: ExactNumber | None
+    cloud_usd: ExactNumber | None
 
 class RuntimeExtension(TypedDict):
     decision_id: str
     recorded_at: str  # durable UTC timestamp; never polling time
-    previous_wall_seconds: float
-    revised_wall_seconds: float
+    previous_wall_seconds: ExactNumber
+    revised_wall_seconds: ExactNumber
     reason: str
     evidence_ids: list[str]
 
@@ -368,6 +395,8 @@ class RunSelection(TypedDict):
 
 class CompletionSnapshot(TypedDict):
     format: Literal[1]
+    requested_display: DisplaySelector
+    display_resolution: DisplayResolution
     ref_id: int
     geometry: GeometrySnapshot | None  # current observed rows
     selected_geometry: GeometrySnapshot | None  # actual verified historic snapshot
@@ -409,6 +438,8 @@ class NextPhase(TypedDict):
 
 class CompletionEnvelope(TypedDict):
     format: Literal[1]
+    requested_display: DisplaySelector
+    display_resolution: DisplayResolution
     requested_geometry_token: str | None
     latest_geometry: GeometryIdentity | None
     shown_geometry: GeometryIdentity | None
@@ -439,6 +470,7 @@ def structure_completion_snapshot(
     ref_id: int,
     *,
     conn: Connection | None = None,
+    requested_display: DisplaySelector | None = None,
     selected_run_id: int | None = None,
     history_limit: int = 64,
     request_limit: int = 64,
@@ -447,6 +479,7 @@ def completion_envelope(
     snapshot: CompletionSnapshot,
     *,
     shown_geometry_token: str | None = None,
+    requested_display: DisplaySelector | None = None,
     selected_run_id: int | None = None,
     policy: EffectivePolicy | None = None,
 ) -> CompletionEnvelope: ...
@@ -565,6 +598,17 @@ class PhysicalAtomKey(TypedDict):
     atom_row_id: int  # persisted snapshot only in v1; never an invented ordinal
     image: Image3
 
+class PeriodicComparisonMapping(TypedDict):
+    source_geometry: GeometryIdentity
+    target_geometry: GeometryIdentity
+    source_cell_digest: str
+    target_cell_digest: str
+    endpoint_image_mapping_digest: str
+    cell_basis_mapping_digest: str
+    compared_endpoint_count: int
+    complete_population: bool
+    proof: Proof  # must be verified for every compared endpoint and cell basis
+
 class GraphIdentity(TypedDict):
     geometry: GeometryIdentity
     token: str | None
@@ -575,6 +619,7 @@ class GraphIdentity(TypedDict):
     atom_mapping_digest: str | None
     mapped_atom_count: int | None
     mapping_proof: Proof | None
+    periodic_mapping: PeriodicComparisonMapping | None
     algorithm: str | None
     algorithm_revision: str | None
     dependency_digest: str | None
