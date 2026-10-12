@@ -165,6 +165,30 @@ consumer of the flag.
 - Refs with a `pdf_pages` range (~24k) are judged on the whole PDF, not
   their page range: a flag can over-cover if the PDF holds other papers.
 
+## Detector precision — dry run 2026-10-12 says do not stamp at scale yet
+
+`precis backfill-glyph-health --after 0 --limit 900` on melchior (dry run,
+nothing applied): **456 of 900 refs flagged (51%)**, 0 missing PDFs, 0 errors.
+`pa494` and `pa47024` are flagged as expected. Two of eight sampled papers
+cited by dr42995 are flagged too. Hand check:
+
+- **ref 422 — real scar:** "1.24 ± 0.19 m-thickness", and 6 Greek chunks
+  elsewhere in the paper.
+- **ref 398 — probably a false positive or mild.**
+
+The 51% rate is far above the spec's expectation and plausibly inflated by the
+weak signals (single-character C0 residue, Greek-font signals) rather than the
+two exact signatures in §Fix order. Ruling (default, pending Reto):
+
+1. Do **not** `--apply` the corpus backfill until the outline resolver is
+   seeded (§Recovery step 1).
+2. Then sample 20 flagged refs, hand-check each for lost Greek/μ, and record
+   precision per signal before stamping at scale. If a weak signal drives the
+   false positives, narrow `suspected` rather than stamp 456+ refs that every
+   consumer of the flag will caveat.
+
+Prod count of refs with `glyph_health` stays at 101 until then.
+
 ## Fix order
 
 > **Shipped 2026-09-28 (gr228652) — steps 1 & 2, together.**
@@ -293,9 +317,21 @@ not built until step 4 measures how much that is.
 1. Seed the outline table `src/precis/data/glyph_outlines.json` from the
    two confirmed scars: `AdvP7DA6` `/m` → μ (pa494), `AdvP4C4E51` `/C22` →
    μ and `AdvP0004` → ≤ (pa47024). Each entry names its source font and
-   paper. **Open:** the file ships empty. The hashes need those two PDFs,
-   which only a corpus-mounting node holds; once the resolver is deployed,
-   their `meta['glyph_health']['recovery']['misses']` carry the hashes.
+   paper. **Open:** the file ships empty (resolver landed `6e4bb55e3`, r28).
+   Seeding handoff, a prod step after the deploy that carries the resolver:
+   1. Stamp the two scar refs (dry run first by dropping `--apply`; raise
+      `--limit` if it counts refs without a PDF):
+      `precis backfill-glyph-health --after 493 --limit 1 --apply` and
+      `precis backfill-glyph-health --after 47023 --limit 1 --apply`.
+      Prod showed no `glyph_health` on refs 494 and 47024 (101 refs carry it).
+   2. Read the hashes with `scripts/prod-psql --ro` (plain SQL): each ref's
+      `meta->'glyph_health'->'recovery'` `misses` entries carry font, code,
+      glyph, emits and `outline`. If `recovery` is absent the font failed to
+      open; `recovery.errors` names it.
+   3. Add to `outlines` in `src/precis/data/glyph_outlines.json`, keyed by
+      outline hash: `AdvP7DA6` `/m` → μ (pa494); `AdvP4C4E51` `/C22` → μ
+      (pa47024); `AdvP0004` (the code that emits `G`) → ≤ (pa47024). Land,
+      re-run step 1; the same codes must now appear under `recovery.resolved`.
 2. Resolver — **shipped** (gr228652): `ingest/glyph_outline.py`, called
    from `glyph_health.analyze_pdf` (so ingest and `backfill-glyph-health`
    both run it). For each flagged simple font (Type1, CFF, TrueType;
@@ -313,6 +349,9 @@ not built until step 4 measures how much that is.
    the backfill path is proven.
 4. Measure the share of flagged papers fully resolved. That number decides
    whether the VLM fallback gets built.
+
+Steps 3 and 4 wait on the seeded table and on the precision gate in
+§Detector precision.
 
 test: a pa494-shaped font (lying `ToUnicode`) recovers `V/μm`; a
 pa47024-shaped font (no `ToUnicode`, `\x02` residue) recovers `6 μm`; an

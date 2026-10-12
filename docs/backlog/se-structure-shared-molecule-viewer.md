@@ -35,6 +35,27 @@ Consume the accepted Hex490 read derivation without copying its classifier.
 The larger requirement is unfinished; no new jobs, compute, geometry mutations
 or shared chat changes belong to this extraction.
 
+## Rulings pending Reto — adopted as defaults (2026-10-12)
+
+Open questions from the 2026-10-11 triage, proceeding on these defaults until
+Reto says otherwise:
+
+- **First slice = stages 1–2 below:** the structure adapter (typed layers from
+  `_geom_payload`-equivalent data), then a standalone Three host for the
+  structure page behind a compat fixture that also settles OrbitControls on
+  r184. The shared core is already in place (`6f3b45d24`:
+  `static/molecule-core.js`, `molecule-host.js`, `molecule-adapter.js`; the SE
+  viewer `blocktree-3d.js` uses it). Stages 3–4 (behaviour port with browser
+  parity, coherent identity transport) follow.
+- **Keep the legacy `_geom_payload`** and its response shape until Hex490's
+  snapshot envelope is integrated: `refs/pathway_detail.html.j2` and
+  `routes/refs.py` still use it, and the 3Dmol vendor assets stay. The new
+  adapter is additive; the structure page switches to the envelope only in the
+  later transport slice.
+- Until the structure page moves, `templates/structure/detail.html.j2` keeps
+  its own 3Dmol `renderGeom`, endpoint-only bond matching and 27-image
+  `micDist`; do not patch those, replace them.
+
 The source map below records the earlier91d6 baseline and proposal history.
 Its old pending/absent statements describe that baseline, not current acceptance.
 
