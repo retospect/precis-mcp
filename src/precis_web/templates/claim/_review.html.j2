@@ -372,14 +372,21 @@
     <h3 class="text-xs font-semibold uppercase tracking-wide text-amber-700">
       Withheld evidence edges ({{ np.withheld|length }})
     </h3>
-    <p class="text-[11px] text-slate-500">Neither verified-by-refine nor signed off — each blocks
-      publication until verified, or attested literally below (no mute button).</p>
+    <p class="text-xs text-slate-600">An evidence edge links a paper passage to this claim as support.
+      Every new edge starts withheld, and a claim with any withheld edge cannot be published.</p>
+    <p class="text-xs text-slate-600">Two ways to release an edge: the automatic verification sweep
+      (<span class="font-mono">precis taproot verify-edges</span>, which re-reads the passage against the
+      claim and stamps it verified; run it to release edges now, otherwise it happens on the next
+      background pass), or your own sign-off on the row below, with a note saying why it is ok.</p>
     {% for w in np.withheld %}
     <div class="rounded border border-amber-200 bg-white/70 p-2 space-y-1.5">
       <p class="text-xs" title="{{ w.paper_title }}">
         {{ w.relation }} ← {{ w.paper_title }} {{ vm.verified_mark(w.reviewed_at, w.reviewed_by) }}
         {% if w.chunk_handle %}<span class="font-mono text-slate-400">{{ w.chunk_handle }}</span>{% endif %}
       </p>
+      <p class="text-[11px] text-amber-700">Why withheld:
+        {% if w.stale %}stale: claim edited after verification{% if w.verified_on %} (verified {{ w.verified_on }}){% endif %}; the sweep must re-check it
+        {% else %}never verified: the sweep has not checked this edge yet{% endif %}.</p>
       {% if w.passage %}
       <blockquote class="italic text-slate-600 text-xs border-l-2 border-amber-200 pl-2">
         “{{ w.passage[:600] }}{% if w.passage|length > 600 %}…{% endif %}”

@@ -1095,6 +1095,9 @@ def _withheld_rows(store: Any, withheld: list[Any]) -> list[dict[str, Any]]:
                 "paper_title": w.paper_title,
                 "relation": w.relation,
                 "stale": w.stale,
+                "verified_on": (utc_date(w.verified_at) or None)
+                if w.verified_at
+                else None,
                 "chunk_handle": w.chunk_handle,
                 "passage": w.passage,
                 "reviewed_at": (

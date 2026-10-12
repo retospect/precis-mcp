@@ -92,6 +92,10 @@ class WithheldEdge:
     #: withheld as *stale* (claim edited after verification) rather than
     #: missing. False for the plain unverified shape.
     stale: bool = False
+    #: ``links.meta['verified_at']`` (ISO text) of the verdict a *stale*
+    #: edge carries — "claim edited after verification on <date>". ``None``
+    #: for unverified edges or verdicts stamped without a time.
+    verified_at: str | None = None
     #: The grounding chunk's ``pc<id>`` handle — the Phase-3 chase pointer
     #: (``links.meta['source_handle']``) when set, else the handle of the
     #: ``links.src_chunk_id`` the paper→hub edge pins directly (same
@@ -209,6 +213,9 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
                 paper_title=str(r[2] or ""),
                 relation=str(r[3]),
                 stale=r[4] is not None,
+                verified_at=(r[6] or {}).get("verified_at")
+                if r[4] is not None
+                else None,
                 chunk_handle=(
                     handle_registry.try_format("paper", chunk_id, chunk=True)
                     if chunk_id is not None

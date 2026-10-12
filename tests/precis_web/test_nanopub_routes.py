@@ -1480,3 +1480,46 @@ def test_coverage_panel_states_the_ledger_and_requests_a_resweep(
     )
     assert approved.status_code == 303, approved.text
     assert store.nanopub_publish_row(hub).state == "reviewed"
+
+
+def test_withheld_panel_leads_with_the_gate_and_states_each_reason(
+    client: TestClient, runtime_with_store
+) -> None:
+    """gr479949: the panel explains what an evidence edge is, the two
+    release doors and the publish consequence, and each row says why it
+    is withheld (never verified vs stale after a claim edit, with date)."""
+    from psycopg.types.json import Jsonb
+
+    from precis.nanopub.preflight import withheld_edges
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A reason-bearing claim.", paper, chunk)
+
+    text = client.get(f"/claim/fi{hub}").text
+    assert "cannot be published" in text
+    assert "precis taproot verify-edges" in text
+    assert "never verified" in text
+    assert "stale: claim edited" not in text
+
+    link_id = withheld_edges(store, hub)[0].link_id
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE links SET meta = meta || %s WHERE link_id = %s",
+            (
+                Jsonb(
+                    {
+                        "support": "support",
+                        "verified_claim_sha": "0" * 64,
+                        "verified_at": "2026-09-01T10:00:00+00:00",
+                    }
+                ),
+                link_id,
+            ),
+        )
+    edge = withheld_edges(store, hub)[0]
+    assert edge.stale and edge.verified_at == "2026-09-01T10:00:00+00:00"
+    text = client.get(f"/claim/fi{hub}").text
+    assert "stale: claim edited after verification" in text
+    assert "verified 2026-09-01" in text
+    assert "never verified" not in text
