@@ -214,11 +214,12 @@ export/fab if this file outgrows itself.
    nothing; removes the wall a colleague's 2-layer .epro2 hits at import.
 8. **gr451356 residue** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
    is authored per instance; shipped: placer snap + `edge_mating` DRC in
-   `view='drc'` and the place job's pre-route check. Left: the `.epro2`
-   import never sets it (a re-imported USB-C loses its constraint); the
-   judged-mutation gate (`_validity_findings`) and `pcb_route`'s pre-route
-   gate do not run the rule; a small package table (USB/card-edge/barrel)
-   to default `face` from the footprint name.
+   `view='drc'`, the place and route jobs' pre-route check
+   (`session.placement_drc_findings`) and the judged-mutation gate (moving
+   an edge-mated part off its edge is refused; newly authoring one on a
+   mid-board part is shown, not refused). Left: the `.epro2` import never
+   sets it (a re-imported USB-C loses its constraint); a small package
+   table (USB/card-edge/barrel) to default `face` from the footprint name.
 9. **backlog/pcb-freeze-mechanicals-and-parts.md** — Reto, 2026-09-30:
    "All should be able to be frozen — nuts, holes etc for sure. But also
    parts ... But only actually freeze when needed."

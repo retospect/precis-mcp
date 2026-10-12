@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import math
 
+import pytest
 from shapely.geometry import Polygon
 
+from precis.dispatch import Hub
+from precis.errors import BadInput
+from precis.handlers.pcb import PcbHandler
 from precis.pcb import DEFAULT_STACKUP, drc, edge_mate
 from precis.pcb.ir import from_graph
 from precis.pcb.optimize import OptimizeConfig, optimize
@@ -148,3 +152,153 @@ def test_no_outline_or_no_records_is_silent():
     recs = _place(ir, 20.0, 15.0, 0.0)
     assert drc.check_edge_mating(recs, outline=None) == []
     assert drc.check_edge_mating(None, outline=_RING) == []
+
+
+# ── handler level: edge_mating is judged on mutations ───────────────────
+
+
+@pytest.fixture
+def pcb(store):
+    return PcbHandler(hub=Hub(store=store))
+
+
+def _board(*, mate: dict | None, x: float, y: float) -> dict:
+    j1: dict = {
+        "refdes": "J1",
+        "label": "edge connector",
+        "footprint": "0402",
+        "x": x,
+        "y": y,
+        "pins": [{"name": "1"}, {"name": "2"}],
+    }
+    if mate is not None:
+        j1["edge_mate"] = mate
+    return {
+        "components": [j1],
+        "nets": [],
+        "connections": [],
+        "features": [
+            {
+                "ftype": "outline",
+                "geom": {"path": [[0, 0], [40, 0], [40, 30], [0, 30], [0, 0]]},
+            }
+        ],
+    }
+
+
+def _j1(pcb, design: str) -> dict:
+    ref = pcb.store.get_ref(kind="pcb", id=design)
+    (j1,) = [i for i in pcb.store.pcb_graph(ref.id)["instances"] if i["refdes"] == "J1"]
+    return j1
+
+
+def _flush_x(pcb, design: str) -> float:
+    """x that seats J1 (face E, rot 0) on the east edge, found by scanning
+    the DRC view rather than assuming the courtyard size."""
+    for tenth in range(400, 370, -1):  # outermost pose the outline accepts
+        x = tenth / 10
+        try:
+            pcb.put(id=design, args={"op": "move", "refdes": "J1", "x": x, "y": 15.0})
+        except BadInput:
+            continue
+        assert "edge_mating" not in pcb.get(id=design, view="drc").body
+        return x
+    raise AssertionError("no flush x found")
+
+
+def _judged_move(pcb, design: str, x: float, y: float):
+    """Move J1 inside ``_judged_mutation`` -- the seam the edge_mating verdict
+    lives in. (Single/batch ``op='move'`` is judged by the placer's pose rule
+    instead, and a re-put never moves an existing part.)"""
+    ref = pcb.store.get_ref(kind="pcb", id=design)
+    return pcb._judged_mutation(
+        ref.id,
+        lambda conn: pcb.store.pcb_move_instance(ref.id, "J1", x=x, y=y, conn=conn),
+    )
+
+
+def test_moving_edge_mated_connector_off_the_edge_is_refused(pcb):
+    mate = {"face": "E", "require": "required"}
+    pcb.put(id="em-move", args=_board(mate=mate, x=20.0, y=15.0))
+    x_ok = _flush_x(pcb, "em-move")
+    before = _j1(pcb, "em-move")
+    with pytest.raises(BadInput, match="edge_mating"):
+        _judged_move(pcb, "em-move", 20.0, 15.0)
+    after = _j1(pcb, "em-move")
+    assert (after["x"], after["y"]) == (before["x"], before["y"]) == (x_ok, 15.0)
+
+
+def _xy(pcb, design: str) -> tuple[float, float]:
+    j1 = _j1(pcb, design)
+    return (j1["x"], j1["y"])
+
+
+def test_op_move_required_edge_mated_off_the_edge_is_refused(pcb):
+    mate = {"face": "E", "require": "required"}
+    pcb.put(id="em-op", args=_board(mate=mate, x=20.0, y=15.0))
+    x_ok = _flush_x(pcb, "em-op")
+    with pytest.raises(BadInput, match="edge_mating"):
+        pcb.put(id="em-op", args={"op": "move", "refdes": "J1", "x": 20.0, "y": 15.0})
+    assert _xy(pcb, "em-op") == (x_ok, 15.0)
+
+
+def test_op_move_preferred_edge_mated_midboard_is_accepted(pcb):
+    mate = {"face": "E", "require": "preferred"}
+    pcb.put(id="em-op-pref", args=_board(mate=mate, x=20.0, y=15.0))
+    _flush_x(pcb, "em-op-pref")
+    pcb.put(id="em-op-pref", args={"op": "move", "refdes": "J1", "x": 20.0, "y": 15.0})
+    assert _xy(pcb, "em-op-pref") == (20.0, 15.0)
+
+
+def test_batch_op_move_required_edge_mated_off_the_edge_is_refused(pcb):
+    mate = {"face": "E", "require": "required"}
+    pcb.put(id="em-batch", args=_board(mate=mate, x=20.0, y=15.0))
+    x_ok = _flush_x(pcb, "em-batch")
+    with pytest.raises(BadInput, match="edge_mating"):
+        pcb.put(
+            id="em-batch",
+            args={"op": "move", "moves": [{"refdes": "J1", "x": 20.0, "y": 15.0}]},
+        )
+    assert _xy(pcb, "em-batch") == (x_ok, 15.0)
+
+
+def test_standing_midboard_required_part_may_move_closer_not_further(pcb):
+    mate = {"face": "E", "require": "required"}
+    pcb.put(id="em-stand", args=_board(mate=mate, x=20.0, y=10.0))
+    pcb.put(id="em-stand", args={"op": "move", "refdes": "J1", "x": 30.0, "y": 10.0})
+    assert _xy(pcb, "em-stand") == (30.0, 10.0)  # closer to the east edge
+    with pytest.raises(BadInput, match="edge_mating"):
+        pcb.put(
+            id="em-stand", args={"op": "move", "refdes": "J1", "x": 15.0, "y": 10.0}
+        )
+    assert _xy(pcb, "em-stand") == (30.0, 10.0)
+
+
+def test_adding_edge_mate_to_a_midboard_part_is_visible_not_refused(pcb):
+    # A re-put cannot patch an existing part's edge_mate, so the mated part
+    # arrives as a new component, mid-board, on a board with no edge_mate.
+    pcb.put(id="em-add", args=_board(mate=None, x=20.0, y=15.0))
+    mate = {"face": "E", "require": "required"}
+    j2 = {
+        "refdes": "J2",
+        "label": "edge connector",
+        "footprint": "0402",
+        "x": 10.0,
+        "y": 8.0,
+        "pins": [{"name": "1"}, {"name": "2"}],
+        "edge_mate": mate,
+    }
+    resp = pcb.put(id="em-add", args={"components": [j2]})
+    assert "edge_mating" in resp.body, resp.body
+    assert "standing" in resp.body, resp.body
+    ref = pcb.store.get_ref(kind="pcb", id="em-add")
+    stored = {i["refdes"]: i for i in pcb.store.pcb_graph(ref.id)["instances"]}
+    assert stored["J2"]["edge_mate"] == mate
+
+
+def test_preferred_edge_mate_moved_midboard_is_not_refused(pcb):
+    mate = {"face": "E", "require": "preferred"}
+    pcb.put(id="em-pref", args=_board(mate=mate, x=20.0, y=15.0))
+    _flush_x(pcb, "em-pref")
+    _judged_move(pcb, "em-pref", 20.0, 15.0)  # no BadInput: warn tier
+    assert _j1(pcb, "em-pref")["x"] == 20.0

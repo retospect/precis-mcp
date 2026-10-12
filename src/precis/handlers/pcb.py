@@ -255,8 +255,8 @@ def _pose_delta(
 
     Keys: ``courtyard_overlap`` is the unordered refdes pair (seen once
     from either end when both are moved); ``courtyard_hole``,
-    ``via_pad_keepout`` and ``outline`` are per part (hole id /
-    ``via`` / ``board outline``). ``skip[refdes]`` is the part's own rigid
+    ``via_pad_keepout``, ``outline`` and ``edge_mating`` are per part (hole
+    id / ``via`` / ``board outline`` / ``board edge``). ``skip[refdes]`` is the part's own rigid
     group, whose members never conflict with each other."""
 
     def collect(
@@ -279,7 +279,7 @@ def _pose_delta(
     standing: list[tuple[str, str, str, str]] = []
     for key, (depth, rule, rd, other) in collect(after).items():
         prev = old.get(key)
-        unit = "mm" if rule == "via_pad_keepout" else "mm\u00b2"
+        unit = "mm" if rule in ("via_pad_keepout", "edge_mating") else "mm\u00b2"
         if prev is None:
             problems.append((rule, rd, other, ""))
         elif depth > prev[0] + _POSE_DEPTH_EPS:
@@ -3997,7 +3997,7 @@ class PcbHandler(Handler):
         decides which of them gate): copper clearance (with class rules and net
         voltages), trace width, annular ring, NPTH clearance, via/pad and
         via/via keep-out, board edge, plus courtyard overlap, courtyard vs
-        mounting hole and outline containment. Not silkscreen, unrouted/
+        mounting hole, outline containment and edge mating. Not silkscreen, unrouted/
         connectivity (routedness, not validity), synthesized footprints or
         board furniture.
 
@@ -4055,6 +4055,10 @@ class PcbHandler(Handler):
             *pcb_drc.check_outline_containment(
                 model, outline=outline, courtyards=courtyards
             ),
+            *pcb_drc.check_edge_mating(
+                [r for r in pcb_edge_mate.records(ir) if r.refdes not in guessed],
+                outline=outline,
+            ),
         ]
         if courtyards:
             findings += pcb_drc.check_courtyard_overlap(
@@ -4104,6 +4108,15 @@ class PcbHandler(Handler):
         a mutation whose new facts must win, e.g. a pulled footprint)."""
         with self.store.pcb_judged_tx() as conn:
             before = self._validity_findings(ref_id) if ref_id is not None else []
+            mated_before = (
+                {
+                    str(i["refdes"])
+                    for i in self.store.pcb_graph(ref_id)["instances"]
+                    if i.get("edge_mate") is not None
+                }
+                if ref_id is not None
+                else set()
+            )
             result = mutate(conn)
             rid = ref_id_of(result) if ref_id_of is not None else ref_id
             if rid is None:
@@ -4118,6 +4131,15 @@ class PcbHandler(Handler):
             )
             problems: list[str] = []
             for f, margin, old_margin in worse:
+                # A constraint authored on a part already placed off the
+                # edge is a request for op='place' to snap it, not an
+                # invalid edit: shown, not refused. Moving an edge-mated
+                # part off its edge is refused like any other error.
+                if f.rule == "edge_mating" and not mated_before & {
+                    str(o.get("refdes")) for o in f.objects
+                }:
+                    report.visible.append(f"{f.rule}: {f.where}")
+                    continue
                 nets = pcb_session.router_nets_of(f)
                 if nets:
                     for net in sorted(nets):

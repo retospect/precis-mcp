@@ -176,7 +176,7 @@ from precis.pcb.cost import (
     outline_bbox,
     routing_area_term,
 )
-from precis.pcb.edge_mate import snap_to_edges
+from precis.pcb.edge_mate import required_pose_depth, snap_to_edges
 from precis.pcb.eyes import (
     align_residual,
     bind_feature_operands,
@@ -3131,8 +3131,10 @@ class OptimizeEngine:
         rule :meth:`pose_conflicts` does not report, listed only here, as
         ``("outline", "board outline", area)`` when the area exceeds
         1e-9; ``via_pad_keepout`` is the clearance shortfall in mm
-        (``_FIXED_VIA_CLEARANCE_MM`` minus the land-to-annulus gap), the
-        only depth that is a length."""
+        (``_FIXED_VIA_CLEARANCE_MM`` minus the land-to-annulus gap), and
+        ``("edge_mating", "board edge", mm)`` (outline boards only) is how
+        far a ``required`` edge-mated part misses its edge
+        (:func:`precis.pcb.edge_mate.required_pose_depth`)."""
         from shapely.geometry import Polygon
 
         ir = self.ir
@@ -3161,6 +3163,11 @@ class OptimizeEngine:
             outside = mine.difference(Polygon(ir.outline)).area
             if outside > 1e-9:
                 out.append(("outline", "board outline", float(outside)))
+            edge = required_pose_depth(
+                ir, inst, x, y, float(ir.inst_rot[inst]) if rot is None else rot
+            )
+            if edge is not None:
+                out.append(("edge_mating", "board edge", edge))
         return out
 
     def legalize_start(self) -> tuple[str, ...]:

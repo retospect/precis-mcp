@@ -413,7 +413,7 @@ and where to check before trusting a `view='drc'` pass on that part.
 A batch `put`, `op='class_rules'` and `op='footprint'` on a design with placed
 parts are checked before and after in one transaction. A design's first put
 counts when it carries x/y: its board is checked against an empty "before".
-Judged: pads, authored copper, courtyards, holes, the outline. Parts with only
+Judged: pads, authored copper, courtyards, holes, the outline, edge mating. Parts with only
 a synthesized (guessed) footprint are not.
 
 - **Refused:** a new or worse error between pads and authored copper stores
@@ -430,6 +430,9 @@ a synthesized (guessed) footprint are not.
 - **`op='footprint'`** always stores the real footprint; collisions it reveals
   stay as errors until a re-place. Only the calling design is judged; other
   designs using the part get a `check view='drc'` pointer.
+- **`edge_mating`:** moving a `required` edge-mated part off its edge is
+  refused. Adding `edge_mate` to a part already placed off the edge is not
+  refused; it is listed as standing until `op='place'` snaps it.
 - **Standing** findings (present before, not made worse) are only counted.
 
 Placement and routing run as **enqueued worker jobs** — never inline in this

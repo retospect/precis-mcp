@@ -243,6 +243,50 @@ def records(ir: PcbIR) -> list[EdgeMateRecord]:
     return out
 
 
+def required_pose_depth(
+    ir: PcbIR, i: int, x: float, y: float, rot: float | None
+) -> float | None:
+    """How far instance ``i`` at ``(x, y, rot)`` misses its ``required``
+    edge mate — the ``op='move'`` delta's measure (``optimize.
+    pose_conflict_depths``), so a hand move cannot drag a USB receptacle
+    off the edge that ``drc.check_edge_mating`` would then fail. ``None``
+    when it sits flush facing out, has no ``required`` spec, or the board
+    has no outline. Interior: the face centre's distance to the nearest
+    edge (always > :data:`EDGE_TOL_MM`); on the edge but facing in:
+    :data:`EDGE_TOL_MM`, so moving from interior to facing-in reads as
+    shrinking and the reverse as deepening."""
+    spec = _specs(ir)[i]
+    if spec is None or spec.require != "required":
+        return None
+    edges = outline_edges(ir.outline)
+    if not edges:
+        return None
+    from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM
+    from precis.pcb.ir import COURTYARD_CLEARANCE_MM, instance_courtyard_polygon
+    from precis.pcb.landpattern import place_points
+
+    local = instance_courtyard_polygon(
+        ir,
+        i,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
+    if len(local) < 3:
+        return None
+    r = 0.0 if rot is None or math.isnan(rot) else float(rot)
+    mirrored = bool(ir.inst_bottom[i])
+    rec = EdgeMateRecord(
+        refdes=str(ir.instance_refdes[i]),
+        require=spec.require,
+        polygon=place_points(local, cx=x, cy=y, rot_deg=r, mirrored=mirrored),
+        outward=outward_vector(spec, r, mirrored=mirrored),
+    )
+    v = evaluate(rec, edges)
+    if v.state == "ok":
+        return None
+    return v.distance_mm if v.state == "interior" else EDGE_TOL_MM
+
+
 def _specs(ir: PcbIR) -> list[EdgeMateSpec | None]:
     raw = ir.inst_edge_mate
     if raw is None:
