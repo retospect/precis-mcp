@@ -32,6 +32,53 @@ Moved out of the Resume (word budget); every fact kept.
 - Fin scenes, Local measurements, all clash-free and H-terminated by default: sp3 outward 963 C, inward 1,603 C, host angles 87–124° at the pinned registration; seam tubes outward 1,076 C (seam line 0.85 Å proud of the 6.96 Å mean wall radius), inward 1,780 C (notch 0.6 Å deep at 12.38 Å mean radius), seam angles exact.
 - Y variant A ran on prod 2026-10-07 12:15Z (round 5, fc8ad08f7): `se:hexfold-dogfood-y-a` block `y` UID 212, 5,790 atoms, 87 seam eight-cycles, 0 clashes, 696 ring-angle WARNs, matching the dev-DB build; URL handed to Reto, td471803 done. Native stored-target acceptance on legacy r5 recorded on gr470905 (default reads honest-unavailable, override and null boundaries as specified); a receipt-backed positive read still needs a post-R17 sphere/cylinder generation.
 
+## Design note: pillar diameter (post-R16 dogfood)
+
+Retained historical planning note, not authorization for another fleet run.
+gr469873 original reach acceptance is DONE; the diameter sweep and cost-job
+follow-on transfers to a Mac-local agent. No wider-pillar build or sweep
+validation was performed for this note.
+
+Reto via orchestrator (2026-10-06 15:20Z) asks whether a wider pillar
+reduces collapse in the ball12 lineage, `se:hexfold-dogfood-r4` /
+`st465728`. Plan fresh Melchior-only variants at current diameter, 1.5x
+and 2x, with the same authored ball radius and fold settings, after R16
+deployment and authenticated process/viewer gates. Durable plan and limits:
+Precis gr469873, comment 2, publication key
+`hexfold-ball12-pillar-diameter-sweep-plan`; native readback verified, OPEN.
+Transport pointer: fleet-state `inbox/hexfold-r16-dogfood-plan.md`.
+
+Premise checked: pillar diameter is derived from authored zigzag tube `n`
+(`D = 2 * tube_radius(n, 0)`), while feature `radius` is the foot fillet.
+There is no independent continuous diameter field. At fixed lattice settings,
+n12, n18 and n24 give the requested diameter ratios. However, the current
+sphere-scene guard refuses n above 12 before planning: the larger variants
+are blocked, not ready to run. The smallest authoring path uses existing
+`n` and explicitly pins `top_R` and all fold settings; a separately reviewed
+narrow guard/budget change is prerequisite for larger builds. Do not scale
+the whole scene or bypass the guard. Recover the actual authored ball radius
+from saved provenance; a fitted sphere radius is not that provenance.
+
+Guard investigation (durable gr469873 comment 3, readback verified)
+confirms the n ceiling protects synchronous request cost, not socket or
+print clearance. A proposed explicit 12/18/24 ceiling opt-in must preserve
+the default and all geometry checks, with a proven Melchior request budget;
+no implementation in this note. Also, `top_R` selects the nearest
+area-matched candidate: identical requested radius does not guarantee
+identical actual sphere radius. Report both; a strictly fixed actual-radius
+sweep needs a separate reviewed target-authoring premise/change.
+
+Report each variant's built/refused/unknown state, actual/authored diameter,
+reach residual mean/p95/max in Å, whole-scene and pillar-period fractions
+within 0.5 Å, and an actually opened Melchior `/se/<slug>` URL. Name the
+observed collapse indicator: evidenced self-intersection, measured waist
+narrowing relative to authored diameter with discrete-ring/precision limits,
+or declining fraction along the pillar with explicit counts. Use saved
+pillar membership; missing topology/provenance stays unknown. A width
+deficit or tethered fold is not a physical stability verdict. All model,
+hero, scientific, service and private-k3-public/T2 holds remain; no live
+build, tests or new threshold in this planning change.
+
 ## Thread context
 
 **Status:** ends when hexfold composites join, catalogue and validate
