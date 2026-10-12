@@ -361,8 +361,23 @@ fabric so the rule and its check cannot drift. Owning files:
 `src/precis/pcb/generators.py`, the measures evaluator, `PcbHandler`
 measures view.
 
-Who: needs-Reto: spec round — metric vocabulary for the generator-owned
-class, and whether `hard` gates by default or via a new strength.
+**Decided 2026-10-12 (Reto, design-fold):**
+
+1. Metrics are generator-declared. Each generator in `generators.py`
+   emits its invariants as measure rows, and the evaluator sits beside the
+   code that emits the fabric. First set: `via_per_electrode`,
+   `no_via_in_pad`, `pad_covers_plaza`, `hv_pitch_floor`,
+   `stub_length_match`.
+2. `hard` keeps steering (the placer prices it ~40× soft). Changing it to
+   gate would silently alter the placer on every existing board. Gating
+   is a new strength, `invariant`, evaluated by the always-valid gate
+   (`pcb-always-valid-board-invariant.md`). A violated `invariant`
+   reddens the check and refuses the put/route; it is never merely
+   weighted.
+
+Acceptance: on ewod-dogfood-6, `view='measures'` lists the five generator
+invariants with a value each; a hand-moved via into a pad makes
+`no_via_in_pad` fail and the next put refuses with that measure named.
 
 ## Sequencing
 

@@ -74,6 +74,17 @@ checked against the footprint's pad map, which nothing checks today
   page-anchored pin table on the part ref, not one finding per pin (that
   floods the claim graph). This supersedes gr458878's proposed
   pin → finding → chunk shape.
-- **[open]** Is a single-pin citation (`part:<C#>~<pin>` link selector)
-  still wanted once the pin table exists, and does it extend the
-  `pcb-argue-with-design.md` anchor grammar?
+- **[decided 2026-10-12, Reto design-fold]** Build the single-pin
+  citation: `part:<C#>~<pin>` is a link selector (`handlers/_link_target.py`
+  resolves refs and chunks only today). Reto: "we need this to talk" — an
+  argument about a pin must be able to cite the datasheet row for that
+  pin. It does not become a second scheme: the pad handle in the
+  `pcb-argue-with-design.md` anchor grammar (`U_TEMP.3`, `ARR1.R3C4`,
+  resolved in `src/precis/pcb/argue.py`) resolves through the instance's
+  part to `part:<C#>~<pin>`, and the selector resolves to the pin-table
+  row (number, name, function, type, page anchor). So a design pad, the
+  part pin and the datasheet page are one walk. Pin names use the pin
+  table's number. Acceptance: `link(target='part:<C#>~3')` resolves and
+  shows the row with its page anchor; an argue note about `U_TEMP.3` reports
+  the same row; an unknown pin is a BadInput quoting the valid pins.
+  Builds with the pin table (this item's slice that stores it).

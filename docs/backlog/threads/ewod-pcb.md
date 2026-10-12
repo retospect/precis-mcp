@@ -47,12 +47,8 @@ deploy, for steps 2, 3 and 5 below. gr464537 (step 4) waits on nothing
 and is the first build on reopen. The sheet-job adapter waits on
 se-machine-design's input shape (Do-next).
 
-1. **gr464240, round-3 dogfood done (job 464668, prod 929107f32):**
-   22 of 55 routable nets realized (round 2: 20; earlier: 29),
-   0 vias, best_at=0/708 (round 2: 17/699): the anneal never beat its
-   start state. A fix helped by 2 nets, but it did not recover
-   the 29. Still open; do step 2 before touching the cost model, so the
-   v4 generator's effect is measured on its own.
+1. **gr464240** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
+   ruled 2026-10-12: route start/best/last, keep the most-routed).
 2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4; the
    route reply carries the stale warning, confirmed live). Re-put its
    generators entry, route, report routed count before/after — after
@@ -101,6 +97,10 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    and **mx456–mx467**. Steps: prod re-route with the landed warm start and
    pin swaps on; then a placement pass that may move the driver and parts
    and enlarge the outline. Report routed/55, vias, length, and what moved.
+0b. **backlog/pcb-anneal-best-state-vs-routability.md** (gr464240) — after
+   0: only if routed/55 stays low and `best_at` stays near 0, route the
+   anneal's start/best/last states and keep the most-routed (Reto
+   2026-10-12; no routability cost term).
 0a. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
    board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
    are chosen in the board frame, and an aligned row or column of
@@ -291,7 +291,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    a class becomes enforceable rather than advisory. **gr458878** (filed on
    Reto's word 2026-09-30) is the pin-level datasheet-provenance gap: a
    datasheet links to a PART, but no pin selector exists so no pin fact can
-   cite the page it came from — and the payoff is validation, since the
+   cite the page it came from (ruled 2026-10-12: build `part:<C#>~<pin>`,
+   reached from the argue pad handle — `datasheet-facts-mesh.md` log) — and the payoff is validation, since the
    footprint and the datasheet pin table are two independent statements of
    pad->function that we compare nowhere. Owned by pcb-platform, sequenced
    behind pcb-component-model. That gripe also records the blocker found
@@ -321,19 +322,10 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-10. **gr451662** — EWOD stack assembly needs non-fab mechanical 2D layers
-    (ITO top sheet, spacer adhesive, alignment holes, via-plaza covers),
-    generalising the pcb 2D layer system the way solder paste already
-    does; the hard part is stencil bridges that keep the adhesive sheet
-    one connected component. Reto-architected 2026-09-26; waits on nothing.
-    **v1 shipped** as `precis.pcb.mech2d` (pure,
-    never in `export_fab`): ITO cut + spacer adhesive (frame with array
-    window, optional via covers), shared round-hole+slot alignment
-    primitive, kerf and mirror at export, board-fingerprinted SVG,
-    connected-component check. **Left:** stencil bridges (open-polyline
-    gaps) for interior islands, the channel-cutout style variant,
-    persisting the layers as generator rows / a `pcb` view wiring, the
-    parylene-liner-edge note, Cricut importer check (Reto: "later").
+10. **backlog/pcb-ewod-mechanical-sheets.md** (gr451662) — mech2d v1
+    shipped; left: stencil bridges, channel-cutout variant, coating
+    extent, `view='cutsheets'` (not `mechanical`, which is the fab view),
+    generator-row persistence. Waits on Reto's dimensions.
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
 14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +

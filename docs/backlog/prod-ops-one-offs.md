@@ -143,13 +143,6 @@ need Reto. Re-check each one before acting, because several are days old.
 - **gr464379:** balthazar `com.openclaw.agents` exits with code 78. Its log
   dir is root-owned and the job runs as `openclaw`. Fix: chown, then
   re-check.
-- **gr273965:** cluster hosts fail the TLS handshake to Vercel-hosted
-  sites; likely a UniFi IPS false positive on server-like hosts
-  (perplexity-reasoning:478805). Reto checks the UniFi console (td345841):
-  from melchior run `curl -v https://vercel.com`; in UniFi, Insights →
-  Flows (filter blocked) or Insights → Threats for the matching rule. If it
-  is an IPS signature, use "Allow Signature" or "Exclude Source IP" scoped
-  to the cluster hosts. Never disable IPS.
 - **gr461596:** dropping the `llm_call_log` hash indexes is on hold. The
   caller check says DO NOT DROP (the GC anti-join and FK use them).
   Date-gated: re-check `idx_scan` after 2026-10-13, then either drop them

@@ -214,10 +214,19 @@ during it.**
 - Decide now: each terminal takes exactly one net = **perfect matching**.
   If electrodes ever share a channel (multiplexing) the problem becomes
   min-cost flow — different solver, same interface; do not pre-build it.
-- **Hypothesis, not fact:** this should largely dissolve gr347037. Its
-  2026-09-24 re-measure shows interior electrodes (rows 1–4, columns 2–6)
-  failing while the perimeter routes — the signature of a bad assignment,
-  not a capacity wall. Test after Slice 1 restores an honest metric.
+- **Evidence 2026-10-11 (gr347037; ruled 2026-10-12, Reto design-fold):**
+  dogfood-6 failed 10/55 (7 no_path, 3 congestion at the right edge:
+  R5C7, R6C7, R7C6). Offline replay on B.Cu: distance warm start 24
+  failed, radial 33, none 33, different nets each time; opening In2.Cu
+  leaves 4. The failure set tracks assignment and layer capacity, not a
+  lost race, so this matching is the fix. **Do not patch routing order or
+  retry depth for `no_path` nets** — it moves failures between nets and
+  inflates the realized count (masking). Order/retry may be tried only on
+  the congestion subset, as a measured experiment. ewod-pcb Do-next 0 (the
+  unconstrained re-route) is the live test; the 2026-10-12 prod re-route
+  on r24 left 4 failed (R1C5, R6C5, R7C2, R7C6, job 479966). Doc drift:
+  5fc99982b dropped the plaza via B.Cu stub, but the old 30/57 → 10/58
+  gain is still credited to it.
 
 ### 1f. No schematic/layout split — one continuous persisted context
 
