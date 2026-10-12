@@ -1492,14 +1492,15 @@ def _vet_objectives(
         return None
     if not isinstance(raw, dict):
         raise OpError(f"{opname} 'objectives' must be a JSON object, got {raw!r}")
-    if edge and raw.get("fixed") is not None:
-        # reject on EVERY edge write path, not just set_load — a stored
-        # 'fixed' on a connect is read by nothing (the swallowed-facet
-        # lesson, reviewer finding 2026-09-09).
-        raise OpError(
-            f"{opname}: 'fixed' grounds a BLOCK (stability "
-            "supports) — it has no meaning on a connect"
-        )
+    for key in ("fixed", "pinned"):
+        if edge and raw.get(key) is not None:
+            # reject on EVERY edge write path, not just set_load — a stored
+            # support key on a connect is read by nothing (the
+            # swallowed-facet lesson, reviewer finding 2026-09-09).
+            raise OpError(
+                f"{opname}: {key!r} grounds a BLOCK (stability "
+                "supports) — it has no meaning on a connect"
+            )
     if not edge and raw.get("role") is not None:
         # The mirror of the rejection above: 'role' is the atomic bond
         # capability gate's override and is read on connects only (a block

@@ -433,6 +433,9 @@ OBJECTIVE_KEYS: dict[str, str] = {
     "'x'|'y'|'z'|'rx'|'ry'|'rz'; pins the block's point on its rigid body, "
     "x+y+z on a body's only support clamps it (blocks only; read by "
     "view='stability')",
+    "pinned": "true keeps the block's rotations free where its 'fixed' "
+    "x+y+z would clamp it — a ball joint (blocks only; read by "
+    "view='stability')",
 }
 
 
@@ -497,6 +500,13 @@ def validate_objectives(raw: dict[str, Any]) -> dict[str, Any]:
         out["cycles"] = cycles
     if raw.get("fixed") is not None:
         out["fixed"] = _vet_fixed(raw["fixed"])
+    if raw.get("pinned") is not None:
+        # stored as given, false included, so a set_load merge can unset it
+        if not isinstance(raw["pinned"], bool):
+            raise JointError(
+                f"objective 'pinned' must be true or false, got {raw['pinned']!r}"
+            )
+        out["pinned"] = raw["pinned"]
     if raw.get("role") is not None:
         role = str(raw["role"]).strip()
         if not role:

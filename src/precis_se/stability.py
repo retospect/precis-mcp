@@ -29,7 +29,8 @@ three non-collinear feet 6. A block whose ``fixed`` covers x, y and z and
 is the only grounded block of its body is a clamp: it also grounds the
 three rotations, unless its list names ``rx``/``ry``/``rz`` itself — then
 exactly those rotations are grounded (an axle bearing on a lone body is
-``x y z rx ry``). Rotation axes act only
+``x y z rx ry``), or unless the block sets ``objectives.pinned`` — then
+its rotations stay free (a ball joint). Rotation axes act only
 on a 6-DOF body; a pin node's rotation is not a modelled DOF. A grounded
 point off its body's pose makes that body 6-DOF.
 
@@ -418,7 +419,8 @@ def _assemble(tree: SeTree) -> _System:
     # −skew(r)[k] on the rotation rows. Clamp (Reto 2026-10-12): a support
     # covering x, y and z that is the ONLY support on its body also grounds
     # the three body rotations, unless it lists rotation axes itself — then
-    # exactly those are grounded (an axle bearing is x y z rx ry).
+    # exactly those are grounded (an axle bearing is x y z rx ry), or it
+    # sets objectives.pinned (a ball joint: rotations stay free).
     # Rotation axes act only on a 6-DOF body — a pin node's rotation is not
     # a modelled DOF, so a clamp there grounds the same as a pin.
     per_node = Counter(i for i, *_ in supports)
@@ -426,7 +428,12 @@ def _assemble(tree: SeTree) -> _System:
     for i, name, arm, axes in supports:
         r0 = int(start[i])
         rot = {a for a in axes if a in _ROTATIONS}
-        if not rot and set(_TRANSLATIONS) <= set(axes) and per_node[i] == 1:
+        if (
+            not rot
+            and set(_TRANSLATIONS) <= set(axes)
+            and per_node[i] == 1
+            and tree.blocks[name].objectives.get("pinned") is not True
+        ):
             rot = set(_ROTATIONS)
         for k, axis in enumerate(_TRANSLATIONS):
             if axis not in axes:

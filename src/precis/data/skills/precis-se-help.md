@@ -177,7 +177,7 @@ the last four delimit region selectors, `precis-se-regions-help`.)
 ## Ops — loads, prose, measures
 
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
-  keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `fixed`
+  keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `pinned` · `fixed`
   (true = `["x","y","z"]` or a subset of `x y z rx ry rz`; blocks only;
   pin vs clamp under `view='stability'`) · `clear`. Flat, never under
   `objectives=`. Keys MERGE across calls (a repeated key overwrites);
@@ -475,10 +475,10 @@ Maxwell/Calladine m−s on the axial subgraph:
   skipped. Other connects (`revolute` …) are NOT in the matrix.
 - `fixed` pins each grounded block's point on its body: one foot grounds
   3 DOF, two 5, three non-collinear 6. Clamp: `x`+`y`+`z` on a body's ONLY
-  grounded block grounds all 6 (bolted down); `["z"]` stays a pin; any of
-  `rx`/`ry`/`rz` disables the clamp and grounds exactly those (axle
-  bearing on a lone hub: `["x","y","z","rx","ry"]`). Pin-node rotation is
-  not modelled. Header `c` = grounded DOFs.
+  grounded block grounds all 6; `["z"]` stays a pin; any of
+  `rx`/`ry`/`rz` unclamps, grounding exactly those (axle
+  bearing on a lone hub: `["x","y","z","rx","ry"]`); `pinned=true` keeps
+  all three free (ball joint). Pin-node rotation unmodelled; `c` = grounded.
 - Verdicts: `rigid` · `prestress-stabilized` · `first-order mobile —
   NOT stabilized …` · the not-checked tripwire line.
 - Declared preloads are checked as a self-stress state (out-of-balance

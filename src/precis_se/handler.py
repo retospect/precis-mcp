@@ -5268,7 +5268,7 @@ def _render_stability(tree: SeTree) -> str:
         "its pose; rigid connects merge their blocks into one rigid body; "
         "fixed pins each grounded block's point on its body (x/y/z; "
         "x+y+z on a body's only support clamps all 6 DOF; rx/ry/rz ground "
-        "rotations); pin-ended axial members only — other non-axial "
+        "rotations; pinned=true keeps rotations free, a ball joint); pin-ended axial members only — other non-axial "
         "connects and envelope contact are NOT modelled",
         "",
         f"j={report.j} node(s)  b={report.b} member(s)  c={report.c} "

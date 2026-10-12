@@ -1193,6 +1193,45 @@ def test_partial_translation_support_stays_a_pin() -> None:
     assert "mobile" in report.verdict
 
 
+def test_pinned_lone_body_keeps_its_rotations_free() -> None:
+    """pinned=true on the body's only x/y/z support: no clamp (a ball
+    joint). c = 3 + 3; free rx, ry, rz (3); the bar resists rz → rank 1,
+    m = 2; m − s = 9 − 6 − 1."""
+    tree = apply_ops(
+        _offset_bar_body(True), [{"op": "set_load", "block": "body", "pinned": True}]
+    )
+    report = se_stability.classify(tree)
+    assert (report.c, report.rank, report.m, report.s) == (6, 1, 2, 0)
+    assert report.m - report.s == 9 - report.c - report.b
+    assert "mobile" in report.verdict
+
+
+def test_pinned_false_merges_back_to_the_clamp() -> None:
+    """set_load merges keys, so pinned=false must undo pinned=true."""
+    tree = apply_ops(
+        _offset_bar_body(True),
+        [
+            {"op": "set_load", "block": "body", "pinned": True},
+            {"op": "set_load", "block": "body", "pinned": False},
+        ],
+    )
+    report = se_stability.classify(tree)
+    assert (report.c, report.rank, report.m, report.s) == (9, 0, 0, 1)
+
+
+def test_pinned_is_refused_on_a_connect_and_must_be_a_bool() -> None:
+    with pytest.raises(OpError, match="'pinned' grounds a BLOCK"):
+        apply_ops(
+            _offset_bar_body(True),
+            [{"op": "set_load", "a": "body.p", "b": "wall.pin", "pinned": True}],
+        )
+    with pytest.raises(OpError, match="'pinned' must be true or false"):
+        apply_ops(
+            _offset_bar_body(True),
+            [{"op": "set_load", "block": "body", "pinned": "yes"}],
+        )
+
+
 # ── supports on rigid groups: one constraint row set per foot ───────────
 
 
