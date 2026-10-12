@@ -271,6 +271,7 @@ def run_loop(
                 log.info("worker: stop signal received; exiting loop")
                 return
             t0 = time.monotonic()
+            activity.track(handler.name)
             try:
                 result = run_handler_once(handler, store, batch_size=batch_size)
             except Exception:
@@ -279,6 +280,8 @@ def run_loop(
                 # single hiccup to kill the whole worker.
                 log.exception("worker: %s batch raised; continuing", handler.name)
                 continue
+            finally:
+                activity.untrack()
             # Structured payload travels via the DBLogHandler's
             # ``extra={'payload': ...}`` channel so worker_logs.payload
             # carries the BatchResult shape directly — `precis logs

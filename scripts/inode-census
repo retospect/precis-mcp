@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Read-only inode census for a quota-limited tree (Lustre project space, NAS, home).
 
 Walks one directory once and reports where the file count (inodes) sits:

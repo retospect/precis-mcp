@@ -1074,6 +1074,9 @@ def _heartbeat_thread_body(
 
     store: Store | None = None
     while not should_stop():
+        # gr262888: name a pass stuck past the threshold (never raises).
+        # A hang in this thread's own connect/pass below also loses the warning.
+        activity.warn_if_stuck()
         try:
             if store is None:
                 try:
