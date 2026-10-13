@@ -186,3 +186,30 @@ lever; the loader's host-side staging peaks at the end of load and frees
 after. Fifth launch pauses earlyoom for the load window only (restored by
 a guard on castor itself). If SGLang is sound once up, the role needs
 either that guard or an earlyoom exemption for the serving unit.
+Research, 2026-10-13 14:0xZ (perplexity-research reports cached as
+`sglang-serving-openai-gpt-oss-120b-on-nvidia-dgx-spark-gb10` and
+`best-smaller-open-weight-model-than-gpt-oss-120b-for-agentic`; flags
+verified against the image's `--help` on castor):
+- The load peak is a loader buffer, not the static fraction. SGLang has
+  `--weight-loader-drop-cache-after-load` (Spark-validated in the MiMo-V2.6
+  Spark recipe: frees the load buffer once weights are on-device) and a
+  streaming loader `--load-format runai_streamer` whose host buffer is
+  capped by `--model-loader-extra-config '{"memory_limit": <bytes>,
+  "concurrency": N}'`; SSD is a documented source. Fifth launch uses both
+  with earlyoom left on (4 GiB cap, concurrency 4). If the streamer import
+  fails the fallback is plain safetensors + drop-cache.
+- NVIDIA's SGLang Spark playbook lists gpt-oss-20b and gpt-oss-120b MXFP4
+  as supported on `lmsysorg/sglang:latest-cu130`, no Harmony corruption
+  reported; gpt-oss-20b on SGLang ~70 tok/s on GB10.
+- vLLM on SM121 needs the whole gotchas set, not just atomic-add:
+  `--moe-backend marlin`, Triton attention, `VLLM_USE_FLASHINFER_MOE_FP4=0`,
+  `VLLM_MARLIN_USE_ATOMIC_ADD=1`; CUTLASS FP4 is silently wrong. Cheap
+  second vLLM try if SGLang fails. Spark images once registries are back:
+  `nvcr.io/nvidia/vllm:25.12.post1-py3`, community `eugr/spark-vllm-docker`.
+- Smaller-model options, all registry-free: gpt-oss-20b via SGLang (HF is
+  reachable from castor; ~16 GB, never near earlyoom's line);
+  Nemotron 3 Super NVFP4 already complete on castor's disk (75 GB; on vLLM
+  needs `VLLM_NVFP4_GEMM_BACKEND=marlin`, ~16-18 tok/s). Qwen3-Coder-30B-A3B
+  FP8 on vLLM ~44 tok/s is the best-documented coding model but needs an
+  FP8 download. Castor's NVMe reads 11.9 GB/s direct; load time is
+  processing, not disk.
