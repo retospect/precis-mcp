@@ -309,9 +309,16 @@ def _mode_binding_findings(
     ]
 
 
-def drc(tree: SeTree) -> DrcReport:
+def drc(
+    tree: SeTree, *, load_cases: list[se_stability.LoadCase] | None = None
+) -> DrcReport:
     """Run every graph-tier check + stack-up + the DOF probe. Pure over
-    ``tree`` (plus its loaded measures); no store access."""
+    ``tree`` (plus its loaded measures); no store access.
+
+    ``load_cases`` is the view-layer named-load-case argument for the
+    sign-aware completeness rule (4e, the complementarity bridge): each
+    ``(name, {block: [x, y, z]})`` adds a case on top of the implicit
+    ``'declared'`` case the stored ``objectives.force`` field makes."""
     findings: list[ValidationIssue] = []
 
     # 1. stored joints re-checked through the one schema (op-time gates new
@@ -595,6 +602,25 @@ def drc(tree: SeTree) -> DrcReport:
                 subject=subject,
                 detail=detail,
                 severity="warn",
+            )
+        )
+
+    # 4e. sign-aware completeness under each declared load case (the
+    # complementarity bridge's slice-2 face): a tie a case drives into
+    # compression is a topology error, named by member and case —
+    # warn-first like prestress_state, hardening to error once the
+    # flagship dogfood exercises it. Paths that cannot run the solve
+    # emit the honest "not checked" line at info tier, never a bare
+    # verdict and never a warn for an unchecked design.
+    for severity, subject, detail in se_stability.completeness_findings(
+        tree, load_cases=load_cases
+    ):
+        findings.append(
+            ValidationIssue(
+                rule="completeness",
+                subject=subject,
+                detail=detail,
+                severity=severity,
             )
         )
 

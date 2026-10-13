@@ -479,6 +479,26 @@ Maxwell/Calladine m−s on the axial subgraph:
   declared — nothing to verify", never a pass.
 - A loaded block outside the analysed subgraph is NOT flagged — check
   membership yourself (j of N blocks in the header).
+- **Load path** (`## load path` section): the active-set
+  complementarity solve over the pin reduction (block-pose to
+  block-pose, ports/arms/rotations not modelled) — per member taut /
+  slack / bearing / separated under each load case; members without a
+  declared `rate` are skipped and named, never guessed. The solve needs
+  `rate` (and `free_length`/`preload` for prestress) declared on the
+  axial joint params.
+- **Load cases are an argument, not stored objectives**:
+  `args={'load_cases': [{'name': 'shock', 'loads': {'<block>':
+  [x,y,z]}}]}` layers named cases (complete per-block force fields) on
+  top of the implicit `'declared'` case `objectives.force` makes;
+  accepted on `view='stability'`, `'drc'` and `'validate'` — a case
+  that drives a tie compressive lands as a warn-tier `completeness`
+  finding naming member and case.
+- **Bistability**: `args={'bistable': {'member': 'a.port—b.port',
+  'trans': <m>, 'cis': <m>}}` probes whether a photoswitch member's two
+  free lengths are two stable equilibria of one structure (`bistable:
+  YES/no`, both per-state verdicts, the barrier estimate and the core's
+  honesty notes verbatim — it is an energy-difference scale, never a
+  snap-through barrier).
 
 ## Checking views — drc, fasten, clearance
 

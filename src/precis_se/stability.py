@@ -52,6 +52,33 @@ that balance at every free node with no external load — within a
 tolerance; undeclared members are completed by least squares and the
 implied forces vetted against role sign and capacity pair.
 
+The same assembler backs the **complementarity bridge** (the se side of
+docs/backlog/complementarity-solver.md slices 1–3; the solver itself is
+:mod:`precis.structsolve.complementarity`, unchanged): under a declared
+or named load case, which members carry and does every member stay on its
+legal sign. :func:`load_path_report` (the ``view='stability'`` taut/slack
+section) solves the **pin reduction** of the assembled system —
+node-per-block poses exactly as :func:`_assemble` scopes them (rigid
+groups merged to their reference node, members running block-pose to
+block-pose): port offsets, attachment arms and rigid-body rotations are
+NOT modelled there — :func:`classify` above stays the fuller model, and
+non-axial connects and envelope contact stay out of scope either way.
+:func:`completeness_findings` is the warn-first DRC face (a tie a case
+drives into compression is a topology error — the finding names the
+member and the case; any path that cannot run the solve reports "not
+checked", never a bare verdict). :func:`probe_member_bistability` is the
+photoswitch ``{trans, cis}`` free-length entry to the two-equilibria
+probe, surfacing the core's notes verbatim. Members without a declared
+``rate`` are skip-and-report, never guessed; ``free_length`` defaults to
+the installed length (zero prestress) unless a declared ``preload``
+implies one; a member without a capacity pair solves as bidirectional —
+its sign is undeclared, not bilateral by evidence (the missing pair is
+already ``capacity_findings``' finding). Load cases are a view-layer
+argument, not stored objectives — the spec's open question, resolved
+2026-10-13: ``objectives.force`` (block and connect) is always the
+implicit ``'declared'`` case and a ``load_cases`` view argument layers
+named cases on top, so no objectives-schema change and no migration.
+
 TRIPWIRE CONTRACT (two-party, recorded in
 docs/backlog/structural-solution-space.md §Tripwire contract and
 docs/backlog/cad-machine-spec.md §NOT-in-scope): any constraint-vs-DOF
@@ -71,6 +98,7 @@ formfind still places its nodes at block poses (ports ignored; Reto
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -78,6 +106,13 @@ import numpy as np
 
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.structsolve import (
+    BistabilityResult,
+    ComplementarityError,
+    check_completeness,
+    probe_bistability,
+    solve_complementarity,
+)
 from precis_se import joints as se_joints
 from precis_se.ops import ConnectSpec, SeTree, effective_ports
 
@@ -1301,3 +1336,590 @@ def _find_connect(tree: SeTree, row: MemberRow) -> ConnectSpec | None:
         if subject == row.subject:
             return conn
     return None
+
+
+# ── the complementarity bridge: load path, completeness, bistability ────
+# (docs/backlog/complementarity-solver.md — the se side of slices 1–3.
+# The solver is :mod:`precis.structsolve.complementarity`, a pin-jointed
+# small-displacement active-set solve; this bridge reduces the assembled
+# system to exactly the pin model it takes and reports under the same
+# honesty posture as the rest of this module — see the module docstring
+# for the pin-reduction scope and the load-case vocabulary decision.)
+
+#: Member role → solver sign idiom. ``must_contact`` has no se vocabulary
+#: yet (the spec maps a hard stop onto a declared gap/interface as a
+#: compression-only member); an undeclared capacity pair solves as
+#: bidirectional and is noted, never silently one-sided.
+_ROLE_IDIOM = {
+    "tie": "tension_only",
+    "strut": "compression_only",
+    "rod": "bidirectional",
+}
+
+#: The implicit case name for the stored loads (``objectives.force`` on
+#: blocks and connects) — findings and the view section name cases.
+DECLARED_CASE = "declared"
+
+#: One named load case at the view layer: ``(name, {block: [x, y, z]})``.
+#: A named case's ``loads`` map is that case's complete per-block force
+#: field (it does not merge with ``objectives.force``); connect-declared
+#: forces are joint-internal declarations and apply to every case.
+LoadCase = tuple[str, dict[str, list[float]]]
+
+
+@dataclass
+class _Bridge:
+    """The assembled system (:func:`_assemble`'s scoping — rigid groups
+    merged, degenerate members already skipped) reduced to the
+    pin-jointed arrays :func:`~precis.structsolve.solve_complementarity`
+    takes. ``skipped``/``notes`` carry the honesty record: what the
+    reduction dropped and why."""
+
+    system: _System
+    node_names: list[str]
+    index: dict[str, int]
+    coords: np.ndarray  # (j, 3) node poses
+    members: np.ndarray  # (b, 2) node indices of the solvable rows
+    rows: list[MemberRow]  # aligned with `members`
+    rate: np.ndarray  # (b,)
+    free_length: np.ndarray  # (b,)
+    idiom: np.ndarray  # (b,) dtype=object
+    fixed: np.ndarray  # (j, 3) bool — translation axes only
+    block_loads: np.ndarray  # (j, 3) — block objectives.force
+    connect_loads: np.ndarray  # (j, 3) — connect objectives.force halved
+    skipped: list[tuple[str, str]]  # (subject, reason) — unsolvable members
+    notes: list[str]
+
+
+def _bridge(tree: SeTree) -> _Bridge | None:
+    """Assemble the pin-model arrays. ``None`` when the design has no
+    axial members at all (the section and the findings are silent then —
+    absence is not a finding). Members the solve cannot see — a missing
+    or non-positive ``rate``, a degenerate length in the pin model, a
+    ``preload``-implied non-positive free length — are skip-and-report
+    into ``skipped``, never guessed at."""
+    system = _assemble(tree)
+    if not system.members:
+        return None
+    j = len(system.node_names)
+    index = system.index
+    notes: list[str] = list(system.notes)
+    notes.extend(_scope_honesty_notes(tree, list(index)))
+    skipped: list[tuple[str, str]] = [
+        (row.subject, row.skipped) for row in system.members if row.skipped
+    ]
+
+    rows: list[MemberRow] = []
+    member_idx: list[tuple[int, int]] = []
+    rates: list[float] = []
+    free_lengths: list[float] = []
+    idioms: list[str] = []
+    n_default_fl = 0
+    n_undeclared_role = 0
+    for row in system.live:
+        assert row.a_block in index and row.b_block in index
+        ia, ib = index[row.a_block], index[row.b_block]
+        length = float(np.linalg.norm(system.coords[ib] - system.coords[ia]))
+        if length <= 0.0:
+            skipped.append(
+                (
+                    row.subject,
+                    "endpoint blocks share a pose — zero length in the pin "
+                    "model (the port-to-port member is real; this reduction "
+                    "cannot see it)",
+                )
+            )
+            continue
+        rate = row.params.get("rate")
+        if rate is None or not math.isfinite(rate) or rate <= 0.0:
+            skipped.append(
+                (
+                    row.subject,
+                    "no declared axial 'rate' — the load-path solve needs a "
+                    "stiffness (set_joint params); skipped, not checked",
+                )
+            )
+            continue
+        free_length = row.params.get("free_length")
+        preload = row.params.get("preload")
+        if free_length is not None and (
+            not math.isfinite(free_length) or free_length <= 0.0
+        ):
+            skipped.append(
+                (
+                    row.subject,
+                    f"declared free_length {free_length:g} is not a positive length",
+                )
+            )
+            continue
+        if free_length is None and preload is not None:
+            free_length = length - preload / rate
+            if not math.isfinite(free_length) or free_length <= 0.0:
+                skipped.append(
+                    (
+                        row.subject,
+                        f"preload {preload:g} N at rate {rate:g} N/m implies "
+                        "a non-positive free length at the installed "
+                        "geometry",
+                    )
+                )
+                continue
+        if free_length is None:
+            free_length = length
+            n_default_fl += 1
+        if row.role == "undeclared":
+            n_undeclared_role += 1
+        rows.append(row)
+        member_idx.append((ia, ib))
+        rates.append(float(rate))
+        free_lengths.append(float(free_length))
+        idioms.append(_ROLE_IDIOM.get(row.role, "bidirectional"))
+
+    notes.append(
+        "pin reduction: members run block-pose to block-pose (port poses "
+        "are ignored — a port off its block origin shifts nothing here), "
+        "and rigid-body rotations and member moment arms are NOT modelled "
+        "— the m − s count above is the fuller model"
+    )
+    if n_default_fl:
+        notes.append(
+            f"{n_default_fl} member(s) declare no free_length — taken "
+            "unstressed at their installed length (zero prestress; "
+            "set_joint 'free_length' or 'preload' to declare one)"
+        )
+    if n_undeclared_role:
+        notes.append(
+            f"{n_undeclared_role} member(s) declare no capacity pair — "
+            "solved as bidirectional (their one-sidedness is undeclared; "
+            "axial_capacity already flags the missing pair)"
+        )
+    rot_declared = [
+        name
+        for name in sorted(index)
+        if any(a in _ROTATIONS for a in _fixed_axes(tree, name))
+        or tree.blocks[name].objectives.get("pinned") is not None
+    ]
+    if rot_declared:
+        notes.append(
+            f"rotation support axes/pinned on {', '.join(rot_declared)} "
+            "ground nothing in the pin model — a pin node has no "
+            "rotational DOF"
+        )
+
+    fixed = np.zeros((j, 3), dtype=bool)
+    for name, i in index.items():
+        for axis in fixed_translations(tree, name):
+            fixed[i, _TRANSLATIONS.index(axis)] = True
+
+    block_loads = np.zeros((j, 3))
+    connect_loads = np.zeros((j, 3))
+    n_split = 0
+    dropped_shares = 0
+    for name in sorted(tree.blocks):
+        force = tree.blocks[name].objectives.get("force")
+        if not (
+            isinstance(force, list)
+            and len(force) == 3
+            and all(isinstance(v, (int, float)) for v in force)
+        ):
+            continue
+        node_i = index.get(name)
+        if node_i is not None and np.all(np.isfinite(force)):
+            block_loads[node_i] += np.asarray(force, dtype=float)
+    for conn in tree.connects:
+        force = (conn.objectives or {}).get("force")
+        if not (
+            isinstance(force, list)
+            and len(force) == 3
+            and all(isinstance(v, (int, float)) for v in force)
+        ):
+            continue
+        vec = np.asarray(force, dtype=float)
+        if not np.all(np.isfinite(vec)):
+            continue
+        hits = 0
+        for blk in (conn.a_block, conn.b_block):
+            node_i = index.get(blk)
+            if node_i is not None:
+                connect_loads[node_i] += vec / 2.0
+                hits += 1
+            else:
+                dropped_shares += 1
+        if hits:
+            n_split += 1
+    if n_split:
+        notes.append(
+            f"{n_split} connect-declared force(s) applied half to each "
+            "endpoint node — the pin model has no joint-local load point; "
+            "they apply to every load case"
+        )
+    if dropped_shares:
+        notes.append(
+            f"{dropped_shares} connect load share(s) landed on blocks "
+            "outside the axial subgraph — that share is not applied"
+        )
+
+    b = len(rows)
+    return _Bridge(
+        system=system,
+        node_names=system.node_names,
+        index=index,
+        coords=system.coords,
+        members=np.asarray(member_idx, dtype=int).reshape(b, 2),
+        rows=rows,
+        rate=np.asarray(rates, dtype=float),
+        free_length=np.asarray(free_lengths, dtype=float),
+        idiom=np.asarray(idioms, dtype=object),
+        fixed=fixed,
+        block_loads=block_loads,
+        connect_loads=connect_loads,
+        skipped=skipped,
+        notes=notes,
+    )
+
+
+def _all_cases(
+    bridge: _Bridge, load_cases: list[LoadCase] | None
+) -> tuple[list[str], list[np.ndarray], list[str]]:
+    """The case stack: the implicit ``'declared'`` case (stored
+    ``objectives.force``) first, then the named view-layer cases. A named
+    case's ``loads`` map IS that case's per-block force field (it does
+    not merge with ``objectives.force`` — the declared case already
+    covers it); connect-declared loads persist across every case.
+    Returns ``(names, per-case (j, 3) load fields, case notes)`` — a
+    load declared on a block that is not a node of the axial subgraph is
+    dropped with a note, never silently.
+
+    ``ValueError`` on a case named ``'declared'`` — the implicit case
+    owns that name and a user case colliding with it would silently
+    shadow/duplicate it."""
+    names = [DECLARED_CASE]
+    fields = [bridge.block_loads + bridge.connect_loads]
+    notes = [""]
+    for name, loads_map in load_cases or []:
+        if name == DECLARED_CASE:
+            raise ValueError(
+                f"load case name {DECLARED_CASE!r} is the implicit "
+                "stored-objectives case — pick another name"
+            )
+        loads = bridge.connect_loads.copy()
+        dropped: list[str] = []
+        for block, vec in loads_map.items():
+            i = bridge.index.get(block)
+            if i is None:
+                dropped.append(block)
+                continue
+            loads[i] += np.asarray(vec, dtype=float)
+        names.append(name)
+        fields.append(loads)
+        notes.append(
+            f"case {name!r}: load(s) on {', '.join(sorted(dropped))} not "
+            "applied — no node of the axial subgraph"
+            if dropped
+            else ""
+        )
+    return names, fields, notes
+
+
+@dataclass
+class LoadPathMember:
+    """One member's solved status in one load case."""
+
+    subject: str
+    role: str
+    idiom: str
+    force: float  # N, tension-positive
+    status: str  # taut | slack | bearing | separated | seated | unseated
+
+
+@dataclass
+class LoadPathCase:
+    """One load case's fate under the active-set solve."""
+
+    name: str
+    solved: bool = False
+    error: str | None = None  # the refusal message when not solved
+    iterations: int = 0
+    residual: float | None = None
+    members: list[LoadPathMember] = field(default_factory=list)
+    note: str = ""  # e.g. loads on non-node blocks, dropped
+
+
+@dataclass
+class LoadPathReport:
+    """Slice-1 taut/slack report over every declared load case."""
+
+    cases: list[LoadPathCase] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    #: True when at least one member entered the solve — False means the
+    #: report is a "not checked" posture, never an empty success.
+    checked: bool = False
+
+
+def load_path_report(
+    tree: SeTree, load_cases: list[LoadCase] | None = None
+) -> LoadPathReport | None:
+    """Slice 1 — the active-set complementarity solve over the axial
+    subgraph's pin reduction, once per load case (implicit ``'declared'``
+    from ``objectives.force``, then the named view-layer cases).
+    ``None`` when the design has no axial members; ``checked=False``
+    when nothing solvable remains. Refusals land on the case as
+    ``error`` — never a bare verdict, never a least-squares answer."""
+    bridge = _bridge(tree)
+    if bridge is None:
+        return None
+    report = LoadPathReport(skipped=bridge.skipped, notes=list(bridge.notes))
+    names, fields, case_notes = _all_cases(bridge, load_cases)
+    solvable = len(bridge.rows) > 0
+    for name, loads, note in zip(names, fields, case_notes, strict=True):
+        case = LoadPathCase(name=name, note=note)
+        if not solvable:
+            case.error = (
+                "not checked — no analysable axial member declares a "
+                "'rate' the solve can run on (skipped members above)"
+            )
+        else:
+            try:
+                res = solve_complementarity(
+                    bridge.coords,
+                    bridge.members,
+                    bridge.rate,
+                    bridge.free_length,
+                    bridge.idiom,
+                    bridge.fixed,
+                    loads,
+                )
+            except ComplementarityError as exc:
+                case.error = str(exc)
+            else:
+                case.solved = True
+                case.iterations = res.iterations
+                case.residual = res.residual
+                case.members = [
+                    LoadPathMember(
+                        subject=row.subject,
+                        role=row.role,
+                        idiom=str(bridge.idiom[k]),
+                        force=float(res.forces[k]),
+                        status=str(res.status[k]),
+                    )
+                    for k, row in enumerate(bridge.rows)
+                ]
+        report.cases.append(case)
+    report.checked = solvable and any(c.solved for c in report.cases)
+    report.notes.append(
+        "the residual (when reported) certifies only that the linear "
+        "tangent solve converged — it is NOT an independent physics "
+        "verification (a systematic assembly error would still show "
+        "residual ≈ 0); axial subgraph only, small displacements"
+    )
+    return report
+
+
+def completeness_findings(
+    tree: SeTree, load_cases: list[LoadCase] | None = None
+) -> list[tuple[str, str, str]]:
+    """Slice 2 — ``(severity, subject, detail)`` triples from the
+    sign-aware completeness check
+    (:func:`precis.structsolve.check_completeness`), folded into
+    ``view='drc'``/``validate.validate`` the way ``preload_findings``
+    and ``capacity_findings`` already are. Real verdicts —
+    incomplete/unseated/mechanism, named by member and case — are
+    ``warn`` (warn-first like ``prestress_state``); the unchecked-only
+    notices ("not checked", skipped members, dropped case loads, and the
+    core's standing scope notes once the check ran) are ``info`` — a
+    design without declared rates is honestly reported as unchecked, not
+    warned at. Silent only when the design has no axial members at all."""
+    bridge = _bridge(tree)
+    if bridge is None:
+        return []
+    findings: list[tuple[str, str, str]] = []
+    if bridge.skipped:
+        subjects = ", ".join(sorted(s for s, _ in bridge.skipped))
+        findings.append(
+            (
+                "info",
+                f"{len(bridge.skipped)} member(s)",
+                "the sign-aware completeness check does not cover them — "
+                f"UNCHECKED, not clear: {subjects} (reasons in "
+                "view='stability')",
+            )
+        )
+    if not bridge.rows:
+        findings.append(
+            (
+                "info",
+                "axial subgraph",
+                "sign-aware completeness not checked — no analysable "
+                "member declares an axial 'rate' (set_joint params) or "
+                "survives the pin reduction",
+            )
+        )
+        return findings
+    names, fields, case_notes = _all_cases(bridge, load_cases)
+    for i, note in enumerate(case_notes):
+        if note:
+            findings.append(("info", f"load case {names[i]!r}", note))
+    try:
+        rep = check_completeness(
+            bridge.coords,
+            bridge.members,
+            bridge.rate,
+            bridge.free_length,
+            bridge.idiom,
+            bridge.fixed,
+            np.asarray(fields, dtype=float),
+        )
+    except ComplementarityError as exc:
+        findings.append(
+            (
+                "info",
+                "axial subgraph",
+                f"sign-aware completeness not checked: {exc}",
+            )
+        )
+        return findings
+    # the core's standing notes ("callers surface these, never the bool
+    # alone") — 'complete' means a legal load path exists, not that
+    # members are adequately sized; once, at info tier.
+    for note in rep.notes:
+        findings.append(("info", "sign-aware completeness", note))
+    for case in rep.cases:
+        name = names[case.case]
+        if case.verdict == "incomplete":
+            for k in case.culprits:
+                row = bridge.rows[k]
+                findings.append(
+                    (
+                        "warn",
+                        row.subject,
+                        f"load case {name!r} drives this {row.role} onto "
+                        "its illegal sign — no complementary equilibrium "
+                        "exists, but the sign-blind (all-bidirectional) "
+                        "solve carries the case, so the one-sidedness is "
+                        "the cause: re-sign the member (the capacity pair "
+                        "sets tie/strut) or brace the case",
+                    )
+                )
+        elif case.verdict == "unseated":
+            # unreachable from se today — no axial param selects the
+            # must_contact idiom (the screw-clamp wiring is the spec's
+            # explicit remainder); the branch maps the core's verdict
+            # for when it lands.
+            for k in case.unseated:
+                findings.append(
+                    (
+                        "warn",
+                        bridge.rows[k].subject,
+                        f"load case {name!r} leaves this hard stop "
+                        "unseated — the joint it guards has separated "
+                        "(more preload or a different stop)",
+                    )
+                )
+        elif case.verdict == "mechanism":
+            findings.append(
+                (
+                    "warn",
+                    f"load case {name!r}",
+                    "no complementary equilibrium even with every member "
+                    "bidirectional — the bilateral topology itself is a "
+                    f"mechanism under these supports: {case.cause}",
+                )
+            )
+    return findings
+
+
+@dataclass
+class MemberBistability:
+    """Slice 3 — one member's two free-length assignments (a
+    photoswitch's ``{trans, cis}`` Δ(end-to-end)) through
+    :func:`precis.structsolve.probe_bistability` under the declared
+    loads. ``result`` is the core's :class:`BistabilityResult` — its
+    ``notes`` (verdict reason, barrier method, honesty limits) are
+    surfaced verbatim by the view; ``error`` is why the probe could not
+    run at all (member not axial/analysable, or a refusal that is a
+    malformed stored input)."""
+
+    member: str
+    length_a: float
+    length_b: float
+    result: BistabilityResult | None = None
+    error: str | None = None
+    notes: list[str] = field(default_factory=list)
+
+
+def probe_member_bistability(
+    tree: SeTree,
+    member: str,
+    length_a: float,
+    length_b: float,
+) -> MemberBistability:
+    """Slice 3's se entry point: the two-equilibria probe over the pin
+    reduction, with member ``member``'s free length set to ``length_a``
+    (trans) in assignment A and ``length_b`` (cis) in assignment B —
+    every other member keeps its bridge free length, and the loads are
+    the implicit ``'declared'`` case (``objectives.force``; the probe
+    takes one load field, named cases do not apply)."""
+    bridge = _bridge(tree)
+    if bridge is None:
+        return MemberBistability(
+            member, length_a, length_b, error="no axial members — nothing to probe"
+        )
+    midx = next(
+        (
+            k
+            for k, row in enumerate(bridge.rows)
+            if row.subject == member
+            # the subject is 'a.port—b.port'; the reversed pair names the
+            # same member — flipping the em-dash halves avoids re-deriving
+            # the port names MemberRow does not keep
+            or "—".join(row.subject.split("—")[::-1]) == member
+        ),
+        None,
+    )
+    if midx is None:
+        for subject, reason in bridge.skipped:
+            if subject == member:
+                return MemberBistability(
+                    member,
+                    length_a,
+                    length_b,
+                    error=f"member is not analysable ({reason}) — skipped, not probed",
+                    notes=list(bridge.notes),
+                )
+        return MemberBistability(
+            member,
+            length_a,
+            length_b,
+            error=f"no axial member {member!r} in the subgraph — the "
+            "subject is 'a.port—b.port' as the member table spells it",
+            notes=list(bridge.notes),
+        )
+    free_length_a = bridge.free_length.copy()
+    free_length_b = bridge.free_length.copy()
+    free_length_a[midx] = length_a
+    free_length_b[midx] = length_b
+    loads = bridge.block_loads + bridge.connect_loads
+    try:
+        res = probe_bistability(
+            bridge.coords,
+            bridge.members,
+            bridge.rate,
+            free_length_a,
+            free_length_b,
+            bridge.idiom,
+            bridge.fixed,
+            loads,
+        )
+    except ComplementarityError as exc:
+        return MemberBistability(
+            member,
+            length_a,
+            length_b,
+            error=str(exc),
+            notes=list(bridge.notes),
+        )
+    return MemberBistability(
+        member, length_a, length_b, result=res, notes=list(bridge.notes)
+    )

@@ -200,11 +200,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 log = logging.getLogger(__name__)
 
 
-def validate_findings(store: Store, tree: SeTree, ref_id: int) -> list[Any]:
+def validate_findings(
+    store: Store,
+    tree: SeTree,
+    ref_id: int,
+    load_cases: list[se_stability.LoadCase] | None = None,
+) -> list[Any]:
     """Every ``view='validate'`` finding (pure + store-aware + atomic),
     shared with ``view='drc'``'s validate digest, the put/edit reply digest
-    and the ``/se/<slug>`` page so none disagree about what validate found."""
-    findings = list(se_validate.validate(tree))
+    and the ``/se/<slug>`` page so none disagree about what validate found.
+    ``load_cases`` layers named cases onto the sign-aware completeness
+    rule (the complementarity bridge; the stored ``objectives.force``
+    field is always the implicit ``'declared'`` case)."""
+    findings = list(se_validate.validate(tree, load_cases=load_cases))
     findings.extend(se_validate.port_override_unapplied_findings(store, tree, ref_id))
     bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(store, tree)
     generated_records = se_atomic_render.bound_generated_records(store, tree)
@@ -270,6 +278,8 @@ class SeHandler(Handler):
                 "path",
                 "previous",
                 "scale",
+                "load_cases",
+                "bistable",
             }
         ),
         "put": frozenset({"description", "ops", "scenario"}),
@@ -361,10 +371,21 @@ class SeHandler(Handler):
             "compression_capacity N, free_length m, rate N/m, preload N "
             "tension-positive); view='stability' runs Maxwell/Calladine "
             "over the axial members (rigid / mechanism / "
-            "prestress-stabilized, self-stress state reported) and, when "
+            "prestress-stabilized, self-stress state reported), a "
+            "taut/slack load-path section from the active-set "
+            "complementarity solve, and, when "
             "any member declares a preload, checks the declared preloads "
             "against the self-stress space (implied forces on the rest "
-            "completed and vetted). The "
+            "completed and vetted). Load cases are a view-layer "
+            "argument: args={'load_cases': [{'name':..., 'loads': {"
+            "'<block>': [x,y,z]}}]} adds named cases on top of the "
+            "implicit 'declared' case the stored objectives.force field "
+            "makes — accepted on view='stability'|'drc'|'validate' (the "
+            "sign-aware completeness findings name member and case), and "
+            "args={'bistable': {'member': 'a.port—b.port', 'trans': <m>, "
+            "'cis': <m>}} on view='stability' probes whether a "
+            "photoswitch member's two free lengths are two stable "
+            "equilibria of one structure. The "
             "formfind op solves force-density form-finding over those "
             "members (anchors = objectives.fixed; q_tie/q_strut/q_rod "
             "role defaults +1/-1/+1, per-member q=[{'a','b','q'}] "
@@ -1207,7 +1228,7 @@ class SeHandler(Handler):
         if v == "freedom":
             return Response(body=_render_freedom(tree))
         if v == "stability":
-            return Response(body=_render_stability(tree))
+            return Response(body=_render_stability(tree, args))
         if v == "fret":
             return Response(body=_render_fret(tree))
         if v == "print":
@@ -1264,7 +1285,10 @@ class SeHandler(Handler):
             "(the question/answer/decision ledger, open questions first) "
             "| view='freedom' (what is still undecided, and by whom) "
             "| view='stability' (Maxwell/Calladine rigid / mechanism / "
-            "prestress-stabilized over the axial members) "
+            "prestress-stabilized over the axial members, plus the "
+            "taut/slack load-path solve per case — args={'load_cases': "
+            "[{'name':..., 'loads': {'<block>': [x,y,z]}}]}, "
+            "args={'bistable': {'member':..., 'trans':..., 'cis':...}}) "
             "| view='mechanics' (atomic mode: advisory L4 ceilings — "
             "buckling, strain energy, min-cut tensile) | view='literature' "
             "(atomic mode: a deterministic paper query, optional "
@@ -1282,9 +1306,14 @@ class SeHandler(Handler):
             "directions)",
         )
 
-    def _validate_findings(self, tree: SeTree, ref_id: int) -> list[Any]:
+    def _validate_findings(
+        self,
+        tree: SeTree,
+        ref_id: int,
+        load_cases: list[se_stability.LoadCase] | None = None,
+    ) -> list[Any]:
         """Method seam over :func:`validate_findings` (``view='drc'``)."""
-        return validate_findings(self.store, tree, ref_id)
+        return validate_findings(self.store, tree, ref_id, load_cases=load_cases)
 
     def _reply_digest(self, tree: SeTree, ref_id: int) -> str:
         """The one-line validate digest a put/edit reply ends with
@@ -1330,7 +1359,9 @@ class SeHandler(Handler):
         (:func:`_scenario_line`) — a verdict whose production context isn't
         stated can't be re-read later."""
         previous = se_finding_id.parse_previous(args)
-        findings = self._validate_findings(tree, ref_id)
+        findings = self._validate_findings(
+            tree, ref_id, load_cases=_load_cases_arg(tree, args)
+        )
         header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]
         atomic_line = se_atomic_render.atomic_fill_line(tree)
         if atomic_line:
@@ -4512,7 +4543,7 @@ def _render_drc(
     never inside the pass, and never by the pass mutating what
     ``se_drc.drc`` returned."""
     previous = se_finding_id.parse_previous(args)
-    report = se_drc.drc(tree)
+    report = se_drc.drc(tree, load_cases=_load_cases_arg(tree, args))
     report.findings.extend(se_precedent.findings(store, tree, ref_id))
     report.findings.extend(se_kinematics_drc.findings(store, tree, ref_id))
     report.findings.extend(_region_pin_findings(store, tree))
@@ -5393,12 +5424,107 @@ def _render_fret(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
-def _render_stability(tree: SeTree) -> str:
+def _load_cases_arg(
+    tree: SeTree, args: dict[str, Any] | None
+) -> list[se_stability.LoadCase] | None:
+    """``args={'load_cases': [{'name': '<case>', 'loads': {'<block>':
+    [x, y, z], …}}, …]}`` → the normalized ``(name, {block: vec})`` list
+    the complementarity bridge takes — the view-layer load-case
+    vocabulary (complementarity-solver's open question, resolved
+    2026-10-13: named cases are an argument, never stored objectives; the
+    stored ``objectives.force`` field is always the implicit ``'declared'``
+    case). Accepted by ``view='stability'|'drc'|'validate'``."""
+    raw = (args or {}).get("load_cases")
+    if raw is None:
+        return None
+    shape = (
+        "[{'name': '<case>', 'loads': {'<block>': [x, y, z]}}] — a named "
+        "case's 'loads' is that case's complete per-block force field"
+    )
+    if not isinstance(raw, list) or not raw:
+        raise BadInput(f"load_cases must be a non-empty list {shape}")
+    out: list[se_stability.LoadCase] = []
+    for case in raw:
+        if not isinstance(case, dict):
+            raise BadInput(f"each load case must be an object — {shape}")
+        name = str(case.get("name") or "").strip()
+        if not name:
+            raise BadInput(f"each load case needs a non-empty 'name' — {shape}")
+        if name == se_stability.DECLARED_CASE:
+            raise BadInput(
+                f"load case name {se_stability.DECLARED_CASE!r} is the "
+                "implicit stored-objectives case — pick another name"
+            )
+        loads = case.get("loads")
+        if not isinstance(loads, dict):
+            raise BadInput(f"load case {name!r} needs a 'loads' map — {shape}")
+        normed: dict[str, list[float]] = {}
+        for block, vec in loads.items():
+            block_name = str(block)
+            if block_name not in tree.blocks:
+                raise BadInput(
+                    f"load case {name!r}: block {block_name!r} does not "
+                    "exist in this design"
+                )
+            try:
+                vec3 = [float(v) for v in vec]
+            except (TypeError, ValueError) as exc:
+                raise BadInput(
+                    f"load case {name!r}: force on {block_name!r} must be "
+                    f"a 3-vector, got {vec!r}"
+                ) from exc
+            if len(vec3) != 3 or not all(math.isfinite(v) for v in vec3):
+                raise BadInput(
+                    f"load case {name!r}: force on {block_name!r} must be "
+                    f"a finite 3-vector, got {vec!r}"
+                )
+            normed[block_name] = vec3
+        out.append((name, normed))
+    return out
+
+
+def _bistable_arg(args: dict[str, Any] | None) -> tuple[str, float, float] | None:
+    """``args={'bistable': {'member': 'a.port—b.port', 'trans': <m>,
+    'cis': <m>}}`` → ``(member subject, length_a, length_b)`` for the
+    slice-3 two-equilibria probe on ``view='stability'``."""
+    raw = (args or {}).get("bistable")
+    if raw is None:
+        return None
+    shape = "{'member': 'a.port—b.port', 'trans': <m>, 'cis': <m>}"
+    if not isinstance(raw, dict):
+        raise BadInput(f"bistable must be an object {shape}")
+    member = str(raw.get("member") or "").strip()
+    if not member:
+        raise BadInput(f"bistable needs a 'member' subject — {shape}")
+    lengths: list[float] = []
+    for key in ("trans", "cis"):
+        val: Any = raw.get(key)
+        try:
+            length = float(val)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"bistable {key!r} must be a positive free length in metres — {shape}"
+            ) from exc
+        if not math.isfinite(length) or length <= 0.0:
+            raise BadInput(
+                f"bistable {key!r} must be a positive free length in "
+                f"metres, got {val!r}"
+            )
+        lengths.append(length)
+    return member, lengths[0], lengths[1]
+
+
+def _render_stability(tree: SeTree, args: dict[str, Any] | None = None) -> str:
     """``view='stability'`` — the Maxwell/Calladine report
     (:mod:`precis_se.stability`): counts, verdict, and the per-member
     self-stress state, under the model-assumption header (pin nodes at
     port world positions, axial subgraph only — the honesty the tripwire contract
-    demands)."""
+    demands); then the complementarity bridge's taut/slack section (the
+    pin-reduction active-set solve per load case —
+    :func:`se_stability.load_path_report`) and, when
+    ``args={'bistable': ...}`` names a member's ``{trans, cis}`` free
+    lengths, the slice-3 two-equilibria probe
+    (:func:`se_stability.probe_member_bistability`)."""
     report = se_stability.classify(tree)
     lines = [
         "# stability — axial subgraph (Maxwell/Calladine)",
@@ -5496,6 +5622,85 @@ def _render_stability(tree: SeTree) -> str:
             lines.append(f"note: {note}")
         for subject, detail in prestress.findings:
             lines.append(f"finding: {subject} — {detail}")
+
+    load_path = se_stability.load_path_report(
+        tree, load_cases=_load_cases_arg(tree, args)
+    )
+    if load_path is not None:
+        lines.append("")
+        lines.append(
+            "## load path — taut/slack per member under each load case "
+            "(active-set complementarity solve; pin reduction of the "
+            "assembled system)"
+        )
+        for case in load_path.cases:
+            if case.error is not None:
+                lines.append(f"case {case.name!r}: NOT SOLVED — {case.error}")
+            else:
+                lines.append(
+                    f"case {case.name!r}: solved in {case.iterations} "
+                    f"active-set iteration(s), residual {case.residual:.3g}"
+                )
+                lines.append(
+                    render_agent_table(
+                        [
+                            {
+                                "member": m.subject,
+                                "role": m.role,
+                                "idiom": m.idiom,
+                                "force": f"{m.force:g} N",
+                                "status": m.status,
+                            }
+                            for m in case.members
+                        ],
+                        schema=["member", "role", "idiom", "force", "status"],
+                    )
+                )
+            if case.note:
+                lines.append(f"note: {case.note}")
+        if load_path.skipped:
+            lines.append(
+                "skipped members (not in the solve — UNCHECKED, not clear): "
+                + "; ".join(
+                    f"{subject} ({reason})" for subject, reason in load_path.skipped
+                )
+            )
+        for note in load_path.notes:
+            lines.append(f"note: {note}")
+
+    bistable = _bistable_arg(args)
+    if bistable is not None:
+        member, length_a, length_b = bistable
+        probe = se_stability.probe_member_bistability(tree, member, length_a, length_b)
+        lines.append("")
+        lines.append(
+            f"## bistability probe — {probe.member} "
+            f"(trans={probe.length_a:g} m, cis={probe.length_b:g} m free "
+            "length, two assignments over the same topology)"
+        )
+        if probe.error is not None:
+            lines.append(f"not checked: {probe.error}")
+        else:
+            assert probe.result is not None
+            res = probe.result
+            lines.append(f"bistable: {'YES' if res.bistable else 'no'}")
+            for label, state in zip(("trans", "cis"), res.states, strict=True):
+                if state.stable:
+                    verdict = "stable equilibrium"
+                elif state.solved:
+                    verdict = "solved but NOT second-order stable"
+                else:
+                    verdict = f"no equilibrium ({state.error})"
+                lines.append(f"state {label}: {verdict}")
+            if res.barrier is not None:
+                lines.append(f"barrier estimate: {res.barrier:.6g} (energy units)")
+            for note in res.notes:
+                lines.append(f"note: {note}")
+            for label, state in zip(("trans", "cis"), res.states, strict=True):
+                for note in state.notes:
+                    lines.append(f"note ({label}): {note}")
+        for note in probe.notes:
+            lines.append(f"note: {note}")
     return "\n".join(lines)
 
 
@@ -5705,18 +5910,18 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "revisions": frozenset(),
     "datums": frozenset(),
     "pockets": frozenset(),
-    "validate": frozenset({"previous"}),
+    "validate": frozenset({"previous", "load_cases"}),
     "clearance": frozenset({"a", "b", "state", "previous"}),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
     "pick": frozenset({"block", "atom", "token"}),
-    "drc": frozenset({"state", "previous"}),
+    "drc": frozenset({"state", "previous", "load_cases"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
     "fasten": frozenset(),
     "interview": frozenset(),
     "freedom": frozenset(),
-    "stability": frozenset(),
+    "stability": frozenset({"load_cases", "bistable"}),
     "mechanics": frozenset(),
     "literature": frozenset({"block"}),
     "fret": frozenset(),

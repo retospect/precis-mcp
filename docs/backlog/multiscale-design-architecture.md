@@ -69,7 +69,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
 | toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11); rung 4 nonplanar member sweeps added 2026-09-14 |
 | scenarios + three-verdict rule table | **here, §Scenarios** | new |
-| complementarity solver | **here, §Complementarity** | core BUILT 2026-09-12 (`structsolve/complementarity.py`: active-set solve e49fb80a + bistability probe; se bridge/validate wiring waits on the units window — `complementarity-solver.md`) |
+| complementarity solver | **here, §Complementarity** | core + se bridge BUILT (active-set solve e49fb80a; se side 2026-10-13 — `precis_se/stability.py` taut/slack `view='stability'` section, `completeness` findings in `view='drc'`/`validate`, `bistable` arg; named load cases are a view-layer arg, no objectives schema); screw-clamp must-contact wiring OPEN (no se vocabulary — `unseated` unreachable from se; `complementarity-solver.md`) |
 | optimisation stack (surrogates, BO, annealing) | **here, §Optimisation** | new |
 | requirement→joint matching | **here, §Joint matching** | new |
 | view-dependent form | **here, §View-dependent form** | new |

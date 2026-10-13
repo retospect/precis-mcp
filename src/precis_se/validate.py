@@ -61,6 +61,7 @@ from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.design import states as design_states
 from precis_se import bom as se_bom
+from precis_se import stability as se_stability
 from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 
@@ -372,7 +373,10 @@ def envelope_overlaps(
 
 
 def validate(
-    tree: SeTree, *, budget_s: float | None = _OVERLAP_BUDGET_S
+    tree: SeTree,
+    *,
+    budget_s: float | None = _OVERLAP_BUDGET_S,
+    load_cases: list[se_stability.LoadCase] | None = None,
 ) -> list[ValidationIssue]:
     """Return all findings (empty = clean — but see the handler's
     filled-fraction header: clean-and-empty must render as *unfilled*,
@@ -381,7 +385,12 @@ def validate(
     ``budget_s`` bounds the undeclared-interpenetration check's narrow-phase
     SDF work (:func:`envelope_overlaps`) — the default is generous for
     real designs; callers normally leave it alone (tests use a small value
-    to exercise the partial-result path, gr337045)."""
+    to exercise the partial-result path, gr337045).
+
+    ``load_cases`` is the view-layer named-load-case argument for the
+    sign-aware completeness rule (6): each ``(name, {block: [x, y, z]})``
+    adds a case on top of the implicit ``'declared'`` case the stored
+    ``objectives.force`` field makes."""
     findings: list[ValidationIssue] = []
 
     # 1. dangling_connect (error) — an endpoint that no longer resolves
@@ -574,6 +583,25 @@ def validate(
                     severity="error",
                 )
             )
+
+    # 6. sign-aware completeness under each declared load case — the
+    # complementarity bridge (docs/backlog/complementarity-solver.md
+    # slice 2), folded in the same warn-first way as drc's rule 4e. A
+    # tie a case drives into compression is a topology error named by
+    # member and case; a path that cannot run the solve reports "not
+    # checked" at info tier, never a bare verdict and never a warn for
+    # an unchecked design.
+    for severity, subject, detail in se_stability.completeness_findings(
+        tree, load_cases=load_cases
+    ):
+        findings.append(
+            ValidationIssue(
+                rule="completeness",
+                subject=subject,
+                detail=detail,
+                severity=severity,
+            )
+        )
     return findings
 
 

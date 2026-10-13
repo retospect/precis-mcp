@@ -31,13 +31,12 @@ consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 1. **backlog/design-state-core.md** — `ready/high`; unblocks pattern-groups
    below and is the node type every later milestone in this file writes
    into.
-2. **backlog/complementarity-solver.md** — `ready/high`; independent of 1.
-3. **backlog/pose-vector-units.md** — `ready/high`; vector ingest shipped
+2. **backlog/pose-vector-units.md** — `ready/high`; vector ingest shipped
    2026-10-12, open: echo-on-write, TOON column formatter, prefunits,
-   respond-in-kind. Independent of 1 and 2.
-4. **backlog/pattern-groups.md** — blocked-by 1 (design-state-core).
-5. **backlog/make-tree-vs-design-tree.md**
-6. **backlog/attached-models-layer.md**
+   respond-in-kind. Independent of 1.
+3. **backlog/pattern-groups.md** — blocked-by 1 (design-state-core).
+4. **backlog/make-tree-vs-design-tree.md**
+5. **backlog/attached-models-layer.md**
 
 ## Horizon
 

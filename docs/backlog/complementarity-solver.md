@@ -14,17 +14,15 @@ complementarity"): that rung's deferral note says when a consumer
 actually wants the load path, build it as the complementarity solve
 from the start, not a graph walk. This is that build.
 
-**Core status:** the pure `src/precis/structsolve/complementarity.py`
-module is SHIPPED for all three slices — `solve_complementarity`
-(slice 1 active-set solve, status rows, refusals), `check_completeness`
-(slice 2's sign-aware per-load-case verdict: complete / unseated /
-incomplete + culprit members / mechanism) and `probe_bistability`
-(slice 3) — with array-level tests in
-`tests/test_structsolve_complementarity.py`. What remains below is the
-`precis_se/*` side only: the bridge, the `view='stability'` section, the
-validate/drc findings and the load-case vocabulary. (The 2026-09-12
-units-window split that held the se side back is moot now that
-`units-policy-cutover` landed.)
+**Status — all three slices shipped.** Core e49fb80a
+(`src/precis/structsolve/complementarity.py` — `solve_complementarity`,
+`check_completeness`, `probe_bistability`, array-level tests in
+`tests/test_structsolve_complementarity.py`) and the se side
+2026-10-13 (`src/precis_se/stability.py`'s bridge; see In scope for
+pointers). **Genuinely open:** the screw-clamp fastener-preload →
+must-contact pair wiring in the decisions log — se has no
+`must_contact` vocabulary, so the `unseated` verdict is unreachable
+from se today.
 
 ## Motivation / why
 
@@ -62,34 +60,26 @@ module docstring is the contract (inputs, tension-positive convention,
 status vocabulary, refusal posture, the documented active-set
 algorithm choice, and the completeness/bistability honesty notes).
 
-**Slice 1 — se bridge for the active-set solve + taut/slack report on
-the existing axial subgraph.** The bridge consumes what already exists: member rows via
-`stability.axial_connects` (role from the asymmetric capacity pair —
-tie/strut/rod derived, never a third class), supports via
-`objectives.fixed`, loads via `objectives.force`, node-per-block poses
-exactly as `stability._assemble` scopes them. Report surfaces as a
-section of `view='stability'` with the same honesty scoping notes:
-axial subgraph only, non-axial connects and envelope contact not
-modelled.
+**Slice 1 — se bridge + taut/slack report — SHIPPED 2026-10-13:**
+`stability.load_path_report` consumes `stability.axial_connects`,
+`objectives.fixed`, `objectives.force` and `_assemble`'s
+node-per-block poses and renders the `## load path` section of
+`view='stability'` (undeclared-rate members skip-and-report; axial
+subgraph only).
 
-**Slice 2 — sign-aware completeness wired into se validate.** The
-verdict itself is shipped (`check_completeness`: per case `complete` /
-`unseated` / `incomplete` with culprit member indices / `mechanism`,
-culprits read off the sign-blind contrast solve). The bridge maps
-culprit indices to `a.port—b.port` subjects and the case index to its
-declared name — structured rejection (principle 9) naming member and
-load case. Lands as findings folded into `view='drc'` /
-`validate.validate` the same way `preload_findings` and
-`capacity_findings` already fold in. Tripwire contract respected: any
-path that cannot run the solve emits the honest "not checked" line,
-never a bare verdict.
+**Slice 2 — sign-aware completeness in se validate — SHIPPED
+2026-10-13:** `stability.completeness_findings` maps culprit indices
+to `a.port—b.port` subjects and names the case — folded into
+`view='drc'`/`validate.validate` as the warn-first `completeness`
+rule (unchecked paths are the honest "not checked" line at info tier).
+Load cases are `args={'load_cases': ...}` at the view layer — decision
+below.
 
-**Slice 3 — two-equilibria / bistability probe, se side.**
-`probe_bistability` is shipped (per-state second-order stability,
-`|E_a − E_b|` barrier with its honesty notes). Remaining: an se entry
-point that takes a photoswitch member's `{trans, cis}` free lengths and
-surfaces the result with its `notes` verbatim. Endpoint verification
-only; the full switching-pathway sweep stays in
+**Slice 3 — two-equilibria probe, se side — SHIPPED 2026-10-13:**
+`stability.probe_member_bistability` takes a member's `{trans, cis}`
+free lengths (`args={'bistable': ...}` on `view='stability'`) and
+surfaces `probe_bistability`'s result with its notes verbatim.
+Endpoint verification only; the full switching-pathway sweep stays in
 structural-solution-space slice 5.
 
 ## Explicitly NOT in scope
@@ -159,17 +149,26 @@ complementary compression-only/must-contact pair carrying the
 balancing compression. `seated` while service tension < preload;
 service load exceeding preload drives the face force to zero →
 `unseated` = joint separation. The shipped closed-form rung-5
-separation check is the two-member special case; the se bridge wires
-fastener preload (`joints.py` preload, N tension-positive) into
-exactly this pair so the general solve and the closed-form check agree
-by construction.
+separation check is the two-member special case.
 
-Still open (the se side):
-- **Load-case vocabulary.** `objectives.force` today is one load per
-  block — "under any load case" needs named cases (shock included).
-  Extend the objectives vocabulary, or a list-of-cases argument at the
-  view/op layer only? Blocker for the slice-2 bridge; the core takes an
-  `(n, j, 3)` stack and is indifferent.
+Still open:
+- **Screw-clamp must-contact wiring — the explicit remainder.** The
+  se bridge does NOT yet wire fastener preload (`joints.py` preload, N
+  tension-positive) into the fastener-tie + face-stop pair above: se
+  has no `must_contact` vocabulary (no axial param selects the idiom),
+  no `screw`/`press` connect is decomposed into the member pair, and
+  the `unseated` verdict is unreachable from se today. That wiring is
+  what makes the general solve and the closed-form check agree by
+  construction — still to build.
+- **Load-case vocabulary — RESOLVED 2026-10-13 (built):** the
+  view-layer list-of-cases argument, no objectives-schema change and no
+  migration. `args={'load_cases': [{'name':..., 'loads': {'<block>':
+  [x,y,z]}}]}` on `view='stability'|'drc'|'validate'` layers named cases
+  on top of the implicit `'declared'` case the stored
+  `objectives.force` field (block and connect) always makes; a named
+  case's `loads` map is that case's complete per-block force field.
+  Cases are read-time, so a case list is re-declared per call — a
+  standard load-case library (spec §1.3) remains its own item.
 - **Algorithm — RESOLVED in-code:** iterative active-set over linear
   solves with a visited-set cycling guard (module docstring); revisit
   only if a consumer needs Lemke-style pivoting.

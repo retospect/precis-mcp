@@ -94,8 +94,11 @@ undeclared interpenetration), :mod:`precis_se.drc` (graph-tier DRC, store-free
 by contract), :mod:`precis_se.geometry_plausibility`,
 :mod:`precis_se.kinematics` / :mod:`precis_se.kinematics_drc`,
 :mod:`precis_se.stability` (Maxwell/Calladine counting over the axial
-subgraph; the ``axial`` class and ``cable`` mechanism) with
-:mod:`precis_se.formfind` as its generator, :mod:`precis_se.precedent`
+subgraph plus the complementarity bridge — the taut/slack load-path
+solve per case, sign-aware ``completeness`` findings, the member
+``{trans, cis}`` bistability probe; the ``axial`` class and ``cable``
+mechanism) with :mod:`precis_se.formfind` as its generator,
+:mod:`precis_se.precedent`
 (joining-chemistry evidence against ``rxn`` yield rows).
 
 *Bought parts, fastening, fabrication (L3/L5).* :mod:`precis_se.bom` /
