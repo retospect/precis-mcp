@@ -2,34 +2,67 @@
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
 
+<style>
+  .pbx-rung.pbx-limit td { background: #fef3c7; }
+  .pbx-rung td { white-space: nowrap; }
+</style>
+
 <div class="mb-4">
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <p class="text-xs text-slate-500">
     Resting-state surface-Pourbaix validity map{% if subject.kind == 'quest' %}
-    per candidate structure serving {{ subject.handle }}{% endif %} —
-    one map per footing (anchor_key · engine · correction set), partitioned,
-    never blended. The bulk layer is a labelled uncertain overlay:
-    {{ bulk_note }}.
+    per candidate structure serving {{ subject.handle }}{% endif %}, linked to
+    the reaction staircase — one map per footing (anchor_key · engine ·
+    correction set), partitioned, never blended. The bulk layer is a labelled
+    uncertain overlay: {{ bulk_note }}.
   </p>
 </div>
 
-{# Slider-bank slot: slice 3 adds the shared slider bank here (the map and
-   the staircase panel ride the same bank). Keep the map inside
-   #pourbaix-panel so the bank can drive it without re-templating. #}
+{# The shared slider bank (slice 3, §7.1): U re-tilts every staircase rung
+   (ΔG = ΔG0 + n_e·U) and moves the marker on every map; pH only relabels
+   SHE — every quantity here is pH-flat on RHE. Honest-slider rule: each
+   input carries data-offgrid; an off-grid axis (fresh anchors needed) is
+   flagged, never silently extrapolated. None exist yet — the flag path is
+   wired so an axis can be marked. #}
+<div id="pbx-bank" class="mb-4 rounded border border-slate-200 bg-white p-3 text-xs">
+  <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
+    <label class="text-slate-600">U (V vs RHE)
+      <input type="range" id="pbx-u" min="{{ u_lo }}" max="{{ u_hi }}" step="0.005"
+             value="{{ u0 }}" data-offgrid="0" class="ml-1 w-48 align-middle">
+    </label>
+    <span id="pbx-u-read" class="font-mono"></span>
+    <span id="pbx-u-she" class="text-slate-500"></span>
+    <label class="text-slate-600">pH
+      <input type="range" id="pbx-ph" min="0" max="14" step="0.1"
+             value="{{ ph0 }}" data-offgrid="0" class="ml-1 w-28 align-middle">
+    </label>
+    <span id="pbx-ph-read" class="font-mono"></span>
+    <span id="pbx-offgrid" class="hidden rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+      off the computed grid — this axis needs fresh anchors
+    </span>
+  </div>
+</div>
+
 <div id="pourbaix-panel" class="space-y-6">
 {% for e in entries %}
-  <section class="rounded border border-slate-200 bg-white p-3">
+  <section class="pbx-entry rounded border border-slate-200 bg-white p-3">
+    <script type="application/json" class="pbx-ejson">{{ e.pbx | tojson }}</script>
     <div class="mb-2 flex items-baseline gap-2">
       <a href="{{ e.url }}" class="font-mono text-sm text-sky-700 hover:underline">{{ e.handle }}</a>
       <span class="text-sm text-slate-700">{{ e.title }}</span>
     </div>
-    {% if not e.maps %}
+    {% if not e.maps and not e.staircase %}
+    <p class="text-xs text-slate-500">no anchors — no succeeded
+      <code>surface_coverage_scan</code> job is tied to this structure — and no
+      ready pathway is linked to it.</p>
+    {% elif not e.maps %}
     <p class="text-xs text-slate-500">no anchors — no succeeded
       <code>surface_coverage_scan</code> job is tied to this structure.</p>
     {% endif %}
     {% for m in e.maps %}
     <div class="mb-4">
       <div class="overflow-auto">{{ m.svg | safe }}</div>
+      <div class="pbx-resting mt-1 text-[11px] font-medium text-slate-700"></div>
       <div class="mt-1 text-[11px] text-slate-500 space-y-0.5">
         <div>
           anchor_key <span class="font-mono">{{ m.anchor_key[:16] }}…</span> ·
@@ -51,11 +84,213 @@
       </div>
     </div>
     {% endfor %}
+    <div class="pbx-mismatch mt-1 hidden text-[11px] font-medium text-amber-700"></div>
+    {% if e.staircase %}
+    {% set sc = e.staircase %}
+    <div class="pbx-staircase mt-3 border-t border-slate-200 pt-2">
+      <div class="text-xs">
+        reaction staircase —
+        <a href="{{ sc.pathway_url }}" class="font-mono text-sky-700 hover:underline">{{ sc.pathway_handle }}</a>
+        <span class="text-slate-600">{{ sc.title }}</span>
+        <span class="text-slate-400">· ΔG(U) = ΔG0 + n_e·U, n_e = pairs consumed</span>
+      </div>
+      {% if not e.maps %}
+      <div class="mt-1 text-[11px] text-amber-700">no resting map on this
+        structure — the staircase's starting surface is unverified</div>
+      {% endif %}
+      {% for r in sc.routes %}
+      <div class="pbx-route mt-2">
+        <div class="text-[11px] font-medium text-slate-700">
+          route {{ loop.index }}: <span class="font-mono">{{ r.name }}</span>
+          <span class="font-normal text-slate-500">—
+            U_L {{ '%+.3f'|format(r.U_L) + ' V' if r.U_L is not none else 'n/a' }},
+            U_opt {{ '%+.3f'|format(r.U_opt) + ' V' if r.U_opt is not none else 'n/a' }},
+            span_at_UL {{ '%.3f'|format(r.span_at_UL) + ' eV' if r.span_at_UL is not none else 'n/a' }}</span>
+        </div>
+        <table class="mt-0.5 text-[11px] font-mono text-slate-700">
+          <thead class="text-slate-400">
+            <tr><th class="pr-3 text-left font-normal">rung</th>
+                <th class="pr-3 text-left font-normal">kind</th>
+                <th class="pr-3 text-left font-normal">n_e</th>
+                <th class="pr-3 text-left font-normal">ΔG0 eV</th>
+                <th class="text-left font-normal">ΔG(U) eV</th></tr>
+          </thead>
+          <tbody>
+          {% for rg in r.rungs %}
+          <tr class="pbx-rung" data-dg0="{{ rg.delta_g0 }}" data-ne="{{ rg.n_e }}"
+              data-name="{{ rg.name }}">
+            <td class="pr-3">{{ rg.name }}</td>
+            <td class="pr-3">{{ rg.kind }}</td>
+            <td class="pr-3">{{ rg.n_e }}</td>
+            <td class="pr-3">{{ '%+.3f'|format(rg.delta_g0) }}{% if rg.sigma is not none %}±{{ '%.3f'|format(rg.sigma) }}{% endif %}</td>
+            <td class="pbx-dgu"></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <div class="pbx-lim text-[11px] text-slate-600"></div>
+        {% if sc.her %}<div class="pbx-her-margin text-[11px] text-slate-600"></div>{% endif %}
+      </div>
+      {% endfor %}
+      {% if sc.her %}
+      <div class="pbx-her mt-2">
+        <div class="text-[11px] font-medium text-slate-700">
+          HER competitor ({{ sc.her.product or 'H2' }}):
+          U_L_her {{ '%+.3f'|format(sc.her.U_L_her) + ' V' if sc.her.U_L_her is not none else 'n/a' }}{% if sc.her.dG_H_star is not none %},
+          dG_H* {{ '%+.3f'|format(sc.her.dG_H_star) }} eV{% endif %};
+          <span class="pbx-her-lim font-normal text-slate-500"></span>
+        </div>
+        <table class="mt-0.5 text-[11px] font-mono text-slate-700">
+          <tbody>
+          {% for rg in sc.her.rungs %}
+          <tr class="pbx-rung" data-dg0="{{ rg.delta_g0 }}" data-ne="{{ rg.n_e }}"
+              data-name="{{ rg.name }}">
+            <td class="pr-3">{{ rg.name }}</td>
+            <td class="pr-3">her</td>
+            <td class="pr-3">{{ rg.n_e }}</td>
+            <td class="pr-3">{{ '%+.3f'|format(rg.delta_g0) }}</td>
+            <td class="pbx-dgu"></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      {% if sc.missing %}
+      <div class="mt-1 text-[11px] text-amber-700">missing: {{ sc.missing | join('; ') }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
   </section>
 {% endfor %}
 {% if not entries %}
 <p class="text-xs text-slate-500">no candidate structures serve this quest.</p>
 {% endif %}
 </div>
+
+<script>
+{% raw %}
+(function () {
+  const uEl = document.getElementById('pbx-u');
+  const phEl = document.getElementById('pbx-ph');
+  if (!uEl || !phEl) return;
+  const PREFAC = 0.0592;  // V/pH at 298.15 K — RHE -> SHE relabel only
+  const fmt = (x) => (x >= 0 ? '+' : '') + x.toFixed(3);
+  const sorted = (o) =>
+    Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1)));
+
+  function regionAt(regs, u) {
+    for (const r of regs || []) {
+      if (r.range && u >= r.range[0] - 1e-9 && u <= r.range[1] + 1e-9) return r;
+    }
+    return null;
+  }
+
+  function update() {
+    const u = parseFloat(uEl.value);
+    const ph = parseFloat(phEl.value);
+    document.getElementById('pbx-u-read').textContent = 'U = ' + fmt(u) + ' V';
+    document.getElementById('pbx-ph-read').textContent = 'pH ' + ph.toFixed(1);
+    document.getElementById('pbx-u-she').textContent =
+      '(= ' + fmt(u - PREFAC * ph) + ' V vs SHE — display only)';
+    // honest-slider rule: an axis flagged data-offgrid=1 is off the computed
+    // grid — flag it, never extrapolate silently. All current axes are cheap.
+    const off = [uEl, phEl].some((el) => el.dataset.offgrid === '1');
+    document.getElementById('pbx-offgrid').classList.toggle('hidden', !off);
+
+    document.querySelectorAll('svg.pbx-map').forEach((svg) => {
+      const m = svg.querySelector('line.pbx-u-marker');
+      if (!m) return;
+      const lo = +svg.dataset.ulo, hi = +svg.dataset.uhi;
+      const x0 = +svg.dataset.x0, pw = +svg.dataset.pw;
+      const uc = Math.min(Math.max(u, lo), hi);
+      const x = x0 + ((uc - lo) / (hi - lo)) * pw;
+      m.setAttribute('x1', x);
+      m.setAttribute('x2', x);
+    });
+
+    document.querySelectorAll('section.pbx-entry').forEach((sec) => {
+      let data = null;
+      const dj = sec.querySelector('script.pbx-ejson');
+      if (dj) { try { data = JSON.parse(dj.textContent); } catch (e) {} }
+
+      sec.querySelectorAll('.pbx-resting').forEach((el, i) => {
+        const regs = data && data.maps && data.maps[i] ? data.maps[i].regions : [];
+        const r = regionAt(regs, u);
+        el.textContent = r
+          ? 'staircase starts from ' + r.label + ' (resting at ' + fmt(u) + ' V)'
+          : 'resting at ' + fmt(u) + ' V: outside the swept window';
+        el.dataset.label = r ? r.label : '';
+        el.dataset.term = r && r.termination ? JSON.stringify(r.termination) : '';
+      });
+
+      const mm = sec.querySelector('.pbx-mismatch');
+      if (mm && data) {
+        const rest = sec.querySelector('.pbx-resting');
+        const term = rest && rest.dataset.term ? JSON.parse(rest.dataset.term) : null;
+        const actual =
+          term && term.adsorbate && term.n !== null && term.n !== undefined
+            ? { [term.adsorbate]: Math.round(term.n) }
+            : {};
+        const assumed = data.coads || {};
+        const same = JSON.stringify(sorted(actual)) === JSON.stringify(sorted(assumed));
+        // No region at this U: no resting termination to compare against
+        // (matches the Python mismatch(), which returns None here).
+        if (!rest || !rest.dataset.label || same) {
+          mm.classList.add('hidden');
+        } else {
+          const a = Object.keys(assumed).length
+            ? Object.entries(assumed).map(([k, v]) => k + '×' + v).join(' + ')
+            : 'clean';
+          mm.textContent =
+            'coads mismatch: the pathway assumed ' + a +
+            ', but the resting termination at ' + fmt(u) + ' V is ' +
+            (rest.dataset.label || '?') +
+            ' — the staircase sits on a different starting surface';
+          mm.classList.remove('hidden');
+        }
+      }
+
+      sec.querySelectorAll('.pbx-route').forEach((rt) => {
+        let lim = null;
+        rt.querySelectorAll('.pbx-rung').forEach((row) => {
+          const dg = parseFloat(row.dataset.dg0) + parseFloat(row.dataset.ne) * u;
+          row.querySelector('.pbx-dgu').textContent = fmt(dg);
+          if (!lim || dg > lim.dg) lim = { row, dg, name: row.dataset.name };
+        });
+        rt.querySelectorAll('.pbx-rung').forEach((row) => row.classList.remove('pbx-limit'));
+        if (lim) {
+          lim.row.classList.add('pbx-limit');
+          const el = rt.querySelector('.pbx-lim');
+          if (el) el.textContent = 'limiting at U: ' + lim.name + ' (ΔG ' + fmt(lim.dg) + ' eV)';
+          rt.dataset.limG = String(lim.dg);
+        }
+      });
+
+      const her = sec.querySelector('.pbx-her');
+      if (her) {
+        let hg = null;
+        her.querySelectorAll('.pbx-rung').forEach((row) => {
+          const dg = parseFloat(row.dataset.dg0) + parseFloat(row.dataset.ne) * u;
+          row.querySelector('.pbx-dgu').textContent = fmt(dg);
+          if (hg === null || dg > hg) hg = dg;
+        });
+        const hl = her.querySelector('.pbx-her-lim');
+        if (hl && hg !== null) hl.textContent = 'limiting HER rung at U ΔG ' + fmt(hg) + ' eV';
+        sec.querySelectorAll('.pbx-route').forEach((rt) => {
+          const el = rt.querySelector('.pbx-her-margin');
+          if (!el || hg === null || !rt.dataset.limG) return;
+          const margin = hg - parseFloat(rt.dataset.limG);
+          el.textContent = 'HER margin at U: ' + fmt(margin) + ' eV (limiting_HER − limiting_route; positive = the route out-competes HER)';
+        });
+      }
+    });
+  }
+  uEl.addEventListener('input', update);
+  phEl.addEventListener('input', update);
+  update();
+})();
+{% endraw %}
+</script>
 
 {% endblock %}

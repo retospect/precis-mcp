@@ -10,11 +10,12 @@ owner: catalysis session
 
 **Lifted 2026-10-07** (Reto, via chat-interface): ready for slices 1–2,
 owner = the catalysis session; see §Rulings below. **Build plan approved
-2026-10-13**; in build (Devin tasks A1–A4, catpath-repo engine tasks A1/A2;
-coordinator thread memory me481988): slice 2 (A3) and slices 4+5 as the pure
-library `src/precis_pathway/staircase_masks.py` (A4) started 2026-10-13. A5 =
-the first clean Pd(111) scan at -0.3 V and the θ→0 comparison vs pw455722
-(coordinator), then wave B = quest wiring. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
+2026-10-13** (coordinator thread memory me481988). **Wave A landed
+2026-10-13**: engine tasks A1/A2 (catpath v0.25.0), slice 2 (A3) and slices
+4+5 as the pure library `src/precis_pathway/staircase_masks.py` (A4) in main
+01b36dba7, A5 = the slice-1 proof below. **Wave B (quest wiring)**: slice 3 staircase panel (B2) landed 2026-10-13;
+B1 anchors rung and B3 window/Shapley/HER objectives in flight as Devin
+trees spso-b1, spso-b3. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
 this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
@@ -366,6 +367,19 @@ never mixed in one contract.
   Fe-doped Pd PoC (~Nov 2026) and the catpath trust-demo paper
   (`threads/chemistry.md`) both sit under qu459585's one-paper-a-month.
   Unresolved.
+
+## Follow-ups from wave review (2026-10-13, non-blocking)
+
+- `pourbaix_map`: region edges built from sampled rows leave gaps;
+  `propagated_complete` is only flagged on non-finite values (A3 review).
+- `/pourbaix` quest page builds each candidate's maps twice (`quest_maps`
+  then `_candidate_ctx`); pass the precomputed maps through (B2 review).
+- Structure `view='staircase'` catches every exception from the pathway
+  sibling as "not installed"; narrow it, and fix `Hub.sibling()` so the
+  `pw_handler.hub = self.hub` backfill can go (B2 review).
+- `staircase_routes._step_kind` labels any `~` product as desorption, not
+  only the final edge; labels only, masks are kind-blind (B2 review).
+- The JS re-tilt and mismatch logic on `/pourbaix` have no test.
 
 ## Explicitly NOT in scope
 

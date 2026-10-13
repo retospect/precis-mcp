@@ -3,10 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** SPSO build in flight (plan approved 2026-10-13): A1–A4 running, A5 = first clean Pd(111) scan at -0.3 V + θ→0 vs pw455722 (coordinator), wave B = quest wiring next.
-  A1/A2 are engine tasks, A3 slice 2, A4 slices 4+5. A5: first clean-Pd(111) `surface_coverage_scan` with qu164903's
-  config, `point_U_RHE=-0.3`, no `target_node`, plus the θ→0 comparison
-  against pw455722. Wave B = quest wiring next. Then the Pourbaix gate's R15
+- **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B1 anchors rung and B3 window/Shapley/HER objectives running as Devin trees spso-b1, spso-b3; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
+  Wave A is done (A1/A2 engine 0.25.0, A3 slice 2, A4 slices 4+5, A5 slice-1 proof jo482106 + θ→0 vs pw455722, all in the SPSO doc). Wave B = quest wiring, in flight. Then the Pourbaix gate's R15
   proof, preserving failed before-job 468292, gate rule-out/lift,
   correction-set basis, and Pd-hydride precis-side fixes.
 - **Blocked by:** source-dependent production operations remain held. Items
@@ -156,14 +154,24 @@ only; everything this thread built is on main and was live by round 4.
   `PRECIS_MP_API_KEY` is in the overlay; Pourbaix must not block on the
   MP import.
 
-**Resume (2026-10-13, SPSO build approved):** Reto approved the build plan
-(coordinator memory me481988). Catpath floor is 0.24.1 (tag v0.24.1,
-headless matplotlib); the engine changes in flight cut 0.25.0. Tasks: A1
-coverage scan honours prebuilt slab + corrections + `slab_source`; A2
-per-edge/per-route affine CHE export + HER branch (both catpath repo); A3
-slice 2; A4 slices 4+5 (`staircase_masks.py`); A5 first clean scan + θ→0
-(coordinator). Decisions and the open paper-date collision: the item's
-§Rulings 2026-10-13.
+**Resume (2026-10-13, SPSO wave A landed):** Reto approved the build plan
+(coordinator memory me481988). Landed the same day: catpath **0.25.0**
+(tag v0.25.0, f88e45f: A1 coverage scan honours the injected slab, shares
+the pipeline's lattice derivation, applies the model corrections and
+records `corrections`/`slab_source`/`lattice_source`; A2 `che_affine`
+per-edge/per-route export + `network.her` side branch kept out of the
+headline U_L); precis main 01b36dba7 (A3 slice 2 map view + `/pourbaix/
+<handle>`; A4 `staircase_masks.py` slices 4+5 with the n_e sign
+convention; gr482107 coverage snap; gr482121 ingest slug) and 75a6ab85b
+(pin bump; needs the agent-image rebuild, r33). A5: jo482106 proof and
+θ→0 (caveat: pw455722 is the Sn-subsurface candidate) — in the item.
+Wave B in flight as Devin trees spso-b1 (anchors rung: mint per
+candidate, harvest sweep + θ→0, lift the `slab_extxyz` refusal), spso-b2
+(slice 3 staircase panel + `staircase_routes.py` adapter + slider bank),
+spso-b3 (window area / Shapley IPR / HER margin as Pareto measures,
+anchor-placement proposals, validity region per candidate). Decisions and
+the open paper-date collision: the item's §Rulings 2026-10-13. Open for
+Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
 
 **Worktree:** `catalysis-selectivity`
 **Allocation decision (historical):** yes — Reto, 2026-10-02 ("high up").

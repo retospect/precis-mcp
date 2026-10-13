@@ -157,6 +157,117 @@ def test_pourbaix_structure_page_no_anchors(
     assert "no anchors" in r.text
 
 
+# ── slice 3: the staircase panel on the shared slider bank ───────────────
+
+
+def _pathway_results() -> dict[str, Any]:
+    """A 0.25.0-shape results.json (the ``che_affine`` export + HER)."""
+    return {
+        "substrate": "NO",
+        "target": "NH3",
+        "network_digest": "d" * 16,
+        "corrections": {"gas": "catsel19"},
+        "nodes": {"*": {"mean": 0.0, "std": 0.0}},
+        "U_L": -0.15,
+        "che_affine": {
+            "scale": "RHE",
+            "T": 298.15,
+            "pH": 0.0,
+            "per_route": [
+                {
+                    "route": "* -> NO -> N+OH -> *~nh3",
+                    "steps": [
+                        {"edge": "no_ads", "delta_g0": -0.4, "n_e": 0},
+                        {"edge": "no_reduce", "delta_g0": 0.3, "n_e": 2},
+                        {"edge": "nh3_desorb", "delta_g0": 0.3, "n_e": 0},
+                    ],
+                    "U_L": -0.15,
+                    "U_opt": -0.1,
+                    "span_at_UL": 0.7,
+                }
+            ],
+        },
+        "her": {
+            "U_L_her": -0.2,
+            "product": "H2",
+            "leaf": "*~h2",
+            "dG_H_star": -0.1,
+            "edges": [
+                {
+                    "step": "Volmer",
+                    "edge": "*->H",
+                    "reactant": "*",
+                    "product": "H",
+                    "delta_g0": -0.1,
+                    "n_e": 1,
+                }
+            ],
+        },
+    }
+
+
+def _pathway(store: Any, slug: str, results: dict[str, Any] | None) -> Any:
+    return store.insert_ref(
+        kind="pathway",
+        slug=slug,
+        title="NO → NH3 on Pd",
+        meta={
+            "status": "ready",
+            "autocatpath_version": "0.25.0",
+            "results": results or {},
+        },
+    )
+
+
+def test_pourbaix_page_shows_map_and_staircase_on_one_bank(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store)
+    pw = _pathway(store, "pw_linked", _pathway_results())
+    store.add_link(
+        src_ref_id=sid, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    r = pb_client.get(f"/pourbaix/st{sid}")
+    assert r.status_code == 200
+    text = r.text
+    # the shared slider bank
+    assert 'id="pbx-u"' in text and 'id="pbx-ph"' in text
+    # the map carries the U marker + the U_L/U_opt/U_L_her verticals
+    assert "pbx-u-marker" in text
+    assert "U_L1" in text and "U_opt1" in text and "U_L_her" in text
+    # the staircase panel: rungs with affine terms, the pathway link
+    assert "pbx-staircase" in text and "no_reduce" in text
+    assert 'href="/refs/pathway/' in text
+    assert "HER competitor" in text
+
+
+def test_pourbaix_page_staircase_only_when_no_anchors(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    store = runtime_with_store.store
+    _seed_structure(runtime_with_store, with_scan=False)
+    st = store.get_ref(kind="structure", id="pd_map")
+    pw = _pathway(store, "pw_only", _pathway_results())
+    store.add_link(
+        src_ref_id=st.id, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    r = pb_client.get(f"/pourbaix/st{st.id}")
+    assert r.status_code == 200
+    assert "no anchors" in r.text
+    assert "pbx-staircase" in r.text and "no_reduce" in r.text
+    assert "unverified" in r.text  # no resting map — starting surface unverified
+
+
+def test_pourbaix_page_map_only_when_no_pathway(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/st{sid}")
+    assert r.status_code == 200
+    assert "<svg" in r.text and "pbx-staircase" not in r.text
+
+
 def test_pourbaix_quest_page_maps_candidates(
     pb_client: TestClient, runtime_with_store
 ) -> None:

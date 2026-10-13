@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections import Counter
 from collections.abc import Mapping
@@ -149,6 +150,7 @@ _VIEWS = (
     "links",
     "literature",
     "pourbaix",
+    "staircase",
     *_EXPORT_VIEWS,
 )
 
@@ -1100,6 +1102,8 @@ class StructureHandler(Handler):
                     ref, pourbaix_map.maps_for_structure(self.store, ref)
                 )
             )
+        if view == "staircase":
+            return self._render_staircase(ref, a)
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)
@@ -1127,6 +1131,83 @@ class StructureHandler(Handler):
                 next=f"view= one of {list(_VIEWS)}, or omit for the TOC",
             )
         return self._render_probe(view, scene, args or {}, ref=ref)
+
+    def _render_staircase(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``view='staircase'`` — the reaction staircase of this
+        structure's best linked pathway (SPSO slice 3), re-tilted at
+        ``args['U']`` (V vs RHE; default the serving quest's operating
+        point, else the pathway's recorded one, else 0).
+
+        The render itself is the pathway handler's — the affine adapter
+        lives in the plugin and core may not import it
+        (``tests/test_plugin_import_boundary.py``), so this resolves the
+        best pathway in core (``precis.quest.staircase``) and delegates
+        through :meth:`Hub.sibling`. A structure without a ready linked
+        pathway gets the honest no-pathway answer; a missing plugin
+        degrades to the same."""
+        u_raw = args.get("U")
+        u: float | None = None
+        if u_raw is not None:
+            if (
+                isinstance(u_raw, bool)
+                or not isinstance(u_raw, int | float)
+                or not math.isfinite(u_raw)
+            ):
+                raise BadInput(
+                    f"args={{'U': {u_raw!r}}}: U must be a finite number (V vs RHE)"
+                )
+            u = float(u_raw)
+        from precis.quest import staircase as sq
+
+        pw = sq.best_pathway(self.store, int(ref.id))
+        handle = (
+            handle_registry.try_format("structure", int(ref.id))
+            or f"structure:{ref.id}"
+        )
+        head = (ref.title or "").splitlines()[0] if ref.title else handle
+        if pw is None:
+            return Response(
+                body=(
+                    f"# reaction staircase — {handle} {head}\n\n"
+                    "no staircase — no ready pathway is linked to this "
+                    "structure (the harvest wires candidates to their "
+                    "evaluating pathway with a `related-to` link)."
+                )
+            )
+        if u is None:
+            u = sq.quest_operating_u(self.store, int(ref.id))
+        pw_handle = (
+            handle_registry.try_format("pathway", int(pw.id)) or f"pathway:{pw.id}"
+        )
+        try:
+            # the pathway kind is slug-keyed — a bare ref_id would hit its
+            # cite_key lookup, never the ref table
+            pw_handler = self.hub.sibling("pathway")
+            if getattr(pw_handler, "hub", None) is None:
+                # sibling() lazy-builds without _register_with — .hub unset
+                pw_handler.hub = self.hub
+            # omit U entirely when no quest/point is recorded — the pathway
+            # side then falls back to its own operating point (args={'U':
+            # None} is a caller bug it rejects)
+            body = pw_handler.get(
+                id=str(pw.slug or pw.id),
+                view="staircase",
+                args={"U": u} if u is not None else {},
+            ).body
+        except Exception as exc:  # plugin absent or init-guard tripped
+            log.debug("structure %s: pathway sibling unavailable (%s)", ref.id, exc)
+            body = (
+                f"(staircase render unavailable — the pathway kind is not "
+                f"installed here; best linked pathway is {pw_handle})"
+            )
+        return Response(
+            body=(
+                f"# reaction staircase — {handle} {head}\n"
+                f"best linked pathway: {pw_handle} "
+                f"({(pw.title or '').splitlines()[0] if pw.title else '?'})\n\n"
+                f"{body}"
+            )
+        )
 
     def _get_external(
         self, *, source: str, q: str | None, args: dict[str, Any]

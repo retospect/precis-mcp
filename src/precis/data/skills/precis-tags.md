@@ -194,8 +194,8 @@ the union (32 values). Pick the row that matches the ref you're tagging:
 | Quest (perpetual striving — no `done`; enforced) | `quest` | `active`, `dormant`, `abandoned` |
 
 The runtime rejects unknown values at write time with the options list
-for that kind (for `todo`/`gripe`/`quest`) or the full union (other
-kinds). To see the live set without triggering a write, `get(kind='tag',
+for that kind (for `todo`/`gripe`/`quest`) or the union (32 values)
+for other kinds. To see the live set without triggering a write, `get(kind='tag',
 id='STATUS:open')` — the `sibling values` line surfaces the full closed
 vocabulary for the axis (`precis-status-help` is unrelated — build/DB
 introspection, not tag axes).

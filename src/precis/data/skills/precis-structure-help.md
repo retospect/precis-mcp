@@ -152,14 +152,13 @@ edit(kind="structure", id="pd111", ops=[
 ```
 
 `z` comes from the anchors' own geometry, never a remembered constant — a
-hand-picked `frac` copied from another cell doesn't transfer. Use raw
-`add_atom` only when no anchor exists yet, and then derive `z` from *this*
-cell: top-layer `frac z` + bond length / cell height. On the standard
-Pd(111) `[3,3,4]`/vacuum-10 cell (height ≈16.74 Å, top layer `frac
-z≈0.403`), on-surface hollow `z≈0.46–0.47` for a ~0.9–1.2 Å H–metal bond —
-`frac z=0.66` looks plausible but sits H ~4.3 Å above the surface: it either
-fails preflight as a floating atom or relaxes in 0 steps to a
-subsurface-degenerate energy, not a real adsorbate.
+`frac` copied from another cell doesn't transfer. Use raw `add_atom` only
+when no anchor exists yet, then derive `z` from *this* cell: top-layer
+`frac z` + bond length / cell height. On the standard Pd(111)
+`[3,3,4]`/vacuum-10 cell (height ≈16.74 Å, top layer `frac z≈0.403`),
+on-surface hollow `z≈0.46–0.47` for a ~0.9–1.2 Å H–metal bond — `frac
+z=0.66` looks plausible but floats H ~4.3 Å off the surface: it fails
+preflight or relaxes in 0 steps to a subsurface-degenerate energy.
 
 ## Edit — `edit(id=<slug>, ops=[…])`
 
@@ -272,8 +271,8 @@ the single most insightful view of what a relax (or an edit) actually did.
 
 ### Point of view — the embodiment readout
 
-One uniform readout regardless of *what* you focus on — an atom or a
-fragment (a ring from `rings`, a molecule from `fragments`):
+One uniform readout whatever you focus on — an atom, or a fragment (a ring
+from `rings`, a molecule from `fragments`):
 
 ```python
 get(..., view="pov", args={"support": "aO1", "reach": 3.0})  # i_am=atom
@@ -284,9 +283,9 @@ get(
 )  # i_am=fragment
 ```
 
-Returns **`i_am`** (atom/fragment) · **`i_include`** (the support) ·
-**`i_touch`** (everything within reach, nearest-first). `pov` is the
-*stateless* readout; an **eye** is the persisted, named form — see below.
+Returns **`i_am`** · **`i_include`** (the support) · **`i_touch`**
+(within reach, nearest-first). `pov` is the *stateless* readout; an **eye**
+is the persisted, named form — see below.
 
 ## Eyes & measures — persisted, re-evaluated markers
 
@@ -333,11 +332,11 @@ get(
 )  # all eyes + measures, live value + verdict
 ```
 
-- **measure `kind`**: `distance` / `bond_length` (2 atoms) · `angle` (3) ·
+- **measure `kind`**: `distance`/`bond_length` (2 atoms) · `angle` (3) ·
   `coordination` (1). **`direction`**: `min|max|target`. **`goal`**:
-  `{target, tol}` or `{min}` / `{max}`. **`strength`**: `hard|soft|gauge` — a
-  `soft` failure is downgraded to a warning; `gauge` is a readout with no
-  verdict. Retire with `unmark`/`remove_measure`.
+  `{target,tol}` or `{min}`/`{max}`. **`strength`**: `hard|soft|gauge` —
+  `soft` downgrades a failure to a warning, `gauge` has no verdict. Retire
+  with `unmark`/`remove_measure`.
 - A marker whose atoms are later removed reads **`dangling`** (legible, not an
   error).
 
@@ -348,12 +347,12 @@ get(
 link(kind="structure", id="pd111_h", target="structure:pd111", rel="derived-from")
 ```
 
-`derived-from` (⇄ `derived-into`) records that one design came from another —
-e.g. an LLM-proposed edit branched to a new slug. Read both directions with
-the store's link queries; the web viewer renders the lineage.
+`derived-from` (⇄ `derived-into`) records that one design came from another
+— e.g. an LLM-proposed edit branched to a new slug. Read both directions
+with the store's link queries; the web viewer renders the lineage.
 
-**Design provenance — link a design to the paper(s) that motivated it**, with a
-one-line rationale, so a material shows *why* it was made:
+**Design provenance — link a design to the paper(s) that motivated it**,
+with a one-line rationale:
 
 ```python
 link(
@@ -365,10 +364,8 @@ link(
 )
 ```
 
-The TOC and the web detail page surface these **paper-provenance** links (the
-paper, its DOI, and your `note`); re-linking the same edge with a fresh `note`
-updates it. Any paper-target link shows up, so you reason from design intent,
-not just a citation list. To *find* the papers in the first place, use the
+The TOC and web detail page surface these links (paper, DOI, your `note`);
+re-linking the same edge updates the note. To *find* the papers, use the
 literature view below.
 
 ## Relax — the fidelity ladder (`{"op":"relax", …}`)
@@ -408,13 +405,11 @@ honours `fixed` constraints — a frozen atom never moves.
 MLIP. Default off (unchanged), but turn it **on for anything held together by
 van der Waals contact** rather than covalent bonds — a host–guest complex, an
 interlocked mechanical bond, stacked aromatic faces. The MLIP's receptive
-field is a few Å, so without D3 those contacts read as barely bound and a
-sloppy design scores as well as a good one. It is part of the calculator's
-identity: the run-cube keys on it, so a D3 run never collides with a bare one,
-and `view='runs'` shows `dispersion=True` in the `calc:` header. Local-only —
-the GPU container contract carries no dispersion flag, so a host without
-`[dft-ml]` gets a clean `Unsupported` instead of a silently uncorrected
-dispatch. `model='chgnet'` has no D3 and rejects the flag.
+field is a few Å, so without D3 those contacts read as barely bound. It is
+part of the calculator's identity (the run-cube keys on it; `view='runs'`
+shows `dispersion=True` in the `calc:` header). Local-only — the GPU
+container contract carries no dispersion flag, so a host without `[dft-ml]`
+gets a clean `Unsupported`; `model='chgnet'` has no D3 and rejects the flag.
 
 ```python
 edit(
@@ -433,19 +428,14 @@ get(
 ## Completion reads
 
 `get(kind='structure', id='<design>', view='completion')` returns the shared
-v1 completion envelope; `completion_digest` gives a human-readable summary.
-Both read one coherent geometry/run/request snapshot, no compute or writes.
-Legacy run flags do not establish force convergence or finished geometry.
-`next.can_submit` is always false in this read-only version.
-
-Optional args: `requested_display` (default `{"kind":"current"}`),
-`shown_geometry_token`, `selected_run_id`, `history_limit`, `request_limit`.
-Numeric args use lossless tags, e.g. `{"selected_run_id":{"$int":"12"}}`;
-history/request limits are 1–64. All wire integers and rational numbers use
-tags; decode with the shared codec rather than converting IDs to floats.
-An explicit missing/foreign run never selects another run. Persisted input/output
-roles and artifact/historic selectors are echoed with typed unavailable status
-until a trusted loader/provenance path exists; they never borrow current rows.
+v1 completion envelope; `completion_digest` gives a human-readable summary —
+one coherent geometry/run/request snapshot, read-only (`next.can_submit`
+always false). Legacy run flags do not establish force convergence. Optional
+args (`requested_display` default `{"kind":"current"}`, `shown_geometry_token`,
+`selected_run_id`, `history_limit`/`request_limit` 1–64) take lossless number
+tags (`{"selected_run_id":{"$int":"12"}}`); decode with the shared codec.
+A missing/foreign run never selects another; artifact/historic selectors
+echo as typed unavailable rather than borrowing current rows.
 
 ## Relax — the GPU dispatch path
 
@@ -459,14 +449,12 @@ requirement is gone). The relaxed geometry lands in the run-cube on
 completion; poll `view='runs'`. An identical relax — same geometry, same
 rung — is a **zero-compute cache hit** (returns synchronously, mints no job).
 
-**Pre-flight gate before the GPU spend.** A dispatch first runs the `validate`
-gate as a **hard reject**: an overlap, over-valence, or impossibly-long declared
-bond raises an error naming the offending atom pair and mints **no** job — fix
-the geometry first. It then runs a cheap local `clean` pre-relax (pass
-`preflight='emt'` for an EMT pre-relax instead) so a mild clash is repaired
-before cloud compute, and re-checks the cache on the cleaned geometry. So the
-GPU is the last resort, not the first thing that runs on bad geometry. (A plain
-local `clean`/`emt` relax to *fix* a clashing structure is never gated.)
+**Pre-flight gate before the GPU spend.** A dispatch first runs the
+`validate` gate as a **hard reject** (an overlap, over-valence, or
+impossibly-long bond errors out naming the pair — fix the geometry first),
+then a cheap local `clean` pre-relax (`preflight='emt'` for EMT), then
+re-checks the cache. The GPU is the last resort, not the first thing on bad
+geometry. (A plain local `clean`/`emt` relax to *fix* a clash is never gated.)
 
 ```python
 edit(
@@ -615,6 +603,22 @@ interval, every boundary with its propagated and model-form bands kept
 apart, plus the bulk Pourbaix verdict as a labelled uncertain overlay. One
 map per footing (anchor_key · engine · correction set — partitioned, never
 blended). `no anchors` until a scan lands; the same map as an SVG page at
+`/pourbaix/<handle>`.
+
+### The reaction staircase — `get(view='staircase')`
+
+```python
+get(kind="structure", id="pd111", view="staircase", args={"U": -0.3})
+```
+
+The best linked pathway's staircase from the engine's affine CHE export
+(`che_affine`, engine ≥ 0.25.0), re-tilted at `U` (default: the serving
+quest's operating point, else the pathway's recorded one, else 0): each
+rung's ΔG(U), the limiting rung, per-route U_L/U_opt, the HER margin when
+present. Where a coverage-scan map exists, its resting termination at U is
+named as the starting surface with the coads-mismatch verdict when the
+pathway's slab spec disagrees. `no staircase` until a ready pathway is
+linked; a pre-0.25.0 result reports `che_affine absent`. Same panel at
 `/pourbaix/<handle>`.
 
 ## Export — `get(view='poscar'|'extxyz'|'cif')`

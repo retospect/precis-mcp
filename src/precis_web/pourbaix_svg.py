@@ -82,9 +82,23 @@ def _cell_step(values: list[float]) -> float:
     return ds[len(ds) // 2]
 
 
-def map_svg(m: dict[str, Any], *, width: int = 760, height: int = 460) -> str:
+def map_svg(
+    m: dict[str, Any],
+    *,
+    width: int = 760,
+    height: int = 460,
+    u_marker: float | None = None,
+    vlines: list[dict[str, Any]] | None = None,
+) -> str:
     """One map → an inline ``<svg>`` fragment. ``m`` is the
-    :func:`precis.quest.pourbaix_map.build_map` object."""
+    :func:`precis.quest.pourbaix_map.build_map` object.
+
+    Slice 3 additions: ``u_marker`` draws the draggable U indicator (a
+    ``.pbx-u-marker`` line the slider bank repositions), and ``vlines``
+    draws fixed verticals (the campaign carry-over: each route's ``U_L``
+    and ``U_opt`` as ``{"u", "label", "color", "dash"}``). The ``data-*``
+    attributes on the root carry the plot's coordinate transform so the
+    shared slider bank can move the marker client-side."""
     window = m.get("U_RHE_window") or [None, None]
     if window[0] is None or window[1] is None or not (window[0] < window[1]):
         return (
@@ -109,7 +123,11 @@ def map_svg(m: dict[str, Any], *, width: int = 760, height: int = 460) -> str:
     parts: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
         f'height="{height}" viewBox="0 0 {width} {height}" role="img" '
-        'font-family="ui-monospace, monospace">',
+        'font-family="ui-monospace, monospace" class="pbx-map" '
+        f'data-ulo="{u_lo:g}" data-uhi="{u_hi:g}" '
+        f'data-x0="{_ML}" data-pw="{plot_w}" '
+        f'data-phlo="{ph_lo:g}" data-phhi="{ph_hi:g}" '
+        f'data-y0="{_MT}" data-ploth="{plot_h}">',
         "<defs>"
         '<pattern id="mfHatch" width="6" height="6" '
         'patternTransform="rotate(45)" patternUnits="userSpaceOnUse">'
@@ -199,6 +217,35 @@ def map_svg(m: dict[str, Any], *, width: int = 760, height: int = 460) -> str:
             f'<path d="M {px:.1f} {py - 6:.1f} L {px + 6:.1f} {py:.1f} '
             f'L {px:.1f} {py + 6:.1f} L {px - 6:.1f} {py:.1f} Z" '
             f'fill="none" stroke="#111827" stroke-width="1.6"/>'
+        )
+
+    # Slice 3: route U_L / U_opt verticals (fixed — the affine terms they
+    # come from are U-invariant), then the draggable U marker last so it
+    # sits on top.
+    for vl in vlines or []:
+        u = vl.get("u")
+        if not isinstance(u, int | float) or not math.isfinite(float(u)):
+            continue
+        if not u_lo <= float(u) <= u_hi:
+            continue  # outside the swept window — clipped, not extrapolated
+        x = X(float(u))
+        dash = f' stroke-dasharray="{_esc(vl.get("dash"))}"' if vl.get("dash") else ""
+        color = _esc(vl.get("color") or "#0f172a")
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{_MT}" x2="{x:.1f}" '
+            f'y2="{_MT + plot_h}" stroke="{color}" stroke-width="1.1"{dash}/>'
+        )
+        if vl.get("label"):
+            parts.append(
+                f'<text x="{x + 3:.1f}" y="{_MT + plot_h - 6}" font-size="9" '
+                f'fill="{color}">{_esc(vl["label"])}</text>'
+            )
+    if isinstance(u_marker, int | float) and math.isfinite(float(u_marker)):
+        x = X(min(max(float(u_marker), u_lo), u_hi))
+        parts.append(
+            f'<line class="pbx-u-marker" x1="{x:.1f}" y1="{_MT}" x2="{x:.1f}" '
+            f'y2="{_MT + plot_h}" stroke="#dc2626" stroke-width="1.8" '
+            'stroke-opacity="0.85"/>'
         )
 
     # Axes + ticks.

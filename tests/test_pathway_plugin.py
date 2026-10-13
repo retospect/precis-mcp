@@ -1068,7 +1068,7 @@ def test_get_unknown_view_raises_bad_input_naming_accepted_set(
 
 
 def test_all_declared_views_dispatch(pathway_store: Store) -> None:
-    """Every one of the 12 views the KindSpec declares must still pass
+    """Every one of the 13 views the KindSpec declares must still pass
     through `get` (not itself get rejected as 'unknown') once the view=
     validation lands."""
     h = _handler(pathway_store)
@@ -1076,7 +1076,7 @@ def test_all_declared_views_dispatch(pathway_store: Store) -> None:
     h.put(id="views_smoke", text=SMOKE)
 
     declared = PathwayHandler.spec.views
-    assert len(declared) == 12
+    assert len(declared) == 13
     for view in declared:
         resp = h.get(id=slug, view=view)
         assert resp.body, f"view={view!r} returned an empty body"

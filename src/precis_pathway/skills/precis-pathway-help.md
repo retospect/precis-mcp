@@ -202,6 +202,17 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
 ## Other reads
 
+- `view='staircase'` — the reaction staircase from the engine's affine CHE
+  export (`che_affine`, engine ≥ 0.25.0): per scored route every rung's
+  ΔG(U) = ΔG0 + n_e·U (n_e = proton-electron pairs **consumed** — reductions
+  ease at more negative U; pH-flat on RHE), the limiting rung at U,
+  per-route U_L/U_opt/span_at_UL, the HER competitor's U_L_her + margin
+  when `network.her` was on, the DAG-wide U_L, the footing (engine ·
+  corrections · network_digest), and a `missing:` line naming what the
+  results lack rather than fabricating rungs. `args={'U': -0.3}` re-tilts;
+  the default is the config's recorded operating point (else 0 V). Linked
+  structures' resting maps name the starting surface with the
+  coads-mismatch verdict. Same panel on the web at `/pourbaix/<handle>`.
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.
 - `view='warnings'` — where to distrust the numbers, in three sections:
   **blocking** (real fatal, on-route trust-record fails — read these first),

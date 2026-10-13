@@ -30,6 +30,7 @@ from precis.handlers._mode_help import require_mode
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
+from precis.utils import handle_registry
 from precis.utils.text import slugify
 
 if TYPE_CHECKING:
@@ -46,8 +47,9 @@ _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 
 
 #: Views that accept the CHE potential lever ``args={'U': <V vs RHE>}``
-#: (docs/backlog/pathway-conditions-effects-report.md Phase 1 item 1).
-_POTENTIAL_VIEWS = ("analysis", "profile", "compare")
+#: (docs/backlog/pathway-conditions-effects-report.md Phase 1 item 1;
+#: 'staircase' re-tilts the affine export — SPSO slice 3).
+_POTENTIAL_VIEWS = ("analysis", "profile", "compare", "staircase")
 
 
 def _potential_arg(args: dict[str, Any] | None) -> float | None:
@@ -129,6 +131,7 @@ class PathwayHandler(Handler):
             "network",
             "methods",
             "config",
+            "staircase",
         ),
     )
 
@@ -407,6 +410,8 @@ class PathwayHandler(Handler):
             return Response(body=self._mermaid(meta))
         if v == "compare":
             return Response(body=self._compare(store, ref, meta, U=U))
+        if v == "staircase":
+            return Response(body=self._staircase(store, ref, meta, U=U))
 
         computed = bool(meta.get("graph"))
         if v in ("analysis", "steps", "kinetics", "trust", "warnings") and not computed:
@@ -631,6 +636,63 @@ class PathwayHandler(Handler):
                 "leaderboard."
             )
         return compare_toon(candidates, U=U)
+
+    # -- staircase (SPSO slice 3, the che_affine read) --------------------
+    def _staircase(
+        self, store: Store, ref: Any, meta: dict[str, Any], *, U: float | None
+    ) -> str:
+        """`view='staircase'` — the reaction staircase from the engine's
+        affine CHE export, re-tilted at ``U`` (default: the pathway's
+        recorded operating point, else 0 V). Where a linked structure has
+        a surface-Pourbaix map, the map's resting termination at U is the
+        staircase's stated starting surface (§7.2), with the coads
+        mismatch verdict when the pathway's slab spec disagrees."""
+        from precis.quest import pourbaix_map
+        from precis.quest import staircase as sq
+
+        from .staircase_routes import render_staircase, routes_for_pathway
+
+        results = meta.get("results") if isinstance(meta.get("results"), dict) else {}
+        u = U if U is not None else sq.pathway_operating_u(meta.get("config"), results)
+        sr = routes_for_pathway(store, ref)
+        cfg = meta.get("config") or {}
+        ph = sr.pH
+        for c in (
+            (cfg.get("conditions") or {}).get("pH"),
+            (cfg.get("electrochemistry") or {}).get("pH"),
+        ):
+            if ph is None and isinstance(c, int | float) and not isinstance(c, bool):
+                ph = float(c)
+        structures = []
+        for s in sq.structures_for_pathway(store, int(ref.id)):
+            smeta = dict(s.meta or {})
+            coads = sq.coads_of(smeta)
+            handle = (
+                handle_registry.try_format("structure", int(s.id))
+                or f"structure:{s.id}"
+            )
+            resting, region = None, None
+            for m in pourbaix_map.maps_for_structure(store, s):
+                region = sq.resting_region(m, u)
+                if region is not None:
+                    resting = str(region.get("label") or "?")
+                    break
+            structures.append(
+                {
+                    "handle": handle,
+                    "resting": resting,
+                    "assumed": sq.assumed_label(coads),
+                    "mismatch": sq.mismatch(region, coads, u=u, label=resting),
+                }
+            )
+        return render_staircase(
+            sr,
+            results,
+            u_rhe=u,
+            title=ref.title,
+            ph=ph,
+            structures=structures,
+        )
 
     # -- preview (cheap, no compute) -------------------------------------
     def _preview(
