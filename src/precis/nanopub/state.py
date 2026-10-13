@@ -17,7 +17,10 @@ one; every other door refuses it.
 Pure policy; the CAS write is
 ``store.nanopub_transition(row_id, to_state=…, expect=…)`` — callers
 check :func:`check_transition` first, and the CAS's ``expect`` list keeps
-a racing writer honest.
+a racing writer honest. Two legal targets are nonetheless refused by the
+generic CAS because they carry side obligations: ``publishing`` (claim /
+release / record_published) and ``superseded`` (``store.nanopub_supersede``,
+which also writes the ``nanopub_supersessions`` row — gr482220).
 """
 
 from __future__ import annotations

@@ -86,7 +86,7 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    open = prod tuning + the published-provenance question; the service
    stays dark until lit).
 3. **Doors** — `taproot-merge-mcp-surface` (web door + agent `view='merge-plan'` shipped; open = corpus-wide banded candidate scan, low priority) ·
-   `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` ·
+   `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` (a1 shipped 0043fdb7e: anchored unpublished predecessors; open = signed and published predecessors, the latter needs Reto's ruling) ·
    `preprint-to-published-cite-upgrade`.
 4. **Evidence quality** — `evidence-edge-verification` (rubric labels +
    approve gate; whether the verify/repair runs happened needs prod data.

@@ -499,11 +499,24 @@ class NanopubMixin:
         self, row_id: int, *, to_state: str, expect: tuple[str, ...]
     ) -> bool:
         """CAS state flip. Legality (which flips are allowed at all) is
-        :func:`precis.nanopub.state.check_transition` — call that first."""
+        :func:`precis.nanopub.state.check_transition` — call that first.
+
+        Two states have their own doors and are refused here regardless of
+        legality: ``publishing`` (the registry-POST claim) and ``superseded``
+        (gr482220 — only :meth:`nanopub_supersede` may terminalize a row, and
+        it does so together with the ``nanopub_supersessions`` row naming the
+        successor and the predecessor's signed-artifact check; a bare flip
+        would leave a superseded row with no successor, past the signing
+        boundary)."""
         if to_state == "publishing" or "publishing" in expect:
             raise BadInput(
                 "'publishing' moves only through nanopub_claim_publishing / "
                 "nanopub_release_publishing / nanopub_record_published"
+            )
+        if to_state == "superseded":
+            raise BadInput(
+                "'superseded' moves only through nanopub_supersede, which "
+                "records the successor in nanopub_supersessions"
             )
         with self.pool.connection() as conn:
             cur = conn.execute(

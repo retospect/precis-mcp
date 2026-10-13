@@ -494,3 +494,16 @@ def test_publish_rechecks_after_supersede_and_never_posts(
         registry.publish(
             store, old.claim_ref_id, live=True, interactive=True, post=post
         )
+
+
+def test_generic_transition_refuses_superseded(store: Any) -> None:
+    """gr482220: the CAS flip may not terminalize a row as ``superseded`` even
+    though the TRANSITIONS table lists it; only ``nanopub_supersede`` may, and
+    it writes the ``nanopub_supersessions`` row in the same transaction."""
+    old = _old(store)
+    before = _persisted(store, old)
+    state.check_transition("anchored", "superseded")  # legal in the table …
+    with pytest.raises(BadInput, match="nanopub_supersede"):  # … refused by the CAS
+        store.nanopub_transition(old.id, to_state="superseded", expect=("anchored",))
+    assert _persisted(store, old) == before
+    assert store.nanopub_publish_row_by_id(old.id).state == "anchored"

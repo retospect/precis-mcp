@@ -4,7 +4,7 @@
 
 - **Pillar:** 3d-design
 - **Next:** once the docx fix (2026-10-10, below) is deployed, export both formats from the web UI (tick "submission copy" for the journal PDF) and read them; Reto's manual pass over the citations, starting with the 14 WEAK sentences the 2026-10-10 audit left open (listed below); ingest full text for the six 1993/1986/1996 definitional stubs pa477139–pa477144 or accept them as metadata-only cites.
-- **Blocked by:** the deploy of the docx fix (sections/cross-refs/title block in Word); nothing on figure rights (the five reproduced figures are cleared; the two image-less placeholders dc3015723 and dc3015730 were dropped); hero figure remains unchanged while hexfold's spec-driven shapes are pending; anchored-hub edits wait on the supersede door.
+- **Blocked by:** the deploy of the docx fix (sections/cross-refs/title block in Word); nothing on figure rights (the five reproduced figures are cleared; the two image-less placeholders dc3015723 and dc3015730 were dropped); hero figure remains unchanged while hexfold's spec-driven shapes are pending; anchored-hub edits go through `precis nanopub supersede` (door shipped 0043fdb7e for anchored, unpublished predecessors), then the normal sign and publish flow.
 - **Unblocks:** A submission-ready October preprint.
 - **Acceptance:** Use [the latest handoff](#thread-context): read back the ruled edits, re-export dr173020, compile and visually read the PDF; saved-export checks alone do not establish readiness. Preserve signed-grounding pins and frozen-hub constraints.
 - **Worktree:** `nanobuds-paper`
@@ -78,7 +78,7 @@ held for hexfold; leave the hero and its unrelaxed-junction caption intact.
 
     - Measured before deploy: 37 of 89 pins warn, none for G4. In a sample about 6 in 10 are real gaps, e.g. DFT, DFTB or HOMO/LUMO missing from the pinned chunk. Known noise: negated terms, words glued by extraction, numeric locants, range endpoints.
     - Each warning suggests up to 3 better chunks: re-pin to one if it carries the term; if none does, file the gap.
-    - fi189535 (anchored) now flags TEM and STS as uncovered and suggests pc209502 and pc209508. Its fix is still a supersede, which waits on the unbuilt supersede door. This thread owns it.
+    - fi189535 (anchored) now flags TEM and STS as uncovered and suggests pc209502 and pc209508. If a fix is needed it is a supersede via `precis nanopub supersede` (door shipped 0043fdb7e); the item 29 correction below says none is. This thread owns it.
 - **Reto-run:**
   - ~~delete dc3015729 and dc3015722~~ done 2026-10-09 via MCP `delete(kind='draft')`, both retired (Reto: "delete them");
   - ~~enrich-rearm~~ applied 2026-10-08 (115/118); the worker-cycle wait and the re-export are Reto's (2026-10-09, "I work on it");
@@ -124,11 +124,11 @@ item is nanobuds-paper-32. Edit-verb year=/journal= fix landed
      fi189535, fi189536, fi190976, fi191314, fi191016, fi191021, fi191123, fi191164 and fi272040.
      fi190976 is already known (pa2615 SI vs pa2069). Under the adopted rule a non-originator pin is fine when it supports the sentence.
      Checked: one real case, fi191314 in dc2445942 ("the original synthesis" pinned to pa1483, not pa2069). Filed as item 28 §A7. The rest are fine.
-   - **Frozen hubs (14:42Z, at the review session's request):** dr173020 cites 15 hubs whose nanopub is `anchored` (td345840 done). A reword of one of those hubs needs a supersede, and the supersede door is unbuilt.
+   - **Frozen hubs (14:42Z, at the review session's request):** dr173020 cites 15 hubs whose nanopub is `anchored` (td345840 done). A reword of one of those hubs needs a supersede through `precis nanopub supersede` (door shipped 0043fdb7e for anchored, unpublished predecessors); the successor then signs and publishes by the normal human flow.
      - Item 28 touches three: A3 fi191270, B1 fi189544 and B10 fi189548.
      - A3 and B1 change draft prose only.
      - B10 is re-proposed as B10′, which uses bare pc cites so that no link is added to the anchored hub.
-     - Check script: `nanobud-fidelity/printed-read/frozen_check_28.py`. Before applying any edit to a cited hub, re-run it; a fix that touches an anchored hub's claim sentence waits for the supersede door.
+     - Check script: `nanobud-fidelity/printed-read/frozen_check_28.py`. Before applying any edit to a cited hub, re-run it; a fix that touches an anchored hub's claim sentence is a successor nanopub via `precis nanopub supersede`, never an in-place edit.
    - **Item 28 applied 15:05Z (10-03): all as proposed, B10 as B10′, and the four extras.**
      `printed-read/apply_28.py` ran 3 link adds, 20 draft edits and 5 link removals, all ok (`apply-28.log`). `verify_finds_28.py --after` read back clean.
      - A1 removed three pa345 links (pc22030, pc22031, pc22037), not the two the item listed.
