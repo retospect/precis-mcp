@@ -39,9 +39,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    already landed in code (polygon-aware `check_via_pad_keepout` 3c8db49a,
    `check_outline_containment` 5b91abe18; the same-net-fixed-via exemption
    stays as authored-copper policy) — verified and deleted from the doc.
+   **Slices 5 and 8 shipped 2026-10-13 too** (`view='check'`, authored
+   `op='phase'`, the etype/voltage/rail ERC rules).
    **Left:** Slice 1's Reto decision + the prod re-run of
-   `ewod-dogfood-2`; Slices 5–9 (`unconnected_pin`'s slice-5 line is
-   already done; the etype/voltage/rail rules remain).
+   `ewod-dogfood-2`; Slices 6, 7 and 9.
 2. **backlog/pcb-component-model.md** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps,
    pinout-view-and-connector-intake and meta-blocks all build on.

@@ -31,16 +31,12 @@ consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 1. **backlog/design-state-core.md** — `ready/high`; unblocks pattern-groups
    below and is the node type every later milestone in this file writes
    into.
-2. **backlog/pose-vector-units.md** — `ready/high`; vector ingest shipped
-   2026-10-12, and the same day's follow-up rounds shipped too
-   (echo-on-write `understood:` lines, the TOON column formatter,
-   `prefunits` per-call + sticky `meta.prefunits`, respond-in-kind for
-   cad/se/nm reads, pcb `group_offset.rot` unit strings). Only the
-   notation-robustness eval (needs Reto + a castor gpt-oss run) is left
-   in the file. Independent of 1.
-3. **backlog/pattern-groups.md** — blocked-by 1 (design-state-core).
-4. **backlog/make-tree-vs-design-tree.md**
-5. **backlog/attached-models-layer.md**
+2. **backlog/pattern-groups.md** — blocked-by 1 (design-state-core).
+3. **backlog/make-tree-vs-design-tree.md**
+4. **backlog/attached-models-layer.md**
+
+(pose-vector-units.md deleted 2026-10-13: every round shipped; the
+notation-robustness rerun moved to backlog/claude-code-on-local-serving.md.)
 
 ## Horizon
 

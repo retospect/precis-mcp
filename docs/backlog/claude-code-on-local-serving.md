@@ -213,3 +213,9 @@ verified against the image's `--help` on castor):
   FP8 on vLLM ~44 tok/s is the best-documented coding model but needs an
   FP8 download. Castor's NVMe reads 11.9 GB/s direct; load time is
   processing, not disk.
+Once castor serves sound output, the first free-lane job is the notation
+robustness eval rerun that gr336349 (closed, default ruling: keep both
+notations) deferred to a weak local model: `uv run python -m
+precis.llm_eval.notation --model openai/gpt-oss-120b --repeats 3` against
+the castor endpoint; reopen gr336349 only if one notation concentrates
+10x/1000x slips. (Moved here from pose-vector-units.md, deleted 2026-10-13.)
