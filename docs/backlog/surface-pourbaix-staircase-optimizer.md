@@ -208,9 +208,11 @@ refine, not replace, them.
   session; started after the catpath lock. Anchors compute on the
   locked engine (0.24.0 ruled 2026-10-07; floor is 0.24.1 since the
   headless-matplotlib fix, tag v0.24.1): engine token recorded per anchor.
-  The engine changes in flight (A1: prebuilt slab + corrections in the
-  coverage scan; A2: per-edge/per-route affine CHE export and an HER
-  branch) cut 0.25.0.
+  The engine changes (A1: prebuilt slab + corrections + shared lattice
+  derivation in the coverage scan; A2: per-edge/per-route affine CHE
+  export `che_affine` and an HER side branch `network.her`, kept out of
+  the headline U_L) are **autocatpath 0.25.0, cut 2026-10-13** (tag
+  v0.25.0, f88e45f); precis pins it from the same day.
 - Sequencing: first build = anchor inventory + inner CHE sweep with error
   bands (slice 1). The hydride pilot (catalysis-selectivity item 23, still
   HELD) hangs off slice 2.
