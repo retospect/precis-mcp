@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -110,6 +111,10 @@ class _FakeCtx:
     failures: list[str] = field(default_factory=list)
     meta_set: dict[str, Any] = field(default_factory=dict)
     status: str = "running"
+    #: ``(wake_at, note)`` pairs recorded by ctx.defer; ``defer_ok``
+    #: flips to False to exercise the park-cap fall-through.
+    deferred: list[tuple[Any, str]] = field(default_factory=list)
+    defer_ok: bool = True
 
     def set_status(self, v: str) -> None:
         self.status = v
@@ -126,6 +131,12 @@ class _FakeCtx:
 
     def is_cancel_requested(self) -> bool:
         return False
+
+    def defer(self, wake_at: Any, note: str) -> bool:
+        if not self.defer_ok:
+            return False
+        self.deferred.append((wake_at, note))
+        return True
 
 
 def _spec() -> Any:
@@ -511,3 +522,133 @@ def test_dispatch_insert_before_retire_survives_mid_apply_failure(
     texts = {c.text for c in live_paras}
     assert "New paragraph, tightened." in texts  # the insert succeeded
     assert old_text in texts  # the retire failed, so the old one is still live
+
+
+# ── dispatch: window-scoped LLM pause defers, never fails (gr482938) ──────
+
+
+def _paused_result(*, timed_out: bool = False) -> LlmResult:
+    """A taper-refusal result as the router returns it for a breaker trip
+    (``paused=True``, the trip text in ``error``, a ``retry_at`` instant)."""
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="fake",
+        tier=Tier.BIG,
+        error=(
+            "budget: claude quota low (98% of the seven_day window used; "
+            "under 2% remaining) — big background work paused. Smaller "
+            "tiers and free local work still run; auto-clears when the "
+            "window resets, or resume now on /budget."
+        ),
+        paused=True,
+        timed_out=timed_out,
+        retry_at=datetime(2026, 10, 14, 6, 30, tzinfo=UTC),
+    )
+
+
+def test_dispatch_quota_pause_defers_with_retry_at(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr482938: the breaker's taper refusal must park the job for the
+    retry instant — never ``record_failure``. The same job re-runs when
+    the wake fires, so the refresh isn't lost and the all-failing
+    watchdog doesn't trip on a deliberate pause."""
+    draft = DraftHandler(hub=hub)
+    old_text = "Old paragraph."
+    seeded = _seed_section_draft(draft, hub, paras=(old_text,))
+
+    res = _paused_result()
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: res)
+
+    ctx = _FakeCtx(
+        store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    assert len(ctx.deferred) == 1
+    wake_at, note = ctx.deferred[0]
+    assert wake_at == res.retry_at
+    assert "paused" in note
+    # The section is untouched (no partial apply) — the wake re-runs it.
+    para_chunk = store.drafts.get_draft_chunk(seeded["paras"][0])
+    assert para_chunk is not None and para_chunk.text == old_text
+
+
+def test_dispatch_pause_without_retry_at_uses_default_horizon(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paused result that names no retry instant still parks — the
+    executor's default backoff applies (wake_at=None to ctx.defer)."""
+    draft = DraftHandler(hub=hub)
+    seeded = _seed_section_draft(draft, hub, paras=("Old paragraph.",))
+
+    res = _paused_result()
+    res = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="fake",
+        tier=Tier.BIG,
+        error=res.error,
+        paused=True,
+        retry_at=None,
+    )
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: res)
+
+    ctx = _FakeCtx(
+        store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    assert len(ctx.deferred) == 1
+    assert ctx.deferred[0][0] is None
+
+
+def test_dispatch_timed_out_pause_still_fails(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wall-clock timeout is ``paused=True`` too, but nothing rolls
+    off — re-running the identical call re-burns the same ceiling (the
+    quest_tick ``pause_kind == "timeout"`` ruling), so it stays a
+    failure, not a park."""
+    draft = DraftHandler(hub=hub)
+    seeded = _seed_section_draft(draft, hub, paras=("Old paragraph.",))
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.route",
+        lambda _req: _paused_result(timed_out=True),
+    )
+
+    ctx = _FakeCtx(
+        store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.deferred
+    assert ctx.failures and "LLM dispatch failed" in ctx.failures[0]
+
+
+def test_dispatch_pause_past_park_cap_fails(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the executor's park cap is hit (ctx.defer → False), a
+    never-lifting pause surfaces as a normal failure rather than
+    sleeping behind ``waiting_time`` forever."""
+    draft = DraftHandler(hub=hub)
+    seeded = _seed_section_draft(draft, hub, paras=("Old paragraph.",))
+
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: _paused_result())
+
+    ctx = _FakeCtx(
+        store=store,
+        meta={"params": {"draft": "nt", "scope": seeded["sec"]}},
+        defer_ok=False,
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.deferred
+    assert ctx.failures and "LLM dispatch failed" in ctx.failures[0]

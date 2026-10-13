@@ -28,7 +28,7 @@ from precis.structure import apply_ops
 from precis.structure.ops import OpError
 from precis.structure.probe import toc as _toc
 from precis.utils.llm.router import LlmRequest, Tier, route
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, defer_on_pause
 
 log = logging.getLogger(__name__)
 
@@ -198,6 +198,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"structure_propose: agent failed: {exc}")
         return
     if res.error:
+        if defer_on_pause(ctx, res, label="structure_propose"):
+            return
         ctx.record_failure(f"structure_propose: agent failed: {res.error}")
         return
 

@@ -64,6 +64,11 @@ WAITING_TIME = "waiting_time"
 WAITING_ASK_USER = "waiting_ask_user"
 WAITING_MANUAL_KICK = "waiting_manual_kick"
 
+#: Every waiting status — a parked job (coordinator Yield, or a
+#: non-coordinator lane's :func:`park_job_until`). Non-terminal but NOT
+#: still-running either: a finalize pass must leave these alone.
+WAITING = (WAITING_CHILDREN, WAITING_TIME, WAITING_ASK_USER, WAITING_MANUAL_KICK)
+
 # Terminal STATUS values — a row carrying any of these is not
 # claimable. Waiting statuses are NOT terminal; they're paused.
 TERMINAL = (SUCCEEDED, FAILED, CANCELLED)
@@ -1188,6 +1193,70 @@ def classify_transient_backoff_hours(reason: str) -> float | None:
 #: actionable without risking a huge traceback bloating ``refs.meta``.
 _ERROR_META_CAP = 500
 
+#: Park horizon when a window-scoped pause names no retry instant — the
+#: quota wording's own two-hour fallback
+#: (:data:`precis.utils.llm.failure.DEFAULT_HORIZON`).
+PAUSE_BACKOFF = timedelta(hours=2)
+
+#: Successive parks before a job stops deferring and fails normally. A
+#: window pause is indefinite upstream, but a job that can never be
+#: admitted shouldn't sleep behind ``STATUS:waiting_time`` forever —
+#: same bound deferred_llm_call's ``MAX_DEFERRALS`` puts on its
+#: coordinator-lane re-parks (six five-hour windows is over a day).
+MAX_PAUSE_PARKS = 6
+
+
+def park_job_until(
+    store: Store,
+    conn: Connection,
+    ref_id: int,
+    wake_at: datetime | None,
+    note: str,
+) -> bool:
+    """Park a running job until ``wake_at`` — the non-coordinator lane's
+    Yield (gr482938): ``STATUS:waiting_time`` + ``meta.wake_when``
+    ``{'kind': 'at_time', 'payload': {'ts': …}}``, which the
+    wake_runner's ``at_time`` selector re-queues once the instant passes
+    (the selector is executor-agnostic — the re-queued row goes back to
+    whichever executor claimed it). ``wake_at=None`` parks for
+    :data:`PAUSE_BACKOFF`.
+
+    Use for a *window-scoped* pause — a quota taper / dollar cap breaker
+    trip, a quota-exhaustion notice, a saturated local slot — where the
+    SAME job must re-run after the window clears, instead of
+    :func:`record_failure` (which terminal-fails it and trips the
+    all-failing watchdog on a deliberate pause). The reservation is
+    released so a parked job holds no slots while it sleeps; the wake
+    re-queue clears the stale lease (``wake_runner._requeue``), so the
+    next claim is a clean fresh-work claim with no attempt bump.
+
+    ``True`` when the job parked; ``False`` once it has already parked
+    :data:`MAX_PAUSE_PARKS` times (``meta.pause_parks``) — the caller then
+    records the pause as a normal failure instead of letting a
+    never-lifting window hide the job forever. Caller commits.
+    """
+    row = conn.execute(
+        "SELECT COALESCE((meta->>'pause_parks')::int, 0) FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    parks = int(row[0]) if row and row[0] is not None else 0
+    if parks >= MAX_PAUSE_PARKS:
+        return False
+    at = wake_at if wake_at is not None else datetime.now(UTC) + PAUSE_BACKOFF
+    append_chunk(store, ref_id, JOB_EVENT_KIND, note, conn=conn)
+    set_meta(
+        conn,
+        ref_id,
+        wake_when={
+            "kind": "at_time",
+            "payload": {"ts": int(at.timestamp())},
+        },
+        pause_parks=parks + 1,
+    )
+    release_job_reservation(conn, ref_id)
+    set_status(store, ref_id, WAITING_TIME, conn=conn)
+    return True
+
 
 def record_failure(
     store: Store,
@@ -1365,6 +1434,8 @@ __all__ = [
     "JOB_EVENT_KIND",
     "JOB_SUMMARY_KIND",
     "MAX_ATTEMPTS",
+    "MAX_PAUSE_PARKS",
+    "PAUSE_BACKOFF",
     "QUEUED",
     "RECLAIM_WHY_EPOCH",
     "RECLAIM_WHY_EXPIRY",
@@ -1372,6 +1443,7 @@ __all__ = [
     "STATUS_NAMESPACE",
     "SUCCEEDED",
     "TERMINAL",
+    "WAITING",
     "WAITING_ASK_USER",
     "WAITING_CHILDREN",
     "WAITING_MANUAL_KICK",
@@ -1384,6 +1456,7 @@ __all__ = [
     "job_type_requires",
     "max_job_attempts",
     "maybe_reset_gpu_after_kill",
+    "park_job_until",
     "poison_guard",
     "record_failure",
     "release_job_reservation",

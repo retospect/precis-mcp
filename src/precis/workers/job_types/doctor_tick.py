@@ -119,6 +119,11 @@ class DoctorTickOutcome:
     duration_s: float
     cost_usd: float | None
     report_ref_id: int | None
+    #: Window-scoped pause (``LlmResult.paused`` minus its ``timed_out``
+    #: refinement): the executor parks the job until ``retry_at`` instead
+    #: of failing it (gr482938). ``False`` on any other outcome.
+    paused: bool = False
+    retry_at: Any = None
 
 
 #: Packaged doctor directive prompt — the SSOT, persona-neutral (the
@@ -237,6 +242,11 @@ def run(
             duration_s=duration,
             cost_usd=res.cost_usd,
             report_ref_id=None,
+            # A window-scoped pause parks the job (gr482938); a timeout is
+            # excluded deliberately — nothing rolls off, so retrying the
+            # identical call re-burns the same ceiling and stays a failure.
+            paused=bool(res.paused) and not res.timed_out,
+            retry_at=getattr(res, "retry_at", None),
         )
 
     text = (res.text or "").strip()

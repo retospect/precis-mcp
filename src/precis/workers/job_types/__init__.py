@@ -188,6 +188,49 @@ class JobTypeSpec:
 JOB_TYPE_PLUGIN_GROUP = "precis.job_types"
 
 
+def defer_on_pause(ctx: Any, result: Any, *, label: str) -> bool:
+    """Park the job on a window-scoped LLM pause instead of failing it
+    (gr482938 — the plugin-dispatch analog of a coordinator ``Yield``).
+
+    Call this first on any ``route()`` result (or ``DispatchError``)
+    before falling into the ``record_failure`` path: a ``paused`` result
+    — a breaker trip (claude quota taper / dollar cap), a
+    quota-exhaustion notice, a saturated local slot — is a
+    wait-for-window, not a defect. ``ctx.defer`` parks the SAME job as
+    ``STATUS:waiting_time`` until the router's ``retry_at`` (the parsed
+    window reset, else the executor's default backoff), so the work is
+    retried when the window reopens instead of landing as a failed job
+    that trips the all-failing watchdog.
+
+    Returns ``True`` when the job parked — the dispatcher must then
+    return with no terminal status (the finalize pass leaves a parked
+    job alone). ``False`` on a non-pause result, when the ctx carries no
+    ``defer`` surface, or once the job has already parked
+    ``_common.MAX_PAUSE_PARKS`` times — the caller then handles
+    ``result.error`` normally, so a never-lifting pause still fails.
+
+    A ``timed_out`` result is deliberately NOT a park: it is
+    ``paused=True`` too, but nothing rolls off — re-running the
+    identical call re-burns the same wall-clock ceiling (quest_tick's
+    ``pause_kind == "timeout"`` ruling), so it keeps failing.
+    """
+    if not getattr(result, "paused", False) or getattr(result, "timed_out", False):
+        return False
+    defer = getattr(ctx, "defer", None)
+    if defer is None:
+        return False
+    wake_at = getattr(result, "retry_at", None)
+    when = wake_at.isoformat() if wake_at is not None else "the default backoff"
+    err = getattr(result, "error", None) or "paused"
+    return bool(
+        defer(
+            wake_at,
+            f"{label}: LLM dispatch paused (window-scoped) — {err}; "
+            f"re-queued at {when} or on /budget resume",
+        )
+    )
+
+
 def _load_fix_gripe() -> JobTypeSpec:
     # Lazy import keeps the heavy git/subprocess dependencies out
     # of the MCP dispatch path until the worker actually needs them.
@@ -818,6 +861,7 @@ __all__ = [
     "JOB_TYPE_PLUGIN_GROUP",
     "JobTypeSpec",
     "_reset_plugin_cache",
+    "defer_on_pause",
     "get_job_type",
     "known_job_types",
 ]

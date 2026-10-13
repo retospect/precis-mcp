@@ -35,7 +35,7 @@ from precis.cad.scene import build_design, spec_to_source
 from precis.cad_resolve import design_resolver
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.units import format_quantity
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, defer_on_pause
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -277,6 +277,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"cad_discuss: agent failed: {exc}")
         return
     if res.error:
+        if defer_on_pause(ctx, res, label="cad_discuss"):
+            return
         ctx.record_failure(f"cad_discuss: agent failed: {res.error}")
         return
 

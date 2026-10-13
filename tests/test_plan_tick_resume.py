@@ -12,6 +12,9 @@ text, and the executor's resume-vs-bubble decision end to end.
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
+
 from precis.store.store import Store
 from precis.store.types import Tag
 from precis.utils.claude_agent import stream_terminal_reason
@@ -461,3 +464,80 @@ def test_no_precis_tools_streak_parks_planner_stuck(store: Store, monkeypatch) -
         ).fetchall()
     decompose_jobs = [r for r in rows if (r[0].get("params") or {}).get("decompose")]
     assert decompose_jobs == []
+
+
+# ── gr482938: window-scoped pause parks the job (no streak, no bubble) ────
+
+
+def test_paused_tick_parks_until_retry_at(store: Store) -> None:
+    """A quota taper / dollar-cap pause parks the SAME job at
+    ``STATUS:waiting_time`` until the router's retry instant — it does
+    not end 'succeeded' (which would re-mint a fresh tick that burns the
+    parent's resume streak on consecutive no-op pauses until it bubbled
+    a real child-failed for a deliberate pause)."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+    retry_at = datetime(2026, 10, 14, 6, 30, tzinfo=UTC)
+    spec = _FakeSpec(
+        PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr=(
+                "budget: claude quota low (98% of the seven_day window "
+                "used) — big background work paused"
+            ),
+            duration_s=1.0,
+            resume_reason="paused",
+            retry_at=retry_at,
+        )
+    )
+    ci._run_plan_tick(store, job_id, spec)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:waiting_time" in job_tags
+    assert "STATUS:succeeded" not in job_tags
+    assert "STATUS:failed" not in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+        streak_row = conn.execute(
+            "SELECT meta->>'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()
+    assert meta_row is not None
+    meta = meta_row[0]
+    assert int(meta["wake_when"]["payload"]["ts"]) == int(retry_at.timestamp())
+    assert meta["pause_parks"] == 1
+    # The pause consumed none of the give-up budget.
+    assert streak_row is not None and streak_row[0] is None
+
+
+def test_paused_tick_without_retry_at_parks_on_backoff(store: Store) -> None:
+    """A pause that names no reset still parks (executor's default
+    horizon), never burns the streak."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+    spec = _FakeSpec(
+        PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr="local slots busy",
+            duration_s=1.0,
+            resume_reason="paused",
+            retry_at=None,
+        )
+    )
+    ci._run_plan_tick(store, job_id, spec)
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:waiting_time" in job_tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    meta = row[0]
+    ts = int(meta["wake_when"]["payload"]["ts"])
+    assert ts > int(time.time())

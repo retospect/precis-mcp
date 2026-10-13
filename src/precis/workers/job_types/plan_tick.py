@@ -57,6 +57,8 @@ from precis.utils.llm.router import (
 )
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
@@ -174,6 +176,11 @@ class PlanTickOutcome:
     #: ``_resume_reason`` to parse). ``None`` on the claude path — its resume
     #: reason stays derived from the stream + exit code, unchanged/byte-identical.
     resume_reason: str | None = None
+    #: The router's earliest-retry instant on a window-scoped pause
+    #: (``resume_reason == "paused"`` — quota taper / dollar cap /
+    #: saturated local slot); the executor parks the job until it
+    #: (gr482938). ``None`` on every other outcome.
+    retry_at: datetime | None = None
 
 
 def validate_submit(
@@ -486,6 +493,7 @@ def _run_oss_tick(
         stderr=result.error or "",
         duration_s=duration,
         resume_reason=resume_reason,
+        retry_at=getattr(result, "retry_at", None) if result.paused else None,
     )
 
 
@@ -497,8 +505,14 @@ def _oss_exit_from_result(result: Any) -> tuple[int, str | None]:
     cap). A transport / build / admission error → a hard failure. Otherwise
     defer to the loop's ``stop_reason`` (:func:`_oss_exit`).
     """
-    if result.paused:
+    if result.paused and not result.timed_out:
         return 1, "paused"
+    if result.timed_out:
+        # A wall-clock timeout is ``paused`` too, but nothing rolls off —
+        # re-running the identical call re-burns the same ceiling, so it
+        # counts against the streak (quest_tick's pause_kind ruling)
+        # instead of parking (gr482938).
+        return 1, "timeout"
     if result.error:
         return 1, None
     return _oss_exit(result.stop_reason or "")
@@ -636,6 +650,7 @@ def _run_claude_tick(
         stderr=result.error or "",
         duration_s=duration,
         resume_reason=resume_reason,
+        retry_at=getattr(result, "retry_at", None) if result.paused else None,
     )
 
 
@@ -702,10 +717,10 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
     Resumable (the MCP usually comes back), bounded by the same streak cap, and
     bubbles a real ``child-failed:`` when it doesn't.
     """
-    if result.paused:
+    if result.paused and not result.timed_out:
         return 1, "paused"
     if result.error is not None:
-        if "timed out" in result.error.lower():
+        if result.timed_out or "timed out" in result.error.lower():
             return 1, "timeout"
         return 1, None
     tr = result.terminal_reason

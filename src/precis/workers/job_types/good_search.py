@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, defer_on_pause
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -660,6 +660,12 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
             )
         )
         if res.error:
+            # A window-scoped pause can't clear inside the retry loop —
+            # park the child for the retry instant instead of failing it
+            # (gr482938); the parent's children_done wake just sees a
+            # longer-lived child.
+            if defer_on_pause(ctx, res, label="good_search_triage"):
+                return
             last_err = res.error
             ctx.append_chunk(
                 "job_event",

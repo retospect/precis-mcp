@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, defer_on_pause
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     try:
         draft_id = build_reading_briefing(ctx.store, **kwargs)
     except Exception as exc:
+        # A window-scoped pause (the compose call's DispatchError carries
+        # .paused/.retry_at from the router) parks the job instead of
+        # failing it (gr482938).
+        if defer_on_pause(ctx, exc, label="reading_brief"):
+            return
         log.warning("reading_brief job: pass raised", exc_info=True)
         ctx.record_failure(f"reading_brief: pass raised: {exc}")
         return

@@ -208,6 +208,25 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # executor's parked-job backoff classifies this failure the same way
         # the router did (a quota reset, a 429's fifteen minutes, ...).
         first = unavailable_why[0][2] if unavailable_why else ""
+        # gr482938: when every stall was a window-scoped pause (quota /
+        # budget — the same classes deferred_llm_call parks on), park the
+        # job at the furthest horizon instead of failing it: the
+        # done_chunk_ids checkpoint means the wake re-runs only the
+        # unconverted chunks. An unclassified or mixed failure keeps the
+        # failure path (a dead endpoint is not a window).
+        deferrable = bool(classes) and set(classes) <= {"quota", "budget"}
+        defer = getattr(ctx, "defer", None)
+        if (
+            deferrable
+            and defer is not None
+            and defer(
+                max(horizons) if horizons else None,
+                f"taproot_backfill: claim extraction LLM paused{why} for "
+                f"{handles} — unconverted chunks re-run on wake; "
+                f"{len(done_ids)} chunk(s) checkpointed",
+            )
+        ):
+            return
         ctx.record_failure(
             f"taproot_backfill: claim extraction LLM unavailable{why} for "
             f"{handles} — those chunks are not checkpointed; retry this job"

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Write ``.coverage.precis.json`` — the byte-fingerprint manifest for a
 per-test-context coverage DB.
 

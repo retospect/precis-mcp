@@ -359,6 +359,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     from precis.quest.narrative_budget import narrative_growth_gate
     from precis.utils.llm.router import LlmRequest, Tier
     from precis.utils.llm.router import route as llm_dispatch
+    from precis.workers.job_types import defer_on_pause
 
     params = (ctx.meta or {}).get("params") or {}
     draft_slug = str(params.get("draft") or "").strip()
@@ -457,6 +458,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     res = llm_dispatch(LlmRequest(tier=Tier.BIG, prompt=prompt, source="draft_refresh"))
     if res.error:
+        # A window-scoped pause (quota taper, dollar cap) parks the job for
+        # the retry instant instead of failing — this job is minted once per
+        # section per day by idem_key, so ending it failed loses the
+        # refresh AND trips the all-failing watchdog on a deliberate pause
+        # (gr482938). The attempt is left unmarked — the model never ran,
+        # so nothing was ruled out.
+        if defer_on_pause(ctx, res, label="draft_refresh"):
+            return
         if quest_id is not None:
             dossier_mod.mark_attempt(ctx.store, quest_id, attempt_label, "ruled-out")
         ctx.record_failure(f"draft_refresh: LLM dispatch failed: {res.error}")

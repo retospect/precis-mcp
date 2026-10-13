@@ -54,6 +54,9 @@ from precis.workers.executors._common import (
     TERMINAL as _TERMINAL,
 )
 from precis.workers.executors._common import (
+    WAITING as _WAITING,
+)
+from precis.workers.executors._common import (
     append_chunk as _append_chunk,
 )
 from precis.workers.executors._common import (
@@ -67,6 +70,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     is_cancel_requested as _is_cancel_requested,
+)
+from precis.workers.executors._common import (
+    park_job_until as _park_job_until,
 )
 from precis.workers.executors._common import (
     poison_guard as _poison_guard,
@@ -473,6 +479,14 @@ def _build_dispatch_context(
         with store.pool.connection() as conn:
             return _is_cancel_requested(conn, ref_id)
 
+    def _ctx_defer(wake_at: datetime | None, note: str) -> bool:
+        # Park the job (STATUS:waiting_time + meta.wake_when at_time) —
+        # this lane's Yield; wake_runner re-queues it at the instant.
+        with store.pool.connection() as conn:
+            parked = _park_job_until(store, conn, ref_id, wake_at, note)
+            conn.commit()
+        return parked
+
     return DispatchContext(
         store=store,
         ref_id=ref_id,
@@ -484,6 +498,7 @@ def _build_dispatch_context(
         record_failure=_ctx_record_failure,
         is_cancel_requested=_ctx_is_cancel_requested,
         renew_lease=_ctx_renew_lease,
+        defer=_ctx_defer,
     )
 
 
@@ -492,11 +507,14 @@ def _finalize_plugin_dispatch(store: Store, ref_id: int) -> None:
 
     Only transitions a job still in a non-terminal state — a dispatcher
     that already recorded a failure (``STATUS:failed``) or cancellation
-    is left untouched. Idempotent and race-free: ``dispatch`` guarantees
-    one runner per job, so the read-then-write needs no extra locking.
+    is left untouched; so is one that parked itself (``STATUS:waiting_*``
+    via ``ctx.defer``, gr482938 — the wake_runner owns that row's
+    re-queue now; flipping it to SUCCEEDED would strand the deferral).
+    Idempotent and race-free: ``dispatch`` guarantees one runner per job,
+    so the read-then-write needs no extra locking.
     """
     with store.pool.connection() as conn:
-        if _current_status(conn, ref_id) not in _TERMINAL:
+        if _current_status(conn, ref_id) not in (*_TERMINAL, *_WAITING):
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
             conn.commit()
 
@@ -589,6 +607,31 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     # sweep — bounded by a per-parent streak cap so a tick that *always*
     # runs out can't loop forever burning spend. See CHANGELOG.
     resume_reason = _resume_reason(outcome, raw_stream)
+
+    # gr482938: a *window-scoped* pause (quota taper, dollar cap, a
+    # saturated local slot) is a wait-for-window, not a resumable
+    # exhaustion — park the SAME job until the router's retry instant
+    # instead of ending it succeeded and letting dispatch re-mint a fresh
+    # tick that burns the parent's resume streak on consecutive no-op
+    # pauses (the streak cap would then bubble a real child-failed for
+    # what is a deliberate pause). The wake_runner re-queues this job at
+    # the horizon; the parent's re-mint gate sees a live job meanwhile.
+    if resume_reason == "paused":
+        with store.pool.connection() as conn:
+            parked = _park_job_until(
+                store,
+                conn,
+                ref_id,
+                getattr(outcome, "retry_at", None),
+                f"runner: tick paused — {(outcome.stderr or 'window pause')[:400]}; "
+                "parked until the window clears or /budget resumes",
+            )
+            if parked:
+                _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
+                conn.commit()
+                return
+        # Park cap reached — fall through to the normal resume machinery,
+        # which consumes the streak and eventually bubbles.
 
     with store.pool.connection() as conn:
         _append_chunk(
@@ -1570,6 +1613,22 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
             result_text += f" error={outcome.error}"
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
         _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
+        if outcome.paused:
+            # gr482938: a window-scoped pause parks the SAME job until the
+            # router's retry instant instead of failing — a cadence-minted
+            # tick has no parent to re-arm it, so a failure would lose the
+            # report and trip the all-failing watchdog on a deliberate
+            # pause. Cap reached → the normal failure branch below.
+            if _park_job_until(
+                store,
+                conn,
+                ref_id,
+                outcome.retry_at,
+                f"runner: doctor tick paused — {(outcome.error or 'window pause')[:400]}; "
+                "parked until the window clears or /budget resumes",
+            ):
+                conn.commit()
+                return
         if outcome.exit_code == 0:
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
         else:

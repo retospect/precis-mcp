@@ -2773,11 +2773,21 @@ class DispatchError(RuntimeError):
     or an all-local-slots-busy backoff (expected, self-clearing), ``False``
     for a genuine transport/provider failure — lets a caller skip the
     per-item ERROR traceback for the former without message-string sniffing.
+    ``retry_at`` mirrors :attr:`LlmResult.retry_at`: the earliest sensible
+    retry instant for a pause (``None`` when the window names none), so a
+    job lane can park until it instead of guessing a horizon.
     """
 
-    def __init__(self, message: str, *, paused: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        paused: bool = False,
+        retry_at: datetime | None = None,
+    ) -> None:
         super().__init__(message)
         self.paused = paused
+        self.retry_at = retry_at
 
 
 @dataclass
@@ -2881,7 +2891,7 @@ class DispatchClient:
             )
         )
         if res.error is not None:
-            raise DispatchError(res.error, paused=res.paused)
+            raise DispatchError(res.error, paused=res.paused, retry_at=res.retry_at)
         return res
 
 

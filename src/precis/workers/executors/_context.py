@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from precis.store.store import Store
 
 #: Parses the job id out of ``JobHandler.put``'s ack body. Both ack
@@ -95,6 +97,17 @@ class DispatchContext:
     #: between work items, at least once per lease interval. ``None`` on
     #: contexts built outside the executor (tests).
     renew_lease: Callable[[], bool] | None = None
+    #: Window-pause parker (gr482938). ``defer(wake_at, note)`` parks the
+    #: job as ``STATUS:waiting_time`` + ``meta.wake_when`` (``at_time``) —
+    #: this lane's equivalent of a coordinator ``Yield``: the wake_runner
+    #: re-queues it once ``wake_at`` passes (``None`` → the executor's
+    #: default backoff). For a window-scoped LLM pause (quota taper,
+    #: dollar cap, saturated local slot) that must re-run later — never
+    #: ``record_failure``. Returns ``False`` past the park cap
+    #: (:data:`precis.workers.executors._common.MAX_PAUSE_PARKS`) so the
+    #: caller can still fail a never-lifting pause. ``None`` on contexts
+    #: built outside the executor (tests).
+    defer: Callable[[datetime | None, str], bool] | None = None
 
     def spawn_child(
         self,

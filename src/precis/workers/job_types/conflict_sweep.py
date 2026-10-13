@@ -120,6 +120,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if not outcome.swept:
         # Only reachable through a negate dispatch failure — the lease was
         # cleared and nothing stamped, so a retry re-runs the whole sweep.
+        # A quota/budget pause reads identically (llm_errors=1): park for
+        # the backoff horizon instead of failing (gr482938); the park cap
+        # bounds a never-lifting outage.
+        defer = getattr(ctx, "defer", None)
+        if defer is not None and defer(
+            None,
+            f"conflict_sweep: negate LLM unavailable for fi{hub_id} — "
+            "nothing stamped; parked for the window",
+        ):
+            return
         ctx.record_failure(
             f"conflict_sweep: negate LLM unavailable for fi{hub_id} — nothing "
             "stamped; retry this job",

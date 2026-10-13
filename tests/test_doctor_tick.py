@@ -8,6 +8,7 @@ Registry/plumbing + ``run()`` are DB-backed (the report artifact is a real
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -190,3 +191,114 @@ def test_run_reply_without_a_classification_heading_is_a_failure(
     assert outcome.report_ref_id is None
     assert "Classification" in (outcome.error or "")
     assert doctor_report.find_report(store, doctor_report.utc_date_tag()) is None
+
+
+# ── gr482938: window-scoped pause parks, never fails ─────────────────────
+
+
+def test_run_paused_dispatch_flags_the_outcome(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A taper refusal (``paused=True`` + ``retry_at``) surfaces on the
+    outcome so the executor can park the job instead of failing it."""
+    retry_at = datetime(2026, 10, 14, 6, 30, tzinfo=UTC)
+    monkeypatch.setattr(
+        router,
+        "route",
+        lambda req: LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.BIG,
+            error="budget: claude quota low — big background work paused",
+            paused=True,
+            retry_at=retry_at,
+        ),
+    )
+
+    outcome = dt.run(store=store, job_ref_id=1, params={})
+
+    assert outcome.exit_code == 1
+    assert outcome.paused is True
+    assert outcome.retry_at == retry_at
+    assert outcome.report_ref_id is None
+
+
+def test_run_timed_out_pause_does_not_flag(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wall-clock timeout is ``paused`` too, but nothing rolls off —
+    the outcome stays a plain failure (no park flag)."""
+    monkeypatch.setattr(
+        router,
+        "route",
+        lambda req: LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.BIG,
+            error="timeout after 1200s",
+            paused=True,
+            timed_out=True,
+        ),
+    )
+
+    outcome = dt.run(store=store, job_ref_id=1, params={})
+
+    assert outcome.exit_code == 1
+    assert outcome.paused is False
+
+
+class _PausedSpec:
+    """Stands in for the doctor_tick JobTypeSpec — a canned paused
+    outcome instead of an LLM round-trip."""
+
+    name = "doctor_tick"
+
+    def run(self, **_kw: Any) -> dt.DoctorTickOutcome:
+        return dt.DoctorTickOutcome(
+            exit_code=1,
+            text="",
+            raw_text="",
+            error="budget: claude quota low — big background work paused",
+            duration_s=0.5,
+            cost_usd=None,
+            report_ref_id=None,
+            paused=True,
+            retry_at=None,
+        )
+
+
+def test_executor_parks_a_paused_tick(store: Store) -> None:
+    """``_run_doctor_tick`` parks a paused outcome at waiting_time +
+    wake_when (gr482938): the job re-runs when the window clears instead
+    of landing failed and tripping the all-failing watchdog."""
+    from precis.store.types import Tag
+    from precis.workers.executors import claude_inproc as ci
+
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="doctor_tick",
+        meta={"executor": "claude_inproc", "job_type": "doctor_tick", "params": {}},
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "running"), set_by="system", replace_prefix=True
+    )
+
+    ci._run_doctor_tick(store, int(job.id), _PausedSpec())
+
+    tags = {str(t) for t in store.tags_for(job.id)}
+    assert "STATUS:waiting_time" in tags
+    assert "STATUS:failed" not in tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (job.id,)
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    meta = row[0]
+    assert meta["wake_when"]["kind"] == "at_time"
+    assert meta["pause_parks"] == 1

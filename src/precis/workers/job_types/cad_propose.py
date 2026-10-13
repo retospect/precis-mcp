@@ -46,7 +46,7 @@ from precis.cad.scene import (
 from precis.cad_resolve import design_resolver
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.units import format_quantity
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, defer_on_pause
 
 log = logging.getLogger(__name__)
 
@@ -348,6 +348,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"cad_propose: agent failed: {exc}")
         return
     if res.error:
+        if defer_on_pause(ctx, res, label="cad_propose"):
+            return
         ctx.record_failure(f"cad_propose: agent failed: {res.error}")
         return
 
