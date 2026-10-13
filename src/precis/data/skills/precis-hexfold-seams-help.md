@@ -47,6 +47,14 @@ Three planes are unsupported by the revolution target format, so stored
 `surface_deviation` is honestly unavailable. Unequal dihedrals/k>=5 return
 `fit.unsolvable`; variant B remains unimplemented.
 
+sp3 siblings on the same contract: `k4-sp3-90-a` (four armchair sheets at
+90°, one degree-4 seam atom per period, `sheet[1]`>=3 atom levels) and
+`k3-sp3-z` (three zigzag sheets on a dimer seam chain, even `sheet[0]`);
+an H cap landing under 1.0 Å from another atom is dropped outright
+(`terminate.dropped`, bare edge). Free GFN2-xTB relaxes the sp2 120° Y and
+the seam tube INTO the k3 dimer chain (axial pairs 1.60–1.64 Å, sheet bonds
+1.50–1.53 Å, seam angle sums ~341°; hexhex 2026-10-13).
+
 ## Seam tube: the 120° Y seam run along a tube axis
 
 The strip joins the wall as the equal-120 sp2 k3 seam (the Y grammar)

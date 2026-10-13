@@ -383,6 +383,7 @@ def _block_from_net(
     target_flip: np.ndarray | None = None,
     provenance_tail: str = "",
     terminate: str = "H",
+    drop_h_under_A: float | None = None,
 ) -> GeneratedBlock:
     """Mint the block from a built ``net`` and its coordinates: the
     canonical frame and envelope, bond orders/kinds, ports, rings, length
@@ -401,7 +402,13 @@ def _block_from_net(
     appended after the carbons (ports, regions and findings keep their
     ordinals), recorded in ``topology["terminated"]`` and tagged
     :data:`TERMINATED_TAG` on the structure; ``"ports-open"`` leaves the
-    join ports' rim atoms bare for a later fuse, ``"none"`` caps nothing."""
+    join ports' rim atoms bare for a later fuse, ``"none"`` caps nothing.
+    ``drop_h_under_A`` (default None, keep every cap) drops a placed H
+    outright when any other atom sits under that distance — for seam
+    rows whose converging rims would otherwise mint overlapping
+    hydrogens: the bare open edge is honest, a 0.2 Å cap pair is not.
+    Dropped caps are reported as ``terminate.dropped`` INFO with their
+    host ordinals, and counted on ``topology["terminated"]["dropped"]``."""
     inverse: dict[str, Any] = {}
     coords, envelope = _canonical_frame(
         np.asarray(raw_coords, dtype=float),
@@ -421,6 +428,40 @@ def _block_from_net(
         for i, j, _o in net.bonds
     ]
     h_hosts, h_positions = _terminate_open_edges(net, coords, terminate)
+    h_dropped: list[int] = []  # host ordinals whose caps were dropped
+    if h_positions and drop_h_under_A is not None:
+        # Both members of a clashing pair go: each sees the other under
+        # the bar when the whole placed set is evaluated at once.
+        h_xyz0 = np.asarray(h_positions, dtype=float)
+        keep_h: list[int] = []
+        for k, (host, p) in enumerate(zip(h_hosts, h_xyz0)):
+            d_c = np.linalg.norm(coords - p, axis=1)
+            d_c[host] = np.inf
+            d_h = np.linalg.norm(h_xyz0 - p, axis=1)
+            d_h[k] = np.inf
+            if min(float(d_c.min()), float(d_h.min())) < drop_h_under_A:
+                h_dropped.append(host)
+            else:
+                keep_h.append(k)
+        h_hosts = [h_hosts[k] for k in keep_h]
+        h_positions = [h_positions[k] for k in keep_h]
+    if h_dropped:
+        report = report.merge(
+            Report(
+                (
+                    Finding(
+                        "terminate.dropped",
+                        Severity.INFO,
+                        f"{len(h_dropped)} placed H cap(s) dropped: another atom "
+                        f"sits under {drop_h_under_A:g} A; those carbons stay bare",
+                        data=(
+                            ("count", len(h_dropped)),
+                            ("hosts", sorted(set(h_dropped))),
+                        ),
+                    ),
+                )
+            )
+        )
     h_clashes: list[tuple[float, int, int]] = []
     if h_positions:
         base = len(elements)
@@ -557,6 +598,7 @@ def _block_from_net(
         "count": len(h_positions),
         "hosts": sorted(set(h_hosts)),
         "clashes": len(h_clashes),
+        "dropped": len(h_dropped),
         "bond_A": net.lattice.sigma_CH_A,
         "why": "open edges capped after the relax and the judgement so renders, "
         "se reports and a DFT handoff see a closed-shell edge; the report "

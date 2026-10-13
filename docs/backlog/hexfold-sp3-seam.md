@@ -1,13 +1,13 @@
 ---
 status: draft
 pillar: 3d-design
-title: hexfold sp³ seam lines and seam vertices — joining three or four sheets at an atom
+title: hexfold seam vertices — joining three or four seam lines at an atom
 prio: medium
 model: opus
 blocked-by: hexfold-integration
 ---
 
-# hexfold: sp³ seam variant + seam vertices
+# hexfold: seam vertices (sp³ seam lines shipped)
 
 Reto, 2026-09-16: "we want to add the sp3 join variant in the backlog
 also, i think that can join 3 or 4 sheets. We'll add it after the rest
@@ -15,66 +15,80 @@ is done." Spec context: `src/hexfold/spec.md` §6.2–6.4 (the sp² seam
 model, per-sheet χ, and the 0.2 exclusions), §11.3 (`seam … atoms=sp2`;
 `sp3` is the reserved value).
 
-## Scope
+**Shipped (this branch, 2026-10-13):** the sp³ seam *lines*. Both rows
+are built privately in `src/hexfold/sp3_seam.py` and routed through
+`hexfold_scene` as exclusive feature types `k4-sp3-90-a` (four
+armchair-rimmed sheets at 0/90/180/270°, one degree-four sp³ atom per
+period, alternating up/down sheet bonds → the catalogue's squashed
+tetrahedron 104.48°×4 + 120°×2) and `k3-sp3-z` (three zigzag-rimmed
+sheets at 120°, seam atoms paired into a dimer chain along the axis
+carrying the fourth bond; even period counts only; seeded at the
+xTB-relaxed seam lengths, seam angles 106.54°×3 + 112.24°×3).
+Wrong rim type is `port.mismatch`; unequal dihedrals, odd
+k3 period counts and k ≥ 5 are `fit.unsolvable` before build. Seam ring
+censuses are derived from the built graphs and recorded in
+`hexfold-seam-type-catalogue.md`'s row table. Public `.hx` grammar was
+not extended — the construction is private, exactly like the Y and the
+fins. What remains in this item is the vertex, not the line.
 
-- **sp³ seam line.** A seam atom with four bonds: one into each of four
-  sheets, or three sheets plus a bond along the seam chain.
+## Scope (remaining)
 
-  **Corrected 2026-09-26 — the claim that used to gate this item was
-  wrong.** It read: "four half-planes meeting on one line put the four
-  bonds in a plane at 90°, which is not tetrahedral — so the four-sheet
-  variant needs either alternating seam atoms along the line or sheets
-  that do not all meet on the same axis." That assumed every bond is
-  perpendicular to the seam line. A bond lies in its sheet's plane but is
-  free to tilt *within* that plane, which is the whole in-plane degree of
-  freedom the hexagon's 120° gives you (Reto's objection; checked
-  numerically). For dihedral φ between two half-planes and tilt α from the
-  seam axis, bonds on opposite sides along the axis:
-
-      cos θ = −cos²α + sin²α · cos φ
-
-  At α = arccos(1/√3) = 54.74°, bonds alternating up/down around the line,
-  four half-planes at 90° give all six angles **exactly** 109.47°. The hex
-  lattice does not hand you 54.74° though: measured off a flake, a zigzag
-  rim's dangling bonds sit at α = 90° from the rim line and an armchair
-  rim's at α = 60°. So the *realizable* four-sheet seam uses armchair rims
-  and comes out 104.48°×4 + 120°×2 — a squashed tetrahedron about 5° off
-  ideal on four bonds, not a 90° degeneracy.
-
-  Consequence: the four-sheet sp³ seam is geometrically ordinary and this
-  item is no longer gated on a design question that was an artefact of the
-  fixed-α assumption. Plain sp³ carbon, no exotic junction atom, and no
-  terminator (all four bonds go into sheets). What it still owes is a ring
-  census and a strain number.
-
-  The rim edge-word is **not** a free choice — the seam type picks it. See
-  `hexfold-seam-type-catalogue.md`, which owns the enumeration; this item
-  keeps only the sp³-specific work.
 - **Seam vertices.** Points where seam curves meet (Plateau's second law:
   four lines at the tetrahedral angle). Excluded in 0.2 because the atom
   there needs four sheets. The pyramidal join of four planes is
   `cone(P)` with creased edges plus one seam vertex at the apex.
-- Extend `seam`'s consistency check, `seam.rings`, and the per-sheet χ
-  rule to the sp³ case; decide whether seam-vertex atoms get their own
-  path-ID class.
+- Extend `seam`'s consistency check and the per-sheet χ rule to the
+  vertex case; decide whether seam-vertex atoms get their own path-ID
+  class. (The line rows already carry per-sheet χ residuals and
+  `seam.rings` through the private path.)
 
-## Prior art to check first (cite with DOI, per the sources rule)
+## Prior art — checked 2026-10-13
 
-- Carbon honeycomb: Krainyukova & Zubarev, *Phys. Rev. Lett.* 116, 055501
-  (2016), doi:10.1103/PhysRevLett.116.055501 —
-  graphene walls joined along lines; both sp³ and sp² junction variants
-  are studied in it and its follow-ups. Which papers treat which variant
-  is unverified.
-- The sp² octagon census derived in spec §6.2 must be compared against
-  the sp² honeycomb junction before the sp³ one is designed.
+- Krainyukova & Zubarev, *Phys. Rev. Lett.* 116, 055501 (2016),
+  doi:10.1103/PhysRevLett.116.055501 — the deposited carbon honeycomb:
+  zigzag-terminated graphene-nanoribbon walls interconnected through
+  single carbon atoms along the junction lines, proposed **all-sp²**.
+- **Erratum**, *Phys. Rev. Lett.* 118, 029901 (2017),
+  doi:10.1103/PhysRevLett.118.029901 — following the DFT instability
+  analysis (all-sp² junctions relax to sp³; RSC Adv., doi:10.1039/
+  C6RA27833G), the junction lines carry **sp³ bonding**: two atoms per
+  junction cell alternately shift toward/away from their neighbours
+  along the line. That alternation is exactly the `k3-sp3-z` dimer
+  motif — **verified correspondence**.
+- Diachenko & Krainyukova, *Low Temp. Phys.* 48, 232–238 (2022) —
+  honeycombs "built from graphene nanoribbons connected by sp³-bonded
+  carbon junction lines", both wall chiralities modelled. Follow-up
+  band-structure work names the zigzag-ribbon junction a **5-5-8** ring
+  triple and the armchair one 6-6-6; the built `k3-sp3-z` census
+  (3·n/2 pentagons + 3·(n/2−1) octagons per seam) is the same 5/8
+  family — **consistent, not yet matched cell-for-cell**.
+- `k4-sp3-90-a` (four sheets at 90°) has **no verified literature
+  correspondence**: the PRL's four-wall crossings were the sp² variant.
+- **Direct dynamical evidence, 2026-10-13 (coordinator):** free
+  GFN2-xTB relaxes (tblite, Te 1000 K, FIRE fmax 0.05) of both the small
+  equal-120 sp² Y (`hexfold_scene` `k3-sp2-120-z`, sheet [8,8],
+  H-terminated, 572 atoms, converged in 120 steps) and the 120° seam
+  tube did **not** keep the planar sp² seam. The seam atoms paired into
+  dimers along the axis at 1.60–1.64 Å, sheet bonds stretched 1.42 →
+  1.50–1.53 Å, and each seam atom pyramidalised (angle sum 360 → ~341°):
+  the xTB minimum of the three-sheet 120° seam is the `k3-sp3-z` sp³
+  dimer chain — the real seam atom is a flattened tetrahedron. The built
+  row seeds at those lengths (dimer 1.60 Å, sheet 1.51 Å, gap 3.32 Å).
+  Coordinates `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/
+  relax1013/{y-a,seam-out}.after.extxyz`, report `y-a.json` (read-only).
+  Finite-segment artefacts ignored: three guard-column H crowding at
+  each seam end, two guard carbons bonded across sheets at the start.
+  The public pass pins seam atoms and neighbours at this seed, so the
+  reported seam/rim angle tables are the held registration, not relaxed
+  evidence; H caps landing inside another atom's 1.0 Å neighbourhood on
+  converging rims are dropped (`terminate.dropped`), leaving bare edges.
+- Still open: comparing the sp² octagon census (§6.2, derived only)
+  against the all-sp² junction described in the PRL.
 
-## Acceptance
+## Acceptance (remaining)
 
-- A three-sheet sp³ seam and a four-sheet sp³ seam each `check` clean
-  with residual 0 per sheet, and their seam census matches the literature
-  object they correspond to.
-- One seam-vertex example (three seam lines meeting) builds, or the spec
-  records precisely why it cannot on the hex lattice.
+- One seam-vertex example (three seam lines meeting) builds, or the
+  spec records precisely why it cannot on the hex lattice.
 
 ## Seam vertices: the box corner cannot be a regular 90° corner (2026-09-27)
 

@@ -78,6 +78,11 @@ while seam-ring, bond, angle and tether residual findings remain inspectable.
 Typed Y and fin scenes retain an explicit termination mode in their replay
 params: otherwise replaying a bare carbon scene silently adds H. An omitted
 mode keeps the historical scene shape and the family default.
+The ``k4-sp3-90-a``/``k3-sp3-z`` scene features expose the sp3 seam
+siblings — four armchair-rimmed sheets at 90° through one degree-four seam
+carbon per period, and three zigzag-rimmed sheets whose seam atoms pair
+into a chain carrying the fourth bond — through the same exclusive
+pinned-registration contract and the same unavailable surface receipt.
 """
 
 from __future__ import annotations

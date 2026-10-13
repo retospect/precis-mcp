@@ -47,6 +47,17 @@ the axis, each seam's third sheet an inward strip (``rows``), with optional
 ``pores`` (``{"arc": k, "at": [u, v]}`` hexagon vacancies) and a stored
 ``sites`` list of the attachment carbons; ``tube: [rows, periods]`` as for
 the seam tube but with even row pairs per arc.
+**sp3 seam feature contract.** A feature with ``"type": "k4-sp3-90-a"``
+routes the whole call to
+:func:`~precis_se.atomic.generators.sp3_seam.build_sp3_seam`: four
+armchair-rimmed sheets at 0/90/180/270 degrees joined along a straight
+line of degree-four sp3 carbons, one per armchair period — the
+squashed-tetrahedron row (104.48 x4 + 120 x2 deg). A feature with
+``"type": "k3-sp3-z"`` joins three zigzag-rimmed sheets at equal 120
+degrees and carries the seam atoms' fourth valence on a seam chain
+(dimer pairs; ``periods`` must be even). For both, ``sheet`` means
+``[seam_periods, sheet_rows]``; each must be the only feature, with
+``name``, ``type`` and ``dihedrals_deg`` only.
 
 **Authored tops.** ``top: "sphere"`` (n a multiple of 6, n >= 12; optional
 ``top_R`` and ``top_fillet``, Å) and ``top: "lid"`` with ``top_fillet`` (at
@@ -621,7 +632,8 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     An exclusive feature ``type='k3-sp2-120-z'`` instead builds the finite
     straight Y; see :mod:`.y_junction` for its strict contract. An exclusive
     ``type='fin-sp3-z'`` builds the sp3-grafted fin on an armchair tube;
-    see :mod:`.fin`.
+    see :mod:`.fin`. Exclusive ``type='k4-sp3-90-a'``/``'k3-sp3-z'`` build
+    the sp3 seam rows; see :mod:`.sp3_seam`.
     """
     features_arg = params.get("features")
     typed = (
@@ -642,6 +654,10 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
             from precis_se.atomic.generators.rail120 import build_rail120
 
             return build_rail120(params)
+        if typed == ["k4-sp3-90-a"] or typed == ["k3-sp3-z"]:
+            from precis_se.atomic.generators.sp3_seam import build_sp3_seam
+
+            return build_sp3_seam(params)
         # the Y adapter owns every other typed declaration, including the
         # refusals (unequal dihedrals, k >= 5, unknown types)
         from precis_se.atomic.generators.y_junction import build_y_junction

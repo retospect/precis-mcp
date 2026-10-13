@@ -718,7 +718,11 @@ removed as met — the transport move it waited on happened 09-29)
    (§28.7) — three- and four-sheet joins at an atom, and the valve's sp³
    isolation loops. Sequenced here by choice, not blocked: §28 lists it as
    unblocked since step 2 landed. `JOINERS` is already keyed on a lattice
-   *pair* for it.
+   *pair* for it. Landed: the two sp³ seam-line rows `k4-sp3-90-a` /
+   `k3-sp3-z` (private `hexfold.sp3_seam`, exclusive `hexfold_scene`
+   features; dimer chain is the PRL-erratum junction motif). Still open
+   there: seam vertices (the box-corner counting argument) and the
+   isolation band.
 11. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
     lining rotary-ratchet-valve.md Q2 (item 9) needs to decide scrubber
     cadence; sequenced right after the seam it instruments.

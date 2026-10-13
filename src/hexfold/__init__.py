@@ -32,6 +32,12 @@ columns close its endpoints; no cyclic Port or unequal solver is invented.
 meeting at N equal-120 seams along the axis, each seam's third sheet an
 inward strip, seams minted in place by ``join._seam_k3`` because every arc
 enters two seams.
+``sp3_seam`` extends that pattern to the sp³ seam rows:
+``straight_k4`` joins four armchair-rimmed sheets at 90° through one
+degree-four seam carbon per period, ``straight_k3z`` joins three
+zigzag-rimmed sheets whose seam atoms pair into a chain along the axis
+carrying the fourth bond. Rim-type mismatches and off-catalogue
+multiplicities refuse before placement; no public grammar is added.
 
 Vendored into precis as its own package: MIT (``LICENSE`` here), never
 imports ``precis*`` (``tests/test_hexfold_import_boundary.py``), exported

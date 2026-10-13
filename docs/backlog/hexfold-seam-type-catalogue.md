@@ -312,8 +312,9 @@ and owes a seam-atom motif, a ring census and a strain figure.
 | k | dihedrals | rim | seam atoms | status |
 |---|---|---|---|---|
 | 2 | crease | either | — | not a seam; `fuse` merges to one sheet (§6.4). Implemented |
-| 3 | 120·3 | zigzag | 1 × sp² | §6.2's model. Unstrained, coplanar, trivalent. Census **derived only** |
-| 4 | 90·4 | armchair | 1 × sp³ | un-excluded by the correction above. Census + strain owed |
+| 3 | 120·3 | zigzag | 1 × sp² | §6.2's model. Unstrained, coplanar, trivalent. Implemented as `k3-sp2-120-z` |
+| 3 | 120·3 | zigzag | 1 × sp³ + one seam-chain bond | **Built** (`k3-sp3-z`; `hexfold.sp3_seam.straight_k3z`, scene feature `k3-sp3-z`): seam atoms pair into dimers along the axis, so the row takes an even period count. Free GFN2-xTB of the sp² 120° Y **and** of the seam tube both relax *into* this motif (axial pairs 1.60–1.64 Å, sheet bonds 1.50–1.53 Å, seam-atom angle sums ~341° — a flattened tetrahedron); seeded at dimer 1.60 Å / sheet 1.51 Å / gap 3.32 Å, seam angles 106.54°×3 + 112.24°×3, bonded rim atoms carry a 16.54° in-plane tilt at the pinned seed. Census, derived from the built graph: 3·n/2 pentagons (one per dimer per sheet) + 3·(n/2−1) octagons (one per sheet-pair channel per inter-dimer gap) |
+| 4 | 90·4 | armchair | 1 × sp³ | **Built** (`k4-sp3-90-a`; `hexfold.sp3_seam.straight_k4`, scene feature `k4-sp3-90-a`): alternating up/down sheet bonds give the squashed tetrahedron 104.48°×4 + 120°×2, ≈5° off ideal on four bonds. Census, derived from the built graph: 4·(n−1) 12-cycles, one per sheet-pair channel per period gap |
 | 4 | 90·4 | armchair | 2 × sp², bonded to each other, 2 sheets each | Reto's third option; had no home anywhere before this item |
 | 3 | unequal | — | — | **OUT — "we just don't do yet" (Reto, 2026-09-26). Refuse, do not approximate** |
 

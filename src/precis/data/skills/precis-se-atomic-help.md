@@ -108,26 +108,15 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
   (`params.sheet`, `params.features` — `precis-hexfold-help`); misses and
   caveats come back as `scene.bar` / `scene.top.joint` WARNs, also in the
   returned provenance. Unknown keys are refused.
-  Its exclusive `features:[{name:'y',type:'k3-sp2-120-z',
-  dihedrals_deg:[120,120,120]}]` entry makes three open sheets on one
-  straight equal-120 seam; `sheet:[periods,row_pairs]` has integer counts
-  in [2,30]. Analytic seed, minimally relaxed: seam and neighbours pinned, outer sheet
-  atoms tethered to their sheet plane; no mixed feet or `extra`. See
-  `precis-hexfold-help` for the exact op and retained seam/bond/angle report.
-  Three-plane stored surface deviation is unavailable, not zero.
-  The sibling exclusive entry `features:[{name,type:'fin-sp3-z',
-  side:'out'|'in', rows?}]` with `tube:[n,periods]` grafts a graphene
-  strip along an axial zigzag chain of an `(n,n)` tube by one radial sp3
-  bond per period (the §11.1 `bond` attachment; `graft.rings`,
-  `graft.geometry` retained; surface deviation unavailable); and
-  `type:'fin-k3-120-z'` with `tube:[rows,periods]` runs the Y's
-  equal-120 seam along a tube axis with the strip as the third sheet
-  and the wall free to close around it (`tube.cross_section`); and
-  `type:'rail-k3-120-z'` with `tube:[rows,periods]` (even rows), `rails`
-  (2–6), `rows` (rib) and optional `pores:[{"arc":k,"at":[u,v]}]` closes
-  the tube into N arcs on N equal-120 seams, each carrying an inward rib
-  (`side` is always `in`), kept findings `pore.rings`/`sites` plus the
-  lumen attachment-site list in `generated.sites`.
+  Its exclusive typed entries (one feature, no mixed feet or `extra`;
+  seam and neighbours pinned, the rest tethered; stored surface deviation
+  unavailable, not zero) are the seam family — `k3-sp2-120-z` (three
+  sheets on a straight equal-120 seam), `fin-sp3-z` (sp3 graft fin on a
+  tube), `fin-k3-120-z` (the seam along a tube axis), `rail-k3-120-z` (N
+  inward ribs, pores, `generated.sites`), `k4-sp3-90-a` and `k3-sp3-z`
+  (sp3 seam lines; an H cap under 1.0 Å from another atom is dropped,
+  `terminate.dropped`). Exact params and retained findings:
+  `precis-hexfold-seams-help`.
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →
