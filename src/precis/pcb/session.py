@@ -1070,18 +1070,18 @@ def router_copper_conflicts(
     return out
 
 
-def _routed_model(
+def _copper_model(
     ir: pcb_ir.PcbIR,
-    rres: RealizeResult,
+    copper_rows: list[dict[str, Any]],
     *,
     footprints: dict[str, dict[str, Any]] | None,
-    fixed_copper: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Pads + authored fixed copper + the router's own copper (``rres``),
-    quantized the way :func:`precis.pcb.realize.to_gerber_model` quantizes
-    it — the ONE board model both post-route gates judge
-    (:func:`routed_drc_findings`, :func:`split_nets`), so legality and
-    connectivity are asked of the same copper the fab receives."""
+    """Pads + the given copper rows + mounting-hole drills, quantized the
+    way :func:`precis.pcb.realize.to_gerber_model` quantizes it — the ONE
+    board model shape both post-route gates judge
+    (:func:`routed_drc_findings`, :func:`split_nets`) and the incumbent
+    side of ``pcb_route``'s worse-board guard
+    (:func:`stored_copper_drc_findings`) reads."""
     from precis.pcb import realize as pcb_realize
 
     layers = [str(layer.get("name")) for layer in ir.stackup]
@@ -1089,10 +1089,7 @@ def _routed_model(
         {
             "layers": layers,
             "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
-            "copper": [
-                *({**row, "net": row.get("net") or ""} for row in (fixed_copper or [])),
-                *pcb_realize.result_copper_rows(rres, ir, layers, derived=True),
-            ],
+            "copper": copper_rows,
             "drills": [
                 {
                     "x": h.x,
@@ -1103,6 +1100,29 @@ def _routed_model(
                 for h in ir.mounting_holes
             ],
         }
+    )
+
+
+def _routed_model(
+    ir: pcb_ir.PcbIR,
+    rres: RealizeResult,
+    *,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Pads + authored fixed copper + the router's own copper (``rres``)
+    as a :func:`_copper_model` — legality and connectivity are asked of
+    the same copper the fab receives."""
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    return _copper_model(
+        ir,
+        [
+            *({**row, "net": row.get("net") or ""} for row in (fixed_copper or [])),
+            *pcb_realize.result_copper_rows(rres, ir, layers, derived=True),
+        ],
+        footprints=footprints,
     )
 
 
@@ -1151,9 +1171,33 @@ def routed_drc_findings(
     keep-out, board-edge clearance. NOT connectivity/unrouted (routedness,
     not validity — the invariant's split) and not courtyard/silk/outline
     containment (placement, gated by :func:`placement_drc_findings`)."""
+    model = _routed_model(ir, rres, footprints=footprints, fixed_copper=fixed_copper)
+    return _routed_findings_on_model(
+        model,
+        capability=capability,
+        outline=outline,
+        net_rules=net_rules,
+        net_voltages=net_voltages,
+    )
+
+
+def _routed_findings_on_model(
+    model: dict[str, Any],
+    *,
+    capability: CapabilityRow,
+    outline: list[list[float]] | None,
+    net_rules: dict[str, NetRules] | None,
+    net_voltages: dict[str, float] | None,
+) -> list[DrcFinding]:
+    """The routed-copper rule list run over an already-built ``model`` —
+    the shared tail of :func:`routed_drc_findings` (a fresh
+    ``RealizeResult``) and :func:`stored_copper_drc_findings` (the
+    incumbent board's stored rows), so "worse than before" is one
+    yardstick on both sides. A raise names its rule: the job result is
+    all a session can read (worker logs are not), so "which rule" must
+    travel with it."""
     from precis.pcb import drc as pcb_drc
 
-    model = _routed_model(ir, rres, footprints=footprints, fixed_copper=fixed_copper)
     rules: list[tuple[str, Callable[[], list[DrcFinding]]]] = [
         (
             "clearance",
@@ -1182,6 +1226,45 @@ def routed_drc_findings(
         except Exception as exc:
             raise RuntimeError(f"rule {name}: {type(exc).__name__}: {exc}") from exc
     return findings
+
+
+def stored_copper_drc_findings(
+    ir: pcb_ir.PcbIR,
+    copper_rows: list[dict[str, Any]],
+    *,
+    capability: CapabilityRow,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    outline: list[list[float]] | None = None,
+    net_rules: dict[str, NetRules] | None = None,
+    net_voltages: dict[str, float] | None = None,
+) -> list[DrcFinding]:
+    """:func:`routed_drc_findings`' rule set over the board's STORED copper
+    — ``Store.pcb_copper_list`` rows (derived and authored ``fixed`` rows
+    already flattened to the gerber item shape; derived rows get their
+    ``derived: True`` tag back so a finding's objects read the same way
+    both runs produce) — instead of a fresh ``RealizeResult``.
+
+    The incumbent half of ``pcb_route``'s never-commit-a-worse-board guard
+    (gr480010): "more errors than the board had" is a MEASURED before —
+    same rules, same pads source, the IR still carrying stored poses —
+    not the remembered count of a ``view='drc'`` run, which could describe
+    a stale board."""
+    return _routed_findings_on_model(
+        _copper_model(
+            ir,
+            [
+                {**row, "net": row.get("net") or ""}
+                if row.get("fixed")
+                else {**row, "derived": True}
+                for row in copper_rows
+            ],
+            footprints=footprints,
+        ),
+        capability=capability,
+        outline=outline,
+        net_rules=net_rules,
+        net_voltages=net_voltages,
+    )
 
 
 #: ``(net key, derived key)`` pairs a finding's ``objects`` use, per rule

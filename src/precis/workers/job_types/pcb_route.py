@@ -28,6 +28,17 @@ cheap status read instead of re-deriving any of this itself. A dangling
 so it is written ``'realized'`` too (vacuously — nothing was left
 unrouted), with ``pcb_routes.note`` naming why, rather than left with no
 row (which reads as ``'unrouted'`` forever and wedges ``route_complete``).
+
+**A result worse than the incumbent board is never committed**
+(gr480010): before the anneal moves anything, the job measures the stored
+board's floor — nets not realized, and error-severity findings of the
+routed-copper + placement rule sets over the stored copper at stored
+poses (:func:`precis.pcb.session.stored_copper_drc_findings` /
+:func:`~precis.pcb.session.placement_drc_findings`, one yardstick both
+sides). After the post-route gate, an attempt with more unrealized nets
+or more DRC errors writes nothing at all — no planes, pin swaps, poses,
+statuses or copper — and the job fails ``non-convergence`` carrying the
+attempt's summary. An equal or better result commits as usual.
 """
 
 from __future__ import annotations
@@ -72,7 +83,9 @@ log = logging.getLogger(__name__)
 # 5 = connected-via distance assignment as the route warm start.
 # 6 = a split net fails `disconnected` instead of reading `realized`.
 # 7 = placement-DRC errors refuse the route before the router runs.
-CODE_VERSION = 7
+# 8 = a route result worse than the incumbent board (more unrealized nets
+#     or more DRC errors) is not committed (gr480010).
+CODE_VERSION = 8
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -520,6 +533,52 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
 
+    # The incumbent board's own floor, measured BEFORE the anneal touches
+    # `ir`'s poses — the never-commit-a-worse-board guard (gr480010; job
+    # 479998 committed a 4→38 failed-net, 10→76 DRC-error result over a
+    # still-good board) needs a BEFORE that is measured, not remembered:
+    # a persisted view='drc' run could describe a stale board, so the same
+    # rule sets judge both sides. Nets-not-realized reads the stored
+    # pcb_routes statuses (an 'unrouted' net the board never attempted is
+    # not 'failed', but it is not realized either — the comparison is of
+    # how much of the board WORKS, so a first route can never refuse on
+    # this axis and a re-route that only re-labels unrouted nets as failed
+    # does not either). Fail-open, same discipline as the pre-route gate
+    # below: a measurement that raises disables the DRC half of the
+    # guard, never the route.
+    prior_unrealized = sum(
+        1 for r in routes_by_net.values() if r.get("status") != "realized"
+    )
+    prior_drc_errors: int | None = None
+    try:
+        prior_drc_errors = sum(
+            1
+            for f in (
+                pcb_session.placement_drc_findings(
+                    ir,
+                    capability=fab_caps,
+                    footprints=footprints,
+                    fixed_copper=fixed_copper,
+                    outline=pcb_session.outline_from_features(features),
+                )
+                + pcb_session.stored_copper_drc_findings(
+                    ir,
+                    ctx.store.pcb_copper_list(int(board_id)),
+                    capability=fab_caps,
+                    footprints=footprints,
+                    outline=pcb_session.outline_from_features(features),
+                    net_rules=_graph_net_rules(graph, fab_caps),
+                    net_voltages=_graph_net_voltages(graph),
+                )
+            )
+            if f.severity == "error"
+        )
+    except Exception:
+        log.exception(
+            "pcb_route: incumbent DRC measurement raised; the guard's "
+            "error half is disabled for this run"
+        )
+
     pin_swap_warnings: list[str] = []
     pin_swap_groups = _resolve_pin_swap_groups(ir, graph, pin_swap_warnings)
     # Shorter paths through fixed-copper corridors beat fewer airwire
@@ -716,6 +775,20 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         split = pcb_session.split_nets(
             ir, rres, footprints=footprints, fixed_copper=fixed_copper
         )
+        # What the board will CARRY if this attempt commits: every
+        # error-severity finding stripping did NOT resolve. A finding is
+        # resolved when any router copper it names was stripped (the net
+        # is then counted on the failed axis instead); one naming only
+        # pads/authored copper, or only kept nets' copper, is still in the
+        # stored board. The incumbent measured this same number on its
+        # stored rows before the anneal.
+        stripped_nets = set(drc_fail)
+        committed_drc_errors = sum(
+            1
+            for f in routed_findings
+            if f.severity == "error"
+            and not (pcb_session.router_nets_of(f) & stripped_nets)
+        )
     except Exception as exc:
         log.exception("pcb_route: post-route DRC gate raised; writing nothing")
         gate_failure = (
@@ -726,18 +799,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         ctx.record_failure(gate_failure, failure_class="infra")
         return
 
-    # The anneal's settled planes, pin swaps and poses are written only now,
-    # after realize and the post-route gate have both succeeded: written
-    # earlier, a raise in either left the previous run's copper under parts
-    # that had already moved — a board worse than the one the job started
-    # from. On any raise above, the stored board is untouched.
-    ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
-    ctx.store.pcb_pin_swaps_replace_derived(
-        pcb_ref_id, int(board_id), pin_swap_overrides
-    )
-    ctx.store.pcb_set_pose(pcb_ref_id, pcb_session.positions(ir))
-    if any(spec.metric == "align" for spec in measures):
-        ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
     fixed_realized_net_ids = {int(ir.seg_net[s]) for s in rres.fixed_realized}
     plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
     crossing_fail = _residual_crossings(ir, plane_net_ids)
@@ -964,6 +1025,82 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             "fail": {"problems": problems} if problems else None,
             "note": note,
         }
+
+    # ── Never commit a worse board (gr480010) ─────────────────────────
+    # Scored BEFORE anything commits, against the incumbent measured
+    # before the anneal: nets not realized ('failed' AND 'sketched' vs the
+    # stored statuses — a net that loses realized copper is a regression
+    # whether it reads failed or not) and DRC errors on the board this
+    # attempt would store. A worse attempt writes NOTHING — the board
+    # keeps its previous poses, planes, pin swaps, copper and statuses —
+    # and the job reports the attempt instead of committing it.
+    n_unrealized = sum(1 for r in rows.values() if r["status"] != "realized")
+    n_new_drc_errors = n_placement_errors + committed_drc_errors
+    worse: list[str] = []
+    if n_unrealized > prior_unrealized:
+        worse.append(
+            f"{n_unrealized} net(s) unrealized vs the board's stored {prior_unrealized}"
+        )
+    if prior_drc_errors is not None and n_new_drc_errors > prior_drc_errors:
+        worse.append(
+            f"{n_new_drc_errors} DRC error(s) vs the board's stored {prior_drc_errors}"
+        )
+
+    pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
+    # A `negotiate=N` run that gains nothing must say WHY (gr469872's
+    # follow-up: job 470129 reported the baseline 22/33 and nothing else).
+    if rres.negotiation is not None:
+        pin_swap_summary += "\n" + rres.negotiation.line()
+    # A class naming a layer the stackup does not route on is narrowed, not
+    # refused (gr472108): say so, or a "no gain" reads as a routing result.
+    for drop in rres.class_layer_drops:
+        pin_swap_summary += f"\nwarning: {drop}"
+    if unmatched_sketch:
+        pin_swap_summary += (
+            f"\nwarning: {unmatched_sketch} stored layer/side sketch "
+            "entr(ies) matched no segment and were not restored"
+        )
+    # The pre-route DRC gate's own account, ahead of the routing digest — an
+    # illegal placement is the FIRST thing this summary should say, since
+    # (gr451052) it is the thing that made the routing below meaningless.
+    placement_summary = f"{placement_report}\n\n" if placement_report else ""
+    attempt_summary = (
+        f"{placement_summary}"
+        f"routed {len(rows)} net(s): {n_realized} realized, "
+        f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
+        f"route), {len(rres.vias)} via(s) placed, "
+        f"{len(rres.warnings)} congestion warning(s), "
+        f"{len(pin_swap_overrides)} pin swap(s) settled, "
+        f"{n_placement_errors} pre-route DRC error(s), "
+        f"{len(drc_fail)} net(s) stripped by post-route DRC, "
+        f"{n_disconnected} net(s) failed as disconnected copper"
+        f"{pin_swap_summary}\n\n" + digest_toon(result)
+    )
+
+    if worse:
+        refusal = (
+            "pcb_route: attempt left the board worse than it found it ("
+            + "; ".join(worse)
+            + ") — nothing committed; the board keeps its previous "
+            "placement, copper and route statuses"
+        )
+        ctx.append_chunk("job_summary", f"{refusal}\n\n{attempt_summary}")
+        ctx.record_failure(refusal, failure_class="non-convergence")
+        return
+
+    # The anneal's settled planes, pin swaps and poses are written only
+    # now, after realize, the post-route gate AND the worse-board guard
+    # have all passed: written earlier, a raise or a refusal left the
+    # previous run's copper under parts that had already moved — a board
+    # worse than the one the job started from. On any refusal above, the
+    # stored board is untouched.
+    ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
+    ctx.store.pcb_pin_swaps_replace_derived(
+        pcb_ref_id, int(board_id), pin_swap_overrides
+    )
+    ctx.store.pcb_set_pose(pcb_ref_id, pcb_session.positions(ir))
+    if any(spec.metric == "align" for spec in measures):
+        ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
     ctx.store.pcb_routes_write(pcb_ref_id, int(board_id), rows)
 
     # pcb_copper.net_id is a real FK — resolve the IR-local net int back to
@@ -1072,40 +1209,20 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     "errors": n_placement_errors,
                     "forced": force and n_placement_errors > 0,
                 },
+                # The worse-board guard's own scoreboard (gr480010): what
+                # the incumbent measured before the anneal vs what this
+                # attempt would have stored — the numbers a later reader
+                # needs to see why the commit was allowed.
+                "guard": {
+                    "unrealized_before": prior_unrealized,
+                    "unrealized_after": n_unrealized,
+                    "drc_errors_before": prior_drc_errors,
+                    "drc_errors_after": n_new_drc_errors,
+                },
             }
         },
     )
-    pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
-    # A `negotiate=N` run that gains nothing must say WHY (gr469872's
-    # follow-up: job 470129 reported the baseline 22/33 and nothing else).
-    if rres.negotiation is not None:
-        pin_swap_summary += "\n" + rres.negotiation.line()
-    # A class naming a layer the stackup does not route on is narrowed, not
-    # refused (gr472108): say so, or a "no gain" reads as a routing result.
-    for drop in rres.class_layer_drops:
-        pin_swap_summary += f"\nwarning: {drop}"
-    if unmatched_sketch:
-        pin_swap_summary += (
-            f"\nwarning: {unmatched_sketch} stored layer/side sketch "
-            "entr(ies) matched no segment and were not restored"
-        )
-    # The pre-route DRC gate's own account, ahead of the routing digest — an
-    # illegal placement is the FIRST thing this summary should say, since
-    # (gr451052) it is the thing that made the routing below meaningless.
-    placement_summary = f"{placement_report}\n\n" if placement_report else ""
-    ctx.append_chunk(
-        "job_summary",
-        f"{placement_summary}"
-        f"routed {len(rows)} net(s): {n_realized} realized, "
-        f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
-        f"route), {len(rres.vias)} via(s) placed, "
-        f"{len(rres.warnings)} congestion warning(s), "
-        f"{len(pin_swap_overrides)} pin swap(s) settled, "
-        f"{n_placement_errors} pre-route DRC error(s), "
-        f"{len(drc_fail)} net(s) stripped by post-route DRC, "
-        f"{n_disconnected} net(s) failed as disconnected copper"
-        f"{pin_swap_summary}\n\n" + digest_toon(result),
-    )
+    ctx.append_chunk("job_summary", attempt_summary)
     # Reto's ruling (2026-10-01): "it's no good if the wires are not there.
     # You may show it to me but it is failed." So ANY failed net fails the
     # job — after the copper, statuses and summary above are written, so the

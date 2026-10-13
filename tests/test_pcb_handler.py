@@ -1108,6 +1108,37 @@ def test_op_place_never_computes_inline(pcb, store, monkeypatch):
         conn.commit()
 
 
+def test_op_route_warm_start_flag(store, monkeypatch):
+    """``warm_start`` reaches the job params and its idem key; an invalid
+    value is refused at enqueue and, if it reaches the job, fails it."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from precis.workers.job_types import pcb_route
+
+    hub = Hub(store=store)
+    PcbHandler(hub=hub).put(id="route-warm-start", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="route-warm-start")
+    assert ref is not None
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="job captured")
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+    handler._enqueue_op(ref, "route", {"warm_start": "radial"})
+    assert job.put.call_args.kwargs["params"]["warm_start"] == "radial"
+    radial_key = job.put.call_args.kwargs["idem_key"]
+    handler._enqueue_op(ref, "route", {})
+    assert "warm_start" not in job.put.call_args.kwargs["params"]
+    assert job.put.call_args.kwargs["idem_key"] != radial_key
+    with pytest.raises(BadInput, match="warm_start"):
+        handler._enqueue_op(ref, "route", {"warm_start": "invalid"})
+    ctx: Any = SimpleNamespace(
+        meta={"params": {"warm_start": "invalid"}}, record_failure=Mock()
+    )
+    pcb_route._dispatch(ctx, pcb_route.SPEC)
+    ctx.record_failure.assert_called_once()
+
+
 def test_op_route_enqueues_a_pcb_route_job(pcb, store):
     pcb.put(id="route-enqueue", args=_CROSSED)
     resp = pcb.put(id="route-enqueue", args={"op": "route"})
@@ -1120,6 +1151,66 @@ def test_op_route_enqueues_a_pcb_route_job(pcb, store):
             (ref.id,),
         ).fetchone()
     assert row == ("pcb_route",)
+
+
+def test_op_route_refuses_a_stale_generator_expansion(pcb, store, monkeypatch):
+    """gr480010 — job 479998 routed ewod-dogfood-6 over an ARR1 expansion
+    stored at v3 while the code emitted v4: warned, routed anyway,
+    committed the degraded result. A route over a stale expansion is now
+    REFUSED at enqueue, with the refresh named (re-put the generators
+    entry); ``op='place'`` still warns-and-enqueues."""
+    from precis.pcb import generators as pcb_generators
+    from precis.pcb.generators import GeneratorExpansion
+
+    def _expand(generator: str, name: str, params: dict[str, Any]) -> Any:
+        return GeneratorExpansion(
+            refdes=name,
+            generator=generator,
+            version=1,
+            canonical_params=dict(params),
+            components=[{"refdes": name, "pins": [{"name": "1"}, {"name": "2"}]}],
+            nets=[{"name": "NG"}],
+            connections=[{"net": "NG", "refdes": name, "pin": "1"}],
+            footprints=[],
+            features=[],
+            ledger={},
+        )
+
+    monkeypatch.setattr("precis.pcb.generators.expand", _expand)
+    # Code "moved on" to v2 after the board stored the v1 expansion —
+    # stored 1 < current 2 reads stale.
+    monkeypatch.setitem(pcb_generators.VERSIONS, "fake_stale_gen", 2)
+    pcb.put(
+        id="stale-gen-route",
+        args={
+            "generators": [{"name": "G1", "generator": "fake_stale_gen", "params": {}}],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="stale-gen-route")
+    assert ref is not None
+    assert pcb_generators.stale_generators(store.pcb_generators_for(ref.id))
+
+    with pytest.raises(BadInput, match="stale") as exc:
+        pcb.put(id="stale-gen-route", args={"op": "route"})
+    assert "put the same generators entry again" in str(exc.value.next)
+    # Nothing was enqueued.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None and row[0] == 0
+
+    # op='place' keeps the warn-and-enqueue behavior (the gripe scoped the
+    # refusal to route); the note still names the refresh.
+    resp = pcb.put(id="stale-gen-route", args={"op": "place"})
+    assert "enqueued" in resp.body
+    assert "stale" in resp.body
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM refs WHERE kind = 'job' AND parent_id = %s", (ref.id,)
+        )
+        conn.commit()
 
 
 def test_op_place_rejects_non_4_layer_stackup(pcb, store):

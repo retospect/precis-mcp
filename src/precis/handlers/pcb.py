@@ -946,6 +946,33 @@ class PcbHandler(Handler):
                 next="a non-4-layer stackup is out of v1 scope (2-layer "
                 "boards route power like signals, a different problem)",
             )
+        if op == "route":
+            # gr480010: a stale expansion used to ride along with only the
+            # warning below — job 479998 routed ewod-dogfood-6 over ARR1
+            # copper stored at v3 while the code emitted v4, and committed
+            # the degraded result (10→76 DRC errors, 4→38 failed nets).
+            # Routing a board whose expansion is behind the code is now
+            # refused outright; re-putting the entry re-expands it at the
+            # current version.
+            stale_rows = pcb_generators.stale_generators(
+                self.store.pcb_generators_for(ref.id)
+            )
+            if stale_rows:
+                raise BadInput(
+                    f"pcb: refusing to route {ref.slug!r} — generator "
+                    "expansion(s) are stale; the board carries copper an "
+                    "older build emitted:\n"
+                    + "\n".join(
+                        f"- {name} ({gen}): stored version {stored}, code "
+                        f"version {current}"
+                        for name, gen, stored, current in stale_rows
+                    ),
+                    next=(
+                        "put the same generators entry again — the version "
+                        "mismatch re-expands it at the current code (its "
+                        "placement and routing are redone) — then re-route"
+                    ),
+                )
         params: dict[str, Any] = {"pcb_ref_id": ref.id}
         if opts.get("iters") is not None:
             params["iters"] = int(opts["iters"])

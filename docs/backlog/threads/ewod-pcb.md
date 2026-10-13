@@ -56,10 +56,15 @@ se-machine-design's input shape (Do-next).
 
 1. **gr464240** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
    ruled 2026-10-12: route start/best/last, keep the most-routed).
-2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4; the
-   route reply carries the stale warning, confirmed live). Re-put its
-   generators entry, route, report routed count before/after — after
-   step 1, so the two effects are not confounded.
+2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4). Re-put
+   its generators entry, route, report routed count before/after — after
+   step 1, so the two effects are not confounded. gr480010 (job 479998
+   routed over the stale v3 expansion and committed 10→76 DRC errors,
+   4→38 failed nets) made both halves hard guards: `op='route'` now
+   REFUSES on a stale expansion (re-put is required, not just warned),
+   and `pcb_route` commits nothing when the result is worse than the
+   incumbent (more nets unrealized, or more DRC errors measured by the
+   same rule sets on both sides).
 3. Build 4 is landed (round 3: 5f145c3a, 4d58cefc, 4def048c, 796fc1b4).
    Batch put, class_rules and op='footprint' are judged. Next is Do-next 2
    (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).

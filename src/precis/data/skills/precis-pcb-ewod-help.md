@@ -42,8 +42,9 @@ put(
   whole expansion (old instances retired, new ones inserted).
 - A board authored by an older generator version keeps that version's
   copper until its generators entry is put again; `op='place'`/`'route'`
-  never re-expand it. Put and place/route responses name such a board
-  ("generator output is stale"). Putting the entry again re-expands it,
+  never re-expand it. Put and `op='place'` responses name such a board
+  ("generator output is stale"); `op='route'` **refuses** it outright —
+  re-put the entry first. Putting the entry again re-expands it,
   and `"regenerate": true` on the entry forces a re-expansion even when
   nothing changed. Either way, the board's placement and routing are redone.
 

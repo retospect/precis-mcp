@@ -1148,14 +1148,20 @@ def test_pcb_route_fails_a_routed_net_whose_copper_is_in_two_pieces(
     passes it — and the net must still land ``failed`` with reason
     ``disconnected`` (the witness points in ``fail``), never ``realized``.
     The unwrapped run of the same board reads ``realized``, so the flip is
-    the shortening and nothing else."""
+    the shortening and nothing else. The shortened run is the board's
+    FIRST route, so the worse-board guard (gr480010) commits it — an
+    all-'unrouted' baseline cannot be made worse."""
     import dataclasses
 
-    ref_id = _seed(store, "route-split-net", _DESIGN)
-    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    _route(ctx)
-    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    # Control, unwrapped: the same design realizes N1 outright, so the
+    # 'disconnected' verdict on the test board is the shortening and
+    # nothing else.
+    ref_ref = _seed(store, "route-split-ref", _DESIGN)
+    ctx0 = _FakeCtx(store, params={"pcb_ref_id": ref_ref, "iters": 500, "seed": 1})
+    _route(ctx0)
+    assert store.pcb_route_status(ref_ref)[0]["status"] == "realized"
 
+    ref_id = _seed(store, "route-split-net", _DESIGN)
     real = pcb_route.pcb_realize.realize
 
     def short_neck(*args: Any, **kwargs: Any) -> Any:
@@ -1175,6 +1181,135 @@ def test_pcb_route_fails_a_routed_net_whose_copper_is_in_two_pieces(
     assert problem["components"] >= 2
     assert ctx.failures and ctx.failures[0][1] == "non-convergence"
     assert "1 net(s) failed as disconnected copper" in ctx.summaries[0][1]
+
+
+def test_pcb_route_refuses_to_commit_a_worse_net_result(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr480010 — job 479998 committed a 4→38 failed-net result over a
+    still-good board. A re-route that leaves MORE nets unrealized than the
+    incumbent commits nothing: the previous poses, copper and statuses
+    stay, and the job reports the attempt instead of storing it."""
+    import dataclasses
+
+    ref_id = _seed(store, "route-worse-nets", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    _route(ctx)
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    poses_before = {
+        i["refdes"]: (i["x"], i["y"], i["rot"])
+        for i in store.pcb_load(ref_id)["instances"]
+    }
+    copper_before = _copper_count(store, ref_id)
+    assert copper_before > 0
+    ref = store.get_ref(kind="pcb", id="route-worse-nets")
+    assert ref is not None
+    last_route_before = ref.meta["last_route"]
+
+    real = pcb_route.pcb_realize.realize
+
+    def walled_in(*args: Any, **kwargs: Any) -> Any:
+        res = real(*args, **kwargs)
+        ir = args[0]
+        unrouted = tuple(range(ir.n_segments))
+        return dataclasses.replace(
+            res,
+            tracks=(),
+            vias=(),
+            unrouted=unrouted,
+            unrouted_reasons=tuple(
+                pcb_route.pcb_realize.UnroutedReason(
+                    seg_id=s,
+                    net_id=int(ir.seg_net[s]),
+                    kind="no_path",
+                    message="walled in on every allowed layer",
+                )
+                for s in unrouted
+            ),
+        )
+
+    monkeypatch.setattr(pcb_route.pcb_realize, "realize", walled_in)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 2})
+    _route(ctx)
+
+    # Nothing committed: poses, copper, statuses and last_route all still
+    # the first run's.
+    assert {
+        i["refdes"]: (i["x"], i["y"], i["rot"])
+        for i in store.pcb_load(ref_id)["instances"]
+    } == poses_before
+    assert _copper_count(store, ref_id) == copper_before
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    ref = store.get_ref(kind="pcb", id="route-worse-nets")
+    assert ref is not None
+    assert ref.meta["last_route"] == last_route_before
+
+    assert len(ctx.failures) == 1
+    assert ctx.failures[0][1] == "non-convergence"
+    assert "worse than it found it" in ctx.failures[0][0]
+    assert "1 net(s) unrealized vs the board's stored 0" in ctx.failures[0][0]
+    # The attempt's own summary is still reported.
+    summary = ctx.summaries[-1][1]
+    assert "nothing committed" in summary
+    assert "0 realized, 1 failed" in summary
+
+
+def test_pcb_route_refuses_to_commit_more_drc_errors(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr480010, the DRC axis: a re-route whose committed board carries
+    more error-severity findings than the incumbent's measured floor —
+    here a pad-level error no strip can remove — commits nothing."""
+    from precis.pcb.drc import DrcFinding
+
+    ref_id = _seed(store, "route-worse-drc", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    _route(ctx)
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    copper_before = _copper_count(store, ref_id)
+    assert copper_before > 0
+
+    real = pcb_session.routed_drc_findings
+
+    def dirtied(*args: Any, **kwargs: Any) -> list[DrcFinding]:
+        return real(*args, **kwargs) + [
+            DrcFinding(
+                rule="npth_clearance",
+                severity="error",
+                where="hole @ (0,0) <-> pad[U1/1]",
+                detail="0.000mm < 0.300mm",
+                # Pads and authored copper only — no router-copper object,
+                # so nothing strips it and the committed board keeps it.
+                objects=({"ctype": "pad", "refdes": "U1"},),
+            )
+        ]
+
+    monkeypatch.setattr(pcb_session, "routed_drc_findings", dirtied)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 2})
+    _route(ctx)
+
+    assert _copper_count(store, ref_id) == copper_before
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    assert len(ctx.failures) == 1
+    assert ctx.failures[0][1] == "non-convergence"
+    assert "worse than it found it" in ctx.failures[0][0]
+    assert "DRC error(s) vs the board's stored" in ctx.failures[0][0]
+
+
+def test_pcb_route_commits_an_equal_or_better_result(
+    store: Store,
+) -> None:
+    """Negative control for the worse-board guard: a re-route that does
+    NOT degrade the board commits normally — without it the refusal path
+    could be vacuously "always refuse"."""
+    ref_id = _seed(store, "route-notworse", _DESIGN)
+    ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    _route(ctx1)
+    ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    _route(ctx2)
+    assert not ctx2.failures
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    assert _copper_count(store, ref_id) > 0
 
 
 def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(

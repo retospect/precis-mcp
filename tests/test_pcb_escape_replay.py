@@ -15,6 +15,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import generators as pcb_generators
 from precis.pcb import pinswap, realize, session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.drc import process_for_stackup
@@ -58,6 +59,33 @@ def _hydrate(store):
         class_rules=graph["net_classes"],
     )
     return ir, graph, features, footprints, fixed, config
+
+
+def _refresh_stale_generators(store, ref):
+    """Re-put each stale generators entry — the refresh the route-enqueue
+    refusal's own ``next`` names — through :meth:`Store.pcb_apply`, the
+    same generators apply a ``put`` runs: the version mismatch re-expands
+    at the current code version. It is not routed through the judged
+    ``put`` surface because this fixture's re-expansion draws pads over
+    its own vias, which the judged put rightly refuses — the enqueue
+    plumbing these tests exercise only needs the stored row at the code
+    version."""
+    rows = store.pcb_generators_for(ref.id)
+    for name, generator, _stored, _current in pcb_generators.stale_generators(rows):
+        store.pcb_apply(
+            slug=str(ref.slug),
+            title=ref.title,
+            components=[],
+            nets=[],
+            connections=[],
+            generators=[
+                {
+                    "name": name,
+                    "generator": generator,
+                    "params": rows[name]["params"],
+                }
+            ],
+        )
 
 
 def _failed(ir, result):
@@ -243,6 +271,10 @@ def test_route_op_warm_start_flag_replay(store, monkeypatch):
     job.put.return_value = SimpleNamespace(body="fixture job captured")
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
     handler = PcbHandler(hub=hub)
+    # The fixture stores ARR1 at an OLD ewod_pad_array version; the
+    # stale-expansion guard refuses the route enqueue until the entry is
+    # re-put (the guard's own hinted refresh).
+    _refresh_stale_generators(store, ref)
     handler._enqueue_op(ref, "route", {"warm_start": "radial"})
     assert job.put.call_args.kwargs["params"]["warm_start"] == "radial"
     radial_key = job.put.call_args.kwargs["idem_key"]
@@ -256,6 +288,33 @@ def test_route_op_warm_start_flag_replay(store, monkeypatch):
     )
     pcb_route._dispatch(ctx, pcb_route.SPEC)
     ctx.record_failure.assert_called_once()
+
+
+def test_route_refuses_the_stale_dogfood_board(store, monkeypatch):
+    """gr480010 — the hydrated dogfood board still carries ARR1 at the
+    OLD ``ewod_pad_array`` version; a route enqueue must REFUSE before a
+    job is minted, name the stale row and both versions, and point at the
+    refresh (re-put the same generators entry)."""
+    _hydrate(store)
+    ref = store.get_ref(kind="pcb", id="ewod-dogfood-6-escape-regression")
+    assert ref is not None
+    hub = Hub(store=store)
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="fixture job captured")
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+    stored = store.pcb_generators_for(ref.id)["ARR1"]
+    current = pcb_generators.VERSIONS["ewod_pad_array"]
+    assert int(stored["version"]) < current  # the fixture itself is stale
+    with pytest.raises(BadInput, match="refusing to route") as exc:
+        handler._enqueue_op(ref, "route", {})
+    message = str(exc.value)
+    assert (
+        f"ARR1 (ewod_pad_array): stored version {int(stored['version'])}, "
+        f"code version {current}" in message
+    )
+    assert "put the same generators entry again" in str(exc.value.next)
+    job.put.assert_not_called()
 
 
 @pytest.mark.slow

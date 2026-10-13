@@ -91,7 +91,9 @@ piece.
 
 **The route job itself fails when any net is not realized.** Its copper,
 per-net statuses and summary are still written first, so the partial board
-stays inspectable; the job's reason lists the failed nets. A failed route
+stays inspectable — unless the result is worse than the board it would
+replace (see "A worse result is never committed" below), in which case
+nothing is written. The job's reason lists the failed nets. A failed route
 job is not a crash: read `view='route-status'`, fix, and re-route.
 
 **Fixed copper on another net's pad refuses the route.** If a fixed via or
@@ -110,6 +112,20 @@ not block. Fix the placement (`op='move'`, unpin a part, re-place) and route
 again; `view='drc'` runs the full check. `force=True` routes the illegal
 placement anyway; the job summary then opens with `pre-route DRC gate
 OVERRIDDEN (force=True)` and the findings.
+
+**A stale generator expansion refuses the enqueue.** If a stored generator
+expansion's version is behind the code's (`view`/`place` responses flag it),
+`op='route'` fails before queueing a job — the board still carries copper an
+older build emitted. Re-put the same `generators` entry (the version mismatch
+re-expands it), then re-route.
+
+**A worse result is never committed.** After routing, the job compares the
+attempt against the board's own measured floor (nets unrealized, and DRC
+errors on what would be stored, both sides scored by the same rule sets).
+More unrealized nets or more DRC errors than the board already had → nothing
+is written: prior poses, copper and route statuses stay, and the job fails
+(`non-convergence`) with the attempt's summary. An equal or better result
+commits as usual.
 
 `view='congestion'` reports gaps only. With failed nets and no gap warning
 it says the failures have another cause; read `view='route-status'` for
