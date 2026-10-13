@@ -116,6 +116,15 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
+    "src/precis/pcb/optimize.py::anneal_route_loop": (
+        "opt-in loop; surface wiring is the filed follow-up"
+    ),
+    "src/precis/pcb/optimize.py::conflict_digest_text": (
+        "opt-in loop; surface wiring is the filed follow-up"
+    ),
+    "src/precis/pcb/feedback.py::outcome_from_realize": (
+        "opt-in loop; surface wiring is the filed follow-up"
+    ),
     "src/precis/pcb/_http.py::reset_circuit": (
         "own docstring: 'for tests, and for an operator retrying by hand' "
         "-- an ops tool, never code-called"
@@ -260,10 +269,9 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "'vocabulary settles in sketch.py, slice 7' -- a documented "
         "future slice, not a forgotten wire-up"
     ),
-    "src/precis/pcb/ir.py::PcbIR.rotation_darts": (
-        "L2 tier -- same 'slice 7' future-work note as set_rotation, see "
-        "that entry's reason"
-    ),
+    # rotation_darts left this mapping 2026-10-13: optimize.py's
+    # _ir_state_snapshot/_ir_state_restore (the outer loop's best-round
+    # restore) now carries it with the rest of the mutable sketch state.
     # ---- PcbIR fields: via_* real gap ------------------------------------
     # add_via/via_net/via_layer_span are the ONLY way to populate a via in
     # the IR's own L1 model ("vias as transitions") -- but realize.py's
@@ -289,10 +297,9 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "same real gap as add_via -- see that entry's reason; nothing "
         "outside ir.py itself ever reads or writes this"
     ),
-    "src/precis/pcb/ir.py::PcbIR.via_layer_span": (
-        "same real gap as add_via -- see that entry's reason; nothing "
-        "outside ir.py itself ever reads or writes this"
-    ),
+    # via_layer_span left this mapping 2026-10-13: optimize.py now
+    # remaps it on LAYER_ADD (bit-shift in _shift_layer_indices) and
+    # carries it in the loop's state snapshot -- a real producer/consumer.
     # ---- PcbIR fields: L4/L5 invalidation cascade ------------------------
     # dirty_l1..l5 are set by every mutator and cleared by clean() (called
     # from optimize.py), but nothing anywhere READS a dirty_lN mask to
@@ -306,23 +313,11 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # reason ("no placement pass reads that field yet"). Classified (b):
     # legitimately unwired, consistent with pre-existing precedent in
     # this same file, not a new finding.
-    "src/precis/pcb/ir.py::PcbIR.dirty_l1": (
-        "field-level shape of the already-allow-listed "
-        "compute_gap_capacity/compute_region_density gap above: no "
-        "engine reads ANY dirty_lN mask to decide what needs "
-        "recomputing -- optimize.py calls ir.clean() off its own "
-        "bookkeeping, never consulting the mask first (see this file's "
-        "module docstring)"
-    ),
-    "src/precis/pcb/ir.py::PcbIR.dirty_l2": (
-        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
-    ),
-    "src/precis/pcb/ir.py::PcbIR.dirty_l3": (
-        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
-    ),
-    "src/precis/pcb/ir.py::PcbIR.dirty_l4": (
-        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
-    ),
+    # dirty_l1..l5 left this mapping 2026-10-13: optimize.py's LAYER_ADD
+    # apply/undo marks segments dirty across the cascade, and the loop's
+    # _ir_state_restore sets every mask wholesale -- real producers and a
+    # reader now exist (the "nothing recomputes off the mask" gap this
+    # used to document is no longer the whole truth).
     # ---- PcbIR fields: §1i pin semantics (Slice 5 staged carry) --------
     # pin_etype/pin_max_voltage_v/pin_rail are carried through the IR per
     # pcb-lazy-netlist-and-checks.md Slice 5's contract ("ir.py carries
@@ -342,9 +337,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
     ),
     "src/precis/pcb/ir.py::PcbIR.pin_rail": (
         "Slice-5 staged carry — see PcbIR.pin_etype's reason"
-    ),
-    "src/precis/pcb/ir.py::PcbIR.dirty_l5": (
-        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
     ),
     # ---- PcbIR fields: realize.py's own remit, in flight ----------------
     "src/precis/pcb/ir.py::PcbIR.seg_copper_length_mm": (

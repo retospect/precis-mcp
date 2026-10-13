@@ -1730,6 +1730,47 @@ TERMS: list[TermSpec] = [
         _board_edge_clearance,
         direction=BoundDirection.LOWER,
     ),
+    # ── router-feedback terms (optimize.py's outer loop, never estimated
+    # here) ───────────────────────────────────────────────────────────
+    # These three exist so the engine's margin cache and digest have a
+    # registered weight/justification for evidence the ROUTER produces:
+    # `evaluate_cost` knows nothing about a route that hasn't run yet, so
+    # each estimate is the empty list — the values are injected into
+    # `OptimizeEngine._margin` by `OptimizeEngine.apply_route_feedback`
+    # and recomputed per move exactly like every other margin entry.
+    TermSpec(
+        "route_failure",
+        Family.MARGIN,
+        Criticality.CATASTROPHIC,
+        "an unrouted net is an open the board cannot ship with — the last "
+        "route's failed segment(s) are penalised while they still span the "
+        "region cells the router implicated, so the next anneal pays to "
+        "leave the failure in place",
+        lambda _ir, _level, _config: [],
+        direction=BoundDirection.LOWER,
+    ),
+    TermSpec(
+        "route_escape",
+        Family.MARGIN,
+        Criticality.CATASTROPHIC,
+        "a terminal that could not escape its pad neighbourhood is an open "
+        "the same way an unrouted segment is — the penalty is tied to the "
+        "actual terminal instance, not guessed from the net name",
+        lambda _ir, _level, _config: [],
+        direction=BoundDirection.LOWER,
+    ),
+    TermSpec(
+        "route_demand",
+        Family.MARGIN,
+        Criticality.FUNCTIONAL,
+        "PathFinder's final present-congestion is real routing demand a "
+        "cell must supply — a segment sitting in a contested cell pays a "
+        "fraction of that demand so the next anneal spreads demand out of "
+        "over-subscribed regions (routing-demand units, not USD — the "
+        "normalisation is documented on the engine)",
+        lambda _ir, _level, _config: [],
+        direction=BoundDirection.LOWER,
+    ),
 ]
 
 _BY_NAME: dict[str, TermSpec] = {t.name: t for t in TERMS}

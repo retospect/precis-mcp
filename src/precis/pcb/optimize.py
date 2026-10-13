@@ -3,7 +3,18 @@ per docs/backlog/pcb-guided-place-route.md §"Joint place+route optimizer".
 Slice 6 restricts the move set to placement (translate, rotate 90°,
 swap-pair); slice 7 adds topology/layer/pin-swap moves as new
 :data:`MOVE_GENERATORS` entries — the state, cost plumbing and SA loop
-below don't change shape for that.
+below don't change shape for that. The route-feedback outer loop
+(:func:`anneal_route_loop`, per the shipped
+pcb-anneal-closes-router-loop spec) adds the two PRICED expansion moves
+:class:`MoveKind.OUTLINE_GROW`/:class:`MoveKind.LAYER_ADD` — "as big as it
+needs to be" as a bounded, fab-priced design move, gated on authored
+:class:`ExpansionCaps` (missing caps disable; a missing fab price is an
+explicit unavailable-price refusal, never zero USD) — plus
+:meth:`OptimizeEngine.apply_route_feedback`, the penalise step that folds
+the last route's failed nets, failed escapes and present congestion into
+the next anneal's ``route_failure``/``route_escape``/``route_demand``
+margin terms (routing-demand units, normalisation at
+:data:`_ROUTE_DEMAND_FULL_USAGE`, never folded into USD).
 
 One engine, not place-then-route, because under :mod:`precis.pcb.ir`'s
 rubber-band sketch topology (L0-L2) is invariant to a placement (L3)
@@ -146,8 +157,9 @@ from __future__ import annotations
 import heapq
 import math
 import random
+import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -155,6 +167,7 @@ import numpy as np
 
 from precis.format import toon
 from precis.pcb import pinswap, pose
+from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
@@ -176,7 +189,7 @@ from precis.pcb.cost import (
     outline_bbox,
     routing_area_term,
 )
-from precis.pcb.edge_mate import required_pose_depth, snap_to_edges
+from precis.pcb.edge_mate import outward_vector, required_pose_depth, snap_to_edges
 from precis.pcb.eyes import (
     align_residual,
     bind_feature_operands,
@@ -227,6 +240,16 @@ class MoveKind(Enum):
     PLANE_PROMOTE = "plane_promote"
     PLANE_DEMOTE = "plane_demote"
     PIN_SWAP = "pin_swap"
+    #: The two PRICED expansion moves (the route-feedback outer loop —
+    #: docs/backlog/pcb-anneal-closes-router-loop.md): "as big as it needs
+    #: to be" as bounded, fab-priced design moves, never free shape
+    #: changes. Both are inert unless the caller authors
+    #: :attr:`OptimizeConfig.expansion` — a missing cap is a refusal, not
+    #: infinity — and both price their delta off the money family's fab
+    #: table (``board_area_usd_per_mm2`` / ``layer_usd``), never a
+    #: synthetic tuning weight.
+    OUTLINE_GROW = "outline_grow"
+    LAYER_ADD = "layer_add"
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +288,17 @@ class Move:
       undoes it (each individual swap is self-inverse; reversing a
       composed sequence of invertible ops always undoes it, regardless of
       whether the ops commute).
+    - ``OUTLINE_GROW``: ``old_outline``/``new_outline`` — the complete
+      polygon rings, before and after. The whole ring is recorded, not
+      edge+delta, so undo restores the exact prior outline rather than
+      re-deriving it (a second growth of the same edge must not depend on
+      the first being reproducible).
+    - ``LAYER_ADD``: ``new_int`` (the symmetric insertion index into
+      ``ir.stackup``) + ``layer_entries`` (the two stackup dicts
+      inserted). Undo removes the same two entries at the same index —
+      a LAYER_ADD's undo only ever runs while the added layers are
+      provably still empty (the anneal undoes in exact reverse order),
+      so the pair is recorded, not recomputed.
     """
 
     kind: MoveKind
@@ -276,6 +310,9 @@ class Move:
     new_int: tuple[int, ...] = ()
     net: int | None = None
     pin_pairs: tuple[tuple[int, int], ...] = ()
+    old_outline: tuple[tuple[float, float], ...] = ()
+    new_outline: tuple[tuple[float, float], ...] = ()
+    layer_entries: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +629,35 @@ def _measure_pair_usd(ir: PcbIR, ia: int, ib: int, spec: MeasureSpec) -> float:
 
 
 @dataclass(frozen=True, slots=True)
+class ExpansionCaps:
+    """The authored bounds on the priced expansion moves
+    (:class:`MoveKind.OUTLINE_GROW` / :class:`MoveKind.LAYER_ADD` —
+    docs/backlog/pcb-anneal-closes-router-loop.md §1). Every field is
+    REQUIRED: a cap the caller did not author is a refusal, not
+    infinity — ``OptimizeConfig.expansion = None`` disables both moves
+    outright (the default: nothing changes for a design that never opted
+    in), and a missing fab price (:attr:`CostConfig.board_area_usd_per_mm2`
+    or :attr:`CostConfig.layer_usd` not positive) surfaces as an explicit
+    ``unavailable-price`` refusal, never a zero-USD one.
+
+    - ``outline_max_mm``: ``(width, height)`` the grown outline's
+      bounding box may not exceed, mm — the same bbox approximation
+      :func:`~precis.pcb.cost.outline_bbox` applies everywhere.
+    - ``max_copper_layers``: stackup layer count a LAYER_ADD may not
+      exceed (the move adds exactly two; parity stays symmetric).
+    - ``max_fab_usd``: ceiling on :meth:`OptimizeEngine.estimated_fab_usd`
+      — the fab-table USD estimate on the SAME
+      ``board_area_usd_per_mm2``/``layer_usd``/``via_usd``/part-fee basis
+      the money family already prices, not a purchase quote. A move whose
+      own priced delta would cross the ceiling is refused, not trimmed.
+    """
+
+    outline_max_mm: tuple[float, float]
+    max_copper_layers: int
+    max_fab_usd: float
+
+
+@dataclass(frozen=True, slots=True)
 class OptimizeConfig:
     """Every tunable this module needs. ``cost`` is passed straight to the
     per-item ``cost.py`` evaluators; its own ``schedule`` field is ignored
@@ -653,6 +719,14 @@ class OptimizeConfig:
     #: measure machinery adds a cost term, never a new code path an
     #: unrelated design's anneal has to pass through.
     measures: tuple[MeasureSpec, ...] = ()
+    #: Authored expansion bounds (:class:`ExpansionCaps`) for the priced
+    #: OUTLINE_GROW/LAYER_ADD moves. ``None`` (the default) means both
+    #: generators refuse every proposal — "missing caps do not mean
+    #: infinity; disable/refuse the priced expansion" (the backlog item,
+    #: verbatim) — and even WITH caps authored the moves only enter the
+    #: schedule the caller chooses: :data:`DEFAULT_SCHEDULE` carries no
+    #: weight for either, so an ordinary anneal never grows a board.
+    expansion: ExpansionCaps | None = None
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:
@@ -661,6 +735,123 @@ class OptimizeConfig:
                 "soft p-norm margin aggregate is not locally decomposable "
                 "(see module docstring)"
             )
+
+
+# ── router-feedback evidence ─────────────────────────────────────────────
+#
+# The outer loop's contract surface: what ONE route attempt reports back
+# (`RouteOutcome`), which `OptimizeEngine.apply_route_feedback` folds into
+# the NEXT anneal's cost. The engine consumes this and nothing else — the
+# router call itself stays outside this module (the loop takes a callable),
+# so no realize/maze import ever enters here.
+
+
+@dataclass(frozen=True, slots=True)
+class RouteFailure:
+    """One failed connection (or failed escape), resolved to the board
+    geometry it implicates — the CALLER's route function owns the mapping
+    from router output to these fields; this module only requires that a
+    failure carries its cause verbatim and real mm/pin witnesses, never
+    just a net name to guess a region from.
+
+    - ``cause``: the router's own failure kind, preserved verbatim
+      (``'congestion'``, ``'width'``, ``'no_path'``, ``'search_budget'``,
+      ``'plane_drop_blocked'``, ``'layer_lock'``, ``'unpourable_plane'``,
+      or ``'unknown'`` — an unknown cause is evidence too: it is reported,
+      never re-labelled as congestion).
+    - ``points``: the implicated board positions, mm — the cells these
+      resolve to are where the failure's margin penalty lands.
+    - ``escape``: True when the failure is a terminal that could not
+      escape its pad neighbourhood; the penalty then ties to the actual
+      terminal ``instances`` (pad neighbourhood), not the segment span.
+    - ``instances``/``seg_id``: the engine-side witnesses. An escape
+      names its terminal's instance; a net failure names its segment —
+      the penalty lives where the segment is NOW, so the anneal can move
+      it out of the implicated region rather than carrying a constant.
+    - ``detail``: the router's message, preserved for the digest.
+    """
+
+    net: str
+    cause: str
+    points: tuple[tuple[float, float], ...] = ()
+    escape: bool = False
+    instances: tuple[int, ...] = ()
+    seg_id: int | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DemandCell:
+    """One over-subscribed grid cell of routing demand — PathFinder's
+    final present-congestion, converted to board mm at the SOURCE (the
+    grid spec's pitch and origin are the provenance, carried here so the
+    digest can say which layer/grid the demand was measured on).
+    ``usage`` is the number of nets whose negotiated claims cover the
+    cell; demand above one is contention. The routing-demand unit stays
+    separate from USD — :meth:`OptimizeEngine.apply_route_feedback`
+    normalises it to a margin fraction via
+    :data:`_ROUTE_DEMAND_FULL_USAGE`, exposed, not folded silently into
+    money.
+
+    ``source`` names the meter the reading came from — ``'negotiation'``
+    (default; PathFinder's per-cell claim count) or ``'gap_warning'``
+    (the hard grid's over-capacity gap report, whose ``usage`` is nets
+    wanting through a gap of ``capacity`` strands — a DIFFERENT unit,
+    normalised by :data:`_GAP_WARNING_FULL_OVERAGE` against
+    ``capacity``, never by the negotiation constant)."""
+
+    x_mm: float
+    y_mm: float
+    usage: int
+    capacity: int | None = None
+    layer: int | None = None
+    pitch_mm: float | None = None
+    source: str = "negotiation"
+
+
+@dataclass(frozen=True, slots=True)
+class RouteOutcome:
+    """What one route attempt measured. ``routed``/``total`` are the
+    honest connection counts (the caller decides the denominator — the
+    outer loop never re-derives it); ``failures`` is the evidence the
+    next anneal's cost is built from; ``demand`` is the congestion map.
+    ``complete`` is the router's own verdict that nothing was left
+    unrouted — an incomplete legal route is not success, so the loop
+    trusts this flag, never infers it from counts."""
+
+    routed: int
+    total: int
+    complete: bool
+    failures: tuple[RouteFailure, ...] = ()
+    demand: tuple[DemandCell, ...] = ()
+    note: str = ""
+
+
+#: A contested cell reaches full demand fraction at this usage — the
+#: exposed normalisation of routing demand into the margin family's
+#: 0..1 raw scale (cost.py's ``route_demand`` TermSpec). Usage 2 (two
+#: nets' claims cover one cell) reads as 0.5 of budget; 3+ reads as 1.0.
+#: Chosen so a single over-subscribed cell is a real but half-weight
+#: signal while a genuinely contested one dominates its margin weight
+#: class; NOT a USD figure and never folded into money() — the backlog's
+#: "routing-demand units stay separate from USD" made explicit.
+_ROUTE_DEMAND_FULL_USAGE = 3.0
+
+#: The gap-warning channel's own normalisation (:data:`DemandCell.
+#: source` ``'gap_warning'``): a hard-grid ``CongestionWarning`` reports
+#: ``usage`` nets wanting through a gap of ``capacity`` strands, so the
+#: demand fraction is the overage ratio ``(usage - capacity) /
+#: capacity``, full when demand is 100% over capacity. Deliberately NOT
+#: :data:`_ROUTE_DEMAND_FULL_USAGE` — a gap usage of 3 means "three nets
+#: want a two-strand gap", not "three claims cover one cell"; review
+#: finding: the two units must not share one constant.
+_GAP_WARNING_FULL_OVERAGE = 1.0
+
+#: Bound on recorded expansion refusals — a generator that declines says
+#: WHY (the digest's binding-constraint evidence), but an anneal that
+#: refuses thousands of times must not grow the log without limit. The
+#: digest counts, it does not enumerate.
+_MAX_REFUSAL_RECORDS = 200
 
 
 # ── digest shapes ────────────────────────────────────────────────────────
@@ -2086,6 +2277,75 @@ class OptimizeEngine:
         self._measure_usd: dict[int, float] = {}
         self._money_measures: float = 0.0
 
+        # ── priced-expansion state (OUTLINE_GROW/LAYER_ADD) ────────────
+        # `_money_outline_area`: the authored panel's area priced at the
+        # money family's own `board_area_usd_per_mm2` — the SAME rate
+        # `board_area` prices the placed bbox at, applied to the actual
+        # fab panel instead of the placement proxy. Tracked only when
+        # `config.expansion` is authored: without caps the search may not
+        # grow anything, so the constant can only shift every state's
+        # money() equally (delta-neutral) — including it there would
+        # change every existing run's reported money for zero steering
+        # gain. `board_area` stays too: the overlap is the cost model's
+        # documented coarseness, not a hidden term (both rows name their
+        # quantity in the digest).
+        # `_money_layer_add`: USD of accepted LAYER_ADD pairs at
+        # `layer_usd` each — priced at acceptance, the same
+        # lamination-step figure `layer_count` uses per USED layer. The
+        # pair exists physically the moment the stackup changes, so its
+        # price does not wait for a segment to land on it; a later
+        # LAYER_ASSIGN onto a new layer then also moves `layer_count`'s
+        # used count — the residual overlap with this channel is the
+        # known coarse-estimate caveat, stated rather than hidden.
+        self._money_outline_area = 0.0
+        self._money_layer_add = 0.0
+        #: Why the last expansion proposal was refused — the digest's
+        #: binding-constraint evidence (bounded by
+        #: :data:`_MAX_REFUSAL_RECORDS`).
+        self._expansion_refusals: list[str] = []
+        #: The fab capability row cost terms should read. Normally the
+        #: authored `config.cost.fab_caps`; after an accepted LAYER_ADD
+        #: the stackup is a different process, and terms that ask "what
+        #: will the fab actually drill" (implied via count, thermal
+        #: width) read the matching row instead of the stale one.
+        self._fab_caps = config.cost.fab_caps
+        #: Edges (0=x0/W, 1=x1/E, 2=y0/S, 3=y1/N of the outline bbox) a
+        #: `require='required'` edge-mated part sits on — OUTLINE_GROW may
+        #: not move those edges, because the snapped part's mating face
+        #: would be left inside the panel (it is `fixed`, so the anneal
+        #: cannot walk it back out). Computed once: neither the spec nor
+        #: the lock changes mid-anneal.
+        self._edge_mate_edges: set[int] = set()
+        em = ir.inst_edge_mate
+        if em is not None:
+            for i in range(ir.n_instances):
+                spec = em[i]
+                if spec is None or spec.require != "required":
+                    continue
+                ox, oy = outward_vector(
+                    spec, float(ir.inst_rot[i]), mirrored=bool(ir.inst_bottom[i])
+                )
+                if abs(ox) >= abs(oy):
+                    self._edge_mate_edges.add(1 if ox > 0 else 0)
+                else:
+                    self._edge_mate_edges.add(3 if oy > 0 else 2)
+
+        # ── router-feedback state (apply_route_feedback) ───────────────
+        # The LAST route outcome, re-expressed as margin entries:
+        # `_failure_by_seg[seg]` -> the implicated region cells a failed
+        # segment's penalty fades against; `_escape_by_inst[inst]` -> the
+        # pad-neighbourhood cells a failed escape's terminal sits in;
+        # `_demand_by_cell[cell]` -> (demand fraction, provenance label)
+        # of the congestion map's contention. All keyed by CURRENT state
+        # on refresh (a segment's penalty clears as it leaves the
+        # implicated cells — that is what makes the evidence steer the
+        # next anneal rather than sit as a constant).
+        self._route_evidence: RouteOutcome | None = None
+        self._failure_by_seg: dict[int, frozenset[tuple[int, int]]] = {}
+        self._escape_by_inst: dict[int, frozenset[tuple[int, int]]] = {}
+        self._demand_by_cell: dict[tuple[int, int], tuple[float, str]] = {}
+        self._feedback_keys: set[tuple[str, MarginKey]] = set()
+
         # margin cache: (term_name, key) -> latest TermValue. `key` is a
         # segment id for gap_capacity/loop_inductance, a sorted segment-id
         # pair for coupling, a net name for thermal_rise, a layer id for
@@ -2144,6 +2404,7 @@ class OptimizeEngine:
         self._init_alignment_state()
         self._init_measures_state()
         self._seed_layers()
+        self._money_outline_area = self._outline_area_usd()
 
     # -- one-time initialization (the only "full board" pass) ------------
     def _init_caches(self) -> None:
@@ -2184,7 +2445,7 @@ class OptimizeEngine:
             n = implied_via_count(
                 ir,
                 s,
-                fab_caps=cfg.cost.fab_caps,
+                fab_caps=self._fab_caps,
                 class_rules=cfg.cost.class_rules,
                 temp_rise_c=cfg.cost.thermal_temp_rise_c,
                 copper_oz=cfg.cost.thermal_copper_oz,
@@ -2820,7 +3081,7 @@ class OptimizeEngine:
         new = implied_via_count(
             self.ir,
             seg_id,
-            fab_caps=self.config.cost.fab_caps,
+            fab_caps=self._fab_caps,
             class_rules=self.config.cost.class_rules,
             temp_rise_c=self.config.cost.thermal_temp_rise_c,
             copper_oz=self.config.cost.thermal_copper_oz,
@@ -3287,6 +3548,7 @@ class OptimizeEngine:
         self._refresh_measures(moved_inst)
         self._refresh_board_edge(moved_inst)
 
+        self._refresh_route_escape(moved_inst)
         direct = set(ir._segs_of_instance.get(moved_inst, ()))
         reassigned = {
             s
@@ -3318,6 +3580,10 @@ class OptimizeEngine:
             # touches `seg_layer`).
             layer = int(ir.seg_layer[s])
             self._recompute_seg_crossings(s, layer, layer)
+            # Router-feedback entries key off this segment's CURRENT cells
+            # — a placement move is exactly what can move it out of (or
+            # into) an implicated/contested region.
+            self._refresh_route_penalties_for_seg(s)
 
         touched_candidates = direct & self._coupling_candidate_set
         for sa in touched_candidates:
@@ -3346,6 +3612,7 @@ class OptimizeEngine:
                 lt = loop_inductance_term(self.ir, s, self.level, self.config.cost)
                 assert lt is not None
                 self._margin[("loop_inductance", s)] = lt
+            self._refresh_route_penalties_for_seg(s)
         touched = set(seg_ids) & self._coupling_candidate_set
         for sa in touched:
             for sb in self._coupling_candidate_set:
@@ -3378,6 +3645,8 @@ class OptimizeEngine:
         return (
             sum(self._money_static_by_name.values())
             + self._money_board_area
+            + self._money_outline_area
+            + self._money_layer_add
             + self._money_routing_area
             + self._money_measures
         )
@@ -3395,6 +3664,344 @@ class OptimizeEngine:
 
     def total(self) -> float:
         return self.money() + self.config.cost.risk_to_money * self.risk()
+
+    # -- priced expansion (OUTLINE_GROW/LAYER_ADD) -----------------------
+    def _outline_area_usd(self) -> float:
+        """The authored outline's bbox area priced at
+        ``board_area_usd_per_mm2`` — 0 when no caps are authored, the
+        board has no outline, or the price itself is unavailable (the
+        generator refuses in that case anyway; this never fabricates a
+        zero price)."""
+        if (
+            self.config.expansion is None
+            or not self.ir.outline
+            or len(self.ir.outline) < 3
+        ):
+            return 0.0
+        rate = self.config.cost.board_area_usd_per_mm2
+        if not rate or not math.isfinite(rate) or rate <= 0.0:
+            return 0.0
+        x0, y0, x1, y1 = outline_bbox(self.ir.outline)
+        return (x1 - x0) * (y1 - y0) * rate
+
+    def estimated_fab_usd(self) -> float:
+        """The fab-table USD estimate the ``max_fab_usd`` cap binds —
+        every money channel that prices a real fabrication quantity
+        (panel area, layers, vias, part fees, swept routing area). The
+        two non-fab money channels are excluded: ``measures`` is author
+        intent priced as a steering penalty and ``alignment`` a cosmetic
+        tie-breaker, neither is a fab price. An estimate, on the same
+        explicit cost basis the cap is authored against — never a
+        purchase quote."""
+        return (
+            self.money()
+            - self._money_measures
+            - self._money_static_by_name.get("alignment", 0.0)
+        )
+
+    def _refuse_expansion(self, reason: str) -> None:
+        """Record why a priced-expansion proposal was declined — the
+        digest's binding-constraint evidence (bounded)."""
+        if len(self._expansion_refusals) < _MAX_REFUSAL_RECORDS:
+            self._expansion_refusals.append(reason)
+
+    def expansion_status(self) -> str:
+        """Why the priced expansion is or is not on the table — for the
+        end-of-loop digest, never silent: ``'available'`` when caps and
+        fab prices are authored, else the explicit reason
+        (``'disabled:no-caps'`` or ``'unavailable-price:<field>'``)."""
+        if self.config.expansion is None:
+            return "disabled:no-caps"
+        for field_name in ("board_area_usd_per_mm2", "layer_usd"):
+            v = getattr(self.config.cost, field_name, None)
+            if v is None or not math.isfinite(v) or v <= 0.0:
+                return f"unavailable-price:{field_name}"
+        return "available"
+
+    def _apply_outline_grow(self, move: Move, *, forward: bool) -> None:
+        """Apply/undo an OUTLINE_GROW: swap the stored ring, recompute
+        the (outline-derived) placement domain, refresh every instance's
+        ``board_edge_clearance`` margin (a whole-board rescan — the same
+        honest-aggregate carve-out ``board_area`` already carries, the
+        outline edge is a board-scale quantity), and restate
+        ``_money_outline_area`` exactly. The outline field sits outside
+        the IR's dirty-level cascade (``PcbIR.outline``'s own docstring),
+        so no level masks are touched — the router re-reads it at the
+        next route round regardless."""
+        ir = self.ir
+        ir.outline = list(move.new_outline if forward else move.old_outline)
+        self._placement_bounds = self._derive_placement_bounds()
+        for i in range(ir.n_instances):
+            self._refresh_board_edge(i)
+        self._money_outline_area = self._outline_area_usd()
+
+    def _apply_layer_add(self, move: Move, *, forward: bool) -> None:
+        """Apply/undo a LAYER_ADD: insert or remove the recorded
+        symmetric pair at ``move.new_int[0]``, remap every layer-indexed
+        field (``seg_layer``, ``net_plane_layers``, ``via_layer_span``
+        bitmasks), rebuild the engine's layer-scoped caches, and re-price
+        the pair at ``layer_usd`` each. This is a board-scale move like
+        ``board_area``: a full re-derivation, flagged rather than claimed
+        local."""
+        k = move.new_int[0]
+        if forward:
+            lo, hi = self._add_layer_pair(k, move.layer_entries)
+        else:
+            lo, hi = self._remove_layer_pair(k)
+        self._rebuild_layer_state()
+        self._money_layer_add += (2.0 if forward else -2.0) * max(
+            0.0, float(self.config.cost.layer_usd or 0.0)
+        )
+        assert lo == hi  # pragma: no cover — paired helpers agree
+
+    def _add_layer_pair(
+        self, insert_at: int, entries: tuple[dict[str, Any], ...]
+    ) -> tuple[int, int]:
+        """Insert ``entries`` (two layer dicts) at ``insert_at`` in
+        ``ir.stackup`` and shift every layer index >= ``insert_at`` up by
+        two — segments, plane bitmask, via-span bitmask. Returns the new
+        layer count twice (the apply caller asserts the pair is real)."""
+        ir = self.ir
+        ir.stackup = (
+            list(ir.stackup[:insert_at])
+            + [dict(e) for e in entries]
+            + list(ir.stackup[insert_at:])
+        )
+        self._shift_layer_indices(insert_at, +2)
+        for s in range(ir.n_segments):
+            ir.dirty_l1[s] = ir.dirty_l4[s] = ir.dirty_l5[s] = True
+        return ir.n_layers, ir.n_layers
+
+    def _remove_layer_pair(self, insert_at: int) -> tuple[int, int]:
+        """Undo :meth:`_add_layer_pair`. The SA contract guarantees no
+        segment sits on the removed pair (a LAYER_ASSIGN onto it would
+        have been undone first — undo order is exact reverse), so a
+        segment found there is a real invariant violation, asserted
+        rather than silently remapped."""
+        ir = self.ir
+        for s in range(ir.n_segments):
+            assert int(ir.seg_layer[s]) not in (insert_at, insert_at + 1), (
+                f"LAYER_ADD undo: segment {s} still on removed layer "
+                f"{int(ir.seg_layer[s])}"
+            )
+        del ir.stackup[insert_at : insert_at + 2]
+        self._shift_layer_indices(insert_at + 2, -2)
+        for s in range(ir.n_segments):
+            ir.dirty_l1[s] = ir.dirty_l4[s] = ir.dirty_l5[s] = True
+        return ir.n_layers, ir.n_layers
+
+    def _shift_layer_indices(self, from_layer: int, delta: int) -> None:
+        """Shift every layer index >= ``from_layer`` by ``delta`` — the
+        segment array, the per-net plane bitmask, and each via's
+        layer-span bitmask. Layer *identity* is preserved (the moved
+        segment still sits on the same physical copper); only the index
+        into ``ir.stackup`` changes."""
+        ir = self.ir
+        for s in range(ir.n_segments):
+            layer = int(ir.seg_layer[s])
+            if layer >= from_layer:
+                ir.seg_layer[s] = layer + delta
+        keep_mask = (1 << from_layer) - 1
+        for n in range(ir.n_nets):
+            mask = int(ir.net_plane_layers[n])
+            ir.net_plane_layers[n] = np.uint16(
+                (mask & keep_mask) | ((mask & ~keep_mask) << delta)
+                if delta > 0
+                else (mask & keep_mask) | ((mask & ~keep_mask) >> -delta)
+            )
+        for v in range(ir.n_vias):
+            mask = int(ir.via_layer_span[v])
+            ir.via_layer_span[v] = np.uint16(
+                (mask & keep_mask) | ((mask & ~keep_mask) << delta)
+                if delta > 0
+                else (mask & keep_mask) | ((mask & ~keep_mask) >> -delta)
+            )
+
+    def _rebuild_layer_state(self) -> None:
+        """Recompute every layer-scoped engine cache after a stackup
+        change — the whole-board rebuild LAYER_ADD honestly is (see
+        ``_apply_layer_add``). Clears the crossing state (including stale
+        margin entries for layer indices that no longer exist, on the
+        undo direction), re-derives signal/plane layer eligibility from
+        the new stackup, re-runs the one-time crossing init, re-prices
+        ``layer_count``, and re-diffs every segment's implied via count
+        against the NEW process row (``_fab_caps`` tracks the stackup's
+        own process after a layer add — the authored basis' row no
+        longer describes the board)."""
+        ir = self.ir
+        self._signal_layers = routable_layers(ir) or list(range(ir.n_layers))
+        self._plane_layers = pourable_layers(ir)
+        try:
+            self._fab_caps = capability_for(f"{ir.n_layers}layer")
+        except KeyError:
+            pass  # generator already refused unsupported counts; keep last
+        for key in [k for k in self._margin if k[0] == "crossings"]:
+            self._margin.pop(key, None)
+        self._segments_by_layer = {}
+        self._seg_crossing_partners = {}
+        self._layer_crossing_count = [0] * ir.n_layers
+        self._init_crossing_state()
+        self._refresh_layer_count()
+        for s in range(ir.n_segments):
+            self._refresh_via_count_for_segment(s)
+
+    # -- router feedback (the penalise half of the outer loop) ---------
+    def _cell_of_xy(self, x: float, y: float) -> tuple[int, int]:
+        cell = self.config.region_cell_mm
+        return (int(x // cell), int(y // cell))
+
+    def _seg_cells(self, seg_id: int) -> frozenset[tuple[int, int]]:
+        """The region cells one segment currently spans — its midpoint
+        plus both endpoint instance centres, the same instance-centroid
+        granularity every cost term in this module works at."""
+        ir = self.ir
+        ia, ib = int(self._seg_inst_a[seg_id]), int(self._seg_inst_b[seg_id])
+        cells = {self._cell_of_xy(*self._midpoint(seg_id))}
+        for inst in (ia, ib):
+            x, y = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+            if not (math.isnan(x) or math.isnan(y)):
+                cells.add(self._cell_of_xy(x, y))
+        return frozenset(cells)
+
+    def _set_route_margin(
+        self, name: str, key: MarginKey, raw: float, region: str
+    ) -> None:
+        mkey = (name, key)
+        if raw <= 0.0:
+            self._margin.pop(mkey, None)
+            self._feedback_keys.discard(mkey)
+            return
+        self._margin[mkey] = TermValue(
+            name, Family.MARGIN, region, raw, _BY_NAME[name].justification
+        )
+        self._feedback_keys.add(mkey)
+
+    def _refresh_route_penalties_for_seg(self, seg_id: int) -> None:
+        """Restate one segment's router-feedback margin entries against
+        CURRENT positions — called from every segment rescan, so a failed
+        segment's ``route_failure`` fades as it leaves the cells the
+        router implicated (the steering the outer loop exists for), and a
+        segment sitting in a contested cell pays ``route_demand`` at the
+        recorded demand fraction."""
+        if not self._failure_by_seg and not self._demand_by_cell:
+            return  # no feedback applied — these entries cannot exist
+        implicated = self._failure_by_seg.get(seg_id)
+        if implicated:
+            hit = len(self._seg_cells(seg_id) & implicated)
+            self._set_route_margin(
+                "route_failure",
+                seg_id,
+                hit / len(implicated),
+                self._failure_net_label(seg_id),
+            )
+        demand = self._demand_by_cell.get(self._cell_of_xy(*self._midpoint(seg_id)))
+        self._set_route_margin(
+            "route_demand",
+            seg_id,
+            demand[0] if demand else 0.0,
+            demand[1] if demand else "board",
+        )
+
+    def _failure_net_label(self, seg_id: int) -> str:
+        return str(self.ir.net_name[int(self.ir.seg_net[seg_id])])
+
+    def _refresh_route_escape(self, inst: int) -> None:
+        """A failed escape's pad-neighbourhood penalty: raw 1.0 while the
+        terminal's instance still sits in the implicated cells, 0 once it
+        leaves — a coarse but real gradient (one cell away is a cleared
+        penalty), tied to the actual terminal instance, never guessed
+        from the net name."""
+        cells = self._escape_by_inst.get(inst)
+        if not cells:
+            return
+        x, y = float(self.ir.inst_x[inst]), float(self.ir.inst_y[inst])
+        inside = (
+            not (math.isnan(x) or math.isnan(y)) and self._cell_of_xy(x, y) in cells
+        )
+        self._set_route_margin(
+            "route_escape",
+            inst,
+            1.0 if inside else 0.0,
+            str(self.ir.instance_refdes[inst]),
+        )
+
+    def apply_route_feedback(self, outcome: RouteOutcome) -> None:
+        """Fold one route attempt's evidence into the margin cache —
+        the penalise step of route -> penalise -> anneal. Replaces the
+        previous outcome's entries wholesale (the newest route's verdict
+        supersedes; a stale penalty would steer toward a failure the
+        board no longer has).
+
+        Three evidence classes, three entry shapes:
+
+        - a failed net -> ``route_failure`` on its segment, raw = the
+          share of the segment's CURRENT cells still inside the cells
+          the router implicated (clears as the anneal moves it out);
+        - a failed escape -> ``route_escape`` on the actual terminal
+          instance's cell;
+        - present congestion -> ``route_demand`` on every segment whose
+          midpoint sits in a contested cell, at the recorded demand
+          fraction (:data:`_ROUTE_DEMAND_FULL_USAGE` — the exposed
+          routing-demand normalisation, separate from USD).
+
+        Causes are preserved on :attr:`_route_evidence` verbatim — an
+        unknown cause is evidence, never re-labelled congestion.
+        """
+        for key in self._feedback_keys:
+            self._margin.pop(key, None)
+        self._feedback_keys = set()
+        self._route_evidence = outcome
+        self._failure_by_seg = {}
+        self._escape_by_inst = {}
+        self._demand_by_cell = {}
+        for f in outcome.failures:
+            cells = frozenset(
+                self._cell_of_xy(x, y)
+                for x, y in f.points
+                if math.isfinite(x) and math.isfinite(y)
+            )
+            if not cells:
+                continue
+            if f.escape:
+                for inst in f.instances:
+                    # UNION, not overwrite: two failures implicating the
+                    # same terminal add their cells, never replace.
+                    prev = self._escape_by_inst.get(inst)
+                    self._escape_by_inst[inst] = cells if prev is None else prev | cells
+                    self._refresh_route_escape(inst)
+            elif f.seg_id is not None:
+                self._failure_by_seg[f.seg_id] = cells
+                self._refresh_route_penalties_for_seg(f.seg_id)
+        for d in outcome.demand:
+            cell = self._cell_of_xy(d.x_mm, d.y_mm)
+            if d.source == "gap_warning" and d.capacity:
+                # The gap channel's own unit — overage over capacity,
+                # full at _GAP_WARNING_FULL_OVERAGE (100% over), never
+                # PathFinder's claim count.
+                fraction = min(
+                    1.0,
+                    max(0.0, (d.usage - d.capacity) / d.capacity)
+                    / _GAP_WARNING_FULL_OVERAGE,
+                )
+                label = f"usage={d.usage}/{d.capacity}cap gap-warning"
+            else:
+                fraction = min(
+                    1.0,
+                    max(0.0, d.usage - 1.0) / (_ROUTE_DEMAND_FULL_USAGE - 1.0),
+                )
+                label = f"usage={d.usage} negotiation"
+            label += (f"@L{d.layer}" if d.layer is not None else "") + (
+                f" pitch={d.pitch_mm:g}mm" if d.pitch_mm else ""
+            )
+            prev_demand = self._demand_by_cell.get(cell)
+            if prev_demand is None or fraction > prev_demand[0]:
+                self._demand_by_cell[cell] = (fraction, label)
+        # Every segment's demand entry keys off where it sits NOW; the
+        # map changed wholesale, so restate all of them (a whole-board
+        # pass, once per route round — the same honest-aggregate
+        # carve-out the construction pass already uses).
+        for s in range(self.ir.n_segments):
+            self._refresh_route_penalties_for_seg(s)
 
     # -- move application ----------------------------------------------
     #: Kind -> does this move kind's payload live in the placement
@@ -3421,6 +4028,10 @@ class OptimizeEngine:
             self._apply_plane_demote(move, forward=forward)
         elif move.kind == MoveKind.PIN_SWAP:
             self._apply_pin_swap(move, forward=forward)
+        elif move.kind == MoveKind.OUTLINE_GROW:
+            self._apply_outline_grow(move, forward=forward)
+        elif move.kind == MoveKind.LAYER_ADD:
+            self._apply_layer_add(move, forward=forward)
         else:  # pragma: no cover — exhaustive over MoveKind by construction
             raise AssertionError(f"unhandled move kind {move.kind!r}")
 
@@ -3636,6 +4247,15 @@ class OptimizeEngine:
             else:
                 xb, yb = float(self.ir.inst_x[ib]), float(self.ir.inst_y[ib])
             return self._cell_label((xa + xb) / 2.0, (ya + yb) / 2.0)
+        if term_name in ("route_failure", "route_demand"):
+            assert isinstance(key, int)  # a segment id
+            x, y = self._midpoint(key)
+            return self._cell_label(x, y)
+        if term_name == "route_escape":
+            assert isinstance(key, int)  # an instance id
+            return self._cell_label(
+                float(self.ir.inst_x[key]), float(self.ir.inst_y[key])
+            )
         if term_name == "crossings":
             # A layer, not a grid cell -- there is no single (x, y) home
             # for "all of layer k's crossings", so this uses the layer id
@@ -3680,6 +4300,29 @@ class OptimizeEngine:
                 "measures", "money", self._money_measures, None, _MEASURES_JUSTIFICATION
             )
         )
+        if self.config.expansion is not None:
+            term_summaries.append(
+                TermSummary(
+                    "outline_area",
+                    "money",
+                    self._money_outline_area,
+                    None,
+                    "the authored panel's bbox area priced at "
+                    "board_area_usd_per_mm2 — the fab-table area cost "
+                    "OUTLINE_GROW prices its delta against",
+                )
+            )
+            term_summaries.append(
+                TermSummary(
+                    "layer_pair",
+                    "money",
+                    self._money_layer_add,
+                    None,
+                    "accepted LAYER_ADD pairs at layer_usd each — the "
+                    "fab-table cost of the lamination/drill step the pair "
+                    "adds, charged when the stackup changes",
+                )
+            )
 
         by_name: dict[str, list[tuple[str, float, str | None]]] = {}
         for (name, key), tv in self._margin.items():
@@ -4117,6 +4760,162 @@ def _gen_pin_swap(
     return Move(MoveKind.PIN_SWAP, pin_pairs=pairs)
 
 
+#: Outline-bbox edges OUTLINE_GROW may move: 0=W (x0, -x), 1=E (x1, +x),
+#: 2=S (y0, -y), 3=N (y1, +y). Grows translate every vertex AT the
+#: extreme — exact for a rectangle, the same bbox approximation
+#: :func:`~precis.pcb.cost.outline_bbox` already makes everywhere, and a
+#: conservative (never inward) answer for a general polygon.
+_OUTLINE_EDGES = (0, 1, 2, 3)
+
+#: One OUTLINE_GROW proposal's millimetre range — large enough to relieve
+#: a congested band in a few accepted moves, small enough that a single
+#: acceptance cannot buy a panel the author did not mean to pay for.
+_OUTLINE_GROW_MIN_MM = 1.0
+_OUTLINE_GROW_MAX_MM = 10.0
+
+
+def _grow_outline_ring(
+    ring: Sequence[tuple[float, float]], edge: int, delta_mm: float
+) -> tuple[tuple[float, float], ...]:
+    """Move ``edge``'s extreme vertices outward by ``delta_mm`` — the
+    bbox-edge approximation documented on :data:`_OUTLINE_EDGES`. Vertices
+    compare equal to the bbox extreme by construction (the extreme was
+    read off the same ring), so float equality is exact here."""
+    xs = [p[0] for p in ring]
+    ys = [p[1] for p in ring]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    if edge == 0:
+        extreme, dx, dy = x0, -delta_mm, 0.0
+    elif edge == 1:
+        extreme, dx, dy = x1, delta_mm, 0.0
+    elif edge == 2:
+        extreme, dx, dy = y0, 0.0, -delta_mm
+    else:
+        extreme, dx, dy = y1, 0.0, delta_mm
+    axis = 0 if edge < 2 else 1
+
+    def sel(p: tuple[float, float]) -> bool:
+        return p[axis] == extreme
+
+    return tuple((p[0] + dx, p[1] + dy) if sel(p) else p for p in ring)
+
+
+def _gen_outline_grow(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    """Propose growing one outline edge by a positive delta, priced at
+    the added bbox area x ``board_area_usd_per_mm2``. Refusals are
+    recorded (the digest's binding-constraint evidence), never silent:
+    no authored caps, no outline to grow, an unavailable area price, an
+    edge-mated part on the chosen edge, a grown dimension past
+    ``outline_max_mm``, or a priced delta over ``max_fab_usd``."""
+    ir = engine.ir
+    caps = engine.config.expansion
+    if caps is None:
+        return None  # inert by design — missing caps are a refusal, not infinity
+    rate = engine.config.cost.board_area_usd_per_mm2
+    if rate is None or not math.isfinite(rate) or rate <= 0.0:
+        engine._refuse_expansion(
+            "outline_grow: unavailable-price (board_area_usd_per_mm2 "
+            f"={rate!r}) — never priced at zero USD"
+        )
+        return None
+    if not ir.outline or len(ir.outline) < 3:
+        engine._refuse_expansion("outline_grow: no authored outline to grow")
+        return None
+    edges = [e for e in _OUTLINE_EDGES if e not in engine._edge_mate_edges]
+    if not edges:
+        engine._refuse_expansion(
+            "outline_grow: every edge carries a required edge-mated part"
+        )
+        return None
+    edge = edges[rng.randrange(len(edges))]
+    delta = rng.uniform(_OUTLINE_GROW_MIN_MM, _OUTLINE_GROW_MAX_MM)
+    old = tuple((float(x), float(y)) for x, y in ir.outline)
+    new = _grow_outline_ring(old, edge, delta)
+    x0, y0, x1, y1 = outline_bbox(list(new))
+    w_mm, h_mm = x1 - x0, y1 - y0
+    if w_mm > caps.outline_max_mm[0] or h_mm > caps.outline_max_mm[1]:
+        engine._refuse_expansion(
+            f"outline_grow: {w_mm:.1f}x{h_mm:.1f}mm would exceed "
+            f"outline_max_mm={caps.outline_max_mm[0]:.1f}x"
+            f"{caps.outline_max_mm[1]:.1f}mm"
+        )
+        return None
+    ox0, oy0, ox1, oy1 = outline_bbox(list(old))
+    delta_usd = ((x1 - x0) * (y1 - y0) - (ox1 - ox0) * (oy1 - oy0)) * rate
+    if engine.estimated_fab_usd() + delta_usd > caps.max_fab_usd:
+        engine._refuse_expansion(
+            f"outline_grow: +${delta_usd:.2f} would exceed "
+            f"max_fab_usd=${caps.max_fab_usd:.2f} "
+            f"(est=${engine.estimated_fab_usd():.2f})"
+        )
+        return None
+    return Move(MoveKind.OUTLINE_GROW, old_outline=old, new_outline=new)
+
+
+def _gen_layer_add(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    """Propose adding a symmetric copper layer pair at the stackup's
+    centre, priced at ``2 x layer_usd``. Refusals are recorded: no caps,
+    an unavailable layer price, the pair crossing ``max_copper_layers``
+    or ``max_fab_usd``, or a resulting stackup no capability row covers
+    (``capability_for`` raises — an unsupported stack is refused, never
+    made valid by a low cost). Only a symmetric insertion is offered:
+    the pair goes in at ``n_layers // 2`` so the stack stays balanced."""
+    ir = engine.ir
+    caps = engine.config.expansion
+    if caps is None:
+        return None
+    layer_usd = engine.config.cost.layer_usd
+    if layer_usd is None or not math.isfinite(layer_usd) or layer_usd <= 0.0:
+        engine._refuse_expansion(
+            f"layer_add: unavailable-price (layer_usd={layer_usd!r}) — "
+            "never priced at zero USD"
+        )
+        return None
+    n_new = ir.n_layers + 2
+    if n_new > caps.max_copper_layers:
+        engine._refuse_expansion(
+            f"layer_add: {n_new} layers would exceed "
+            f"max_copper_layers={caps.max_copper_layers}"
+        )
+        return None
+    try:
+        capability_for(f"{n_new}layer")
+    except KeyError:
+        engine._refuse_expansion(
+            f"layer_add: illegal-stack — no fab capability row for a "
+            f"{n_new}-layer board"
+        )
+        return None
+    if engine.estimated_fab_usd() + 2.0 * layer_usd > caps.max_fab_usd:
+        engine._refuse_expansion(
+            f"layer_add: +${2.0 * layer_usd:.2f} would exceed "
+            f"max_fab_usd=${caps.max_fab_usd:.2f} "
+            f"(est=${engine.estimated_fab_usd():.2f})"
+        )
+        return None
+    insert_at = ir.n_layers // 2
+    # Name the pair by the inner-layer ordinals not already taken —
+    # collision is a refusal, never a duplicate (validate_stackup's own
+    # rule; on today's table only 2->4 can pass the capability check
+    # anyway, which always names In1/In2).
+    existing = {str(layer.get("name")) for layer in ir.stackup}
+    k = 1
+    while f"In{k}.Cu" in existing:
+        k += 1
+    names = (f"In{k}.Cu", f"In{k + 1}.Cu")
+    if names[1] in existing:
+        engine._refuse_expansion(
+            f"layer_add: no clean inner-layer name ({names[1]!r} taken)"
+        )
+        return None
+    entries = tuple({"name": name, "role": "signal"} for name in names)
+    return Move(MoveKind.LAYER_ADD, new_int=(insert_at,), layer_entries=entries)
+
+
 MOVE_GENERATORS: dict[MoveKind, MoveGeneratorFn] = {
     MoveKind.TRANSLATE: _gen_translate,
     MoveKind.ROTATE: _gen_rotate,
@@ -4126,6 +4925,8 @@ MOVE_GENERATORS: dict[MoveKind, MoveGeneratorFn] = {
     MoveKind.PLANE_PROMOTE: _gen_plane_promote,
     MoveKind.PLANE_DEMOTE: _gen_plane_demote,
     MoveKind.PIN_SWAP: _gen_pin_swap,
+    MoveKind.OUTLINE_GROW: _gen_outline_grow,
+    MoveKind.LAYER_ADD: _gen_layer_add,
 }
 
 
@@ -4315,10 +5116,561 @@ def _capped_list(items: Sequence[str]) -> str:
     return f"{shown},+{rest} more" if rest > 0 else shown
 
 
+# ── the outer loop: route -> penalise -> anneal -> route ─────────────────
+#
+# docs/backlog/pcb-anneal-closes-router-loop.md §3: routing evidence must
+# change the next anneal's objective; the LLM and Reto receive the final
+# constraint-conflict digest, not placement advice or retry instructions.
+# The router call is injected (`route`), so this module stays free of
+# realize/maze imports and the loop is testable against any route that
+# honours the `RouteOutcome` contract.
+
+
+#: The authored maximum number of route rounds the loop may ever run —
+#: a hard bound, clamped, not a hint (the backlog's "two rounds by
+#: default and an authored maximum of three").
+_LOOP_MAX_ROUNDS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class RouteLoopConfig:
+    """Budgets for :func:`anneal_route_loop`. ``rounds`` is the requested
+    route count (default two), hard-clamped to :data:`_LOOP_MAX_ROUNDS`
+    (the authored maximum of three) and to at least one. ``budget_s`` is
+    the wall-clock bound across the whole loop, checked before each route
+    and each anneal — a budget that expires ends the loop early with the
+    partial evidence reported, never an unbounded retry. Iteration
+    budget is the wrapped :class:`OptimizeConfig`'s ``iters``, per anneal
+    round."""
+
+    rounds: int = 2
+    seed: int = 0
+    budget_s: float = 600.0
+    #: The anneal's move mix inside the loop. ``None`` (the default)
+    #: builds the complete legal move set: the caller's own
+    #: ``OptimizeConfig.schedule`` plus OUTLINE_GROW/LAYER_ADD weight on
+    #: the late stages when caps are authored (without caps the priced
+    #: moves stay absent — a zero weight would still draw them).
+    schedule: tuple[ScheduleStage, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictWitness:
+    """One named piece of evidence behind a binding constraint — a net,
+    a pad terminal, a region cell, or a fixed instance."""
+
+    kind: str  # 'net' | 'terminal' | 'region' | 'fixed_instance' | 'demand_cell'
+    name: str
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class BindingConstraint:
+    """One constraint the loop ended bound against, with its finite
+    marginal cost where one exists. ``marginal_usd`` is the priced next
+    step on the stated ``basis`` (the fab-table rate it was computed
+    from); ``None`` means no price exists — an unavailable price is
+    reported as such, never as zero. ``effect_if_freed`` is ``'unknown'``
+    unless a bounded replay actually witnessed the outcome (no
+    counterfactual is inferred from the conflict's shape)."""
+
+    name: str
+    detail: str
+    marginal_usd: float | None
+    basis: str
+    effect_if_freed: str
+    witnesses: tuple[ConflictWitness, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictDigest:
+    """The loop's only LLM-facing result: what stayed unrouted, which
+    constraints bound, their marginal prices and units, and the routing
+    evidence behind them. No placement advice — internal rounds and
+    moves live on the :class:`RouteLoopResult`, not in this digest."""
+
+    complete: bool
+    rounds_run: int
+    unrouted_nets: tuple[str, ...]
+    expansion_status: str
+    constraints: tuple[BindingConstraint, ...]
+    estimated_fab_usd: float
+    budget_exhausted: bool
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RouteLoopRound:
+    """One route attempt's retained evidence: the honest counts, the
+    failures verbatim (causes preserved — unknown stays unknown), and
+    the anneal's own cost/move record for that round."""
+
+    round: int
+    routed: int
+    total: int
+    complete: bool
+    failures: tuple[RouteFailure, ...]
+    demand_cells: int
+    money: float
+    risk: float
+
+
+@dataclass(frozen=True, slots=True)
+class RouteLoopResult:
+    """The outer loop's outcome: per-round evidence, which round's state
+    the IR was restored to, and the :class:`ConflictDigest`."""
+
+    seed: int
+    rounds: tuple[RouteLoopRound, ...]
+    best_round: int
+    complete: bool
+    outcome: RouteOutcome
+    digest: ConflictDigest
+    moves: tuple[MoveRecord, ...]
+
+
+def _loop_schedule(cfg: OptimizeConfig) -> tuple[ScheduleStage, ...]:
+    """The complete legal move set for the loop: the caller's schedule
+    plus the two priced additions on the last stage — late, the same
+    place every expensive/combinatorial move lives, and only when
+    expansion is actually authored (a zero weight would still draw a
+    refused generator every pick)."""
+    if cfg.expansion is None:
+        return cfg.schedule
+    stages = list(cfg.schedule)
+    last = stages[-1]
+    stages[-1] = ScheduleStage(
+        last.through_fraction,
+        {**last.weights, MoveKind.OUTLINE_GROW: 0.05, MoveKind.LAYER_ADD: 0.05},
+    )
+    return tuple(stages)
+
+
+def _ir_state_snapshot(ir: PcbIR) -> dict[str, Any]:
+    """A restorable copy of every field a move can mutate — placement,
+    sketch topology, pin assignment, plane roles, outline, stackup and
+    the layer-span bitmasks. ``_segs_of_instance`` and the fixed data
+    (footprints, holes, groups) are construction-derived and untouched
+    by every move kind, so they are not copied."""
+    return {
+        "inst_x": ir.inst_x.copy(),
+        "inst_y": ir.inst_y.copy(),
+        "inst_rot": ir.inst_rot.copy(),
+        "seg_layer": ir.seg_layer.copy(),
+        "seg_side": ir.seg_side.copy(),
+        "seg_pin_a": ir.seg_pin_a.copy(),
+        "seg_pin_b": ir.seg_pin_b.copy(),
+        "pin_net": ir.pin_net.copy(),
+        "rotation_darts": list(ir.rotation_darts),
+        "net_plane_layers": ir.net_plane_layers.copy(),
+        "via_layer_span": ir.via_layer_span.copy(),
+        "outline": list(ir.outline) if ir.outline else None,
+        "stackup": [dict(layer) for layer in ir.stackup],
+    }
+
+
+def _ir_state_restore(ir: PcbIR, snap: dict[str, Any]) -> None:
+    """Restore a :func:`_ir_state_snapshot` in place and mark every
+    derived level dirty — the honest flag state for a wholesale restore
+    (finer-grained accounting is the engine's, and the engine is
+    rebuilt after a restore anyway)."""
+    for field_name, value in snap.items():
+        if field_name in ("outline", "stackup"):
+            continue
+        arr = getattr(ir, field_name)
+        arr[:] = value
+    ir.outline = list(snap["outline"]) if snap["outline"] else None
+    ir.stackup = [dict(layer) for layer in snap["stackup"]]
+    for mask in (ir.dirty_l1, ir.dirty_l2, ir.dirty_l3, ir.dirty_l4, ir.dirty_l5):
+        mask[:] = True
+
+
+def _binding_constraints(
+    engine: OptimizeEngine, outcome: RouteOutcome
+) -> tuple[BindingConstraint, ...]:
+    """The constraint conflicts for the digest: the recorded expansion
+    refusals (deduplicated, counted — the binding caps), the finite
+    marginal prices of the next expansion step on each axis, the failed
+    nets themselves (with preserved causes), the contested cells, and
+    the fixed instances sitting inside implicated regions. Unknown
+    prices are reported as unknown, never zero; clearance claims are
+    ``'unknown'`` unless a replay witnessed them (none is run — the
+    digest does not infer fixes)."""
+    out: list[BindingConstraint] = []
+    cfg = engine.config
+    caps = cfg.expansion
+    rate = cfg.cost.board_area_usd_per_mm2
+
+    def _p(v: float | None) -> str:
+        return (
+            f"{v:g}"
+            if isinstance(v, (int, float)) and math.isfinite(v)
+            else "unavailable"
+        )
+
+    basis = (
+        f"board_area_usd_per_mm2={_p(rate)}, layer_usd="
+        f"{_p(cfg.cost.layer_usd)} "
+        f"(process {engine._fab_caps.process}, estimated not quoted)"
+    )
+
+    if caps is None:
+        out.append(
+            BindingConstraint(
+                "expansion",
+                "priced outline/layer expansion disabled — no authored caps",
+                None,
+                "no fab price basis (caps absent)",
+                "unknown",
+            )
+        )
+    else:
+        price_missing = (
+            rate is None
+            or not math.isfinite(rate)
+            or rate <= 0.0
+            or cfg.cost.layer_usd is None
+            or not math.isfinite(cfg.cost.layer_usd)
+            or cfg.cost.layer_usd <= 0.0
+        )
+        if price_missing:
+            out.append(
+                BindingConstraint(
+                    "unavailable-price",
+                    "a fab price field is missing or non-positive — "
+                    "expansion refused rather than priced at zero USD",
+                    None,
+                    basis,
+                    "unknown",
+                )
+            )
+        else:
+            # The finite marginal cost of each next step on its basis.
+            if engine.ir.outline and len(engine.ir.outline) >= 3:
+                x0, y0, x1, y1 = outline_bbox(engine.ir.outline)
+                per_mm_usd = {
+                    0: (y1 - y0) * rate,
+                    1: (y1 - y0) * rate,
+                    2: (x1 - x0) * rate,
+                    3: (x1 - x0) * rate,
+                }
+                w_mm, h_mm = x1 - x0, y1 - y0
+                grown_out = (
+                    w_mm >= caps.outline_max_mm[0] and h_mm >= caps.outline_max_mm[1]
+                )
+                cheapest = min(per_mm_usd.values())
+                out.append(
+                    BindingConstraint(
+                        "outline_cap" if grown_out else "outline",
+                        (
+                            f"outline {w_mm:.1f}x{h_mm:.1f}mm vs cap "
+                            f"{caps.outline_max_mm[0]:.1f}x"
+                            f"{caps.outline_max_mm[1]:.1f}mm"
+                            + (" — at cap" if grown_out else "")
+                        ),
+                        cheapest,
+                        basis,
+                        "unknown",
+                    )
+                )
+            n_new = engine.ir.n_layers + 2
+            layer_blocked = n_new > caps.max_copper_layers
+            stack_blocked = False
+            try:
+                capability_for(f"{n_new}layer")
+            except KeyError:
+                stack_blocked = True
+            out.append(
+                BindingConstraint(
+                    "layer_cap" if layer_blocked else "layer_pair",
+                    (
+                        f"{engine.ir.n_layers} layers; +2 -> {n_new}"
+                        + (" — over max_copper_layers" if layer_blocked else "")
+                        + (" — no fab capability row" if stack_blocked else "")
+                    ),
+                    # The finite marginal cost of the step on its basis —
+                    # legality is the detail's job, not the price's.
+                    2.0 * float(cfg.cost.layer_usd),
+                    basis,
+                    "unknown",
+                )
+            )
+        if engine._expansion_refusals:
+            counts: dict[str, int] = {}
+            for reason in engine._expansion_refusals:
+                counts[reason] = counts.get(reason, 0) + 1
+            for reason, count in sorted(counts.items()):
+                out.append(
+                    BindingConstraint(
+                        "refused_expansion",
+                        f"{count}x {reason}",
+                        None,
+                        basis,
+                        "unknown",
+                    )
+                )
+
+    # The failures themselves, deduplicated per (net, cause) — a net with
+    # several failed segments is one conflict with several witnesses —
+    # with preserved causes and their net/pad/region witnesses.
+    by_failure: dict[tuple[str, str], list[RouteFailure]] = {}
+    for f in outcome.failures:
+        by_failure.setdefault((f.net, f.cause), []).append(f)
+    for (net, cause), fs in sorted(by_failure.items()):
+        witnesses: list[ConflictWitness] = [
+            ConflictWitness("net", net, fs[0].detail or cause)
+        ]
+        for f in fs[:4]:
+            witnesses.extend(
+                ConflictWitness(
+                    "terminal",
+                    str(engine.ir.instance_refdes[i]),
+                    "escape" if f.escape else "endpoint",
+                )
+                for i in f.instances
+            )
+            witnesses.extend(
+                ConflictWitness("region", f"R{ix}C{iy}", "")
+                for ix, iy in sorted({engine._cell_of_xy(x, y) for x, y in f.points})
+            )
+        out.append(
+            BindingConstraint(
+                f"failed_net:{cause}",
+                f"{net} unrouted ({cause})"
+                + (f" — {len(fs)} segment(s)" if len(fs) > 1 else ""),
+                None,
+                "router verdict, not a price",
+                "unknown",
+                tuple(witnesses),
+            )
+        )
+    # Present congestion, deduplicated per region cell (the worst usage
+    # in each cell is the number that matters).
+    demand_by_region: dict[tuple[int, int], DemandCell] = {}
+    for d in outcome.demand:
+        cell = engine._cell_of_xy(d.x_mm, d.y_mm)
+        prev = demand_by_region.get(cell)
+        if prev is None or d.usage > prev.usage:
+            demand_by_region[cell] = d
+    for (ix, iy), d in sorted(
+        demand_by_region.items(), key=lambda kv: kv[1].usage, reverse=True
+    )[:8]:
+        out.append(
+            BindingConstraint(
+                "demand_cell",
+                (
+                    f"cell R{ix}C{iy} usage={d.usage}"
+                    + (f"/{d.capacity}cap" if d.capacity else "")
+                    + (f" layer={d.layer}" if d.layer is not None else "")
+                    + (f" pitch={d.pitch_mm:g}mm" if d.pitch_mm else "")
+                    + f" src={d.source}"
+                ),
+                None,
+                "routing-demand units (not USD)",
+                "unknown",
+                (
+                    ConflictWitness(
+                        "demand_cell",
+                        f"R{ix}C{iy}",
+                        f"usage={d.usage} src={d.source}",
+                    ),
+                ),
+            )
+        )
+    # Fixed parts inside implicated regions — a named 'fixed' constraint.
+    implicated_regions: set[str] = set()
+    for f in outcome.failures:
+        for x, y in f.points:
+            ix, iy = engine._cell_of_xy(x, y)
+            implicated_regions.add(f"R{ix}C{iy}")
+    for region in sorted(implicated_regions):
+        for refdes in engine._locked_refdes_in_region(region):
+            out.append(
+                BindingConstraint(
+                    "fixed_instance",
+                    f"{refdes} is fixed inside implicated region {region}",
+                    None,
+                    "authored lock",
+                    "unknown",
+                    (ConflictWitness("fixed_instance", refdes, region),),
+                )
+            )
+    return tuple(out)
+
+
+def anneal_route_loop(
+    ir: PcbIR,
+    config: OptimizeConfig,
+    route: Callable[[PcbIR], RouteOutcome],
+    *,
+    loop: RouteLoopConfig | None = None,
+) -> RouteLoopResult:
+    """route -> penalise -> anneal -> route, budgeted.
+
+    ``route`` is one honest route attempt: it reads the CURRENT IR
+    (placement, layer assignments, outline, stackup) and returns a
+    :class:`RouteOutcome`. Between routes the last outcome is folded
+    into the margin cache (:meth:`OptimizeEngine.apply_route_feedback`)
+    and the full legal move set anneals again — including the two priced
+    expansion moves when ``config.expansion`` is authored.
+
+    Two rounds by default, hard-clamped to :data:`_LOOP_MAX_ROUNDS`
+    (the authored maximum of three) and to :attr:`RouteLoopConfig.
+    budget_s` of wall clock. The board the caller gets back is the
+    BEST round's state — fewest failures, then lowest cost — restored
+    wholesale (:func:`_ir_state_restore`), never the last round by
+    accident. An incomplete legal route is not success: the loop ends
+    early only on ``outcome.complete``, and whatever it ends on is what
+    the :class:`ConflictDigest` reports — constraints, witnesses,
+    marginal prices — not placement advice.
+    """
+    loop = loop or RouteLoopConfig()
+    n_rounds = max(1, min(loop.rounds, _LOOP_MAX_ROUNDS))
+    config = config or OptimizeConfig()
+    config = replace(config, schedule=loop.schedule or _loop_schedule(config))
+    # The loop-level seed wins when set — the caller's OptimizeConfig
+    # seed is the fallback, so `RouteLoopResult.seed` always reports the
+    # seed actually used.
+    seed = loop.seed if loop.seed else config.seed
+    rng = random.Random(seed)
+    started = time.monotonic()
+    deadline = started + loop.budget_s
+
+    # The incoming board may be unplaced (unit-test / bare-IR callers):
+    # seed only the unplaced, then snap edge-mated parts — the same two
+    # steps `optimize()` performs, so the loop's round-0 route measures a
+    # legal seeded board, never a raw netlist.
+    seed_placement(
+        ir,
+        rng,
+        max_cluster_size=config.max_cluster_size,
+        pitch_mm=config.seed_pitch_mm,
+        force=False,
+    )
+    snap_to_edges(ir)
+    engine = OptimizeEngine(ir, config)
+    engine.legalize_start()
+
+    rounds: list[RouteLoopRound] = []
+    outcomes: list[RouteOutcome] = []
+    states: list[dict[str, Any]] = []
+    # Per-round engine expansion state — `_ir_state_snapshot` covers the
+    # IR, but the ENGINE's priced-expansion bookkeeping (`_money_layer_add`,
+    # the recorded refusals) is engine state, and a best-round restore
+    # rebuilds the engine: it must be carried with the snapshot or the
+    # digest understates fab USD and loses the refusal history. The
+    # matching `_fab_caps` is re-derived on restore from the restored
+    # stackup's own process row.
+    exp_states: list[tuple[float, tuple[str, ...]]] = []
+    all_moves: list[MoveRecord] = []
+    budget_exhausted = False
+
+    for r in range(n_rounds):
+        if r and time.monotonic() > deadline:
+            budget_exhausted = True
+            break
+        outcome = route(ir)
+        outcomes.append(outcome)
+        states.append(_ir_state_snapshot(ir))
+        exp_states.append((engine._money_layer_add, tuple(engine._expansion_refusals)))
+        rounds.append(
+            RouteLoopRound(
+                round=r,
+                routed=outcome.routed,
+                total=outcome.total,
+                complete=outcome.complete,
+                failures=outcome.failures,
+                demand_cells=len(outcome.demand),
+                money=engine.money(),
+                risk=engine.risk(),
+            )
+        )
+        if outcome.complete or r + 1 >= n_rounds:
+            break
+        engine.apply_route_feedback(outcome)
+        engine.anneal(rng)
+        all_moves.extend(engine.moves)
+
+    # Best round: fewest failures, then most routed, then lowest cost.
+    def _rank(i: int) -> tuple[float, float, float]:
+        o = outcomes[i]
+        return (len(o.failures), -(o.routed), rounds[i].money + rounds[i].risk)
+
+    best = min(range(len(rounds)), key=_rank)
+    if best != len(rounds) - 1:
+        _ir_state_restore(ir, states[best])
+        engine = OptimizeEngine(ir, config)
+        # Carry the priced-expansion bookkeeping across the rebuild —
+        # see `exp_states` above: the pair's fab USD and the recorded
+        # refusals are evidence the digest must not lose on a restore.
+        engine._money_layer_add, refusals = exp_states[best]
+        engine._expansion_refusals = list(refusals)
+        try:
+            engine._fab_caps = capability_for(f"{ir.n_layers}layer")
+        except KeyError:
+            pass
+        engine.apply_route_feedback(outcomes[best])
+        engine.moves = all_moves
+    else:
+        engine.moves = all_moves
+
+    best_outcome = outcomes[best]
+    digest = ConflictDigest(
+        complete=best_outcome.complete,
+        rounds_run=len(rounds),
+        unrouted_nets=tuple(sorted({f.net for f in best_outcome.failures})),
+        expansion_status=engine.expansion_status(),
+        constraints=_binding_constraints(engine, best_outcome),
+        estimated_fab_usd=engine.estimated_fab_usd(),
+        budget_exhausted=budget_exhausted,
+        notes=tuple(n for n in (best_outcome.note,) if n),
+    )
+    return RouteLoopResult(
+        seed=seed,
+        rounds=tuple(rounds),
+        best_round=best,
+        complete=best_outcome.complete,
+        outcome=best_outcome,
+        digest=digest,
+        moves=tuple(all_moves),
+    )
+
+
+def conflict_digest_text(result: RouteLoopResult) -> str:
+    """The digest rendered for the LLM/Reto — constraints and witnesses,
+    never move instructions."""
+    d = result.digest
+    lines = [
+        f"route-loop: {'complete' if d.complete else 'incomplete'} after "
+        f"{d.rounds_run} round(s), best={result.best_round}, "
+        f"est_fab=${d.estimated_fab_usd:.2f}, expansion={d.expansion_status}"
+        + (", budget exhausted" if d.budget_exhausted else ""),
+    ]
+    if d.unrouted_nets:
+        lines.append("unrouted nets: " + ", ".join(d.unrouted_nets))
+    for c in d.constraints:
+        price = (
+            "price-unavailable"
+            if c.marginal_usd is None
+            else f"~${c.marginal_usd:.3f} next step"
+        )
+        lines.append(f"  [{c.name}] {c.detail} ({price}; {c.basis})")
+        for w in c.witnesses:
+            lines.append(f"      - {w.kind}:{w.name} {w.detail}".rstrip())
+    for note in d.notes:
+        lines.append(f"  note: {note}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "DEFAULT_SCHEDULE",
     "MOVE_GENERATORS",
+    "BindingConstraint",
+    "ConflictDigest",
+    "ConflictWitness",
+    "DemandCell",
     "Digest",
+    "ExpansionCaps",
     "Move",
     "MoveKind",
     "MoveRecord",
@@ -4327,8 +5679,15 @@ __all__ = [
     "OptimizeResult",
     "PinSwapGroup",
     "RegionEntry",
+    "RouteFailure",
+    "RouteLoopConfig",
+    "RouteLoopResult",
+    "RouteLoopRound",
+    "RouteOutcome",
     "ScheduleStage",
     "TermSummary",
+    "anneal_route_loop",
+    "conflict_digest_text",
     "digest_toon",
     "mounting_hole_keepout_polygon",
     "optimize",

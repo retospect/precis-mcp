@@ -3448,18 +3448,20 @@ def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
 
     cheap_grid = build_grid()
     cheap_grid.set_body_mask(mask)
-    _tracks, cheap_vias, cheap_unrouted, _island_notes = pcb_realize._route_pass(
-        ir,
-        [0],
-        [],
-        cheap_grid,
-        RealizeConfig(via_body_cost_mm=0.0),
-        rules_by_net,
-        pads,
-        clearance,
-        signal_layers,
-        spec,
-        pad_geoms,
+    _tracks, cheap_vias, cheap_unrouted, _island_notes, _failed_pins = (
+        pcb_realize._route_pass(
+            ir,
+            [0],
+            [],
+            cheap_grid,
+            RealizeConfig(via_body_cost_mm=0.0),
+            rules_by_net,
+            pads,
+            clearance,
+            signal_layers,
+            spec,
+            pad_geoms,
+        )
     )
     assert not cheap_unrouted
     assert cheap_vias
@@ -3469,18 +3471,20 @@ def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
 
     priced_grid = build_grid()
     priced_grid.set_body_mask(mask)
-    _tracks, priced_vias, priced_unrouted, _island_notes = pcb_realize._route_pass(
-        ir,
-        [0],
-        [],
-        priced_grid,
-        RealizeConfig(via_body_cost_mm=5.0),
-        rules_by_net,
-        pads,
-        clearance,
-        signal_layers,
-        spec,
-        pad_geoms,
+    _tracks, priced_vias, priced_unrouted, _island_notes, _failed_pins = (
+        pcb_realize._route_pass(
+            ir,
+            [0],
+            [],
+            priced_grid,
+            RealizeConfig(via_body_cost_mm=5.0),
+            rules_by_net,
+            pads,
+            clearance,
+            signal_layers,
+            spec,
+            pad_geoms,
+        )
     )
     assert not priced_unrouted
     assert priced_vias

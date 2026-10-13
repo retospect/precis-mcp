@@ -169,14 +169,14 @@ instruction to relax rules or reopen unrelated routing implementation.
 
 ## Router failure feedback — Reto correction, 2026-10-06 21:58Z
 
-The anneal, not an LLM, corrects placement after routing failure. Follow
-[PCB anneal closes the router loop](pcb-anneal-closes-router-loop.md): priced
+The anneal, not an LLM, corrects placement after routing failure. This was
+built as `anneal_route_loop` in `src/precis/pcb/optimize.py` (priced
 outline/layer moves within authored caps, bounded router-evidence feedback,
-and an end-of-loop constraint-conflict digest with shadow prices. This
-supersedes the brief's LLM placement-advice step. Router defects still go
-to gripes with evidence, but the user-facing output is the conflict digest,
-not instructions for an LLM to move parts. The new item is filed ready;
-implementation is queued separately, not started by this link.
+and an end-of-loop constraint-conflict digest with marginal prices — the
+spec file `pcb-anneal-closes-router-loop.md` keeps the open evidence items).
+This supersedes the brief's LLM placement-advice step. Router defects still
+go to gripes with evidence, but the user-facing output is the conflict
+digest, not instructions for an LLM to move parts.
 
 
 ## Readiness handoff — approved docs fold, 2026-10-07

@@ -1,5 +1,5 @@
 ---
-status: ready
+status: in-progress
 title: PCB anneal closes the router loop
 pillar: 3d-design
 prio: high
@@ -7,6 +7,50 @@ model: opus
 ---
 
 # PCB anneal closes the router loop
+
+## Status — core loop shipped, evidence gaps remain (2026-10-13, bl-pcb-anneal)
+
+**Shipped** (commit `8d6f56c59`, committed not landed, reviewed and
+fixed): `MoveKind.OUTLINE_GROW`/`LAYER_ADD` priced from the fab table
+under authored `ExpansionCaps` (missing caps disable; a missing fab
+price is an explicit unavailable-price refusal, never zero USD);
+`OptimizeEngine.apply_route_feedback` folding failed-net, failed-escape
+and PathFinder present-congestion evidence into `route_failure`/
+`route_escape`/`route_demand` margin terms with region provenance and
+exposed normalisation; `anneal_route_loop` running the budgeted
+route → penalise → anneal → route loop (default 2 rounds, hard max 3)
+ending in a `ConflictDigest` of binding constraints, witnesses and
+marginal prices — no placement advice. `RealizeResult.congestion_cells`
+exposes the negotiation's final usage map; `feedback.py`'s
+`outcome_from_realize` adapts a route result to the loop's contract;
+`UnroutedReason.pins` names the actual failing terminal pin on
+plane-drop escapes. Measured on the Nano fixture at seed 1 (slow test
+`tests/test_pcb_route_loop.py`, ~221 s): round 0 reproduces the pinned
+38/64 baseline; the loop prices outline growth to 113.4×84.6 mm inside a
+120×100 cap and reaches **43/64 routed**. The remaining 21 unrouted
+nets (mostly `width`-diagnosed GND/VBUS/V5 spans) are named in the
+digest with terminal/region witnesses and a fixed-instance witness
+(J_USB). Pipeline baseline unchanged — the loop is opt-in.
+
+**Still open:**
+
+1. **Surface wiring** — an op/job that runs the loop and returns the
+   digest to the LLM (the loop callable today is test-local; the
+   review's `_KNOWN_UNWIRED` carve-out covers this, filed here).
+2. **The power nets routed cleanly, recorded.** The 38→43/64 Nano run
+   improved routing but did not route the congested power nets cleanly:
+   acceptance wants a run where the congested power nets come out
+   routed, with before/after outline dimensions and layer counts,
+   routed/failed/dangling counts, and the fab-USD cost delta of the
+   accepted expansion recorded explicitly.
+3. **The capped-conflict case on the Nano fixture.** A run where caps
+   forbid both expansions and the digest names the binding
+   outline/layer/USD/fixed constraints — the unit controls exist, the
+   Nano-level fixture run does not.
+4. **Determinism.** The synthetic-graph determinism test ships with the
+   loop (same seed twice gives identical `RouteLoopResult`); the seeded
+   Nano pipeline repeat (identical state and results on a second full
+   run) is not yet measured.
 
 ## Motivation / why
 

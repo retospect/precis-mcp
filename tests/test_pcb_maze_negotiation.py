@@ -258,11 +258,13 @@ def test_a_converged_proposal_commits_verbatim_every_segment(monkeypatch):
         return out
 
     def negotiate(*a, **k):
-        proposal, conflicted, report = real_negotiate(*a, **k)
+        # _negotiate also returns the final congestion cells since the
+        # anneal router loop landed; pass them through untouched.
+        proposal, conflicted, report, cells = real_negotiate(*a, **k)
         seen["proposal"] = proposal
         seen["conflicted"] = conflicted
         seen["report"] = report
-        return proposal, conflicted, report
+        return proposal, conflicted, report, cells
 
     monkeypatch.setattr(realize_mod, "_route_pass", route_pass)
     monkeypatch.setattr(realize_mod, "_negotiate", negotiate)

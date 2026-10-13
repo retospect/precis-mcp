@@ -551,6 +551,28 @@ _NOT_MOVE_REACHABLE: dict[str, str] = {
         "radius, so no generated move can place a part's copper off the "
         "board. Still scores externally-authored poses."
     ),
+    # The three route-feedback terms exist only so the engine's margin
+    # cache/digest have a registered weight + justification for evidence
+    # the ROUTER produces: their ``estimate`` is the empty list by
+    # design (a cost evaluator cannot see a route that has not run),
+    # and the values are injected per move by
+    # ``OptimizeEngine.apply_route_feedback`` — covered by
+    # tests/test_pcb_route_loop.py, dead only here.
+    "route_failure": (
+        "Router-injected, not estimable — applied by "
+        "OptimizeEngine.apply_route_feedback, exercised in "
+        "test_pcb_route_loop.py."
+    ),
+    "route_escape": (
+        "Router-injected, not estimable — applied by "
+        "OptimizeEngine.apply_route_feedback, exercised in "
+        "test_pcb_route_loop.py."
+    ),
+    "route_demand": (
+        "Router-injected, not estimable — applied by "
+        "OptimizeEngine.apply_route_feedback, exercised in "
+        "test_pcb_route_loop.py."
+    ),
 }
 
 

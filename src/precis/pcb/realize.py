@@ -799,6 +799,31 @@ class CongestionWarning:
 
 
 @dataclass(frozen=True, slots=True)
+class CongestionCell:
+    """One over-subscribed occupancy-grid cell from a negotiated-
+    congestion run's FINAL usage map — PathFinder's present congestion at
+    end of loop, converted to board mm through the grid spec it was
+    measured on (``x``/``y`` = the cell centre, ``layer`` the stackup
+    index, ``pitch_mm`` the grid it was counted on, ``usage`` how many
+    nets' claims cover the cell). The anneal's route-feedback path reads
+    these as its ``route_demand`` evidence (optimize.py); empty whenever
+    negotiation never ran."""
+
+    x_mm: float
+    y_mm: float
+    layer: int
+    usage: int
+    pitch_mm: float
+
+
+#: Bound on :attr:`RealizeResult.congestion_cells` — a negotiated board
+#: can contest thousands of cells; the evidence needs the WORST, not a
+#: second occupancy grid attached to every result. Sorted by usage
+#: descending before the cut so what survives is the signal.
+_MAX_CONGESTION_CELLS = 512
+
+
+@dataclass(frozen=True, slots=True)
 class RealizeResult:
     tracks: tuple[RealizedTrack, ...]
     vias: tuple[RealizedVia, ...]
@@ -881,6 +906,12 @@ class RealizeResult:
     #: silently narrows such a class, and only a class left with NOTHING
     #: fails as ``'layer_lock'``. Empty for ``router='tangent'``.
     class_layer_drops: tuple[str, ...] = ()
+    #: PathFinder's final present-congestion per cell (:class:`CongestionCell`),
+    #: from the LAST negotiation iteration's usage map — the
+    #: over-subscribed cells the loop ended on, win or lose, grid-to-mm
+    #: provenance included. Empty whenever ``negotiate_iterations`` was 0
+    #: or no net was left unrouted for the loop to contest.
+    congestion_cells: tuple[CongestionCell, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -940,6 +971,16 @@ class UnroutedReason:
     net_id: int
     kind: str
     message: str
+    #: The actual terminal pin ids the router implicated — populated only
+    #: where the router KNOWS which terminal failed (today:
+    #: ``'plane_drop_blocked'``, the pins :func:`_plane_fanout` could not
+    #: give a legal drop-via site). Empty for every span-level kind
+    #: (``'congestion'``/``'width'``/``'no_path'``/``'search_budget'``/
+    #: ``'layer_lock'``/``'unpourable_plane'``): the diagnosis does not
+    #: name an end, and a caller must not invent one — the route-
+    #: feedback path treats non-empty ``pins`` as the ONLY escape-class
+    #: evidence (feedback.py).
+    pins: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1415,6 +1456,7 @@ def _realize_maze(
     list[UnstitchedNet],
     dict[int, str],
     NegotiationReport | None,
+    tuple[CongestionCell, ...],
 ]:
     """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
     maze` for why this cannot emit overlapping copper, and what it gives
@@ -1507,13 +1549,13 @@ def _realize_maze(
             )
             pads.append((point, net, shape, layers))
     if not pads:
-        return [], [], list(ids), [], [], [], {}, None
+        return [], [], list(ids), [], [], [], {}, None, ()
 
     rules_by_net = {
         n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
     }
     if not rules_by_net:
-        return [], [], list(ids), [], [], [], {}, None
+        return [], [], list(ids), [], [], [], {}, None, ()
     # Rulings 2026-09-19 item 7 — per-net layer lock, resolved ONCE
     # (net-class-derived, not attempt-derived, same "built once outside
     # the retry loop" reasoning as `rules_by_net` itself). A net absent
@@ -1621,7 +1663,13 @@ def _realize_maze(
             _sibling_pad_terminals_by_pin(ir, footprints, signal_layers),
         ),
     )
-    Outcome = tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]
+    Outcome = tuple[
+        list[RealizedTrack],
+        list[RealizedVia],
+        list[int],
+        dict[int, str],
+        list[int],
+    ]
     best: Outcome | None = None
     best_score = (0, 0)
     accepted_counts: list[int] = []
@@ -1670,13 +1718,14 @@ def _realize_maze(
 
     attempts(order, None)
     negotiation: NegotiationReport | None = None
+    congestion: tuple[CongestionCell, ...] = ()
     if best_score[0] and config.negotiate_iterations > 0:
         # The re-ordering passes left nets unrouted: negotiate (see
         # `_negotiate`), then commit the proposal onto a hard grid the same
         # way, conflict-free nets first. Kept only if it scores better, so
         # it can cost time but never realized nets.
         hard_best = best
-        proposal, conflicted, report = _negotiate(
+        proposal, conflicted, report, congestion = _negotiate(
             ir,
             order,
             plane_ids,
@@ -1705,7 +1754,7 @@ def _realize_maze(
             won=best is not hard_best,
         )
     assert best is not None  # the loop runs at least once
-    tracks, vias, unrouted, island_terminal_notes = best
+    tracks, vias, unrouted, island_terminal_notes, plane_failed_pins = best
     # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
     # which is a TRACK-CENTERLINE figure (edge rule + half the widest
     # track) that over-insets a polygon rim by `widest/2` and left parts
@@ -1794,6 +1843,7 @@ def _realize_maze(
         npth_clearance_mm=_npth_clearance_mm(config),
         net_layer_lock_fail=net_layer_lock_fail,
         routed_copper=(tracks, vias),
+        plane_failed_pins=plane_failed_pins,
     )
     return (
         tracks,
@@ -1804,6 +1854,7 @@ def _realize_maze(
         unstitched,
         island_terminal_notes,
         negotiation,
+        congestion,
     )
 
 
@@ -1823,11 +1874,20 @@ def _diagnose_all(
     npth_clearance_mm: float = 0.0,
     net_layer_lock_fail: dict[int, str] | None = None,
     routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
+    plane_failed_pins: list[int] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
     extra_unrouted`` — split out of :func:`_realize_maze` purely to keep
     that function's already-long body from growing further, not because
     anything here is reused elsewhere.
+
+    ``plane_failed_pins`` is the actual per-PIN list of terminals
+    :func:`_plane_fanout` could not give a legal drop — grouped per net
+    and stamped on the matching ``'plane_drop_blocked'`` reasons as
+    ``UnroutedReason.pins``, so the actual terminal that could not
+    escape survives into evidence rather than being flattened into the
+    segment-level ``unrouted`` list (which is only the counting unit,
+    per ``_claim_static``'s own note).
 
     ``net_layer_lock_fail`` (Rulings 2026-09-19 item 7) is checked FIRST,
     before even the plane-drop branch below: a net whose class named a
@@ -1837,6 +1897,9 @@ def _diagnose_all(
     plane-drop branch already documents for ITS own never-searched
     segments."""
     reasons: list[UnroutedReason] = []
+    pins_by_net: dict[int, list[int]] = {}
+    for pid in plane_failed_pins or ():
+        pins_by_net.setdefault(int(ir.pin_net[pid]), []).append(pid)
     probe: maze.OccupancyGrid | None = None
     for seg_id in unrouted:
         net_id = int(ir.seg_net[seg_id])
@@ -1863,6 +1926,7 @@ def _diagnose_all(
                     "this plane-promoted net had at least one pin with no "
                     "legal drop-via site within its search radius (blocked by "
                     "other copper) -- not a point-to-point route failure",
+                    pins=tuple(pins_by_net.get(net_id, ())),
                 )
             )
             continue
@@ -2509,11 +2573,12 @@ def _claim_static(
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None,
     fixed_copper: list[dict[str, Any]] | None,
-) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
+) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], list[int]]:
     """Everything a routing attempt claims before its first search: fixed
     copper, fiducial and mounting-hole keep-outs, pads, and the plane
-    fan-out stubs. Returns the fan-out's copper and the plane segments it
-    could not serve."""
+    fan-out stubs. Returns the fan-out's copper, the plane segments it
+    could not serve, and the PIN ids it could not give a legal drop —
+    the actual failing terminals, for ``UnroutedReason.pins``."""
     _claim_fixed_copper(grid, ir, fixed_copper)
     _claim_fiducial_keepouts(grid, ir)
     _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
@@ -2527,11 +2592,14 @@ def _claim_static(
     unrouted: list[int] = []
     # A pin with no legal drop leaves its net's segments unserved. Report
     # the segments, because that is the unit `unrouted` is counted in and
-    # the unit a reader can act on.
+    # the unit a reader can act on. The pin ids THEMSELVES are returned
+    # too — the actual terminal that could not escape is evidence the
+    # unrouted-reason diagnosis (`UnroutedReason.pins`) must not flatten
+    # into "some endpoint".
     if plane_failed:
         stranded = {int(ir.pin_net[p]) for p in plane_failed}
         unrouted += [s for s in plane_ids if int(ir.seg_net[s]) in stranded]
-    return list(plane_tracks), list(plane_vias), unrouted
+    return list(plane_tracks), list(plane_vias), unrouted, list(plane_failed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2813,7 +2881,9 @@ def _negotiate(
     fixed_copper: list[dict[str, Any]] | None,
     island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
     net_layers: dict[int, list[int]] | None,
-) -> tuple[dict[int, _Proposal], set[int], NegotiationReport]:
+) -> tuple[
+    dict[int, _Proposal], set[int], NegotiationReport, tuple[CongestionCell, ...]
+]:
     """Negotiated congestion over the routed nets (:class:`maze.
     Negotiation`): a proposal per segment, the nets still in conflict
     when the iterations or ``config.negotiate_budget_s`` ran out, and a
@@ -2943,7 +3013,23 @@ def _negotiate(
         out_of_time=out_of_time,
         elapsed_s=time.monotonic() - started,
     )
-    return paths, conflicted, report
+    # PathFinder's final present congestion, for the caller's evidence:
+    # every cell more than one net's claims still cover at end of loop,
+    # grid indices converted to board mm through this grid's own spec.
+    # Bounded by _MAX_CONGESTION_CELLS, worst usage first.
+    contested = np.argwhere(neg.usage > 1)
+    cells = [
+        CongestionCell(
+            float(spec.to_point(int(ix), int(iy))[0]),
+            float(spec.to_point(int(ix), int(iy))[1]),
+            int(layer),
+            int(neg.usage[layer, iy, ix]),
+            float(spec.pitch),
+        )
+        for layer, iy, ix in contested
+    ]
+    cells.sort(key=lambda c: c.usage, reverse=True)
+    return paths, conflicted, report, tuple(cells[:_MAX_CONGESTION_CELLS])
 
 
 def _route_pass(
@@ -2964,7 +3050,13 @@ def _route_pass(
     net_layers: dict[int, list[int]] | None = None,
     preferred: dict[int, _Proposal] | None = None,
     accepted: list[int] | None = None,
-) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]:
+) -> tuple[
+    list[RealizedTrack],
+    list[RealizedVia],
+    list[int],
+    dict[int, str],
+    list[int],
+]:
     """One complete routing attempt onto a fresh ``grid``, in ``order``.
 
     ``ink_field`` (:func:`_courtyard_ink_field`, built ONCE in
@@ -3007,7 +3099,7 @@ def _route_pass(
     then committed verbatim — snapped as negotiated, not straightened.
     Anything else searches as usual. ``accepted`` collects the segments
     committed that way."""
-    tracks, vias, unrouted = _claim_static(
+    tracks, vias, unrouted, failed_pins = _claim_static(
         ir,
         plane_ids,
         grid,
@@ -3131,7 +3223,7 @@ def _route_pass(
                 fillet_radius_mm=config.fillet_radius_tracks * rules.track_width_mm,
             )
         )
-    return tracks, vias, unrouted, island_notes
+    return tracks, vias, unrouted, island_notes, failed_pins
 
 
 def _pad_blockers(
@@ -6059,6 +6151,7 @@ def realize(
             unstitched,
             island_notes,
             negotiation,
+            congestion,
         ) = _realize_maze(ir, route_ids, config, footprints, fixed_copper)
         warnings = _gap_usage(ir, route_ids, config)
         return RealizeResult(
@@ -6073,6 +6166,7 @@ def realize(
             island_notes,
             negotiation=negotiation,
             class_layer_drops=tuple(class_layer_drops(ir.stackup, config.class_rules)),
+            congestion_cells=congestion,
         )
     if config.router != "tangent":
         raise ValueError(
