@@ -69,6 +69,14 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## Horizon
 
+- **backlog/pcb-datasheet-review.md** — `draft/high`, filed 2026-10-13 from
+  the taz15-blank dogfood: shared part facts, design intent in graph
+  memory, re-derivable verdicts, review job, shortlist selection with
+  lifecycle, design from facts, human review. Absorbed
+  `pcb-design-source-provenance.md`, the ratings-validation part of
+  Do-next 2 and the checklist lifecycle TTL. Slice 1 (epro import keeps
+  part identity) has no dependencies and could jump the queue; slice 5
+  waits on `datasheet-facts-mesh.md`.
 - **gr458878 — pin-level datasheet provenance + the two-source pin-name
   cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
   `link(rel='datasheet-of')` already bind a datasheet to a PART; what is
@@ -104,7 +112,6 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## No action needed — ranked in pcb-easyeda-round-trip
 
-- **backlog/pcb-design-source-provenance.md** — that thread's Horizon 8.
 - **backlog/pcb-flexboard.md** — that thread's Horizon 9.
 - **backlog/pcb-engine-plan.md** §5 — that thread's Horizon 7 (2-layer and
   n-layer stackups specifically; the rest of the file is unclaimed and

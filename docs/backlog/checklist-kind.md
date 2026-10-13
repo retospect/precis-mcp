@@ -38,9 +38,10 @@ What is left, each independently shippable:
   (phase-by-phase, which views to run when). `precis-checklist-help`
   carries a one-pass summary today; split it out only if that section
   outgrows its place.
-- **Per-item TTL** — `bom-availability-lifecycle` is marked TTL in its
-  body only; a `ttl` column + "stale (expired)" status would enforce it
-  (precedent: `refs.retraction_checked_at`).
+- **Per-item TTL** — moved to `pcb-datasheet-review.md` (slice 8:
+  lifecycle and stock staleness on a recorded selection, which is what
+  `bom-availability-lifecycle` reads; precedent for the expiry:
+  `refs.retraction_checked_at`).
 - **Doctor wiring** for `checklist_sync.check_drift` (function + test
   landed; no doctor check calls it yet).
 - **A clean DRC run is invisible** — `pcb_write_drc_findings` with zero

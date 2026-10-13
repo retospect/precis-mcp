@@ -239,9 +239,11 @@ export/fab if this file outgrows itself.
     them and their net loses those connections every time. Waits on
     nothing; overlaps the inert `ftype='testpoint'`, which the item says
     to resolve rather than duplicate.
-11. **backlog/pcb-design-source-provenance.md** — waits on the annotation
-    step; datasheet-chunk citations behind each pin/net spec the re-route
-    trusts.
+11. **backlog/pcb-datasheet-review.md** — provenance folded in there
+    (in-scope 12); its slice 1 (epro import keeps manufacturer part, LCSC
+    number, values, pin types) touches this thread's importer — sequence,
+    do not merge. Datasheet-chunk citations behind each pin/net spec the
+    re-route trusts.
 12. **backlog/pcb-flexboard.md** — waits on 6; the flex half of "all of them".
 13. **backlog/pcb-guided-place-route.md** slice 9 (JLCPCB ordering) — the
     workflow's endpoint; gated on a human granting Components/PCB scope in

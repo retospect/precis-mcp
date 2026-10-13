@@ -54,7 +54,7 @@ wrong reason and would have to be undone before any work could start.
   convenience cannot quietly become a default.
 - Report what a freeze means where it is set: a frozen part communicates an
   assembly constraint (Reto's tall-part-in-the-corner), which is exactly
-  the kind of fact `pcb-design-source-provenance.md` wants attributable.
+  the kind of fact `pcb-datasheet-review.md` (in-scope 12, provenance) wants attributable.
 
 ## Explicitly NOT in scope
 

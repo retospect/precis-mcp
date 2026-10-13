@@ -185,7 +185,10 @@ width derives from that via IPC-2221.
 **Ratings' primary use is validation, not defaulting.** A declared net
 current above a series part's iMax is a design error nothing currently
 catches. Same for working voltage against Vrange. Unambiguous, cheap, no
-inference about current paths required.
+inference about current paths required. *The validation rules
+(`over_current`, `passive_rating`, fed `over_voltage`) moved to
+`pcb-datasheet-review.md` 2026-10-13; this section keeps the defaulting
+rule, `current_role` and the assumption ledger.*
 
 ### The default direction rule
 

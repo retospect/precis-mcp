@@ -28,7 +28,7 @@ bind={port: design_net})` — refdes prefixed, internal nets
 namespaced, ports bound. Value:
 - Correctness reuse: PD resistors / buck feedback / H-bridge
   protection designed and adversarially validated ONCE; provenance
-  (pin-fact chunk refs, `pcb-design-source-provenance.md`) travels
+  (pin-fact chunk refs, `pcb-datasheet-review.md` in-scope 12) travels
   with the stamp.
 - Checklist carry-over: block-interior verdicts keyed to the block
   content hash hold wherever that hash is stamped unmodified; only
