@@ -3,17 +3,16 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** after the production-operation holds clear, two single-job proofs:
-  clean-Pd(111) `surface_coverage_scan` with qu164903's config,
-  `point_U_RHE=-0.3`, no `target_node` (surface-Pourbaix item's slice-1
-  contract), followed by the θ→0 comparison against pw455722; then the
-  Pourbaix gate's R15 proof, preserving failed before-job 468292. Neither
-  proof has run. Afterward: resting-state map, gate rule-out/lift,
+- **Next:** SPSO build in flight (plan approved 2026-10-13): A1–A4 running, A5 = first clean Pd(111) scan at -0.3 V + θ→0 vs pw455722 (coordinator), wave B = quest wiring next.
+  A1/A2 are engine tasks, A3 slice 2, A4 slices 4+5. A5: first clean-Pd(111) `surface_coverage_scan` with qu164903's
+  config, `point_U_RHE=-0.3`, no `target_node`, plus the θ→0 comparison
+  against pw455722. Wave B = quest wiring next. Then the Pourbaix gate's R15
+  proof, preserving failed before-job 468292, gate rule-out/lift,
   correction-set basis, and Pd-hydride precis-side fixes.
 - **Blocked by:** source-dependent production operations remain held. Items
   23/25 retain the re-run/hydride holds; seed re-mint is not a re-run.
   Record a verified **<$25** scan bound and verify its worker engine while
-  preserving the cluster's catpath 0.22 pin; a timeout is not a dollar bound.
+  against the 0.24.1 floor; a timeout is not a dollar bound.
   **BEEF is estimate only**, `td470248` waiting-for:reto. `me470247` contains
   conditional cost/time formulas; absolute PBE basis and dollars are unknown.
   Native `estimate` rejects `put`, so the memory is an explicit fallback,
@@ -146,14 +145,25 @@ only; everything this thread built is on main and was live by round 4.
   `autocatpath coverage` scan (γ(θ) per adsorbate per facet, MARI pick)
   is the generator, but precis never calls it (`run_kinetics` sets
   `mari=None`) and it builds its own clean slab from element+facet,
-  ignoring the prebuilt-slab side channel — doped slabs and β-PdH need a
-  catpath brief before their anchors can be scanned.
+  ignoring the prebuilt-slab side channel — doped slabs and β-PdH need the
+  engine change (task A1, catpath repo, 0.25.0; no brief was ever filed)
+  before their anchors can be scanned.
 - Surface-Pourbaix "file only" is lifted (Reto via chat-interface,
   2026-10-07): slices 1–2 are this thread's next build, after the lock.
   Rulings: q6 discrete slabs, q7 (111) only; slice 6 gets a quest-side
-  "which slab model to trust" representation; q2/q3 unruled.
+  "which slab model to trust" representation; q2 ruled 2026-10-05, q3
+  2026-10-12.
   `PRECIS_MP_API_KEY` is in the overlay; Pourbaix must not block on the
   MP import.
+
+**Resume (2026-10-13, SPSO build approved):** Reto approved the build plan
+(coordinator memory me481988). Catpath floor is 0.24.1 (tag v0.24.1,
+headless matplotlib); the engine changes in flight cut 0.25.0. Tasks: A1
+coverage scan honours prebuilt slab + corrections + `slab_source`; A2
+per-edge/per-route affine CHE export + HER branch (both catpath repo); A3
+slice 2; A4 slices 4+5 (`staircase_masks.py`); A5 first clean scan + θ→0
+(coordinator). Decisions and the open paper-date collision: the item's
+§Rulings 2026-10-13.
 
 **Worktree:** `catalysis-selectivity`
 **Allocation decision (historical):** yes — Reto, 2026-10-02 ("high up").
@@ -198,10 +208,9 @@ only; everything this thread built is on main and was live by round 4.
    job (A) is on main (e167f4859, landed by the orchestrator because it
    changes deploy roles); its note clamp and the pymatgen#4709 citation
    followed in round 3.
-   - **Waits on Reto: key.** Reto adds `PRECIS_MP_API_KEY` to the secret
-     store himself (release-2-2); do not add or ask for it. After he says
-     it is set, run one prod job through the Materials Project path and
-     record it here as "MP key live: <call> → <result>".
+   - **Key:** `PRECIS_MP_API_KEY` is in the overlay. Run one prod job
+     through the Materials Project path and record it here as "MP key
+     live: <call> → <result>".
    - The gate (B): its first slice (operating conditions, dispatch,
      harvest/stamp; no rule-out yet) and the R15 contribs fix are on main
      since 2026-10-07 (folded in from the Codex branch). The one
@@ -225,8 +234,9 @@ only; everything this thread built is on main and was live by round 4.
 2. **backlog/pathway-conditions-effects-report.md** — chemistry's report
    for qu164903; consumes the window scalars from Do-next 5 instead of
    U_L / U_opt alone.
-3. **backlog/surface-pourbaix-staircase-optimizer.md** (Reto,
-   2026-10-02: **file only, do not build**) extends the Pourbaix work
+3. **backlog/surface-pourbaix-staircase-optimizer.md** (Reto, 2026-10-02
+   file only; lifted 2026-10-07, build plan approved 2026-10-13, slices
+   2/4/5 in build) extends the Pourbaix work
    (Do-next 4, Parts A and B) into a surface validity map, a linked
    reaction staircase, and a Shapley-attribution field that tells the
    slab search where and why a candidate loses its window.
@@ -273,7 +283,7 @@ only; everything this thread built is on main and was live by round 4.
   - the NH₂OH `thermo.GASES` fix (`scratch/catsel-catpath-brief-href.md`),
     delivered by the review session.
 
-  After that release: an offline re-score of qu164903 in precis. It must
+  Release is out (0.24.0 has both on by default): an offline re-score of qu164903 in precis. It must
   reproduce the 299 validated replay rows with both levers off before it
   writes. qu164903's tier promotion is paused until then (Reto runs the
   meta write; the undo is in design note §19).

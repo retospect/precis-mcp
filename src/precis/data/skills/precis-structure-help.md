@@ -602,6 +602,21 @@ query (so you can refine it) plus the ranked hits. Deterministic: same design
 → same query, no model call. Pair it with a paper-provenance `link` (above) to
 record which of the hits actually motivated the design.
 
+### The surface-Pourbaix validity map — `get(view='pourbaix')`
+
+```python
+get(kind="structure", id="pd111", view="pourbaix")
+```
+
+The resting-state termination map over (U_RHE, pH) folded from the
+structure's `surface_coverage_scan` jobs (a scan is tied to the structure by
+parenting the job on it or on a todo under it): validity regions per U
+interval, every boundary with its propagated and model-form bands kept
+apart, plus the bulk Pourbaix verdict as a labelled uncertain overlay. One
+map per footing (anchor_key · engine · correction set — partitioned, never
+blended). `no anchors` until a scan lands; the same map as an SVG page at
+`/pourbaix/<handle>`.
+
 ## Export — `get(view='poscar'|'extxyz'|'cif')`
 
 The output side; bonds are dropped (DFT consumes positions + cell).

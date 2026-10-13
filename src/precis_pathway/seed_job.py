@@ -310,8 +310,9 @@ def _poll(ctx: Any, handle: Any) -> bool:
     if state == "failed":
         tail = status.get("tail") or ""
         reason = f"autocatpath_seed: run failed: {status.get('error')}"
+        status_d = dict(status)
         exit_bits = [
-            f"{k}={status[k]}" for k in ("exit_code", "exit_signal") if k in status
+            f"{k}={status_d[k]}" for k in ("exit_code", "exit_signal") if k in status_d
         ]
         if exit_bits:
             reason = f"{reason} ({', '.join(exit_bits)})"

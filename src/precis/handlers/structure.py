@@ -148,6 +148,7 @@ _VIEWS = (
     "markers",
     "links",
     "literature",
+    "pourbaix",
     *_EXPORT_VIEWS,
 )
 
@@ -1089,6 +1090,16 @@ class StructureHandler(Handler):
             if body is None:
                 raise NotFound(f"structure {id!r} no longer exists")
             return Response(body=body, ref_id=ref.id)
+        if view == "pourbaix":
+            # No scene needed — the map reads job meta, not geometry, so it
+            # also answers for a structure whose atoms never landed.
+            from precis.quest import pourbaix_map
+
+            return Response(
+                body=pourbaix_map.render_structure_maps(
+                    ref, pourbaix_map.maps_for_structure(self.store, ref)
+                )
+            )
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)

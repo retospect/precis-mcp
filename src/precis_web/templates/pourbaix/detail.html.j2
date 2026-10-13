@@ -1,0 +1,61 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+
+<div class="mb-4">
+  <h1 class="text-lg font-semibold">{{ title }}</h1>
+  <p class="text-xs text-slate-500">
+    Resting-state surface-Pourbaix validity map{% if subject.kind == 'quest' %}
+    per candidate structure serving {{ subject.handle }}{% endif %} —
+    one map per footing (anchor_key · engine · correction set), partitioned,
+    never blended. The bulk layer is a labelled uncertain overlay:
+    {{ bulk_note }}.
+  </p>
+</div>
+
+{# Slider-bank slot: slice 3 adds the shared slider bank here (the map and
+   the staircase panel ride the same bank). Keep the map inside
+   #pourbaix-panel so the bank can drive it without re-templating. #}
+<div id="pourbaix-panel" class="space-y-6">
+{% for e in entries %}
+  <section class="rounded border border-slate-200 bg-white p-3">
+    <div class="mb-2 flex items-baseline gap-2">
+      <a href="{{ e.url }}" class="font-mono text-sm text-sky-700 hover:underline">{{ e.handle }}</a>
+      <span class="text-sm text-slate-700">{{ e.title }}</span>
+    </div>
+    {% if not e.maps %}
+    <p class="text-xs text-slate-500">no anchors — no succeeded
+      <code>surface_coverage_scan</code> job is tied to this structure.</p>
+    {% endif %}
+    {% for m in e.maps %}
+    <div class="mb-4">
+      <div class="overflow-auto">{{ m.svg | safe }}</div>
+      <div class="mt-1 text-[11px] text-slate-500 space-y-0.5">
+        <div>
+          anchor_key <span class="font-mono">{{ m.anchor_key[:16] }}…</span> ·
+          models {{ m.models | join(', ') }} ·
+          engine {{ m.engine_version or '?' }} ·
+          corrections {% if m.uncorrected %}<span class="text-amber-700">none — uncorrected anchors</span>{% else %}{{ m.corrections }}{% endif %} ·
+          σ<sub>e</sub> {{ '%.3f' % m.sigma_e_eV if m.sigma_e_eV is not none else 'unrecorded' }} eV
+        </div>
+        <div>scan jobs: {% for j in m.scan_jobs %}<span class="font-mono">jo{{ j }}</span>{{ ', ' if not loop.last }}{% endfor %}</div>
+        {% if m.bulk %}
+        <div>bulk layer (uncertain): {{ m.bulk.point.verdict }} at
+          U_RHE {{ m.bulk.point.U_RHE }} V, pH {{ m.bulk.point.pH }};
+          worst in window {{ m.bulk.worst_in_window }};
+          job <span class="font-mono">jo{{ m.bulk.job_id }}</span></div>
+        {% endif %}
+        {% if m.incomplete %}
+        <div class="text-amber-700">incomplete: {{ m.incomplete | join('; ') }}</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+{% endfor %}
+{% if not entries %}
+<p class="text-xs text-slate-500">no candidate structures serve this quest.</p>
+{% endif %}
+</div>
+
+{% endblock %}

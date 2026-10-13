@@ -87,6 +87,14 @@ Package-level invariants (detail lives on the named module):
   a successful current-input verdict is stamped as evidence, while every
   Pourbaix field (including numeric ΔG) stays outside Pareto ranking
   (``pourbaix``/``compute``/``frontier``).
+- **The surface-Pourbaix map is pure reads over stored job meta.**
+  ``pourbaix_map`` folds a structure's ``surface_coverage_scan`` sweeps into
+  the resting-state validity map (``view='pourbaix'`` on quest + structure,
+  ``/pourbaix/<handle>``): one map per footing, never blended; the bulk
+  verdict is a labelled uncertain overlay, never merged (slice-2 rulings).
+  It lives in core — not ``precis_pathway`` — because core handlers serve
+  the view and the plugin-import boundary forbids the import
+  (``tests/test_plugin_import_boundary.py``).
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.

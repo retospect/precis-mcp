@@ -219,6 +219,13 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   still shown after that has spent its retries or is an endpoint-mismatch
   class failure, which is never re-rolled.
 - `view='methods'` — the citable methods paragraph; `view='config'` — the snapshot.
+- **The resting-state surface map** (a different kind's view, not this
+  kind's): `get(kind='structure'|'quest', id=…, view='pourbaix')` folds the
+  stored `surface_coverage_scan` sweeps into the validity map — termination
+  regions per U interval, each boundary with its propagated and model-form
+  bands apart, the bulk verdict as a labelled uncertain overlay, `no
+  anchors` until a scan lands. Same map as an SVG page at
+  `/pourbaix/<handle>`.
 
 ## See the reaction — the interactive web explorer
 

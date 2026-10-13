@@ -180,6 +180,7 @@ def create_app(
         papers_needed,
         pcb,
         podcast,
+        pourbaix,
         pres,
         preview,
         refs,
@@ -225,6 +226,7 @@ def create_app(
     app.include_router(mermaid.router)
     app.include_router(pcb.router)
     app.include_router(nanopub.router)
+    app.include_router(pourbaix.router)
     app.include_router(alerts.router)
     app.include_router(gripes.router)
     app.include_router(agentlogs.router)

@@ -43,6 +43,7 @@ from autocatpath import __version__, provenance
 from autocatpath.config import Config
 from autocatpath.pipeline import Results, run
 
+from .coverage_sites import representable_coverages, slab_top_sites
 from .step_retry import narrow_partial, narrow_structures
 from .types import (
     CoverageScanResult,
@@ -783,9 +784,22 @@ def coverage_anchor_key(config: dict[str, Any]) -> str:
     model tag is recorded per scan) — plus the engine version, like
     :func:`content_key`. The correction set rides in the config (an engine
     that records one does so under ``corrections``), so a correction flip
-    changes the key."""
+    changes the key.
+
+    ``coverage.coverages`` is normalised to the theta values the engine
+    will actually run on this slab (:func:`representable_coverages`) before
+    hashing: the engine snaps each request to an integer count on the
+    cell's ``n_top`` sites and reports the achieved ``n / n_top``, so two
+    requests that differ only pre-snap — ``[0.25, 0.5, 0.75, 1.0]`` versus
+    ``[2/9, 4/9, 7/9, 1]`` on a 9-site cell — are ONE anchor set and must
+    pool under one key (gr482107)."""
     cfg = _prep(config, None).to_dict()
     cfg.pop("mlip", None)
+    cov = cfg.get("coverage")
+    if isinstance(cov, dict):
+        cov["coverages"] = representable_coverages(
+            cov.get("coverages"), slab_top_sites(cfg)
+        )
     canonical = json.dumps(cfg, sort_keys=True, separators=(",", ":"))
     payload = f"{canonical}\x00autocatpath=={__version__}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

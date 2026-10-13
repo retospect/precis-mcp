@@ -366,6 +366,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "series",
     "measures",
     "logbook",
+    "pourbaix",
 )
 
 
@@ -507,7 +508,8 @@ class QuestHandler(NumericRefHandler):
             "candidate across every band, dopant/site/co-adsorbate columns); "
             "view='series' the controlled series among them (one axis varied "
             "per block); view='measures' the best live measured value per "
-            "measurand over everything serving it. "
+            "measurand over everything serving it; view='pourbaix' the "
+            "per-candidate surface-Pourbaix validity maps. "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -916,6 +918,9 @@ class QuestHandler(NumericRefHandler):
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref))
+        if view == "pourbaix" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_pourbaix(ref))
         # The eye ladder (fisheye-everywhere AC 2): `fisheye` / `fisheye+1hop` /
         # `fisheye+2hop`, any rung with a `+recall` suffix. One-hop shows the
         # quests it serves and the ones serving it under `Roadmap`, plus the
@@ -935,7 +940,8 @@ class QuestHandler(NumericRefHandler):
                 options=[*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, measures, logbook (quest-specific) · "
+                    "results, series, measures, logbook, pourbaix "
+                    "(quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",
@@ -1330,6 +1336,19 @@ class QuestHandler(NumericRefHandler):
         lines = self._render_header(ref, tags, entries)
         lines += self._render_log_entries(entries)
         return "\n".join(lines)
+
+    def _render_pourbaix(self, ref: Ref) -> str:
+        """`view='pourbaix'` — the resting-state surface-Pourbaix validity
+        map per candidate structure (surface-Pourbaix slice 2,
+        :mod:`precis.quest.pourbaix_map`): the stored ``surface_coverage_scan``
+        sweeps folded into validity regions + two-band boundaries, bulk
+        verdict as a labelled uncertain overlay. Candidates without scans
+        are listed as "no anchors"."""
+        from precis.quest import pourbaix_map
+
+        return pourbaix_map.render_quest_maps(
+            ref, pourbaix_map.quest_maps(self.store, ref)
+        )
 
     def _render_tree(
         self, ref: Ref, *, depth: int = 0, visited: set[int] | None = None

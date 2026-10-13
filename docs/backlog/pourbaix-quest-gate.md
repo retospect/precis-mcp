@@ -144,6 +144,5 @@ start only once a quest has `operating_conditions`.
   window U_RHE −0.4 to 0 V, pH 7 to 10. Rule out only if dissolved across
   the whole window. Written to the quest's `operating_conditions` when
   this item ships, not before (item 6's prod gate).
-- **Pending, Reto (review-queue `catalysis-selectivity-4`A):** the
-  Materials Project key goes into the vault as `PRECIS_MP_API_KEY`; not
-  there yet. Part A builds and tests without it.
+- **Reto (review-queue `catalysis-selectivity-4`A):** the Materials Project
+  key `PRECIS_MP_API_KEY` is in the overlay. Part A builds and tests without it.

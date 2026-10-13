@@ -15,6 +15,7 @@ also stored in the pathway meta, so lookup never depends on link semantics.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 from typing import TYPE_CHECKING, Any
@@ -73,6 +74,25 @@ def _read_extxyz(text: str) -> Any:
     return ase_read(io.StringIO(text), format="extxyz")
 
 
+def _structures_key(structures_extxyz: dict[str, str]) -> str:
+    """Content address of the relaxed structure set — the slab-discriminating
+    half of the ingest slug. ``runner.content_key`` is slab-blind by design
+    (an injected ``_prebuilt_slab`` never enters ``Config.to_dict``), so every
+    candidate sharing a config+engine version collides on it and same-key
+    pathways used to overwrite one shared set of structure refs (gr482121).
+    The geometry itself is the only slab identity the artifact carries:
+    identical structures address identically (idempotent re-runs still
+    replace), any difference — dopant, placement, coverage — mints fresh
+    refs instead of a silent overwrite."""
+    h = hashlib.sha256()
+    for state, xyz in sorted((structures_extxyz or {}).items()):
+        h.update(state.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(xyz.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:10]
+
+
 def ingest_intermediates(
     store: Store,
     pathway_ref_id: int,
@@ -80,18 +100,20 @@ def ingest_intermediates(
     key: str,
     structures_extxyz: dict[str, str],
 ) -> dict[str, int]:
-    """Save each relaxed intermediate as a `structure` ref (content-keyed slug,
-    so re-runs of the same config are idempotent and a changed config makes
-    fresh refs), link it `related-to` the pathway, and return {state → ref_id}.
+    """Save each relaxed intermediate as a `structure` ref (slug keyed on the
+    config's content key AND the structure-set fingerprint, so re-runs of the
+    same geometry are idempotent and any different slab makes fresh refs),
+    link it `related-to` the pathway, and return {state → ref_id}.
     Best-effort per intermediate — a bad geometry is skipped, not fatal."""
     out: dict[str, int] = {}
     kp = (key or "x")[:10]
+    sk = _structures_key(structures_extxyz)
     for state, xyz in (structures_extxyz or {}).items():
         try:
             scene = scene_from_ase(_read_extxyz(xyz))
         except Exception:
             continue
-        slug = f"pw-{kp}-{_slug(state)}"
+        slug = f"pw-{kp}-{sk}-{_slug(state)}"
         ref, _created = store.structure_save(
             slug=slug,
             title=f"{pathway_slug}: {state}",

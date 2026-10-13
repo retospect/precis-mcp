@@ -47,7 +47,7 @@ coverage.
    the span-over-required-leaves and the selectivity scorecard compare
    NH₃ against all of them.
 5. **Re-run pw455722's candidate at the neb tier on the complete
-   network** (catpath 0.23.0; screening no longer changes) and record the
+   network** (catpath 0.24.1; screening no longer changes) and record the
    new selectivity branch points beside the old ones (the delta is the
    size of the error the minimal network was making).
 6. **Re-check pw455722's trap and poison verdicts** on the re-run. On the

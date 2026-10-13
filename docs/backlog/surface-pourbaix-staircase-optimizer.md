@@ -9,9 +9,12 @@ owner: catalysis session
 # Surface-Pourbaix validity map + reaction staircase as a catalyst optimizer
 
 **Lifted 2026-10-07** (Reto, via chat-interface): ready for slices 1–2,
-owner = the catalysis session, after the catpath lock (0.24.0 since
-2026-10-07); see
-§Rulings below. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
+owner = the catalysis session; see §Rulings below. **Build plan approved
+2026-10-13**; in build (Devin tasks A1–A4, catpath-repo engine tasks A1/A2;
+coordinator thread memory me481988): slice 2 (A3) and slices 4+5 as the pure
+library `src/precis_pathway/staircase_masks.py` (A4) started 2026-10-13. A5 =
+the first clean Pd(111) scan at -0.3 V and the θ→0 comparison vs pw455722
+(coordinator), then wave B = quest wiring. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
 this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
@@ -91,7 +94,8 @@ slab's anchor energies exist. In it:
 
 ## Open questions (OPEN in the prompt, §10)
 
-1. Activity vs stability: how "is it active" folds into the window score.
+1. Activity vs stability: how "is it active" folds into the window score
+   (resolved 2026-10-13, §Rulings below).
 2. **Reference consistency:** every anchor on one footing (functional,
    corrections, H-electrode and gas references). Already measured here:
    MACE-MP-0 misprices N-containing gases (NO→NH₃ U_eq +0.13 V) and H* on
@@ -201,8 +205,12 @@ refine, not replace, them.
 ## Rulings 2026-10-07 (Reto, via chat-interface)
 
 - "File only" LIFTED. Slices 1–2 are `ready`; owner = the catalysis
-  session; started after the catpath lock. Anchors compute on 0.24.0
-  (Reto's ruling 2026-10-07): engine token recorded per anchor.
+  session; started after the catpath lock. Anchors compute on the
+  locked engine (0.24.0 ruled 2026-10-07; floor is 0.24.1 since the
+  headless-matplotlib fix, tag v0.24.1): engine token recorded per anchor.
+  The engine changes in flight (A1: prebuilt slab + corrections in the
+  coverage scan; A2: per-edge/per-route affine CHE export and an HER
+  branch) cut 0.25.0.
 - Sequencing: first build = anchor inventory + inner CHE sweep with error
   bands (slice 1). The hydride pilot (catalysis-selectivity item 23, still
   HELD) hangs off slice 2.
@@ -214,8 +222,8 @@ refine, not replace, them.
   be computed? Report the answer to Reto.
 - `PRECIS_MP_API_KEY` is in the overlay; the map must not block on the
   Materials Project import either way.
-- q2/q3 (reference consistency, oxide corrections): still being explained
-  to Reto; no ruling yet.
+- q2/q3 (reference consistency, oxide corrections): ruled later; see
+  2026-10-05 (q2) and 2026-10-12 (q3).
 
 ## Rulings 2026-10-12 (Reto, chat)
 
@@ -261,7 +269,7 @@ So anchors are computed, not read.
   `coverage.facets` must be empty; a prebuilt slab is refused
   (`failure_class="input"`) because the engine's scan builds its own clean
   slab and ignores the pathway pipeline's prebuilt-slab side channel —
-  doped candidates and β-PdH wait on the catpath brief below.
+  doped candidates and β-PdH wait on the engine task below.
 - Footing per anchor set (acceptance "one footing"): `meta.anchor_key`
   (`runner.coverage_anchor_key`: config minus `mlip` + engine version),
   `meta.model`, `meta.engine_version`, `meta.corrections` (what the scan
@@ -269,10 +277,11 @@ So anchors are computed, not read.
   applies neither the gas set nor the H* shift — they run only in
   `pipeline._corrections_plan` at aggregation (catpath session,
   2026-10-07) — so a 0.24.0 anchor is uncorrected and keyed `None` until
-  catpath's brief lands; the pathway's `results.json` on 0.24.0 sits on
+  the engine task below lands (0.25.0); the pathway's `results.json` on 0.24.0 sits on
   the corrected gauge, so the θ→0 comparison must account for that).
-  The lock is 0.24.0 since 2026-10-07, so every anchor minted from here
-  carries `engine_version` 0.24.0; nothing precis-side corrects it.
+  Anchors minted from 2026-10-13 carry `engine_version` 0.24.1 (the
+  floor); 0.24.x anchors are uncorrected either way, and nothing
+  precis-side corrects them.
 - `precis_pathway.surface_pourbaix` (pure, engine-free): γ_A(n; U) =
   γ_A(n; 0) − n·ν_A·U/area with ν_A = 2n_O + 4n_C − n_H on the RHE scale
   (pH only tilts the SHE view by 0.059 V/pH); the resting envelope on a U
@@ -290,22 +299,74 @@ So anchors are computed, not read.
   formation energy at the lowest coverage vs a pathway's single-adsorbate
   energy); wiring it to a live pathway ref is the next slice-1 step.
 
-**Not yet (slice-1 residue):** minting the first prod scan on clean
-Pd(111) with the qu164903 base config (mint via `put(kind='job',
-job_type='surface_coverage_scan', params={config: REACTION_CONFIG,
-point_U_RHE: -0.3})`; leave `target_node` unset — none of the 1061
-`autocatpath_seed` jobs on prod pins one, the `ssh_node` executor routes
-them, read-only check 2026-10-07), the live
-θ→0 comparison against pw455722's nodes, and the catpath brief (filed by
-the catpath session as its `docs/backlog/coverage-scan-prebuilt-slab-
-corrections.md`, draft, 2026-10-07): the coverage scan honours
+**Slice-1 proof, 2026-10-13 (jo482106, castor, 0.24.1, mace:medium, ~55 s):**
+at −0.30 V_RHE clean Pd(111) rests as H* at 9/9 ML; the one boundary in
+−1…+0.5 V is H*(9/9)→H*(7/9) at +0.44 V (propagated ±0.05 V; no
+model-form band, one model); O*/OH* never win. θ→0 acceptance against
+pw455722 (a 0.22.0, uncorrected pathway, so no H* gauge offset is
+expected): Δ(anchor 2/9 ML − pathway single-adsorbate) = H −0.08, O −0.06,
+OH −0.08/+0.29 eV (the pathway's own OH* seed spread is 0.375 eV). Passed
+where the pathway is self-consistent. Surfaced: the scan relaxes its own
+lattice (a = 3.958 Å) while the pipeline slab sits at 3.914 Å for the same
+config (task A1 addendum: one lattice code path); the default coverage
+grid is not cell-aware (gr482107); pathway structure refs are keyed on
+the slab-blind `content_key`, so same-key pathways overwrite each other's
+`pw-*` structures (gr482121, root-caused; quest ranking unaffected).
+**Caveat on the comparison:** pw455722 is candidate 209903
+(Pd111-Sn-subsurf-1, slab Pd35Sn1), not clean Pd(111): the seed partials
+carry the doped slab even though the pathway's `meta.config` looks clean.
+The agreement therefore bounds the single-subsurface-Sn effect plus
+lateral/lattice terms at ≲0.1 eV; a strictly clean θ→0 check needs a
+clean 0.24.1 pathway on st203306 (pa246095's footing is incomplete).
+
+**Not yet (slice-1 residue):** the engine task A1 (catpath repo, in
+build 2026-10-13; the 2026-10-07 brief was never filed). Mint recipe for
+further scans: `put(kind='job', job_type='surface_coverage_scan',
+parent_id=<structure id>, params={config: REACTION_CONFIG, point_U_RHE:
+-0.3})`, `target_node` unset (the `ssh_node` executor routes it). A1: the coverage scan honours
 `cfg._prebuilt_slab` (doped slabs, β-PdH twins; `n_slab` from
 `slab.info` so lattice H is not counted), applies the same gas set and H*
 shift as the pipeline under `cfg.corrections`, and records a
 `corrections` block plus `slab_source: injected|built` in
 `coverage.json`.
 
+## Carried from qu164903-campaign (the old `autocatpath_coverage` spec)
+
+Slice 2's qu164903 asks, beyond the render ruling above:
+- the pathways' U_L and U_opt drawn as vertical lines on the map, with a
+  verdict "at U_L the slab is H*(2/3 ML), the pathway assumed clean" when
+  the winner at U_L differs from the pathway's `meta.params.coads`;
+- `view='pourbaix'` on a structure lists terminations and the winner at
+  U ∈ {0, U_L, U_opt}; the quest results table gains a `winner@U_L` column;
+- provenance footer: model, T, pressures, thermo tier, and the engine-v1
+  limit (single-species terminations, no lateral interactions);
+- test: a pH change moves axis labels only, ΔG lines unchanged on the RHE
+  scale.
+
+## Sign convention (fixed 2026-10-13, coordinator; binds A2 export and A4 masks)
+
+Staircase rungs use the engine's CHE form: ΔG(U) = ΔG₀ + n_e·eU with
+**n_e = proton-electron pairs consumed** by the step (positive for a
+reduction, negative for an oxidation, 0 for a chemical or desorption
+step), so a reduction rung gets easier at more negative U_RHE and
+U_L = −max(ΔG₀/n_e). The surface sweep keeps its own ν = electrons
+*released* (γ(U) = γ(0) − ν·U/area); the two are documented per module,
+never mixed in one contract.
+
+## Rulings 2026-10-13 (Reto: "that's good")
+
+- **HER is a mask rung and its own Pareto objective**, not a scalar penalty
+  on the window score.
+- **Open question 1 (activity vs stability), resolved:** rung masks carry a
+  tolerance ε on ΔG; a TOF floor is a separate objective, not folded into
+  the window.
+- **Open, for the pillar review:** paper-date collision. This item's
+  Fe-doped Pd PoC (~Nov 2026) and the catpath trust-demo paper
+  (`threads/chemistry.md`) both sit under qu459585's one-paper-a-month.
+  Unresolved.
+
 ## Explicitly NOT in scope
 
-- Slices 3–8: ordered, not scheduled; each needs its own `ready`.
+- Slices 3, 6–8: ordered, not scheduled; each needs its own `ready`.
+  (Slices 2, 4, 5 are in build, 2026-10-13.)
 - The hydride pilot itself (item 23) and any re-run under item 25.

@@ -167,6 +167,7 @@ get(kind="quest", id=7, view="results")  # lineage-ordered results table (all ba
 get(kind="quest", id=7, view="series")  # controlled series: one axis varied per block
 get(kind="quest", id=7, view="measures")  # best live measured value per measurand
 get(kind="quest", id=7, view="logbook")  # the FULL lab notebook, every entry
+get(kind="quest", id=7, view="pourbaix")  # per-candidate surface-Pourbaix validity maps
 get(
     kind="quest", id=7, view="log"
 )  # raw ref-events audit trail (generic, not logbook-specific)
@@ -175,7 +176,7 @@ get(kind="quest", id="/gaps")  # gaps across ALL active quests
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
-leaderboard · results · series · measures · logbook` (quest-specific) plus the generic
+leaderboard · results · series · measures · logbook · pourbaix` (quest-specific) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
 `view='fisheye+1hop'` shows the quests this one serves and the quests
@@ -231,6 +232,16 @@ paper. "Best" follows the taxon's `higher_is_better`; a group without it
 reports its row count and no best. Rows that are ambiguous, flagged
 (`meta.escalation`), anchor-lost or distrusted are left out — never compared
 across groups. See `precis-measure-help`.
+
+`view='pourbaix'` is the resting-state surface-Pourbaix validity map per
+candidate structure that serves the quest: the stored `surface_coverage_scan`
+sweeps folded into validity regions per U interval (two bands per boundary —
+propagated and model-form, never summed), the bulk Pourbaix verdict as a
+labelled uncertain overlay, one map per footing (partitioned, never
+blended), and the `needs_anchor` ranking. Candidates without scans are
+listed as `no anchors`. Same map on a structure
+(`view='pourbaix'` on `kind='structure'`) and as an SVG page at
+`/pourbaix/<handle>`.
 
 ## Health + gaps — the exploration queue
 

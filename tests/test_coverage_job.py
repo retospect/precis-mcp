@@ -191,6 +191,83 @@ def test_anchor_key_pools_models_and_separates_anchor_sets() -> None:
     assert runner.coverage_anchor_key(base) != runner.coverage_anchor_key(other_set)
 
 
+# Prod jo482106's params.config verbatim (read 2026-10-13; stored
+# meta.anchor_key 2f0d3e06fa39… was hashed pre-gr482107 on the RAW
+# [0.25, 0.5, 0.75, 1.0] request, so the normalised key for this config is
+# the new value pinned below — sibling pooling for it happens under the
+# new key from here on).
+JO482106_CONFIG: dict[str, Any] = {
+    "mlip": {"dtype": "mixed", "model": "medium", "device": "cuda", "backend": "mace"},
+    "name": "no_to_nh3_pd",
+    "slab": {"size": [3, 3, 4], "vacuum": 10, "element": "Pd", "fix_layers": 2},
+    "search": {
+        "fmax": 0.1,
+        "seeds": [0, 1],
+        "neb_fmax": 0.15,
+        "max_steps": 120,
+        "neb_images": 5,
+        "neb_retries": 2,
+        "rmsd_thresh": 0.7,
+        "energy_thresh": 0.05,
+        "neb_max_steps": 160,
+    },
+    "target": "NH3",
+    "thermo": {"mode": "vib"},
+    "network": "ammonia",
+    "poisons": ["CO"],
+    "substrate": "NO",
+}
+#: ``coverage_anchor_key(with_defaults(JO482106_CONFIG))`` on
+#: autocatpath 0.24.1 — the key carries the engine version, so this pin is
+#: re-derived (not loosened) on any engine bump.
+JO482106_KEY = "17c3b318fc0e42605d34fc3a8c0fbc8064e5a25a00d6b65a54a0234a78a9365c"
+
+
+def test_anchor_key_normalises_requests_to_the_achieved_thetas() -> None:
+    """gr482107: requests that snap to the same representable fractions pool
+    under one key — [0.25, 0.5, 0.75, 1.0] on a 9-site (3x3) cell achieves
+    [2/9, 4/9, 7/9, 1], so the two forms hash equal; a genuinely different
+    site count still separates."""
+    cell3 = {**CONFIG, "slab": {**CONFIG["slab"], "size": [3, 3, 4]}}
+    asked = coverage_job.with_defaults(
+        {**cell3, "coverage": {"coverages": [0.25, 0.5, 0.75, 1.0]}}
+    )
+    representable = coverage_job.with_defaults(
+        {**cell3, "coverage": {"coverages": [2 / 9, 4 / 9, 7 / 9, 1.0]}}
+    )
+    assert asked["coverage"]["coverages"] == [0.25, 0.5, 0.75, 1.0], (
+        "caller-set coverages stay verbatim through with_defaults"
+    )
+    assert runner.coverage_anchor_key(asked) == runner.coverage_anchor_key(
+        representable
+    )
+    other = coverage_job.with_defaults(
+        {**cell3, "coverage": {"coverages": [2 / 9, 7 / 9, 1.0]}}
+    )
+    assert runner.coverage_anchor_key(asked) != runner.coverage_anchor_key(other)
+
+
+def test_anchor_key_pins_jo482106s_normalised_key() -> None:
+    """The prod scan's config reproduces one exact key under the
+    normalisation (engine-versioned: re-pin on an autocatpath bump)."""
+    assert (
+        runner.coverage_anchor_key(coverage_job.with_defaults(JO482106_CONFIG))
+        == JO482106_KEY
+    )
+
+
+def test_with_defaults_snaps_the_default_coverages_to_the_slab() -> None:
+    """On a 9-site cell the default fill is the representable set the
+    engine would run (the snap the job event records); on a 2x2 cell the
+    defaults are already representable and pass through unchanged."""
+    snapped = coverage_job.with_defaults(
+        {**CONFIG, "slab": {**CONFIG["slab"], "size": [3, 3, 4]}}
+    )
+    assert snapped["coverage"]["coverages"] == [2 / 9, 4 / 9, 7 / 9, 1.0]
+    representable = coverage_job.with_defaults(CONFIG)  # 2x2 cell -> n_top 4
+    assert representable["coverage"]["coverages"] == [0.25, 0.5, 0.75, 1.0]
+
+
 # ── sibling pooling ───────────────────────────────────────────────────────
 
 
@@ -308,6 +385,33 @@ def test_dispatch_stamps_footing_and_pooled_sweep(
     summary = ctx.chunks[-1][1]
     assert "resting termination is the H* at 0.25 ML" in summary
     assert "scan warnings: coverage: scan runs on the first model only" in summary
+
+
+def test_dispatch_event_records_the_coverage_snap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a 9-site cell the job event names the achieved thetas and the
+    requested set — the record that the defaults were snapped (gr482107)."""
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        return {
+            "model": "emt",
+            "model_index": model_index,
+            "coverage": _coverage("emt", -0.02),
+            "engine_version": "0.24.1",
+            "corrections": None,
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    cell3 = {**CONFIG, "slab": {**CONFIG["slab"], "size": [3, 3, 4]}}
+    ctx = _FakeCtx(store=store, params={"config": cell3})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.status == "succeeded"
+    event = ctx.chunks[0][1]
+    assert "coverages=[0.222222, 0.444444, 0.777778, 1]" in event
+    assert "requested [0.25, 0.5, 0.75, 1.0], snapped to 9 top sites" in event
 
 
 def test_dispatch_refuses_out_of_scope_params_before_any_compute(

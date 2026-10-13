@@ -1363,6 +1363,108 @@ def test_native_structure_ingest(pathway_store: Store) -> None:
     assert any(getattr(link, "dst_ref_id", None) == sid for link in links)
 
 
+def _slab_artifact(content_key: str, dopant: str | None) -> PathwayArtifact:
+    """A synthetic artifact whose ``structures_extxyz`` carry a 3x3x4 Pd
+    slab — clean Pd36, or Pd35X1 with one atom swapped for ``dopant`` —
+    under two states (bare slab + an adsorbate), like a real harvest."""
+    from ase import Atom
+    from autocatpath.config import SlabConfig
+    from autocatpath.structures import build_slab
+
+    bare = build_slab(SlabConfig(element="Pd", size=(3, 3, 4)))
+    if dopant is not None:
+        bare[0].symbol = dopant
+    covered = bare.copy()
+    top = float(covered.positions[:, 2].max())
+    covered.append(Atom("N", position=(0.0, 0.0, top + 2.0)))
+    covered.append(Atom("H", position=(0.9, 0.0, top + 2.0)))
+    return {
+        "content_key": content_key,
+        "autocatpath_version": "test",
+        "config": {"slab": {"element": "Pd"}},
+        "config_snapshot_yaml": "",
+        "results_json": dict(_LEVER_RESULTS),
+        "graph_json": copy.deepcopy(_LEVER_GRAPH),
+        "methods_md": "synthetic fixture — no pipeline run",
+        "structures_extxyz": {"*": _extxyz(bare), "NH*": _extxyz(covered)},
+        "warnings": [],
+    }
+
+
+def test_structure_ingest_disambiguates_same_key_different_slab(
+    pathway_store: Store,
+) -> None:
+    """gr482121: ``runner.content_key`` is slab-blind by design, so same-config
+    candidates on one engine version shared it — and the old
+    ``pw-{key}-{state}`` ingest slug made each pathway's ``structure_save``
+    overwrite the previous one's geometry in place (26 pathways on
+    content_key 89507f6a ended pointing at the last writer's Pd35Sc1
+    structures). The slug now also carries a fingerprint of the structure
+    set: different slabs land on disjoint refs, and a re-ingest of
+    identical geometry still replaces in place rather than duplicating."""
+    key = "shared-content-key"
+    clean = _slab_artifact(key, None)  # Pd36
+    doped = _slab_artifact(key, "Sc")  # Pd35Sc1
+
+    def _persist(
+        slug: str, artifact: PathwayArtifact, ref_id: int | None = None
+    ) -> tuple[int, dict[str, int]]:
+        if ref_id is None:
+            with pathway_store.tx() as conn:
+                ref = pathway_store.insert_ref(
+                    kind="pathway",
+                    slug=slug,
+                    title=f"pathway {slug} (computing)",
+                    meta={"status": "computing"},
+                    conn=conn,
+                )
+            ref_id = int(ref.id)
+        persist_result(pathway_store, ref_id, artifact, pathway_slug=slug)
+        meta = pathway_store.fetch_refs_by_ids([ref_id])[ref_id].meta
+        return ref_id, dict(meta.get("structure_refs") or {})
+
+    clean_id, clean_refs = _persist("pw-clean-pd36", clean)
+    _doped_id, doped_refs = _persist("pw-doped-pd35sc1", doped)
+
+    # Same content_key and the same state names — disjoint structure refs.
+    assert set(clean_refs) == set(doped_refs) == {"*", "NH*"}
+    assert not set(clean_refs.values()) & set(doped_refs.values())
+
+    # Each ref holds its OWN slab's composition and names its own pathway —
+    # the second persist must not have overwritten the first's geometry.
+    for rid, want_composition, want_title in (
+        (clean_refs["*"], {"Pd": 36}, "pw-clean-pd36"),
+        (clean_refs["NH*"], {"Pd": 36, "N": 1, "H": 1}, "pw-clean-pd36"),
+        (doped_refs["*"], {"Pd": 35, "Sc": 1}, "pw-doped-pd35sc1"),
+        (doped_refs["NH*"], {"Pd": 35, "Sc": 1, "N": 1, "H": 1}, "pw-doped-pd35sc1"),
+    ):
+        sref = pathway_store.fetch_refs_by_ids([rid])[rid]
+        assert sref.meta["composition"] == want_composition
+        assert sref.title.startswith(want_title)
+    with pathway_store.pool.connection() as c:
+        sc_row = c.execute(
+            "SELECT count(*) FROM struct_atoms WHERE ref_id = %s "
+            "AND element = 'Sc' AND retired_version IS NULL",
+            (clean_refs["*"],),
+        ).fetchone()
+        n_row = c.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'structure' AND retired_at IS NULL"
+        ).fetchone()
+    assert sc_row is not None and sc_row[0] == 0, (
+        "clean pathway's bare-slab ref picked up dopant atoms"
+    )
+
+    # Re-ingesting the same geometry onto the same pathway replaces in
+    # place: identical structure_refs, no new structure refs minted.
+    _id2, clean_refs2 = _persist("pw-clean-pd36", clean, ref_id=clean_id)
+    assert clean_refs2 == clean_refs
+    with pathway_store.pool.connection() as c:
+        n_row2 = c.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'structure' AND retired_at IS NULL"
+        ).fetchone()
+    assert n_row is not None and n_row2 is not None and n_row2[0] == n_row[0]
+
+
 def test_put_dispatches_job_when_route_node_set(
     pathway_store: Store,
     register_autocatpath_explore: Any,

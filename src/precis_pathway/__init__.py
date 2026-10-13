@@ -47,7 +47,18 @@ barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 coverage scan for one MLIP model (the anchors, on a recorded footing:
 ``anchor_key``/``engine_version``/``corrections``) and pools every model's
 scan on the same key into the CHE sweep — resting termination along U, each
-boundary with its propagated and model-form bands kept apart.
+boundary with its propagated and model-form bands kept apart. The slice-2
+read — the resting-state validity map (``view='pourbaix'`` on the quest and
+structure kinds, ``/pourbaix/<handle>`` on the web) — lives in
+``precis.quest.pourbaix_map`` and is re-exported as
+``precis_pathway.pourbaix_map``: core handlers serve the view and may not
+import this plugin (the reaction_graph precedent).
+``staircase_masks`` (slices 4+5, same spec) is the pure layer above the
+resting map: per-rung viability masks and toggles, the honest operating
+window (resting ∩ active rungs ∩ HER margin), and Shapley attribution of
+the lost window as a field — exact ``2^N`` enumeration to N = 16, seeded
+permutation sampling past it — with its reductions (sum of squares, IPR,
+ridge churn), never a field sum.
 
 ``step_retry`` + the tail of ``aggregate_job`` are the step-level retry:
 when the just-aggregated ``trust_summary`` names a quantity blocker that is

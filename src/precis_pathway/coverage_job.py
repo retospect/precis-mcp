@@ -45,6 +45,8 @@ from typing import Any
 
 from precis.workers.job_types import JobTypeSpec
 
+from .coverage_sites import representable_coverages, slab_top_sites
+
 log = logging.getLogger(__name__)
 
 NAME = "surface_coverage_scan"
@@ -105,11 +107,23 @@ DESCRIPTION = (
 
 def with_defaults(config: dict[str, Any]) -> dict[str, Any]:
     """``config`` with the slice-1 ``coverage`` defaults filled in (a copy;
-    caller-set keys win)."""
+    caller-set keys win).
+
+    ``DEFAULT_COVERAGES`` are not representable on every slab — 0.25 ML is
+    no integer count on a 9-site cell — so the defaulted list is snapped
+    to the representable ``n / n_top`` fractions of *this* config's slab
+    (the same normalisation :func:`runner.coverage_anchor_key` hashes, so
+    the dispatched config and its key agree). Caller-set ``coverages``
+    pass through verbatim: for an explicit ask the engine's own "not
+    representable" warning is the record, and the key normalisation pools
+    it with the snapped form anyway."""
     cfg = dict(config)
     cov = dict(cfg.get("coverage") or {})
     cov.setdefault("adsorbates", list(DEFAULT_ADSORBATES))
-    cov.setdefault("coverages", list(DEFAULT_COVERAGES))
+    if "coverages" not in cov:
+        cov["coverages"] = representable_coverages(
+            list(DEFAULT_COVERAGES), slab_top_sites(cfg)
+        )
     cov.setdefault("facets", [])
     cfg["coverage"] = cov
     return cfg
@@ -200,11 +214,26 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     from . import runner, surface_pourbaix
 
     anchor_key = str(params.get("anchor_key") or runner.coverage_anchor_key(config))
+    cov = config["coverage"]
+    n_top = slab_top_sites(config)
+    achieved = representable_coverages(cov["coverages"], n_top)
+    requested = (params["config"].get("coverage") or {}).get("coverages")
+    requested = list(DEFAULT_COVERAGES) if requested is None else requested
+    achieved_text = (
+        f"[{', '.join(f'{t:g}' for t in achieved)}]"
+        if isinstance(achieved, list)
+        else repr(achieved)
+    )
+    snap_note = (
+        f" (requested {requested}, snapped to {n_top} top sites)"
+        if achieved != requested
+        else ""
+    )
     ctx.append_chunk(
         "job_event",
         f"{NAME}: {config.get('name', '?')} model#{model_index} "
-        f"adsorbates={config['coverage']['adsorbates']} "
-        f"coverages={config['coverage']['coverages']} key={anchor_key[:12]}…",
+        f"adsorbates={cov['adsorbates']} "
+        f"coverages={achieved_text}{snap_note} key={anchor_key[:12]}…",
     )
     try:
         kw: dict[str, Any] = {"force_backend": params.get("force_backend")}
