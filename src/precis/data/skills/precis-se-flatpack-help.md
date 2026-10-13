@@ -8,7 +8,7 @@ answers:
   - what do fit, kerf and cutter_d mean for a flat-pack part, and which values are recorded?
   - why did the generator refuse my edge, shelf or sheet?
   - what is the sheet job, and which machines export from it?
-applies-to: the flat-pack generator under se (python API in this build; the se op and view='cut' follow); read precis-se-help for the se design surface
+applies-to: the flat-pack generator under se — the flatpack_box op on put/edit, view='cut' for the sheet file, and the flatpack_* drc checks; read precis-se-help for the se design surface
 status: active
 tags: workflow, design
 kinds: se
@@ -25,10 +25,43 @@ come from the python kind:
 get(kind='python', id='precis::precis_se.flatpack.generator.flatpack_box')
 ```
 
-In this build it
-is a python surface with tests; the se op (`flatpack_box` beside
-`realize`) and `view='cut'` on an se design are the next build, so an se
-design cannot yet hold one.
+## Put a box on an se design — the flatpack_box op
+
+`{"op": "flatpack_box", "params": {...}}` on `put`/`edit` of an se
+design, where `params` are the generator's kwargs verbatim. One call
+mints a `cad` design per panel under `<design>-<panel>` slugs (the panel
+outline extruded: `add` boxes for the outline, `cut` boxes for slots,
+`cut` cylinders for dog-bones), one placed block per panel, and a
+`rigid` connect per mated pair. Re-running replaces the cad designs
+under the same slugs and rebinds the blocks — nothing is suffixed `-2`,
+and a removed panel's block and cad design are retired. The params land
+in the design's `meta['flatpack']`, which every export and the drc
+checks regenerate from.
+
+```json
+{"ops": [{"op": "flatpack_box",
+          "params": {"W": 50, "H": 50, "D": 50,
+                     "material": "corrugated-3mm", "shelves": [22],
+                     "shelf_load_n": 5}}]}
+```
+
+## Get the cut file — view='cut'
+
+```text
+get(kind='se', id='cube50', view='cut', args={'format': 'svg'})
+```
+
+`format` is `svg` (LightBurn) or `dxf` (Maslow). The body is the file
+only; the parts, sheet size, utilisation, colour→settings table and the
+figures used (or "no recorded figure") are in its leading comment. A
+design without `meta['flatpack']` is refused — run the op first.
+
+`view='drc'` appends the `flatpack_*` checks: `flatpack_mating` (every
+tab/finger in its mate's slot at the `fit` clearance; every gap filled),
+`flatpack_min_width` (nothing narrower than 2t), `flatpack_nest_overlap`
+/`flatpack_off_sheet`, `flatpack_shelf_sag` (warn past 3 mm, or says it
+skipped), `flatpack_unrecorded_figure` (the `fit`/`kerf` used with no
+material record), and `flatpack_utilisation` (info, always).
 
 ## What it makes
 
@@ -128,5 +161,5 @@ changed and the figures that did seat.
 
 ## See also
 
-- [[precis-se-help]] — the se design surface the flat-pack op will join
+- [[precis-se-help]] — the se design surface the flat-pack op lives on
 - [[precis-se-print-help]] — the printed route for the same block

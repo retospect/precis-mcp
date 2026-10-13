@@ -78,9 +78,8 @@ FRET links between blocks — see `precis-se-fret-help`.
 only top-level keys are `description`, `ops` and `scenario` (anything else
 is rejected). An empty op list is refused while the design has blocks —
 ops go in `text=` or `ops=`; to start over, `delete` the design first. `delete` also retires the
-`structure` refs the design's blocks were bound to, except ones another
-live design still binds (named in the reply as "stay live") and promoted
-building blocks. Incremental changes go through
+`structure` refs it bound, except ones another live design still binds
+(named "stay live") or promoted building blocks. Incremental changes go through
 `edit(kind='se', id=…, ops=[…])`. Op batches are **atomic**: one bad op
 rolls the whole batch back.
 
@@ -88,10 +87,9 @@ rolls the whole batch back.
 `prototype` (one off, lifetime physics OFF) · `small_batch` (100, indoor
 five-year service) · `mass_production` (100 000, full lifetime physics).
 It decides which checks are meaningful, so `view='validate'` and
-`view='drc'` both print which scenario governed the run — or say
-`scenario: none chosen` rather than assume a default. An unknown name is
-rejected; an *absent* key keeps the earlier choice (design-level context,
-not part of the block tree `put` replaces).
+`view='drc'` print the governing scenario — or `scenario: none chosen`.
+An unknown name is rejected; an *absent* key keeps the earlier choice —
+it is design-level context, not part of the tree `put` replaces.
 
 `view='drc'` always ends with a one-line `validate:` digest (error/warning
 counts, first finding, or `validate: clean`), and a DRC-clean design with
@@ -214,6 +212,10 @@ the last four delimit region selectors, `precis-se-regions-help`.)
   `set_process_override`/`clear_process_override`
   — `block`, `field` (+ `value`) · `set_build_frame` — `block`, `down`
   [x,y,z] / `clear_build_frame` — `block`. Contracts: `precis-se-print-help`.
+- `flatpack_box` — `params` = the generator's kwargs (mm): one `cad`
+  design + placed block + `rigid` connect per panel, re-runnable in
+  place under `<design>-<panel>` slugs; params live in
+  `meta['flatpack']`. `precis-se-flatpack-help`.
 
 ## Ops — BOM, order, notes, formfind
 
@@ -414,12 +416,11 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 `tree · block · report · ports · topology · chain · measures · revisions · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links · export · ops`. There is **no `mass` view** (mass goes via
+literature · fret · links · export · cut · ops`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
-elicits what's missing — lead with it. `mechanics`/`literature` are
-atomic-mode-only (below); `topology` renders atomic mode's threading
-pairs + declared dof together and is empty prose for a non-atomic
-design.
+elicits what's missing — lead with it. `mechanics`/`literature`/
+`topology` are atomic-mode views. `view='cut'` gives the flat-pack cut
+file — `args={'format':'svg'|'dxf'}` from `meta['flatpack']`.
 
 `view='revisions'` lists every saved revision of the design — rev number,
 UTC time, op names, block count. `edit(kind='se', id=…,
@@ -439,8 +440,8 @@ or expand template occurrences. State overrides are not accepted.
 
 `view='ops'` is the only view that reads back into `put`: the design as a
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be
-reproduced in another database without a `pg_dump` or prod write access
-(the use it was built for: checking a production design locally). It is
+reproduced in another database without a `pg_dump` or prod write access.
+It is
 **final state, not history** — nothing removed ever appears, and no
 destructive op is emitted. Its header lists what the round-trip does not
 carry, and the two that bite are **block uids** (a re-`put` mints fresh

@@ -176,6 +176,7 @@ from precis_se.chain.vocab import (
     chain_role,
     group_domains,
 )
+from precis_se.flatpack import checks as se_flatpack_checks
 from precis_se.identity import AmbiguousLabel, block_by_uid, resolve_block
 from precis_se.measures import LEGACY_MEASURANDS, measurand_name
 from precis_se.measures import stackup as se_stackup
@@ -589,6 +590,7 @@ class SeHandler(Handler):
         *,
         slug: str,
         pending_jobs: list[PendingJob],
+        flatpack_params: list[dict[str, Any]],
     ) -> str | None:
         """Walk one ``put``/``edit``'s ops list. Delegates to
         :func:`~precis_se.atomic.apply.apply_ops_with_atomic` rather than
@@ -602,7 +604,12 @@ class SeHandler(Handler):
         the tree is saved. Returns the store-aware ops' echo, or
         ``None``."""
         return apply_ops_with_atomic(
-            self.store, tree, ops, design_slug=slug, pending_jobs=pending_jobs
+            self.store,
+            tree,
+            ops,
+            design_slug=slug,
+            pending_jobs=pending_jobs,
+            flatpack_params=flatpack_params,
         )
 
     def _run_pending(self, ref: Any, tree: SeTree, requests: list[PendingJob]) -> str:
@@ -784,9 +791,24 @@ class SeHandler(Handler):
         tree.own_slug = slug
         tree.foreign = self._foreign_resolver()
         pending_jobs: list[PendingJob] = []
-        echo = self._apply(tree, ops, slug=slug, pending_jobs=pending_jobs)
+        flatpack_params: list[dict[str, Any]] = []
+        echo = self._apply(
+            tree,
+            ops,
+            slug=slug,
+            pending_jobs=pending_jobs,
+            flatpack_params=flatpack_params,
+        )
         ttl = (title or slug).strip() or slug
-        meta = {"description": description}
+        meta: dict[str, Any] = {"description": description}
+        # The flatpack params home (build 3): a put that ran the op writes
+        # the new params; a put that didn't keeps the existing record —
+        # a replace doesn't mint panels, but the sheet job regenerates
+        # from these params either way.
+        if flatpack_params:
+            meta["flatpack"] = flatpack_params[-1]
+        elif existing is not None and (existing.meta or {}).get("flatpack"):
+            meta["flatpack"] = existing.meta["flatpack"]
         # A replace is a whole-tree write: serialize it against every other
         # load->mutate->save of this design (persist.tree_mutation — an edit,
         # or the se_simp job binding its result). A brand-new slug has no
@@ -882,6 +904,7 @@ class SeHandler(Handler):
         if any(isinstance(o, dict) and o.get("dry_run") for o in op_list):
             return self._join_dry_run(ref, op_list)
         pending_jobs: list[PendingJob] = []
+        flatpack_params: list[dict[str, Any]] = []
         # load -> apply -> save under the design's per-ref lock
         # (persist.tree_mutation's invariant): the retire-all/reinsert-all
         # save would otherwise silently drop a concurrent edit or the
@@ -892,8 +915,19 @@ class SeHandler(Handler):
             tree.own_slug = str(ref.slug)
             tree.foreign = self._foreign_resolver()
             echo = self._apply(
-                tree, op_list, slug=str(ref.slug), pending_jobs=pending_jobs
+                tree,
+                op_list,
+                slug=str(ref.slug),
+                pending_jobs=pending_jobs,
+                flatpack_params=flatpack_params,
             )
+            if flatpack_params:
+                # meta['flatpack'] is a top-level merge, not a replace —
+                # the rest of the meta (description, …) is untouched.
+                conn.execute(
+                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                    (Jsonb({"flatpack": flatpack_params[-1]}), ref.id),
+                )
             persist.save_tree(
                 self.store,
                 ref_id=ref.id,
@@ -1165,6 +1199,8 @@ class SeHandler(Handler):
                     load_structure=_load_structure,
                 )
             )
+        if v == "cut":
+            return Response(body=self._render_cut(ref, args))
         if v == "revisions":
             return Response(body=self._render_revisions(ref))
         if v == "measures":
@@ -2170,6 +2206,52 @@ class SeHandler(Handler):
         if footer:
             lines.append(footer)
         return "\n".join(lines)
+
+    def _render_cut(self, ref: Any, args: dict[str, Any] | None) -> str:
+        """``view='cut'`` — the flat-pack cut file itself, body only.
+
+        Regenerates the sheet job from the design's ``meta['flatpack']``
+        params home (every export regenerates; nothing stores the panels)
+        and runs the ``precis.sheet`` exporter for ``args['format']``
+        (``svg`` → LightBurn SVG, ``dxf`` → DXF R12 for the Maslow). The
+        notes live in the file's leading comment — the SVG ``<!-- -->`` /
+        DXF group-999 the exporters write — parts, sheet size,
+        utilisation, the colour→settings table and the figures used.
+        A sibling of ``view='export'``'s ``render_export``, not a branch
+        inside it."""
+        from precis.sheet.dxf import export_dxf
+        from precis.sheet.svg_laser import export_laser_svg
+        from precis_se.flatpack import flatpack_box
+        from precis_se.flatpack.panels import FlatpackError
+
+        fmt = str((args or {}).get("format") or "").strip().lower()
+        if fmt not in ("svg", "dxf"):
+            raise BadInput(
+                f"cut: format {fmt or '(missing)'!r} — one of svg, dxf",
+                next="get(kind='se', id=…, view='cut', args={'format': 'svg'})",
+            )
+        params = (ref.meta or {}).get("flatpack")
+        if not isinstance(params, dict):
+            raise BadInput(
+                f"se design {ref.slug!r} has no flatpack params — write it "
+                "with a flatpack_box op first",
+                next="put(kind='se', id=…, ops=[{'op': 'flatpack_box', "
+                "'params': {'W': 50, 'H': 50, 'D': 50}}])",
+            )
+        kw = dict(params)
+        if kw.get("sheet") is not None:
+            kw["sheet"] = tuple(kw["sheet"])
+        try:
+            fp = flatpack_box(**kw)
+        except (FlatpackError, TypeError, KeyError) as exc:
+            raise BadInput(
+                f"cut: the stored flatpack params for {ref.slug!r} no "
+                f"longer rebuild: {exc}",
+                next="re-run the flatpack_box op through edit to refresh "
+                "meta['flatpack']",
+            ) from exc
+        job = fp.job
+        return export_laser_svg(job).text if fmt == "svg" else export_dxf(job).text
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
@@ -4553,6 +4635,12 @@ def _render_drc(
             f for f in report.findings if f.rule not in chain_extra.supersedes
         ]
     report.findings.extend(chain_extra.rows)
+    # Flat-pack checks (docs/backlog/flatpack-furniture-generator.md build
+    # 3): read the design's meta['flatpack'] params home — store-aware,
+    # so they live here, not in the store-free drc() — and are appended
+    # after the other store-aware passes like the precedent/kinematics
+    # rows above.
+    report.findings.extend(se_flatpack_checks.findings(store, tree, ref_id))
     fill_line = _fill_fraction_line(tree)
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"
@@ -5906,6 +5994,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "topology": frozenset(),
     "chain": frozenset({"state"}),
     "export": frozenset({"format"}),
+    "cut": frozenset({"format"}),
     "measures": frozenset(),
     "revisions": frozenset(),
     "datums": frozenset(),

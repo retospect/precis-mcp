@@ -1,6 +1,6 @@
 ---
 status: ready
-title: Flat-pack furniture generator on a shared sheet job — the se op, params home, view='cut', store-aware checks and the cardboard cut (builds 1–2 shipped)
+title: Flat-pack furniture generator on a shared sheet job — the cardboard cut and the later exporters (builds 1–3 shipped)
 pillar: 3d-design
 prio: normal
 model: opus
@@ -26,7 +26,7 @@ ruled on it the same day:
   - PCB writes into it through an adapter ewod-pcb owns, and never reads
     from it.
 
-## What shipped (builds 1 and 2)
+## What shipped (builds 1–3)
 
 `src/precis/sheet/` (model, validation, laser SVG and DXF R12 exporters)
 and `src/precis_se/flatpack/` (materials, panel model with finger/straight
@@ -36,94 +36,34 @@ exporter contract live in those packages' docstrings; the acceptance
 figures (the panel table, 5 × 10 mm fingers, the kerf area formulas, the
 10 000 mm² shortfall) are pinned in `tests/test_flatpack_panels.py`,
 `tests/test_flatpack_nest.py` and `tests/test_sheet_job.py`; the 50 mm
-cube's SVG is the golden `tests/fixtures/flatpack/cube50_laser.svg`. Skill
-`precis-se-flatpack-help` describes the python surface. No agent surface
-yet: that is build 3 below.
+cube's SVG is the golden `tests/fixtures/flatpack/cube50_laser.svg`.
 
-## Design — the agent surface (build 3)
+The agent surface shipped in build 3: the `flatpack_box` op
+(handler-level beside `realize`; one cad design + placed block + rigid
+connect per panel under `<design>-<panel>` slugs, idempotent re-runs with
+retired-panel cleanup in `precis_se/flatpack/se_op.py` and `mating.py`),
+the `meta['flatpack']` params home (`put` merges it, `edit` writes it with
+`meta || jsonb`), `view='cut'` (`format` `svg`/`dxf`, the notes in the
+exporters' leading comment), and the store-aware `flatpack_*` checks in
+`precis_se/flatpack/checks.py` appended by `_render_drc`. Skills
+`precis-se-help` and `precis-se-flatpack-help` describe the surface; the
+acceptance figures are pinned in `tests/test_flatpack_se.py`.
 
-- **An se op**, `{"op": "flatpack_box", "params": {...}}`, sent through
-  `put(kind='se')`. It is handler-level beside `realize` and `generate`
-  (`precis_se/atomic/apply.py::HANDLER_LEVEL_OPS`).
-  - It mints one cad design per panel and one block per panel, placed, plus
-    the rigid connects. Commits are deferred until the whole ops list
-    validates, as `realize` does.
-  - The cad design is a `SceneSpec` built from a box, with `add` fingers
-    and tabs, `cut` slots and `cut` dog-bone cylinders, following
-    `precis_se/realize.py::prepare_realize`/`finish_realize` with one
-    pending per panel. The panel's `Frame` (origin, u, v, n) is the pose.
-  - Mated panel pairs are declared with a `connect` of joint class
-    `rigid`, so `validate.py::envelope_overlaps` treats their seam overlap
-    as sanctioned.
-  - Cad slugs are `<design>-<panel>`. Running the op again on the same
-    design replaces those cad designs under the same slugs and rebinds the
-    blocks. A panel that no longer exists, such as a removed shelf, has its
-    cad design retired. Nothing is suffixed `-2`, and nothing is orphaned.
-  - `generate` stays the atomic-structure path: its builders return a
-    `GeneratedBlock` structure, not a set of cad panels.
-- **Where the params live:** in `refs.meta['flatpack']` on the se design —
-  the `Flatpack.params` dict the generator already echoes (JSON-shaped).
-  - `apply_ops_with_atomic` hands them back through a new out-parameter, as
-    it hands back `pending_jobs`.
-  - `put` merges them into the meta it writes. A put whose ops include no
-    `flatpack_box` keeps an existing `meta['flatpack']`.
-  - An `edit` that runs the op writes them with `meta || jsonb`.
-  - Every export regenerates the panels from these params. No migration.
-- **The cut view:** `get(kind='se', id=..., view='cut', args={'format':
-  'svg'|'dxf'})`.
-  - It takes `format`, matching se's `view='export'`.
-  - It is registered in `precis_se/handler.py::_VIEW_ARGS`, with its own
-    branch. It is a sibling of the nucleic `chain/export.py::render_export`,
-    not a branch inside it.
-  - The body is the file only. The notes already go in the exporters'
-    leading comment (SVG `<!-- -->`, DXF group 999): parts, sheet size,
-    utilisation, the colour → settings table, the figures used and their
-    source, and any refused layer.
-- **Skills:**
-  - `precis-se-help` gains the op and the view in its tables.
-  - `precis-se-flatpack-help` gains the op, the view and the fenced
-    examples once they exist.
+## The first physical check — Reto's
 
-## Checks (build 3)
+Not agent-gradable; handed over as a review-queue item once build 3 lands.
 
-The checks live in a new `precis_se/flatpack/checks.py::findings(store,
-tree, ref_id)`. It reads `meta['flatpack']`, rebuilds the panel model, and
-returns `ValidationIssue`s (`precis_se/validate.py`).
-`precis_se/handler.py::_render_drc` appends them after the store-aware
-passes. `drc.py::drc(tree)` stays store-free.
-
-Severity `error`:
-- **Mating.** Every tab or finger is transformed into its mate panel's
-  frame and must lie inside the mate's slot or gap polygon, with clearance
-  `fit` on each side, within 1e-6 mm. Every slot has a tab. (The
-  ownership-tiling test in `tests/test_flatpack_panels.py` is the
-  store-free form of this; the check reuses `Panel.frame`.)
-- **Minimum width.** No part is narrower than `2t` anywhere: shapely
-  `buffer(-t)` leaves a non-empty polygon.
-- **Nesting.** No two nested parts overlap after kerf, and every part lies
-  inside the sheet margin.
-
-Severity `warn`:
-- **Shelf sag** when `shelf_load_n` is set: a simply supported beam with
-  the material's `E`. It warns past 3 mm. If the load is unset, or the
-  material has no `E`, the finding says it skipped and why rather than
-  inventing a figure. (`flatpack_box` already accepts and echoes
-  `shelf_load_n`.)
-- **No recorded figure.** A material with no recorded `fit` or `kerf` for
-  the machine names the value it used (the generator's `FigureEcho`).
-
-Severity `info`:
-- Sheet utilisation, always.
+- Reto cuts the 50 mm finger-joint cube in 3 mm corrugated cardboard on
+  his laser.
+- The `fit` and `kerf` that seat are recorded as `corrugated-3mm`'s laser
+  figures in `materials.py` and the generator's docstring, in a follow-up
+  commit.
+- If the first cut does not seat, the record says what changed, and the
+  figures that seated are the ones recorded.
 
 ## Builds
 
-3. **se design, checks and the cardboard cut.**
-   - The se op, the params home, the `view='cut'` surface, the checks
-     above, and both skills.
-   - It lands on the software criteria. Then a review-queue item hands Reto
-     the cube's SVG for the physical cut.
-
-Later, each its own build or less, none blocking build 3:
+Later, each its own build or less:
 - **Cricut SVG exporter.** Close to free on top of the laser writer: the
   SVG restricted to `cut` and `score`, plus `pressure` and `blade` per
   layer from the layer's `cricut` settings. Any other op is refused by
@@ -157,37 +97,6 @@ Later, each its own build or less, none blocking build 3:
 - Multi-sheet layouts. The packer refuses, naming how much does not fit.
 - Grain or flute direction optimisation.
 - PCB reading from the sheet job, ruled out on se-machine-design-7.
-
-## Acceptance criteria (build 3)
-
-- The se op realises the 50 mm cube as 5 placed blocks with rigid connects.
-- `view='drc'` reports zero flatpack mating findings and zero
-  `undeclared_interpenetration` between mated panels.
-- Running the op again with `shelves=[22]` adds one block and one cad
-  design. It suffixes nothing and orphans nothing.
-- `view='cut'` returns a valid SVG and a valid DXF. The notes give the
-  parts, the sheet size, the utilisation and the colour table, and say that
-  `fit` and `kerf` are 0 mm with no recorded figure.
-- **Physical check.** This is Reto's, and it is not agent-gradable. It is
-  handed over as a review-queue item after build 3 lands.
-  - Reto cuts the 50 mm finger-joint cube in 3 mm corrugated cardboard on
-    his laser.
-  - The `fit` and `kerf` that seat are recorded as `corrugated-3mm`'s laser
-    figures in `materials.py` and the generator's docstring, in a follow-up
-    commit.
-  - If the first cut does not seat, the record says what changed, and the
-    figures that seated are the ones recorded.
-  - The item is deleted when that commit lands.
-
-## Target + blast radius (build 3)
-
-- `precis_se/flatpack/checks.py`, new.
-- `precis_se/atomic/apply.py`: the handler-level op and the params
-  out-parameter.
-- `precis_se/handler.py`: the meta merge on put and edit, `view='cut'` in
-  `_VIEW_ARGS`, and the checks appended in `_render_drc`.
-- Skills: `precis-se-help`, `precis-se-flatpack-help`.
-- No migrations, no worker changes, no new dependency.
 
 ## Open questions / decisions log
 

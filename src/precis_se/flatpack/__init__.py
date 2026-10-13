@@ -35,11 +35,22 @@ Shape, in call order:
   together and emits the :class:`~precis.sheet.model.SheetJob` (one ``cut``
   layer, slots before outlines, parts in nesting order); the exporters in
   :mod:`precis.sheet` take it from there.
+* :mod:`precis_se.flatpack.mating` — the joint-region geometry shared by
+  the se op and the checks: mated slab-overlap pairs, rectangle
+  decomposition, material projected into a mate's frame.
 
-**Seams.** Nothing here touches the store or a handler; the se op, the
-params home (``meta['flatpack']``), ``view='cut'`` and the store-aware
-checks are the next build and will sit in ``precis_se.atomic.apply`` /
-``precis_se.handler`` / ``flatpack/checks.py``. Living hinges are a
+**The agent surface.** The ``flatpack_box`` se op
+(:mod:`precis_se.flatpack.se_op`, dispatched from
+:mod:`precis_se.atomic.apply` like ``realize``) mints one cad design per
+panel under ``<design>-<panel>`` slugs, one placed block per panel, and
+a ``rigid`` connect per mated pair; re-runs replace in place and retire
+the cad designs of panels that vanished. The ``Flatpack.params`` echo
+lives in the se ref's ``meta['flatpack']`` — merged in by ``put``
+(``edit`` writes it with ``meta || jsonb``) — and ``view='cut'``
+(:meth:`precis_se.handler.SeHandler._render_cut`) regenerates the sheet
+job from it for ``format='svg'|'dxf'``. The store-aware checks in
+:mod:`precis_se.flatpack.checks` are appended to ``view='drc'`` by
+``_render_drc``; ``drc()`` stays store-free. Living hinges are a
 separate item. Units are mm only, here and in the sheet job.
 """
 

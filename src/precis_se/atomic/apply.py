@@ -36,6 +36,11 @@ from precis_se.chain.fold import op_fold_layout
 from precis_se.chain.protocol import op_make_steps
 from precis_se.chain.relax import op_relax_chain
 from precis_se.datums import snapshot_measure_datums, stamp_region_pins
+from precis_se.flatpack.se_op import (
+    PendingFlatpack,
+    finish_flatpack_box,
+    prepare_flatpack_box,
+)
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.persist import structure_version_resolver
@@ -88,6 +93,13 @@ HANDLER_LEVEL_OPS = (
     # (:mod:`precis_se.chain.protocol`): store-read (transitions) and a
     # write to another kind, never deferred.
     "make_steps",
+    # The flat-pack box generator (:mod:`precis_se.flatpack.se_op`,
+    # docs/backlog/flatpack-furniture-generator.md build 3): mints one
+    # cad design per panel under ``<design>-<panel>`` slugs — store-write
+    # deferred like ``realize`` — and hands its ``Flatpack.params`` back
+    # through ``flatpack_params`` for the handler's ``meta['flatpack']``
+    # home.
+    "flatpack_box",
 )
 
 
@@ -106,6 +118,7 @@ def apply_ops_with_atomic(
     *,
     design_slug: str,
     pending_jobs: list[PendingJob] | None = None,
+    flatpack_params: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Walk ``ops`` in order, applying the store-aware ops here (the
     atomic mode's 3, ``realize``, ``relax_chain`` and ``fold_layout``) and
@@ -164,6 +177,15 @@ def apply_ops_with_atomic(
     passes no ``pending_jobs`` list refuses the strategy rather than
     dropping the request on the floor.
 
+    **``flatpack_box`` is store-write-deferred like ``realize``**
+    (:mod:`precis_se.flatpack.se_op`): it mints/replaces one ``cad``
+    design per panel under ``<design>-<panel>`` slugs in the finisher
+    loop, and hands its ``Flatpack.params`` back through the
+    ``flatpack_params`` out-list — the caller merges the last entry into
+    ``refs.meta['flatpack']``, the params home ``view='cut'`` and the
+    flat-pack checks regenerate from. A caller with no such list refuses
+    the op rather than dropping the params on the floor.
+
     Returns a compact echo of every atomic store-aware op (for the caller's
     response), or ``None`` when there were none."""
     roster = all_op_names()
@@ -180,6 +202,8 @@ def apply_ops_with_atomic(
     pending_joins: list[PendingJoin] = []
     pending_realizes: list[PendingRealize] = []
     pending_chain_realizes: list[PendingRealizeChain] = []
+    pending_flatpacks: list[PendingFlatpack] = []
+    flatpack_last_ids: set[str] | None = None
     pending_dof_checks: list[str] = []
     for op in ops:
         if not isinstance(op, dict) or "op" not in op:
@@ -293,6 +317,23 @@ def apply_ops_with_atomic(
             echoes.append(echo)
             pending_chain_realizes.append(chain_pending)
             continue
+        if name == "flatpack_box":
+            if flatpack_params is None:
+                raise BadInput(
+                    "flatpack_box needs a caller that records its params "
+                    "home (put/edit on kind='se')"
+                )
+            try:
+                echo, flatpack_pending = prepare_flatpack_box(
+                    store, tree, op, design_slug, carried_ids=flatpack_last_ids
+                )
+            except OpError as exc:
+                raise BadInput(str(exc)) from exc
+            echoes.append(echo)
+            flatpack_params.append(dict(flatpack_pending.params))
+            flatpack_last_ids = {p.block_name for p in flatpack_pending.panels}
+            pending_flatpacks.append(flatpack_pending)
+            continue
         try:
             apply_ops(tree, [op])
         except OpError as exc:
@@ -309,6 +350,8 @@ def apply_ops_with_atomic(
         finish_realize(store, tree, realize_pending)
     for chain_pending in pending_chain_realizes:
         finish_realize_chain(store, tree, chain_pending)
+    for flatpack_pending in pending_flatpacks:
+        finish_flatpack_box(store, tree, flatpack_pending)
     for block_name in pending_dof_checks:
         node = tree.blocks.get(block_name)
         if node is None or node.dof is None:

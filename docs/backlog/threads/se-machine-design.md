@@ -124,9 +124,12 @@ off that gap until it closes.
 3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped
    2026-10-09 (`src/precis/sheet/`, `src/precis_se/flatpack/`: panels,
    finger/straight joints, shelves, skyline nesting, laser SVG and DXF,
-   the 50 mm cube golden). Left: build 3, the se op and params home,
-   `view='cut'`, store-aware checks and the cardboard cut, whose physical
-   fit check is Reto's. Rulings (laser first, 3 mm cardboard, finger
+   the 50 mm cube golden); build 3 shipped 2026-10-13
+   (`flatpack_box` op, `meta['flatpack']` params home, `view='cut'`,
+   store-aware `flatpack_*` checks, both skills). Left: the cardboard
+   cut — Reto cuts the 50 mm cube and records the `fit`/`kerf` that
+   seat — then the later builds (Cricut, raster engrave, the geom move,
+   engrave labels). Rulings (laser first, 3 mm cardboard, finger
    joints default, shared sheet job under flat-pack, PCB writes through
    ewod-pcb's adapter only) are recorded in the file.
 4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by

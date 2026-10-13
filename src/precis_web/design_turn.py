@@ -243,6 +243,12 @@ _SE_STORE_AWARE_SIGNATURES: dict[str, str] = {
         "realize_chain{block:helix,start,end,fidelity?:'allatom'|'backbone',"
         "sites?:[offsets],loops?:bool}"
     ),
+    # The flat-pack maker op (:mod:`precis_se.flatpack.se_op`) — mints one
+    # cad design + placed block per panel and binds them.
+    "flatpack_box": (
+        "flatpack_box{params:{W,H,D,material?,t?,shelves?,joint?,'fit'?,"
+        "kerf?,cutter_d?,sheet?,shelf_load_n?}}"
+    ),
 }
 
 #: Structure op signatures — ``structure_propose``'s vocabulary widened to
