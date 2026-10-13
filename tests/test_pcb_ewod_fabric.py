@@ -305,9 +305,11 @@ def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_chang
     so the lock is pinned by the two tests below. Version 4 emits the
     fixed copper at the array anchor; version 5 declares the five fabric
     invariants as measures (gr345859 §F — ``test_pcb_generator_invariants``
-    and ``test_pcb_generator_version_tripwire`` pin both)."""
+    and ``test_pcb_generator_version_tripwire`` pin both); version 6
+    declares every channel pin on a sink, the unwired ones ``unused``
+    (pcb-lazy-netlist-and-checks.md Slice 2)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 5
+    assert exp.version == 6
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.

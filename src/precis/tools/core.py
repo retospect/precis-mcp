@@ -202,7 +202,12 @@ def _accepted_sorts(kind: str | None, browse: bool) -> tuple[str, ...]:
     sorts = ("recency", "prio") if browse else ("relevance", "recency")
     if kind and "," not in kind:
         rt = _get_runtime()
-        handler = rt.hub.handler_for(rt._expand_kind_code(kind.strip()))
+        # A runtime without a hub (the pre-dispatch unit tests stub one in
+        # with only render_error) contributes no handler sorts.
+        hub = getattr(rt, "hub", None)
+        if hub is None:
+            return sorts
+        handler = hub.handler_for(rt._expand_kind_code(kind.strip()))
         sorts = (*sorts, *getattr(handler, "EXTRA_SORTS", ()))
     return sorts
 
