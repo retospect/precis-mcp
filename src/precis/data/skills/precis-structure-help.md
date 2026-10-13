@@ -381,13 +381,17 @@ the design and **every run is recorded** (see `view='runs'`).
 |----------|---------|-------|------|
 | `clean` (default) | pure geometry repair (ours) | nothing | fix overlaps / sub-covalent bonds — "make the stupid geometry sane" |
 | `emt` | ASE EMT + FIRE (ours, torch-free) | nothing (core dep) | cheap, real-but-approximate energy/forces on the closed fcc-metal set `{Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}` — never dispatches to the GPU node |
+| `xtb` | ASE + tblite GFN2-xTB + FIRE | `precis-mcp[estimate]` (no linux-aarch64 wheel — macOS and manylinux x86_64 only) | the relaxer of record for hexfold blocks: real molecular energies/forces over the light-element palette, atoms-only (no variable-cell, `fixed` pins whole atoms) |
 | `ml` | ASE + MACE-MP-0 / CHGNet | `precis-mcp[dft-ml]` | cheap, physical pre-relax before any DFT |
-| `ff` · `xtb` · `dft-fast` · `dft-tight` | rented | (later) | progressively more correct |
+| `ff` · `dft-fast` · `dft-tight` | rented | (later) | progressively more correct |
 
 `emt` is ours like `clean` and works out of the box (ASE +
 spglib are core deps, not gated behind an extra); an element outside its
 closed set raises `Unsupported` with a "use fidelity='ml'" hint rather than
-a stray error. No variable-cell mode.
+a stray error. No variable-cell mode. `xtb` relaxes atoms only — a cell
+(periodic or not) stays fixed. `converged` is the optimiser's own verdict —
+a run stopped at the step cap is *attempted, non-converged*, never
+"converged at the last step".
 
 ```python
 edit(kind="structure", id="pd111", ops=[{"op": "relax", "fidelity": "clean"}])

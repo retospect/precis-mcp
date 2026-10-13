@@ -16,12 +16,14 @@ this design or any other sharing the input geometry.
 
 **Two backends, routed by rung (gr346449).** The precis-dft image exposes
 exactly one subcommand, ``precis-dft-run gpaw-relax``, so it can only compute a
-GPAW rung (:data:`_CONTAINER_FIDELITIES`). The MLIP rung
-(:data:`_INPROC_FIDELITIES`) runs **in this process** on the node via
-:func:`_default_ml_runner`, reusing
-:func:`precis.structure.relax._ml_calculator` — the same backend a local
-``relax(fidelity='ml')`` would use, already installed on the DFT node with
-torch + CUDA. A rung in neither set fails the job: this dispatcher used to send
+GPAW rung (:data:`_CONTAINER_FIDELITIES`). The in-process rungs
+(:data:`_INPROC_FIDELITIES` — ``ml``, ``xtb``) run **in this process** on
+the node via :func:`_default_ml_runner`, reusing
+:func:`precis.structure.relax._ml_calculator` /
+:func:`._xtb_calculator` — the same backends a local ``relax()`` would
+use, already installed where their extras land (torch + CUDA for the
+MLIP; the platform-markered tblite wheel for GFN2-xTB). A rung in
+neither set fails the job: this dispatcher used to send
 *every* fidelity to ``gpaw-relax``, so an ``ml`` request silently ran a
 spin-polarized RPBE DFT relax and, if it ever finished inside the wall-clock
 cap, recorded DFT energies in the run-cube under a MACE label. Running
@@ -188,8 +190,11 @@ _CONTAINER_FIDELITIES = frozenset({"gpaw"})
 #: Rungs this worker computes **in-process** on the node, with no container at
 #: all — the MLIP backend is an ordinary precis dependency
 #: (:func:`precis.structure.relax._ml_calculator`), already installed on the
-#: DFT node alongside torch/CUDA.
-_INPROC_FIDELITIES = frozenset({"ml"})
+#: DFT node alongside torch/CUDA, and GFN2-xTB is tblite's ASE calculator
+#: (:func:`precis.structure.relax._xtb_calculator`, the ``[estimate]``
+#: extra — absent on linux-aarch64, where the in-proc runner fails the job
+#: honestly as infra rather than running different physics).
+_INPROC_FIDELITIES = frozenset({"ml", "xtb"})
 
 #: Force-convergence target for the in-process MLIP rung, matching the floor
 #: :func:`precis.structure.relax._relax_ml` applies to its ``tol`` so a
@@ -753,43 +758,53 @@ class _RelaxDeadline(RuntimeError):
 def _default_ml_runner(
     *,
     poscar: str,
+    fidelity: str,
     model: str,
     steps: int,
     cell: str | None,
     timeout: float,
 ) -> dict[str, Any]:
-    """Relax at the MLIP rung **in this process**, returning the container
-    contract's ``result.json`` shape (gr346449).
+    """Relax an :data:`_INPROC_FIDELITIES` rung **in this process**, returning
+    the container contract's ``result.json`` shape (gr346449).
 
     There is no ML container: the precis-dft image implements ``gpaw-relax``
     and nothing else, so before this existed a ``fidelity='ml'`` job ran a
     spin-polarized RPBE DFT relax and recorded the answer under a MACE label.
     The MLIP backend is an ordinary precis dependency, already on the DFT node
     with torch + CUDA, so the honest fix is to compute the rung here rather
-    than ship a second image.
+    than ship a second image. ``fidelity='xtb'`` rides the same in-process
+    seam on tblite's ASE calculator — the GFN2-xTB relaxer of record for
+    hexfold blocks — with its own optimiser recipe (ASE FIRE,
+    ``maxstep=0.1`` Å, the settings the 2026-10-11 neck re-runs used) rather
+    than the ML rung's BFGS.
 
-    The calculator comes from :func:`precis.structure.relax._ml_calculator` so
-    the model routing and the "[dft-ml] not installed" message have exactly one
-    definition; a missing backend surfaces as ``RelaxUnsupported`` for the
-    caller to class as infra. Constraints ride in on the POSCAR's *Selective
-    dynamics* block, which is how the fixed-atom mask reached the container
-    too, so a slab's frozen bottom layers stay frozen.
+    The calculator comes from
+    :func:`precis.structure.relax._ml_calculator` /
+    :func:`._xtb_calculator` so the model routing and the
+    backend-not-installed messages have exactly one definition; a missing
+    backend surfaces as ``RelaxUnsupported`` for the caller to class as
+    infra. Constraints ride in on the POSCAR's *Selective dynamics* block,
+    which is how the fixed-atom mask reached the container too, so a slab's
+    frozen bottom layers stay frozen.
     """
     import io
     import time
 
     from ase.io import write as ase_write
     from ase.io.vasp import read_vasp
-    from ase.optimize import BFGS
+    from ase.optimize import BFGS, FIRE
 
-    from precis.structure.relax import _cell_filter, _ml_calculator
+    from precis.structure.relax import _cell_filter, _ml_calculator, _xtb_calculator
 
     # read_vasp, not the generic ase.io.read: the generic reader's return type
     # is a frame-or-list union (it honours an ``index`` slice), which no
     # single-structure caller here can use.
     atoms = read_vasp(io.StringIO(poscar))
     before = atoms.get_positions().copy()
-    atoms.calc = _ml_calculator(model)
+    if fidelity == "xtb":
+        atoms.calc = _xtb_calculator()
+    else:
+        atoms.calc = _ml_calculator(model)
 
     curve: list[float] = []
     deadline = time.monotonic() + timeout
@@ -801,7 +816,13 @@ def _default_ml_runner(
             raise _RelaxDeadline(f"exceeded {timeout:.0f}s after {len(curve)} steps")
 
     target = _cell_filter(atoms, cell) if cell else atoms
-    opt = BFGS(target, logfile=None)
+    # FIRE maxstep 0.1 Å is the xtb recipe (the local _relax_xtb rung and the
+    # 2026-10-11 neck re-runs); ml keeps its historical BFGS.
+    opt = (
+        FIRE(target, maxstep=0.1, logfile=None)
+        if fidelity == "xtb"
+        else BFGS(target, logfile=None)
+    )
     opt.attach(_record, interval=1)
     converged = bool(opt.run(fmax=_ML_FMAX, steps=steps))
 
@@ -859,6 +880,18 @@ def _dispatch_inproc(
     """
     from precis.structure.relax import RelaxUnsupported
 
+    if fidelity == "xtb" and cell is not None:
+        # The rung's contract is atoms-only (the structure handler refuses
+        # ``cell=`` on xtb as BadInput before a job is ever minted). A job
+        # carrying ``cell`` got here around that gate, so refuse honestly
+        # rather than compute settings the rung does not define.
+        ctx.record_failure(
+            "struct_relax: rung 'xtb' relaxes atoms only — the job params "
+            f"carry cell={cell!r}, which the rung does not support",
+            failure_class="infra",
+        )
+        return
+
     timeout = _relax_timeout_s()
     ctx.append_chunk(
         "job_event",
@@ -868,13 +901,19 @@ def _dispatch_inproc(
     )
     try:
         result = ML_RUNNER(
-            poscar=poscar, model=model, steps=steps, cell=cell, timeout=timeout
+            poscar=poscar,
+            fidelity=fidelity,
+            model=model,
+            steps=steps,
+            cell=cell,
+            timeout=timeout,
         )
     except RelaxUnsupported as exc:
         ctx.record_failure(
             f"struct_relax: rung {fidelity!r} has no backend on this host ({exc}) "
-            "-- the job was routed here by the claim gate but the MLIP wheel is "
-            "missing; install the [dft-ml] extra on the node",
+            "-- the job was routed here by the claim gate but the backend wheel "
+            "is missing; install the extra that carries it on the node "
+            "([dft-ml] for 'ml', [estimate] for 'xtb')",
             failure_class="infra",
         )
         return

@@ -134,10 +134,11 @@ def _stub_ml_runner(relaxed_poscar: str, *, e_tot: float = -3.21):
     """An ML_RUNNER that returns the container contract's result shape."""
     calls: list[dict[str, Any]] = []
 
-    def runner(*, poscar, model, steps, cell, timeout):
+    def runner(*, poscar, fidelity, model, steps, cell, timeout):
         calls.append(
             {
                 "poscar": poscar,
+                "fidelity": fidelity,
                 "model": model,
                 "steps": steps,
                 "cell": cell,
@@ -994,7 +995,12 @@ def test_default_ml_runner_round_trips_a_poscar(structure, monkeypatch):
     params = _build_params(structure, fidelity="ml")
 
     result = struct_relax._default_ml_runner(
-        poscar=params["poscar"], model="mace_mp", steps=20, cell=None, timeout=120.0
+        poscar=params["poscar"],
+        fidelity="ml",
+        model="mace_mp",
+        steps=20,
+        cell=None,
+        timeout=120.0,
     )
     assert result["ok"] is True
     scalars = result["scalars"]
@@ -1017,6 +1023,7 @@ def test_default_ml_runner_honours_the_wall_clock_cap(structure, monkeypatch):
     with pytest.raises(struct_relax._RelaxDeadline):
         struct_relax._default_ml_runner(
             poscar=params["poscar"],
+            fidelity="ml",
             model="mace_mp",
             steps=200,
             cell=None,

@@ -13,11 +13,14 @@ original cleanup pass, docs/backlog/se-nanobud-graph.md §1) — the capability
 sp2 vertex toward 120°, not just sp3's 109.47°), not only lengths. ``emt``
 (rung 1) is also **ours** — a torch-free ASE-EMT relax, always available (ASE is a core
 dependency, no MLIP needed), whose closed element coverage happens
-to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. Every rung
-above that is a **rented backend** (``ff``/``xtb``/``ml``/``dft-fast``/
-``dft-tight``) gated behind the ``[dft-ml]`` / ``[dft-gpaw]``
-extras — calling one without its backend raises :class:`RelaxUnsupported`,
-surfaced as ``Unsupported`` at the handler, never a crash.
+to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. ``xtb``
+(GFN2-xTB via tblite's ASE calculator) is a real energy rung wherever the
+tblite wheel installs — the relaxer of record for hexfold blocks (Reto
+2026-10-11, gr472846). The remaining rungs are **rented backends**
+(``ff``/``ml``/``dft-fast``/``dft-tight``) gated behind the ``[dft-ml]`` /
+``[dft-gpaw]`` extras — calling one without its backend raises
+:class:`RelaxUnsupported`, surfaced as ``Unsupported`` at the handler,
+never a crash.
 
 Rung 0 honours the ``fixed`` constraint (a fixed axis never moves) and returns a
 structured convergence envelope (converged + steps + max displacement + the
@@ -42,10 +45,11 @@ from . import elements, export, georelax
 from .scene import Scene
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
-#: (ASE + an MLIP, the ``[dft-ml]`` extra); ``ff``/``xtb``/``dft-*`` stay gated.
+#: (ASE + an MLIP, the ``[dft-ml]`` extra) and ``xtb`` one too (tblite's ASE
+#: calculator, the ``[estimate]`` extra); ``ff``/``dft-*`` stay gated.
 #: ``emt`` (rung 1) is deliberately *not* here — it's ours, like ``clean``,
 #: always-on (ASE is a core dependency).
-_RENTED_RUNGS = {"ff", "xtb", "ml", "dft-fast", "dft-tight"}
+_RENTED_RUNGS = {"ff", "ml", "dft-fast", "dft-tight"}
 
 #: EMT's built-in interatomic-potential coverage (ASE's ``emt.py`` parameter
 #: table) — a closed set of fcc catalytic metals + light adsorbate elements.
@@ -207,9 +211,10 @@ def relax(
             "'clean'/'geo' geometry rungs have no stress to relax the cell "
             "against"
         )
-    if cell_mode is not None and fidelity == "emt":
+    if cell_mode is not None and fidelity in ("emt", "xtb"):
         raise RelaxUnsupported(
-            "variable-cell relax isn't supported at rung 'emt' — use fidelity='ml'"
+            f"variable-cell relax isn't supported at rung {fidelity!r} — "
+            "use fidelity='ml'"
         )
     if dispersion and fidelity not in ("ml",):
         raise RelaxUnsupported(
@@ -222,6 +227,8 @@ def relax(
         return _relax_geo(scene, steps=steps, tol=tol)
     if fidelity == "emt":
         return _relax_emt(scene, steps=steps, tol=tol)
+    if fidelity == "xtb":
+        return _relax_xtb(scene, steps=steps, tol=tol)
     if fidelity == "ml":
         return _relax_ml(
             scene,
@@ -473,6 +480,97 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         forces=per_atom_forces,
         forces_approx=False,
         forces_source="emt",
+    )
+
+
+def _xtb_calculator():
+    """The GFN2-xTB ASE calculator (tblite), or raise RelaxUnsupported.
+
+    The import is isolated here so a missing backend gives one clean
+    ``RelaxUnsupported`` naming the extra AND the platform limit, never a
+    stray ImportError — tblite ships no linux-aarch64 wheel, so the rung is
+    genuinely absent on the aarch64 cluster nodes rather than merely
+    uninstalled (``pyproject.toml``'s ``[estimate]`` marker comment). GFN2
+    at 1000 K electronic temperature is the recipe the hexfold neck re-runs
+    of 2026-10-11 validated (hexfold-corner/s4_xtb.py)."""
+    try:
+        from tblite.ase import TBLite
+    except ImportError as exc:
+        raise RelaxUnsupported(
+            "relax rung 'xtb' (GFN2-xTB) needs tblite — pip install "
+            "'precis-mcp[estimate]'; tblite ships no linux-aarch64 wheel "
+            "(macOS arm64/x86_64 and manylinux x86_64 only)"
+        ) from exc
+    return TBLite(method="GFN2-xTB", electronic_temperature=1000.0, verbosity=0)
+
+
+def _relax_xtb(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
+    """Rung ``xtb``: relax on GFN2-xTB via tblite's ASE calculator.
+
+    The relaxer of record for hexfold blocks (Reto 2026-10-11, gr472846):
+    a semi-empirical quantum rung that resolves what the ``stick``/``geo``
+    previews and the closed-element-set ``emt`` rung cannot — real
+    energies + forces over the whole light-element palette at molecular
+    cost. Settings mirror the reference recipe the 2026-10-11 neck
+    re-runs converged on (hexfold-corner/s4_xtb.py): GFN2-xTB at 1000 K
+    electronic temperature, ASE FIRE (``maxstep`` 0.1 Å), the ladder's
+    usual ``fmax=max(tol, 0.05)`` convention.
+
+    Honours ``fixed`` as a **whole-atom** pin (like ``geo``: any fixed
+    axis pins the atom — ``ase.constraints.FixAtoms``), and the cell is
+    never relaxed — a molecule stays whatever box it was saved in
+    (variable-cell requests are refused in :func:`relax` before this
+    runs). A missing tblite raises :class:`RelaxUnsupported` naming the
+    platform limit (no linux-aarch64 wheel).
+    """
+    if not export.ase_available():
+        raise RelaxUnsupported(
+            "relax rung 'xtb' needs ASE + tblite — pip install 'precis-mcp[estimate]'"
+        )
+    from ase.constraints import FixAtoms
+    from ase.optimize import FIRE
+
+    atoms = export._to_ase(scene)
+    labels = list(scene.atoms)
+    before = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
+
+    pinned = [idx for idx, la in enumerate(labels) if scene.atoms[la].fixed]
+    if pinned:
+        atoms.set_constraint(FixAtoms(indices=pinned))
+    atoms.calc = _xtb_calculator()
+
+    curve: list[float] = []
+
+    def _record() -> None:
+        f = atoms.get_forces()
+        curve.append(round(float(np.sqrt((f**2).sum(axis=1).max())), 4))
+
+    opt = FIRE(atoms, maxstep=0.1, logfile=None)
+    opt.attach(_record, interval=1)
+    converged = bool(opt.run(fmax=max(tol, 0.05), steps=steps))
+
+    scaled = atoms.get_scaled_positions()
+    for idx, la in enumerate(labels):
+        scene.atoms[la].frac = scene.cell.wrap(np.asarray(scaled[idx], dtype=float))
+    after = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
+    max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
+    forces = atoms.get_forces()
+    max_force = float(np.sqrt((forces**2).sum(axis=1).max()))
+    per_atom_forces = {
+        la: [float(x) for x in forces[idx]] for idx, la in enumerate(labels)
+    }
+    return RelaxResult(
+        rung="xtb",
+        converged=converged,
+        n_steps=int(opt.get_number_of_steps()),
+        max_disp=round(max_disp, 4),
+        curve=curve,
+        energy=float(atoms.get_potential_energy()),
+        max_force=round(max_force, 4),
+        model="gfn2-xtb",
+        forces=per_atom_forces,
+        forces_approx=False,
+        forces_source="gfn2-xtb",
     )
 
 

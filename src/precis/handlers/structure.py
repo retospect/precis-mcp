@@ -1772,13 +1772,23 @@ class StructureHandler(Handler):
         # 285774) — an all-organic, non-periodic, neutral scene defaults to
         # the organic MLIP (mace_off) rather than the materials one
         # (mace_mp), which is off-distribution for exactly that chemistry.
+        # The 'xtb' rung has exactly one backend (GFN2-xTB via tblite), so
+        # its model is pinned rather than routed — naming anything else is
+        # refused here rather than silently computed under a wrong label.
         # Every other rung keeps the historical literal default — model
         # isn't functional there yet, so there's nothing to route.
         explicit_model = ro.get("model")
         if explicit_model is not None:
             model = str(explicit_model)
+            if fidelity == "xtb" and model.lower().replace("_", "-") != "gfn2-xtb":
+                raise BadInput(
+                    f"relax model {model!r} does not apply to rung 'xtb' — "
+                    "the rung is GFN2-xTB only (model='gfn2-xtb' or omit)"
+                )
         elif fidelity == "ml":
             model = route_ml_model(scene)
+        elif fidelity == "xtb":
+            model = "gfn2-xtb"
         else:
             model = "mace_mp"
         # Optional variable-cell relax: 'inplane' (slab box, vacuum pinned) or
@@ -1796,6 +1806,15 @@ class StructureHandler(Handler):
             raise BadInput(
                 "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
                 "geometry repair has no stress to relax the cell against"
+            )
+        if cell_mode is not None and fidelity == "xtb":
+            # Refused here, not left to relax()'s RelaxUnsupported: that
+            # exception is the cloud-dispatch trigger below, and a struct_relax
+            # job carrying cell= for an atoms-only rung would only fail as
+            # infra on the node.
+            raise BadInput(
+                "variable-cell relax (cell=…) needs fidelity='ml'; rung 'xtb' "
+                "relaxes atoms only"
             )
         # Optional DFT-D3 on top of the MLIP. Off by default (the historical
         # behaviour), but load-bearing for anything held together by van der
@@ -1878,6 +1897,16 @@ class StructureHandler(Handler):
                     "flag, so this relax cannot be dispatched",
                     next="install the [dft-ml] extra locally, or re-run with "
                     "dispersion omitted to use the cluster",
+                ) from exc
+            # xtb has no cluster home: tblite ships no linux-aarch64 wheel,
+            # so a dispatched job would land on a node that lacks it and fail
+            # as infra after queueing. Refuse here with the platform message.
+            if fidelity == "xtb":
+                raise Unsupported(
+                    str(exc),
+                    next="run the relax on a host with tblite (macOS or x86_64, "
+                    "the [estimate] extra), e.g. scripts/prod-precis in the "
+                    "background, or use fidelity='ml'",
                 ) from exc
             if cache_key is None:  # defensive — clean never reaches here
                 raise Unsupported(

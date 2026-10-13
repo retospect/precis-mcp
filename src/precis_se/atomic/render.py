@@ -130,6 +130,27 @@ def bound_generated_records(store: Store, tree: SeTree) -> dict[str, dict[str, A
     return out
 
 
+def bound_relax_states(store: Store, tree: SeTree) -> dict[str, dict[str, Any] | None]:
+    """Every bound ``structure`` slug's recorded last relax
+    (``meta['last_relax']``, stamped by ``structure_save(relax_summary=…)``),
+    mapped to that summary — ``None`` for a slug that no longer resolves or
+    never relaxed past generation.
+
+    The design summary's ``fidelity=`` read: the block's stored ``desc``
+    freezes the *generator's* tier at mint time (``fidelity=stick`` for the
+    hexfold family), so a structure relaxed further shows the live rung
+    read off the bound ref — the same field
+    :func:`precis_se.atomic.join._rung_of` checks for its rung gate."""
+    out: dict[str, dict[str, Any] | None] = {}
+    for n in tree.blocks.values():
+        if n.bound_kind != "structure" or not n.bound or n.bound in out:
+            continue
+        ref = store.get_ref(kind="structure", id=n.bound)
+        lr = (ref.meta or {}).get("last_relax") if ref is not None else None
+        out[n.bound] = lr if isinstance(lr, dict) else None
+    return out
+
+
 def bound_chain_records(store: Store, tree: SeTree) -> dict[str, dict[str, Any]]:
     """Every bound ``structure`` slug that ``realize_chain`` minted
     (``meta['chain_atoms']``), mapped to that record — what

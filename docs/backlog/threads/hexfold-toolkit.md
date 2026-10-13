@@ -225,6 +225,12 @@ removed as met — the transport move it waited on happened 09-29)
        - The bonded alternative passes both relaxers as an isolated
          pillar: a (12,0) tube with a lid and the C60 as a sidewall [2+2]
          bud (scripts in hexfold-corner/s4_lid_check.py).
+       - **Landed 2026-10-13 (hex-xtb): the `xtb` relax rung in-product** —
+         GFN2-xTB via tblite on the structure relax ladder
+         (`fidelity='xtb'`, the neck re-run's FIRE/Te-1000 recipe), so a
+         hexfold block's bound structure relaxes at the relaxer of record
+         without a scratch runner; `struct_runs`/`last_relax` and the se
+         block summary report rung, converged and max_force.
        - Inside the tethered scene it fails: the multi-pass tethered relax
          leaves about 6 close pairs around the bud, and four scratch fixes
          did not pass.

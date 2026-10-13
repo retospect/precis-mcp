@@ -91,7 +91,7 @@ second `put` on the same id is a **full replace** that drops any minted
 block. Iterate with `edit(kind='se', id=..., ops=[...])` once the design
 exists. A refused spec comes back as `line:col: message` (ParseError —
 including `unknown parameter 'length' for tube — known: hand, len, m, n`
-for a keyword outside the primitive's vocabulary) or as the rendered
+for an unknown keyword) or as the rendered
 report (ERROR findings); `hexfold internal error …` means a compiler bug —
 file a gripe with the spec.
 
@@ -135,7 +135,7 @@ ERROR (a `bond`/`terminate` names an atom or port that no longer exists)
 `geom.summary`/`geom.bond.*`/`geom.angle.dev`/`geom.join.*` INFO/WARN
 (`geom.summary` also counts every bond/corner past tolerance, `bond_n_over`
 /`angle_n_over`, beside rms and max: the findings list stays capped at ten, and
-the stored report text of plain `hexfold` builds carries the count; geometry
+the stored report text carries the count; geometry
 reports from before hexfold 0.3.1 list at most 10 entries per code and carry no
 `n_over` totals) ·
 `geom.clash` ERROR under 1.0 Å (overlapping atoms), WARN from 1.0 to
@@ -159,8 +159,8 @@ junction bonds (worst bond +0.4 Å on [9-6], +0.5 Å on [8-7],
 part whose seed winds against its fuses is reflected before placement
 (`place.mirrored` INFO; a chiral tube is refused, `place.mirror_refused`
 WARN). On hexfold 0.3.5, `flanged_doughnut` and `_oh` have no relaxed
-clash under the default profile; their rigid washer seeds still carry a
-`seam.cycle` strain warning (gr462075). `tube_ring_closure` remains overlapping:
+clash; their rigid washer seeds still carry a `seam.cycle` strain
+warning (gr462075). `tube_ring_closure` remains overlapping:
 106 relaxed pairs under 1.8 Å, minimum 1.39 Å (gr462074).
 `geom.seed_overlap` ERROR: atoms under 0.7 Å in the placed seed, before
 stick. A clean relaxed geometry does not clear it. Of the shipped
@@ -281,6 +281,14 @@ band vs. a fully free relax). `meta['generated']['relaxer']` records
 which rung actually ran. Joint placement across a part-graph *cycle* is
 still a later slice (three-or-more-way joins today only chain linearly,
 one pair at a time).
+
+## Relax a block — `fidelity='xtb'`
+
+GFN2-xTB, the relaxer of record: `edit(kind='structure',
+id='<design>-<block>', ops=[{'op':'relax','fidelity':'xtb'}])` on the bound
+structure (the block's `realization:` slug); `view='block'` then reports
+the rung, not `fidelity=stick`. Over ~2 min: `scripts/prod-precis` in the
+background, not the MCP.
 
 ## Options (spec §25.3)
 
@@ -508,18 +516,16 @@ hemisphere) and every top atom is held to it, like the foot.
 - `top_R` is a request: R is area-matched to the chosen build's atoms, and an
   authored `top_R` picks the `(k, L)` whose area-matched R is nearest.
   `top_fillet` default = `min(1.5 × R_min, R − r)` and at least 2 Å, where
-  `R_min` is an analytic conservative heuristic using the existing 12° bar
-  and both shoulder curvature magnitudes (hoop `1/r` plus `1/R_t`), not a
-  necessary physical stability bound. At `n = 12`:
-  `R_min` 2.70 Å, so the default is 1.5 × 2.70 = 4.05 Å, under the room cap
-  `R − r` (4.3 Å at R 9.0). An authored `top_fillet` above that room is
-  refused by name.
+  `R_min` is a conservative heuristic from the 12° bar and both shoulder
+  curvatures (hoop `1/r` plus `1/R_t`), not a physical stability bound. At
+  `n = 12`: `R_min` 2.70 Å, default 4.05 Å, under the room cap `R − r`
+  (4.3 Å at R 9.0). An authored `top_fillet` above that room is refused.
 - `open_pole: true` on a `sphere` (refused elsewhere) drops the `cap(6k,0)`
   lid: the bulge `out` rim stays open and the default H cap rings the apex
-  with `6k` H — an instrumentable ring on the closed top's plan row (pole
-  numbers n/a). INFO `scene.top.open` gives rim C/H,
-  mean z and radius; `topology.sites.ring` lists `{host, h, z_A,
-  theta_deg, normal}` in the scene frame.
+  with `6k` H, the instrument ring (closed top's plan row; pole numbers
+  n/a). INFO `scene.top.open` gives rim C/H, mean z and radius;
+  `topology.sites.ring` lists `{host, h, z_A, theta_deg, normal}` in the
+  scene frame.
 
 ## Check sphere fillets and read stored top diagnostics
 
@@ -574,14 +580,12 @@ overlap (reach = tube radius + `radius` + 1.5 Å); build errors.
 Limits:
 
 - `top="ball"` always carries WARN `scene.top.joint`: the fused (6,0)→C60
-  neck is stick geometry only; MACE-MP small and GFN2-xTB both open 4 of
-  its 6 seam bonds (gr464391), measured before the 2026-10-11 mirror-seed
-  fix (pairs then 1.04–1.23 Å, now none under 1.8 Å) and not yet re-run. Bonded alternative: a `(12,0)` `top="lid"` feature with the C60
-  as a sidewall `[2+2]` bud under the lid, via `extra`:
-  `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"` (for `tube_len=4`;
-  it moves with it). It passes both
-  relaxers as an isolated pillar only; inside a tethered scene its seam
-  still opens (MACE-MP 2.6/3.6 Å), so it is not a scene recipe yet.
+  neck is stick geometry in the scene. Isolated and seeded unmirrored it
+  is a bonded GFN2-xTB minimum (six seam bonds 1.403 Å, 2026-10-11,
+  gr464391 closed); the earlier opening was a mirrored seed. The sidewall
+  `[2+2]` bud alternative (`extra`: `"b: fullerene(C60)\nb @
+  <name>/(4,-7,A):0 [2+2]"`, site for `tube_len=4`) still opens inside a
+  tethered scene (MACE-MP 2.6/3.6 Å), so it is not a scene recipe yet.
 - `(18,0)` feet crumple (an open row).
 - Fillet `radius` reaches ~3–8 Å at the narrowest frustum; beyond ~12 Å
   bonds stretch past 1.50.

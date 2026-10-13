@@ -1278,6 +1278,7 @@ class SeHandler(Handler):
                     generated_records=se_atomic_render.bound_generated_records(
                         self.store, tree
                     ),
+                    relax_states=se_atomic_render.bound_relax_states(self.store, tree),
                 )
             )
         if v in ("block", "surface_deviation"):
@@ -3043,7 +3044,53 @@ def _port_cells(port: PortSpec, *, atomic: bool, posed: bool = False) -> dict[st
     return cells
 
 
-def _block_line(tree: SeTree, node: SeBlock) -> str:
+#: The ``fidelity=<word>`` claim a generated block's stored ``desc``
+#: carries — rewritten at render time when the bound structure relaxed
+#: past the generator's own tier (see :func:`_desc_with_relax`).
+_FIDELITY_TOKEN = re.compile(r"\bfidelity=\w+")
+
+
+def _desc_with_relax(descr: str, lr: dict[str, Any] | None) -> str:
+    """Render a block desc's ``fidelity=`` claim against the bound
+    structure's recorded last relax — ``fidelity=xtb, converged, max_force
+    0.03 eV/Å`` instead of the generator's ``fidelity=stick``. The stored
+    provenance itself is untouched (``view='block'``'s ``## generated``
+    section still shows it verbatim); this only upgrades the *read* so a
+    summary no longer states the preview tier once a real relax rung
+    exists. A desc without a ``fidelity=`` claim gains the clause
+    appended; ``None`` / absent last_relax leaves the text alone."""
+    if not isinstance(lr, dict) or not lr.get("rung"):
+        return descr
+    state = "converged" if lr.get("converged") else "non-converged"
+    clause = f"fidelity={lr['rung']}, {state}"
+    if lr.get("max_force") is not None:
+        clause += f", max_force {lr['max_force']:g} eV/Å"
+    if _FIDELITY_TOKEN.search(descr):
+        return _FIDELITY_TOKEN.sub(clause, descr, count=1)
+    return f"{descr}; {clause}"
+
+
+def _bound_last_relax(store: Any, node: SeBlock) -> dict[str, Any] | None:
+    """``meta['last_relax']`` of the structure a block binds — the CURRENT
+    relax state of its stored atoms, versus the generator's ``fidelity=``
+    claim frozen into ``desc`` at mint time. ``None`` when unbound or the
+    slug does not resolve (degrades silently, like
+    :func:`_generated_section`)."""
+    if node.bound_kind != "structure" or not node.bound or store is None:
+        return None
+    try:
+        ref = store.get_ref(kind="structure", id=node.bound)
+    except Exception:
+        return None
+    lr = (getattr(ref, "meta", None) or {}).get("last_relax") if ref else None
+    return lr if isinstance(lr, dict) else None
+
+
+def _block_line(
+    tree: SeTree,
+    node: SeBlock,
+    relax_states: Mapping[str, dict[str, Any] | None] | None = None,
+) -> str:
     # AUTHORED (parent-frame) value only — this is the byte-exact argument
     # ``set_pose`` round-trips (precis_se.ops.SeBlock.local_pose/local_rot
     # docstring). Printing the composed WORLD ``node.pose``/``node.rot``
@@ -3071,7 +3118,12 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
     if n_ports:
         parts.append(f"[{n_ports} port{'s' if n_ports != 1 else ''}]")
     if node.descr:
-        parts.append(f"— {node.descr}")
+        lr = (
+            (relax_states or {}).get(node.bound)
+            if node.bound_kind == "structure" and node.bound
+            else None
+        )
+        parts.append(f"— {_desc_with_relax(node.descr, lr)}")
     return "  ".join(parts)
 
 
@@ -3133,6 +3185,7 @@ def _render_tree(
     description: str,
     *,
     generated_records: Mapping[str, dict[str, Any]] | None = None,
+    relax_states: Mapping[str, dict[str, Any] | None] | None = None,
 ) -> str:
     lines = [f"# se design '{title}'"]
     if description:
@@ -3163,7 +3216,7 @@ def _render_tree(
 
     def _walk(name: str, depth: int, path: tuple[str, ...]) -> None:
         node = tree.blocks[name]
-        block_line = _block_line(tree, node)
+        block_line = _block_line(tree, node, relax_states)
         if (
             generated_records is not None
             and node.bound_kind == "structure"
@@ -3624,7 +3677,9 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
         lines.append(
             f"envelope: {_fmt_envelope(node.envelope) if node.envelope else '— (unfilled)'}"
         )
-    lines.append(f"desc: {node.descr or '—'}")
+    lines.append(
+        f"desc: {_desc_with_relax(node.descr, _bound_last_relax(store, node)) if node.descr else '—'}"
+    )
     lines.append(f"use: {node.use or '—'}")
     if node.objectives:
         lines.append(f"loads: {json.dumps(node.objectives)}")
