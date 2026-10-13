@@ -72,26 +72,28 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
 Shipped (`quota.TAPER_FLOORS`, `breaker._gate_quota`). Every LLM request
 carries a work class (`LlmRequest.work_class`; unset → the ambient
 `work_class_scope` → `background`). The quota taper decides per
-(class, tier) from one table; percentages are of a window *used*; "warning"
-is the provider's `allowed_warning` / `warning` status with no percentage:
+(class, tier) from one table; percentages are of a window *used*
+(Reto 2026-10-13: "warning 2% or so"). The provider's `allowed_warning` /
+`warning` status is only a blind fallback — it stops BIG when no live
+window reports a percentage, and stops nothing once one does:
 
 | class | who sets it | BIG/FRONTIER stop | MEDIUM stop | on a pause |
 |---|---|---|---|---|
-| background | default: every worker pass | ≥75% or warning | ≥90% | skip; re-run when it clears |
-| deliverable | briefing job (`work_class='deliverable'`) | ≥85% or warning | ≥95% | degrade FRONTIER→MEDIUM + notice; all paused → "delayed" notice, hourly retry to the recurring's `deadline_utc` (default 12:00Z), then "skipped today" |
+| background | default: every worker pass | ≥98% | ≥99% | skip; re-run when it clears |
+| deliverable | briefing job (`work_class='deliverable'`) | ≥99% | ≥99.5% | degrade FRONTIER→MEDIUM + notice; all paused → "delayed" notice, hourly retry to the recurring's `deadline_utc` (default 12:00Z), then "skipped today" |
 | interactive | asa turns, web requests (middleware), session MCP tool calls (tool wrapper) | never | never | — |
 
 All classes park at 100% / a blocking status until the window resets;
 SMALL and local tiers are never gated; the resume override bypasses both.
-The deliverable MEDIUM floor (95%) is this change's pick — Reto's ruling set
-only the BIG floor. Each paid gate decision is tallied per class as
-served / paused (+ degraded from the caller) in `llm_outcome_hourly`;
-/budget shows 24h counts and what each class is tapered at now.
+The percentages reach the snapshot via the CLI's
+`rate_limit_event.rate_limit_info.unifiedWindows` (`claude_quota.py`);
+the probe runs `claude -p` bounded to one turn (`--max-turns 1` — 0 is
+unbounded in Claude Code 2.1.x). Each paid gate decision is tallied per
+class as served / paused (+ degraded from the caller) in
+`llm_outcome_hourly`; /budget shows 24h counts and what each class is
+tapered at now.
 
 Open:
-- The prod `claude_quota_snapshot` carries no `used_percentage`, so only the
-  warning stage and the park can fire; have `quota_check` capture a usable
-  remaining figure from the provider.
 - The deliverable ladder stops at MEDIUM; add the local rung once the
   gr479851 asa degrade ladder lands its served-local-model pin.
 - Other recurring posts besides the briefing still run as background;

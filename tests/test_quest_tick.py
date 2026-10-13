@@ -1263,7 +1263,7 @@ class TestQuestTick:
             scope="unified",
             ts=datetime(2026, 10, 11, tzinfo=UTC),
             data={
-                "windows": {"five_hour": {"status": "allowed", "used_percentage": 80}}
+                "windows": {"five_hour": {"status": "allowed", "used_percentage": 98.5}}
             },
         )
         fake: Any = SimpleNamespace(read_claude_quota=lambda scope="unified": snapshot)

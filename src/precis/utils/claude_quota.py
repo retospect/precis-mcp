@@ -1,22 +1,27 @@
 """Refresh + parse the Claude.ai OAuth quota snapshot.
 
-Invokes ``claude -p "quota" --max-turns 0 --output-format stream-json
+Invokes ``claude -p "say ok" --max-turns 1 --output-format stream-json
 --verbose`` and harvests the ``rate_limit_event`` events the CLI emits
-during the call (one per rate-limit window the headers carry). Each
+during the call (one per API response the headers ride on). Each
 event has the shape::
 
     {"type": "rate_limit_event",
-     "rateLimitType": "five_hour" | "seven_day" | ...,
-     "resetsAt": 1750005540,
-     "status": "active" | "warning" | "exceeded"}
+     "rate_limit_info": {
+       "status": "allowed" | "warning" | "exceeded",
+       "resetsAt": 1750005540,
+       "rateLimitType": "five_hour" | "seven_day" | ...,
+       "unifiedWindows": {
+         "five_hour": {"utilization": 0.55, "resetsAt": 1750005540},
+         "seven_day":  {"utilization": 0.50, "resetsAt": 1750232340}}}}
 
-The events carry **no** ``used_percentage`` — that field is only
-returned to ``--output-format json`` consumers and that mode is what
-the original implementation used. As of 2026-06 Claude Code emits the
-percentage only via the stream-json variant for the per-window status;
-the JSON variant returns a final envelope with no ``rate_limits`` for
-many account configurations. The parser therefore accepts **either**
-input shape and falls back gracefully when the shape changes again.
+``rate_limit_info.unifiedWindows`` carries every window's live
+``utilization`` (a 0..1 fraction → ``used_percentage`` = x100) and
+``resetsAt`` — the only percentage the stream shape offers. Older
+events had flat ``rateLimitType``/``resetsAt``/``status`` fields and
+no ``unifiedWindows``; the ``--output-format json`` envelope carried
+``rate_limits.<window>.used_percentage`` instead. The parser accepts
+all of those shapes and folds whatever percentages they report into
+the snapshot.
 
 Persists to ``claude_quota_snapshot`` (scope='unified'). The 1-token
 call is cheap; the value is the headers Anthropic returns. Claude Code
@@ -136,9 +141,11 @@ class QuotaSnapshot:
     that's the binding window), ``"overage"`` (pay-per-use overage —
     present only when enabled).
 
-    Each window's value is ``{"used_percentage": float, "resets_at":
-    iso8601_str}``. Reset times are normalised to UTC ISO 8601 here;
-    rendering does the tz translation.
+    Each window's value is any of ``{"used_percentage": float,
+    "resets_at": iso8601_str, "status": str}`` — stream-json events
+    supply all three (the percentage via ``unifiedWindows.utilization``
+    x100); older shapes may carry only a subset. Reset times are
+    normalised to UTC ISO 8601 here; rendering does the tz translation.
     """
 
     ts: datetime
@@ -233,6 +240,8 @@ def _parse_stream_events(text: str) -> tuple[dict[str, dict[str, Any]], str | No
             #   {"type":"rate_limit_event",
             #    "rate_limit_info":{
             #       "status":"allowed", "resetsAt":..., "rateLimitType":"...",
+            #       "unifiedWindows":{
+            #         "<window>": {"utilization": 0..1, "resetsAt": ...}},
             #       "overageStatus":..., ...}}
             # Older versions had the fields flat on the event. Look in
             # the nested envelope first; fall back to flat for forward
@@ -241,21 +250,44 @@ def _parse_stream_events(text: str) -> tuple[dict[str, dict[str, Any]], str | No
             if not isinstance(info, dict):
                 info = candidate
             key = info.get("rateLimitType") or info.get("rate_limit_type")
-            if not isinstance(key, str):
-                continue
-            entry: dict[str, Any] = windows.setdefault(key, {})
-            iso = _normalise_resets(info.get("resetsAt") or info.get("resets_at"))
-            if iso is not None:
-                entry["resets_at"] = iso
-            status = info.get("status")
-            if isinstance(status, str):
-                entry["status"] = status
-            used = info.get("used_percentage")
-            if used is not None:
-                try:
-                    entry["used_percentage"] = float(used)
-                except (TypeError, ValueError):
-                    pass
+            if isinstance(key, str):
+                entry: dict[str, Any] = windows.setdefault(key, {})
+                iso = _normalise_resets(info.get("resetsAt") or info.get("resets_at"))
+                if iso is not None:
+                    entry["resets_at"] = iso
+                status = info.get("status")
+                if isinstance(status, str):
+                    entry["status"] = status
+                used = info.get("used_percentage")
+                if used is not None:
+                    try:
+                        entry["used_percentage"] = float(used)
+                    except (TypeError, ValueError):
+                        pass
+            # ``unifiedWindows`` reports every live window's
+            # ``utilization`` (0..1) — fold each into that window's
+            # ``used_percentage`` (x100) and ``resets_at``. A window is
+            # worth recording even without a ``rateLimitType`` key on
+            # the event itself.
+            unified = info.get("unifiedWindows") or info.get("unified_windows")
+            if isinstance(unified, dict):
+                for wname, wbucket in unified.items():
+                    if not isinstance(wname, str) or not isinstance(wbucket, dict):
+                        continue
+                    went = windows.setdefault(wname, {})
+                    util = wbucket.get("utilization")
+                    if util is not None:
+                        try:
+                            # 0.55 * 100 is 55.000…01 in float; round so
+                            # the snapshot displays clean percent figures.
+                            went["used_percentage"] = round(float(util) * 100, 2)
+                        except (TypeError, ValueError):
+                            pass
+                    wiso = _normalise_resets(
+                        wbucket.get("resetsAt") or wbucket.get("resets_at")
+                    )
+                    if wiso is not None:
+                        went["resets_at"] = wiso
         if isinstance(ev.get("rate_limit_status"), str):
             representative = ev["rate_limit_status"]
     return windows, representative
@@ -318,17 +350,23 @@ def refresh_snapshot(
     binary: str | None = None,
     timeout_s: float = 30.0,
 ) -> tuple[QuotaSnapshot | None, RefreshOutcome]:
-    """Shell out to ``claude -p "quota" ...`` and persist the snapshot.
+    """Shell out to ``claude -p "say ok" ...`` and persist the snapshot.
 
     Returns ``(snapshot, outcome)``. ``snapshot`` is the parsed numbers
     (``None`` when unavailable); ``outcome`` (:class:`RefreshOutcome`) tells
     the caller whether ``claude -p`` *authenticated* — the axis the auth
     alert watches, orthogonal to whether rate-limit numbers came back.
 
-    Cost: one 1-token completion. The binding utilisation figure is
-    a side-effect of the response headers; the prompt content doesn't
-    matter so long as the API actually returns headers (free-tier
-    accounts return nothing — we no-op gracefully but auth is still OK).
+    Cost: one turn — ``--max-turns 1`` bounds the probe to a single API
+    call, which is all it takes for the response headers to arrive as a
+    ``rate_limit_event``. ``--max-turns 0`` used to mean "no turns" but
+    Claude Code 2.1.x reads it as *unbounded*: the probe ran a full
+    agentic session with tools before anyone noticed. One turn with a
+    reply-only prompt is the cheapest call that still emits the event.
+    The binding utilisation figure is a side-effect of the response
+    headers; the prompt content doesn't matter so long as the API
+    actually returns headers (free-tier accounts return nothing — we
+    no-op gracefully but auth is still OK).
     """
     cmd_binary = binary or os.environ.get("PRECIS_CLAUDE_BIN", "claude")
     # Bootstrap the OAuth token from ~/.claude_oauth_token so a launchd
@@ -341,9 +379,9 @@ def refresh_snapshot(
             [
                 cmd_binary,
                 "-p",
-                "quota",
+                "say ok",
                 "--max-turns",
-                "0",
+                "1",
                 "--output-format",
                 "stream-json",
                 "--verbose",

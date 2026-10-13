@@ -52,11 +52,16 @@ def _taper(used: float | None = None, status: str = "allowed") -> quota_mod.Tape
     ("used", "status", "expected"),
     [
         (50, "allowed", {BG: NONE, DEL: NONE, INT: NONE}),
-        (80, "allowed", {BG: BIG_UP, DEL: NONE, INT: NONE}),
-        (87, "allowed", {BG: BIG_UP, DEL: BIG_UP, INT: NONE}),
-        (92, "allowed", {BG: MED_UP, DEL: BIG_UP, INT: NONE}),
-        (96, "allowed", {BG: MED_UP, DEL: MED_UP, INT: NONE}),
-        # Prod shape: warning status, no percentage.
+        (98, "allowed", {BG: BIG_UP, DEL: NONE, INT: NONE}),
+        (98.5, "allowed", {BG: BIG_UP, DEL: NONE, INT: NONE}),
+        (99, "allowed", {BG: MED_UP, DEL: BIG_UP, INT: NONE}),
+        (99.5, "allowed", {BG: MED_UP, DEL: MED_UP, INT: NONE}),
+        # Warning band far above the floors: ignored once a percentage
+        # is visible — the percentages alone decide.
+        (50, "allowed_warning", {BG: NONE, DEL: NONE, INT: NONE}),
+        (97, "warning", {BG: NONE, DEL: NONE, INT: NONE}),
+        # Blind fallback: warning status with no percentage still stops
+        # BIG so a blind taper stays conservative.
         (None, "allowed_warning", {BG: BIG_UP, DEL: BIG_UP, INT: NONE}),
         (None, "allowed", {BG: NONE, DEL: NONE, INT: NONE}),
     ],
@@ -78,16 +83,18 @@ def test_floor_table_shape() -> None:
     assert bg.stop_big_pct is not None and de.stop_big_pct is not None
     # Deliverables taper later than background, never earlier.
     assert de.stop_big_pct > bg.stop_big_pct
-    assert quota_mod.TAPER_STOP_BIG_PCT == bg.stop_big_pct == 75.0
-    assert quota_mod.TAPER_STOP_MEDIUM_PCT == bg.stop_medium_pct == 90.0
+    assert quota_mod.TAPER_STOP_BIG_PCT == bg.stop_big_pct == 98.0
+    assert quota_mod.TAPER_STOP_MEDIUM_PCT == bg.stop_medium_pct == 99.0
 
 
 def test_level_and_reason_are_the_background_reading() -> None:
-    assert _taper(87).level == 1
-    assert _taper(92).level == 2
+    assert _taper(98).level == 1
+    assert _taper(99).level == 2
     assert _taper(50).level == 0
     assert "seven_day" in _taper(None, "allowed_warning").reason
     assert _taper(None, "allowed_warning").level == 1
+    # A warning alongside a visible percentage reads as no taper.
+    assert _taper(50, "allowed_warning").level == 0
 
 
 def _gate(tier: Tier, windows: object, **kw: Any) -> str | None:
@@ -105,11 +112,11 @@ def test_gate_interactive_never_tapered_but_parked() -> None:
 
 
 def test_gate_deliverable_tapers_later_than_background() -> None:
-    windows = {"seven_day": {"status": "allowed", "used_percentage": 80}}
+    windows = {"seven_day": {"status": "allowed", "used_percentage": 98.5}}
     reason = _gate(Tier.FRONTIER, windows)
-    assert reason is not None and "background" in reason and "under 25%" in reason
+    assert reason is not None and "background" in reason and "under 2%" in reason
     assert _gate(Tier.FRONTIER, windows, work_class="deliverable") is None
-    windows = {"seven_day": {"status": "allowed", "used_percentage": 86}}
+    windows = {"seven_day": {"status": "allowed", "used_percentage": 99.2}}
     reason = _gate(Tier.FRONTIER, windows, work_class="deliverable")
     assert reason is not None and "deliverable" in reason
     assert _gate(Tier.MEDIUM, windows, work_class="deliverable") is None

@@ -78,8 +78,8 @@ _NOTICE_WINDOWS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 #: ``used_percentage`` ceiling when the CLI reports one. Default 100 → pause
 #: only on an explicit rejection; lower it (env or the web override) to leave
-#: interactive headroom. The snapshot often omits the percentage, in which case
-#: only the ``status`` signal applies.
+#: interactive headroom. A snapshot missing percentages (older probe shapes)
+#: leaves only the ``status`` signal.
 DEFAULT_CEILING_PCT = 100.0
 
 #: Windows to consider, in binding-priority order (first hit wins the message).
@@ -182,8 +182,9 @@ class ClassFloor:
     ``stop_big_pct`` / ``stop_medium_pct``: percent of a window *used* at or
     past which BIG+FRONTIER / MEDIUM too stop being admitted (``None`` =
     never). ``warning_stops_big``: whether the provider's warning status
-    alone (the only signal the prod snapshot carries — no percentage) stops
-    BIG+FRONTIER for this class.
+    alone stops BIG+FRONTIER for this class — consulted only when no live
+    window reports a ``used_percentage``; once a percentage is visible it
+    is the sole signal and the warning band stops nothing on its own.
     """
 
     stop_big_pct: float | None
@@ -192,18 +193,20 @@ class ClassFloor:
 
 
 #: The taper table (gr347551; Reto 2026-10-11 tiers, 2026-10-12 work-class
-#: axis): per class, when each paid tier stops. At 100% used (or a blocking
-#: status) :func:`evaluate` parks every class and paid tier until the reset;
+#: axis, 2026-10-13 "warning 2% or so"): per class, when each paid tier
+#: stops. Background BIG stops at ~2% remaining, MEDIUM at ~1%; deliverables
+#: hold out a point longer. At 100% used (or a blocking status)
+#: :func:`evaluate` parks every class and paid tier until the reset;
 #: SMALL and local tiers never reach this gate; the resume override bypasses
 #: both. Deliverables stop BIG later than background and their caller
 #: degrades to MEDIUM and posts a notice rather than pausing silently
 #: (``precis.workers.briefing``); interactive work is never tapered.
 TAPER_FLOORS: dict[WorkClass, ClassFloor] = {
     WorkClass.BACKGROUND: ClassFloor(
-        stop_big_pct=75.0, stop_medium_pct=90.0, warning_stops_big=True
+        stop_big_pct=98.0, stop_medium_pct=99.0, warning_stops_big=True
     ),
     WorkClass.DELIVERABLE: ClassFloor(
-        stop_big_pct=85.0, stop_medium_pct=95.0, warning_stops_big=True
+        stop_big_pct=99.0, stop_medium_pct=99.5, warning_stops_big=True
     ),
     WorkClass.INTERACTIVE: ClassFloor(
         stop_big_pct=None, stop_medium_pct=None, warning_stops_big=False
@@ -218,8 +221,10 @@ _BIG_UP: frozenset[str] = frozenset({"big", "frontier"})
 _MEDIUM_UP: frozenset[str] = frozenset({"medium", "big", "frontier"})
 
 #: Statuses the CLI raises ahead of exhaustion: the window is inside its
-#: warning band (the provider's own "running low" signal), so the first taper
-#: stage applies when no percentage is reported.
+#: warning band (the provider's own "running low" signal, which starts far
+#: above the floors). Only a fallback: when no live window reports a
+#: percentage the band still stops BIG so a blind taper stays conservative;
+#: once a ``used_percentage`` is visible the floors alone decide.
 _WARNING_STATUSES: frozenset[str] = frozenset({"allowed_warning", "warning"})
 
 
@@ -234,8 +239,10 @@ class Taper:
     ``used_pct`` is the highest ``used_percentage`` over live windows
     (``None`` when none reports one) and ``pct_reason`` names that window;
     ``warning_reason`` names a live window in its warning band (empty when
-    none). :meth:`blocked` turns the reading into the tiers stopped for a
-    work class via :data:`TAPER_FLOORS`.
+    none). When ``used_pct`` is set it is the only signal — the floors
+    alone decide and a warning band stops nothing; ``warning_reason``
+    applies only as the blind fallback. :meth:`blocked` turns the reading
+    into the tiers stopped for a work class via :data:`TAPER_FLOORS`.
 
     ``level`` / ``reason`` are the background reading (0 admit all, 1 stop
     BIG/FRONTIER, 2 also stop MEDIUM) — what /budget shows as the headline.
@@ -255,18 +262,15 @@ class Taper:
         ``work_class`` (resolved like a request's: ambient → background)."""
         floor = TAPER_FLOORS[resolve_work_class(work_class)]
         used = self.used_pct
-        if (
-            used is not None
-            and floor.stop_medium_pct is not None
-            and used >= floor.stop_medium_pct
-        ):
-            return _MEDIUM_UP
-        if (
-            used is not None
-            and floor.stop_big_pct is not None
-            and used >= floor.stop_big_pct
-        ):
-            return _BIG_UP
+        if used is not None:
+            # A percentage is visible: the floors alone decide. The
+            # provider's warning band starts far above them, so the
+            # warning status must not stop anything on its own.
+            if floor.stop_medium_pct is not None and used >= floor.stop_medium_pct:
+                return _MEDIUM_UP
+            if floor.stop_big_pct is not None and used >= floor.stop_big_pct:
+                return _BIG_UP
+            return frozenset()
         if self.warning_reason and floor.warning_stops_big:
             return _BIG_UP
         return frozenset()

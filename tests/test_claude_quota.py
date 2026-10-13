@@ -170,6 +170,64 @@ def test_parse_extracts_rate_limit_events_from_stream() -> None:
     assert "used_percentage" not in snap.windows["five_hour"]
 
 
+def test_parse_stream_reads_unified_windows_utilization() -> None:
+    """Claude Code 2.1.x reports every live window's ``utilization``
+    (a 0..1 fraction) and ``resetsAt`` under
+    ``rate_limit_info.unifiedWindows`` — the only percentage the stream
+    shape offers. Fixture: a real event captured 2026-10-13."""
+    stream = json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed",
+                "resetsAt": 1791915000,
+                "rateLimitType": "five_hour",
+                "overageStatus": "rejected",
+                "overageDisabledReason": "org_level_disabled",
+                "isUsingOverage": False,
+                "unifiedWindows": {
+                    "five_hour": {
+                        "utilization": 0.55,
+                        "resetsAt": 1791915000,
+                    },
+                    "seven_day": {
+                        "utilization": 0.5,
+                        "resetsAt": 1792126800,
+                    },
+                },
+            },
+            "uuid": "b15018cc-0d48-480c-a24e-95cfe96350b7",
+        }
+    )
+    snap = parse_rate_limits(stream)
+    assert snap is not None
+    assert set(snap.windows) == {"five_hour", "seven_day"}
+    # utilization 0..1 → used_percentage x100; the event's own window
+    # keeps its status, the other unified window gets pct + reset.
+    assert snap.windows["five_hour"]["used_percentage"] == 55.0
+    assert snap.windows["five_hour"]["status"] == "allowed"
+    assert snap.windows["seven_day"]["used_percentage"] == 50.0
+    assert snap.windows["seven_day"]["resets_at"].endswith("+00:00")
+
+
+def test_parse_stream_unified_windows_alone_yields_windows() -> None:
+    """An event whose own ``rateLimitType`` is absent still contributes
+    its ``unifiedWindows`` entries."""
+    stream = json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "unifiedWindows": {
+                    "seven_day": {"utilization": 0.97, "resetsAt": 1792126800}
+                }
+            },
+        }
+    )
+    snap = parse_rate_limits(stream)
+    assert snap is not None
+    assert snap.windows["seven_day"]["used_percentage"] == 97.0
+
+
 def test_parse_stream_tolerates_garbage_lines() -> None:
     stream = "\n".join(
         [
@@ -301,6 +359,26 @@ def test_refresh_snapshot_outcomes(monkeypatch) -> None:
     monkeypatch.setattr(cq.subprocess, "run", _missing)
     _snap, outcome = refresh_snapshot(object())
     assert outcome is RefreshOutcome.UNAVAILABLE
+
+
+def test_refresh_snapshot_probe_is_bounded_to_one_turn(monkeypatch) -> None:
+    """``--max-turns 0`` is *unbounded* in Claude Code 2.1.x — the probe
+    ran a full agentic session with tools. The refresh must run exactly
+    one turn: enough for the API call that emits ``rate_limit_event``,
+    nothing more."""
+    from precis.utils import claude_quota as cq
+    from precis.utils.claude_quota import refresh_snapshot
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], **kw: object) -> _FakeRes:
+        seen["cmd"] = cmd
+        return _FakeRes(0, "{}")
+
+    monkeypatch.setattr(cq.subprocess, "run", fake_run)
+    refresh_snapshot(object())
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--max-turns") + 1] == "1"
 
 
 def test_refresh_snapshot_pages_on_logged_out_clean_exit(monkeypatch) -> None:

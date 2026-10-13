@@ -834,8 +834,9 @@ def _taper_gate(tier: Tier, windows: object, **kw: Any) -> str | None:
     ("used", "blocked"),
     [
         (50, set()),
-        (80, {Tier.BIG, Tier.FRONTIER}),
-        (92, {Tier.MEDIUM, Tier.BIG, Tier.FRONTIER}),
+        (97, set()),
+        (98, {Tier.BIG, Tier.FRONTIER}),
+        (99, {Tier.MEDIUM, Tier.BIG, Tier.FRONTIER}),
         (100, {Tier.MEDIUM, Tier.BIG, Tier.FRONTIER}),
     ],
 )
@@ -848,7 +849,7 @@ def test_quota_taper_by_used_percentage(used: int, blocked: set[Tier]) -> None:
         )
 
 
-@pytest.mark.parametrize("used", [80, 92, 100, None])
+@pytest.mark.parametrize("used", [98, 99, 100, None])
 def test_quota_taper_never_gates_small_or_local(used: int | None) -> None:
     bucket: dict[str, object] = {"status": "rejected" if used is None else "allowed"}
     if used is not None:
@@ -890,6 +891,17 @@ def test_quota_taper_warning_status_blocks_big_and_frontier_only(status: str) ->
     assert taper.no_signal is False and taper.level == 1
 
 
+@pytest.mark.parametrize("status", ["allowed_warning", "warning"])
+def test_quota_taper_warning_ignored_when_percentage_visible(status: str) -> None:
+    # The provider's warning band starts far above the floors; once a
+    # used_percentage reaches the snapshot it is the sole signal.
+    windows = {"five_hour": {"status": status, "used_percentage": 97}}
+    for tier in (Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
+        assert _taper_gate(tier, windows) is None
+    taper = quota_mod.taper_state(cast("Store", SqlStore(windows=windows)))
+    assert taper.no_signal is False and taper.level == 0
+
+
 def test_quota_taper_expired_window_allows_again() -> None:
     past = "2000-01-01T00:00:00+00:00"
     for bucket in (
@@ -911,7 +923,7 @@ def test_quota_taper_ignores_overage_and_unknown_windows() -> None:
 
 
 def test_quota_taper_seven_day_window_counts() -> None:
-    windows = {"seven_day": {"status": "allowed", "used_percentage": 80}}
+    windows = {"seven_day": {"status": "allowed", "used_percentage": 99}}
     assert _taper_gate(Tier.BIG, windows) is not None
 
 
