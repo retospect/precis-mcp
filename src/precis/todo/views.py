@@ -23,6 +23,7 @@ from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _DOABLE_EXCLUSION_TAGS,
     _doable_exclusion_clause,
 )
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.guards import todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -1148,7 +1149,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
                 ) AND NOT EXISTS (
                   SELECT 1 FROM ref_tags st JOIN tags s ON s.tag_id = st.tag_id
                    WHERE st.ref_id = r.ref_id AND s.namespace = 'STATUS'
-                     AND s.value IN ('done', 'won''t-do', 'auto-timeout')
+                     AND s.value = ANY(%s)
                 )
               ) AS waiting,
               count(*) FILTER (
@@ -1168,6 +1169,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
             """,
+            (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchone()
     if row is None:
         return {"open": 0, "waiting": 0, "blocked": 0, "asking": 0}
@@ -1270,12 +1272,13 @@ def render_waiting(store: Store) -> Response:
                AND NOT EXISTS (
                  SELECT 1 FROM ref_tags st JOIN tags s ON s.tag_id = st.tag_id
                   WHERE st.ref_id = r.ref_id AND s.namespace = 'STATUS'
-                    AND s.value IN ('done', 'won''t-do', 'auto-timeout')
+                    AND s.value = ANY(%s)
                )
              GROUP BY r.ref_id, r.title
              ORDER BY r.ref_id DESC
              LIMIT 50
             """,
+            (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchall()
     if not rows:
         return Response(body="no waiting-for leaves")
@@ -1593,12 +1596,12 @@ def _attention_unminted(
                                 WHERE rt4.ref_id = ct.ref_id
                                   AND t4.namespace = 'STATUS' LIMIT 1),
                               'open'
-                            ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                            ) <> ALL(%s)
                    )
              ORDER BY r.created_at
              LIMIT 50
             """,
-            (threshold_min, list(_JOB_TERMINAL)),
+            (threshold_min, list(_JOB_TERMINAL), sorted(TERMINAL_TODO_STATUSES)),
         ).fetchall()
     return [{"id": int(r[0]), "title": r[1], "age_min": int(r[2])} for r in rows]
 

@@ -1031,6 +1031,29 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
     "gripe": frozenset(
         {"open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"}
     ),
+    # Todo lifecycle (migration 0013): ``paused`` parks a subtree,
+    # ``auto-timeout`` is written by the auto-check worker. Terminals —
+    # done / won't-do / auto-timeout — are shared with every "still
+    # open" SQL predicate via ``precis.todo.TERMINAL_TODO_STATUSES``
+    # (keep in sync). gr482126: ``abandoned``/``dormant``/``active`` are
+    # quest vocabulary; accepting ``STATUS:abandoned`` on a todo left it
+    # "open" to every terminal-status query (nursery long-wait, doctor,
+    # hubs, quest search).
+    "todo": frozenset(
+        {
+            "open",
+            "doing",
+            "blocked",
+            "done",
+            "won't-do",
+            "paused",
+            "auto-timeout",
+        }
+    ),
+    # Quest perpetual lifecycle — a quest has no ``done`` (migration
+    # 0065; also guarded in ``QuestHandler.tag`` via ``_LIFECYCLE``,
+    # which reads this entry).
+    "quest": frozenset({"active", "dormant", "abandoned"}),
 }
 
 _CLOSED_VOCAB: dict[str, frozenset[str]] = {

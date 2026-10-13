@@ -68,15 +68,16 @@ from precis.quest.logbook import (
 from precis.quest.logbook import append_entry as _append_logbook_entry
 from precis.response import Response
 from precis.store import Ref, Tag
-from precis.store.types import ChunkRow
+from precis.store.types import _KIND_STATUS_VALUES, ChunkRow
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
 #: never completes (``quest-layer`` (git-only)). STATUS is a shared union
-#: axis, so the value-subset is enforced here in the handler, not at the tag
-#: parser (which only gates *which* axes a kind may carry).
-_LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
+#: axis; the value-subset lives once in ``store.types._KIND_STATUS_VALUES``
+#: and is enforced by the tag parser on every kind-scoped write — this
+#: alias keeps the friendlier quest-specific error in ``tag()`` below.
+_LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
 #: fix): ``compute_lane`` (the reason-only switch —

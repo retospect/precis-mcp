@@ -349,6 +349,23 @@ def test_long_wait_detector_still_flags_a_machine_dependency(
     assert rid in {f.ref_id for f in findings}
 
 
+def test_long_wait_detector_excludes_terminal_todos(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A terminal todo keeps its ``waiting-for:*`` tag as history but must
+    not alert — the closed set comes from ``precis.todo.TERMINAL_TODO_STATUSES``
+    (gr482126: an out-of-vocab ``STATUS:abandoned`` read as *open* here)."""
+    r = handler.put(text="Waiting, then declined")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
+    handler.tag(id=rid, add=["STATUS:won't-do"])
+
+    findings = _detect_long_waits(store)
+
+    assert rid not in {f.ref_id for f in findings}
+
+
 # ── stuck doable ──────────────────────────────────────────────────
 
 

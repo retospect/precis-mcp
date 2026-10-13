@@ -92,6 +92,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Store
 from precis.store.types import Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
     effective_requires,
@@ -155,9 +156,9 @@ UNPARK_CAP = 3
 #: Base cool-down (hours) before the FIRST (attempt 0) autonomous unpark;
 #: doubles per subsequent attempt (12h, 24h, 48h for attempts 0/1/2).
 _UNPARK_BASE_COOLDOWN_HOURS = 12
-#: Same terminal-status exclusion set ``nursery._detect_child_failed_parked``
-#: uses — a todo already closed (by any means) is not a candidate.
-_UNPARK_TERMINAL_STATUSES = ("done", "won't-do", "auto-timeout")
+#: A todo already closed (by any means) is not an unpark candidate — the
+#: shared terminal set, same one ``nursery._detect_child_failed_parked`` reads.
+_UNPARK_TERMINAL_STATUSES = TERMINAL_TODO_STATUSES
 
 #: The chunk-embedding model whose transient failures the sweeper re-opens.
 _EMBED_MODEL = "bge-m3"

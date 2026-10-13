@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.eye_render import _HUB_TAG, _VERBATIM_CAP, _hub_ids
 
 log = logging.getLogger(__name__)
@@ -178,9 +179,9 @@ def review_todos(store: Store, ref_ids: list[int]) -> dict[int, str]:
             "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
             "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
             "AND g.namespace = 'STATUS' "
-            "AND g.value IN ('done', 'won''t-do', 'auto-timeout')) "
+            "AND g.value = ANY(%s)) "
             "ORDER BY t.ref_id",
-            (list(ref_ids), REVIEW_TAG),
+            (list(ref_ids), REVIEW_TAG, sorted(TERMINAL_TODO_STATUSES)),
         ).fetchall()
     from precis.utils import handle_registry
 

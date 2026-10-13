@@ -175,23 +175,23 @@ as lowercase tags (`density:dense`, `confidence:strong`) instead.
 ### `STATUS:` value subsets per lifecycle
 
 `STATUS:` is the one axis that hosts multiple lifecycles on the same
-prefix. The runtime accepts the union (32 values); each handler enforces
-a sane subset for its kind. Pick the row that matches the ref you're
-tagging:
+prefix. Kinds with their own lifecycle are enforced per-kind at write
+time (the error lists that kind's options); unlisted kinds accept the
+full union. Pick the row that matches the ref you're tagging:
 
 | Lifecycle | Kinds | Values |
 |---|---|---|
-| Workflow (original) | `todo` | `open`, `doing`, `blocked`, `done`, `won't-do` |
+| Workflow (enforced) | `todo` | `open`, `doing`, `blocked`, `done`, `won't-do`, `paused`, `auto-timeout` |
 | Gripe (DB-checked) | `gripe` | `open`, `triaged`, `ready_for_fix`, `in_review`, `done`, `wontfix` — never `won't-do` |
 | Citation chase | `finding` | `tracing`, `established`, `multi_candidate`, `dead_chain`, `refuted`, `acquiring` |
 | Taproot claim hub | `finding` | `canonical` |
 | Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |
-| Todo-tree | `todo` | also: `paused`, `auto-timeout` |
 | Coordinator yield/resume | `job` | also: `waiting_children`, `waiting_time`, `waiting_ask_user`, `waiting_manual_kick` |
-| Quest (perpetual striving — no `done`) | `quest` | `active`, `dormant`, `abandoned` |
+| Quest (perpetual striving — no `done`; enforced) | `quest` | `active`, `dormant`, `abandoned` |
 
-The runtime rejects unknown values at write time with the full options
-list. To see the live set without triggering a write, `get(kind='tag',
+The runtime rejects unknown values at write time with the options list
+for that kind (for `todo`/`gripe`/`quest`) or the full union (other
+kinds). To see the live set without triggering a write, `get(kind='tag',
 id='STATUS:open')` — the `sibling values` line surfaces the full closed
 vocabulary for the axis (`precis-status-help` is unrelated — build/DB
 introspection, not tag axes).
@@ -237,14 +237,13 @@ put(kind='todo', text='...', tags=['urgent'])
   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
 
 tag(kind='todo', id=40, add=['STATUS:bogus'])
-[error:BadInput] invalid STATUS value: 'bogus'
-  options: ['abandoned', 'acquiring', 'active', 'auto-timeout', 'blocked',
-            'cancel_requested', 'cancelled', 'canonical', 'dead_chain',
-            'doing', 'done', 'dormant', 'established', 'failed',
-            'in_review', 'multi_candidate', 'open', 'paused', 'queued',
-            'ready_for_fix', 'refuted', 'running', 'submitted', 'succeeded',
-            'tracing', 'triaged', 'waiting_ask_user', 'waiting_children',
-            'waiting_manual_kick', 'waiting_time', 'won't-do', 'wontfix']
+[error:BadInput] invalid STATUS value for kind 'todo': 'bogus'
+  options: ['auto-timeout', 'blocked', 'doing', 'done', 'open', 'paused',
+            'won't-do']
+
+tag(kind='todo', id=40, add=['STATUS:abandoned'])
+[error:BadInput] invalid STATUS value for kind 'todo': 'abandoned'
+  # 'abandoned' is quest vocabulary — the options are the todo set above
 ```
 
 ## Tag a ref at creation time

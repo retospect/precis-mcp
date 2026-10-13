@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.store.types import TODO_BODY_KIND as _BODY_KIND
 from precis.store.types import ChunkInsert, Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -319,11 +320,11 @@ def _find_open_ask(store: Store, key: str) -> tuple[int, int] | None:
                AND NOT EXISTS (
                      SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
                       WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                        AND t.value IN ('done', %s, %s))
+                        AND t.value = ANY(%s))
              ORDER BY r.ref_id DESC
              LIMIT 1
             """,
-            (key, "won't-do", "auto-timeout"),
+            (key, sorted(TERMINAL_TODO_STATUSES)),
         ).fetchone()
     if row is None:
         return None
@@ -357,11 +358,11 @@ def _find_open_ask_by_refs(store: Store, refs: list[str]) -> tuple[int, int] | N
                AND NOT EXISTS (
                      SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
                       WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                        AND t.value IN ('done', %s, %s))
+                        AND t.value = ANY(%s))
              ORDER BY r.ref_id ASC
              LIMIT 1
             """,
-            (refs, title_re, td_ids, "won't-do", "auto-timeout"),
+            (refs, title_re, td_ids, sorted(TERMINAL_TODO_STATUSES)),
         ).fetchone()
     if row is None:
         return None
@@ -413,10 +414,14 @@ def _open_trackers(store: Store, refs: list[str]) -> list[str]:
                         AND NOT EXISTS (
                               SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                                WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                                 AND t.value IN ('done', 'won''t-do', 'auto-timeout'))))
+                                 AND t.value = ANY(%(todo_terminal)s))))
              ORDER BY r.ref_id
             """,
-            {**ids, "alert_open": "alert-state:open"},
+            {
+                **ids,
+                "alert_open": "alert-state:open",
+                "todo_terminal": sorted(TERMINAL_TODO_STATUSES),
+            },
         ).fetchall()
     prefix = {"gripe": "gr", "alert": "al", "todo": "td"}
     return [f"{prefix[kind]}{ref_id}" for kind, ref_id in rows]

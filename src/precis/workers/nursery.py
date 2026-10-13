@@ -100,6 +100,7 @@ from typing import Any
 from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
 from precis.store import Store
 from precis.store._todo_sql import _doable_exclusion_clause, todo_root_sql
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -512,7 +513,7 @@ def _detect_orphans(store: Store) -> list[Symptom]:
                      (SELECT t.value FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
                        WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                   ) <> ALL(%s)
                -- Root is not strategic
                AND NOT rt.root_is_strategic
                -- And not in a recurring subtree (root is not recurring either)
@@ -520,6 +521,7 @@ def _detect_orphans(store: Store) -> list[Symptom]:
              ORDER BY r.ref_id
              LIMIT 50
             """,
+            (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchall()
     return [
         Symptom(
@@ -563,11 +565,11 @@ def _detect_stale_claims(store: Store) -> list[Symptom]:
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                   ) <> ALL(%s)
              ORDER BY r.ref_id
              LIMIT 50
             """,
-            (f"{STALE_CLAIM_HOURS} hours",),
+            (f"{STALE_CLAIM_HOURS} hours", sorted(TERMINAL_TODO_STATUSES)),
         ).fetchall()
     out: list[Symptom] = []
     for r in rows:
@@ -630,13 +632,14 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                   ) <> ALL(%(terminal)s)
              ORDER BY r.ref_id
              LIMIT 50
             """,
             {
                 "exempt": sorted(_LONG_WAIT_EXEMPT_TARGETS),
                 "age": f"{LONG_WAIT_DAYS} days",
+                "terminal": sorted(TERMINAL_TODO_STATUSES),
             },
         ).fetchall()
     out: list[Symptom] = []
@@ -813,7 +816,7 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                          (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                            WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                          'open'
-                       ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                       ) <> ALL(%s)
                    AND NOT EXISTS (
                          SELECT 1 FROM ref_tags rt3 JOIN tags t3 ON t3.tag_id = rt3.tag_id
                           WHERE rt3.ref_id = r.ref_id
@@ -825,7 +828,7 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
              ORDER BY sub.ref_id
              LIMIT 50
             """,
-            (f"{CHILD_FAILED_PARKED_HOURS} hours",),
+            (f"{CHILD_FAILED_PARKED_HOURS} hours", sorted(TERMINAL_TODO_STATUSES)),
         ).fetchall()
     out: list[Symptom] = []
     for r in rows:
@@ -875,8 +878,9 @@ def _detect_child_failed_final(store: Store) -> list[Symptom]:
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
-            """
+                   ) <> ALL(%s)
+            """,
+            (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchone()
     count = int(row[0]) if row else 0
     if count == 0:
@@ -939,7 +943,7 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = child.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                      'open'
-                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                   ) <> ALL(%s)
                AND child.created_at = (
                    SELECT max(c2.created_at) FROM refs c2
                     WHERE c2.parent_id = rec.ref_id
@@ -949,6 +953,7 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
              ORDER BY rec.ref_id
              LIMIT 50
             """,
+            (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchall()
     return [
         Symptom(

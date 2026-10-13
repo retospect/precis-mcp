@@ -71,6 +71,7 @@ from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
 from precis.quest.tagging import quest_tag_value
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.env import env_float, env_int
 
 if TYPE_CHECKING:
@@ -658,9 +659,9 @@ def _open_unrun_searches_todo(store: Store, quest_id: int) -> int | None:
             "AND r.meta->>'content_key' = %s AND NOT EXISTS ("
             " SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
             " WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'"
-            " AND t.value IN ('done', 'won''t-do', 'auto-timeout')) "
+            " AND t.value = ANY(%s)) "
             "ORDER BY r.ref_id DESC LIMIT 1",
-            (quest_id, UNRUN_SEARCHES_KEY),
+            (quest_id, UNRUN_SEARCHES_KEY, sorted(TERMINAL_TODO_STATUSES)),
         ).fetchone()
     return int(row[0]) if row else None
 

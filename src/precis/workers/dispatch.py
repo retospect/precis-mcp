@@ -55,6 +55,7 @@ from typing import Any
 from precis.store import Store
 from precis.store._todo_sql import _doable_exclusion_clause
 from precis.store.types import Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.views import (
     _hard_block_clause,
     _replan_bypass_clause,
@@ -542,10 +543,10 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          -- terminal-status set must match auto_check.py's
-                          -- closed states: a child parked on auto-timeout is
-                          -- settled, not live (gr236586 planner wedge)
-                          ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                          -- terminal statuses: TERMINAL_TODO_STATUSES — a
+                          -- child parked on auto-timeout is settled, not live
+                          -- (gr236586 planner wedge)
+                          ) <> ALL(%s)
                       AND """
             + _parked_child_still_blocks_sql("r", "c")
             + """
@@ -562,7 +563,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
              ORDER BY r.ref_id
              LIMIT %s
             """,
-            (sorted(_OPEN_PARENT_STATUSES), limit),
+            (sorted(_OPEN_PARENT_STATUSES), sorted(TERMINAL_TODO_STATUSES), limit),
         ).fetchall()
     return _drop_orphaned(store, [int(r[0]) for r in rows])
 
@@ -715,10 +716,10 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          -- terminal-status set must match auto_check.py's
-                          -- closed states: a child parked on auto-timeout is
-                          -- settled, not live (gr236586 planner wedge)
-                          ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                          -- terminal statuses: TERMINAL_TODO_STATUSES — a
+                          -- child parked on auto-timeout is settled, not live
+                          -- (gr236586 planner wedge)
+                          ) <> ALL(%s)
                       AND """
             + _parked_child_still_blocks_sql("r", "c")
             + """
@@ -737,7 +738,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                )
              FOR UPDATE OF r SKIP LOCKED
             """,
-            (parent_id, sorted(_OPEN_PARENT_STATUSES)),
+            (parent_id, sorted(_OPEN_PARENT_STATUSES), sorted(TERMINAL_TODO_STATUSES)),
         ).fetchone()
         if row is None:
             # Another worker holds it, or the parent's state changed
