@@ -19,6 +19,7 @@ import pytest
 
 from precis.workers.llm_summarize import (
     EMPTY_RETRY_ATTEMPTS,
+    GIST_REPAIR_ATTEMPTS,
     HOT_WINDOW_MIN,
     MAX_CHUNK_CHARS,
     MAX_SUMMARIZE_ATTEMPTS,
@@ -29,11 +30,11 @@ from precis.workers.llm_summarize import (
     LlmClient,
     LlmConfig,
     _Claimed,
-    _fallback_summary,
     _mark_failed,
     _reject_reason,
     build_messages,
     claim_chunks_without_summary,
+    fetch_cited_identifiers,
     parse_summary,
     run_llm_summarize_pass,
     write_chunk_summary,
@@ -511,39 +512,71 @@ def test_reject_reason_ignores_a_short_coincidental_prefix() -> None:
     assert _reject_reason("Cobalt", "Cobalt catalysis review") is None
 
 
-def test_fallback_keeps_a_whole_sentence_over_the_gist_budget() -> None:
-    """The gist budget is what the *prompt* asks the model for; capping the
-    deterministic fallback at it wrote 774 mid-sentence fragments to prod."""
-    chunk = (
-        "That said, the new theoretical work that came in overnight is "
-        "directly on point for the adsorption question raised earlier. "
-        "And more follows."
+# ── the identifier + mid-sentence scratchpad checks (2026-10-13 audit) ──
+
+
+def test_reject_reason_invented_arxiv_id() -> None:
+    """A gist naming an arXiv id absent from the chunk text is refused,
+    and the reason names the offending id."""
+    gist = "CNT hot-electron transistor demonstrated\n\nsee arXiv:2301.12345."
+    reason = _reject_reason(gist, "We built a carbon nanotube device.")
+    assert reason is not None
+    assert "2301.12345" in reason
+
+
+def test_reject_reason_keeps_arxiv_id_present_in_source() -> None:
+    gist = "preprint result\n\narXiv:2301.12345, section 3."
+    assert _reject_reason(gist, "As shown in arXiv:2301.12345 v2, the…") is None
+
+
+def test_reject_reason_invented_doi() -> None:
+    gist = "Science article on CNT circuits\n\ndoi: 10.1126/science.abd1234."
+    assert _reject_reason(gist, "We built CNT circuits.") is not None
+
+
+def test_reject_reason_identifier_resolves_via_cited_ref() -> None:
+    """An id the chunk text omits is still fine when a ref the chunk cites
+    carries it (or the chunk's own ref does — a masthead gloss)."""
+    gist = "the paper's own DOI\n\n10.1021/nn400447b."
+    cited = frozenset({"doi:10.1021/nn400447b"})
+    assert _reject_reason(gist, "metal-graphene hybrid.", cited_ids=cited) is None
+
+
+def test_reject_reason_mid_sentence_let_me_draft() -> None:
+    """The prod leak shape: reasoning after sentence-final punctuation."""
+    gist = (
+        "on/off ratio 10⁴ at 1 V gate; NOT, NAND, NOR gates. "
+        "BRIEF must not include things DETAIL repeats. Let me draft:"
     )
-
-    fallback = _fallback_summary(chunk)
-
-    # The old cap fired at word 15, storing "... is directly on point for".
-    assert fallback == (
-        "That said, the new theoretical work that came in overnight is "
-        "directly on point for the adsorption question raised earlier"
-    )
-    assert len(fallback.split()) > 15
+    assert _reject_reason(gist) is not None
 
 
-def test_fallback_marks_an_elision_past_its_own_ceiling() -> None:
-    chunk = "alpha beta, " + " ".join(f"word{i}" for i in range(60)) + ". Next."
+def test_reject_reason_specifics_not_in_brief_echo() -> None:
+    gist = "CNT\n\nadds specifics not in BRIEF: on/off ratio 10⁴ at 1 V gate."
+    assert _reject_reason(gist) is not None
 
-    fallback = _fallback_summary(chunk)
 
-    assert fallback.endswith("…")
-    assert len(fallback.split()) <= 31
+def test_reject_reason_check_word_count_leak() -> None:
+    gist = "boxel size trade-offs\n\n≈1 nm unit cells. Check BRIEF word count:"
+    assert _reject_reason(gist) is not None
+
+
+def test_reject_reason_ignores_caps_acronym_in_list() -> None:
+    """A bare all-caps BRIEF in an acronym list is content, not meta-talk."""
+    gist = "lists acronyms used in the manuscript\n\nincludes AUC, BRIEF, CNN, EER."
+    assert _reject_reason(gist) is None
+
+
+def test_reject_reason_ignores_lowercase_brief_colon() -> None:
+    gist = "the argument compressed\n\nin brief: position bandwidth dominates."
+    assert _reject_reason(gist) is None
 
 
 def test_run_pass_rejects_leaked_reasoning_then_retries_clean(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A leaked-reasoning candidate is never stored: one retry with a terse
-    reinforcement line recovers a clean summary."""
+    """A leaked-reasoning candidate is never stored: a repair turn carrying
+    the specific trip reason back to the model recovers a clean summary."""
     conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
     store = _FakeStore(conn)
     t = _SequenceTransport([_LEAKED_REASONING, "BRIEF: g\nDETAIL: d."])
@@ -553,22 +586,48 @@ def test_run_pass_rejects_leaked_reasoning_then_retries_clean(
         result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
-    assert len(t.calls) == 2  # original candidate + one reinforced retry
+    assert len(t.calls) == 2  # original candidate + one repair turn
     retry_messages = t.calls[1]["payload"]["messages"]
-    assert "output contract" in retry_messages[-1]["content"].lower()
+    # The repair conversation carries the bad reply back plus the reason.
+    assert retry_messages[-2]["role"] == "assistant"
+    repair = retry_messages[-1]["content"]
+    assert "was rejected" in repair
+    assert "something like:" in repair  # the specific trip reason is named
     (_sql, params), *_ = conn.writes
-    assert params[2] == "g\n\nd."  # the retry's clean summary, not the leak
+    assert params[2] == "g\n\nd."  # the repair's clean summary, not the leak
     rejects = [r for r in caplog.records if "candidate rejected" in r.getMessage()]
     assert len(rejects) == 1
     assert "chunk_id=1" in rejects[0].getMessage()
 
 
-def test_run_pass_falls_back_to_truncation_when_retry_also_leaks(
+def test_run_pass_repair_message_names_the_invented_identifier() -> None:
+    """The repair turn tells the model exactly which id was rejected, so it
+    can drop or fix it — not a generic scolding."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _SequenceTransport(
+        [
+            "BRIEF: MOF-5 band gap\nDETAIL: see arXiv:2301.12345.",
+            "BRIEF: MOF-5 band gap\nDETAIL: measured optically.",
+        ]
+    )
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
+    repair = t.calls[1]["payload"]["messages"][-1]["content"]
+    assert "arXiv" in repair or "2301.12345" in repair
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "MOF-5 band gap\n\nmeasured optically."
+
+
+def test_run_pass_keeps_old_gist_when_repairs_exhaust(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Both the original candidate and its reinforced retry leak reasoning →
-    deterministic truncation of the chunk text is stored instead, never the
-    model's chain of thought, and the fallback is warn-logged."""
+    """All repairs still leaking → the write is refused outright: no
+    fallback text is stored, the lease's attempts bump records the failure
+    for the next pass, and the refusal is warn-logged."""
     conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
     store = _FakeStore(conn)
     t = _FakeTransport(_LEAKED_REASONING)  # every call leaks
@@ -577,22 +636,20 @@ def test_run_pass_falls_back_to_truncation_when_retry_also_leaks(
     with caplog.at_level(logging.WARNING):
         result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    # The fallback always succeeds (no LLM call), so the chunk still lands ok.
-    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
-    assert len(t.calls) == 2  # original + the one reinforced retry
-    (_sql, params), *_ = conn.writes
-    stored = params[2]
-    assert "at most" not in stored.lower()
-    assert "count words" not in stored.lower()
-    # Deterministic truncation of the claimed chunk's own text.
-    assert stored == "We synthesized MOF-5 and measured a band gap of 3.5 eV."
-    fallback_warns = [
-        r
-        for r in caplog.records
-        if "falling back to deterministic truncation" in r.getMessage()
-    ]
-    assert len(fallback_warns) == 1
-    assert "chunk_id=1" in fallback_warns[0].getMessage()
+    # Nothing is written: the old gist (or none) stays; the lease keeps
+    # the failure so a later pass retries after the cooldown.
+    assert result == {
+        "claimed": 1,
+        "ok": 0,
+        "failed": 1,
+        "rejected": 1,
+    }
+    assert len(t.calls) == 1 + GIST_REPAIR_ATTEMPTS
+    assert conn.writes == []
+    assert conn.leases == {1: 1}
+    refusal_warns = [r for r in caplog.records if "gist refused" in r.getMessage()]
+    assert len(refusal_warns) == 1
+    assert "chunk_id=1" in refusal_warns[0].getMessage()
 
 
 def test_run_pass_clean_candidate_stored_untouched() -> None:
@@ -1389,7 +1446,7 @@ def test_reject_reason_does_not_overfire_on_clean_gists(clean: str) -> None:
     assert _reject_reason(clean) is None
 
 
-def test_run_pass_never_stores_the_leak_when_both_attempts_leak() -> None:
+def test_run_pass_never_stores_the_leak_when_all_attempts_leak() -> None:
     conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
     store = _FakeStore(conn)
     leak = "Let me analyze this passage. It's about cobalt."
@@ -1398,9 +1455,8 @@ def test_run_pass_never_stores_the_leak_when_both_attempts_leak() -> None:
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
     assert result["rejected"] == 1
-    stored = [p[2] for _sql, p in conn.writes]
-    assert stored
-    assert all("Let me" not in t for t in stored)
+    assert result["failed"] == 1
+    assert conn.writes == []  # the leak is refused, not stored
 
 
 # ── gr478547: an edited (in-place) chunk is re-summarised (real PG) ──
@@ -1536,3 +1592,138 @@ def test_failure_over_legacy_ok_row_keeps_the_summary(store: Any) -> None:
         ).fetchone()
         assert row == ("ok", "legacy gist\n\nlegacy detail.", "sha-v1")
         assert cid not in _claimable_ids(conn)
+
+
+# ── store-side write guard (gist guard, 2026-10-13 ruling) ──
+
+
+def test_write_chunk_summary_refuses_invented_arxiv(store: Any) -> None:
+    """The store write path refuses a gist naming an arXiv id the chunk
+    never carried — a BadInput with the offending id, no row written."""
+    from precis.errors import BadInput
+    from tests.workers._helpers import seed_chunks
+
+    _ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    with store.pool.connection() as conn:
+        with pytest.raises(BadInput) as excinfo:
+            write_chunk_summary(
+                conn,
+                cid,
+                summarizer="llm-v1",
+                text="per arXiv:2301.12345",
+                prompt_hash="h",
+                token_count=1,
+            )
+        assert "2301.12345" in str(excinfo.value)
+        row = conn.execute(
+            "SELECT 1 FROM chunk_summaries WHERE chunk_id = %s", (cid,)
+        ).fetchone()
+        assert row is None
+
+
+def test_write_chunk_summary_accepts_id_in_chunk_text(store: Any) -> None:
+    from tests.workers._helpers import seed_chunks
+
+    _ref_id, (cid,) = seed_chunks(
+        store, [_PROSE + " Replication of arXiv:2301.12345 follows."]
+    )
+    with store.pool.connection() as conn:
+        write_chunk_summary(
+            conn,
+            cid,
+            summarizer="llm-v1",
+            text="replication described\n\narXiv:2301.12345.",
+            prompt_hash="h",
+            token_count=1,
+        )
+        row = conn.execute(
+            "SELECT text FROM chunk_summaries WHERE chunk_id = %s", (cid,)
+        ).fetchone()
+        assert row is not None and "arXiv:2301.12345" in row[0]
+
+
+def test_write_chunk_summary_accepts_id_on_cited_ref(store: Any) -> None:
+    """An id absent from the chunk text passes when a ref the chunk's ref
+    cites carries it — the gist is verifiable, not invented."""
+    from tests.workers._helpers import seed_chunks, seed_ref
+
+    ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    cited_ref = seed_ref(store, title="cited paper")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id) "
+            "VALUES ('doi', '10.1021/nn400447b', %s)",
+            (cited_ref,),
+        )
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
+            "VALUES (%s, %s, 'cites', 'system')",
+            (ref_id, cited_ref),
+        )
+        write_chunk_summary(
+            conn,
+            cid,
+            summarizer="llm-v1",
+            text="hybrid material\n\nDOI 10.1021/nn400447b.",
+            prompt_hash="h",
+            token_count=1,
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT text FROM chunk_summaries WHERE chunk_id = %s", (cid,)
+        ).fetchone()
+        assert row is not None and "10.1021/nn400447b" in row[0]
+
+
+def test_write_chunk_summary_refusal_keeps_old_gist(store: Any) -> None:
+    """A refused re-gist leaves the existing row untouched — the write is
+    refused, not silently stripped or overwritten."""
+    from precis.errors import BadInput
+    from tests.workers._helpers import seed_chunks
+
+    _ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    with store.pool.connection() as conn:
+        write_chunk_summary(
+            conn,
+            cid,
+            summarizer="llm-v1",
+            text="good gist",
+            prompt_hash="h",
+            token_count=1,
+        )
+        conn.commit()
+        with pytest.raises(BadInput):
+            write_chunk_summary(
+                conn,
+                cid,
+                summarizer="llm-v1",
+                text="adds specifics not in BRIEF: whatever. Let me draft:",
+                prompt_hash="h",
+                token_count=1,
+            )
+        row = conn.execute(
+            "SELECT status, text FROM chunk_summaries WHERE chunk_id = %s",
+            (cid,),
+        ).fetchone()
+        assert row == ("ok", "good gist")
+
+
+def test_fetch_cited_identifiers_collects_own_and_linked_refs(store: Any) -> None:
+    from tests.workers._helpers import seed_chunks, seed_ref
+
+    ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    cited_ref = seed_ref(store, title="cited")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id) VALUES "
+            "('arxiv', '2301.12345v2', %s), ('doi', '10.1/ABC', %s)",
+            (ref_id, cited_ref),
+        )
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
+            "VALUES (%s, %s, 'cites', 'system')",
+            (ref_id, cited_ref),
+        )
+        conn.commit()
+        got = fetch_cited_identifiers(conn, [cid])
+    assert got[cid] == {"arxiv:2301.12345", "doi:10.1/abc"}

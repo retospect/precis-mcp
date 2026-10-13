@@ -29,19 +29,28 @@ chunks; per-chunk specifics go LAST. Chunks are claimed ordered
 reuse the prefix. Pin the litellm ``summarizer`` alias to a single
 backend — least-busy routing across nodes destroys this locality.
 
-**Fail-closed output contract** (gr338215): the shared reasoning-capable
-backend occasionally bleeds chain-of-thought about the *instructions*
-into ``content`` instead of the BRIEF/DETAIL answer. Every candidate is
-checked (:func:`_reject_reason`) for instruction-echo, a leaked
-self-verification tally, quote-wrapping, gross length overshoot, or a
-verbatim prefix of its own chunk cut mid-sentence
-(:func:`_is_truncated_copy`) before it is ever written; a rejected
-candidate gets one reinforced retry (:func:`_retry_with_reinforcement`),
-then falls back to a deterministic gist of the chunk text
-(:func:`_fallback_summary`) — never a raw model call's reasoning trace.
-The pass reports the contract's own rate as ``rejected`` alongside
-``ok``/``failed``, so a model drifting off contract is visible as a rate
-rather than as a scatter of per-chunk warnings.
+**Fail-closed output contract** (gr338215, gist guard 2026-10-13): the
+shared reasoning-capable backend occasionally bleeds chain-of-thought
+about the *instructions* into ``content`` instead of the BRIEF/DETAIL
+answer, or names a paper identifier (arXiv id, DOI, PMID) the passage
+never mentioned. Every candidate is checked (:func:`_reject_reason`) for
+instruction-echo, a leaked self-verification tally, quote-wrapping,
+gross length overshoot, a verbatim prefix of its own chunk cut
+mid-sentence (:func:`_is_truncated_copy`), mid-sentence scratchpad
+("Let me draft:", "Wait — BRIEF mentions"), contract meta-talk about
+BRIEF/DETAIL, and identifiers absent from both the chunk text and the
+identifiers of refs it cites (:func:`_identifier_reason`) before it is
+ever written. A rejected candidate is sent back to the model with the
+*specific* reason for up to :data:`GIST_REPAIR_ATTEMPTS` repairs; still
+failing, the write is refused — the chunk keeps its old gist (or none)
+and the reason is recorded on the lease (``_mark_failed`` →
+``last_error``) where ``scripts/gist-cleanup`` and the retry cap find
+it. The same contract is enforced store-side in
+:func:`write_chunk_summary`, so every writer — this pass or any future
+import/edit path — gets the same :class:`~precis.errors.BadInput`
+refusal. The pass reports the contract's own rate as ``rejected``
+alongside ``ok``/``failed``, so a model drifting off contract is visible
+as a rate rather than as a scatter of per-chunk warnings.
 """
 
 from __future__ import annotations
@@ -53,11 +62,12 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import psycopg
 
+from precis.errors import BadInput
 from precis.store.protocols import PoolStore
 from precis.utils.llm.openai_tools import HttpTransport as Transport
 from precis.utils.llm.openai_tools import _UrllibTransport
@@ -393,6 +403,12 @@ class _Claimed:
     numerics: list[str]
     ref_kind: str
     title: str
+    #: Normalised ``kind:value`` identifiers the gist may legitimately
+    #: carry without appearing in the chunk text — the chunk's own ref's
+    #: identifiers plus those of refs the chunk (or its ref) cites via
+    #: ``links``. Populated in the claim phase by
+    #: :func:`fetch_cited_identifiers`.
+    cited_ids: frozenset[str] = frozenset()
 
 
 # Lease claim via the shared ``chunk_claims`` table. Each pass selects eligible
@@ -798,6 +814,42 @@ def fetch_doc_card(conn: Any, ref_id: int) -> str:
     return str(row[0]) if row and row[0] else ""
 
 
+def fetch_cited_identifiers(
+    conn: Any, chunk_ids: list[int]
+) -> dict[int, frozenset[str]]:
+    """``chunk_id`` → the normalized ``kind:value`` identifier set
+    (:func:`_norm_id`) a gist on that chunk may legitimately name: the
+    chunk's own ref's ``ref_identifiers`` — a masthead chunk glossing the
+    paper's own DOI is faithful, not hallucinating — plus those of every
+    ref linked from the chunk (``links.src_chunk_id``) or ref-level from
+    its ref (``links.src_ref_id``, ``src_chunk_id IS NULL``). One round
+    trip for the whole claimed batch; an identifier absent from both the
+    chunk text and this set is what :func:`_identifier_reason` refuses.
+    """
+    if not chunk_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT c.chunk_id, ri.id_kind, ri.id_value
+          FROM chunks c
+          JOIN ref_identifiers ri ON ri.ref_id = c.ref_id
+         WHERE c.chunk_id = ANY(%(ids)s)
+         UNION
+        SELECT c.chunk_id, ri.id_kind, ri.id_value
+          FROM chunks c
+          JOIN links l ON l.src_chunk_id = c.chunk_id
+                       OR (l.src_ref_id = c.ref_id AND l.src_chunk_id IS NULL)
+          JOIN ref_identifiers ri ON ri.ref_id = l.dst_ref_id
+         WHERE c.chunk_id = ANY(%(ids)s)
+        """,
+        {"ids": chunk_ids},
+    ).fetchall()
+    out: dict[int, set[str]] = {}
+    for chunk_id, kind, value in rows:
+        out.setdefault(int(chunk_id), set()).add(_norm_id(str(kind), str(value)))
+    return {k: frozenset(v) for k, v in out.items()}
+
+
 # ---------------------------------------------------------------------------
 # Prompt — stable content first (cache-hot), per-chunk specifics last
 # ---------------------------------------------------------------------------
@@ -837,7 +889,9 @@ _INSTRUCTION_BLOCK = (
     "list, or copyright/masthead boilerplate — set BRIEF to a short "
     "parenthetical tag naming it (e.g. (tabular data), (atomic coordinates), "
     "(copyright notice), (publication metadata), (reference list)) and leave "
-    "DETAIL empty."
+    "DETAIL empty.\n"
+    "Never name an external paper identifier (arXiv id, DOI, PMID) unless "
+    "it appears verbatim in the passage."
 )
 
 #: Layer 1 — the seven few-shot BRIEF/DETAIL pairs (style only). A CACHED
@@ -1084,7 +1138,7 @@ _INSTRUCTION_ECHO_SUBSTRINGS: tuple[str, ...] = ("something like:",)
 _INSTRUCTION_ECHO_RE = re.compile(
     r"at most \d+ words|self-contained (?:gist|clause|summary)|"
     # "miscount words" is content; the leak is the instruction itself.
-    r"\bcount (?:the )?words\b|that's \d+ words|"
+    r"\bcount (?:the )?words\b|that's (?:about |around |roughly )?\d+ words|"
     # "words: 11" is a tally; "keywords:", "key words:" and "brainish
     # words: <p, t>" are content, so a number must follow.
     r"(?<!key)(?<!key )\bwords:\s*\d",
@@ -1120,6 +1174,42 @@ _REASONING_PREAMBLE_RE = re.compile(
 #: "First," opens reasoning only as the whole candidate's opener; on a DETAIL
 #: line it is an enumeration ("first, X; second, Y") — 2026-10-11 dry run.
 _REASONING_OPENER_RE = re.compile(r"\A\s*(?:first[,:]|firstly)", re.IGNORECASE)
+
+#: Contract meta-talk observed in the 2026-10-13 prod audit: the model
+#: narrates the BRIEF/DETAIL contract instead of answering it — "adds
+#: specifics not in BRIEF: …", "Check BRIEF word count:", "Make sure
+#: DETAIL doesn't repeat BRIEF", "(BRIEF: (tabular data) DETAIL:)". A bare
+#: all-caps token stays legal (acronym lists: "2D, ARI, AUC, BRIEF,
+#: CASIA"), so it only trips in a meta position: followed by a
+#: colon/dash, or by a contract verb. Case-sensitive — a lowercased
+#: "in brief:" or "the detail must" is ordinary prose.
+_CONTRACT_META_CAPS_RE = re.compile(
+    r"\b(?:BRIEF|DETAIL)\s*(?::|—|--)"
+    r"|\b(?:BRIEF|DETAIL)\s+(?:must|should|cannot|can't|won't|doesn't|"
+    r"does not|do not|mentions?|adds?|repeats?|gives|states?|needs?|has|"
+    r"is|means|lists?|reads|word count|not)"
+)
+
+#: Case-insensitive contract talk: the DETAIL instruction paraphrased back
+#: as content ("specifics not in BRIEF", "~1.6k stored gists 2026-10-13")
+#: and its verbatim noun list echoed ("quantities, named entities,
+#: method, caveats"). Neither phrasing is plausible gloss prose.
+_CONTRACT_META_CI_RE = re.compile(
+    r"\bspecifics?\s+not\s+in\s+(?:the\s+)?brief\b"
+    r"|\bquantities,\s*named\s+entities,\s*method,\s*caveats\b",
+    re.IGNORECASE,
+)
+
+#: Mid-sentence scratchpad. ``_REASONING_PREAMBLE_RE`` is line-anchored;
+#: the same leaks also surface *inside* a gist after sentence-final
+#: punctuation or an em-dash: "… repeats. Let me draft:", "… frontier.
+#: Wait, DETAIL must…", "… BRIEF. Check: BRIEF ≤ 15". Case-sensitive on
+#: purpose — the capital after a sentence break is the tic ("surfaces
+#: wait," is a verb, "Let's Talk GenAI" is a course name inside a quote).
+_MID_SENTENCE_SCRATCHPAD_RE = re.compile(
+    r"(?:[.!?…]['\"’)\]]?\s+|—\s+)"
+    r"(?:Let me\b|Let us\b|Wait[,.!—]|Okay[,.!]|Hmm[,.]|Check:|So:)"
+)
 
 #: A numbered list is reasoning, not a gist: two or more "1." / "2)" lines.
 _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
@@ -1185,7 +1275,63 @@ def _is_truncated_copy(candidate: str, chunk_text: str) -> bool:
     return not brief.endswith(_SENTENCE_END)
 
 
-def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
+#: Paper identifiers a gist may carry only when verifiable (gist guard
+#: 2026-10-13): an arXiv id (new ``YYMM.NNNNN`` or legacy
+#: ``hep-th/9901001`` shape), a DOI, or a PubMed id. Anything matching
+#: these shapes must appear verbatim in the chunk text or in
+#: ``ref_identifiers`` of a ref the chunk cites — the prod audit found
+#: ~530 stored gists naming ids the source never carried
+#: ("doi:10.1126/science.abd1234").
+_ARXIV_ID_RE = re.compile(
+    r"\barxiv:?\s*(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?",
+    re.IGNORECASE,
+)
+_DOI_ID_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'()\[\]<>…]+)")
+_PUBMED_ID_RE = re.compile(r"\b(?:pmid|pubmed)\s*[:#]?\s*(\d{6,9})\b", re.IGNORECASE)
+
+
+def _norm_id(kind: str, value: str) -> str:
+    """Normalize a ``(kind, value)`` pair to the ``kind:value`` form held in
+    ``cited_ids``: lowercased (``ref_identifiers`` stores DOIs lowercase),
+    arXiv version suffix dropped so ``2301.12345`` and ``2301.12345v2``
+    count as the same paper."""
+    v = value.strip().lower().rstrip(".,;:)]…")
+    if kind == "arxiv":
+        v = re.sub(r"v\d+$", "", v)
+    return f"{kind}:{v}"
+
+
+def _identifier_reason(
+    candidate: str, chunk_text: str, cited_ids: frozenset[str]
+) -> str | None:
+    """First paper identifier in ``candidate`` verifiable nowhere — it must
+    appear verbatim in ``chunk_text`` or in ``cited_ids`` (the
+    ``kind:value`` set from :func:`fetch_cited_identifiers`: the chunk's
+    own ref plus refs linked from the chunk or its ref).
+
+    A gist that names an identifier its source never carried is the model
+    recalling an id from parameters — sometimes even a real one, but not
+    checkable against this chunk, so it is refused either way.
+    """
+    hay = (chunk_text or "").lower()
+    for kind, raw in (
+        [("arxiv", m.group(1)) for m in _ARXIV_ID_RE.finditer(candidate)]
+        + [("doi", m.group(1)) for m in _DOI_ID_RE.finditer(candidate)]
+        + [("pubmed", m.group(1)) for m in _PUBMED_ID_RE.finditer(candidate)]
+    ):
+        norm = _norm_id(kind, raw)
+        value = norm.split(":", 1)[1]
+        if value in hay or norm in cited_ids:
+            continue
+        return f"identifier {kind}:{value!r} not in chunk text or cited refs"
+    return None
+
+
+def _reject_reason(
+    candidate: str,
+    chunk_text: str = "",
+    cited_ids: frozenset[str] = frozenset(),
+) -> str | None:
     """Cheap, deterministic check for leaked reasoning in a candidate summary.
 
     Runs on :func:`parse_summary`'s output — already normalized to
@@ -1198,7 +1344,10 @@ def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
 
     ``chunk_text``, when given, additionally rejects a gist that is a
     verbatim prefix of its own chunk cut mid-sentence
-    (:func:`_is_truncated_copy`) — a copy, not a summary.
+    (:func:`_is_truncated_copy`) — a copy, not a summary. Together with
+    ``cited_ids`` it also grounds the identifier check
+    (:func:`_identifier_reason`): an arXiv id / DOI / PMID the chunk text
+    never carried and no cited ref resolves is refused by name.
     """
     if not candidate:
         return None
@@ -1215,6 +1364,12 @@ def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
             return f"prompt-fragment echo {needle!r}"
     if m := _PROMPT_FRAGMENT_RE.search(candidate):
         return f"prompt-fragment echo {m.group(0).strip().lower()!r}"
+    if m := _CONTRACT_META_CAPS_RE.search(candidate):
+        return f"contract meta-talk {m.group(0).strip()!r}"
+    if m := _CONTRACT_META_CI_RE.search(candidate):
+        return f"contract meta-talk {m.group(0).strip()!r}"
+    if m := _MID_SENTENCE_SCRATCHPAD_RE.search(candidate):
+        return f"mid-sentence scratchpad {m.group(0).strip()!r}"
     if _REASONING_PREAMBLE_RE.search(candidate) or _REASONING_OPENER_RE.search(
         candidate
     ):
@@ -1235,79 +1390,40 @@ def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
         return f"brief grossly over budget ({len(brief_words)} words)"
     if chunk_text and _is_truncated_copy(candidate, chunk_text):
         return "verbatim prefix of the chunk, cut mid-sentence"
-    return None
+    return _identifier_reason(candidate, chunk_text, cited_ids)
 
 
-#: The fallback keeps whole sentences, so its ceiling is looser than the
-#: gist budget the *prompt* asks the model for. Capping the fallback at
-#: ``_BRIEF_MAX_WORDS`` instead is what wrote 774 mid-sentence fragments to
-#: prod in the week to 2026-09-18 — a 16-word first sentence came out cut
-#: at word 15, stored ``status='ok'``, and read by humans as a broken row.
-_FALLBACK_MAX_WORDS = _BRIEF_MAX_WORDS * 2
+#: Repair attempts after the first contract-violating candidate
+#: (gist guard 2026-10-13). The specific trip reason is fed back verbatim
+#: so the model can fix *that* problem — an invented identifier, a leaked
+#: "Let me draft:" — rather than getting a generic scolding. After this
+#: many repairs the chunk keeps its old gist (or none) and the refusal is
+#: recorded on the lease (``_mark_failed``), where the retry cap and the
+#: ``scripts/gist-cleanup`` repair sweep find it.
+GIST_REPAIR_ATTEMPTS = 2
 
 
-def _fallback_summary(chunk_text: str) -> str:
-    """Deterministic gist used when both the original candidate and its
-    reinforced retry fail :func:`_reject_reason`.
+class GistRejectedError(ValueError):
+    """Every repair attempt still failed the output contract.
 
-    No model call: the chunk's own first sentence, mirroring this module's
-    "promote first sentence" idiom in :func:`parse_summary` rather than
-    inventing a new rule. A whole sentence slightly over the gist budget
-    beats a fragment inside it, so the word cap is
-    :data:`_FALLBACK_MAX_WORDS` and only a sentence past *that* is cut —
-    at a clause boundary, with a trailing ellipsis marking the elision.
+    The write is refused (the chunk keeps its old gist, or none); the
+    reason rides along in the message so ``_mark_failed``'s ``last_error``
+    names what to fix on the next pass.
     """
-    clean = _sanitize_model_text(chunk_text or "").strip()
-    first_line = clean.split("\n", 1)[0]
-    first_sentence = first_line.split(". ", 1)[0].strip()
-    words = first_sentence.split()
-    if len(words) <= _FALLBACK_MAX_WORDS:
-        return first_sentence or clean[:120]
-    # Past even the ceiling: cut at the last clause boundary inside it and
-    # mark the elision, so the row never reads as a finished thought.
-    head = " ".join(words[:_FALLBACK_MAX_WORDS])
-    cut = max(head.rfind(", "), head.rfind("; "), head.rfind(": "))
-    if cut > len(head) // 3:
-        head = head[:cut]
-    return head.rstrip(",;:— ") + " …"
 
 
-#: Reinforcement turn appended for the one contract-violation retry — terse,
-#: and explicit about the exact failure mode seen in gr338215.
-_REINFORCEMENT_MESSAGE = {
-    "role": "user",
-    "content": (
-        "Your previous reply violated the output contract (it included "
-        "reasoning, commentary, or a word tally instead of just the answer). "
-        "Output ONLY the two required lines, BRIEF: and DETAIL: — nothing "
-        "else."
-    ),
-}
-
-
-def _retry_with_reinforcement(
-    client: Any, claim: _Claimed, messages: list[dict[str, str]]
-) -> tuple[str | None, int | None]:
-    """One extra call, with a terse reinforcement line appended, for a
-    candidate that failed :func:`_reject_reason`.
-
-    Returns ``(summary, total_tokens)`` on a clean retry, else ``(None,
-    None)`` — the caller falls back to :func:`_fallback_summary`. Any
-    transport/parse error on the retry is swallowed and logged here (this is
-    already the fallback path; it must not raise out of the pass).
-    """
-    try:
-        result = client.complete(messages + [_REINFORCEMENT_MESSAGE])
-        summary = parse_summary(result.text)
-    except Exception:
-        log.warning(
-            "llm_summarize: chunk_id=%s output-contract retry itself failed",
-            claim.chunk_id,
-        )
-        return None, None
-    if _reject_reason(summary, claim.text) is not None:
-        return None, None
-    return summary, result.total_tokens
+def _repair_message(reason: str) -> dict[str, str]:
+    """The user turn appended after a rejected candidate — the *specific*
+    contract reason plus the two-line reminder."""
+    return {
+        "role": "user",
+        "content": (
+            f"That reply was rejected: {reason}. Output ONLY the two "
+            "required lines, BRIEF: and DETAIL: — no reasoning, no "
+            "commentary, no word tallies, and only identifiers that appear "
+            "verbatim in the passage."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1324,7 +1440,28 @@ def write_chunk_summary(
     prompt_hash: str,
     token_count: int | None,
 ) -> None:
-    """Write the terminal ``ok`` summary and release the chunk's claim."""
+    """Write the terminal ``ok`` summary and release the chunk's claim.
+
+    Store-side enforcement of the output contract (gist guard 2026-10-13):
+    the same :func:`_reject_reason` the generation pass applies runs here
+    too — scratchpad and unverifiable identifiers are refused with the
+    specific reason as :class:`~precis.errors.BadInput`, so every writer
+    (this worker, an MCP put/edit, an import) gets the same answer and the
+    existing gist is left in place. A chunk deleted mid-pass has no row
+    to check; the INSERT's FK then raises as before.
+    """
+    row = conn.execute(
+        "SELECT text FROM chunks WHERE chunk_id = %s", (chunk_id,)
+    ).fetchone()
+    if row is not None:
+        cited = fetch_cited_identifiers(conn, [chunk_id]).get(chunk_id, frozenset())
+        reason = _reject_reason(str(text), str(row[0]), cited_ids=cited)
+        if reason is not None:
+            raise BadInput(
+                f"chunk {chunk_id} gist refused: {reason}",
+                next="fix the gist text — identifiers must appear in the "
+                "chunk or a cited ref, and no reasoning may leak",
+            )
     conn.execute(
         """
         INSERT INTO chunk_summaries
@@ -1427,9 +1564,9 @@ class _Outcome:
     token_count: int | None
     error: Exception | None
     #: Trip reason when the output contract caught the first candidate, even
-    #: if the reinforced retry or the fallback then produced a usable gist —
-    #: the pass's own rate signal for "the summarizer is misbehaving", which
-    #: the per-chunk WARNING alone does not aggregate anywhere.
+    #: if a repair attempt then produced a usable gist — the pass's own rate
+    #: signal for "the summarizer is misbehaving", which the per-chunk
+    #: WARNING alone does not aggregate anywhere.
     rejected: str | None = None
 
 
@@ -1517,12 +1654,15 @@ def run_llm_summarize_pass(
     # (see MAX_CONCURRENCY_ENV above).
     concurrency = max(1, min(concurrency, _max_concurrency()))
 
-    # Phase 1 — claim + prefetch cards in one short transaction, then commit.
+    # Phase 1 — claim + prefetch cards and cited-identifier sets in one
+    # short transaction, then commit.
     card_cache: dict[int, str] = {}
     with store.pool.connection() as conn:
         rows = claim_chunks_without_summary(
             conn, summarizer=summarizer, limit=batch_size
         )
+        cited = fetch_cited_identifiers(conn, [r.chunk_id for r in rows])
+        rows = [replace(r, cited_ids=cited.get(r.chunk_id, frozenset())) for r in rows]
         for claim in rows:
             if not _is_numeric_dump(claim.text) and claim.ref_id not in card_cache:
                 card_cache[claim.ref_id] = fetch_doc_card(conn, claim.ref_id)
@@ -1558,36 +1698,61 @@ def run_llm_summarize_pass(
             try:
                 result = client.complete(messages)
                 summary = parse_summary(result.text)
-                reason = _reject_reason(summary, claim.text)
+                reason = _reject_reason(summary, claim.text, cited_ids=claim.cited_ids)
                 if reason is None:
                     return _Outcome(
                         claim, prompt_hash, summary, result.total_tokens, None
                     )
-                # Fail-closed output contract (gr338215): never store a
-                # candidate that reads like leaked reasoning. One retry with
-                # a terse reinforcement line, then a deterministic
-                # truncation fallback — never a raw model call's chain of
-                # thought.
-                log.warning(
-                    "llm_summarize: chunk_id=%s candidate rejected (%s): %r",
-                    claim.chunk_id,
-                    reason,
-                    summary[:80],
-                )
-                retry_summary, retry_tokens = _retry_with_reinforcement(
-                    client, claim, messages
-                )
-                if retry_summary is not None:
-                    return _Outcome(
-                        claim, prompt_hash, retry_summary, retry_tokens, None, reason
+                # Fail-closed output contract (gr338215, gist guard
+                # 2026-10-13): never store a candidate that reads like
+                # leaked reasoning or names an identifier the chunk does
+                # not carry. Each rejection goes back to the model with
+                # the specific reason for up to GIST_REPAIR_ATTEMPTS
+                # repairs; still failing, the write is refused — the old
+                # gist (or none) stays and the reason lands on the lease's
+                # failure record via _mark_failed.
+                first_reason = reason
+                convo = list(messages)
+                for _repair in range(GIST_REPAIR_ATTEMPTS):
+                    log.warning(
+                        "llm_summarize: chunk_id=%s candidate rejected (%s): %r",
+                        claim.chunk_id,
+                        reason,
+                        summary[:80],
                     )
-                fallback = _fallback_summary(claim.text)
+                    convo += [
+                        {"role": "assistant", "content": result.text},
+                        _repair_message(reason),
+                    ]
+                    result = client.complete(convo)
+                    summary = parse_summary(result.text)
+                    reason = _reject_reason(
+                        summary, claim.text, cited_ids=claim.cited_ids
+                    )
+                    if reason is None:
+                        return _Outcome(
+                            claim,
+                            prompt_hash,
+                            summary,
+                            result.total_tokens,
+                            None,
+                            first_reason,
+                        )
                 log.warning(
-                    "llm_summarize: chunk_id=%s output contract failed twice; "
-                    "falling back to deterministic truncation",
+                    "llm_summarize: chunk_id=%s gist refused after %d repairs "
+                    "(%s); keeping existing summary",
                     claim.chunk_id,
+                    GIST_REPAIR_ATTEMPTS,
+                    reason,
                 )
-                return _Outcome(claim, prompt_hash, fallback, None, None, reason)
+                return _Outcome(
+                    claim,
+                    prompt_hash,
+                    None,
+                    None,
+                    GistRejectedError(f"gist refused: {reason}"),
+                    first_reason,
+                )
             except EmptySummaryError as exc:
                 # A model/backend miss, not a bug — no per-chunk ERROR traceback
                 # (it floods the log surface). Recorded below only if *every*
@@ -1751,8 +1916,10 @@ def _truthy(value: str | None) -> bool:
 
 
 __all__ = [
+    "GIST_REPAIR_ATTEMPTS",
     "SUMMARIZER_NAME",
     "EmptySummaryError",
+    "GistRejectedError",
     "LlmClient",
     "LlmConfig",
     "LlmResult",
@@ -1760,6 +1927,7 @@ __all__ = [
     "build_messages",
     "claim_chunks_without_summary",
     "eligible_chunk_count",
+    "fetch_cited_identifiers",
     "fetch_doc_card",
     "parse_summary",
     "run_llm_summarize_pass",
