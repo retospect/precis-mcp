@@ -326,6 +326,17 @@ def publish_preflight(
                 blocking=False,
             )
         )
+    elif row.state == "publishing":
+        issues.append(
+            PreflightIssue(
+                check="state",
+                message=(
+                    "a registry POST is already in flight or unresolved "
+                    "(state 'publishing') — wait, or run "
+                    "`precis nanopub reconcile`"
+                ),
+            )
+        )
     elif row.state != "anchored":
         issues.append(
             PreflightIssue(

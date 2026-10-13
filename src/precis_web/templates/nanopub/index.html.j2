@@ -6,7 +6,7 @@
 <div class="space-y-3">
   {# One tooltip vocabulary for every state mention on the page (header
      strip + row badges) — hover explains where a claim sits on the
-     candidate → reviewed → signed → anchored → published ladder and
+     candidate → reviewed → signed → anchored → publishing → published ladder and
      what moves it next. #}
   {% macro state_tip(key) -%}
     {%- if key == 'unminted' -%}
@@ -19,6 +19,8 @@
       Artifact bytes signed and immutable in the append-only proof store. Next: an OpenTimestamps batch anchors it (signed → anchored).
     {%- elif key == 'anchored' -%}
       Signed and OTS-anchored. Next: publish to the nanopub registry (anchored → published) — CLI-only and irreversible.
+    {%- elif key == 'publishing' -%}
+      Registry POST in flight or outcome unknown — no action; `precis nanopub reconcile` resolves a stuck row.
     {%- elif key == 'published' -%}
       Public and immutable — a change is a supersede or retract, never an edit.
     {%- elif key == 'blocked' -%}
@@ -31,7 +33,7 @@
     <p class="text-xs text-slate-500">
       {{ n_nodes }} hub{{ 's' if n_nodes != 1 }}:
       {% for s, c in state_counts %}<span class="whitespace-nowrap cursor-help
-        {%- if s in ('signed', 'anchored') %} text-sky-700
+        {%- if s in ('signed', 'anchored', 'publishing') %} text-sky-700
         {%- elif s == 'published' %} text-emerald-700
         {%- elif s == 'unminted' %} text-slate-400{% endif %}"
         title="{{ state_tip(s) }}">{{ c }} {{ s }}</span>{{ ' · ' if not loop.last }}{% endfor %}
@@ -97,7 +99,7 @@
   <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help
     {% if r.disputed %}bg-rose-100 text-rose-700
     {% elif r.state == 'published' %}bg-emerald-100 text-emerald-700
-    {% elif r.state in ('signed', 'anchored') %}bg-sky-100 text-sky-700
+    {% elif r.state in ('signed', 'anchored', 'publishing') %}bg-sky-100 text-sky-700
     {% elif r.state %}bg-slate-200 text-slate-700
     {% else %}bg-slate-100 text-slate-400{% endif %}"
     title="{{ state_tip(key) }}{% if r.updated_at %} In this state since {{ r.updated_at|abs_ts }}.{% endif %}">
@@ -113,11 +115,11 @@
     stale: {{ stale.label }}
   </span>
   {% endif %}
-  {# Minted rows also get a five-dot pipeline strip — the transition
+  {# Minted rows also get a six-dot pipeline strip — the transition
      readout: filled dots = ladder rungs climbed, hover for the ladder
      and the last-transition time. #}
   {% if r.state %}
-  {% set steps = ['candidate', 'reviewed', 'signed', 'anchored', 'published'] %}
+  {% set steps = ['candidate', 'reviewed', 'signed', 'anchored', 'publishing', 'published'] %}
   {% set idx = steps.index(r.state) if r.state in steps else -1 %}
   <span class="np-steps shrink-0 cursor-help"
         title="{{ steps|join(' → ') }} — at “{{ r.state }}”{% if r.updated_at %} since {{ r.updated_at|abs_ts }}{% endif %}">

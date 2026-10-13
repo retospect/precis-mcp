@@ -23,7 +23,7 @@ from typing import Any
 #: Publish states whose artifact exists and is byte-frozen — the
 #: frozen-ness ladder's "artifact" rungs (``reviewed`` freezes only the
 #: string; nothing citable-as-artifact exists yet).
-MINTED_STATES = ("signed", "anchored", "published")
+MINTED_STATES = ("signed", "anchored", "publishing", "published")
 
 #: Section heading, identical in both exporters.
 SECTION_TITLE = "Published claim artifacts"

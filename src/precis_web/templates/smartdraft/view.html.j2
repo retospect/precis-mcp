@@ -819,7 +819,7 @@
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Claims</div>
         {# Chip colour = the hub's nanopub publish-ladder state (candidate →
-           reviewed → signed → anchored → published; rose/struck = a terminal
+           reviewed → signed → anchored → publishing → published; rose/struck = a terminal
            mishap). signed=sky / published=emerald match the /nanopub
            workbench badges; violet = no publish row yet (the pre-ladder
            baseline, the rail's original colour). Tooltip carries the state
@@ -829,6 +829,7 @@
           'reviewed':   'bg-indigo-50 text-indigo-700 hover:bg-indigo-100',
           'signed':     'bg-sky-50 text-sky-700 hover:bg-sky-100',
           'anchored':   'bg-teal-50 text-teal-700 hover:bg-teal-100',
+          'publishing': 'bg-teal-50 text-teal-700 hover:bg-teal-100',
           'published':  'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
           'rejected':   'bg-rose-50 text-rose-600 hover:bg-rose-100',
           'retracted':  'bg-rose-50 text-rose-600 hover:bg-rose-100 line-through',

@@ -1,7 +1,7 @@
 """The publish state machine — legality layer.
 
-``candidate`` → ``reviewed`` → ``signed`` → ``anchored`` → ``published``
-→ ``superseded`` / ``retracted``; ``rejected`` branches off ``reviewed``.
+``candidate`` → ``reviewed`` → ``signed`` → ``anchored`` → ``publishing``
+→ ``published`` → ``superseded`` / ``retracted``; ``rejected`` branches off ``reviewed``.
 Backward flips exist only pre-anchor: drift or an edit reopens
 ``reviewed``/``signed`` → ``candidate`` (recompute, not surgery — the
 frozen fields are discarded, the append-only artifact row stays), and a
@@ -9,7 +9,10 @@ dependency's artifact code changing flips a downstream ``signed`` →
 ``reviewed`` for the topo re-mint cascade. From ``anchored`` on, nothing
 moves backward: an anchor is irreversible (but discloses nothing), and
 everything after publication is a new artifact (supersede/retract),
-never an edit.
+never an edit. ``publishing`` is the durable claim held while the registry
+POST is in flight (no DB transaction open): it reverts to ``anchored`` on a
+definite failure and resolves via ``precis nanopub reconcile`` on an ambiguous
+one; every other door refuses it.
 
 Pure policy; the CAS write is
 ``store.nanopub_transition(row_id, to_state=…, expect=…)`` — callers
@@ -24,6 +27,7 @@ STATES = (
     "reviewed",
     "signed",
     "anchored",
+    "publishing",
     "published",
     "superseded",
     "retracted",
@@ -39,7 +43,10 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
     # signed → reviewed is the dependency-dirty flip (topo re-mint);
     # signed → candidate is the local edit reopen (discard artifact ref).
     "signed": ("anchored", "reviewed", "candidate"),
-    "anchored": ("published",),
+    "anchored": ("publishing", "superseded"),
+    # publishing → anchored is the definite-failure revert; the registry
+    # may already hold the bytes, so nothing else moves a publishing row.
+    "publishing": ("published", "anchored"),
     "published": ("superseded", "retracted"),
     "superseded": (),
     "retracted": (),
@@ -83,6 +90,6 @@ def frozen_rung(state: str | None) -> str:
         return FROZEN_BYTES
     if state == "reviewed":
         return FROZEN_STRING
-    if state == "published":
+    if state in ("publishing", "published"):
         return FROZEN_PUBLISHED
     return FROZEN_NONE

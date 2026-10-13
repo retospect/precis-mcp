@@ -53,6 +53,7 @@ def test_ladder_unminted_lights_nothing() -> None:
         "reviewed",
         "signed",
         "anchored",
+        "publishing",
         "published",
     ]
     assert not any(s["done"] for s in steps)

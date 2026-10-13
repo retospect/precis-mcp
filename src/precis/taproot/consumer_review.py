@@ -179,7 +179,7 @@ def require_unsigned(conn: Any, hub_ref_id: int) -> None:
         ).fetchall()
     }
     for publish_id, state in rows:
-        if state in ("signed", "anchored", "published") or (
+        if state in ("signed", "anchored", "publishing", "published") or (
             state not in ("superseded", "retracted", "rejected")
             and publish_id in artifacts
         ):

@@ -98,7 +98,7 @@ def plan_demotion(state: str | None) -> str:
     # ``signed`` (both freeze the artifact) but not its reversibility —
     # signing is local, anchoring is a calendar attestation that cannot be
     # taken back. Rung alone would wrongly reopen it.
-    if state in ("anchored", "published"):
+    if state in ("anchored", "publishing", "published"):
         return ACTION_SUPERSEDE_REQUIRED
     if frozen_rung(state) in (FROZEN_STRING, FROZEN_BYTES):
         return ACTION_REOPEN

@@ -172,6 +172,7 @@ def _index_context(request: Request) -> dict[str, Any]:
             "reviewed",
             "signed",
             "anchored",
+            "publishing",
             "published",
             "unminted",
         )

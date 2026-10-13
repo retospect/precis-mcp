@@ -95,6 +95,15 @@ def test_published_entry_shows_published_date(
         hub.live_store, monkeypatch, "DFT shows a public claim holds."
     )
     _anchor(hub.live_store, row)
+    row = hub.live_store.nanopub_publish_row_by_id(row.id)
+    assert row is not None
+    assert row.artifact_id is not None and row.trusty_uri is not None
+    assert hub.live_store.nanopub_claim_publishing(
+        row.id,
+        artifact_id=row.artifact_id,
+        trusty_uri=row.trusty_uri,
+        registry_url="test://registry",
+    )
     assert hub.live_store.nanopub_record_published(
         row.id, registry_url="test://registry"
     )

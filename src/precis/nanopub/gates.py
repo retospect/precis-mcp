@@ -1306,6 +1306,7 @@ def check_mint_order(store: Store, bundle: ev.HubBundle) -> list[GateViolation]:
             not in (
                 "signed",
                 "anchored",
+                "publishing",
                 "published",
             )
         ):

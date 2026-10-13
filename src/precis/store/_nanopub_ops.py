@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from psycopg.types.json import Jsonb
+
+from precis.errors import BadInput
 
 #: Publish states with no live claim on the hub — the partial unique
 #: index `nanopub_publish_one_live_per_hub` excludes exactly these.
@@ -52,6 +54,8 @@ class PublishRow:
     #: Set once by the registry POST (slice 5) — the point of no return.
     published_at: datetime | None = None
     registry_url: str | None = None
+    #: Claim time of an in-flight registry POST (``state='publishing'``).
+    publishing_since: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,10 +138,15 @@ class OtsLeafRow:
     path_proof: bytes
 
 
+_PUBLISHING_MSG = (
+    "publish row {row} is 'publishing': a registry POST is in flight or its "
+    "outcome is unresolved — wait, or run `precis nanopub reconcile`"
+)
+
 _PUBLISH_COLS = (
     "id, claim_ref_id, artifact_type, approved_title, claim_sha, aida_uri, "
     "grounding, dependency_codes, trusty_uri, artifact_id, batch_id, state, "
-    "created_at, updated_at, published_at, registry_url"
+    "created_at, updated_at, published_at, registry_url, publishing_since"
 )
 
 _ARTIFACT_COLS = (
@@ -165,6 +174,7 @@ def _row_to_publish(row: tuple[Any, ...]) -> PublishRow:
         updated_at=row[13],
         published_at=row[14],
         registry_url=row[15],
+        publishing_since=row[16],
     )
 
 
@@ -241,15 +251,143 @@ class NanopubMixin:
     ) -> PublishRow:
         """Insert a fresh ``candidate`` row. Raises (unique-index) if the
         hub already has a live one — callers check first via
-        :meth:`nanopub_publish_row`."""
+        :meth:`nanopub_publish_row`. Reattach a discarded successor's pending
+        predecessor obligation in the same transaction; ambiguous or rejected
+        history refuses instead of silently shedding provenance."""
         with self.pool.connection() as conn:
+            # Serialize staging with supersede and other restaging attempts.
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (claim_ref_id,),
+            )
+            # A terminal transition must not free the live slot between
+            # obligation inspection and insertion (rejected successor race).
+            live = conn.execute(
+                "SELECT id FROM nanopub_publish "
+                "WHERE claim_ref_id = %s AND state = 'publishing' FOR UPDATE",
+                (claim_ref_id,),
+            ).fetchone()
+            if live is not None:
+                raise BadInput(_PUBLISHING_MSG.format(row=live[0]))
+            conn.execute(
+                "SELECT id FROM nanopub_publish WHERE claim_ref_id = %s FOR UPDATE",
+                (claim_ref_id,),
+            )
+            obligations = conn.execute(
+                "SELECT s.predecessor_id, s.successor_id FROM nanopub_supersessions s "
+                "JOIN nanopub_publish p ON p.id = s.predecessor_id "
+                "LEFT JOIN nanopub_publish n ON n.id = s.successor_id "
+                "WHERE p.claim_ref_id = %s AND "
+                "(s.successor_id IS NULL OR n.state IN ('rejected', 'retracted')) "
+                "FOR UPDATE OF s",
+                (claim_ref_id,),
+            ).fetchall()
+            if len(obligations) > 1 or any(r[1] is not None for r in obligations):
+                raise BadInput(
+                    "supersession history needs explicit resolution before restaging"
+                )
             row = conn.execute(
                 "INSERT INTO nanopub_publish (claim_ref_id, artifact_type) "
                 f"VALUES (%s, %s) RETURNING {_PUBLISH_COLS}",
                 (claim_ref_id, artifact_type),
             ).fetchone()
-        assert row is not None
+            assert row is not None
+            if obligations:
+                conn.execute(
+                    "UPDATE nanopub_supersessions SET successor_id = %s "
+                    "WHERE predecessor_id = %s",
+                    (row[0], obligations[0][0]),
+                )
         return _row_to_publish(row)
+
+    def nanopub_supersede(self, row_id: int) -> PublishRow:
+        """Atomically replace an anchored, unpublished row with a candidate.
+
+        The local state changes; frozen bytes/fields and OTS proofs never do.
+        The caller supplies an exact predecessor id, so a racing invocation
+        cannot accidentally supersede the winner's newly staged successor.
+        """
+        with self.pool.connection() as conn:
+            hub = conn.execute(
+                "SELECT claim_ref_id FROM nanopub_publish WHERE id = %s", (row_id,)
+            ).fetchone()
+            if hub is None:
+                raise BadInput(f"no publish row {row_id}")
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE", hub
+            )
+            raw = conn.execute(
+                f"SELECT {_PUBLISH_COLS} FROM nanopub_publish WHERE id = %s FOR UPDATE",
+                (row_id,),
+            ).fetchone()
+            if raw is None:
+                raise BadInput(f"publish row {row_id} disappeared")
+            old = _row_to_publish(raw)
+            if old.state == "publishing":
+                raise BadInput(_PUBLISHING_MSG.format(row=old.id))
+            if (
+                old.state != "anchored"
+                or old.published_at is not None
+                or old.registry_url
+            ):
+                raise BadInput(
+                    "supersede requires an anchored, unpublished predecessor"
+                )
+            proof = conn.execute(
+                "SELECT 1 FROM nanopub_artifacts a "
+                "JOIN nanopub_ots_leaves l ON l.artifact_id = a.id "
+                "JOIN nanopub_ots_proofs p ON p.batch_id = l.batch_id "
+                "WHERE a.id = %s AND a.publish_id = %s AND a.claim_ref_id = %s "
+                "AND a.trusty_uri = %s AND l.batch_id = %s LIMIT 1",
+                (
+                    old.artifact_id,
+                    old.id,
+                    old.claim_ref_id,
+                    old.trusty_uri,
+                    old.batch_id,
+                ),
+            ).fetchone()
+            if proof is None:
+                raise BadInput(
+                    "predecessor needs its own signed artifact and OTS proof"
+                )
+            conn.execute(
+                "UPDATE nanopub_publish SET state = 'superseded', updated_at = now() "
+                "WHERE id = %s",
+                (old.id,),
+            )
+            new = conn.execute(
+                "INSERT INTO nanopub_publish (claim_ref_id, artifact_type) "
+                f"VALUES (%s, %s) RETURNING {_PUBLISH_COLS}",
+                (old.claim_ref_id, old.artifact_type),
+            ).fetchone()
+            assert new is not None
+            conn.execute(
+                "INSERT INTO nanopub_supersessions (predecessor_id, successor_id) "
+                "VALUES (%s, %s)",
+                (old.id, new[0]),
+            )
+        return _row_to_publish(new)
+
+    def nanopub_predecessor_artifact(self, successor_id: int) -> ArtifactRow | None:
+        """Resolve server-owned version provenance, never a payload-supplied URI."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT p.artifact_id, p.claim_ref_id, n.claim_ref_id "
+                "FROM nanopub_supersessions s "
+                "JOIN nanopub_publish p ON p.id = s.predecessor_id "
+                "JOIN nanopub_publish n ON n.id = s.successor_id "
+                "WHERE s.successor_id = %s",
+                (successor_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row[1] != row[2] or row[0] is None:
+            raise BadInput("invalid supersession predecessor")
+        artifact = self.nanopub_artifact(row[0])
+        if artifact is None:
+            raise BadInput("supersession predecessor artifact is missing")
+        return artifact
 
     def nanopub_approve(
         self,
@@ -362,6 +500,11 @@ class NanopubMixin:
     ) -> bool:
         """CAS state flip. Legality (which flips are allowed at all) is
         :func:`precis.nanopub.state.check_transition` — call that first."""
+        if to_state == "publishing" or "publishing" in expect:
+            raise BadInput(
+                "'publishing' moves only through nanopub_claim_publishing / "
+                "nanopub_release_publishing / nanopub_record_published"
+            )
         with self.pool.connection() as conn:
             cur = conn.execute(
                 "UPDATE nanopub_publish SET state = %s, updated_at = now() "
@@ -404,9 +547,20 @@ class NanopubMixin:
         :func:`precis.nanopub.mint.approve` already treats as "insert a
         fresh row" — so the hub re-enters candidacy through the ordinary
         staging path the moment it re-clears the gates, never tombstoned.
+        Supersession obligations survive via the relationship table's
+        ON DELETE SET NULL and are reattached on ordinary restaging.
         The caller is responsible for the audit trail (this is a bare
         CRUD op, like :meth:`nanopub_reopen`)."""
         with self.pool.connection() as conn:
+            hub = conn.execute(
+                "SELECT claim_ref_id FROM nanopub_publish WHERE id = %s", (row_id,)
+            ).fetchone()
+            if hub is None:
+                return False
+            # Same lock order as staging: discard and reattachment cannot race.
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE", hub
+            )
             cur = conn.execute(
                 "DELETE FROM nanopub_publish WHERE id = %s AND state = 'candidate'",
                 (row_id,),
@@ -503,17 +657,63 @@ class NanopubMixin:
             )
             return cur.rowcount == 1
 
+    def nanopub_claim_publishing(
+        self, row_id: int, *, artifact_id: int, trusty_uri: str, registry_url: str
+    ) -> bool:
+        """Short transaction 1 of a publish: CAS ``anchored`` → ``publishing``,
+        stamping ``publishing_since`` and the target ``registry_url`` so a
+        stuck row is detectable and resolvable. The artifact/trusty guard
+        pins the exact bytes the caller preflighted. ``False`` = lost the
+        race (another publish/supersede moved the row) — nothing written.
+        The connection is released on return: the POST holds none."""
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE nanopub_publish SET state = 'publishing', "
+                "publishing_since = now(), registry_url = %s, updated_at = now() "
+                "WHERE id = %s AND state = 'anchored' AND artifact_id = %s "
+                "AND trusty_uri = %s AND published_at IS NULL",
+                (registry_url, row_id, artifact_id, trusty_uri),
+            )
+            return cur.rowcount == 1
+
+    def nanopub_release_publishing(self, row_id: int) -> bool:
+        """Definite POST failure: revert ``publishing`` → ``anchored``,
+        clearing the claim. CAS; ``False`` = the row was not ``publishing``."""
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE nanopub_publish SET state = 'anchored', "
+                "publishing_since = NULL, registry_url = NULL, updated_at = now() "
+                "WHERE id = %s AND state = 'publishing'",
+                (row_id,),
+            )
+            return cur.rowcount == 1
+
+    def nanopub_publishing_rows(
+        self, *, older_than: timedelta = timedelta(0)
+    ) -> list[PublishRow]:
+        """``publishing`` rows claimed at least ``older_than`` ago, oldest first."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_PUBLISH_COLS} FROM nanopub_publish "
+                "WHERE state = 'publishing' AND publishing_since <= now() - %s::interval "
+                "ORDER BY publishing_since ASC",
+                (older_than,),
+            ).fetchall()
+        return [_row_to_publish(r) for r in rows]
+
     def nanopub_record_published(self, row_id: int, *, registry_url: str) -> bool:
-        """Flip ``anchored`` → ``published``, stamping when and where. CAS.
-        The registry POST itself (the one true point of no return) happens
-        in :mod:`precis.nanopub.registry` BEFORE this bookkeeping — a
-        ``False`` here after a successful POST means the row moved
-        mid-publish and must be reconciled by hand, loudly."""
+        """Short transaction 2 of a publish: ``publishing`` → ``published``,
+        stamping when and where. CAS. The registry POST itself (the one true
+        point of no return) happens in :mod:`precis.nanopub.registry` between
+        :meth:`nanopub_claim_publishing` and this call — a ``False`` here
+        after a successful POST means the row moved mid-publish and must be
+        reconciled by hand, loudly."""
         with self.pool.connection() as conn:
             cur = conn.execute(
                 "UPDATE nanopub_publish SET state = 'published', "
-                "published_at = now(), registry_url = %s, updated_at = now() "
-                "WHERE id = %s AND state = 'anchored'",
+                "published_at = now(), registry_url = %s, "
+                "publishing_since = NULL, updated_at = now() "
+                "WHERE id = %s AND state = 'publishing'",
                 (registry_url, row_id),
             )
             return cur.rowcount == 1

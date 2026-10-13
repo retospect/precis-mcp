@@ -20,11 +20,12 @@ migrations. Any migration goes through coordinator gated `/go`, not quick deploy
 
 ## Selected first slice: (b), no migration
 
-(a)+(b) crosses separate publication concurrency and consumer-review paths.
-Implement (b) first because existing `chunk_review`, `reviews` and `refs.meta`
-provide the required review surfaces without a migration. The initial (a) WIP
-is preserved separately and excluded; it also needs its publication-lock/pool
-issue corrected under the newly widened signed/published policy.
+Slice (b) landed on main as 880a4421b (2026-10-05): consumer re-review after
+unsigned claim edits. Slice (a1) is the supersede door for anchored,
+unpublished predecessors: the `nanopub_supersessions` table and a durable
+`publishing` row state (CAS anchored->publishing, POST with no connection held,
+then publishing->published; `precis nanopub reconcile` resolves ambiguous
+outcomes).
 
 Own `refine_claim_sentence` in-place title/scope edits, hypothesis
 `testable_by`/`motivation` edits (preserving their existing prose history), and
@@ -76,19 +77,20 @@ created by unsigned edits.
 
 ## Audit / remaining work
 
-Current main4b7d64594: `refine_claim_sentence` freezes anchored/published only;
-`nanopub_reopen` clears signed-row pointers and returns the same row to candidate;
-`demote.plan_demotion` maps signed to reopen. Artifact bytes/OTS proof tables
-remain append-only, but the mutable hub/publish envelope can diverge from a
-signed artifact. No version rows are minted by those unsigned edit/reopen paths.
-
-This slice guards the in-place edit door. Align all signed reopen/demotion,
-dependency-dirty/re-stamp policy with Reto's boundary in (a), together with signed,
-anchored AND published predecessor support, explicit relationship migration,
-server-owned pubinfo emission, same-key enforcement, discard/restage persistence,
-and publication/supersession concurrency using a pool-safe lock. Actual successor
-approval/signing/publication remain normal human flow. Retraction and deployed
-native replay are separate follow-ups. No production writes in this work.
+1. Signed predecessors: `nanopub_supersede` accepts `signed`;
+   `demote.plan_demotion`, `nanopub_reopen`, CLI `reopen` and the web action
+   route signed hubs to supersede instead of reopen; the signed->reviewed
+   re-mint cascade in `state.py` ends in supersede. Decide which artifact
+   checks a signed predecessor needs, since it has no OTS leaf/proof yet. Tests.
+2. Published predecessors: refused today. NEEDS RETO RULING on when a published
+   predecessor flips to `superseded` (at successor staging vs at successor
+   publication; flip-at-staging is safe now only because an unpublished
+   predecessor is not public). Then implement and test.
+3. Nice-to-have: same-key check at publish and preflight; a health check or
+   scheduled `reconcile` for rows stuck in `publishing` (`publishing_since`);
+   a resolution path for a hub whose successor was rejected/retracted (today
+   `nanopub_create_publish_row` refuses restage forever); a preflight warning
+   when `npx:supersedes` points at a never-published predecessor.
 
 ## fi191121 needs a successor (gr345628)
 
@@ -100,10 +102,9 @@ correction is a successor nanopub through the supersede door above.
   sentence carries "CNB100"; it takes all three passages, including the
   pc35887 definition caption; it has a `refines` link to fi191121. An agent
   is minting it 2026-10-11.
-- fi191121 must not be live-published until the supersede door exists.
-- The door itself remains open work: agent-code builds it (successor→
-  predecessor publish row, `npx:supersedes` pubinfo, same key) per the
-  ruling at the top; fi191121 is its first real consumer and the acceptance
-  case.
+- Slice (a1) provides the door for anchored predecessors, which fi191121 is.
+- fi191121 is the door's first real consumer and the acceptance case: stage
+  the successor through `precis nanopub supersede`, then sign and publish it
+  by the normal human flow.
 
 Who: agent-code.

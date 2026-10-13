@@ -60,6 +60,7 @@ _STATE_ACTION = {
     "reviewed": ("sign", "Sign"),
     "signed": ("reopen", "Reopen (discard artifact pointer, re-mint)"),
     "anchored": ("publish-cli", "Publish via CLI (point of no return)"),
+    "publishing": (None, "Publishing — in flight; precis nanopub reconcile if stuck"),
     "published": (None, "Published — change = supersede/retract"),
 }
 
@@ -440,6 +441,11 @@ _LADDER: list[tuple[str, str]] = [
         "to the Bitcoin timeline — the artifact provably existed by then.",
     ),
     (
+        "publishing",
+        "Publishing: the registry POST is in flight (or its outcome is "
+        "unknown); `precis nanopub reconcile` resolves a stuck row.",
+    ),
+    (
         "published",
         "Published to the nanopub registry — public and immutable forever; "
         "a change is a supersede or retract, never an edit.",
@@ -538,7 +544,7 @@ _PREFLIGHT_CHECKS: list[tuple[str, str]] = [
 #: on any violation, so a row past candidate mechanically cleared them
 #: all. (``drift`` is deliberately absent from the mint list: it can only
 #: fire after a freeze, so it reports under the preflight group.)
-_GATES_PASSED_STATES = ("reviewed", "signed", "anchored", "published")
+_GATES_PASSED_STATES = ("reviewed", "signed", "anchored", "publishing", "published")
 
 
 def _gate_report(

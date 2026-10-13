@@ -49,7 +49,7 @@ exists. Details: [[precis-taproot-help]].
   naming the trusty URI and the `nanopub_artifacts` row that holds the
   authoritative copy.
 - Read the header's publish state: `candidate → reviewed → signed →
-  anchored → published → superseded/retracted` (`rejected` off
+  anchored → publishing → published → superseded/retracted` (`rejected` off
   `reviewed`). A hub with a live `contradicts` edge renders an
   UNMINTABLE warning — disputed claims are visible internally,
   unpublishable externally, until adjudicated by artifacts.
@@ -531,8 +531,32 @@ No-op and scope dry-run edits leave review state unchanged.
 Once signed (including anchored/published), use a new nanopublication whose
 pubinfo asserts `<successor> npx:supersedes <predecessor trusty URI>`, signed with
 the same key. Existing bytes and OTS proofs are immutable. `npx:retracts` is
-withdrawal without a successor. The explicit relationship/migration and local
-supersede door are a follow-up; until then, the in-place edit refuses signed
-claims. The older reopen/demotion paths still need alignment with this boundary;
-do not use them to edit a signed artifact's claim. Actual approval/signing and
-publication of successors remain the normal human flow.
+withdrawal without a successor. The local supersede door exists only for an
+anchored, unpublished predecessor (`precis nanopub supersede`, below); a
+signed-only predecessor (reopen it instead, nothing is out yet) and a published
+one are still refused, and until a successor is staged the in-place edit refuses
+signed claims. The older reopen/demotion paths still need alignment with this
+boundary; do not use them to edit a signed artifact's claim. Actual
+approval/signing and publication of successors remain the normal human flow.
+
+## Correct an anchored, unpublished artifact
+
+Run `precis nanopub supersede FI` to stage a local candidate linked to the
+previous artifact. It refuses published predecessors. Review the candidate
+against current evidence, then approve and sign through the ordinary doors
+using the predecessor's key. Staging performs no signing or network calls.
+The successor pubinfo carries `npx:supersedes` pointing to the predecessor's
+trusty URI; previous signed bytes and OTS proofs remain unchanged. Reopening
+or discarding/restaging a candidate retains that predecessor obligation.
+Published supersession and retraction are not supported by this door.
+
+## Publishing state and reconcile
+
+`precis nanopub publish --live` claims the row (`anchored` -> `publishing`,
+stamped `publishing_since`) in a short transaction, POSTs with no database
+transaction open, then flips `publishing` -> `published`. While `publishing`,
+supersede, reopen, restage and a second publish all refuse the row. A registry
+4xx response reverts it to `anchored`. A 5xx, timeout or dropped connection is
+ambiguous (the registry may hold the bytes), so the row stays `publishing`:
+run `precis nanopub reconcile [--older-than MINUTES]` to look up its trusty URI
+at the registry (present -> `published`, 404 -> `anchored`, else untouched).
