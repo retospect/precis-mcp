@@ -18,23 +18,39 @@ never-convert-yourself directive (overview, se, cad, structure, calc help)
 swept. Not touched: `declare_states` `port_pose_overrides` pose/rot
 deltas (separate path, still bare SI), `add_port` `direction` (unitless).
 
-OPEN, ruled by Reto 2026-09-12 (design stands, build what is left):
+SHIPPED (2026-10-12, ruled by Reto 2026-09-12):
 
-- **Echo on write**: every quantity-ingesting op acknowledges in canonical
-  form (`understood: pose = [3 0 0] nm`, via `format_vector`). Blocked
-  on a result channel: blocktree op functions return `None`
-  (`apply_ops`), so it needs a per-op notes list threaded to the handler.
-  Tree-view `pose=[...]` rendering (`precis_se/handler.py`) is still bare
-  SI numbers.
-- **TOON column formatter** in `units.py`: one common unit per
-  homogeneous column (mantissas ~0.001–10000) in the header
-  (`gap (nm)`), bare cells; per-value neat units with no header unit when
-  no common unit fits. Never header unit + divergent cell suffixes.
-- **prefunits** per call (`prefunits=nm,deg,kg`): preferred-unit override
-  threaded into `format_quantity` / the column formatter, display only.
-  **Sticky** form: `meta.prefunits` on the design/ref (per-call
-  overrides); decide at build whether design-meta ships with it.
-- **Respond-in-kind** for cad/se/nm query answers (gr336352's rule).
+- **Echo on write** (se only): every quantity-ingesting se op
+  acknowledges in canonical form (`understood: pose = [3 0 0] nm`, via
+  `format_vector`, once per field). The result channel is
+  `op_notes_scope` (`precis.utils.units`), bound by
+  `blocktree.ops.apply_ops(notes=)` and inherited by nested applies;
+  `precis_se.atomic.apply.apply_ops_with_atomic` flushes each op's notes
+  into the echo after that op's own lines. Tree-view `pose=`/`rot=` and
+  the ports-table cells render via `format_vector` (unit on every
+  value). OPEN: nm-side writes do not echo (the retired `nm` kind's
+  atomic ops share the se walk but were not swept as a checklist), and
+  cad writes (`put`/`derive` DSL) do not echo at all — no
+  `understood:` lines there yet.
+- **TOON column formatter**: `format_quantity_column` in `units.py` —
+  one common unit per homogeneous column (mantissas ~0.001–10000) in the
+  header (`gap (nm)`), bare cells; per-value neat units with no header
+  unit when no common unit fits; never both. Wired at se's clearance
+  digest + sweep hits and cad's probe (point/ray/arc) + connectivity
+  columns.
+- **prefunits** per call (`prefunits=nm,deg,kg` or a
+  `{dimension: unit}` map): `args.prefunits` on se/cad `get`, payload
+  `prefunits` on se `put`/`edit`, and a `prefunits:` DSL directive for
+  cad. Display only; resolved precedence: explicit arg > per-call >
+  used (respond-in-kind) > sticky `meta.prefunits` > neat default.
+  Design-meta shipped with it: `meta.prefunits` on the se ref, the
+  cad `prefunits:` directive on `spec.meta`.
+- **Respond-in-kind** for cad/se query answers (gr336352's rule):
+  `capture_used_units` records the unit the caller authored inside a
+  call (`record_used=False` marks stored-data re-parses so they can't
+  steer it); `format_quantity`/`format_vector`/the column formatter
+  resolve through it. (`nm` reads are `se` reads — the kind is retired;
+  nothing nm-specific was threaded.)
 
 ## Angle units across every MCP surface (gr336352)
 
@@ -46,10 +62,11 @@ strings accepted, `rot_deg` alias); structure `add_adsorbate rotate`
 (unit required). Already explicit: cad/se joint `state`/`limits`, cad
 `rot:` DSL. Self-named, left: draft `camera.*_deg`, cad `sweep_deg`.
 
-OPEN: pcb `group_offset.rot` still takes bare degrees only; respond-in-kind
-for cad/se/nm query answers (above) is not yet threaded through.
-(se/nm `rot` vectors are now per-component angle quantities via
-`parse_vector_quantity`.) Who: agent-code.
+SHIPPED (2026-10-12): pcb `group_offset.rot` now rides the same
+`parse_angle_deg` grammar as instance `rot` (bare = declared degrees,
+unit strings accepted) — `precis/pcb/ir.py::_offset_rot`; respond-in-kind
+for cad/se query answers shipped with the display-preference scopes
+above.
 
 ## Notation robustness eval (gr336349)
 

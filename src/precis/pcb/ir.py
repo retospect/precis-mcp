@@ -56,8 +56,10 @@ from shapely.geometry import (
     MultiPoint as _ShapelyMultiPoint,
 )
 
+from precis.errors import BadInput
 from precis.pcb import landpattern, padplace
 from precis.pcb.edge_mate import parse_edge_mate
+from precis.utils.units import parse_angle_deg
 
 #: Sentinel: a pin/segment/via with no net (unconnected / pure keepout).
 NO_NET: int = -1
@@ -867,6 +869,20 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _offset_rot(value: Any) -> float:
+    """``group_offset.rot`` → degrees. Same grammar as an instance's own
+    ``rot`` (:func:`~precis.utils.units.parse_angle_deg`,
+    ``bare="degrees"``): a bare number reads as degrees, a unit string
+    like ``"1.5708 rad"`` or ``"90deg"`` converts — anything else degrades
+    to 0.0 under the same never-crash rule as ``x``/``y``."""
+    if value is None:
+        return 0.0
+    try:
+        return parse_angle_deg(value, arg_name="group_offset.rot", bare="degrees")
+    except BadInput:
+        return 0.0
+
+
 def _parse_instance_groups(
     instances: list[dict[str, Any]],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -941,7 +957,7 @@ def _parse_instance_groups(
         offset = raw_offset if isinstance(raw_offset, dict) else {}
         offset_dx[i] = _safe_float(offset.get("x"), 0.0)
         offset_dy[i] = _safe_float(offset.get("y"), 0.0)
-        offset_rot[i] = _safe_float(offset.get("rot"), 0.0)
+        offset_rot[i] = _offset_rot(offset.get("rot"))
 
     return (
         inst_group,

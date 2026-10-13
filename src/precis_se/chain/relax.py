@@ -335,7 +335,7 @@ def material_lp_m(
         if value is None:
             continue
         try:
-            value_m = parse_quantity(f"{value} {unit}", "length")
+            value_m = parse_quantity(f"{value} {unit}", "length", record_used=False)
         except BadInput:
             continue  # not a length — a mis-read row is worse than the default
         if not math.isfinite(value_m) or value_m <= 0.0:

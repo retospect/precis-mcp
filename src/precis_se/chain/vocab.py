@@ -28,7 +28,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.utils.units import parse_quantity
+from precis.utils.units import echo_quantity, format_vector, op_note, parse_quantity
 from precis_se.chain import nucleic
 
 #: ``chain.role`` values. ``helix`` carries geometry, ``strand`` carries
@@ -244,11 +244,14 @@ def length_m(raw: Any, key: str, what: str) -> float:
     value = parse_quantity(raw, "length", arg_name=f"{what} {key}")
     if not value > 0.0:
         raise ChainError(f"{what}: {key!r} must be a positive length, got {raw!r}")
+    echo_quantity(f"{what} {key}", value, "length")
     return value
 
 
 def _angle_rad(raw: Any, key: str, what: str) -> float:
-    return parse_quantity(raw, "angle", arg_name=f"{what} {key}")
+    value = parse_quantity(raw, "angle", arg_name=f"{what} {key}")
+    echo_quantity(f"{what} {key}", value, "angle")
+    return value
 
 
 def resolve_motif_name(raw: Any, nucleic_name: str, what: str) -> str:
@@ -373,6 +376,12 @@ def vet_path(raw: Any, what: str) -> dict[str, Any]:
                     for axis, component in enumerate(point)
                 ]
             )
+        # Echo on write, once per FIELD (not per waypoint component —
+        # an N-point path is one acknowledged line, not 3N).
+        op_note(
+            f"understood: {what} waypoints = "
+            + ", ".join(format_vector(p, "length") for p in points)
+        )
     if len(points) < 2:
         raise ChainError(
             f"{what}: 'waypoints' needs >= 2 points to be a centre line, "

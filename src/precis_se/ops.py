@@ -891,12 +891,16 @@ def _sync_local_pose(tree: SeTree, name: str, *, pose: bool, rot: bool) -> None:
     compose_world_pose(tree)
 
 
-def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
+def apply_ops(
+    tree: SeTree, ops: list[dict[str, Any]], *, notes: list[str] | None = None
+) -> SeTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it —
     dispatches through :data:`_OPS` (the core's 9 shared ops, 8 of them
     overridden here, plus se's own — :func:`known_ops` is the roster), via
-    the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
-    return blocktree.apply_ops(tree, ops, _OPS)
+    the core's generic :func:`~precis.blocktree.ops.apply_ops`. ``notes``
+    is the echo-on-write list (``understood:`` lines) the core's
+    ``apply_ops`` fills while bound."""
+    return blocktree.apply_ops(tree, ops, _OPS, notes=notes)
 
 
 # ── helpers (imported from the core; se calls these directly for its own

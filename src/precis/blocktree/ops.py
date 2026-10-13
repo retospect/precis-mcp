@@ -96,7 +96,12 @@ from precis.blocktree.types import (
 )
 from precis.cad import dsl as cad_dsl
 from precis.errors import BadInput
-from precis.utils.units import parse_vector_quantity
+from precis.utils.units import (
+    Dimension,
+    echo_vector,
+    op_notes_scope,
+    parse_vector_quantity,
+)
 
 #: An op implementation: ``(tree, op) -> None``, mutating ``tree`` in
 #: place. Typed against ``Any`` for the tree parameter rather than
@@ -109,21 +114,34 @@ OpsTable = Mapping[str, OpFn]
 
 
 def apply_ops[TTree: Tree[Any, Any]](
-    tree: TTree, ops: list[dict[str, Any]], ops_table: OpsTable
+    tree: TTree,
+    ops: list[dict[str, Any]],
+    ops_table: OpsTable,
+    *,
+    notes: list[str] | None = None,
 ) -> TTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it, via
     ``ops_table`` — the domain's own (possibly core-plus-extras, possibly
     core-with-overrides) op dispatch table. Never hardcodes which ops
-    exist; that is entirely the caller's table."""
-    for op in ops:
-        if "op" not in op:
-            raise OpError(f"op missing 'op' key: {op!r}")
-        name = op["op"]
-        handler = ops_table.get(name)
-        if handler is None:
-            known = ", ".join(sorted(ops_table))
-            raise OpError(f"unknown op: {name!r}; known: {known}")
-        handler(tree, op)
+    exist; that is entirely the caller's table.
+
+    ``notes`` is the echo-on-write channel: while bound, every
+    quantity-ingesting helper (:func:`_pose_vec`, and the chain vocab's
+    length/angle parses) appends ``understood: <arg> = <canonical
+    rendering>`` lines to it — op functions return ``None``, so the
+    acknowledgement rides a scoped list instead
+    (:func:`precis.utils.units.op_notes_scope`). A nested ``apply_ops``
+    without its own list inherits the enclosing one."""
+    with op_notes_scope(notes):
+        for op in ops:
+            if "op" not in op:
+                raise OpError(f"op missing 'op' key: {op!r}")
+            name = op["op"]
+            handler = ops_table.get(name)
+            if handler is None:
+                known = ", ".join(sorted(ops_table))
+                raise OpError(f"unknown op: {name!r}; known: {known}")
+            handler(tree, op)
     return tree
 
 
@@ -240,15 +258,18 @@ def _pose_vec(op: dict[str, Any], key: str, what: str) -> list[float]:
     value = op.get(key)
     if value is None:
         return [0.0, 0.0, 0.0]
+    dim: Dimension = "length" if key == "pose" else "angle"
     try:
-        return parse_vector_quantity(
+        vec = parse_vector_quantity(
             value,
-            "length" if key == "pose" else "angle",
+            dim,
             unit=op.get(f"{key}_unit"),
             arg_name=what,
         )
     except BadInput as exc:
         raise OpError(f"{exc} — {exc.next}" if exc.next else str(exc)) from exc
+    echo_vector(what, vec, dim)
+    return vec
 
 
 def _unit_vec(vec: list[float], *, what: str) -> list[float]:

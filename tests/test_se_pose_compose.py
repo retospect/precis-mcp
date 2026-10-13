@@ -226,8 +226,8 @@ def test_tree_view_renders_authored_pose_not_composed(
     block a second time."""
     handler.put(id="rt4", text=_NESTED)
     body = handler.get(id="rt4").body
-    assert "pose=[0, 0, 0.016]" in body
-    assert "pose=[0, 0.1, 0.27]" not in body
+    assert "pose=[0 0 16] mm" in body
+    assert "pose=[0 100 270] mm" not in body
 
 
 def test_block_view_renders_authored_pose_and_labelled_world_pose(
@@ -240,9 +240,9 @@ def test_block_view_renders_authored_pose_and_labelled_world_pose(
     never be mistaken for each other."""
     handler.put(id="rt5", text=_NESTED)
     body = handler.get(id="rt5", view="block", args={"name": "crank_bolt_left"}).body
-    assert "pose: [0, 0, 0.016] m" in body
+    assert "pose: [0 0 16] mm" in body
     assert "authored" in body
-    assert "world pose: [0, 0.1, 0.27]" in body
+    assert "world pose: [0 100 270] mm" in body
 
 
 def test_block_view_omits_world_pose_when_it_matches_authored(
@@ -253,5 +253,5 @@ def test_block_view_omits_world_pose_when_it_matches_authored(
     ``world pose`` line for it."""
     handler.put(id="rt6", text=_NESTED)
     body = handler.get(id="rt6", view="block", args={"name": "crank_left"}).body
-    assert "pose: [0, 0.1, 0.254] m" in body
+    assert "pose: [0 100 254] mm" in body
     assert "world pose" not in body

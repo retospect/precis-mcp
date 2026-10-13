@@ -48,17 +48,38 @@ Quantity as bare" branch (correct for the other four dimensions, where
 a stray dimensionless `Quantity` really is unit-less) is skipped for
 angle. :func:`format_quantity` renders degrees (`"90°"`), never the SI
 prefix ladder — nobody reads femto-degrees.
+
+**Display preferences** (the ``prefunits`` / respond-in-kind rounds of
+docs/backlog/pose-vector-units.md — display only; storage stays SI).
+Three scoped channels, all bound by a handler for the duration of one
+call and read by :func:`format_quantity` / :func:`format_vector` /
+:func:`format_quantity_column`, in precedence order: an explicit
+``prefunits=`` argument > per-call :func:`prefunits_scope`
+(``args.prefunits`` / a put payload's) > the caller's own *used* units
+(:func:`capture_used_units` — respond-in-kind, recorded by
+:func:`parse_quantity` at ingest) > sticky :func:`sticky_prefunits_scope`
+(``meta.prefunits`` on the ref) > the neat default. The ContextVar
+plumbing is the ``cad.scene`` ``_WARN_SINK`` precedent: handlers bind a
+scope once and every formatter inside the call honours it with no
+signature churn.
 """
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import math
 import re
-from typing import Final, Literal
+from collections.abc import Iterator, Mapping, Sequence
+from contextvars import ContextVar
+from typing import Final, Literal, cast
 
 import pint
+from pint.facets.plain import PlainUnit
 
 from precis.errors import BadInput
+
+log = logging.getLogger(__name__)
 
 #: The five dimensioned quantity families this cutover covers (map
 #: boundary — dimensionless ratios and currency/time stay outside the
@@ -194,6 +215,7 @@ def parse_quantity(
     require_unit: bool = True,
     arg_name: str | None = None,
     warnings: list[str] | None = None,
+    record_used: bool = True,
 ) -> float:
     """Ingest-any-unit boundary: parse one dimensioned quantity to SI.
 
@@ -282,6 +304,11 @@ def parse_quantity(
             next=f"use a {dimension} unit, e.g. {_HINT_UNITS[dimension][0]!r}",
         ) from e
 
+    # ``record_used=False`` marks a re-parse of stored data (a registry
+    # row's unit, not a unit the caller just typed) so it cannot steer
+    # respond-in-kind — everything else lands in the used-units sink.
+    if require_unit and record_used:
+        _record_used(dimension, parsed.units)
     if warnings is not None and require_unit:
         advice = awkward_mantissa_advice(
             float(parsed.magnitude), float(si.magnitude), dimension, arg_name=arg_name
@@ -582,10 +609,17 @@ def _trim(x: float) -> float:
     return 0.0 if x == 0 else float(f"{x:.4g}")
 
 
-def format_vector(values: list[float], dimension: Dimension) -> str:
+def format_vector(
+    values: list[float], dimension: Dimension, *, prefunits: PrefUnits | None = None
+) -> str:
     """Canonical neat display of an SI vector with ONE common unit for the
     whole vector (picked off the largest component): ``[3 0 0] nm``,
-    ``[0 0 90] deg``. The echo-on-write spelling."""
+    ``[0 0 90] deg``. The echo-on-write spelling. A resolved display
+    preference (``prefunits=`` arg, per-call/used/sticky scope —
+    :func:`_pref_unit`) replaces the picked unit."""
+    pref, f = _try_pref(dimension, prefunits)
+    if pref is not None and f is not None:
+        return vector_canonical([_trim(v * f) for v in values], pref)
     if dimension == "angle":
         return vector_canonical([_trim(math.degrees(v)) for v in values], "deg")
     factor, base_sym = _DISPLAY_BASE[dimension]
@@ -598,7 +632,9 @@ def format_vector(values: list[float], dimension: Dimension) -> str:
     return vector_canonical([_trim(v * factor / 10.0**exp) for v in values], sym)
 
 
-def format_quantity(value: float, dimension: Dimension) -> str:
+def format_quantity(
+    value: float, dimension: Dimension, *, prefunits: PrefUnits | None = None
+) -> str:
     """Neat human display: scale-appropriate SI-prefixed unit string —
     ``2.3 nm``, ``1.2 kN``, ``350 ml``. E-notation fallback outside the
     prefix ladder (< 1e-15 or >= 1e18 in the *display* base unit).
@@ -615,8 +651,12 @@ def format_quantity(value: float, dimension: Dimension) -> str:
 
     Lossy by design (3 significant figures) — for reading, not for
     round-tripping; use :func:`format_dsl_number` + the SI unit when
-    fidelity matters.
+    fidelity matters. A resolved display preference (:func:`_pref_unit`)
+    renders in that unit instead — display only.
     """
+    pref, _factor = _try_pref(dimension, prefunits)
+    if pref is not None:
+        return _format_in_unit(value, dimension, pref)
     if dimension == "angle":
         degrees = math.degrees(value)
         if not math.isfinite(degrees):
@@ -644,3 +684,382 @@ def format_quantity(value: float, dimension: Dimension) -> str:
     exp, sym = chosen
     scaled = scaled_base / (10.0**exp)
     return f"{scaled:.3g} {sym}{base_symbol}"
+
+
+# ── display preferences, respond-in-kind, echo notes ─────────────────────
+
+#: Preferred display units, keyed by dimension — the ``prefunits``
+#: mechanism's resolved form (``{"length": "nm", "angle": "deg"}``).
+PrefUnits = Mapping[Dimension, str]
+
+
+#: Angle units by their base-unit identity, not dimensionality — pint's
+#: registry has no angle dimension, so ``percent``/``ppm`` would otherwise
+#: classify as angle (every dimensionless unit "converts" to radian).
+def _is_angle_unit(q: pint.Quantity) -> bool:
+    return q.to_base_units().units == _registry().radian
+
+
+def _pref_symbol(units: PlainUnit) -> str:
+    """The canonical short symbol for a parsed unit — ``nanometer`` →
+    ``nm``, ``degree`` → ``deg`` (the ASCII spelling, matching the hint /
+    header conventions rather than ``°``)."""
+    sym = f"{units:~P}"
+    return "deg" if sym == "°" else sym
+
+
+def _unit_token(text: str, *, arg_name: str) -> tuple[Dimension | None, str]:
+    """One bare unit token → ``(dimension or None, canonical symbol)`` —
+    the per-token half of :func:`parse_prefunits`. ``None`` when the unit
+    fits none of the five dimensions; raises for text that isn't a unit
+    at all, or is a quantity (``"3 nm"``) rather than a bare unit."""
+    ureg = _registry()
+    try:
+        parsed = ureg.parse_expression(text)
+    except (pint.PintError, ValueError, TypeError, SyntaxError) as e:
+        raise BadInput(f"{arg_name}: unknown unit {text!r}: {e}") from e
+    if isinstance(parsed, pint.Unit):
+        parsed = ureg.Quantity(1.0, parsed)
+    if not isinstance(parsed, ureg.Quantity):
+        raise BadInput(f"{arg_name}: {text!r} is a bare number, not a unit")
+    if not isinstance(parsed.magnitude, (int, float)) or parsed.magnitude != 1:
+        raise BadInput(
+            f"{arg_name}: {text!r} is not a plain unit — give bare unit "
+            "tokens ('nm,deg,kg'), not quantities"
+        )
+    sym = _pref_symbol(parsed.units)
+    if _is_angle_unit(parsed):
+        return "angle", sym
+    for dim in ("length", "force", "mass", "volume"):
+        try:
+            parsed.to(_SI_UNIT[dim])
+        except pint.DimensionalityError:
+            continue
+        return dim, sym
+    return None, sym
+
+
+def parse_prefunits(
+    raw: object, *, arg_name: str = "prefunits"
+) -> dict[Dimension, str]:
+    """``prefunits`` input → ``{dimension: canonical symbol}``.
+
+    Accepted: a comma list (``"nm,deg,kg"``), a list/tuple of unit tokens,
+    or a ``{dimension: unit}`` map (the stored ``meta.prefunits`` form).
+    A token's dimension is inferred — one entry per dimension wins (last
+    one standing on a repeat). ``None``/empty → ``{}``. Display only —
+    nothing here changes what ingest stores.
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        items: list[object] = [t for t in (s.strip() for s in raw.split(",")) if t]
+    elif isinstance(raw, Mapping):
+        out_map: dict[Dimension, str] = {}
+        for k, v in raw.items():
+            key = str(k).strip().lower()
+            if key not in _SI_UNIT:
+                raise BadInput(
+                    f"{arg_name}: unknown dimension {k!r} — keys are one of "
+                    "length/force/mass/volume/angle"
+                )
+            got, sym = _unit_token(str(v).strip(), arg_name=arg_name)
+            if got != key:
+                raise BadInput(
+                    f"{arg_name}: {v!r} is not a {key} unit"
+                    + (f" (it is a {got} unit)" if got else "")
+                )
+            out_map[cast(Dimension, key)] = sym
+        return out_map
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        raise BadInput(
+            f"{arg_name} must be a unit list ('nm,deg') or "
+            f"{{dimension: unit}} map, got {raw!r}"
+        )
+    out: dict[Dimension, str] = {}
+    for tok in items:
+        text = str(tok).strip()
+        if not text:
+            continue
+        dim, sym = _unit_token(text, arg_name=arg_name)
+        if dim is None:
+            raise BadInput(
+                f"{arg_name}: {text!r} is not a length/force/mass/volume/angle unit"
+            )
+        out[dim] = sym
+    return out
+
+
+#: Per-call preferred display units — ``args.prefunits`` / a put payload's
+#: own. Bound by a handler for one call via :func:`prefunits_scope`.
+_PREF_CALL: ContextVar[PrefUnits | None] = ContextVar("units_pref_call", default=None)
+#: Sticky preferred display units — ``meta.prefunits`` on the design ref.
+#: Lowest precedence of the three: a per-call pref or a used unit the
+#: caller just typed both outrank it (per-call overrides sticky — the
+#: design doc's own ordering).
+_PREF_META: ContextVar[PrefUnits | None] = ContextVar("units_pref_meta", default=None)
+#: The units the caller AUTHORED in this call's own arguments — the
+#: respond-in-kind channel (gr336352). ``dimension -> canonical symbol``;
+#: a value of ``None`` means conflicting units were used for that
+#: dimension in one call (respond neutral — same rule
+#: :func:`format_angle_in_kind` applies to a mixed ``unit``). Recorded by
+#: :func:`parse_quantity` under :func:`capture_used_units`.
+_USED_SINK: ContextVar[dict[Dimension, str | None] | None] = ContextVar(
+    "units_used_sink", default=None
+)
+#: ``understood:`` echo lines for the op application in flight — the
+#: echo-on-write channel. Bound by
+#: :func:`~precis.blocktree.ops.apply_ops`; ``None`` outside it (a bare
+#: parse then echoes nowhere, same as the warnings sink's caller-less
+#: default).
+_OP_NOTES: ContextVar[list[str] | None] = ContextVar("units_op_notes", default=None)
+
+
+@contextlib.contextmanager
+def prefunits_scope(pref: PrefUnits | None) -> Iterator[None]:
+    """Bind per-call preferred display units for everything formatted
+    inside the block (``args.prefunits`` / a put payload's own key)."""
+    token = _PREF_CALL.set(dict(pref) if pref else None)
+    try:
+        yield
+    finally:
+        _PREF_CALL.reset(token)
+
+
+@contextlib.contextmanager
+def sticky_prefunits_scope(pref: PrefUnits | None) -> Iterator[None]:
+    """Bind the ref's sticky ``meta.prefunits`` — the lowest-precedence
+    display preference."""
+    token = _PREF_META.set(dict(pref) if pref else None)
+    try:
+        yield
+    finally:
+        _PREF_META.reset(token)
+
+
+@contextlib.contextmanager
+def capture_used_units(
+    sink: dict[Dimension, str | None],
+) -> Iterator[None]:
+    """Bind the respond-in-kind recorder: every strict
+    :func:`parse_quantity` inside the block writes the unit the caller
+    authored into ``sink`` (first unit wins; a conflicting second one
+    turns the entry ``None``)."""
+    token = _USED_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _USED_SINK.reset(token)
+
+
+@contextlib.contextmanager
+def op_notes_scope(notes: list[str] | None) -> Iterator[None]:
+    """Bind the echo-on-write notes list for an op application. A nested
+    call passing ``notes=None`` INHERITS the enclosing sink, so an op that
+    fans out into a second apply still echoes to the caller's list."""
+    token = _OP_NOTES.set(notes if notes is not None else _OP_NOTES.get())
+    try:
+        yield
+    finally:
+        _OP_NOTES.reset(token)
+
+
+def _record_used(dimension: Dimension, units: PlainUnit) -> None:
+    """One authored unit into the respond-in-kind sink — the strict-ingest
+    half only (``require_unit=False`` re-parses of stored canonical text
+    are not the caller "using" a unit, so they never reach here)."""
+    sink = _USED_SINK.get()
+    if sink is None:
+        return
+    sym = _pref_symbol(units)
+    if dimension not in sink:
+        sink[dimension] = sym
+    elif sink[dimension] != sym:
+        sink[dimension] = None
+
+
+def _pref_unit(dimension: Dimension, prefunits: PrefUnits | None) -> str | None:
+    """Resolve the display unit for ``dimension``: explicit argument >
+    per-call ``prefunits`` > the caller's own used unit (respond-in-kind)
+    > sticky ``meta.prefunits`` > ``None`` (the neat default)."""
+    if prefunits is not None and dimension in prefunits:
+        return prefunits[dimension]
+    call = _PREF_CALL.get()
+    if call is not None and dimension in call:
+        return call[dimension]
+    used = _USED_SINK.get()
+    if used is not None:
+        sym = used.get(dimension)
+        if sym:
+            return sym
+    meta = _PREF_META.get()
+    if meta is not None:
+        return meta.get(dimension)
+    return None
+
+
+def _try_pref(
+    dimension: Dimension, prefunits: PrefUnits | None
+) -> tuple[str | None, float | None]:
+    """``(symbol, SI→unit factor)`` for the resolved preference, or
+    ``(None, None)`` when none applies or the resolved symbol cannot
+    convert (a corrupt sticky/arg pref must never fail a *committed
+    write* on the render path — it falls back to the canonical unit and
+    leaves a note on the op-notes sink plus a log line)."""
+    pref = _pref_unit(dimension, prefunits)
+    if pref is None:
+        return None, None
+    try:
+        return pref, _pref_factor(dimension, pref)
+    except BadInput:
+        sink = _OP_NOTES.get()
+        if sink is not None:
+            sink.append(
+                f"note: display pref {pref!r} is not a {dimension} unit — "
+                "rendering the canonical unit"
+            )
+        log.warning("display pref %r is not a %s unit; canonical used", pref, dimension)
+        return None, None
+
+
+def _pref_factor(dimension: Dimension, sym: str) -> float:
+    """SI → ``sym`` magnitude multiplier (``1 m`` → ``1000 mm``)."""
+    ureg = _registry()
+    try:
+        return float(ureg.Quantity(1.0, _SI_UNIT[dimension]).to(sym).magnitude)
+    except pint.DimensionalityError as e:
+        raise BadInput(f"{sym!r} is not a {dimension} unit") from e
+
+
+def _format_in_unit(value: float, dimension: Dimension, sym: str) -> str:
+    """``value`` (SI) rendered in an explicit unit — the
+    prefunits/respond-in-kind path. ``deg`` keeps the ``90°`` spelling
+    (the angle ruling); ``rad`` matches :func:`format_angle_in_kind`."""
+    if not math.isfinite(value):
+        raise BadInput(f"cannot format a non-finite {dimension}: {value!r}")
+    if dimension == "angle":
+        if sym in ("deg", "°"):
+            return f"{math.degrees(value):.3g}°"
+        if sym == "rad":
+            return f"{value:.5g} rad"
+    return f"{value * _pref_factor(dimension, sym):.4g} {sym}"
+
+
+def op_note(text: str) -> None:
+    """One ``understood:``-style line into the echo-on-write sink, if one
+    is bound — the escape hatch for a field-level acknowledgement that
+    isn't a single quantity (a whole waypoints path, say)."""
+    sink = _OP_NOTES.get()
+    if sink is not None:
+        sink.append(text)
+
+
+def _echo_seen(sink: list[str], what: str) -> bool:
+    """Dedupe per op: one ``understood:`` line per field, not one per
+    parse — a re-parsed arg (defaults folded into the same ``what``)
+    doesn't echo twice."""
+    head = f"understood: {what} ="
+    return any(line.startswith(head) for line in sink)
+
+
+def echo_vector(what: str, values: list[float], dimension: Dimension) -> None:
+    """``understood: <what> = <canonical vector>`` — the echo-on-write
+    acknowledgement, appended only while an op-notes sink is bound
+    (:data:`_OP_NOTES`, i.e. an ``apply_ops`` walk that a handler asked
+    for notes on)."""
+    sink = _OP_NOTES.get()
+    if sink is not None and not _echo_seen(sink, what):
+        sink.append(f"understood: {what} = {format_vector(values, dimension)}")
+
+
+def echo_quantity(what: str, value: float, dimension: Dimension) -> None:
+    """The scalar sibling of :func:`echo_vector` — one dimensioned
+    quantity the op just ingested, acknowledged in canonical neat form."""
+    sink = _OP_NOTES.get()
+    if sink is not None and not _echo_seen(sink, what):
+        sink.append(f"understood: {what} = {format_quantity(value, dimension)}")
+
+
+#: The column-header mantissa window: a shared header unit is only offered
+#: when every (nonzero) cell's mantissa in it lands in [1e-3, 1e4) — the
+#: readable range the awkward-mantissa advisory is tuned from.
+_COL_LO: Final[float] = 1e-3
+_COL_HI: Final[float] = 1e4
+
+
+def _column_candidates(dimension: Dimension) -> list[tuple[float, str]]:
+    """``(SI→unit factor, symbol)`` per display unit, ascending unit size —
+    the prefix ladder for the dimension's display base (``nm``, ``µm``,
+    …); angle's whole ladder is ``deg``."""
+    if dimension == "angle":
+        return [(180.0 / math.pi, "deg")]
+    factor, base_sym = _DISPLAY_BASE[dimension]
+    return [(factor / 10.0**exp, f"{p}{base_sym}") for exp, p in _PREFIX_LADDER]
+
+
+def _col_num(x: float) -> str:
+    """One bare cell mantissa — 4 significant figures, ``-0`` → ``0``."""
+    return "0" if x == 0 else f"{x:.4g}"
+
+
+def format_quantity_column(
+    values: Sequence[float | None],
+    dimension: Dimension,
+    *,
+    prefunits: PrefUnits | None = None,
+) -> tuple[str | None, list[str]]:
+    """One homogeneous column → ``(header unit or None, cell strings)`` —
+    the TOON column rule (docs/backlog/pose-vector-units.md): ONE common
+    unit in the header (``gap (nm)``) with bare-mantissa cells when a
+    single unit leaves every mantissa readable; per-value neat
+    :func:`format_quantity` cells with NO header unit when no common unit
+    fits (a 1 nm row beside a 1 m row). Never a header unit over
+    divergent cell suffixes. ``None`` cells render as ``""``.
+
+    Unit choice: a resolved preference (prefunits, per-call, used or
+    sticky — :func:`_pref_unit`) wins unconditionally; otherwise the unit
+    :func:`format_quantity` would pick for the largest magnitude, then
+    successively smaller units until every nonzero cell reads
+    0.001–10000.
+    """
+    pref, f = _try_pref(dimension, prefunits)
+    if pref is not None and f is not None:
+        return pref, ["" if v is None else _col_num(v * f) for v in values]
+    present = [v for v in values if v is not None]
+    candidates = _column_candidates(dimension)
+    chosen: tuple[float, str] | None = None
+    if present:
+        big = max(present, key=abs)
+        # Start where format_quantity would put the largest value (the
+        # biggest unit still leaving it a mantissa ≥ 1), then walk to
+        # smaller units — a too-small sibling is the only failure mode,
+        # and shrinking the unit only ever grows mantissas.
+        if big == 0 or dimension == "angle":
+            # All-zero column: the unsuffixed base unit reads best.
+            start = 0
+            if dimension != "angle":
+                start = next(
+                    i
+                    for i, (f, _s) in enumerate(candidates)
+                    if f == _DISPLAY_BASE[dimension][0]
+                )
+        else:
+            start = 0
+            for i, (f, _) in enumerate(candidates):
+                if abs(big) * f >= 1:
+                    start = i
+        for factor, sym in candidates[start::-1]:
+            if all(
+                v == 0 or (math.isfinite(v) and _COL_LO <= abs(v * factor) < _COL_HI)
+                for v in present
+            ):
+                chosen = (factor, sym)
+                break
+    if chosen is None:
+        return None, [
+            "" if v is None else format_quantity(v, dimension) for v in values
+        ]
+    factor, sym = chosen
+    return sym, ["" if v is None else _col_num(v * factor) for v in values]

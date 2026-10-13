@@ -363,7 +363,8 @@ def test_formfind_round_trips_through_the_store(handler: SeHandler) -> None:
     handler.put(id="tripod", text=json.dumps({"ops": ops}))
     handler.edit(id="tripod", ops=[{"op": "formfind", "move": "all"}])
     body = handler.get(id="tripod", view="block", args={"name": "apex"}).body
-    assert "pose: [1, 0.666667, 0] m" in body
+    # format_vector trims to 4 significant figures and picks the unit.
+    assert "pose: [1 0.6667 0] m" in body
     freedom = handler.get(id="tripod", view="freedom").body
     assert "apex.pose" in freedom  # stamped proposed, visible as revisable
     # and the checker agrees the result is a structure it can classify

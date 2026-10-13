@@ -87,7 +87,9 @@ def test_create_design_with_three_level_tree(handler: SeHandler) -> None:
 def test_tree_view_renders_nesting_and_metre_units(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
     toc = handler.get(id="caster1")
-    assert "units: metres" in toc.body
+    # Per-value units now ride ON each pose/rot (the tree header stopped
+    # saying "units: metres") — the cap's [0 0 0.02] m is the proof.
+    assert "pose=[0 0 20] mm" in toc.body
     fork_depth = _indent_of(toc.body, "fork")
     hub_depth = _indent_of(toc.body, "hub")
     cap_depth = _indent_of(toc.body, "cap")

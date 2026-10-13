@@ -153,10 +153,12 @@ from precis.cad.vec import (
     rotation,
     translation,
 )
+from precis.errors import BadInput
 from precis.utils.units import (
     ANGLE_UNIT_TOKEN,
     LENGTH_UNIT_TOKEN,
     UnitRequiredError,
+    parse_prefunits,
     parse_quantity,
 )
 
@@ -1011,6 +1013,19 @@ def _parse_source(text: str) -> SceneSpec:
             if val:
                 prev = spec.meta.get(key)
                 spec.meta[key] = f"{prev} {val}".strip() if prev else val
+            continue
+        if low.startswith("prefunits:"):
+            # Sticky display units for this design's get answers
+            # (`prefunits: nm,deg` → spec.meta['prefunits'], the canonical
+            # {dimension: symbol} map the render scopes read). Display
+            # only — configs still take any unit.
+            val = line.split(":", 1)[1].strip()
+            try:
+                spec.meta["prefunits"] = parse_prefunits(
+                    val, arg_name=f"line {lineno}: prefunits"
+                )
+            except BadInput as exc:
+                raise SceneError(str(exc)) from exc
             continue
         toks = line.split()
         if toks[0] == "component":

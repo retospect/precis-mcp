@@ -88,7 +88,16 @@ from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
-from precis.utils.units import Dimension, format_quantity, parse_quantity
+from precis.utils.units import (
+    Dimension,
+    capture_used_units,
+    format_quantity,
+    format_quantity_column,
+    parse_prefunits,
+    parse_quantity,
+    prefunits_scope,
+    sticky_prefunits_scope,
+)
 
 log = logging.getLogger(__name__)
 
@@ -291,6 +300,19 @@ def _fmt_rot3(v: Any) -> str:
     return "(" + ", ".join(format_quantity(float(x), "angle") for x in v) + ")"
 
 
+def _spec_prefunits(spec: Any) -> dict[Dimension, str]:
+    """The sticky ``spec.meta.prefunits`` (the DSL ``prefunits:``
+    directive) → canonical ``{dimension: symbol}``; corrupt stored prefs
+    read as absent — a display knob must not fail the whole get."""
+    meta = getattr(spec, "meta", None) or {}
+    if meta.get("prefunits") is None:
+        return {}
+    try:
+        return parse_prefunits(meta["prefunits"], arg_name="meta.prefunits")
+    except BadInput:
+        return {}
+
+
 def _design_scale(design: Any) -> float:
     """The whole design's bbox diagonal — the governing length for a
     scale-relative default (the shipped ``CONTACT_TOL_REL`` pattern from
@@ -373,6 +395,7 @@ class CadHandler(Handler):
                 "sweep_deg",
                 "tol",
                 "z",
+                "prefunits",
             }
         ),
     }
@@ -863,6 +886,18 @@ class CadHandler(Handler):
         title: str | None = None,
         **_kw: Any,
     ) -> Response:
+        used: dict[Dimension, str | None] = {}
+        with capture_used_units(used):
+            return self._put_impl(id=id, text=text, title=title, **_kw)
+
+    def _put_impl(
+        self,
+        *,
+        id: str | int | None = None,
+        text: str | None = None,
+        title: str | None = None,
+        **_kw: Any,
+    ) -> Response:
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='cad') requires id= (the design slug)",
@@ -910,6 +945,19 @@ class CadHandler(Handler):
 
     # ── derive ───────────────────────────────────────────────────────
     def derive(
+        self,
+        *,
+        id: str | int,
+        to: str,
+        text: str,
+        title: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        used: dict[Dimension, str | None] = {}
+        with capture_used_units(used):
+            return self._derive_impl(id=id, to=to, text=text, title=title, **_kw)
+
+    def _derive_impl(
         self,
         *,
         id: str | int,
@@ -1269,6 +1317,25 @@ class CadHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        """Display-preference shell (same shape as the se handler's):
+        binds the respond-in-kind recorder plus the per-call
+        ``args.prefunits`` scope; the sticky ``spec.meta.prefunits`` scope
+        binds inside :meth:`_get_impl` once the spec is loaded."""
+        used: dict[Dimension, str | None] = {}
+        call_pref = parse_prefunits(
+            (args or {}).get("prefunits"), arg_name="args.prefunits"
+        )
+        with capture_used_units(used), prefunits_scope(call_pref):
+            return self._get_impl(id=id, view=view, args=args, **_kw)
+
+    def _get_impl(
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        args: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
@@ -1278,6 +1345,18 @@ class CadHandler(Handler):
 
         ref = resolve_live_slug_ref(self.store, kind="cad", id=s)
         spec, handles = self.store.cad_load(ref.id)
+        with sticky_prefunits_scope(_spec_prefunits(spec)):
+            return self._get_view(ref, spec, handles, view, args or {}, s)
+
+    def _get_view(
+        self,
+        ref: Any,
+        spec: Any,
+        handles: dict[str, int],
+        view: str | None,
+        args: dict[str, Any],
+        slug_fallback: str,
+    ) -> Response:
         if view is None:
             head = (
                 f"# {ref.slug} — {len(spec.components)} part(s), "
@@ -1293,13 +1372,13 @@ class CadHandler(Handler):
             return Response(
                 body=to_openscad(
                     self._expand(spec, state=self._state_arg(args or {}, spec)),
-                    name=str(ref.slug or s),
+                    name=str(ref.slug or slug_fallback),
                 )
             )
         if view in ("stl", "3mf", "step"):
             resp = self._render_export(
                 self._expand(spec, state=self._state_arg(args or {}, spec)),
-                str(ref.slug or s),
+                str(ref.slug or slug_fallback),
                 view,
                 args or {},
             )
@@ -2043,42 +2122,62 @@ class CadHandler(Handler):
         comp = args.get("component")
         if view == "point":
             pt = probe_point(design, _vec(args, "p"), component=comp)
+            mu, mcells = format_quantity_column([h.measure for h in pt.hits], "length")
+            mkey = f"measure ({mu})" if mu else "measure"
             rows = [
                 {
                     "name": h.label,
                     "state": h.relation,
-                    "measure": (
-                        ""
-                        if h.measure is None
-                        else format_quantity(h.measure, "length")
-                    ),
+                    mkey: cell,
                 }
-                for h in pt.hits
+                for h, cell in zip(pt.hits, mcells, strict=True)
             ]
             head = f"probe point {_fmt_vec3(pt.point)} — {pt.state}"
             return Response(
                 body=head
                 + "\n"
-                + render_agent_table(rows, schema=["name", "state", "measure"])
+                + render_agent_table(rows, schema=["name", "state", mkey])
             )
         if view == "ray":
             ray = probe_ray(
                 design, _vec(args, "o"), _vec(args, "d", lengths=False), component=comp
             )
+            seg_cols = {
+                name: format_quantity_column(
+                    [getattr(s, attr) for s in ray.segments], "length"
+                )
+                for name, attr in (
+                    ("t_in", "t_in"),
+                    ("t_out", "t_out"),
+                    ("len", "length"),
+                )
+            }
+            col_keys = {
+                name: f"{name} ({unit})" if unit else name
+                for name, (unit, _cells) in seg_cols.items()
+            }
             rows = [
                 {
-                    "t_in": format_quantity(s.t_in, "length"),
-                    "t_out": format_quantity(s.t_out, "length"),
-                    "len": format_quantity(s.length, "length"),
+                    **{
+                        col_keys[name]: cells[i]
+                        for name, (_unit, cells) in seg_cols.items()
+                    },
                     "state": s.state,
                     "feature": s.feature or "",
                 }
-                for s in ray.segments
+                for i, s in enumerate(ray.segments)
             ]
             return Response(
                 body="probe ray\n"
                 + render_agent_table(
-                    rows, schema=["t_in", "t_out", "len", "state", "feature"]
+                    rows,
+                    schema=[
+                        col_keys["t_in"],
+                        col_keys["t_out"],
+                        col_keys["len"],
+                        "state",
+                        "feature",
+                    ],
                 )
             )
         if view == "arc":
@@ -2094,20 +2193,42 @@ class CadHandler(Handler):
                 else parse_quantity(r_raw, "length", arg_name="args.r")
             )
             arc = probe_arc(design, _vec(args, "c"), axis, r, component=comp)
+            seg_cols = {
+                name: format_quantity_column(
+                    [getattr(s, attr) for s in arc.segments], "angle"
+                )
+                for name, attr in (
+                    ("theta_in", "theta_in"),
+                    ("theta_out", "theta_out"),
+                    ("span", "span"),
+                )
+            }
+            col_keys = {
+                name: f"{name} ({unit})" if unit else name
+                for name, (unit, _cells) in seg_cols.items()
+            }
             rows = [
                 {
-                    "theta_in": format_quantity(s.theta_in, "angle"),
-                    "theta_out": format_quantity(s.theta_out, "angle"),
-                    "span": format_quantity(s.span, "angle"),
+                    **{
+                        col_keys[name]: cells[i]
+                        for name, (_unit, cells) in seg_cols.items()
+                    },
                     "state": s.state,
                     "feature": s.feature or "",
                 }
-                for s in arc.segments
+                for i, s in enumerate(arc.segments)
             ]
             return Response(
                 body=f"probe arc r={format_quantity(arc.radius, 'length')}\n"
                 + render_agent_table(
-                    rows, schema=["theta_in", "theta_out", "span", "state", "feature"]
+                    rows,
+                    schema=[
+                        col_keys["theta_in"],
+                        col_keys["theta_out"],
+                        col_keys["span"],
+                        "state",
+                        "feature",
+                    ],
                 )
             )
         if view == "section":
@@ -2380,18 +2501,22 @@ class CadHandler(Handler):
         comps = list(dict.fromkeys(spec.components))
         declared = _declared_weld_pairs(*_split_weld_groups(spec, comps), comps)
 
+        gap_unit, gap_cells = format_quantity_column(
+            [c.gap for c in conn.contacts], "length"
+        )
+        gap_key = f"gap ({gap_unit})" if gap_unit else "gap"
         rows = [
             {
                 "a": c.a,
                 "b": c.b,
-                "gap": format_quantity(c.gap, "length"),
+                gap_key: cell,
                 "state": "interfere" if c.interfering else "touch",
                 "welded": frozenset((c.a, c.b)) in declared,
             }
-            for c in conn.contacts
+            for c, cell in zip(conn.contacts, gap_cells, strict=True)
         ]
         table = (
-            render_agent_table(rows, schema=["a", "b", "gap", "state", "welded"])
+            render_agent_table(rows, schema=["a", "b", gap_key, "state", "welded"])
             if rows
             else "(no contacts)"
         )

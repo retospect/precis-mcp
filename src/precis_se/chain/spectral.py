@@ -253,7 +253,9 @@ def band_resolver(store: Any, tree: Any) -> Callable[[Channel], Band]:
             return None
         try:
             metres = parse_quantity(
-                f"{value} {unit or se_compose.unit_label(cache, key)}", "length"
+                f"{value} {unit or se_compose.unit_label(cache, key)}",
+                "length",
+                record_used=False,
             )
         except BadInput:
             return None

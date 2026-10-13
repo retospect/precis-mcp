@@ -27,7 +27,14 @@ length (`mm`, `cm`, `in`, `Å`, pint's long tail — internally SI metres) or
 an angle (`deg`/`rad` — internally SI radians); a bare number is refused
 with a retry hint (the zero-counting / silent-exponent-slip guard). Reads
 (probe/view output) render back through the shared neat formatter
-(`2.3 mm`, `1.2 kN`) — never a bare, unit-implied number. Transforms are
+(`2.3 mm`, `1.2 kN`) — never a bare, unit-implied number; answers come
+back **in the units you wrote** (respond-in-kind), and a homogeneous
+table column carries one unit in its header (`measure (mm)`) with bare
+cells. `args={'prefunits': 'nm,deg'}` on a `get` forces display units
+per call; a top-level `prefunits: nm,deg` directive in the source makes
+it the design's sticky preference (`meta.prefunits`, per-call wins, a
+unit you just typed wins over both). Display only — storage stays SI.
+Transforms are
 **rigid** (translate + rotate, no scale), so every probe is **exact** (only
 volume/centroid are sampled).
 

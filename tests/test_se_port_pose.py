@@ -90,10 +90,10 @@ def test_add_port_pose_round_trips_and_renders_with_its_provenance(
 
     body = handler.get(id="portpose1", view="block", args={"name": "arm"}).body
     assert "pose" in body
-    assert "[0.004, 0, 0]" in body
-    assert "rot [0, 1.5708, 0]" in body
+    assert "[4 0 0] mm" in body
+    assert "rot [0 90 0] deg" in body
     assert "declared" in body
-    assert "[0.004, 0, 0]" in handler.get(id="portpose1", view="ports").body
+    assert "[4 0 0] mm" in handler.get(id="portpose1", view="ports").body
 
 
 def test_add_port_pose_without_rot_renders_no_rot_clause(
@@ -111,7 +111,7 @@ def test_add_port_pose_without_rot_renders_no_rot_clause(
         ],
     )
     body = handler.get(id="portpose2", view="block", args={"name": "arm"}).body
-    assert "[0.004, 0, 0] · declared" in body
+    assert "[4 0 0] mm · declared" in body
     assert "rot [" not in body
 
 
@@ -422,9 +422,9 @@ def test_state_pose_delta_moves_the_port_origin_and_composes_its_rot(
         view="block",
         args={"name": "switch", "state": {"switch": "cis"}},
     ).body
-    assert "[0.001, 0, 0]" in default_body
-    assert "[0.0019, 0, 0]" in cis_body
-    assert "rot [0, 0, 0.5]" in cis_body
+    assert "[1 0 0] mm" in default_body
+    assert "[1.9 0 0] mm" in cis_body
+    assert "rot [0 0 28.65] deg" in cis_body
 
 
 def test_state_delta_on_a_poseless_port_invents_no_origin(

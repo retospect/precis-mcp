@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
+from precis.utils.units import op_notes_scope
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import (
     PendingGenerate,
@@ -205,143 +206,162 @@ def apply_ops_with_atomic(
     pending_flatpacks: list[PendingFlatpack] = []
     flatpack_last_ids: set[str] | None = None
     pending_dof_checks: list[str] = []
-    for op in ops:
-        if not isinstance(op, dict) or "op" not in op:
-            raise BadInput(f"op missing 'op' key: {op!r}")
-        name = op["op"]
-        if name not in roster:
-            raise BadInput(f"unknown op: {name!r}; known: {', '.join(sorted(roster))}")
-        if name == "bind_structure":
-            echoes.append(bind_structure(store, tree, op))
-            continue
-        if name == "unbind_structure":
-            echoes.append(unbind_structure(tree, op))
-            continue
-        if name == "generate":
-            echo, pending = prepare_generate(store, tree, op, design_slug)
-            echoes.append(echo)
-            if pending is not None:  # dry-run blocks mint nothing
-                pending_generates.append(pending)
-            continue
-        if name == "join":
-            if op.get("dry_run"):
+    # Echo on write: ``op_notes`` is bound for the whole walk, so a
+    # store-aware op that fans out into pure ops (``generate``'s inner
+    # ``apply_ops`` calls, ``prepare_join``'s port ops) echoes its
+    # ingested quantities to the same list — the ``continue``-branch
+    # pattern means each op's notes are flushed at the TOP of the next
+    # iteration, which lands them right after that op's own echo lines.
+    op_notes: list[str] = []
+    with op_notes_scope(op_notes):
+        for op in ops:
+            if not isinstance(op, dict) or "op" not in op:
+                raise BadInput(f"op missing 'op' key: {op!r}")
+            echoes.extend(op_notes)
+            op_notes.clear()
+            name = op["op"]
+            if name not in roster:
                 raise BadInput(
-                    "join dry_run writes nothing, so it runs alone in its own "
-                    "edit(kind='se') call — not mixed with other ops or in a put"
+                    f"unknown op: {name!r}; known: {', '.join(sorted(roster))}"
                 )
-            echo, join_pending = prepare_join(
-                store, tree, op, design_slug, pending_joins=pending_joins
-            )
-            echoes.append(echo)
-            if join_pending is not None:
-                pending_joins.append(join_pending)
-            continue
-        if name == "relax_chain":
-            # Store-read but NOT store-write-deferred: the settle only ever
-            # mutates the in-memory tree (poses + the domain rows' loop
-            # curves), so the caller's own ``save_tree`` is the one commit it
-            # is part of — one revision per call, like the pure ops.
-            # ``state={block: state name}`` makes it a station settle
-            # (se-walker-light-protocol): resolved here against the SAVED
-            # design's declared states — the one place this dispatch has
-            # the store and the slug — through the same resolver the
-            # handler's ``args.state`` uses, so both refuse alike.
-            resolved = None
-            if op.get("state") is not None:
-                ref = store.get_ref(kind="se", id=design_slug)
-                if ref is None:
+            if name == "bind_structure":
+                echoes.append(bind_structure(store, tree, op))
+                continue
+            if name == "unbind_structure":
+                echoes.append(unbind_structure(tree, op))
+                continue
+            if name == "generate":
+                echo, pending = prepare_generate(store, tree, op, design_slug)
+                echoes.append(echo)
+                if pending is not None:  # dry-run blocks mint nothing
+                    pending_generates.append(pending)
+                continue
+            if name == "join":
+                if op.get("dry_run"):
                     raise BadInput(
-                        "relax_chain: state={...} needs a SAVED design with "
-                        "declared states — put the design (and declare_states/"
-                        "declare_stations) first, then edit it with the settle"
+                        "join dry_run writes nothing, so it runs alone in its own "
+                        "edit(kind='se') call — not mixed with other ops or in a put"
                     )
-                resolved = resolve_state_arg(
-                    store, ref.id, tree, op["state"], what="relax_chain state"
+                echo, join_pending = prepare_join(
+                    store, tree, op, design_slug, pending_joins=pending_joins
                 )
-            try:
-                echoes.append(op_relax_chain(store, tree, op, state=resolved))
-            except OpError as exc:
-                raise BadInput(str(exc)) from exc
-            continue
-        if name == "make_steps":
-            echoes.append(op_make_steps(store, tree, op, design_slug))
-            continue
-        if name == "fold_layout":
-            # Store-free, but handler-level: it needs the optional ``[chain]``
-            # extra (``Unsupported`` when absent — a missing dependency is not
-            # a bad op, so that one passes straight through) and it spends
-            # O(n³) compute, which is why it is never auto-applied.
-            try:
-                echoes.append(op_fold_layout(tree, op))
-            except OpError as exc:
-                raise BadInput(str(exc)) from exc
-            continue
-        if name == "realize":
-            strategy = str(op.get("strategy") or "analytic").strip().lower()
-            if strategy not in REALIZE_STRATEGIES:
-                raise BadInput(
-                    f"realize: unknown strategy {strategy!r}; known: "
-                    f"{', '.join(REALIZE_STRATEGIES)}"
-                )
-            if strategy in ("simp", "manufacture"):
-                if pending_jobs is None:
-                    raise BadInput(
-                        f"realize(strategy={strategy!r}) needs a caller that can "
-                        "run or enqueue the job (put/edit on kind='se')"
-                    )
-                request: PendingJob
-                try:
-                    if strategy == "simp":
-                        echo, request = prepare_simp(tree, op, cad_store_reader=store)
-                    else:
-                        echo, request = prepare_manufacture(
-                            tree, op, cad_store_reader=store
+                echoes.append(echo)
+                if join_pending is not None:
+                    pending_joins.append(join_pending)
+                continue
+            if name == "relax_chain":
+                # Store-read but NOT store-write-deferred: the settle only ever
+                # mutates the in-memory tree (poses + the domain rows' loop
+                # curves), so the caller's own ``save_tree`` is the one commit it
+                # is part of — one revision per call, like the pure ops.
+                # ``state={block: state name}`` makes it a station settle
+                # (se-walker-light-protocol): resolved here against the SAVED
+                # design's declared states — the one place this dispatch has
+                # the store and the slug — through the same resolver the
+                # handler's ``args.state`` uses, so both refuse alike.
+                resolved = None
+                if op.get("state") is not None:
+                    ref = store.get_ref(kind="se", id=design_slug)
+                    if ref is None:
+                        raise BadInput(
+                            "relax_chain: state={...} needs a SAVED design with "
+                            "declared states — put the design (and declare_states/"
+                            "declare_stations) first, then edit it with the settle"
                         )
+                    resolved = resolve_state_arg(
+                        store, ref.id, tree, op["state"], what="relax_chain state"
+                    )
+                try:
+                    echoes.append(op_relax_chain(store, tree, op, state=resolved))
+                except OpError as exc:
+                    raise BadInput(str(exc)) from exc
+                continue
+            if name == "make_steps":
+                echoes.append(op_make_steps(store, tree, op, design_slug))
+                continue
+            if name == "fold_layout":
+                # Store-free, but handler-level: it needs the optional ``[chain]``
+                # extra (``Unsupported`` when absent — a missing dependency is not
+                # a bad op, so that one passes straight through) and it spends
+                # O(n³) compute, which is why it is never auto-applied.
+                try:
+                    echoes.append(op_fold_layout(tree, op))
+                except OpError as exc:
+                    raise BadInput(str(exc)) from exc
+                continue
+            if name == "realize":
+                strategy = str(op.get("strategy") or "analytic").strip().lower()
+                if strategy not in REALIZE_STRATEGIES:
+                    raise BadInput(
+                        f"realize: unknown strategy {strategy!r}; known: "
+                        f"{', '.join(REALIZE_STRATEGIES)}"
+                    )
+                if strategy in ("simp", "manufacture"):
+                    if pending_jobs is None:
+                        raise BadInput(
+                            f"realize(strategy={strategy!r}) needs a caller that can "
+                            "run or enqueue the job (put/edit on kind='se')"
+                        )
+                    request: PendingJob
+                    try:
+                        if strategy == "simp":
+                            echo, request = prepare_simp(
+                                tree, op, cad_store_reader=store
+                            )
+                        else:
+                            echo, request = prepare_manufacture(
+                                tree, op, cad_store_reader=store
+                            )
+                    except OpError as exc:
+                        raise BadInput(str(exc)) from exc
+                    echoes.append(echo)
+                    pending_jobs.append(request)
+                    continue
+                try:
+                    echo, realize_pending = prepare_realize(
+                        store, tree, op, design_slug
+                    )
                 except OpError as exc:
                     raise BadInput(str(exc)) from exc
                 echoes.append(echo)
-                pending_jobs.append(request)
+                pending_realizes.append(realize_pending)
+                continue
+            if name == "realize_chain":
+                # Pure over the tree here (frames, occupancy, placed loop
+                # curves → atoms in the segment's frame); the structure mint
+                # and the bind wait for ``finish_realize_chain`` below.
+                echo, chain_pending = prepare_realize_chain(
+                    store, tree, op, design_slug
+                )
+                echoes.append(echo)
+                pending_chain_realizes.append(chain_pending)
+                continue
+            if name == "flatpack_box":
+                if flatpack_params is None:
+                    raise BadInput(
+                        "flatpack_box needs a caller that records its params "
+                        "home (put/edit on kind='se')"
+                    )
+                try:
+                    echo, flatpack_pending = prepare_flatpack_box(
+                        store, tree, op, design_slug, carried_ids=flatpack_last_ids
+                    )
+                except OpError as exc:
+                    raise BadInput(str(exc)) from exc
+                echoes.append(echo)
+                flatpack_params.append(dict(flatpack_pending.params))
+                flatpack_last_ids = {p.block_name for p in flatpack_pending.panels}
+                pending_flatpacks.append(flatpack_pending)
                 continue
             try:
-                echo, realize_pending = prepare_realize(store, tree, op, design_slug)
+                apply_ops(tree, [op])
             except OpError as exc:
                 raise BadInput(str(exc)) from exc
-            echoes.append(echo)
-            pending_realizes.append(realize_pending)
-            continue
-        if name == "realize_chain":
-            # Pure over the tree here (frames, occupancy, placed loop
-            # curves → atoms in the segment's frame); the structure mint
-            # and the bind wait for ``finish_realize_chain`` below.
-            echo, chain_pending = prepare_realize_chain(store, tree, op, design_slug)
-            echoes.append(echo)
-            pending_chain_realizes.append(chain_pending)
-            continue
-        if name == "flatpack_box":
-            if flatpack_params is None:
-                raise BadInput(
-                    "flatpack_box needs a caller that records its params "
-                    "home (put/edit on kind='se')"
-                )
-            try:
-                echo, flatpack_pending = prepare_flatpack_box(
-                    store, tree, op, design_slug, carried_ids=flatpack_last_ids
-                )
-            except OpError as exc:
-                raise BadInput(str(exc)) from exc
-            echoes.append(echo)
-            flatpack_params.append(dict(flatpack_pending.params))
-            flatpack_last_ids = {p.block_name for p in flatpack_pending.panels}
-            pending_flatpacks.append(flatpack_pending)
-            continue
-        try:
-            apply_ops(tree, [op])
-        except OpError as exc:
-            raise BadInput(str(exc)) from exc
-        if name == "add_block" and op.get("dof") is not None:
-            block_name = str(op.get("name") or "").strip()
-            if block_name:
-                pending_dof_checks.append(block_name)
+            if name == "add_block" and op.get("dof") is not None:
+                block_name = str(op.get("name") or "").strip()
+                if block_name:
+                    pending_dof_checks.append(block_name)
+    echoes.extend(op_notes)
     for pending in pending_generates:
         finish_generate(store, tree, pending)
     for join_pending in pending_joins:

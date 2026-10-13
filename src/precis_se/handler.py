@@ -126,7 +126,16 @@ from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
-from precis.utils.units import format_quantity
+from precis.utils.units import (
+    Dimension,
+    capture_used_units,
+    format_quantity,
+    format_quantity_column,
+    format_vector,
+    parse_prefunits,
+    prefunits_scope,
+    sticky_prefunits_scope,
+)
 from precis_se import bom as se_bom
 from precis_se import datums as se_datums
 from precis_se import drc as se_drc
@@ -281,10 +290,11 @@ class SeHandler(Handler):
                 "scale",
                 "load_cases",
                 "bistable",
+                "prefunits",
             }
         ),
-        "put": frozenset({"description", "ops", "scenario"}),
-        "edit": frozenset({"ops"}),
+        "put": frozenset({"description", "ops", "scenario", "prefunits"}),
+        "edit": frozenset({"ops", "prefunits"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -765,6 +775,22 @@ class SeHandler(Handler):
         ops: list[dict[str, Any]] | None = None,
         **_kw: Any,
     ) -> Response:
+        used: dict[Dimension, str | None] = {}
+        with capture_used_units(used):
+            return self._put_impl(
+                id=id, text=text, title=title, args=args, ops=ops, **_kw
+            )
+
+    def _put_impl(
+        self,
+        *,
+        id: str | int | None = None,
+        text: str | None = None,
+        title: str | None = None,
+        args: dict[str, Any] | None = None,
+        ops: list[dict[str, Any]] | None = None,
+        **_kw: Any,
+    ) -> Response:
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='se') requires id= (the design slug)",
@@ -781,6 +807,11 @@ class SeHandler(Handler):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
         scenario_id = _vet_scenario(self.store, payload.get("scenario"))
+        # ``prefunits`` is the sticky display preference: stored verbatim
+        # (canonical {dimension: symbol}) into refs.meta, and bound for
+        # THIS call's own render — put is a full replace, so an absent key
+        # drops a prior sticky pref just like ``description`` does.
+        call_pref = parse_prefunits(payload.get("prefunits"), arg_name="prefunits")
         existing = self.store.get_ref(kind="se", id=slug)
         if not ops and existing is not None:
             _refuse_empty_replace(self.store, existing, slug)
@@ -809,6 +840,8 @@ class SeHandler(Handler):
             meta["flatpack"] = flatpack_params[-1]
         elif existing is not None and (existing.meta or {}).get("flatpack"):
             meta["flatpack"] = existing.meta["flatpack"]
+        if call_pref:
+            meta["prefunits"] = dict(call_pref)
         # A replace is a whole-tree write: serialize it against every other
         # load->mutate->save of this design (persist.tree_mutation — an edit,
         # or the se_simp job binding its result). A brand-new slug has no
@@ -857,16 +890,35 @@ class SeHandler(Handler):
         # sits outside its write for the same reason).
         persist.sync_realized_by(self.store, ref.id, tree)
         verb = "created" if created else "replaced"
-        body = f"# se design '{slug}' {verb}\n\n" + _render_tree(tree, ttl, description)
-        if echo:
-            body += f"\n\n{echo}"
-        if pending_jobs:
-            body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
-        body += "\n\n" + self._reply_digest(tree, ref.id)
+        with prefunits_scope(call_pref), sticky_prefunits_scope(call_pref):
+            body = f"# se design '{slug}' {verb}\n\n" + _render_tree(
+                tree, ttl, description
+            )
+            if echo:
+                body += f"\n\n{echo}"
+            if pending_jobs:
+                body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
+            body += "\n\n" + self._reply_digest(tree, ref.id)
         return Response(body=body)
 
     # ── edit ─────────────────────────────────────────────────────────
     def edit(
+        self,
+        *,
+        id: str | int | None = None,
+        ops: list[dict[str, Any]] | None = None,
+        text: str | None = None,
+        args: dict[str, Any] | None = None,
+        turn: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        used: dict[Dimension, str | None] = {}
+        with capture_used_units(used):
+            return self._edit_impl(
+                id=id, ops=ops, text=text, args=args, turn=turn, **_kw
+            )
+
+    def _edit_impl(
         self,
         *,
         id: str | int | None = None,
@@ -884,19 +936,36 @@ class SeHandler(Handler):
         ref = self.store.get_ref(kind="se", id=str(id).strip())
         if ref is None:
             raise NotFound(f"se design {id!r} not found")
+        # ``ops=`` given directly still honours a payload's ``prefunits``
+        # key; an absent text/args parses as the empty payload.
+        payload = _payload(text, args) if ops is None or text or args else {}
+        call_pref = parse_prefunits(payload.get("prefunits"), arg_name="prefunits")
         op_list = ops
         if op_list is None:
-            payload = _payload(text, args)
             op_list = payload.get("ops", payload if isinstance(payload, list) else [])
-        if not op_list:
+        if not op_list and "prefunits" not in payload:
             raise BadInput(
                 "edit(kind='se') requires ops=",
                 next="edit(kind='se', id="
                 f"{str(ref.slug)!r}, "
                 "ops=[{'op':'add_block','name':'hub','parent':'fork'}])",
             )
+        # Sticky ``meta.prefunits``: an edit carrying ``prefunits`` rewrites
+        # the map wholesale (replace, not merge — predictable like put's
+        # description), inside the same transaction as the ops.
+        sticky_pref = call_pref if "prefunits" in payload else _meta_prefunits(ref.meta)
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
+        if "prefunits" in payload and any(
+            isinstance(o, dict)
+            and (o.get("op") == "restore_revision" or o.get("dry_run"))
+            for o in op_list
+        ):
+            raise BadInput(
+                "prefunits cannot ride an op list containing restore_revision "
+                "or a dry_run — those return before the meta write; send the "
+                "prefunits change as a separate edit"
+            )
         if any(
             isinstance(o, dict) and o.get("op") == "restore_revision" for o in op_list
         ):
@@ -914,41 +983,58 @@ class SeHandler(Handler):
             tree = persist.load_tree(self.store, ref.id)
             tree.own_slug = str(ref.slug)
             tree.foreign = self._foreign_resolver()
-            echo = self._apply(
-                tree,
-                op_list,
-                slug=str(ref.slug),
-                pending_jobs=pending_jobs,
-                flatpack_params=flatpack_params,
-            )
-            if flatpack_params:
-                # meta['flatpack'] is a top-level merge, not a replace —
-                # the rest of the meta (description, …) is untouched.
+            if "prefunits" in payload:
+                # jsonb || merges top-level keys, so a concurrent write to a
+                # *different* meta key (version, description) survives —
+                # re-reading ref.meta here and rewriting the whole dict
+                # would clobber it.
                 conn.execute(
                     "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
-                    (Jsonb({"flatpack": flatpack_params[-1]}), ref.id),
+                    (Jsonb({"prefunits": dict(call_pref)}), ref.id),
                 )
-            persist.save_tree(
-                self.store,
-                ref_id=ref.id,
-                tree=tree,
-                card_text=_card_text(ttl, description, tree),
-                conn=conn,
-            )
-            # Same reasoning as put: block_uid only exists once save_tree
-            # has run, so the shared design-core write lands in the same
-            # transaction right after it, never before.
-            _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.edit")
-            _record_revision(self.store, ref.id, ops=op_list, turn=turn, conn=conn)
+            if op_list:
+                echo = self._apply(
+                    tree,
+                    op_list,
+                    slug=str(ref.slug),
+                    pending_jobs=pending_jobs,
+                    flatpack_params=flatpack_params,
+                )
+                if flatpack_params:
+                    # meta['flatpack'] is a top-level merge, not a replace —
+                    # the rest of the meta (description, …) is untouched.
+                    conn.execute(
+                        "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                        (Jsonb({"flatpack": flatpack_params[-1]}), ref.id),
+                    )
+                persist.save_tree(
+                    self.store,
+                    ref_id=ref.id,
+                    tree=tree,
+                    card_text=_card_text(ttl, description, tree),
+                    conn=conn,
+                )
+                # Same reasoning as put: block_uid only exists once save_tree
+                # has run, so the shared design-core write lands in the same
+                # transaction right after it, never before.
+                _materialize_states(
+                    self.store, ref.id, tree, conn=conn, set_by="se.edit"
+                )
+                _record_revision(self.store, ref.id, ops=op_list, turn=turn, conn=conn)
+            else:
+                # A prefunits-only edit: nothing about the tree changed, so
+                # no save and no empty revision row.
+                echo = None
         persist.sync_realized_by(self.store, ref.id, tree)
-        body = f"# se design '{ref.slug}' edited\n\n" + _render_tree(
-            tree, ttl, description
-        )
-        if echo:
-            body += f"\n\n{echo}"
-        if pending_jobs:
-            body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
-        body += "\n\n" + self._reply_digest(tree, ref.id)
+        with sticky_prefunits_scope(sticky_pref), prefunits_scope(call_pref):
+            body = f"# se design '{ref.slug}' edited\n\n" + _render_tree(
+                tree, ttl, description
+            )
+            if echo:
+                body += f"\n\n{echo}"
+            if pending_jobs:
+                body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
+            body += "\n\n" + self._reply_digest(tree, ref.id)
         return Response(body=body)
 
     def _join_dry_run(self, ref: Any, op_list: list[dict[str, Any]]) -> Response:
@@ -1085,6 +1171,35 @@ class SeHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
     def get(
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        args: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Thin display-preference shell: binds the respond-in-kind
+        recorder, the sticky ``meta.prefunits`` and per-call
+        ``args.prefunits`` scopes for the whole get
+        (:mod:`precis.utils.units`). The extra ``get_ref`` for the sticky
+        read is one indexed lookup — cheap against the tree load below."""
+        used: dict[Dimension, str | None] = {}
+        call_pref = parse_prefunits(
+            (args or {}).get("prefunits"), arg_name="args.prefunits"
+        )
+        meta_pref: dict[Dimension, str] = {}
+        if isinstance(id, (str, int)) and str(id).strip() not in ("", "/"):
+            ref = self.store.get_ref(kind="se", id=str(id).strip())
+            if ref is not None:
+                meta_pref = _meta_prefunits(ref.meta)
+        with (
+            capture_used_units(used),
+            sticky_prefunits_scope(meta_pref),
+            prefunits_scope(call_pref),
+        ):
+            return self._get_impl(id=id, view=view, args=args, **_kw)
+
+    def _get_impl(
         self,
         *,
         id: str | int | None = None,
@@ -2477,7 +2592,7 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
 
 
 #: The only top-level keys ``put`` consumes.
-_PUT_PAYLOAD_KEYS = frozenset({"description", "ops", "scenario"})
+_PUT_PAYLOAD_KEYS = frozenset({"description", "ops", "scenario", "prefunits"})
 
 
 def _vet_scenario(store: Any, raw: Any) -> str | None:
@@ -2796,13 +2911,6 @@ def _fmt3(v: list[float]) -> str:
     return ", ".join(f"{x:g}" for x in v)
 
 
-def _fmt_rot3(v: list[float]) -> str:
-    """A 3-vector of SI-radian angles, rendered in degrees — the angle
-    sibling of :func:`_fmt3` (never a bare-radian tuple, which would
-    misread as degrees, the units-policy-cutover angle ruling)."""
-    return ", ".join(format_quantity(float(x), "angle") for x in v)
-
-
 def _array_label(spec: dict[str, Any]) -> str:
     """The compact array marker on a tree/block line — e.g.
     ``×6 polar r=0.04 axis=[0, 0, 1]`` / ``×10 linear pitch=0.005
@@ -2890,9 +2998,9 @@ def _fmt_port_pose(port: PortSpec) -> str:
     the dash is there to report."""
     if port.pose is None:
         return "—"
-    cell = f"[{_fmt3(port.pose)}] · {port.pose_source or '?'}"
+    cell = f"{format_vector(port.pose, 'length')} · {port.pose_source or '?'}"
     if port.rot is not None:
-        cell += f" rot [{_fmt3(port.rot)}] · {port.rot_source or '?'}"
+        cell += f" rot {format_vector(port.rot, 'angle')} · {port.rot_source or '?'}"
     return cell
 
 
@@ -2934,9 +3042,9 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
     if env:
         marker = f" (from {node.template})" if node.template else ""
         parts.append(f"env={_fmt_envelope(env)}{marker}")
-    parts.append(f"pose=[{_fmt3(node.local_pose)}]")
+    parts.append(f"pose={format_vector(node.local_pose, 'length')}")
     if any(node.local_rot):
-        parts.append(f"rot=[{_fmt_rot3(node.local_rot)}]")
+        parts.append(f"rot={format_vector(node.local_rot, 'angle')}")
     dof = effective_dof(tree, node)
     if dof:
         marker = f" (from {node.template})" if node.template else ""
@@ -3008,7 +3116,7 @@ def _render_tree(
     *,
     generated_records: Mapping[str, dict[str, Any]] | None = None,
 ) -> str:
-    lines = [f"# se design '{title}'  (units: metres)"]
+    lines = [f"# se design '{title}'"]
     if description:
         lines.append(description)
     if not tree.blocks:
@@ -3016,7 +3124,8 @@ def _render_tree(
         return "\n".join(lines)
     lines.append(
         "(pose/rot below are each block's AUTHORED value, in its parent's "
-        "frame — root's parent is world; that is the value set_pose takes. "
+        "frame — root's parent is world; that is the value set_pose takes, "
+        "and the trailing unit is the display unit (stored SI). "
         "view='block' also shows the composed world placement when it "
         "differs.)"
     )
@@ -3463,28 +3572,29 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
         # pose (relax_chain(state=)'s output), not the authored one — say so,
         # and keep the authored value visible so neither reads as the other.
         lines.append(
-            f"pose: [{_fmt3(node.local_pose)}] m  (state {node.posed_by_state!r}, "
-            "STORED by relax_chain(state=) — parent frame; the authored value "
-            "is the same view without args.state)"
+            f"pose: {format_vector(node.local_pose, 'length')}  (state "
+            f"{node.posed_by_state!r}, STORED by relax_chain(state=) — parent "
+            "frame; the authored value is the same view without args.state)"
         )
         lines.append(
-            f"rot: [{_fmt_rot3(node.local_rot)}]  (state {node.posed_by_state!r})"
+            f"rot: {format_vector(node.local_rot, 'angle')}  "
+            f"(state {node.posed_by_state!r})"
         )
     else:
         lines.append(
-            f"pose: [{_fmt3(node.local_pose)}] m  (authored, parent frame — "
-            "root's parent is world)"
+            f"pose: {format_vector(node.local_pose, 'length')}  (authored, "
+            "parent frame — root's parent is world)"
         )
-        lines.append(f"rot: [{_fmt_rot3(node.local_rot)}]")
+        lines.append(f"rot: {format_vector(node.local_rot, 'angle')}")
     world_differs = list(node.pose) != list(node.local_pose) or list(node.rot) != list(
         node.local_rot
     )
     if world_differs:
         lines.append(
-            f"world pose: [{_fmt3(node.pose)}] m  (composed from ancestors "
-            "— NOT what set_pose takes)"
+            f"world pose: {format_vector(node.pose, 'length')}  (composed "
+            "from ancestors — NOT what set_pose takes)"
         )
-        lines.append(f"world rot: [{_fmt_rot3(node.rot)}]")
+        lines.append(f"world rot: {format_vector(node.rot, 'angle')}")
     if node.template:
         # desc/use stay raw (an instance genuinely has none — those keys
         # are rejected at mint time); envelope resolves via the template,
@@ -6020,6 +6130,23 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
 }
 assert {v for v, keys in _VIEW_ARGS.items() if "state" in keys} == _STATE_VIEWS
 
+#: args keys every view accepts — display knobs, not view inputs.
+#: ``prefunits`` (``"nm,deg,kg"`` or a ``{dimension: unit}`` map) overrides
+#: the sticky ``meta.prefunits`` for this call's rendered quantities.
+_GLOBAL_ARGS = frozenset({"prefunits"})
+
+
+def _meta_prefunits(meta: Any) -> dict[Dimension, str]:
+    """The sticky ``meta.prefunits`` on a ref, resolved to the canonical
+    ``{dimension: symbol}`` — corrupt stored prefs read as absent (they
+    are a display knob, not data; a get must not fail over one)."""
+    if not isinstance(meta, dict) or meta.get("prefunits") is None:
+        return {}
+    try:
+        return parse_prefunits(meta["prefunits"], arg_name="meta.prefunits")
+    except BadInput:
+        return {}
+
 
 def _vet_view_args(view: str, args: dict[str, Any] | None) -> None:
     """Reject any ``args=`` key a view doesn't accept — loudly, rather
@@ -6039,10 +6166,10 @@ def _vet_view_args(view: str, args: dict[str, Any] | None) -> None:
     allowed = _VIEW_ARGS.get(view)
     if allowed is None:
         return  # unrecognized view — the dispatch above raises its own error
-    unknown = sorted(set(args) - allowed)
+    unknown = sorted(set(args) - allowed - _GLOBAL_ARGS)
     if not unknown:
         return
-    accepted = ", ".join(sorted(allowed)) if allowed else "(none)"
+    accepted = ", ".join(sorted(allowed | _GLOBAL_ARGS))
     if "state" in unknown:
         supported = ", ".join(sorted(f"{v or 'tree'!r}" for v in _STATE_VIEWS))
         raise BadInput(
@@ -6459,16 +6586,20 @@ def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) ->
 
     # id = the pair, never the gap: a deeper interference between the same
     # two blocks is the same row (``still``), not gone + new.
+    gap_unit, gap_cells = format_quantity_column(
+        [pc.gap_m for pc in computed], "length"
+    )
+    gap_key = f"gap ({gap_unit})" if gap_unit else "gap"
     rows, delta_text = se_finding_id.annotate(
         [
             {
                 "a": pc.a_name,
                 "b": pc.b_name,
                 "joint": _joint_class_for(tree, pc.a_name, pc.b_name) or "—",
-                "gap": format_quantity(pc.gap_m, "length"),
+                gap_key: gap_cell,
                 "tag": pc.verdict,
             }
-            for pc in computed
+            for pc, gap_cell in zip(computed, gap_cells, strict=True)
         ],
         [
             se_finding_id.finding_id("clearance", f"{pc.a_name}—{pc.b_name}")
@@ -6479,7 +6610,7 @@ def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) ->
     header = f"# clearance digest — {len(computed)} pair(s) from CONNECTS"
     if truncated:
         header += f" (showing first {_CLEARANCE_DIGEST_BUDGET} of {total_pairs})"
-    schema = ["id", "a", "b", "joint", "gap", "tag"]
+    schema = ["id", "a", "b", "joint", gap_key, "tag"]
     if previous is not None:
         schema.insert(1, "delta")
     table = render_agent_table(rows, schema=schema)
@@ -6948,7 +7079,7 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
     )
 
     originals = _snapshot_sweep_domain(tree, domain_names)
-    hit_rows: list[dict[str, str]] = []
+    hit_rows: list[dict[str, Any]] = []
     chain_rows: list[dict[str, str]] = []
     unrelaxed_combos = 0
     cross_scale_seen: set[tuple[str, str]] = set()
@@ -7011,7 +7142,7 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
                     {
                         "states": label,
                         "pair": f"{a_name} ↔ {b_name}",
-                        "gap": format_quantity(gap, "length"),
+                        "gap": gap,
                     }
                 )
             cross_scale_seen.update(cross_scale)
@@ -7058,7 +7189,14 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
         )
     body = "\n".join(lines) + "\n"
     if hit_rows:
-        body += "\n" + render_agent_table(hit_rows, schema=["states", "pair", "gap"])
+        gap_unit, gap_cells = format_quantity_column(
+            [float(r["gap"]) for r in hit_rows], "length"
+        )
+        gap_key = f"gap ({gap_unit})" if gap_unit else "gap"
+        for row, cell in zip(hit_rows, gap_cells, strict=True):
+            row.pop("gap")
+            row[gap_key] = cell
+        body += "\n" + render_agent_table(hit_rows, schema=["states", "pair", gap_key])
     if chain_rows:
         body += "\n" + render_agent_table(
             chain_rows, schema=["states", "rule", "subject", "detail"]
