@@ -26,6 +26,7 @@ import pytest
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import materialize as m
+from tests.workers._helpers import seed_chunk, seed_ref
 
 pytestmark = pytest.mark.db
 
@@ -203,6 +204,7 @@ def _set_all_status(store: Store, job_type: str, status: str) -> None:
 def _enable_materialize(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_MATERIALIZE_EMBED", "1")
     monkeypatch.delenv("PRECIS_EMBED_BACKLOG_HIGH", raising=False)
+    monkeypatch.delenv("PRECIS_EMBED_BACKLOG_AGE_MINUTES", raising=False)
     monkeypatch.delenv("PRECIS_EMBED_BATCH_MAX_JOBS", raising=False)
 
 
@@ -738,3 +740,113 @@ def test_backlog_warning_reports_live_jobs_count(
     # WARNING now reports a nonzero live_jobs (draining, not stuck).
     warning = next(r for r in caplog.records if "not draining" in r.message)
     assert "live_jobs=0" not in warning.message
+
+
+# ── age trigger (gr483036): a sub-high-water backlog that outwaited AGE ──
+#
+# These exercise the REAL embed ``_BacklogSource`` end to end — real
+# ``unembedded_chunk_count`` + ``oldest_unembedded_chunk_at`` over seeded
+# chunks — via ``run_materialize_pass`` (both SMALL band sources are
+# default-OFF, so the pass reaches only the embed source), unlike the
+# synthetic-source sections above which pin policy without a corpus.
+
+
+def _seed_job(store: Store, job_type: str, status: str = "queued") -> None:
+    """Insert one job ref at ``status`` directly (no idem_key, so it can't
+    interfere with a same-tick mint's dedupe)."""
+    with store.pool.connection() as conn:
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"seed {job_type}",
+            meta={"job_type": job_type, "executor": "job_inproc", "params": {}},
+            prio=m._MINT_PRIO,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", status),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        conn.commit()
+
+
+def _seed_chunk_aged(
+    store: Store, *, minutes: float, chunk_kind: str = "paragraph"
+) -> int:
+    """One chunk backdated ``minutes`` into the past — an eligible
+    unembedded chunk that has been waiting. Returns its ``chunk_id``."""
+    ref_id = seed_ref(store)
+    cid = seed_chunk(store, ref_id=ref_id, text="backlog chunk", chunk_kind=chunk_kind)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = %s WHERE chunk_id = %s",
+            (datetime.now(UTC) - timedelta(minutes=minutes), cid),
+        )
+        conn.commit()
+    return cid
+
+
+def test_age_trigger_mints_one_when_oldest_pending_outwaited(store: Store) -> None:
+    """gr483036: one eligible chunk older than
+    ``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` (30m default) with the backlog far
+    below HIGH still mints ONE ``embed_batch`` — the trickle path the 2h
+    watchdog was missing between 4.5h-spaced bulk mints."""
+    _seed_chunk_aged(store, minutes=45)
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 1
+    assert _queued_job_count(store, "embed_batch") == 1
+    # The live minted job then suppresses any second trickle mint — the
+    # same hysteresis the high-water path honours.
+    assert m.run_materialize_pass(store).claimed == 0
+    assert _queued_job_count(store, "embed_batch") == 1
+
+
+def test_age_trigger_mints_nothing_for_fresh_backlog(store: Store) -> None:
+    """A sub-high backlog whose oldest chunk is younger than the age
+    threshold keeps waiting for the high-water — no trickle mint."""
+    _seed_chunk_aged(store, minutes=5)
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0
+    assert _queued_job_count(store, "embed_batch") == 0
+
+
+def test_age_trigger_mints_nothing_while_embed_batch_live(store: Store) -> None:
+    """A queued ``embed_batch`` already covers the stale backlog — the age
+    trigger must not pile a second mint on."""
+    _seed_chunk_aged(store, minutes=120)
+    _seed_job(store, "embed_batch")
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0
+    assert _queued_job_count(store, "embed_batch") == 1  # only the seed
+
+
+def test_age_trigger_ignores_skip_kind_chunks(store: Store) -> None:
+    """``field``/``references`` chunks are ineligible — an aged skip-kind
+    chunk neither counts toward the backlog nor fires the trigger (the
+    probe shares ``unembedded_chunk_count``'s predicate)."""
+    _seed_chunk_aged(store, minutes=120, chunk_kind="field")
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0
+    assert _queued_job_count(store, "embed_batch") == 0
+
+
+def test_age_threshold_env_override(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` follows the same env pattern as
+    the high-water — ``0`` fires on any waiting backlog."""
+    monkeypatch.setenv("PRECIS_EMBED_BACKLOG_AGE_MINUTES", "0")
+    _seed_chunk_aged(store, minutes=1)
+
+    assert m.run_materialize_pass(store).claimed == 1

@@ -12,6 +12,7 @@ Mismatched-dim embedders raise on INSERT — caller should pre-check
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, ClassVar
 
 from psycopg import Connection
@@ -405,12 +406,38 @@ def unembedded_chunk_count(conn: Connection, *, ref_id: int | None = None) -> in
     specifically failed" breakdown the readiness line's ``· failed N``
     suffix needs.
     """
+    model_name = _default_embedder_name(conn)
+    if model_name is None:
+        return 0
+    where, params = _unembedded_where(model_name, ref_id=ref_id)
+    count_row = conn.execute(
+        f"SELECT count(*) FROM chunks c WHERE {where}", params
+    ).fetchone()
+    return int(count_row[0]) if count_row else 0
+
+
+def _default_embedder_name(conn: Connection) -> str | None:
+    """The corpus's default embedder (``embedders.is_default = TRUE``) —
+    the anchor every unscoped backlog probe shares, resolved without a
+    live ``Embedder`` (see :func:`unembedded_chunk_count`)."""
     row = conn.execute(
         "SELECT name FROM embedders WHERE is_default = TRUE ORDER BY name LIMIT 1"
     ).fetchone()
-    if row is None:
-        return 0
-    model_name = str(row[0])
+    return str(row[0]) if row else None
+
+
+def _unembedded_where(model_name: str, *, ref_id: int | None) -> tuple[str, list[Any]]:
+    """The ``chunks c`` WHERE fragment + params every unembedded-backlog
+    probe shares — :func:`unembedded_chunk_count` (``count(*)``) and
+    :func:`oldest_unembedded_chunk_at` (``min(created_at)``) project over
+    the same eligibility set, so the predicate lives here exactly once.
+
+    Scoped (``ref_id``) vs unscoped diverge the same way
+    :func:`unembedded_chunk_count`'s docstring describes: a
+    permanently-``failed`` row satisfies the unscoped probe (don't retry —
+    must not hold the backlog open) but NOT the scoped one (a caller
+    polling "is my edit embedded yet" must see the failure).
+    """
     skip_kinds = EmbedHandler.skip_chunk_kinds
     skip_clause = ""
     params: list[Any] = [model_name]
@@ -423,33 +450,51 @@ def unembedded_chunk_count(conn: Connection, *, ref_id: int | None = None) -> in
         )
         scope_clause = ""
     else:
-        # Scoped: only an ``ok`` row with a matching sha satisfies —
-        # unlike the unscoped predicate above, a ``failed`` row (whatever
-        # its content_sha) must NOT satisfy, or a permanently-failed
-        # chunk would drop out of the scoped backlog too (see the
-        # docstring divergence note).
         not_exists_pred = (
             "o.status = 'ok' AND o.content_sha IS NOT DISTINCT FROM c.content_sha"
         )
         scope_clause = "AND c.ref_id = %s AND c.ord >= 0"
         params.append(ref_id)
-    count_row = conn.execute(
+    return (
         f"""
-        SELECT count(*)
-          FROM chunks c
-         WHERE NOT EXISTS (
-                 SELECT 1 FROM {EmbedHandler.output_table} o
-                  WHERE o.chunk_id = c.chunk_id
-                    AND o.{EmbedHandler.model_column} = %s
-                    AND {not_exists_pred}
-               )
-           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-           {skip_clause}
-           {scope_clause}
+        NOT EXISTS (
+                SELECT 1 FROM {EmbedHandler.output_table} o
+                 WHERE o.chunk_id = c.chunk_id
+                   AND o.{EmbedHandler.model_column} = %s
+                   AND {not_exists_pred}
+            )
+        AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+        {skip_clause}
+        {scope_clause}
         """,
         params,
+    )
+
+
+def oldest_unembedded_chunk_at(conn: Connection) -> datetime | None:
+    """``min(created_at)`` over :func:`unembedded_chunk_count`'s UNSCOPED
+    backlog — when the oldest eligible chunk started waiting.
+
+    Feeds the materializer's sub-high-water age trigger
+    (``materialize._materialize_age_trigger``, gr483036): the 500
+    high-water alone let a trickle backlog sit ~4.5h between bulk mints —
+    every gap tripped the embed watchdog's 2h budget and fresh
+    memory/gripe/message chunks waited hours for a vector. ``None`` on an
+    empty backlog (or no default embedder).
+
+    Cost: no index covers the eligibility predicate, so this is one
+    count-shape scan — the same plan the per-tick backlog count already
+    pays — and it's only run while ``0 < backlog <= HIGH`` with nothing
+    queued/running.
+    """
+    model_name = _default_embedder_name(conn)
+    if model_name is None:
+        return None
+    where, params = _unembedded_where(model_name, ref_id=None)
+    row = conn.execute(
+        f"SELECT min(c.created_at) FROM chunks c WHERE {where}", params
     ).fetchone()
-    return int(count_row[0]) if count_row else 0
+    return row[0] if row else None
 
 
 def eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
@@ -522,6 +567,7 @@ __all__ = [
     "EmbedHandler",
     "eligible_chunk_count",
     "failed_embedding_count",
+    "oldest_unembedded_chunk_at",
     "resolve_embedder",
     "unembedded_chunk_count",
 ]

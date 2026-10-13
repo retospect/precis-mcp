@@ -56,29 +56,15 @@ class FreshnessProbe:
     ok: bool
 
 
-#: Backlog eligibility mirrors the worker *claim* predicates so the counts
-#: only cover chunks a pass will actually process. Keep these in sync with
-#: the workers (they are small + stable; a mismatch only skews the panel,
-#: never the pipeline):
-#:   embed          — precis.workers.embed.EmbedHandler.skip_chunk_kinds
-#:   summarize      — precis.workers.summarize.RakeLemmaHandler.skip_chunk_kinds
-#:   chunk_keywords — precis.workers.chunk_keywords {_SKIP_KINDS,
-#:                    _MIN_CHUNK_CHARS, KEYWORDS_VERSION}
+#: Artifact ids each pass writes under — the eligibility constants (skip
+#: kinds, min-chars, keywords version) are NOT duplicated here:
+#: :func:`compute_backlog_counts` imports them from the worker handlers
+#: that own the claim predicates, so this view can't drift from what the
+#: passes actually process (gr483036 — the hand-synced copies this
+#: replaced had lost ``field`` from both skip lists, so field chunks read
+#: pending-forever in the watchdog).
 _EMBED_ARTIFACT = "bge-m3"
 _SUMMARIZE_ARTIFACT = "rake-lemma"
-_EMBED_SKIP_KINDS = ("references",)
-_SUMMARIZE_SKIP_KINDS = ("references", "table")
-_KEYWORDS_SKIP_KINDS = (
-    "card_authors",
-    "card_combined",
-    "card_title",
-    "table",
-    "equation",
-    "figure",
-    "references",
-)
-_KEYWORDS_MIN_CHARS = 150
-_KEYWORDS_VERSION = "1.0"
 
 
 def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
@@ -90,6 +76,19 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
     ``pending=-1`` (so the caller sees the panel/check didn't lie) and the
     connection is rolled back so later sections on it still run.
     """
+    # Backlog eligibility mirrors the worker *claim* predicates — import
+    # them from the handlers themselves (the ONE truth) rather than
+    # restating them: the module-top copies this replaced had drifted
+    # (gr483036). Import here, not at module top — same dependency-light
+    # discipline as ``registry_title_mismatch``'s ingest import below.
+    from precis.workers.chunk_keywords import (
+        _MIN_CHUNK_CHARS,
+        _SKIP_KINDS,
+        KEYWORDS_VERSION,
+    )
+    from precis.workers.embed import EmbedHandler
+    from precis.workers.summarize import RakeLemmaHandler
+
     rows: dict[str, dict[str, Any]] = {}
 
     def _terminal_pass(
@@ -140,14 +139,14 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
         "chunk_embeddings",
         "embedder",
         _EMBED_ARTIFACT,
-        _EMBED_SKIP_KINDS,
+        EmbedHandler.skip_chunk_kinds,
     )
     _terminal_pass(
         "summarize",
         "chunk_summaries",
         "summarizer",
         _SUMMARIZE_ARTIFACT,
-        _SUMMARIZE_SKIP_KINDS,
+        RakeLemmaHandler.skip_chunk_kinds,
     )
 
     try:
@@ -178,10 +177,10 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
               ) t
             """,
             {
-                "skip": list(_KEYWORDS_SKIP_KINDS),
-                "minlen": _KEYWORDS_MIN_CHARS,
+                "skip": list(_SKIP_KINDS),
+                "minlen": _MIN_CHUNK_CHARS,
                 "emb": _EMBED_ARTIFACT,
-                "kv": _KEYWORDS_VERSION,
+                "kv": KEYWORDS_VERSION,
             },
         ).fetchone()
         done, pending, blocked = int(r[1]), int(r[2]), int(r[3])

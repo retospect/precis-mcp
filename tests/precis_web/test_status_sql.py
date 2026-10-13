@@ -17,8 +17,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from precis.health_checks import _KEYWORDS_VERSION
 from precis.store import Tag
+from precis.workers.chunk_keywords import KEYWORDS_VERSION
 from precis_web.routes.status import (
     _automations,
     _background_anomalies,
@@ -155,7 +155,7 @@ def _seed_kw_chunk(
                 "keywords_meta = jsonb_build_object("
                 "    'version', %s::text, 'content_sha', content_sha) "
                 "WHERE chunk_id = %s",
-                (["kw1", "kw2"], _KEYWORDS_VERSION, cid),
+                (["kw1", "kw2"], KEYWORDS_VERSION, cid),
             )
         conn.commit()
     return cid

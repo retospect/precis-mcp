@@ -132,8 +132,9 @@ Notable pass mechanics
 * ``embed`` is manual-only (``--only embed``); the ``materialize`` cadence
   mints bounded ``embed_batch`` jobs (default-ON,
   ``PRECIS_MATERIALIZE_EMBED=0`` opts out) above
-  ``PRECIS_EMBED_BACKLOG_HIGH``, only when none are live — hysteresis
-  coalesces churn into few large batches.
+  ``PRECIS_EMBED_BACKLOG_HIGH`` — or once the oldest pending chunk
+  outwaits ``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` — only when none are
+  live: hysteresis coalesces churn into few large batches.
 * ``fetch``/``chase`` backoff are both exponential (kills ``ref_events``
   spin-loop floods). ``Store.pin_stub_for_fetch`` (the
   ``put(kind='paper')`` path) pre-empts both queue rank and backoff:

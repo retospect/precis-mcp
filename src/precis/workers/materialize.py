@@ -25,7 +25,12 @@ executor, count_fn, batch_limit, params_fn, …)` — so a new demand is a new
 tuple entry, not new mint/hysteresis logic. Two policies now share it:
 
 * **backlog high-water** (embed) — mint a bounded batch when the backlog
-  count crosses HIGH and nothing is live; wait for it to drain.
+  count crosses HIGH and nothing is live; wait for it to drain. A
+  sub-high-water backlog isn't idle-safe either: once the OLDEST eligible
+  chunk has waited past ``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` (default
+  30m) the age trigger mints exactly one batch (gr483036 — trickle
+  backlog used to wait ~4.5h between bulk mints and tripped the embed
+  watchdog's 2h budget in every gap).
 * **job-queue band** (``is_band=True``; the SMALL-LLM ``derived_drain``
   sources, ``docs/backlog/small-llm-derived-drain-band.md``) — keep
   ``[low, high]`` live jobs per source while backlog remains. Default-OFF
@@ -56,9 +61,13 @@ _HANDLER_NAME = "materialize"
 
 _MATERIALIZE_EMBED_ENV = "PRECIS_MATERIALIZE_EMBED"
 _BACKLOG_HIGH_ENV = "PRECIS_EMBED_BACKLOG_HIGH"
+_BACKLOG_AGE_ENV = "PRECIS_EMBED_BACKLOG_AGE_MINUTES"
 _MAX_JOBS_ENV = "PRECIS_EMBED_BATCH_MAX_JOBS"
 
 _DEFAULT_BACKLOG_HIGH = 500
+#: How long the OLDEST eligible unembedded chunk may sit below the
+#: high-water before :func:`_materialize_age_trigger` mints a single job.
+_DEFAULT_BACKLOG_AGE_MINUTES = 30
 _DEFAULT_MAX_JOBS = 4
 _DEFAULT_BATCH_LIMIT = 2000  # mirrors embed_batch's own params.limit default
 
@@ -191,6 +200,24 @@ def _backlog_high() -> int:
         return _DEFAULT_BACKLOG_HIGH
 
 
+def _backlog_age_minutes() -> int:
+    """``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` — same env-parse pattern as
+    :func:`_backlog_high`."""
+    raw = os.environ.get(_BACKLOG_AGE_ENV)
+    if raw is None:
+        return _DEFAULT_BACKLOG_AGE_MINUTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        log.warning(
+            "materialize: %s=%r is not an int; using default %d",
+            _BACKLOG_AGE_ENV,
+            raw,
+            _DEFAULT_BACKLOG_AGE_MINUTES,
+        )
+        return _DEFAULT_BACKLOG_AGE_MINUTES
+
+
 def _max_jobs() -> int:
     raw = os.environ.get(_MAX_JOBS_ENV)
     if raw is None:
@@ -214,6 +241,18 @@ def _embed_backlog_count(store: Store) -> int:
         return unembedded_chunk_count(conn)
 
 
+def _embed_oldest_pending_at(store: Store) -> datetime | None:
+    """``created_at`` of the OLDEST eligible unembedded chunk — the
+    :func:`_embed_backlog_count` predicate with a ``min()`` projection
+    (:func:`precis.workers.embed.oldest_unembedded_chunk_at`). Runs only
+    while the age trigger is live (``0 < backlog <= HIGH``, nothing
+    queued/running): one extra count-shape scan per tick at most."""
+    from precis.workers.embed import oldest_unembedded_chunk_at
+
+    with store.pool.connection() as conn:
+        return oldest_unembedded_chunk_at(conn)
+
+
 @dataclass(frozen=True, slots=True)
 class _BacklogSource:
     """One backlog source: how to count it, and how to mint against it.
@@ -231,6 +270,10 @@ class _BacklogSource:
     * ``params_pass`` — the ``meta.params.pass`` discriminator, so two sources
       sharing one ``job_type`` (``derived_drain``) count their OWN live/failed
       jobs, not each other's.
+    * ``oldest_fn`` — optional probe returning the ``created_at`` of the
+      OLDEST chunk in this source's backlog; feeds the sub-high-water age
+      trigger (:func:`_materialize_age_trigger`). ``None`` keeps the pure
+      high-water policy (every non-embed source today).
     """
 
     name: str
@@ -242,6 +285,7 @@ class _BacklogSource:
     enabled_fn: Callable[[], bool] = lambda: True
     is_band: bool = False
     params_pass: str | None = None
+    oldest_fn: Callable[[Any], datetime | None] | None = None
 
 
 _BACKLOG_SOURCES: tuple[_BacklogSource, ...] = (
@@ -252,6 +296,7 @@ _BACKLOG_SOURCES: tuple[_BacklogSource, ...] = (
         count_fn=_embed_backlog_count,
         batch_limit=_DEFAULT_BATCH_LIMIT,
         params_fn=lambda limit: {"limit": limit},
+        oldest_fn=_embed_oldest_pending_at,
     ),
     # SMALL-LLM derived-drain bands — one `derived_drain` job_type, two queues
     # discriminated by params.pass. Default-OFF (enable per-source in Slice 4).
@@ -561,6 +606,43 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
     return minted
 
 
+def _materialize_age_trigger(store: Store, src: _BacklogSource, count: int) -> int:
+    """Sub-high-water age trigger (gr483036): the high-water alone lets a
+    trickle backlog sit for hours between bulk mints — fresh
+    memory/gripe/message chunks waited ~4.5h for a vector and the embed
+    watchdog's 2h budget fired in every gap. When ``0 < count <= HIGH``
+    and the source exposes an ``oldest_fn``, mint exactly ONE job once
+    the oldest eligible chunk has waited past
+    ``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` (default 30m). Same
+    live-job/failed-cooldown guards as the high-water path; the cheap
+    guard queries run BEFORE ``oldest_fn`` (a count-shape scan) so the
+    probe is only paid when a mint is actually possible."""
+    if count <= 0 or src.oldest_fn is None:
+        return 0
+    if _live_jobs(store, src.job_type) > 0:
+        return 0
+    if _in_failed_cooldown(store, src.job_type):
+        return 0
+    oldest = src.oldest_fn(store)
+    if oldest is None:
+        return 0
+    age_minutes = _backlog_age_minutes()
+    if datetime.now(UTC) - oldest <= timedelta(minutes=age_minutes):
+        return 0
+    minted = _mint_jobs(store, src, 1)
+    if minted:
+        log.info(
+            "materialize: %s backlog=%d below high but oldest pending chunk "
+            "outwaited %dm — minted %d %s job(s)",
+            src.name,
+            count,
+            age_minutes,
+            minted,
+            src.job_type,
+        )
+    return minted
+
+
 def _materialize_one(store: Store, src: _BacklogSource) -> int:
     if not src.enabled_fn():
         return 0
@@ -588,7 +670,7 @@ def _materialize_one(store: Store, src: _BacklogSource) -> int:
             _live_jobs(store, src.job_type),
         )
     if count <= high:
-        return 0
+        return _materialize_age_trigger(store, src, count)
     if _live_jobs(store, src.job_type) > 0:
         # A bounded batch and no more until it drains.
         return 0
