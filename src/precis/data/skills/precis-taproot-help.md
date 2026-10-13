@@ -237,4 +237,5 @@ conversion.
 - [[precis-finding-help]] — finding lifecycle, chase, the evidence view
 - [[precis-citation-help]] — the four-step cite procedure (hubs only), write side
 - [[precis-draft-help]] — authoring prose that cites hubs
-- [[precis-nanopub-help]] — mint gates + claim-sentence grammar (authoring-scope) + publish pipeline
+- [[precis-nanopub-help]] — mint gates + publish pipeline
+- [[precis-nanopub-claim-grammar-help]] — claim-sentence grammar (authoring-scope)

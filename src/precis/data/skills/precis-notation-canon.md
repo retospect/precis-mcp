@@ -171,4 +171,5 @@ mint gate.
 ## See also
 
 - [[precis-taproot-mint-help]] — mint/reword doors, admissibility rubric
-- [[precis-nanopub-help]] — claim-sentence grammar, mint gates
+- [[precis-nanopub-help]] — mint gates
+- [[precis-nanopub-claim-grammar-help]] — claim-sentence grammar

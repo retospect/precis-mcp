@@ -49,7 +49,7 @@ A sentence earns `TAPROOT:claim` only if it passes all four:
      vitamins B9 and B12…" — "the same group" refers to nothing once the
      sentence stands alone.
 3. **Method-attributed** — the epistemic mode is readable from the
-   sentence. Write to `precis-nanopub-help`'s claim-sentence grammar
+   sentence. Write to [[precis-nanopub-claim-grammar-help]]
    (evidence verb + epistemic mode) at authoring time — it governs the
    sentence's shape from the moment it's written, not just at approve.
 4. **Single assertion** — see [[precis-notation-canon]]'s terseness rule.
@@ -62,8 +62,8 @@ reading-list entries as claims; this test is what stops it at the door.
 flags, never blocks or rewrites. At approve it *blocks* on the
 admissibility and grammar codes above plus every
 deterministically-fixable notation code,
-including `past-passive` (tense with no result — `precis-nanopub-help`'s
-claim-sentence grammar); judgment-only codes (`two-denominator-solidus`,
+including `past-passive` (tense with no result —
+[[precis-nanopub-claim-grammar-help]]); judgment-only codes (`two-denominator-solidus`,
 `approx-spacing`, `tilde-approximation`, `past-tense`, `present-perfect`,
 `formula-ascii-subscript`, `scope-*`, `unsupported-term`) stay advisory
 even at approve — nothing mechanical can resolve them. The line is *measured*, not
@@ -455,4 +455,5 @@ See [[precis-taproot-hub-edit-help]].
 - [[precis-taproot-hub-edit-help]] — attach evidence, reword, sharpen, or merge an existing hub
 - [[precis-notation-canon]] — claim-sentence notation rules
 - [[precis-nanopub-help]] — mint gates + publish pipeline
+- [[precis-nanopub-claim-grammar-help]] — claim-sentence grammar (epistemic mode, evidence verbs, tense)
 - [[precis-finding-help]] — non-hub finding modes
