@@ -27,12 +27,22 @@ Each pass first tops up the JLCPCB Basic/Preferred *library* from the public
 website listing (:mod:`precis.pcb.jlc_library`) — credential-free, so it runs
 even when the API walk is dark. The dump lacks the low C-number range and the
 Open API has answered HTTP 500 (gr464537).
+
+A failed walk degrades rather than failing the job (gr481902): the
+``getComponentInfos`` endpoint sat at HTTP 500 for weeks — an upstream outage
+nobody here can fix — while the library top-up kept working, so a dead walk
+still raises its alert but no longer marks the pass failed. The outage's
+first-seen date and consecutive-run count are kept in ``app_state``
+(:data:`OUTAGE_SETTING_KEY`) so the alert title can say *since when* instead
+of reading identically on day 1 and day 30.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.alert_ids import RULES_BY_ID
@@ -81,18 +91,59 @@ _ALERT_FINGERPRINT = "jlcpcb-api"
 _LIBRARY_FINGERPRINT = "jlcpcb-library"
 
 
+#: app_state record for a running upstream 5xx on the walk's endpoint —
+#: ``{"first_seen": "YYYY-MM-DD", "runs": N, "status": <int>}``, bumped on
+#: each outage-class failure and cleared (``""``, app_state has no delete —
+#: same convention as :data:`CURSOR_SETTING_KEY`'s reset) on any other walk
+#: outcome. Feeds the alert title's "since <date>, N consecutive runs"
+#: (gr481902) so a multi-week upstream outage doesn't read like a fresh
+#: failure every morning.
+OUTAGE_SETTING_KEY = "pcb.parts_refresh.api_outage"
+
+
+def _record_api_outage(store: Store, status: int | None) -> tuple[str, int]:
+    """Bump the consecutive-5xx-run record; return ``(first_seen, runs)``."""
+    today = datetime.now(UTC).date().isoformat()
+    try:
+        rec = json.loads(store.get_setting(OUTAGE_SETTING_KEY) or "")
+    except ValueError:
+        rec = {}
+    first_seen = str(rec.get("first_seen") or today)
+    runs = int(rec.get("runs") or 0) + 1
+    store.set_setting(
+        OUTAGE_SETTING_KEY,
+        json.dumps({"first_seen": first_seen, "runs": runs, "status": status}),
+    )
+    return first_seen, runs
+
+
+def _clear_api_outage(store: Store) -> None:
+    """Any non-5xx walk outcome ends the outage streak."""
+    if store.get_setting(OUTAGE_SETTING_KEY):
+        store.set_setting(OUTAGE_SETTING_KEY, "")
+
+
 def _sync_failure_alerts(
-    store: Store, failures: dict[str, str], *, untested: tuple[str, ...] = ()
+    store: Store,
+    failures: dict[str, str],
+    *,
+    untested: tuple[str, ...] = (),
+    titles: dict[str, str] | None = None,
 ) -> None:
     """Open an alert per failing step (``{fingerprint: error}``); resolve
     every other parts_refresh alert except ``untested`` steps (skipped this
-    pass, so an open alert for them is neither confirmed nor cleared)."""
+    pass, so an open alert for them is neither confirmed nor cleared).
+    ``titles`` overrides a step's default alert title this pass (the outage
+    message names first-seen + run count, which vary per sighting)."""
+    titles = titles or {}
     if _ALERT_FINGERPRINT in failures:
         raise_alert(
             store,
             source=_ALERT_SOURCE,
             fingerprint=_ALERT_FINGERPRINT,
-            title="[parts_refresh] JLCPCB catalog walk is failing",
+            title=titles.get(
+                _ALERT_FINGERPRINT, "[parts_refresh] JLCPCB catalog walk is failing"
+            ),
             detail=f"{failures[_ALERT_FINGERPRINT]}\n\nThe `parts` catalog "
             "stays stale/empty until this clears; fallback is "
             "`precis pcb refresh-parts --from-sqlite`.",
@@ -150,15 +201,21 @@ def run_parts_refresh_pass(
     community dump stays the manual fallback.
 
     Returns the ``BatchResult`` shape (``claimed``/``ok``/``failed``), plus
-    an ``"error"`` key when ``failed`` — the walk hit either
+    an ``"error"`` key when the walk itself failed — either
     :class:`~precis.pcb.jlc_api.JlcPermissionError` (403: the signature is
     valid but the app's Open API console hasn't been granted the Components
     scope) or a plainer :class:`~precis.pcb._http.VendorError`/
     :class:`~precis.pcb._http.VendorUnavailable` (outage, rate limiting, or
-    the politeness circuit breaker open) — either way the message is worth
-    surfacing verbatim to an operator (this module's caller,
-    ``scheduler.py``, would otherwise only see a generic ``except
-    Exception`` traceback) rather than just logging it.
+    the politeness circuit breaker open). A failed walk does NOT fail the
+    job (gr481902 — the endpoint sat at upstream HTTP 500 for weeks while
+    every other source kept working): ``failed`` counts the library top-up
+    only, any rows the walk yielded before dying are still imported, and
+    the failure surfaces via the ``jlcpcb-api`` alert — which for a 5xx
+    reads "upstream HTTP <status> since <first-seen>, N consecutive runs"
+    (tracked in :data:`OUTAGE_SETTING_KEY`) instead of the bare "walk is
+    failing". ``"error"`` is still set verbatim so an operator-facing caller
+    (the ``--from-api`` CLI verb; ``scheduler.py`` would otherwise only see
+    a generic ``except Exception`` traceback) can show the real message.
     """
     failures: dict[str, str] = {}
     library_upserted = 0
@@ -196,6 +253,7 @@ def run_parts_refresh_pass(
     since_key = store.get_setting(CURSOR_SETTING_KEY) or None
     rows: list[dict[str, Any]] = []
     error: str | None = None
+    alert_titles: dict[str, str] = {}
     try:
         for norm in client.iter_components(since_key=since_key, page_size=page_size):
             rows.append(norm)
@@ -207,11 +265,25 @@ def run_parts_refresh_pass(
         # so this one wins.
         log.warning("parts_refresh: %s", exc)
         error = str(exc)
+        _clear_api_outage(store)
     except VendorError as exc:
         # An outage, rate limiting, or the politeness circuit breaker open
         # (precis.pcb._http) — not a bug here, just a failed cycle.
         log.warning("parts_refresh: %s", exc)
         error = str(exc)
+        if exc.status is not None and exc.status >= 500:
+            # A dead endpoint is an upstream condition, not a defect here —
+            # name it (with first-seen and streak length) so the alert
+            # doesn't read as a fresh failure each morning (gr481902).
+            first_seen, runs = _record_api_outage(store, exc.status)
+            alert_titles[_ALERT_FINGERPRINT] = (
+                f"[parts_refresh] JLCPCB getComponentInfos upstream "
+                f"HTTP {exc.status} since {first_seen}, {runs} consecutive runs"
+            )
+        else:
+            _clear_api_outage(store)
+    else:
+        _clear_api_outage(store)
     finally:
         # Checkpoint whatever the walk reached either way — a partial page
         # still moved the cursor forward, and a walk that ran to
@@ -223,9 +295,30 @@ def run_parts_refresh_pass(
 
     if error is not None:
         failures[_ALERT_FINGERPRINT] = error
-    _sync_failure_alerts(store, failures)
+    _sync_failure_alerts(store, failures, titles=alert_titles)
     if error is not None:
-        return _result({"claimed": len(rows), "ok": 0, "failed": 1, "error": error})
+        # Degrade, don't fail (gr481902): the alert above carries the walk
+        # failure; the job's success is the other sources' upserts, and
+        # rows the walk yielded before dying are still worth importing —
+        # the checkpoint already moved past them, so dropping them here
+        # would lose them permanently.
+        counts = store.parts_import(rows) if rows else {"upserted": 0, "restocked": 0}
+        if rows:
+            log.info(
+                "parts_refresh: source=jlcpcb-api rows=%d upserted=%d restocked=%d",
+                len(rows),
+                counts["upserted"],
+                counts["restocked"],
+            )
+        return _result(
+            {
+                "claimed": len(rows),
+                "ok": counts["upserted"],
+                "failed": 0,
+                "restocked": counts["restocked"],
+                "error": error,
+            }
+        )
     if not rows:
         return _result({"claimed": 0, "ok": 0, "failed": 0})
 
@@ -246,4 +339,9 @@ def run_parts_refresh_pass(
     )
 
 
-__all__ = ["CURSOR_SETTING_KEY", "DEFAULT_ROW_BUDGET", "run_parts_refresh_pass"]
+__all__ = [
+    "CURSOR_SETTING_KEY",
+    "DEFAULT_ROW_BUDGET",
+    "OUTAGE_SETTING_KEY",
+    "run_parts_refresh_pass",
+]

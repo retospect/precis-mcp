@@ -503,7 +503,9 @@ def test_parts_refresh_pass_surfaces_permission_error(store):
         )
     )
     result = run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)
-    assert result["failed"] == 1
+    # gr481902: a failed walk degrades — the alert carries it, `error`
+    # keeps the verbatim message, the job itself does not fail.
+    assert result["failed"] == 0
     assert "console scope not granted" in result["error"]
 
 
@@ -520,13 +522,106 @@ def test_parts_refresh_failure_raises_alert_and_success_resolves_it(store):
 
     client = _FakeJlcApiClient(permission_error=VendorError("jlcpcb", "HTTP 500"))
     assert (
-        run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)["failed"] == 1
+        run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)["failed"] == 0
     )
     assert _sev() is not None
 
     ok = _FakeJlcApiClient(pages=[{"lcsc": "C90009", "stock": 1}])
     assert run_parts_refresh_pass(store, client=ok, library=_OK_LIBRARY)["failed"] == 0
     assert _sev() is None
+
+
+def _walk_alert(store):
+    from precis.alerts import list_open_alerts
+
+    return next(
+        (
+            a
+            for a in list_open_alerts(store)
+            if a["source"] == "parts_refresh"
+            and a["title"].startswith("[parts_refresh] JLCPCB")
+        ),
+        None,
+    )
+
+
+def test_parts_refresh_walk_500_degrades_and_tracks_the_outage(store):
+    """gr481902: an upstream HTTP 500 on getComponentInfos must not fail the
+    pass — the library top-up is the job's success — and the alert says
+    *since when* and for how many consecutive runs, not "is failing"."""
+    from datetime import UTC, datetime
+
+    from precis.pcb._http import VendorUnavailable
+    from precis.workers.parts_refresh import OUTAGE_SETTING_KEY, run_parts_refresh_pass
+
+    def _library(store):
+        del store
+        return {"rows": 1586, "upserted": 1586, "restocked": 110}
+
+    client = _FakeJlcApiClient(
+        permission_error=VendorUnavailable(
+            "jlcpcb", "4 attempts exhausted; last: HTTP 500", status=500
+        )
+    )
+    result = run_parts_refresh_pass(store, client=client, library=_library)
+    assert result["failed"] == 0
+    assert result["library"] == 1586
+    assert "HTTP 500" in result["error"]
+
+    alert = _walk_alert(store)
+    assert alert is not None
+    today = datetime.now(UTC).date().isoformat()
+    assert alert["title"] == (
+        f"[parts_refresh] JLCPCB getComponentInfos upstream HTTP 500 "
+        f"since {today}, 1 consecutive runs"
+    )
+    assert alert["detail"].startswith("jlcpcb: 4 attempts exhausted")
+
+    # A second consecutive outage run keeps first_seen and bumps the count.
+    assert run_parts_refresh_pass(store, client=client, library=_library)["failed"] == 0
+    alert = _walk_alert(store)
+    assert alert["title"].endswith(f"since {today}, 2 consecutive runs")
+
+    # Recovery: a successful walk resolves the alert and clears the record.
+    ok = _FakeJlcApiClient(pages=[{"lcsc": "C90010", "stock": 1}])
+    run_parts_refresh_pass(store, client=ok, library=_OK_LIBRARY)
+    assert _walk_alert(store) is None
+    assert store.get_setting(OUTAGE_SETTING_KEY) == ""
+
+
+def test_parts_refresh_walk_non_5xx_keeps_the_generic_alert(store):
+    """A walk failure that ISN'T a 5xx (transport error, 4xx) still degrades
+    the job but keeps the generic alert title — "upstream HTTP 500 since…"
+    would be a lie, and no outage record is written."""
+    from precis.pcb._http import VendorError
+    from precis.workers.parts_refresh import OUTAGE_SETTING_KEY, run_parts_refresh_pass
+
+    client = _FakeJlcApiClient(
+        permission_error=VendorError("jlcpcb", "transport error: boom")
+    )
+    result = run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)
+    assert result["failed"] == 0
+    alert = _walk_alert(store)
+    assert alert is not None
+    assert alert["title"] == "[parts_refresh] JLCPCB catalog walk is failing"
+    assert store.get_setting(OUTAGE_SETTING_KEY) is None
+
+
+def test_parts_refresh_walk_error_still_imports_partial_rows(store):
+    """gr481902: rows the walk yielded before the endpoint died are imported —
+    the cursor checkpoint already moved past them, so dropping them would
+    lose them permanently."""
+    from precis.pcb._http import VendorUnavailable
+    from precis.workers.parts_refresh import CURSOR_SETTING_KEY, run_parts_refresh_pass
+
+    client = _FakeJlcApiClient(
+        pages=[{"lcsc": "C90011", "stock": 7, "_cursor": "cursor-1"}],
+        permission_error=VendorUnavailable("jlcpcb", "HTTP 500", status=500),
+    )
+    result = run_parts_refresh_pass(store, client=client, library=_OK_LIBRARY)
+    assert result["failed"] == 0 and result["ok"] == 1
+    assert store.part_row("C90011") is not None
+    assert store.get_setting(CURSOR_SETTING_KEY) == "cursor-1"
 
 
 def test_parts_refresh_service_spec_is_registered_and_discoverable():
