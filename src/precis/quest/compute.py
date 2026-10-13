@@ -3247,6 +3247,14 @@ def harvest_measures(
                 harvested += 1
         except Exception:
             log.exception("harvest_measures: Pourbaix harvest failed for %s", s.id)
+        try:
+            from precis.quest.window_objectives import stamp_window_measures
+
+            window_note = stamp_window_measures(store, quest_id, s)
+            if window_note:
+                notes.append(window_note)
+        except Exception:
+            log.exception("harvest_measures: window-measures stamp failed for %s", s.id)
         if "atom_cost" not in (s.meta or {}):
             try:
                 scene, _handles = store.structure_load(s.id)

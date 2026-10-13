@@ -95,6 +95,15 @@ Package-level invariants (detail lives on the named module):
   It lives in core — not ``precis_pathway`` — because core handlers serve
   the view and the plugin-import boundary forbids the import
   (``tests/test_plugin_import_boundary.py``).
+- **Window/Shapley objectives are opt-in per quest.** ``window_objectives``
+  (SPSO slice 6) turns the resting map + staircase routes into Pareto
+  measures (window area/fraction, Shapley Σφ²/IPR, ridge churn, the HER
+  margin) — but only when the quest's ``rubric_objectives`` names one, so
+  an unflagged quest is bit-identical. ``precis_pathway`` is reached
+  lazily via ``importlib`` (the boundary's dynamic form): a missing
+  plugin or a not-yet-landed sibling module degrades to notes, never a
+  crash. Anchor-scan placement is **propose-only**: ranked proposals go
+  on the logbook; the dispatcher mints.
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.

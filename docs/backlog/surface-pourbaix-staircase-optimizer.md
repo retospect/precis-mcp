@@ -13,9 +13,9 @@ owner = the catalysis session; see §Rulings below. **Build plan approved
 2026-10-13** (coordinator thread memory me481988). **Wave A landed
 2026-10-13**: engine tasks A1/A2 (catpath v0.25.0), slice 2 (A3) and slices
 4+5 as the pure library `src/precis_pathway/staircase_masks.py` (A4) in main
-01b36dba7, A5 = the slice-1 proof below. **Wave B (quest wiring)**: slice 3 staircase panel (B2) landed 2026-10-13;
-B1 anchors rung and B3 window/Shapley/HER objectives in flight as Devin
-trees spso-b1, spso-b3. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
+01b36dba7, A5 = the slice-1 proof below. **Wave B (quest wiring)**: slice 3 staircase panel (B2) and slice 6
+window/Shapley/HER objectives (B3) landed 2026-10-13; B1 anchors rung in
+flight as Devin tree spso-b1. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
 this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
@@ -380,6 +380,16 @@ never mixed in one contract.
 - `staircase_routes._step_kind` labels any `~` product as desorption, not
   only the final edge; labels only, masks are kind-blind (B2 review).
 - The JS re-tilt and mismatch logic on `/pourbaix` have no test.
+- `propose_anchor_scans` has no caller yet; wire it into B1's anchor
+  dispatcher once that lands (B3 review).
+- `stamp_window_measures` fetches the quest meta per structure per tick
+  before the flag check, and recomputes map + routes + Shapley every tick
+  on flagged quests; hoist the flag read and skip on an unchanged input
+  hash (B3 review).
+- The window's U centroid can fall in a forbidden gap between two disjoint
+  strips; snap to the nearest in-window column (B3 review).
+- No test drives the `harvest_measures` hook (exception safety) or snapshots
+  a scanned candidate's meta on an unflagged quest (B3 review).
 
 ## Explicitly NOT in scope
 

@@ -181,6 +181,12 @@ _AXIS_LABELS: dict[str, str] = {
     "trap_margin": "Trap margin (eV)",
     "log_tof_p5": "log₁₀ TOF, 5th pct",
     "log_tof_p95": "log₁₀ TOF, 95th pct",
+    "window_area_VpH": "Operating window (V·pH)",
+    "window_fraction": "Operating window fraction",
+    "shapley_sumsq_raw": "Shapley Σφ² (raw)",
+    "shapley_ipr": "Effective bottlenecks (IPR)",
+    "ridge_churn": "Ridge churn",
+    "her_margin_at_Uopt": "HER margin at U_opt (eV)",
 }
 
 
@@ -282,6 +288,44 @@ _AXIS_DESCRIPTIONS: dict[str, str] = {
         "band the kinetics solve samples from the route's own barrier "
         "uncertainty, present only alongside a trusted log_tof. Higher "
         "is better."
+    ),
+    "window_area_VpH": (
+        "Area of the honest operating window (V·pH): the surface-Pourbaix "
+        "resting-termination mask at the assumed state, intersected with "
+        "every staircase rung's viable region (a rung is viable where its "
+        "ΔG(U) ≤ ε) and the HER-selectivity mask. Computed by "
+        "staircase_masks.operating_window over the candidate's own anchors "
+        "and routes; absent while either is missing. Higher is better."
+    ),
+    "window_fraction": (
+        "The operating window as a fraction of the swept (U_RHE, pH) grid — "
+        "window_area_VpH normalised to the grid. Higher is better."
+    ),
+    "shapley_sumsq_raw": (
+        "Area-weighted sum over the grid of the per-point squared Shapley "
+        "vector (Σᵢφᵢ²·cell area, V·pH): how concentrated the lost window "
+        "is on one or a few rungs — 'big and concentrated is the worst of "
+        "all' (SPSO §8.4). Not a plain field sum, which would just return "
+        "the lost-window map."
+    ),
+    "shapley_ipr": (
+        "Effective number of bottlenecks: the area-weighted mean inverse "
+        "participation ratio of the per-point Shapley vector, "
+        "(Σᵢφᵢ)²/Σᵢφᵢ². 1 = one rung owns the lost window (a clean "
+        "bottleneck diagnosis); ~N = the blame is shared across rungs. "
+        "Lower is better."
+    ),
+    "ridge_churn": (
+        "Fraction of grid cells whose dominant (max-Shapley) rung differs "
+        "from a dominant-holding neighbour — the ridge-density fragility "
+        "scalar; tie and no-loss cells are excluded. Lower is better."
+    ),
+    "her_margin_at_Uopt": (
+        "limiting ΔG(HER) − limiting ΔG(main route) at the operating "
+        "window's U centroid — the same sign convention as "
+        "staircase_masks.her_mask's margin: positive means the main "
+        "route's limiting step beats hydrogen evolution (e.g. NORR wins "
+        "over HER). Higher is better."
     ),
 }
 
@@ -1083,6 +1127,34 @@ def pareto_split(
     )
 
 
+#: Default sense for the SPSO operating-window measures
+#: (:mod:`precis.quest.window_objectives`) when a rubric item omits
+#: ``sense`` — the generic "min" fallback would silently minimise the
+#: window. ``shapley_sumsq_raw`` has no natural direction and keeps "min".
+_DEFAULT_SENSE: dict[str, str] = {
+    "window_area_VpH": "max",
+    "window_fraction": "max",
+    "her_margin_at_Uopt": "max",
+    "shapley_ipr": "min",
+    "ridge_churn": "min",
+}
+
+#: Window measures are optional unless the rubric item says
+#: ``"optional": false``: a candidate without anchors or a 0.25.0 pathway
+#: stamps them as None, and a required axis would strand it in "awaiting"
+#: (the P_side deadlock class, see :func:`_optional_objectives_for`).
+_DEFAULT_OPTIONAL: frozenset[str] = frozenset(
+    {
+        "window_area_VpH",
+        "window_fraction",
+        "shapley_sumsq_raw",
+        "shapley_ipr",
+        "ridge_churn",
+        "her_margin_at_Uopt",
+    }
+)
+
+
 def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
     ref = store.get_ref(kind="quest", id=quest_id)
     raw = (ref.meta or {}).get("rubric_objectives") if ref else None
@@ -1092,7 +1164,9 @@ def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
             if not isinstance(item, dict):
                 continue
             key = str(item.get("key") or "").strip()
-            sense = str(item.get("sense") or "min").strip().lower()
+            sense = (
+                str(item.get("sense") or _DEFAULT_SENSE.get(key, "min")).strip().lower()
+            )
             if key and sense in _VALID_SENSES:
                 out.append((key, sense))
     return out or list(DEFAULT_OBJECTIVES)
@@ -1115,10 +1189,13 @@ def _optional_objectives_for(store: Store, quest_id: int) -> frozenset[str]:
     out: set[str] = set()
     if isinstance(raw, list):
         for item in raw:
-            if not isinstance(item, dict) or not item.get("optional"):
+            if not isinstance(item, dict):
                 continue
             key = str(item.get("key") or "").strip()
-            if key:
+            flag = item.get("optional")
+            if flag is None:
+                flag = key in _DEFAULT_OPTIONAL
+            if key and flag:
                 out.add(key)
     return frozenset(out)
 
@@ -1232,6 +1309,13 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # dict ({phase, x, a, U_step}).
         "bare_twin_ref",
         "substrate_level",
+        # window-objectives diagnostics (quest.window_objectives, SPSO
+        # slice 6): a name, a notes list and a {termination, trust,
+        # footing} dict — all non-numeric already, listed for clarity;
+        # they ride as flags, never measures.
+        "bottleneck_rung",
+        "window_notes",
+        "validity_region_at_point",
     }
 )
 
@@ -1445,6 +1529,15 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
             for k, b in meta["network_basis_by_key"].items()
             if isinstance(b, dict)
         }
+    # Window-objectives diagnostics (quest.window_objectives, SPSO slice 6):
+    # "which slab model to trust" at the operating point, the limiting rung
+    # there, and the harvest's missing-input notes — display context for the
+    # leaderboard's validity column + the tick prompt, never measures.
+    if isinstance(meta.get("validity_region_at_point"), dict):
+        flags["validity_region_at_point"] = dict(meta["validity_region_at_point"])
+    for k in ("bottleneck_rung", "window_notes"):
+        if k in meta:
+            flags[k] = meta[k]
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
@@ -1816,6 +1909,17 @@ def leaderboard(
             return float("inf")  # unmeasured sinks to the bottom of its band
         return v if sense == "min" else -v
 
+    def _validity_text(c: Candidate) -> str:
+        """ "Which slab model to trust" (SPSO slice 6): the resting
+        termination + trust label at the operating point, from the
+        ``validity_region_at_point`` flag — ``""`` when unmeasured."""
+        v = c.flags.get("validity_region_at_point")
+        if not isinstance(v, dict):
+            return ""
+        term = str(v.get("termination") or "clean")
+        trust = v.get("trust")
+        return f"{term} ({trust})" if trust else term
+
     def _rows(cands: list[Candidate], band: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for c in sorted(cands, key=_sort_key):
@@ -1830,6 +1934,7 @@ def leaderboard(
                 row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
             row["$/rate"] = _rate_readout(c.measures) or "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
+            row["validity"] = _validity_text(c)
             quality = (
                 "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
             )
@@ -1880,6 +1985,7 @@ def leaderboard(
                 approx = bool(pc.untrusted_keys & {"atom_cost", "log_tof"})
                 row["$/rate"] = f"≈{rate}" if approx else rate
             row["graduated"] = ""  # a provisional row can never graduate
+            row["validity"] = _validity_text(c)
             quality = "; ".join(pc.reasons) or "unconfirmed"
             if pc.on_frontier:
                 quality = f"★ would lead — {quality}"
@@ -1893,6 +1999,15 @@ def leaderboard(
         + _prov_rows(fr.provisional)
         + _rows(fr.unevaluated, "awaiting")
     )
+    # The validity column exists only when some candidate carries the
+    # stamp — a quest that never opted into the window objectives gets a
+    # bit-identical leaderboard.
+    if any(r.get("validity") for r in rows):
+        validity_col = ["validity"]
+    else:
+        validity_col = []
+        for r in rows:
+            r.pop("validity", None)
     schema = [
         "design",
         "name",
@@ -1901,6 +2016,7 @@ def leaderboard(
         "$/rate",
         "band",
         "graduated",
+        *validity_col,
         "quality",
     ]
     return rows, schema
