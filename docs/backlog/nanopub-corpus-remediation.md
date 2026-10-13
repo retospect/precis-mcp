@@ -123,7 +123,8 @@ sentence must pass *before* it earns a `TAPROOT:claim` tag:
 3. **Method-attributed** — the epistemic mode is readable from the sentence.
 4. **Single assertion** — see terseness above.
 
-**Grammar scope change** (`precis-nanopub-help`). Move claim-sentence grammar
+**Grammar scope change** (`precis-nanopub-claim-grammar-help`, split out of
+`precis-nanopub-help` 2026-10-13). Move claim-sentence grammar
 from approved-title scope to **authoring** scope, and cross-reference it from
 the taproot skill so hubs are born conforming. This is the structural fix for
 the 96%, and it is what stops drift from being manufactured at approve time.
