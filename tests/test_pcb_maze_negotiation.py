@@ -251,7 +251,7 @@ def test_a_converged_proposal_commits_verbatim_every_segment(monkeypatch):
             k.setdefault("accepted", accepted)
         out = real_pass(*a, **k)
         if not preferred:  # a hard pass: pretend it all failed
-            return out[0], out[1], list(a[1]), out[3]
+            return (out[0], out[1], list(a[1]), *out[3:])
         if k["accepted"] is not accepted:
             accepted.extend(k["accepted"])
         seen["commit_unrouted"] = list(out[2])
@@ -349,7 +349,7 @@ def test_an_exhausted_search_keeps_its_previous_proposal(monkeypatch):
 
     def route_pass(*a, **k):
         out = real_pass(*a, **k)
-        return out if k.get("preferred") else (out[0], out[1], list(a[1]), out[3])
+        return out if k.get("preferred") else (out[0], out[1], list(a[1]), *out[3:])
 
     monkeypatch.setattr(realize_mod, "_route_pass", route_pass)
     ir = from_graph(_ladder_graph(6), stackup=DEFAULT_STACKUP)
@@ -366,7 +366,7 @@ def test_negotiation_stops_at_its_wall_clock_budget(monkeypatch):
 
     def route_pass(*a, **k):
         out = real_pass(*a, **k)
-        return out if k.get("preferred") else (out[0], out[1], list(a[1]), out[3])
+        return out if k.get("preferred") else (out[0], out[1], list(a[1]), *out[3:])
 
     monkeypatch.setattr(realize_mod, "_route_pass", route_pass)
     seen: dict[str, object] = {}
@@ -405,7 +405,7 @@ def test_the_budget_is_checked_per_net_not_per_iteration(monkeypatch):
 
     def route_pass(*a, **k):
         out = real_pass(*a, **k)
-        return out if k.get("preferred") else (out[0], out[1], list(a[1]), out[3])
+        return out if k.get("preferred") else (out[0], out[1], list(a[1]), *out[3:])
 
     monkeypatch.setattr(realize_mod, "_route_pass", route_pass)
     seen: dict[str, Any] = {}

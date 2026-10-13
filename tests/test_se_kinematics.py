@@ -68,7 +68,9 @@ def _hinge_ops(*, no_pose: bool = False) -> list[dict[str, Any]]:
                 {"name": "trans"},
                 {
                     "name": "cis",
-                    "port_pose_overrides": {"p1": {"rot": [0.0, 0.0, math.pi / 2.0]}},
+                    "port_pose_overrides": {
+                        "p1": {"rot": f"[0 0 {math.pi / 2.0}] rad"}
+                    },
                 },
             ],
         },
