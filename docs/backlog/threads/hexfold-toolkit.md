@@ -752,8 +752,10 @@ removed as met — the transport move it waited on happened 09-29)
     (Do-next 4) bite.
 15. **backlog/hexfold-nanoreactor-tube.md** — T2 of the
     nanoreactor thread (Reto 2026-10-04): tube between two sheets,
-    inner Y-junction attachment rails, H-inlet pores, site list. Waits on
-    the k = 3 seams, the same blocker as the three-arc cross-section.
+    inner Y-junction attachment rails, H-inlet pores, site list. Slice 1
+    landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs
+    on N equal-120 seams, each an inward rib, authored pore cells, the
+    lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
 16. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 

@@ -122,7 +122,12 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
   `graft.geometry` retained; surface deviation unavailable); and
   `type:'fin-k3-120-z'` with `tube:[rows,periods]` runs the Y's
   equal-120 seam along a tube axis with the strip as the third sheet
-  and the wall free to close around it (`tube.cross_section`).
+  and the wall free to close around it (`tube.cross_section`); and
+  `type:'rail-k3-120-z'` with `tube:[rows,periods]` (even rows), `rails`
+  (2–6), `rows` (rib) and optional `pores:[{"arc":k,"at":[u,v]}]` closes
+  the tube into N arcs on N equal-120 seams, each carrying an inward rib
+  (`side` is always `in`), kept findings `pore.rings`/`sites` plus the
+  lumen attachment-site list in `generated.sites`.
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →

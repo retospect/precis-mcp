@@ -40,6 +40,14 @@ the Y's equal-120 seam along a tube axis, the strip as the third sheet and
 the two wall halves (``tube: [rows, periods]``, row pairs per half) closed
 by a zigzag fuse; same feature keys as the fin.
 
+**Rail-tube feature contract.** A feature with ``"type": "rail-k3-120-z"``
+routes the whole call to :func:`~precis_se.atomic.generators.rail120.build_rail120`:
+a closed tube of ``rails`` arcs meeting at ``rails`` equal-120 seams along
+the axis, each seam's third sheet an inward strip (``rows``), with optional
+``pores`` (``{"arc": k, "at": [u, v]}`` hexagon vacancies) and a stored
+``sites`` list of the attachment carbons; ``tube: [rows, periods]`` as for
+the seam tube but with even row pairs per arc.
+
 **Authored tops.** ``top: "sphere"`` (n a multiple of 6, n >= 12; optional
 ``top_R`` and ``top_fillet``, Å) and ``top: "lid"`` with ``top_fillet`` (at
 most the tube radius) hold the top to an authored surface, planned by
@@ -630,6 +638,10 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
             from precis_se.atomic.generators.fin120 import build_fin120
 
             return build_fin120(params)
+        if typed == ["rail-k3-120-z"]:
+            from precis_se.atomic.generators.rail120 import build_rail120
+
+            return build_rail120(params)
         # the Y adapter owns every other typed declaration, including the
         # refusals (unequal dihedrals, k >= 5, unknown types)
         from precis_se.atomic.generators.y_junction import build_y_junction

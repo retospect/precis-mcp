@@ -1081,6 +1081,38 @@ def _segment_frame(block: Block, rim: _ZigzagSegment) -> np.ndarray | None:
     return np.column_stack((tangent, outward, normal))
 
 
+def _seam_k3(
+    walks: tuple[tuple[int, ...], ...],
+    dangling: tuple[tuple[int, ...], ...],
+    seam: tuple[int, ...],
+) -> tuple[tuple[tuple[int, int, int], ...], tuple[tuple[int, ...], ...]]:
+    """One equal-120 k3 seam's bonds and eight-cycles over ordinals that are
+    already in composite indexing -- the seam-minting half of
+    :func:`_place_k3`, factored out for `railtube`'s seam-by-seam assembly
+    (each sheet enters two seams, so the Y's disjoint three-block placement
+    cannot apply)."""
+    n = len(seam)
+    bonds = tuple((dangling[j][i], seam[i], 1) for i in range(n) for j in range(3))
+    # Each adjacent pair of seam sites bounds an eight-cycle between
+    # each sheet pair. No cyclic endpoint wraparound; actual graph faces.
+    rings: list[tuple[int, ...]] = []
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        for i in range(n - 1):
+            rings.append(
+                (
+                    seam[i],
+                    dangling[a][i],
+                    walks[a][2 * i + 2],
+                    dangling[a][i + 1],
+                    seam[i + 1],
+                    dangling[b][i + 1],
+                    walks[b][2 * i + 2],
+                    dangling[b][i],
+                )
+            )
+    return bonds, tuple(rings)
+
+
 def _place_k3(
     blocks: tuple[Block, ...],
     rims: tuple[_ZigzagSegment, ...],
@@ -1117,24 +1149,13 @@ def _place_k3(
     spos = np.zeros((n, 3))
     spos[:, 0] = np.arange(n) * math.sqrt(3) * sigma
     coords.append(spos)
-    for i, atom in enumerate(seam):
-        bonds.extend((dangling[j][i], atom, 1) for j in range(3))
-    # Each adjacent pair of seam sites bounds an eight-cycle between
-    # each sheet pair. No cyclic endpoint wraparound; actual graph faces.
-    for a, b in ((0, 1), (1, 2), (2, 0)):
-        for i in range(n - 1):
-            rings.append(
-                (
-                    seam[i],
-                    dangling[a][i],
-                    walks[a][2 * i + 2],
-                    dangling[a][i + 1],
-                    seam[i + 1],
-                    dangling[b][i + 1],
-                    walks[b][2 * i + 2],
-                    dangling[b][i],
-                )
-            )
+    seam_bonds, seam_rings = _seam_k3(
+        tuple(walks),
+        tuple(dangling),
+        seam,
+    )
+    bonds.extend(seam_bonds)
+    rings.extend(seam_rings)
     return _K3Composite(
         elements + ("C",) * n,
         np.vstack(coords),

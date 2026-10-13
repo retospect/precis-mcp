@@ -380,32 +380,11 @@ angles and pyramidalisation first** — deviation is small by construction
 missed bar mints with WARN `scene.bar` naming the feature; ERROR
 `geom.clash`/`geom.seed_overlap` stay ERROR.
 
-## Straight Y: equal-120 sp2 seam
+## Seams, fins and rails — see precis-hexfold-seams-help
 
-An exclusive scene entry joins three open sheets along a straight zigzag
-seam. It is separate from foot scenes; no `extra` or mixed features.
-
-```json
-{"op":"generate","generator":"hexfold_scene","name":"y",
- "params":{"sheet":[30,30],"k_tether":1.0,
- "features":[{"name":"y","type":"k3-sp2-120-z",
-              "dihedrals_deg":[120,120,120]}]}}
-```
-
-`sheet` is `[seam_periods,honeycomb_row_pairs]`, integers in [2,30].
-Two guard columns close segment endpoints. At 30 by 30 this makes 5,790
-atoms, 30 trivalent seam atoms and 87 eight-cycle seam faces. `k_tether`
-must be finite and positive; analytic seed, minimally relaxed: seam and
-neighbours pinned, outer sheet atoms tethered to their sheet plane. The central seam atoms and immediate neighbours stay
-pinned at their authored registration; remaining sheet atoms relax.
-`seam.rings`, `seam.geometry`
-and `geom.summary` are retained in the block report. Read the actual bond
-and ring-angle findings; regular-polygon eight-cycle warnings are not
-hidden. This is preview geometry, not strength or stability evidence.
-Replay `generated.scene` params; this entry does not generate hx text.
-Three planes are unsupported by the revolution target format, so stored
-`surface_deviation` is honestly unavailable. Unequal dihedrals/k>=5 return
-`fit.unsolvable`; tube internal rails and variant B remain unimplemented.
+The seam-family scene entries — the straight Y, the seam tube, the
+closed rail tube and the sp3 graft fin — moved to
+[[precis-hexfold-seams-help]].
 
 ## Open edges are H-terminated by default
 
@@ -425,66 +404,6 @@ kept and reported as `terminate.clash` WARN. Parts built to be joined
 should use `"ports-open"`: a join trims the caps off the ports it
 consumes, but a part relaxed with capped rims before the join keeps that
 rim geometry elsewhere. A join's own composite is not re-capped yet.
-
-## Seam tube: the 120° Y seam run along a tube axis
-
-The strip joins the wall as the equal-120 sp2 k3 seam (the Y grammar)
-with the two halves of the tube wall as the other two sheets, closed on
-the far side by a zigzag fuse. Each wall half leaves the seam at 120°
-from the strip, so a free wall closes with a cusp at the seam: a teardrop
-around an outward strip, a heart-shaped notch around an inward one.
-
-```json
-{"op":"generate","generator":"hexfold_scene","name":"y",
- "params":{"tube":[10,20],
- "features":[{"name":"y","type":"fin-k3-120-z","side":"out","rows":4}]}}
-```
-
-`tube` is `[rows, periods]`: row pairs per wall half (the zigzag seam
-along the axis forces an armchair-type wall; two halves of `rows` row
-pairs close to about the `(rows,rows)` family, e.g. rows 10 seeds at
-6.95 Å, rows 18 at 12.37 Å) and seam periods; `side` and `rows` as for
-the sp3 fin. An inward strip that would come within 2 Å of the axis is
-refused naming the smallest wall that seats it (strip rows 4 needs 17).
-One tethered stick pass: seam atoms and their three neighbours pinned at
-the exact 120° registration, strip tethered to its half-plane, **wall
-free** (no cylinder tether), so `tube.cross_section` reports what the
-wall settled into: for rows 10 outward the seam line stands 0.85 Å proud
-of the mean wall radius; for rows 18 inward the notch is about 0.6 Å
-deep. `seam.rings` (eight-cycles plus the far-side six-cycles),
-`seam.geometry` and `geom.summary` are retained; `surface_deviation` is
-unavailable. Preview geometry only. The sp3 graft fin below is the other
-way to hang a strip on a tube.
-
-## Fin on a tube: sp3 graft along an axial zigzag chain
-
-The other exclusive scene entry grafts a single-layer graphene strip to
-an armchair tube wall along the tube axis. It is the §11.1 `bond`
-attachment, not a k3 seam: each grafted wall atom takes a fourth, radial
-C–C bond (recorded sp3) to one dangling atom of the strip's zigzag edge,
-one per lattice period (2.46 Å), so the strip stands perpendicular to
-the wall, outward or inward. The unequal 180/90/90 sp2 seam stays refused.
-
-```json
-{"op":"generate","generator":"hexfold_scene","name":"f",
- "params":{"tube":[10,20],"k_tether":1.0,
- "features":[{"name":"f","type":"fin-sp3-z","side":"out","rows":4}]}}
-```
-
-`tube` is `[n, periods]`: an `(n,n)` tube, n in [4,40], axial periods in
-[2,60]; `side` is `out` or `in`; `rows` (row pairs, default 4, about three
-hexagon rows, 7.1 Å) in [2,12]. The two open end rims are not grafted, so
-`periods` axial periods carry `periods − 1` grafts and `periods − 2`
-six-cycles with two sp3 vertices each (`graft.rings`). An inward fin that
-would come within 2 Å of the axis is refused naming the smallest tube
-that seats it (rows 4 needs (16,16)). Analytic seed, one tethered stick
-pass: wall atoms toward the cylinder, strip atoms toward its half-plane,
-the grafted pairs pinned at their authored registration. `graft.geometry`
-reports the measured bond angles at the sp3 hosts against 109.47°; at
-the pinned registration they stay near 90–124°, which is the honest
-residual of a radial graft on an unpuckered wall, not a relaxed
-structure. A cylinder with a half-plane is no surface of revolution, so
-stored `surface_deviation` is unavailable. Preview geometry only.
 
 ## Round tops — `top: "sphere"` and a rounded `top: "lid"`
 
@@ -598,3 +517,8 @@ Limits:
   regeneration input.
 - Bond-mode attachment sites come out `sp3` — bonds touching them get
   order 1; sp²–sp² bonds get the Pauling 4/3 aromatic order.
+
+## See also
+
+- [[precis-hexfold-seams-help]] — the equal-120 seam family: Y, seam tube, rail tube, fin
+- [[precis-se-atomic-help]] — the atomic generate op and its verbs
