@@ -117,11 +117,19 @@ class _FakeCtx:
         self.chunks: list[tuple[str, str]] = []
         self.meta_updates: dict[str, Any] = {}
         self.open_tag: str | None = None
+        self.failure_class: str | None = None
 
-    def record_failure(self, reason: str, *, open_tag: str | None = None) -> None:
+    def record_failure(
+        self,
+        reason: str,
+        *,
+        open_tag: str | None = None,
+        failure_class: str | None = None,
+    ) -> None:
         self.failure = reason
         self.status = "failed"
         self.open_tag = open_tag
+        self.failure_class = failure_class
 
     def set_status(self, value: str) -> None:
         self.status = value
@@ -1596,6 +1604,7 @@ def test_seed_job_dispatch_child_killed_error_tags_infra_child_killed(
 
     assert ctx.status == "failed"
     assert ctx.open_tag == "infra:child-killed"
+    assert ctx.failure_class == "infra"
     assert "rc=-9" in (ctx.failure or "")
 
 
@@ -1624,6 +1633,7 @@ def test_seed_job_dispatch_generic_error_does_not_tag_infra_child_killed(
 
     assert ctx.status == "failed"
     assert ctx.open_tag is None
+    assert ctx.failure_class is None
 
 
 def test_seed_job_poll_infra_failure_tags_infra_child_killed(
@@ -1654,6 +1664,7 @@ def test_seed_job_poll_infra_failure_tags_infra_child_killed(
     assert terminal is True
     assert ctx.status == "failed"
     assert ctx.open_tag == "infra:child-killed"
+    assert ctx.failure_class == "infra"
 
 
 def test_seed_job_poll_non_infra_failure_does_not_tag_infra_child_killed(
@@ -1682,6 +1693,7 @@ def test_seed_job_poll_non_infra_failure_does_not_tag_infra_child_killed(
     assert terminal is True
     assert ctx.status == "failed"
     assert ctx.open_tag is None
+    assert ctx.failure_class is None
 
 
 def test_seed_job_poll_done_persists_then_finalizes_scratch(

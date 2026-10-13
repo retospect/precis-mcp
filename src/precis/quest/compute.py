@@ -1096,8 +1096,14 @@ _AUTOCATPATH_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_WALL_SECONDS"
 
 
 #: Env pin for the verify-tier wall hint (see :func:`_autocatpath_wall_seconds`);
-#: unset → the general value.
+#: unset → the verify floor below.
 _AUTOCATPATH_VERIFY_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS"
+
+#: Floor (s) for the verify-tier wall hint when its env pin is unset —
+#: ~2 × the 8.7 h max observed coadsorbed-seed success (see
+#: :func:`_autocatpath_wall_seconds`). The general default is never enough:
+#: every measured verify run needs >4 h.
+_DEFAULT_VERIFY_WALL_SECONDS = 64800
 
 
 #: Env pin for the CPU set seed children run on (``taskset -c``); unset/blank →
@@ -1148,12 +1154,17 @@ def _autocatpath_wall_seconds(tier: str | None = None) -> int:
     in ``tests/test_quest_compute.py``.
 
     The ``verify`` tier has its own pin
-    (``PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS``; unset → the general value).
-    Verify seeds are exhaustive coadsorbed NEB (no best_first), so they run
-    far longer than the fast-screening tiers: the 2026-10-03 prod read had
-    24/27 verify seeds killed at the 2.5 h lease while the successes took
-    1.9–2.25 h. Size the pin at 2 × the measured runtime, capped at 8 h.
-    Same clamp; a malformed verify pin falls back to the general value.
+    (``PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS``). Verify seeds are
+    exhaustive coadsorbed NEB (no best_first), so they run far longer than
+    the fast-screening tiers: the 2026-10-03 prod read had 24/27 verify
+    seeds killed at the 2.5 h lease while the successes took 1.9–2.25 h;
+    the 2026-10-13 read had 11 coadsorbed successes at 4.6–8.7 h and seed-2
+    cells of td322478 killed twice at the 9 h bound while still band-
+    splitting (al480803). Size the pin at ~2 × the measured max — an unset
+    or malformed verify pin therefore floors at
+    ``max(general value, _DEFAULT_VERIFY_WALL_SECONDS)`` rather than the
+    90-min general default, which is a guaranteed deadline kill for this
+    tier. Same clamp when the pin is set.
     """
     if tier == _TIER_VERIFY:
         raw = os.environ.get(_AUTOCATPATH_VERIFY_WALL_SECONDS_ENV)
@@ -1161,7 +1172,8 @@ def _autocatpath_wall_seconds(tier: str | None = None) -> int:
             try:
                 return max(60, min(86_400, int(raw)))
             except ValueError:
-                pass  # malformed pin → the general value, as if unset
+                pass  # malformed pin → the verify floor, as if unset
+        return max(_autocatpath_wall_seconds(), _DEFAULT_VERIFY_WALL_SECONDS)
     try:
         n = int(os.environ.get(_AUTOCATPATH_WALL_SECONDS_ENV, "5400"))
     except ValueError:

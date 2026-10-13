@@ -196,7 +196,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # applies instead of an immediate content-class latch.
         log.warning("autocatpath_seed: run failed (child killed)", exc_info=True)
         ctx.record_failure(
-            f"autocatpath_seed: run failed: {exc}", open_tag="infra:child-killed"
+            f"autocatpath_seed: run failed: {exc}",
+            open_tag="infra:child-killed",
+            failure_class="infra",
         )
         return
     except Exception as exc:  # pragma: no cover - env/compute dependent
@@ -325,7 +327,16 @@ def _poll(ctx: Any, handle: Any) -> bool:
         # path's ``ChildKilledError`` above, just observed from the
         # detached side where a returncode was never captured.
         open_tag = "infra:child-killed" if status.get("infra") else None
-        ctx.record_failure(reason, open_tag=open_tag)
+        # ``failure_class="infra"`` on the same branch mirrors the reason
+        # into ``meta.error`` (``_common.record_failure`` only stamps it
+        # alongside a class) — the no-envelope child-kill otherwise leaves
+        # meta.error empty even though the ``job_event`` chunk carries the
+        # reason (al480803's "empty error" failures).
+        ctx.record_failure(
+            reason,
+            open_tag=open_tag,
+            failure_class="infra" if status.get("infra") else None,
+        )
         return True
 
     # state == "done"

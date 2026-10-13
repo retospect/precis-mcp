@@ -6193,26 +6193,36 @@ class TestDispatchAutocatpath:
         assert compute_mod._autocatpath_wall_seconds("neb") == 9000
         assert compute_mod._autocatpath_wall_seconds() == 9000
 
-    def test_unset_verify_pin_falls_back_to_general_wall(
+    def test_unset_verify_pin_falls_back_to_verify_floor(
         self, store: Any, monkeypatch: Any
     ) -> None:
+        """Verify pin unset → ``max(general, _DEFAULT_VERIFY_WALL_SECONDS)``:
+        the 90-min general default is a guaranteed deadline kill for a tier
+        whose measured runs are all >4 h (al480803)."""
         monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
         monkeypatch.delenv(
             compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False
         )
-        assert compute_mod._autocatpath_wall_seconds("verify") == 9000
+        assert compute_mod._autocatpath_wall_seconds("verify") == (
+            compute_mod._DEFAULT_VERIFY_WALL_SECONDS
+        )
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(
             store, sid, self._RX, tier=compute_mod._TIER_VERIFY
         )
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
-        assert jmeta["params"]["resources"]["wall_seconds"] == 9000
-        # clamp; a malformed verify pin falls back to the general value
+        assert jmeta["params"]["resources"]["wall_seconds"] == (
+            compute_mod._DEFAULT_VERIFY_WALL_SECONDS
+        )
+        # a general pin above the floor wins
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "80000")
+        assert compute_mod._autocatpath_wall_seconds("verify") == 80_000
+        # clamp; a malformed verify pin falls back to the floor
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "999999")
         assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "x")
-        assert compute_mod._autocatpath_wall_seconds("verify") == 9000
+        assert compute_mod._autocatpath_wall_seconds("verify") == 80_000
 
     def test_unrouted_job_leaves_device_unset(
         self, store: Any, monkeypatch: Any

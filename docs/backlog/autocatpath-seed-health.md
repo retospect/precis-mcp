@@ -44,13 +44,17 @@ failed 26 of 28 seeds in August on the older wall.
 
 Consequence: **no verify-tier pathway has completed in prod**, so the
 authoritative exhaustive pass the tier ladder promises does not exist for
-any candidate. Fix (accepted 2026-10-03; mechanism shipped, value pending the
-measurement): a tier-aware
-wall — verify gets its own hint (e.g. 4× = 6 h, 7 h lease), set in
+any candidate. Fix (accepted 2026-10-03; mechanism shipped, value set
+2026-10-13): a tier-aware
+wall — verify gets its own hint (`PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS`),
+set in
 `_apply_tier_config`'s caller where `resources.wall_seconds` is stamped,
-with the env pin kept for the other tiers. Measure first on one re-run
-verify seed with the larger wall to get its real runtime before fixing the
-multiplier.
+with the env pin kept for the other tiers. Measured 2026-10-05..10-10:
+11 coadsorbed successes ran 4.6–8.7 h; seed-2 cells of td322478 died
+twice at the 28800 s pin's 9 h bound while still band-splitting
+(al480803). Pin raised to 64800 s (~2× the measured max); the code floor
+for an unset/malformed pin is the same 64800, never the 90-min general
+default.
 
 Not built yet (verdict §8 asked for the first; the second is a gap found
 while building the hold):
