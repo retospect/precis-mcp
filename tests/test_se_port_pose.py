@@ -401,7 +401,7 @@ _DELTA_OPS: list[dict[str, Any]] = [
             {
                 "name": "cis",
                 "port_pose_overrides": {
-                    "far": {"pose": [0.0009, 0.0, 0.0], "rot": [0.0, 0.0, 0.5]}
+                    "far": {"pose": "[0.0009 0 0] m", "rot": "[0 0 0.5] rad"}
                 },
             },
         ],
@@ -446,7 +446,7 @@ def test_state_delta_on_a_poseless_port_invents_no_origin(
                     {"name": "trans"},
                     {
                         "name": "cis",
-                        "port_pose_overrides": {"far": {"pose": [0.0009, 0, 0]}},
+                        "port_pose_overrides": {"far": {"pose": "[0.0009 0 0] m"}},
                     },
                 ],
             },
@@ -515,7 +515,7 @@ def test_state_rot_delta_composes_rather_than_replacing(
                     {"name": "trans"},
                     {
                         "name": "cis",
-                        "port_pose_overrides": {"far": {"rot": [0, 0, 0.5]}},
+                        "port_pose_overrides": {"far": {"rot": "[0 0 0.5] rad"}},
                     },
                 ],
             },
@@ -562,7 +562,12 @@ def test_state_rot_delta_is_applied_in_the_block_frame(
                 "block": "switch",
                 "states": [
                     {"name": "trans"},
-                    {"name": "cis", "port_pose_overrides": {"far": {"rot": delta}}},
+                    {
+                        "name": "cis",
+                        "port_pose_overrides": {
+                            "far": {"rot": f"[{delta[0]} {delta[1]} {delta[2]}] rad"}
+                        },
+                    },
                 ],
             },
         ],

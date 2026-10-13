@@ -1080,8 +1080,8 @@ def test_port_pose_overrides_accept_direction_pose_and_rot_together(
                                 "port_pose_overrides": {
                                     "p1": {
                                         "direction": [0, 2, 0],
-                                        "pose": [0.0005, 0, 0],
-                                        "rot": [0, 0, 0.5],
+                                        "pose": "[0.0005 0 0] m",
+                                        "rot": "[0 0 0.5] rad",
                                     }
                                 },
                             }
@@ -1107,7 +1107,7 @@ def test_port_pose_overrides_accept_direction_pose_and_rot_together(
         args={"name": "switch", "state": {"switch": "cis"}},
     ).body
     assert "[0, 1, 0]" in body  # direction replaced outright
-    assert "[0.0015, 0, 0]" in body  # pose added to the port's own
+    assert "[1.5 0 0] mm" in body  # pose added to the port's own (canonical render)
 
 
 # ── round 2: set_current_state (persistent) vs args.state (transient) ────

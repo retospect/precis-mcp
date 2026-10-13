@@ -102,7 +102,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 import numpy as np
 from numpy.typing import NDArray
@@ -261,6 +261,12 @@ def validate_digest(findings: list[Any]) -> tuple[str, str]:
     if n_warn:
         parts.append(f"{n_warn} warning(s)")
     return digest, "; validate has " + " and ".join(parts)
+
+
+#: Sentinel for "the get wrapper did not prefetch the ref" — distinct
+#: from ``None`` (prefetch ran and the design is absent, which must
+#: raise the same ``NotFound`` a fresh lookup would).
+_MISSING: Final = object()
 
 
 class SeHandler(Handler):
@@ -1181,14 +1187,20 @@ class SeHandler(Handler):
         """Thin display-preference shell: binds the respond-in-kind
         recorder, the sticky ``meta.prefunits`` and per-call
         ``args.prefunits`` scopes for the whole get
-        (:mod:`precis.utils.units`). The extra ``get_ref`` for the sticky
-        read is one indexed lookup — cheap against the tree load below."""
+        (:mod:`precis.utils.units`). The ref fetch doubles as the sticky
+        read and is handed to ``_get_impl`` so the get does one
+        ``get_ref``, not two."""
         used: dict[Dimension, str | None] = {}
         call_pref = parse_prefunits(
             (args or {}).get("prefunits"), arg_name="args.prefunits"
         )
         meta_pref: dict[Dimension, str] = {}
-        if isinstance(id, (str, int)) and str(id).strip() not in ("", "/"):
+        ref: Any = _MISSING
+        if (
+            isinstance(id, (str, int))
+            and str(id).strip() not in ("", "/")
+            and (view or "").strip().lower() not in ("completion", "completion_digest")
+        ):
             ref = self.store.get_ref(kind="se", id=str(id).strip())
             if ref is not None:
                 meta_pref = _meta_prefunits(ref.meta)
@@ -1197,7 +1209,9 @@ class SeHandler(Handler):
             sticky_prefunits_scope(meta_pref),
             prefunits_scope(call_pref),
         ):
-            return self._get_impl(id=id, view=view, args=args, **_kw)
+            return self._get_impl(
+                id=id, view=view, args=args, _prefetched_ref=ref, **_kw
+            )
 
     def _get_impl(
         self,
@@ -1205,6 +1219,7 @@ class SeHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         args: dict[str, Any] | None = None,
+        _prefetched_ref: Any = _MISSING,
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -1221,10 +1236,13 @@ class SeHandler(Handler):
             return self._render_list()
         completion_view = (view or "").strip().lower()
         completion_read = completion_view in ("completion", "completion_digest")
-        ref = self.store.get_ref(
-            kind="se",
-            id=id if completion_read and isinstance(id, int) else str(id).strip(),
-        )
+        if _prefetched_ref is not _MISSING:
+            ref = _prefetched_ref
+        else:
+            ref = self.store.get_ref(
+                kind="se",
+                id=id if completion_read and isinstance(id, int) else str(id).strip(),
+            )
         if ref is None:
             raise NotFound(f"se design {id!r} not found")
         if completion_view in ("completion", "completion_digest"):

@@ -347,7 +347,7 @@ def awkward_mantissa_advice(
         return None
     if _AWKWARD_LO <= abs(authored) < _AWKWARD_HI:
         return None
-    neat = format_quantity(si_value, dimension)
+    neat = _format_neat(si_value, dimension)
     if "e" in neat:
         return None
     who = f"{arg_name}: " if arg_name else ""
@@ -657,6 +657,15 @@ def format_quantity(
     pref, _factor = _try_pref(dimension, prefunits)
     if pref is not None:
         return _format_in_unit(value, dimension, pref)
+    return _format_neat(value, dimension)
+
+
+def _format_neat(value: float, dimension: Dimension) -> str:
+    """The neat default rendering of :func:`format_quantity` with no
+    display preference — what the awkward-mantissa advisory checks
+    against (a *policy* question: does a better-scaled unit exist? —
+    never a display preference, so it deliberately bypasses the
+    per-call/used/sticky scopes)."""
     if dimension == "angle":
         degrees = math.degrees(value)
         if not math.isfinite(degrees):

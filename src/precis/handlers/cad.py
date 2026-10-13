@@ -90,6 +90,7 @@ from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
 from precis.utils.units import (
     Dimension,
+    _format_neat,
     capture_used_units,
     format_quantity,
     format_quantity_column,
@@ -502,7 +503,10 @@ class CadHandler(Handler):
         if not head:
             return f"{short} (grid missing)"
         nx, ny, nz = (int(x) for x in head.get("shape", (0, 0, 0)))
-        pitch = format_quantity(float(head.get("pitch_m", 0.0)), "length")
+        # The stored grid's pitch is a stored fact, not a caller-authored
+        # quantity — always the neat canonical spelling, never steered by
+        # the respond-in-kind/prefunits scopes.
+        pitch = _format_neat(float(head.get("pitch_m", 0.0)), "length")
         flag = "" if head.get("exact") else " ~"
         return f"{short} {nx}×{ny}×{nz} @{pitch}{flag}"
 

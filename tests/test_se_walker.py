@@ -31,6 +31,7 @@ from precis.errors import BadInput
 from precis.handlers.make import MakeHandler
 from precis.handlers.material import MaterialHandler
 from precis.store import Store
+from precis.utils.units import parse_vector_quantity
 from precis_se import compose as se_compose
 from precis_se import persist
 from precis_se.chain import nucleic
@@ -313,8 +314,13 @@ def _pose_of(handler: SeHandler, slug: str, state: str | None) -> list[float]:
     body = handler.get(id=slug, view="block", args=args).body
     for line in body.splitlines():
         if line.startswith("pose:"):
-            inner = line[line.index("[") + 1 : line.index("]")]
-            return [float(v) for v in inner.split(",")]
+            # canonical render: "pose: [x y z] <unit>  (authored, ...)" —
+            # parse the unit-bearing form back through the same grammar;
+            # the render is 4-sig-fig lossy, so callers compare at
+            # display precision (rtol 1e-3), never tighter.
+            inner = line[line.index("[") : line.index("]") + 1]
+            unit = line.split("]", 1)[1].strip().split()[0]
+            return parse_vector_quantity(f"{inner} {unit}", "length")
     raise AssertionError(f"no pose line in\n{body}")
 
 
@@ -362,8 +368,10 @@ def test_station_settle_stores_a_per_state_pose_the_reads_apply_without_relaxing
     read0 = _pose_of(handler, "walk", "st0")
     read1 = _pose_of(handler, "walk", "st1")
     assert calls == []
-    assert np.allclose(read0, p0, rtol=1e-5, atol=0.0)
-    assert np.allclose(read1, p1, rtol=1e-5, atol=0.0)
+    # read0/read1 round-trip through the block view's 4-sig-fig display —
+    # display precision, not storage precision.
+    assert np.allclose(read0, p0, rtol=1e-3, atol=0.0)
+    assert np.allclose(read1, p1, rtol=1e-3, atol=0.0)
     assert not np.allclose(read0, read1, rtol=0.0, atol=1.0e-11)
     # Re-declaring the stations keeps the relaxed poses.
     handler.edit(

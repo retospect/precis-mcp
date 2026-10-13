@@ -15,8 +15,7 @@ echoing the caller's vector under nm/mm/m or deg/rad), three forms
 the vector), bare `0` legal, e-notation fine, mixing rejects. Fixtures,
 `precis-se-help`/`-fasten-`/`-print-help` examples and the
 never-convert-yourself directive (overview, se, cad, structure, calc help)
-swept. Not touched: `declare_states` `port_pose_overrides` pose/rot
-deltas (separate path, still bare SI), `add_port` `direction` (unitless).
+swept. Not touched: `add_port` `direction` (unitless).
 
 SHIPPED (2026-10-12, ruled by Reto 2026-09-12):
 

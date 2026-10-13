@@ -208,7 +208,8 @@ design-core home (:mod:`precis.design.states`), not a table of se's own
   (:func:`_vet_port_pose_overrides`) — ``direction`` unit-normalized the
   same way ``add_port``'s own is; ``pose``/``rot`` are a rigid DELTA in
   the block frame (translation added to the port's own origin, rotation
-  composed on top of it), applied at read time only to a port that
+  composed on top of it), parsed through the same explicit-unit boundary
+  as every other pose/rot, applied at read time only to a port that
   actually carries a pose. The named port need not exist yet — a
   forward reference, the same tolerance a measure's relation source gets.
 - ``set_current_state``   — PERSISTENTLY pose an ordinary block into one
@@ -344,6 +345,11 @@ from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import pose as cad_pose
 from precis.design.states import StateError, validate_driver_kind
 from precis.errors import BadInput
+from precis.utils.units import (
+    Dimension,
+    echo_vector,
+    parse_vector_quantity,
+)
 from precis_se import capabilities as se_caps
 from precis_se import joints as se_joints
 from precis_se.atomic.vocab import (
@@ -2915,8 +2921,8 @@ _PORT_OVERRIDE_KEYS = frozenset({"direction", "pose", "rot"})
 
 def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | None:
     """Vet a declared state's ``port_pose_overrides`` — ``{port_name:
-    {'direction'?: [x,y,z], 'pose'?: [dx,dy,dz], 'rot'?: [rx,ry,rz]}}``,
-    keyed by the block's own port names (migration
+    {'direction'?: [x,y,z], 'pose'?: <length vector>, 'rot'?: <angle
+    vector>}}``, keyed by the block's own port names (migration
     ``0162_design_core.sql``'s column comment: "the ports a state moves"),
     at least one key and no others.
 
@@ -2930,6 +2936,8 @@ def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | N
     because it stays meaningful for a port whose own
     :attr:`~precis.blocktree.types.Port.pose` is null — an absolute value
     there would silently invent an origin the design never declared.
+    Both go through :func:`_override_vec` — the same explicit-unit parse
+    and echo-on-write acknowledgement as ``add_port``'s own pose/rot.
 
     The named port may not exist yet — a forward reference, the same
     tolerance ``add_measure``'s relation source gets: only the SHAPE is
@@ -2949,9 +2957,9 @@ def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | N
             raise OpError(
                 f"declare_states: state {state_name!r} "
                 f"port_pose_overrides[{port_name!r}] takes at least one of "
-                f"'direction' [x,y,z], 'pose' [dx,dy,dz], 'rot' [rx,ry,rz] "
-                f"(pose/rot are a rigid delta in the block frame) and "
-                f"nothing else, got {override!r}"
+                f"'direction' [x,y,z], 'pose' <length vector>, 'rot' "
+                f"<angle vector> (pose/rot are a rigid delta in the block "
+                f"frame) and nothing else, got {override!r}"
             )
         what = f"declare_states: state {state_name!r} port {port_name!r}"
         entry: dict[str, Any] = {}
@@ -2961,11 +2969,25 @@ def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | N
                 _as_vec3(override["direction"], d_what), what=d_what
             )
         if "pose" in keys:
-            entry["pose"] = _as_vec3(override["pose"], f"{what} pose")
+            entry["pose"] = _override_vec(override["pose"], "length", f"{what} pose")
         if "rot" in keys:
-            entry["rot"] = _as_vec3(override["rot"], f"{what} rot")
+            entry["rot"] = _override_vec(override["rot"], "angle", f"{what} rot")
         out[str(port_name)] = entry
     return out
+
+
+def _override_vec(raw: Any, dimension: Dimension, what: str) -> list[float]:
+    """One ``port_pose_overrides`` pose/rot delta through
+    :func:`~precis.utils.units.parse_vector_quantity` — the same
+    explicit-unit ingest every other pose/rot in the op vocabulary
+    rides (a bare nonzero vector is refused), with the echo-on-write
+    acknowledgement. ``direction`` stays a bare unitless 3-vector."""
+    try:
+        vec = parse_vector_quantity(raw, dimension, arg_name=what)
+    except BadInput as exc:
+        raise OpError(f"{exc} — {exc.next}" if exc.next else str(exc)) from exc
+    echo_vector(what, vec, dimension)
+    return vec
 
 
 def _op_declare_states(tree: SeTree, op: dict[str, Any]) -> None:
