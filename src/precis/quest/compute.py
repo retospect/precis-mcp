@@ -3248,6 +3248,19 @@ def harvest_measures(
         except Exception:
             log.exception("harvest_measures: Pourbaix harvest failed for %s", s.id)
         try:
+            from precis.quest.surface_anchors import harvest_surface_anchors
+
+            anchors_note = harvest_surface_anchors(store, quest_id, s)
+            if anchors_note:
+                notes.append(anchors_note)
+                harvested += 1
+        except Exception:
+            log.exception(
+                "harvest_measures: surface-anchors harvest failed for %s", s.id
+            )
+        # After the anchors harvest: window measures read the
+        # resting_termination_at_point it stamps.
+        try:
             from precis.quest.window_objectives import stamp_window_measures
 
             window_note = stamp_window_measures(store, quest_id, s)
@@ -4328,6 +4341,18 @@ def run_compute_step(
                 "run_compute_step: Pourbaix dispatch failed for quest %s", quest_id
             )
             notes.append("pourbaix_bulk dispatch failed; see worker log")
+        try:
+            from precis.quest.surface_anchors import dispatch_surface_anchors
+
+            sa_notes = dispatch_surface_anchors(store, quest_id, hub=hub)
+            notes.extend(sa_notes)
+            dispatched += sum(note.startswith("created job id=") for note in sa_notes)
+        except Exception:
+            log.exception(
+                "run_compute_step: surface-anchors dispatch failed for quest %s",
+                quest_id,
+            )
+            notes.append("surface_coverage_scan dispatch failed; see worker log")
 
     harvest = harvest_measures(store, quest_id, by=by, hub=hub, relax_cell=relax_cell)
     notes.extend(harvest.notes)

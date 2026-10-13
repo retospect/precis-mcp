@@ -777,7 +777,7 @@ def _run_request_subprocess(
 # ── coverage anchors (surface-Pourbaix slice 1) ───────────────────────────
 
 
-def coverage_anchor_key(config: dict[str, Any]) -> str:
+def coverage_anchor_key(config: dict[str, Any], *, slab_key: str | None = None) -> str:
     """Content address of an anchor set: everything that fixes *which slab,
     which adsorbates at which coverages, on which thermodynamic footing* —
     the config minus its ``mlip`` block (models pool under one key; the
@@ -792,7 +792,15 @@ def coverage_anchor_key(config: dict[str, Any]) -> str:
     cell's ``n_top`` sites and reports the achieved ``n / n_top``, so two
     requests that differ only pre-snap — ``[0.25, 0.5, 0.75, 1.0]`` versus
     ``[2/9, 4/9, 7/9, 1]`` on a 9-site cell — are ONE anchor set and must
-    pool under one key (gr482107)."""
+    pool under one key (gr482107).
+
+    ``slab_key`` discriminates an *injected* slab (engine >= 0.25.0 honours
+    ``cfg._prebuilt_slab``): the config's ``slab`` label no longer fixes the
+    geometry — two doped candidates sharing it would otherwise pool anchors
+    measured on different slabs. Pass a digest of the extxyz (the quest
+    dispatch uses ``sha256`` of the exported bytes); same crystal → same
+    key → twins still pool. ``None`` = label-built slab, the pre-0.25.0
+    behaviour, and keys against it unchanged."""
     cfg = _prep(config, None).to_dict()
     cfg.pop("mlip", None)
     cov = cfg.get("coverage")
@@ -802,6 +810,8 @@ def coverage_anchor_key(config: dict[str, Any]) -> str:
         )
     canonical = json.dumps(cfg, sort_keys=True, separators=(",", ":"))
     payload = f"{canonical}\x00autocatpath=={__version__}"
+    if slab_key:
+        payload += f"\x00slab={slab_key}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -810,6 +820,7 @@ def run_coverage_scan(
     model_index: int = 0,
     *,
     force_backend: str | None = None,
+    slab_extxyz: str | None = None,
     log: Any = print,
 ) -> CoverageScanResult:
     """Run catpath's ab-initio-thermodynamics coverage scan
@@ -817,14 +828,16 @@ def run_coverage_scan(
     the anchor generator of ``docs/backlog/surface-pourbaix-staircase-
     optimizer.md`` slice 1.
 
-    The engine's scan builds its own clean slab from ``config.slab``
-    (element + facet) and relaxes each ``(adsorbate, coverage)`` on it; it
-    does NOT read the prebuilt-slab side channel the pathway pipeline
-    honours, so a doped candidate or a hydride slab cannot be scanned here
-    until the engine takes one (briefed to the catpath session, 2026-10-07).
-    Per-model selection mirrors :func:`run_seed_partial`: the scan itself
-    only ever runs ``specs()[0]``, so the chosen spec is pinned onto the
-    config before the call. JSON-safe return (:class:`CoverageScanResult`).
+    Without ``slab_extxyz`` the engine's scan builds its own clean slab
+    from ``config.slab`` (element + facet). With it, the exported candidate
+    slab is stamped through the same ``cfg._prebuilt_slab`` side channel
+    the pathway pipeline uses (:func:`_stamp_slab`) — honoured by
+    autocatpath >= 0.25.0, which relaxes each ``(adsorbate, coverage)`` on
+    the injected geometry and records ``slab_source: injected`` plus a
+    ``lattice_source`` in ``coverage.json``. Per-model selection mirrors
+    :func:`run_seed_partial`: the scan itself only ever runs
+    ``specs()[0]``, so the chosen spec is pinned onto the config before the
+    call. JSON-safe return (:class:`CoverageScanResult`).
 
     ``corrections`` is what the SCAN records (``coverage.json``'s own
     ``corrections`` block), never the config's: on 0.24.0 the scan prices
@@ -848,7 +861,8 @@ def run_coverage_scan(
     resolved = resolve_backend(backend)
     if resolved != backend:
         log(f"backend: auto -> {resolved} (best installed ML potential)")
-    c = copy.deepcopy(cfg)
+    prepared = _stamp_slab(cfg, slab_extxyz)
+    c = copy.deepcopy(prepared.cfg)
     c.mlip.backend, c.mlip.model, c.mlip.models = resolved, model, []
     data = scan(c, log=log)
     corrections = data.get("corrections")
@@ -874,18 +888,21 @@ def run_coverage_scan_subprocess(
     model_index: int = 0,
     *,
     force_backend: str | None = None,
+    slab_extxyz: str | None = None,
     timeout: int = _DEFAULT_COVERAGE_TIMEOUT_S,
     cpuset: str | None = None,
 ) -> CoverageScanResult:
     """:func:`run_coverage_scan` in a fresh, killable child — the same
     ``python -m precis_pathway.runner`` entrypoint and isolation argument as
     :func:`run_seed_partial_subprocess` (gr191351: never load MACE/CUDA in
-    the long-lived worker)."""
+    the long-lived worker). ``slab_extxyz`` rides the request envelope the
+    same way the seed child's does."""
     request = {
         "mode": "coverage",
         "config": config,
         "model_index": model_index,
         "force_backend": force_backend,
+        "slab_extxyz": slab_extxyz,
     }
     result = _run_request_subprocess(
         request,
@@ -1763,6 +1780,7 @@ def _subprocess_main(argv: list[str]) -> int:
                     req["config"],
                     int(req.get("model_index", 0)),
                     force_backend=req.get("force_backend"),
+                    slab_extxyz=req.get("slab_extxyz"),
                     log=lambda *a, **k: print(*a, **k),
                 )
             )

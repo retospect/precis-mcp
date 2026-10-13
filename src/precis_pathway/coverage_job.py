@@ -22,13 +22,15 @@ once per slab. The job then:
    or more models, its model-form band — into ``meta.che_sweep`` and a
    ``job_summary`` chunk.
 
-Scope (Reto's 2026-10-07 rulings): the engine scans the clean
-``config.slab`` it builds itself, (111) only — ``coverage.facets`` must be
-empty and ``slab.miller`` unset or (1,1,1). A doped candidate or a β-PdH
-slab cannot be scanned until catpath's scan honours the prebuilt-slab side
-channel (briefed to the catpath session); the job refuses ``slab_extxyz``
-with ``failure_class="input"`` rather than silently scanning the wrong
-surface.
+Scope (Reto's 2026-10-07 rulings): (111) only — ``coverage.facets`` must
+be empty and ``slab.miller`` unset or (1,1,1). ``slab_extxyz`` injects an
+externally-prepared slab (the quest's exported candidate geometry — a
+doped slab or a β-PdH twin): honoured since autocatpath 0.25.0, which
+scans the injected geometry and records ``slab_source``/``lattice_source``
+in ``coverage.json``. The anchor key folds a digest of the slab bytes so
+two candidates sharing the ``config.slab`` label never pool anchors
+measured on different slabs (:func:`runner.coverage_anchor_key`'s
+``slab_key``).
 
 Registered via the ``precis.job_types`` entry point
 (``surface_coverage_scan = precis_pathway.coverage_job:SPEC``). Same
@@ -40,6 +42,7 @@ under ``resources.wall_seconds``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -88,9 +91,11 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # Per-anchor energy bar (eV) for the propagated band; default =
         # config.search.energy_thresh, else 0.05.
         "sigma_e_eV": {"type": "number", "minimum": 0},
-        # Refused (see the module docstring) — listed so the refusal is a
-        # typed input error, not a silent drop.
+        # An externally-prepared slab (extxyz; the precis `structure`
+        # seam). null → the engine builds the clean config.slab itself.
         "slab_extxyz": {"type": ["string", "null"]},
+        # Provenance: the precis structure ref the slab came from.
+        "structure_ref": {"type": ["integer", "null"]},
     },
     "required": ["config"],
     "additionalProperties": True,
@@ -131,16 +136,11 @@ def with_defaults(config: dict[str, Any]) -> dict[str, Any]:
 
 def check_params(params: dict[str, Any]) -> str | None:
     """The reason a params dict is unusable, or ``None``. Scope rules of the
-    module docstring: (111) only, no extra facets, no prebuilt slab."""
+    module docstring: (111) only, no extra facets. ``slab_extxyz`` is
+    accepted (engine >= 0.25.0 scans the injected slab)."""
     config = params.get("config")
     if not isinstance(config, dict) or not config:
         return "params.config must be a non-empty catpath config object"
-    if params.get("slab_extxyz"):
-        return (
-            "slab_extxyz is not scannable: catpath's coverage scan builds its own "
-            "clean slab from config.slab and ignores a prebuilt slab (doped and "
-            "hydride slabs wait on the catpath brief)"
-        )
     cov = config.get("coverage") or {}
     if cov.get("facets"):
         return "coverage.facets must be empty: slice 1 scans the (111) facet only"
@@ -204,6 +204,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     config = with_defaults(dict(params["config"]))
     model_index = int(params.get("model_index", 0) or 0)
+    slab_extxyz = params.get("slab_extxyz")
     resources = params.get("resources") or {}
     try:
         timeout_s = int(resources.get("wall_seconds") or 0)
@@ -213,7 +214,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     from . import runner, surface_pourbaix
 
-    anchor_key = str(params.get("anchor_key") or runner.coverage_anchor_key(config))
+    # An injected slab is part of the anchor set's content address (see
+    # runner.coverage_anchor_key's slab_key): a digest of the bytes, never
+    # the bytes themselves, so the key stays a key.
+    slab_key = (
+        hashlib.sha256(slab_extxyz.encode("utf-8")).hexdigest() if slab_extxyz else None
+    )
+    anchor_key = str(
+        params.get("anchor_key")
+        or runner.coverage_anchor_key(config, slab_key=slab_key)
+    )
     cov = config["coverage"]
     n_top = slab_top_sites(config)
     achieved = representable_coverages(cov["coverages"], n_top)
@@ -229,14 +239,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         if achieved != requested
         else ""
     )
+    slab_note = " slab=injected" if slab_extxyz else ""
     ctx.append_chunk(
         "job_event",
         f"{NAME}: {config.get('name', '?')} model#{model_index} "
         f"adsorbates={cov['adsorbates']} "
-        f"coverages={achieved_text}{snap_note} key={anchor_key[:12]}…",
+        f"coverages={achieved_text}{snap_note}{slab_note} key={anchor_key[:12]}…",
     )
     try:
-        kw: dict[str, Any] = {"force_backend": params.get("force_backend")}
+        kw: dict[str, Any] = {
+            "force_backend": params.get("force_backend"),
+            "slab_extxyz": slab_extxyz,
+        }
         if timeout_s > 0:
             kw["timeout"] = timeout_s
         if cpuset:
@@ -274,6 +288,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         model_index=model_index,
         engine_version=result["engine_version"],
         corrections=result.get("corrections"),
+        slab_source=coverage.get("slab_source"),
+        lattice_source=coverage.get("lattice_source"),
         coverage=coverage,
         che_sweep=che,
     )

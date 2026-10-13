@@ -1316,6 +1316,15 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "bottleneck_rung",
         "window_notes",
         "validity_region_at_point",
+        # surface-anchor harvest (quest.surface_anchors): a job id (numeric,
+        # would otherwise rank as a measure), a hash, and dict/list stamps.
+        "anchors_job_id",
+        "anchor_key",
+        "anchors_footing",
+        "resting_termination_at_point",
+        "needs_anchor_top",
+        "theta0_check",
+        "theta0_note",
     }
 )
 

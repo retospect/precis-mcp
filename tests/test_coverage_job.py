@@ -9,6 +9,7 @@ catpath's; what is under test is the precis glue around it.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
@@ -150,10 +151,6 @@ def test_with_defaults_fills_the_slice_1_anchor_set() -> None:
     [
         ({}, "params.config"),
         (
-            {"config": CONFIG, "slab_extxyz": "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"},
-            "prebuilt slab",
-        ),
-        (
             {"config": {**CONFIG, "coverage": {"facets": [[1, 0, 0]]}}},
             "(111) facet only",
         ),
@@ -176,6 +173,13 @@ def test_check_params_accepts_the_111_scope() -> None:
     assert (
         coverage_job.check_params(
             {"config": {**CONFIG, "slab": {**CONFIG["slab"], "miller": [1, 1, 1]}}}
+        )
+        is None
+    )
+    # autocatpath >= 0.25.0 honours the injected slab: no longer a refusal.
+    assert (
+        coverage_job.check_params(
+            {"config": CONFIG, "slab_extxyz": "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"}
         )
         is None
     )
@@ -365,7 +369,12 @@ def test_dispatch_stamps_footing_and_pooled_sweep(
         "defaults reach the engine"
     )
     assert seen["model_index"] == 1
-    assert seen["kw"] == {"force_backend": None, "timeout": 600, "cpuset": "0-3"}
+    assert seen["kw"] == {
+        "force_backend": None,
+        "slab_extxyz": None,
+        "timeout": 600,
+        "cpuset": "0-3",
+    }
     m = ctx.meta_updates
     assert (
         m["anchor_key"] == key and m["model"] == "mace:medium" and m["model_index"] == 1
@@ -421,10 +430,60 @@ def test_dispatch_refuses_out_of_scope_params_before_any_compute(
         raise AssertionError("the engine must not be called")
 
     monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _boom)
-    ctx = _FakeCtx(store=store, params={"config": CONFIG, "slab_extxyz": "x"})
+    ctx = _FakeCtx(
+        store=store,
+        params={"config": {**CONFIG, "coverage": {"facets": [[1, 0, 0]]}}},
+    )
     coverage_job._dispatch(ctx, coverage_job.SPEC)
     assert ctx.status == "failed" and ctx.failure_class == "input"
-    assert ctx.failure is not None and "prebuilt slab" in ctx.failure
+    assert ctx.failure is not None and "facets" in ctx.failure
+
+
+def test_dispatch_passes_the_injected_slab_through(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``slab_extxyz`` (autocatpath >= 0.25.0): handed to the scan child,
+    folded into the anchor key via ``slab_key``, and the coverage.json
+    provenance (``slab_source``/``lattice_source``) lands on the job meta."""
+    extxyz = "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"
+    seen: dict[str, Any] = {}
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        seen.update(config=config, kw=kw)
+        cov = _coverage("mace:medium", -0.02)
+        cov["slab_source"] = "injected"
+        cov["lattice_source"] = "slab.info"
+        return {
+            "model": "mace:medium",
+            "model_index": model_index,
+            "coverage": cov,
+            "engine_version": "0.25.0",
+            "corrections": {"gas": "selectivity-19", "h_star": -0.25},
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    ctx = _FakeCtx(store=store, params={"config": CONFIG, "slab_extxyz": extxyz})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+
+    assert ctx.status == "succeeded", ctx.failure
+    assert seen["kw"]["slab_extxyz"] == extxyz
+    m = ctx.meta_updates
+    built_key = runner.coverage_anchor_key(coverage_job.with_defaults(CONFIG))
+    injected_key = runner.coverage_anchor_key(
+        coverage_job.with_defaults(CONFIG), slab_key="x" * 64
+    )
+    assert m["anchor_key"] == runner.coverage_anchor_key(
+        coverage_job.with_defaults(CONFIG),
+        slab_key=hashlib.sha256(extxyz.encode()).hexdigest(),
+    )
+    assert m["anchor_key"] != built_key
+    assert injected_key != built_key
+    assert m["slab_source"] == "injected"
+    assert m["lattice_source"] == "slab.info"
+    assert m["corrections"] == {"gas": "selectivity-19", "h_star": -0.25}
+    assert "slab=injected" in ctx.chunks[0][1]
 
 
 def test_dispatch_classes_a_killed_child_as_infra(

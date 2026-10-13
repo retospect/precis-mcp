@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B3 window/Shapley/HER objectives (slice 6) LANDED 2026-10-13, B1 anchors rung running as Devin tree spso-b1; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
+- **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B3 window/Shapley/HER objectives (slice 6) and B1 anchors rung (meta.surface_anchors) LANDED 2026-10-13 — wave B complete; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
   Wave A is done (A1/A2 engine 0.25.0, A3 slice 2, A4 slices 4+5, A5 slice-1 proof jo482106 + θ→0 vs pw455722, all in the SPSO doc). Wave B = quest wiring, in flight. Then the Pourbaix gate's R15
   proof, preserving failed before-job 468292, gate rule-out/lift,
   correction-set basis, and Pd-hydride precis-side fixes.
