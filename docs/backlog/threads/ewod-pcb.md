@@ -28,7 +28,13 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-10-02 (route-job post-route DRC gate landed; silk shared label spot shipped; dogfood-6
+**Last reviewed:** 2026-10-13 (pcb-lazy-netlist-and-checks Slices 2–3
+shipped on `bl-pcb-netlist-s23`, committed not merged: declare-all pins +
+§1j intent markers + `undeclared_pad` + phase-aware `unconnected_pin`;
+both pad disc-approximations verified polygon-aware — the RESV
+`via_pad_keepout` false positives' fix is in the tree. Still open on that
+item: Slice 1's Reto neck-anchor decision and the `ewod-dogfood-2` prod
+re-run — this thread's "Next" re-route covers the second). 2026-10-02 (route-job post-route DRC gate landed; silk shared label spot shipped; dogfood-6
 valid: 30/55 routed, 0 geometric DRC errors; resume at Do-next 1). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
 sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
 orphan, checklist-kind, component-followons, argue-backport; round-7 and

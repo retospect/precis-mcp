@@ -132,7 +132,11 @@ Field notes:
 - **component**: `refdes` (required), `label`, `part` (an LCSC C-number —
   footprint/height/courtyard are **auto-stamped** from the catalog, see
   [[precis-part-select-help]]), `footprint`, `pins` (`{name, pad?, tags?,
-  description?, note?}`), placement `x`/`y`/`rot`/`layer` (`top`/`bottom`),
+  description?, note?, meta?}` — plus the intent markers `nc: true` (part
+  has no internal connection: never a complaint), `unused: true` (this
+  board does not use a real pin: full geometry, no `unconnected_pin`
+  finding), `must_terminate: true` (must not float: DRC **error** while
+  netless, even if `unused`)), placement `x`/`y`/`rot`/`layer` (`top`/`bottom`),
   `fixed` (`'xy'` or `'both'` — pins it against autoplace, for connectors /
   mounting / status LEDs), `roles` (free tags like `sensitive`/`noisy` that
   drive class-based measures), `note`. **Silk pin-1 marks**: a resistor,
@@ -384,6 +388,16 @@ net (two pads sharing one name are two lands of one pin, bonded inside the
 part); any other pad is net-less copper nothing may route through. Pad
 count therefore equals the footprint's pad count, however many nets touch
 the part; `view='drc'` names an unwired pad it hits by its footprint label.
+
+Since Slice 2 (pcb-lazy-netlist-and-checks.md) **every footprint pad is
+also a declared pin**: `put` completes a component's pin list from the
+cached footprint's `pin_map` (the reply's `pins_completed` counts them; a
+re-`put` completes a part whose footprint arrived later). A declared pin
+with no net and no marker is an `unconnected_pin` finding — `warn` while
+the board is being worked, `error` at fab phase; `nc`/`unused` silence it,
+`must_terminate` upgrades it to an error. A footprint pad no pin claims at
+all is `undeclared_pad`, and a part whose footprint is not cached reports
+NOT-CHECKED — never a clean pass.
 
 `pin_name_mismatch` is a different finding: the footprint IS cached, but
 a declared pin name matches none of its pads, so that pin still sits at a

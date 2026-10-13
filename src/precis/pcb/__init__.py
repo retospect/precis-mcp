@@ -137,6 +137,19 @@ is not an island of its net. Alternatives refused: seeding pins from the
 footprint (breaks pin identity), and net-less extra pads (made a pin's own
 second land a foreign obstacle to its net, measured on GND).
 
+Slice 2 of docs/backlog/pcb-lazy-netlist-and-checks.md then closed the other
+direction: every footprint pad NAME is also a declared pin —
+``_pcb_apply`` completes a component's pins from the cached footprint's
+``pin_map`` (``store._pcb_ops._pcb_complete_footprint_pins``), so the
+netlist can name every land while pads still outnumber pins wherever two
+pads share one name. A declared pin with no net and no §1j marker is
+``drc.check_unconnected_pins`` (warn while the board is worked, error at
+the authored ``fab`` phase); a pad no pin claims at all is
+``drc.check_undeclared_pads`` — and a part whose footprint is not cached
+is reported NOT-CHECKED, never a clean pass. The marker vocabulary
+(``nc``/``unused``/``must_terminate``, on ``pcb_pins.meta`` + the ``nc``
+tag) is what keeps that complaint an oracle and not noise.
+
 Instance pinout inspection (``eyes.pinout``) reads raw stored pads and
 reuses ``padplace.place_pad_point``. IR/fab pads were refused as its input:
 synthesized bounds cannot establish numbering, and per-layer flashes

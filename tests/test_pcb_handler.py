@@ -401,20 +401,35 @@ def test_ratsnest_view_stable_despite_unsorted_store_member_order(
     assert pcb.get(id="mst-line", view="ratsnest").body == reversed_body
 
 
-def test_drc_view_before_any_route_run_and_with_no_cached_footprint_bails(pcb):
+def test_drc_view_before_any_route_run_and_with_no_cached_footprint_bails(pcb, store):
     # Geometric DRC (pcb-guided-place-route Slice 8) checks REALIZED copper
     # (pcb_copper) — before op='route' has ever run there is none. Round 4
     # (docs/backlog/pcb-ewod-multitile.md's decisions log) widened this
     # view to still run a pads-only pass whenever REAL (non-synthesized)
-    # pad geometry exists (see the next test) — but _DESIGN's parts are
-    # real LCSC numbers with NO `part_footprints` row seeded in this
-    # store, so every pad here is a synthesized BOUND, and the old bail
-    # is still exactly correct: DRC over a dimensionally-plausible guess
-    # is meaningless. See tests/test_pcb_drc.py for the engine's own
-    # rule/oracle coverage.
+    # pad geometry exists (see the next test) — and Slice 2 of
+    # docs/backlog/pcb-lazy-netlist-and-checks.md ended the blanket bail:
+    # a board with nothing real to check geometrically still gets the
+    # NETLIST-level rules, because they need no geometry. _DESIGN's parts
+    # are real LCSC numbers with NO `part_footprints` row seeded in this
+    # store, so `undeclared_pad` cannot be checked at all — the run says
+    # exactly that (a check that cannot fire reports NOT-CHECKED, never a
+    # clean pass) instead of "no realized copper yet" pretending the board
+    # has nothing to say.
     pcb.put(id="sensor-node", args=_DESIGN)
     drc = pcb.get(id="sensor-node", view="drc")
-    assert "no realized copper yet" in drc.body
+    assert "undeclared_pad" in drc.body
+    assert "CANNOT be checked" in drc.body
+    # …and the only findings are flag-based ones (synthesized bound,
+    # uncached footprint, netlist) — no geometric rule was fabricated
+    # over the guessed bounds:
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    _run_id, findings = store.pcb_drc_findings_latest(ref.id)
+    assert {f["rule"] for f in findings} <= {
+        "undeclared_pad",
+        "unconnected_pin",
+        "synthesized_footprint",
+    }
 
 
 def test_drc_view_runs_pads_only_before_any_route_when_pads_are_real(pcb):

@@ -353,7 +353,11 @@ _GEOMETRY_ROUNDING_SLACK_MM = 0.001
 #: generator's expansion to its version here, so changing the output without
 #: bumping this fails the gate instead of serving stale copper on prod.
 VERSIONS: dict[str, int] = {
-    "ewod_pad_array": 5,
+    # Version 5 (2026-10-13, gr345859) gates puts/routes on the fabric
+    # invariants; version 6 (same day) declares EVERY channel pin on a
+    # sink (unwired ones carry `unused`), not only the wired share —
+    # pcb-lazy-netlist-and-checks.md Slice 2. Both changed the expansion.
+    "ewod_pad_array": 6,
 }
 
 
@@ -2441,14 +2445,35 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             cursor += share_n
             sink_refdes = f"{name}_SINK_{i}"
             channel_map: dict[str, str] = {}
-            pin_decls: list[dict[str, Any]] = []
             for j, (_r0, _c0, elec_pin) in enumerate(share):
                 ch_pin = sink_cfg.channel_pins[j]
                 channel_map[ch_pin] = elec_pin
-                pin_decls.append({"name": ch_pin})
                 sink_connections.append(
                     {"net": f"{name}_{elec_pin}", "refdes": sink_refdes, "pin": ch_pin}
                 )
+            # Declare EVERY channel pin the part owns (docs/backlog/
+            # pcb-lazy-netlist-and-checks.md Slice 2), not only this sink's
+            # wired share: a partly-filled sink used to declare fewer than
+            # the part's channels, and `channels_per_sink` assigning a
+            # contiguous run of HVOUTn put the undeclared remainder on
+            # contiguous package edges — the "most on the bottom and some
+            # on the right are missing" cluster Reto saw. A channel this
+            # share did not wire is declared `unused` — the §1j
+            # design-level marker: full geometry, no `unconnected_pin`
+            # complaint, and a REAL pin id that the matcher (Slice 6) may
+            # still bind — exactly the slack a bijective matching wants.
+            # Non-channel pins the generator cannot name (HV507's CLK/LE/
+            # BL/POL/DIR/C/HVGND) are completed store-side from the cached
+            # footprint's pin_map (`_pcb_apply`'s declare-all pass); the
+            # `undeclared_pad` DRC rule is the safety net when it can't.
+            pin_decls: list[dict[str, Any]] = [
+                (
+                    {"name": ch_pin}
+                    if ch_pin in channel_map
+                    else {"name": ch_pin, "unused": True}
+                )
+                for ch_pin in sink_cfg.channel_pins
+            ]
             pin_decls.append({"name": sink_cfg.serial_in_pin})
             pin_decls.append({"name": sink_cfg.serial_out_pin})
             if sink_cfg.top_plate_pin:
@@ -2507,14 +2532,17 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 # item 6: any electrode this sink drives may sit on any of
                 # its OWN channel pins (the chain order is firmware's
                 # problem, not this generator's) -- ONE admissible set of
-                # every channel pin this instance actually wired (not
-                # `sink_cfg.channel_pins` verbatim: a last, undersized
-                # share declares fewer pins than the part has, and a pin
-                # this instance never declared has no IR pin id to swap
-                # at all), no exclusions. `pcb_route` resolves this into a
-                # real `pinswap.PinSwapGroup` with footprint pad offsets;
-                # this generator only ever states the admissible-set
-                # judgment, never the geometry.
+                # every channel pin this instance actually wired, no
+                # exclusions. Every channel pin is DECLARED now (the
+                # `unused` spare channels just above have real pin ids —
+                # before Slice 2 an unwired spare had none, so it could
+                # never have been listed anyway); the group still covers
+                # only the wired set because moving a net onto a netless
+                # pin is the Slice-6 matcher's job, not the swap layer's.
+                # `pcb_route` resolves this into a real
+                # `pinswap.PinSwapGroup` with footprint pad offsets; this
+                # generator only ever states the admissible-set judgment,
+                # never the geometry.
                 "pin_swap_groups": [list(channel_map)],
             }
             if sink_cfg.part:

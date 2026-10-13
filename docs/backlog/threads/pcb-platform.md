@@ -30,7 +30,18 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 1. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
    netlist/role/one-check-surface model the rest of this list assumes
-   exists.
+   exists. **Slices 2–3 shipped 2026-10-13** (one commit on worktree
+   `bl-pcb-netlist-s23`, committed not landed): every footprint pad is a
+   declared pin (`_pcb_apply` completion + the EWOD sink's full
+   `channel_pins` with `unused` on the unwired share), the §1j markers
+   `nc`/`unused`/`must_terminate` are live, `undeclared_pad` is the safety
+   net and `unconnected_pin` is phase-aware (error at `fab`). Slice 3 was
+   already landed in code (polygon-aware `check_via_pad_keepout` 3c8db49a,
+   `check_outline_containment` 5b91abe18; the same-net-fixed-via exemption
+   stays as authored-copper policy) — verified and deleted from the doc.
+   **Left:** Slice 1's Reto decision + the prod re-run of
+   `ewod-dogfood-2`; Slices 5–9 (`unconnected_pin`'s slice-5 line is
+   already done; the etype/voltage/rail rules remain).
 2. **backlog/pcb-component-model.md** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps,
    pinout-view-and-connector-intake and meta-blocks all build on.

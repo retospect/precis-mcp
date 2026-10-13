@@ -483,19 +483,16 @@ process-order note. `role: tape_land` joins the allowlist with the
 
 ## In scope — slices (dependency order; each independently shippable)
 
-**Slice 1 — every footprint pad is a declared pin (Defect A). Pure store +
-DRC work, kind-wide, no new footprints.** `_pcb_apply` completion from the
-cached `pin_map`; `undeclared_pad` DRC rule; generator untouched.
-*Accept:* on the `ewod-dogfood-2`-shaped fixture
-(`tests/test_pcb_island_terminal_polygon.py`'s ring sink) every footprint
-pad has an IR pin — `len(pads_for_ir(...))` for the sink == its footprint's
-pad count; two NC pads adjacent to a routed track produce a `clearance`
-finding when the track is placed through them (test the failure
-direction); a component whose footprint is NOT cached produces an
-`undeclared_pad` NOT-CHECKED note, never a clean pass; ruling 6's swap
-count on the fixture is unchanged; `esp32c3_reference`/
-`motor_power_reference` pinned DRC counts unchanged or explained by
-courtyard growth (sweep seeds before touching constants).
+**Slice 1 — every footprint pad is a declared pin (Defect A).**
+**SHIPPED 2026-10-13 under `pcb-lazy-netlist-and-checks.md` Slice 2**
+(commit `fix(pcb): declare every footprint pad as a pin with intent
+markers; close slice 3`, worktree `bl-pcb-netlist-s23`): that slice took
+Defect A over, added the §1j intent markers and the phase-aware
+`unconnected_pin`, and carried Defect A's nuances into its own §1j.
+`_pcb_apply` completes pins from the cached footprint (`pins_completed`
+in the put response); `undeclared_pad` is the safety net; the generator
+declares every channel pin (`unused` on the unwired share) at version 5.
+Nothing remains here — the Defect A analysis above stays as the diagnosis.
 
 **Slice 2 — `sink_grid` control pins as named config. Pure generator
 work.** `clk_pin`, `le_pin`, `bl_pin`, `pol_pin`, `dir_pin` (each optional;

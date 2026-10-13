@@ -346,8 +346,15 @@ with its approximation hidden, cannot be audited by its caller and will
 eventually be trusted in the unsound direction.
 
 This supersedes the per-slice geometry fixes as the *preferred* remedy; the
-slices stay as the shortest path to an honest board, but Slice 2's pad-geometry
-work should land the polarity tag rather than a fourth ad-hoc pad path.
+slices stay as the shortest path to an honest board, and the pad-geometry
+discs named here are already closed (Slice 3, polygon-aware `_copper_item_polygon`
+in both `check_via_pad_keepout` and `check_outline_containment`) — the
+polarity tag remains the preferred shape for whatever approximation work
+is left in the slices below. **Slice-3 closeout decision (2026-10-13):**
+the same-net-fixed-via exemption STAYS — it is authored-copper policy
+(a fixed via the author placed inside its own pad is a deliberate
+via-in-pad, not a router accident), not a disc-approximation workaround
+the polygon check made unnecessary.
 
 #### Consequences for the agent and for tests
 
@@ -438,11 +445,38 @@ from "you forgot".
 - **"Not used" never means "ignore for geometry".** An unused pad still has
   copper, takes paste, grows the courtyard, and next to a 250 V neighbour
   still needs full B4 spacing because it is floating, not grounded.
-  Undeclared pads being invisible to DRC is the bug being fixed (Slice 2);
+  Undeclared pads being invisible to DRC was the bug Slice 2 fixed;
   marking them unused must not quietly reintroduce it.
 - **`unused` means available to the matcher, not excluded.** Only `nc`
   means never. The ~24 spare channels per sink are free terminals and
   exactly the slack that makes a bijective matching easy instead of tight.
+
+**Landed 2026-10-13 (Slice 2, commit on `bl-pcb-netlist-s23`):** the model
+above is live. `_pcb_apply` completes a component's pins from the cached
+footprint's `pin_map` (`_pcb_ops.py::_pcb_complete_footprint_pins` — a pad
+with no `pin_map` entry gets a pin named by its number; names already
+declared are never re-stated, so author `pad=` numbers always win). The
+EWOD generator declares every `channel_pins` name and marks the unwired
+share `unused`. Markers ride `pcb_pins.meta` (the `nc` marker also sets
+the `nc` tag; footprint `pin_map` tags propagate through completion).
+`drc.py::check_unconnected_pins` is phase-aware via `derive_phase`
+(netlist/placed/routed derived; `fab` is authored, Slice 8's `op='phase'`)
+and `drc.py::check_undeclared_pads` is the safety net: a footprint pad no
+pin claims warns, and a part with no cached footprint reports NOT-CHECKED
+instead of passing silently. Tests: `tests/test_pcb_declared_pins.py`.
+
+**Known nuances carried:** courtyards did NOT grow — the footprint pad
+set already hulls every pad since gr451276; what grows is the pin list,
+so pre-existing boards see new `unconnected_pin` warns (or `undeclared_pad`
+notes), not new geometry. Two pads sharing one name declare ONE pin; the
+second is that pin's sibling — `ir.footprint_pad_set` claims it,
+`_sibling_pad_terminals_by_pin` offers it to the router — which resolves
+the HV507 duplicate-names question (one pin per name; sibling pads stay
+claimed). Consumers that still read the PRIMARY alone — placement
+wirelength (`cost.py`), `pinswap._instance_edges`, segment spans, and
+`layer_lock.layer_locked_pins` (counts pads not pins, can call a
+sibling-served pin stranded) — fold in with the slice that first makes
+them bite.
 
 ## In scope — slices (dependency order; each independently shippable)
 
@@ -481,141 +515,15 @@ pins the vertex).
   dedups on `(design, op, content-hash, CODE_VERSION)`); `realized` count
   must equal the connected count in `view='drc'`.
 
-### Slice 2 — every footprint pad is a declared pin, with intent markers (Defect A, gr339236/gr346744 class)
-
-Reto: "ARR1_sink_0_0 does not have all the pins, a package should always
-have all the pins"; from the render: "most on the bottom and some on the
-right are missing."
-
-**Root cause, verified in code:** in `generators.py::_expand_ewod_pad_array`
-the sink's `pin_decls` is wire-driven — it appends the channel pins in this
-sink's `share`, then `serial_in_pin`, `serial_out_pin`, the optional
-`top_plate_pin`, and the `power` map's keys. Every other HV507 pin (CLK,
-LE, BL, POL, DIR, C, HVGND, every unassigned HVOUTn) is never declared.
-With ruling 2's `channels_per_sink` balancing, a partly-filled sink
-declares fewer than 64 channel pins; `channels_per_sink` assigns a
-contiguous run of HVOUTn, so the undeclared remainder maps to contiguous
-package edges — the observed bottom/right clustering.
-
-**Why it matters:** `realize.pads_for_ir` is "every placed **pin** as a
-pad", so a pad with no declared pin is invisible to `check_clearance`, to
-connectivity, and to the router's occupancy stamping. Same blindness class
-as gr339236 and gr346744, each of which cost multiple debugging rounds.
-
-**Fix:** `ewod-controller-and-hv-supply.md` Defect A / its Slice 1 has the
-store-side completion worked out (declare every `pin_map` name via
-`_pcb_apply` when the footprint is cached; `undeclared_pad` DRC rule as the
-safety net; NC pins already flow `ir.py::from_graph → NO_NET →` sentinel
-owner). **This slice takes that over and adds the intent markers from
-§1j**, because shipping declare-all without markers makes ERC noise the day
-it lands:
-
-- `nc` (part-level, datasheet) — never a matcher target, never an ERC
-  complaint.
-- `unused` (design-level) — no ERC complaint for "unconnected", **still
-  full geometry**, **available to the matcher**.
-- `must_terminate` (part-level) — ERC error when netless, even if `unused`.
-- Undeclared-and-unmarked pad with no net → `unconnected_pin` ERC finding
-  (phase-aware: warn while `phase=netlist`, error at `phase=fab`).
-
-**Known nuances to carry:** courtyards grow (`ir.py::instance_courtyard_polygon`
-is the hull of pad outlines), so hand placements may need a look; the
-HV507 has 12 distinct non-channel names on 13 non-channel named pads
-(memory, verify at intake). The second same-named pad is no longer
-invisible: the IR's pad set (`ir.footprint_pad_set`, keyed by pad number,
-gr451276) emits it, claims it for its pin's net, DRC-checks it and
-unions it with the primary in connectivity, and the maze router offers it
-as an extra start/goal terminal (`realize._sibling_pad_terminals_by_pin`,
-gr339236), so a locked or walled-in primary can route from a sibling.
-`session.py::_real_pin_offsets` is still first-wins per name, which now
-decides only the pin's PRIMARY position. Consumers that still read the
-primary alone: placement wirelength (`cost.py`), pin-swap edges
-(`pinswap._instance_edges`), segment spans and route order, and
-`layer_lock.layer_locked_pins` (counts per pad, not per pin, and ignores
-a drilled sibling on an allowed layer, so `view='feasibility'` can call a
-pin stranded that the router now routes). Fold those in with this slice
-if they bite; the `name#2` alternative is no longer needed.
-
-*Accept:* on the ring-sink fixture (`tests/test_pcb_island_terminal_polygon.py`)
-`len(pads_for_ir(...))` for the sink == its footprint's pad count; two
-`unused` pads adjacent to a routed track produce a `clearance` finding
-when the track is pushed through them (geometry survives the marker); a
-`must_terminate` pin with no net errors even when `unused`; an `nc` pin
-never appears in any check; `esp32c3_reference`/`motor_power_reference`
-pinned DRC counts unchanged or explained by courtyard growth (sweep seeds
-before touching constants); `ewod-controller-and-hv-supply.md` Slice 1 is
-reduced to a pointer here in the same commit.
-
-### Slice 3 — via-pad keepout measures the real pad (gr346004, PRIO high)
-
-**Re-measured on prod 2026-09-24**, DRC run `b13770b5`, deployed sha as in
-Slice 1:
-
-```
-error via_pad_keepout via[ARR1_R0C2] @ (-4.500,-5.500) <-> pad[ARR1_RESV] on F.Cu  -0.204
-  via clears pad[ARR1_RESV] by -0.114mm, needs 0.090mm (JLC min trace_spacing_mm, 4layer)
-error via_pad_keepout via[ARR1_R1C0] @ (-5.707,-5.000) <-> pad[ARR1_RESV] on F.Cu  -0.304
-  via clears pad[ARR1_RESV] by -0.214mm, needs 0.090mm
-```
-
-Reto saw the same region in the prod web view as "2 bottom left ewod cells
-that are fused somehow". Both offenders are RESV's immediate neighbours
-(R0C2 diagonal, R1C0 cardinal); RESV (`pad_sizes` cells `[0,0],[0,1]`) is
-the only merged pad on the board. The module's own rule is "merged pads
-never cover a plaza (would short the 8 escape nets)".
-
-**Corrections from checking this against the code (the gripe's
-"WORSE than filed" does not hold):**
-
-1. The numbers are **byte-identical to the original filing** (DRC run
-   `cc0f2ca9`): via coordinates, `-0.114`, `-0.214`. The `-0.204/-0.304`
-   are `margin_mm` = shortfall − the 0.090 requirement, not a new
-   measurement. Nothing got worse.
-2. **Identical via coordinates across a supposed 2.0 → 2.25 mm pitch
-   change** (ruling 10) and a re-derived slot family (ruling 8) mean the
-   prod design's fabric rows were **not re-expanded** — `pcb_generators`
-   stores the expansion as rows at apply time. Before any prod fabric
-   claim, read the design's `pcb_generators` canonical params and
-   `view='capability'` sizing block. "The pitch increase did not help" is
-   unsupported: it never reached this design.
-3. **`drc.py::check_via_pad_keepout` models every pad as a circumscribed
-   disc, `pr = max(w, h) / 2.0`** — its own docstring calls this "the
-   pad-radius approximation ... a false positive on real geometry" and
-   exempts only same-net FIXED vias for it. For the 1×2 merged RESV pad
-   (w ≈ 2·pitch − gap + 2·tooth_depth ≈ 4.02 mm) the disc has radius
-   ≈ 2.01 mm about the pad centre (−6, −7), which reaches 1.06 mm past
-   the pad's short side into the plaza. Check: `dist((−6,−7),(−4.5,−5.5))
-   = 2.121`, minus via radius 0.225, minus 2.010 → **−0.114** ✓;
-   `dist((−6,−7),(−5.707,−5.0)) = 2.021 − 0.225 − 2.010` → **−0.214** ✓.
-   Both findings reproduce exactly from the disc model. Against the
-   actual rectangle the R0C2 via clears by ≈ +0.33 mm.
-4. The "fused cells" **are the reservoir merge as designed**.
-
-So D3 is very likely a **DRC measurement artefact, not a short** — no
-copper touches. Still a defect: two false errors on every board with an
-elongated pad next to a via, and the rule is the one that protects against
-via-in-pad. The same disc appears in `check_outline_containment`
-(buffer by `max(w, h) / 2.0`).
-
-**Fix:** polygon-aware via–pad distance in `check_via_pad_keepout` (shapely
-is already used by `check_clearance` for polygon pads; `connectivity.py`
-uses the real polygon for `shape == 'polygon'` pads and an inscribed disc
-otherwise). Then drop the same-net-fixed-via exemption if it is no longer
-needed. Keep the merged-outline suspicion as the fallback only if the
-polygon-aware check still fires.
-
-*Accept:* the two RESV findings vanish with no geometry change; a via
-moved onto RESV's copper still errors (failure direction, criterion 4 of
-`pcb-ewod-multitile.md`); a 1×3 merge next to a plaza is clean; the
-dogfood DRC count drops by exactly 2 with the rest unchanged.
-
 ### Slice 5 — pin model + ERC rules on the shared check surface
 
 Build §1i's fields (vocabulary validation in `_pcb_apply`; `ir.py` carries
 `pin_etype`, `pin_max_voltage_v`, `pin_rail`), then the rules of §1h as
 `check_*` functions emitting the existing `DrcFinding` shape with
-`margin_mm=None`: `pin_conflict`, `no_driver`, `unconnected_pin`,
-`over_voltage`, `rail_crossing`, `no_decoupling`. Net-level inputs:
+`margin_mm=None`: `pin_conflict`, `no_driver`, `over_voltage`,
+`rail_crossing`, `no_decoupling` (`unconnected_pin` and the marker
+semantics already landed with Slice 2 — what remains here is the
+etype/voltage/rail vocabulary and the rules that need it). Net-level inputs:
 `working_voltage_v` on `pcb_net_classes.rules` (already proposed by
 `ewod-controller-and-hv-supply.md` Slice 4(c) — one key, two consumers) and
 a `rail` name per power net. A declared translator is a component whose
@@ -840,9 +748,10 @@ class, one default net) routes the default net at fab clearance and keeps
   not a gate; `unused` ≠ `nc`, `must_terminate` is the marker that pays;
   unused pads keep full geometry and are matcher-available; firmware map
   is an export. D1 first, D4 second.
-- **Open (Slice 2, blocker-severity for that slice only):** duplicate pin
-  names on the HV507 — key by `(name, pad)` or suffix. Decide at build
-  time against the cached `pin_map`; either is fine, silence is not.
+- **Decided 2026-10-13 (Slice 2):** duplicate pin names on the HV507 —
+  one pin per NAME; the other same-named pads are that pin's siblings
+  (`footprint_pad_set` claims them, the router offers them). No `(name,
+  pad)` keying, no suffixing.
 - **Open (Slice 6):** Hungarian from scipy vs in-tree. Check whether scipy
   is already a runtime dependency before adding it for one function.
 - **Open (Slice 8):** is `phase` authored (`op='phase'`) or purely

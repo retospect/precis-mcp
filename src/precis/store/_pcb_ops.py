@@ -43,6 +43,7 @@ from precis.errors import BadInput, NotFound
 from precis.pcb import DEFAULT_STACKUP, route_summary_status
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
+from precis.pcb import padplace as pcb_padplace
 from precis.pcb.capabilities import capability_for
 from precis.store.types import ActorSlug
 from precis.utils.units import parse_angle_deg
@@ -702,6 +703,7 @@ class PcbMixin:
             "outline_replaced": 0,
             "footprints": 0,
             "generators": 0,
+            "pins_completed": 0,
         }
         if created:
             ref = self.insert_ref(
@@ -828,6 +830,7 @@ class PcbMixin:
         )
 
         declarations: dict[str, list[dict[str, Any]]] = {}
+        pending_completions: list[tuple[dict[str, Any], int, str]] = []
         for c in components:
             refdes = str(c.get("refdes") or "").strip()
             if not refdes:
@@ -841,17 +844,42 @@ class PcbMixin:
                 else None,
             )
             if refdes in inst_by_refdes:
-                continue  # already placed; skip (re-runnable)
-            comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
-            counts["components"] += 1
-            counts["pins"] += self._pcb_insert_pins(
-                conn, comp_id, c.get("pins") or [], refdes=refdes
+                comp_id = inst_by_refdes[refdes][1]
+            else:
+                comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
+                counts["components"] += 1
+                counts["pins"] += self._pcb_insert_pins(
+                    conn, comp_id, c.get("pins") or [], refdes=refdes
+                )
+                inst_id = self._pcb_insert_instance(
+                    conn, ref.id, board_id, comp_id, refdes, c
+                )
+                counts["instances"] += 1
+                inst_by_refdes[refdes] = (inst_id, comp_id)
+            pending_completions.append((c, comp_id, refdes))
+
+        # Declare-all completion (Slice 2): every pad the cached footprint
+        # names becomes a pin, whether the author wired it or not — and on
+        # EVERY pass, not only first insert, so a re-apply after a late
+        # ``op='footprint'`` completes a part that was placed before its
+        # footprint arrived. The pin-name sets and the footprint rows are
+        # each fetched for ALL pending components in one batched query,
+        # not per component (review of the first slice-2 pass: N+1).
+        if pending_completions:
+            names_by_comp = self._pcb_pin_names_by_components(
+                conn, [comp_id for _c, comp_id, _r in pending_completions]
             )
-            inst_id = self._pcb_insert_instance(
-                conn, ref.id, board_id, comp_id, refdes, c
+            fps_by_comp = self._pcb_footprint_refs_by_components(
+                conn, ref.id, pending_completions
             )
-            counts["instances"] += 1
-            inst_by_refdes[refdes] = (inst_id, comp_id)
+            for _c, comp_id, refdes in pending_completions:
+                counts["pins_completed"] += self._pcb_complete_footprint_pins(
+                    conn,
+                    comp_id,
+                    refdes,
+                    fp=fps_by_comp.get(comp_id),
+                    names=names_by_comp.get(comp_id, (set(), set())),
+                )
 
         for n in nets:
             name = str(n.get("name") or "").strip()
@@ -1122,6 +1150,48 @@ class PcbMixin:
         assert row is not None
         return int(row[0])
 
+    def _pcb_footprint_ref(
+        self,
+        conn: Connection,
+        ref_id: int,
+        c: dict[str, Any],
+        component_id: int | None,
+    ) -> dict[str, Any] | None:
+        """``{"pin_map", "pads"}`` of the footprint a component resolves
+        to, by the same precedence readers use
+        (``session.footprints_by_refdes``): the catalog part's cached
+        footprint first, else the design-local footprint named by
+        ``footprint``. An already-stored component contributes its stored
+        part/footprint when the put omits them. ``None`` when no cached
+        footprint exists — the ``undeclared_pad`` check's not-checked case."""
+        part = c.get("part_lcsc") or c.get("part")
+        name = c.get("footprint")
+        if component_id is not None and not (part and name):
+            row = conn.execute(
+                "SELECT part_lcsc, footprint FROM pcb_components "
+                "WHERE component_id = %s",
+                (component_id,),
+            ).fetchone()
+            if row is not None:
+                part = part or row[0]
+                name = name or row[1]
+        if part:
+            row = conn.execute(
+                "SELECT pin_map, pads FROM part_footprints WHERE lcsc = %s",
+                (str(part).strip().upper(),),
+            ).fetchone()
+            if row is not None:
+                return {"pin_map": row[0] or {}, "pads": row[1] or []}
+        if name:
+            row = conn.execute(
+                "SELECT pin_map, pads FROM pcb_local_footprints "
+                "WHERE ref_id = %s AND name = %s",
+                (ref_id, str(name)),
+            ).fetchone()
+            if row is not None:
+                return {"pin_map": row[0] or {}, "pads": row[1] or []}
+        return None
+
     def _pcb_footprint_pin_map(
         self,
         conn: Connection,
@@ -1129,38 +1199,201 @@ class PcbMixin:
         c: dict[str, Any],
         existing: tuple[int, int] | None,
     ) -> dict[str, Any] | None:
-        """The ``pin_map`` of the footprint a component resolves to, by the
-        same precedence readers use (``session.footprints_by_refdes``):
+        """The ``pin_map`` half of :meth:`_pcb_footprint_ref`, for callers
+        (``_validate_pin_declarations``) that only need the name map."""
+        fp = self._pcb_footprint_ref(
+            conn, ref_id, c, existing[1] if existing is not None else None
+        )
+        return fp["pin_map"] if fp is not None else None
+
+    def _pcb_pin_names_by_components(
+        self, conn: Connection, component_ids: list[int]
+    ) -> dict[int, tuple[set[str], set[str]]]:
+        """``{component_id: (all pin names, ACTIVE pin names)}`` in ONE
+        query for a whole apply batch — the dedupe material
+        ``_pcb_complete_footprint_pins`` needs without an N+1.
+
+        BOTH sets matter, and they are not interchangeable: the dedupe
+        runs against ALL names — retired rows included — because a pin the
+        author deliberately retired must NOT be silently un-retired by
+        completion re-declaring its name (the ``ON CONFLICT DO NOTHING``
+        partial index ignores retired rows, so without this the retire
+        silently reverts on the next re-apply). The join-failure guard
+        runs against ACTIVE names only — a retired name matching no pad
+        label is a dead fact, not a live mismatch."""
+        out: dict[int, tuple[set[str], set[str]]] = {}
+        if not component_ids:
+            return out
+        for cid, name, retired in conn.execute(
+            "SELECT component_id, name, (retired_at IS NOT NULL) "
+            "FROM pcb_pins WHERE component_id = ANY(%s)",
+            (component_ids,),
+        ).fetchall():
+            all_names, active = out.setdefault(int(cid), (set(), set()))
+            all_names.add(str(name))
+            if not retired:
+                active.add(str(name))
+        return out
+
+    def _pcb_footprint_refs_by_components(
+        self,
+        conn: Connection,
+        ref_id: int,
+        pending: list[tuple[dict[str, Any], int, str]],
+    ) -> dict[int, dict[str, Any]]:
+        """``{component_id: {"pin_map", "pads"}}`` for a whole apply batch
+        in ≤3 queries — the footprint half of declare-all completion's
+        reads, so a 50-component put does not pay three point-lookups per
+        instance. Same resolution precedence as :meth:`_pcb_footprint_ref`:
         the catalog part's cached footprint first, else the design-local
-        footprint named by ``footprint``. An already-stored component
-        contributes its stored part/footprint when the put omits them."""
-        part = c.get("part_lcsc") or c.get("part")
-        name = c.get("footprint")
-        if existing is not None and not (part and name):
-            row = conn.execute(
-                "SELECT part_lcsc, footprint FROM pcb_components "
-                "WHERE component_id = %s",
-                (existing[1],),
-            ).fetchone()
-            if row is not None:
-                part = part or row[0]
-                name = name or row[1]
-        if part:
-            row = conn.execute(
-                "SELECT pin_map FROM part_footprints WHERE lcsc = %s",
-                (str(part).strip().upper(),),
-            ).fetchone()
-            if row is not None:
-                return row[0]
-        if name:
-            row = conn.execute(
-                "SELECT pin_map FROM pcb_local_footprints "
-                "WHERE ref_id = %s AND name = %s",
-                (ref_id, str(name)),
-            ).fetchone()
-            if row is not None:
-                return row[0]
-        return None
+        footprint named by ``footprint``; the component's stored
+        part/footprint fill in when the put entry omits them."""
+        if not pending:
+            return {}
+        comp_ids = [comp_id for _c, comp_id, _r in pending]
+        stored: dict[int, tuple[Any, Any]] = {
+            int(cid): (part, name)
+            for cid, part, name in conn.execute(
+                "SELECT component_id, part_lcsc, footprint FROM pcb_components "
+                "WHERE component_id = ANY(%s)",
+                (comp_ids,),
+            ).fetchall()
+        }
+        parts: set[str] = set()
+        fp_names: set[str] = set()
+        effective: dict[int, tuple[Any, Any]] = {}
+        for c, comp_id, _refdes in pending:
+            part = c.get("part_lcsc") or c.get("part")
+            name = c.get("footprint")
+            s_part, s_name = stored.get(comp_id, (None, None))
+            if not (part and name):
+                part = part or s_part
+                name = name or s_name
+            if part:
+                parts.add(str(part).strip().upper())
+            if name:
+                fp_names.add(str(name))
+            effective[comp_id] = (part, name)
+        by_lcsc: dict[str, dict[str, Any]] = {}
+        if parts:
+            for lcsc, pin_map, pads in conn.execute(
+                "SELECT lcsc, pin_map, pads FROM part_footprints WHERE lcsc = ANY(%s)",
+                (sorted(parts),),
+            ).fetchall():
+                by_lcsc[str(lcsc)] = {
+                    "pin_map": pin_map or {},
+                    "pads": pads or [],
+                }
+        by_name: dict[str, dict[str, Any]] = {}
+        if fp_names:
+            for name, pin_map, pads in conn.execute(
+                "SELECT name, pin_map, pads FROM pcb_local_footprints "
+                "WHERE ref_id = %s AND name = ANY(%s)",
+                (ref_id, sorted(fp_names)),
+            ).fetchall():
+                by_name[str(name)] = {
+                    "pin_map": pin_map or {},
+                    "pads": pads or [],
+                }
+        out: dict[int, dict[str, Any]] = {}
+        for _c, comp_id, _r in pending:
+            part, name = effective[comp_id]
+            if part is not None and str(part).strip().upper() in by_lcsc:
+                out[comp_id] = by_lcsc[str(part).strip().upper()]
+            elif name is not None and str(name) in by_name:
+                out[comp_id] = by_name[str(name)]
+        return out
+
+    def _pcb_complete_footprint_pins(
+        self,
+        conn: Connection,
+        component_id: int,
+        refdes: str,
+        *,
+        fp: dict[str, Any] | None,
+        names: tuple[set[str], set[str]],
+    ) -> int:
+        """Declare a pin for every pad the component's cached footprint
+        names and the component did not declare — "a package should always
+        have all the pins" (docs/backlog/pcb-lazy-netlist-and-checks.md
+        Slice 2; Defect A of docs/backlog/ewod-controller-and-hv-supply.md,
+        taken over by that slice).
+
+        Without this, :func:`precis.pcb.realize.pads_for_ir`'s per-pin loop
+        emits a pad only for declared pins, so a footprint land no pin
+        claimed was invisible to ``check_clearance``, connectivity and the
+        router's occupancy stamping — the gr339236/gr346744 blindness
+        class. (Non-primary pads DO reach the model through
+        :func:`precis.pcb.ir.footprint_pad_set`, but with no pin id: never
+        a swap target, never a connectivity member, and un-nameable in a
+        netlist.) A completed pin declares with no connection, so
+        ``ir.from_graph`` lands it ``NO_NET`` and the maze's sentinel-owner
+        scheme makes it a routing obstacle as before — geometry unchanged,
+        only the pin exists now.
+
+        The pin name is the ``pin_map`` name (the semantic one —
+        ``pin_map["7"].name == "VDD"``), falling back to the pad NUMBER
+        when the map carries no entry for that pad. The footprint's own
+        ``pin_map`` tags ride along (a footprint-level ``nc`` tag reaches
+        the pin, so a true no-connect stays out of ``unconnected_pin``);
+        ``meta.completed_from_footprint`` marks the declaration's origin
+        for a reader telling author intent from store completion. The
+        insert is name-deduped by ``_pcb_insert_pins``'s
+        ``ON CONFLICT DO NOTHING``: an author-declared pin is never
+        overwritten, and a re-apply after ``op='footprint'`` cached the
+        footprint late completes the declarations then — which is why this
+        runs for existing components too, not only on first insert.
+
+        ``names`` is ``(all pin names incl. retired, active pin names)``
+        from :meth:`_pcb_pin_names_by_components` — see that docstring for
+        why the dedupe must cover retired rows. **Join-failed instances
+        are skipped, not completed**: when an ACTIVE declared pin name
+        matches no footprint label, :func:`precis.pcb.ir.footprint_pad_set`
+        skips the whole instance and ``pin_name_mismatch`` already reports
+        the mismatched name. Completing on top would hand every footprint
+        land a fresh netless pin while the one genuinely-wrong pin stays a
+        synthesized bound — the same defect, buried under new noise. The
+        author must fix the name; completion resumes on the next apply.
+
+        ``fp`` is the component's resolved ``{"pin_map", "pads"}`` from
+        :meth:`_pcb_footprint_refs_by_components` (``None`` = footprint
+        not cached — the ``undeclared_pad`` check's not-checked case).
+
+        Returns the number of pins actually inserted."""
+        if fp is None:
+            return 0
+        pin_map = fp.get("pin_map") or {}
+        all_names, active_names = names
+        decls: list[dict[str, Any]] = []
+        labels: dict[str, dict[str, Any]] = {}
+        for pad in fp.get("pads") or []:
+            if not str(pad.get("number") or "").strip():
+                continue
+            label = pcb_padplace.pad_label(pad, pin_map)
+            if label and label not in labels:
+                entry = pin_map.get(str(pad.get("number")))
+                labels[label] = (
+                    {"name": label, "tags": []}
+                    if isinstance(entry, str)
+                    else {
+                        "name": label,
+                        "tags": list((entry or {}).get("tags") or []),
+                    }
+                )
+        if active_names - set(labels):
+            return 0  # join-failed: see docstring
+        for name, decl in labels.items():
+            # A name two pads share (the HV507's duplicate non-channel
+            # names) declares ONE pin; :func:`precis.pcb.ir.
+            # footprint_pad_set` resolves BOTH pads to it by label, so the
+            # second same-named pad is primary-sibling geometry, not an
+            # undeclared pad. ``all_names`` (retired included) is the
+            # dedupe set: re-declaring a name the author retired would
+            # silently undo the retirement.
+            if name in all_names:
+                continue
+            decls.append({**decl, "meta": {"completed_from_footprint": True}})
+        return self._pcb_insert_pins(conn, component_id, decls, refdes=refdes)
 
     def _pcb_resolve_parts(
         self, conn: Connection, lcscs: list[str]
@@ -1212,6 +1445,24 @@ class PcbMixin:
             name = str(p.get("name") or "").strip()
             if not name:
                 continue
+            # §1j intent markers (pcb-lazy-netlist-and-checks.md Slice 2):
+            # ``meta`` passes through verbatim; the bool keys
+            # ``unused``/``must_terminate``/``nc`` are the authored
+            # shorthand for the same meta facts, and ``nc: true`` ALSO adds
+            # the ``nc`` tag, which the existing tags vocabulary already
+            # carries. ``nc`` is part-level (datasheet: no internal
+            # connection), ``must_terminate`` part-level (must not float),
+            # ``unused`` design-level (this board does not use it —
+            # still full geometry, still matcher-available);
+            # ``drc.check_unconnected_pins`` reads them back off the
+            # graph's ``unconnected`` rows.
+            tags = list(p.get("tags") or [])
+            meta = dict(p.get("meta") or {})
+            for marker in ("unused", "must_terminate", "nc"):
+                if p.get(marker):
+                    meta[marker] = True
+            if meta.get("nc") and "nc" not in tags:
+                tags.append("nc")
             try:
                 # A DB pad conflict remains authoritative. Unwind its
                 # savepoint before looking up the owner or translating it.
@@ -1219,17 +1470,18 @@ class PcbMixin:
                     result = conn.execute(
                         """
                 INSERT INTO pcb_pins
-                    (component_id, pad, name, tags, description, note)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (component_id, pad, name, tags, description, note, meta)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (component_id, name) WHERE retired_at IS NULL DO NOTHING
                 """,
                         (
                             component_id,
                             p.get("pad"),
                             name,
-                            list(p.get("tags") or []),
+                            tags,
                             p.get("description"),
                             p.get("note"),
+                            Jsonb(meta),
                         ),
                     )
             except UniqueViolation as exc:
@@ -1925,9 +2177,18 @@ class PcbMixin:
                 if nid in nets:
                     nets[nid]["members"].append({"refdes": r[1], "pin": r[2]})
             unconnected = [
-                {"refdes": r[0], "pin": r[1]}
+                # `tags`/`meta` carry the §1j intent markers
+                # (`nc`/`unused`/`must_terminate`) that
+                # `drc.check_unconnected_pins` reads — a netless pin is a
+                # complaint only when the author did not mark WHY.
+                {
+                    "refdes": r[0],
+                    "pin": r[1],
+                    "tags": list(r[2] or []),
+                    "meta": dict(r[3] or {}),
+                }
                 for r in conn.execute(
-                    "SELECT i.refdes, p.name "
+                    "SELECT i.refdes, p.name, p.tags, p.meta "
                     "FROM pcb_instances i "
                     "JOIN pcb_pins p ON p.component_id = i.component_id "
                     "  AND p.retired_at IS NULL "

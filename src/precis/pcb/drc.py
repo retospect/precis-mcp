@@ -12,6 +12,13 @@ check, not the main event. Both emit
 ``pcb_drc_findings`` rows and share ``view='drc'`` (``handlers/pcb.py``);
 ``eyes.drc_lite`` is superseded and retired.
 
+Two NETLIST-level rules report on the same surface since Slice 2 of
+docs/backlog/pcb-lazy-netlist-and-checks.md (§1g: one check surface, not
+two — an ERC finding is the same row with ``margin_mm`` empty):
+:func:`check_unconnected_pins`, phase-aware through
+:func:`derive_phase`/``PHASES``, and :func:`check_undeclared_pads`, the
+declare-all completion's safety net.
+
 **Input model**: the same copper-model dict :mod:`precis.pcb.realize`
 produces (:func:`precis.pcb.realize.to_gerber_model`) that
 :mod:`precis.pcb.gerber` consumes — ``{"layers": [...], "outline": [...],
@@ -2839,6 +2846,219 @@ def check_unrouted(
     return out
 
 
+# ── netlist-level rules on the same check surface ──────────────────────
+#
+# docs/backlog/pcb-lazy-netlist-and-checks.md §1g ("one check surface, not
+# two") + §1j (intent markers): the rules below need no geometry — they
+# judge the netlist — but they report on THIS surface, as the same
+# ``DrcFinding`` row (``margin_mm=None``), because splitting the surface
+# would move the schematic/layout division into the checker rather than
+# remove it.
+
+
+#: Design phases for phase-aware severity (§1g's "severity is a function
+#: of ``(rule, phase)``"), cheapest-to-latest. ``fab`` is never derived —
+#: it is the author's claim the design is tape-out ready (Slice 8's
+#: ``op='phase'``); :func:`derive_phase` only ever reports the three the
+#: store can see.
+PHASES = ("netlist", "placed", "routed", "fab")
+
+
+def derive_phase(*, placed: bool, routed: bool) -> str:
+    """The design's phase from what the store can observe (§1g): nothing
+    placed → ``netlist``; placed but the router never ran → ``placed``;
+    else ``routed``. ``fab`` is authored, never derived — a check that
+    escalates at ``fab`` can only reach that tier when the author (Slice
+    8's ``op='phase'``) says so."""
+    if not placed:
+        return "netlist"
+    return "routed" if routed else "placed"
+
+
+def _pin_marker(pin: dict[str, Any]) -> str | None:
+    """The §1j intent marker a netless pin carries — ``"nc"`` /
+    ``"must_terminate"`` / ``"unused"`` / ``None``. Each reads the pin's
+    meta bool (``_pcb_apply`` writes it for the ``nc: true`` /
+    ``unused: true`` / ``must_terminate: true`` decl keys) OR the same word
+    in ``tags``, so a footprint ``pin_map`` tag — the part-level authoring
+    surface ``nc``/``must_terminate`` belong to — reaches the pin through
+    completion untouched. Resolution order is the spec's: ``nc`` and
+    ``unused`` silence the complaint; ``must_terminate`` overrides
+    ``unused`` but not ``nc`` (a no-internal-connection pad cannot be
+    terminated — both set is contradictory authoring that resolves the
+    physical fact's way)."""
+    tags = {str(t) for t in pin.get("tags") or []}
+    meta = pin.get("meta") or {}
+    if "nc" in tags or meta.get("nc"):
+        return "nc"
+    if "must_terminate" in tags or meta.get("must_terminate"):
+        return "must_terminate"
+    if "unused" in tags or meta.get("unused"):
+        return "unused"
+    return None
+
+
+def check_unconnected_pins(
+    unconnected: Iterable[dict[str, Any]] | None, *, phase: str = "netlist"
+) -> list[DrcFinding]:
+    """A declared pin with no net and no stated reason is a complaint —
+    phase-aware (§1j): ``warn`` while the board is still being worked
+    (``netlist``/``placed``/``routed`` — "did you mean to wire this?" is a
+    TODO then, not a defect), ``error`` at ``fab``, where an unwired pin
+    the author never accounted for is a dead-board class bug.
+
+    The §1j markers are why this can exist at all — declaring every
+    footprint pad as a pin (Slice 2) without them would emit ~24
+    intentional "unconnected" complaints per EWOD sink and train the
+    reader to ignore the rule. ``nc`` (part-level: the datasheet says no
+    internal connection) never complains. ``unused`` (design-level: this
+    board does not use a real pin) never complains about being netless —
+    the pad keeps full geometry and stays matcher-available. The marker
+    that pays is ``must_terminate`` (part-level: the pin must not float —
+    a CMOS input, /OE, /CS, the HV507's BL/POL): it errors whenever it is
+    netless, **even if also marked ``unused``**, at every phase.
+
+    Aggregation: dozens of unmarked spares on one MCU would otherwise be
+    dozens of identical warnings — the same "train the reader to ignore
+    it" failure the markers exist to prevent. Below ``fab`` the rule
+    therefore emits ONE warn per instance listing the pin names; at
+    ``fab`` each pin is its own error row, because the bundle review reads
+    one line per defect. ``must_terminate`` stays per-pin at every phase —
+    a floating no-float pin is never bulk-summarized.
+
+    ``unconnected`` entries are ``pcb_graph``'s ``unconnected`` rows:
+    ``{refdes, pin, tags, meta}``. A pin with a net never reaches this
+    rule — it is about absence of a net, nothing else."""
+    findings: list[DrcFinding] = []
+    spare_by_refdes: dict[str, list[str]] = {}
+    for pin in unconnected or []:
+        marker = _pin_marker(pin)
+        if marker in ("nc", "unused"):
+            continue
+        refdes, name = str(pin.get("refdes")), str(pin.get("pin"))
+        if marker == "must_terminate":
+            findings.append(
+                DrcFinding(
+                    rule="unconnected_pin",
+                    severity="error",
+                    where=f"pin {refdes}/{name}",
+                    detail=(
+                        f"pin {refdes}/{name} is marked must_terminate and has "
+                        "no net — a pin that must not float is floating "
+                        "(the `unused` marker does not exempt it)"
+                    ),
+                    objects=({"refdes": refdes, "pin": name, "marker": marker},),
+                )
+            )
+            continue
+        if phase == "fab":
+            findings.append(
+                DrcFinding(
+                    rule="unconnected_pin",
+                    severity="error",
+                    where=f"pin {refdes}/{name}",
+                    detail=(
+                        f"pin {refdes}/{name} has no net and no intent marker — "
+                        "wire it, or mark it `nc` (part: no internal "
+                        "connection) / `unused` (this board does not use it) / "
+                        "`must_terminate` (it must not float — and then it may "
+                        "NOT stay netless)"
+                    ),
+                    objects=({"refdes": refdes, "pin": name},),
+                )
+            )
+            continue
+        spare_by_refdes.setdefault(refdes, []).append(name)
+    for refdes in sorted(spare_by_refdes):
+        names = sorted(spare_by_refdes[refdes])
+        shown = ", ".join(names[:12]) + (
+            f" … +{len(names) - 12}" if len(names) > 12 else ""
+        )
+        findings.append(
+            DrcFinding(
+                rule="unconnected_pin",
+                severity="warn",
+                where=f"part {refdes}",
+                detail=(
+                    f"{len(names)} spare pad(s) on {refdes} netless and unmarked "
+                    f"({shown}) — mark them `unused` (this board does not use "
+                    "them; full geometry, still matcher-available) or `nc` "
+                    "(part has no internal connection), or wire them"
+                ),
+                objects=({"refdes": refdes, "pins": tuple(names)},),
+            )
+        )
+    return findings
+
+
+def check_undeclared_pads(
+    model: dict[str, Any], *, unchecked: Sequence[str] = ()
+) -> list[DrcFinding]:
+    """A footprint pad no declared pin claims — the Slice-2 safety net.
+
+    ``_pcb_apply`` completes pin declarations from the cached footprint's
+    ``pin_map``, so a pad reaches ``model["pads"]`` carrying
+    ``undeclared`` (:func:`precis.pcb.realize._footprint_pad_rows`) only
+    when completion could not run: the footprint was cached AFTER the
+    component was applied (``op='footprint'`` — a re-put completes the
+    declarations), or the design predates declare-all. The pad is still
+    real geometry — it is checked for clearance like any pad — but the
+    netlist has no name for it, which is what this rule complains about:
+    warn, never silent, never a clean pass.
+
+    ``unchecked`` names refdes whose footprint is NOT cached: the rule
+    cannot tell whether those packages have undeclared pads at all, so it
+    says so — "a check that cannot fire must say so", the same contract
+    ``synthesized_footprint`` keeps."""
+    findings: list[DrcFinding] = []
+    for pad in model.get("pads") or []:
+        if not pad.get("undeclared"):
+            continue
+        refdes = str(pad.get("refdes") or "")
+        label = str(pad.get("pin") or "")
+        number = pad.get("pad_number")
+        findings.append(
+            DrcFinding(
+                rule="undeclared_pad",
+                severity="warn",
+                where=f"pad {refdes}/{number or label}",
+                detail=(
+                    f"pad {number or label} on {refdes} is real footprint "
+                    "copper with no declared pin — it is checked for "
+                    "geometry but the netlist cannot name it; re-put the "
+                    "component so _pcb_apply completes its pin declarations "
+                    "from the cached footprint"
+                ),
+                objects=(
+                    {
+                        "refdes": refdes,
+                        "pin": label,
+                        "pad_number": number,
+                        "layer": pad.get("layer"),
+                    },
+                ),
+            )
+        )
+    if unchecked:
+        names = ", ".join(sorted(str(r) for r in unchecked))
+        findings.append(
+            DrcFinding(
+                rule="undeclared_pad",
+                severity="warn",
+                where="footprint cache",
+                detail=(
+                    f"{names}: no cached footprint — whether these parts "
+                    "have pads no pin declares CANNOT be checked "
+                    "(op='footprint' or a catalog fetch completes them)"
+                ),
+                objects=tuple(
+                    {"refdes": str(r), "not_checked": True} for r in sorted(unchecked)
+                ),
+            )
+        )
+    return findings
+
+
 def run_geometric_drc(
     model: dict[str, Any],
     *,
@@ -2853,6 +3073,9 @@ def run_geometric_drc(
     census: tuple[SilkPlacement, ...] | None = None,
     holes: Sequence[HoleKeepout] = (),
     edge_mates: Sequence[Any] | None = None,
+    unconnected: Iterable[dict[str, Any]] | None = None,
+    phase: str = "netlist",
+    undeclared_unchecked: Sequence[str] = (),
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -2895,6 +3118,15 @@ def run_geometric_drc(
     ``edge_mates`` (:func:`precis.pcb.edge_mate.records`) feeds
     :func:`check_edge_mating`; ``None`` keeps a caller that does not pass it
     silent on that axis.
+
+    ``unconnected`` + ``phase`` + ``undeclared_unchecked`` feed the
+    netlist-level rules (§1g's one check surface):
+    :func:`check_unconnected_pins` (the ``pcb_graph`` ``unconnected`` rows,
+    markers read off their ``tags``/``meta``, severity set by ``phase``)
+    and :func:`check_undeclared_pads` (``undeclared`` pad flags already on
+    ``model["pads"]``, plus a not-checked note for the refdes
+    ``undeclared_unchecked`` names). ``None``/empty keeps a caller that
+    never built them silent on that axis — same contract as ``unrouted``.
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
@@ -2915,6 +3147,8 @@ def run_geometric_drc(
     findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
     findings += check_unrouted(unrouted)
+    findings += check_unconnected_pins(unconnected, phase=phase)
+    findings += check_undeclared_pads(model, unchecked=undeclared_unchecked)
     if courtyards:
         findings += check_courtyard_overlap(
             courtyards, bottom_by_refdes=courtyard_bottom
@@ -3053,6 +3287,7 @@ def run_placement_drc(
 
 __all__ = [
     "DEFAULT_COURTYARD_RADIUS_MM",
+    "PHASES",
     "SILK_LEGIBILITY_HEIGHT_MM",
     "WORSE_MARGIN_EPS_MM",
     "DrcFinding",
@@ -3072,12 +3307,15 @@ __all__ = [
     "check_silk_printability",
     "check_synthesized_footprint",
     "check_trace_width",
+    "check_unconnected_pins",
+    "check_undeclared_pads",
     "check_unrouted",
     "check_via_pad_keepout",
     "check_via_via_keepout",
     "clearance_pairs_indexed",
     "clearance_violations_naive",
     "delta_against",
+    "derive_phase",
     "finding_identity",
     "finding_key",
     "process_for_stackup",

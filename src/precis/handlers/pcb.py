@@ -727,6 +727,11 @@ class PcbHandler(Handler):
         # (gr457053).
         if counts.get("nets_patched"):
             extra += f", {counts['nets_patched']} net(s) patched"
+        if counts.get("pins_completed"):
+            extra += (
+                f", +{counts['pins_completed']} pin(s) completed from the "
+                "cached footprint (Slice 2 declare-all)"
+            )
         if n_classes:
             extra += f", +{n_classes} net_class(es)"
         head = (
@@ -2465,11 +2470,18 @@ class PcbHandler(Handler):
 
     def _drc_geometry(
         self, ref_id: int, layers: list[str]
-    ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[float, float]]]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, list[tuple[float, float]]],
+        dict[str, dict[str, Any]],
+    ]:
         """DRC's pads (the same IR-sourced geometry :meth:`_drc_pads`
         builds, off ONE ``build_ir`` call here rather than two independent
         ones) plus each instance's courtyard POLYGON in local-frame
-        coordinates, keyed by refdes.
+        coordinates, keyed by refdes, plus the refdes-keyed footprint map
+        the pad build consumed (Slice 2's ``undeclared_pad`` rule needs it
+        to tell "footprint cached, every pad declared" from "footprint
+        never cached — cannot check").
 
         **The shape is not computed here, and since 2026-08-30 there is
         only one of it.** :func:`precis.pcb.ir.instance_courtyard_polygon`
@@ -2513,9 +2525,11 @@ class PcbHandler(Handler):
             clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
             fallback_half_extent_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0,
         )
-        return pads, {
-            str(ir.instance_refdes[i]): polys[i] for i in range(ir.n_instances)
-        }
+        return (
+            pads,
+            {str(ir.instance_refdes[i]): polys[i] for i in range(ir.n_instances)},
+            footprints,
+        )
 
     def _drc_drills(self, ir: pcb_ir.PcbIR) -> list[dict[str, Any]]:
         """``model['drills']`` for :func:`precis.pcb.drc.
@@ -3565,7 +3579,26 @@ class PcbHandler(Handler):
         # pad source is how this build's recurring defect works — one rule,
         # two call sites, drifted — and connectivity is precisely the check
         # that would be fooled by pads in the wrong place.
-        pads, courtyard_local = self._drc_geometry(ref_id, layer_names)
+        pads, courtyard_local, footprints = self._drc_geometry(ref_id, layer_names)
+
+        # Slice 2's netlist-level inputs: the phase this board is in
+        # (derived — `fab` is authored, Slice 8's op='phase'), the
+        # netless-pin rows with their §1j markers, and the refdes set the
+        # `undeclared_pad` rule cannot check because no footprint is
+        # cached for them.
+        phase = pcb_drc.derive_phase(
+            placed=any(
+                i.get("x") is not None and i.get("y") is not None
+                for i in design["instances"]
+            ),
+            routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
+        )
+        undeclared_unchecked = [
+            str(i.get("refdes"))
+            for i in design["instances"]
+            if (i.get("part_lcsc") or i.get("footprint"))
+            and str(i.get("refdes")) not in footprints
+        ]
 
         copper = self.store.pcb_copper_list(int(board["board_id"]))
         # Round-4 contract change (docs/backlog/pcb-ewod-multitile.md's
@@ -3589,14 +3622,41 @@ class PcbHandler(Handler):
         # EWOD ones — an ordinary placed-but-unrouted board with cached
         # real footprints (e.g. `esp32c3_reference`) now gets pads-only
         # findings here too, instead of "not yet".
+        graph = self.store.pcb_graph(ref_id)
         has_real_pads = any(not p.get("synthesized") for p in pads)
         if not copper and not has_real_pads:
-            return None
+            # No geometry worth checking — but Slice 2's netlist-level
+            # rules need none: a board whose only signal is an unmarked
+            # unconnected pin, a floating `must_terminate`, or an
+            # uncached footprint gets a real run recording exactly that
+            # rather than "no realized copper yet" hiding the only
+            # complaint there is. `check_synthesized_footprint` runs too:
+            # its synthesized/pin_unmatched pad flags also need no real
+            # geometry, and a join-failed or uncached part's
+            # `pin_name_mismatch`/`synthesized_footprint` is exactly the
+            # complaint this bail used to hide.
+            bail_model = {"layers": layer_names, "pads": pads}
+            findings = (
+                pcb_drc.check_unconnected_pins(graph.get("unconnected"), phase=phase)
+                + pcb_drc.check_undeclared_pads(
+                    bail_model, unchecked=undeclared_unchecked
+                )
+                + pcb_drc.check_synthesized_footprint(bail_model)
+            )
+            if not findings:
+                return None
+            board_id = int(board["board_id"])
+            prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id)
+            run_id = uuid.uuid4().hex
+            self.store.pcb_write_drc_findings(
+                board_id, run_id, [f.to_row() for f in findings], pads_only=True
+            )
+            delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
+            return _DrcRun(run_id, list(findings), True, delta)
         pads_only = not copper
 
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
-        graph = self.store.pcb_graph(ref_id)
         ir = self._build_ir(ref_id, graph)
         instance_sides = {
             str(i.get("refdes")): str(i.get("layer") or "top")
@@ -3675,6 +3735,9 @@ class PcbHandler(Handler):
                 for h in ir.mounting_holes
             ],
             edge_mates=pcb_edge_mate.records(ir),
+            unconnected=graph.get("unconnected"),
+            phase=phase,
+            undeclared_unchecked=undeclared_unchecked,
         )
         # Parylene-coater size (gr414481): drc.py knows no components, so
         # the EWOD gate (an `ewod_pad_array` generator) is decided here.
@@ -3728,7 +3791,7 @@ class PcbHandler(Handler):
         except ValueError as exc:
             raise BadInput(f"pcb: {exc}") from exc
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
-        pads, courtyard_local = self._drc_geometry(ref_id, layer_names)
+        pads, courtyard_local, _footprints = self._drc_geometry(ref_id, layer_names)
         # A part with no real footprint is checked at a guessed bound, which
         # `view='drc'` itself calls "not a verdict" — never gate on a guess.
         guessed = {str(p.get("refdes")) for p in pads if p.get("synthesized")}
@@ -3942,6 +4005,26 @@ class PcbHandler(Handler):
         errors = [f for f in findings if f.severity == "error"]
         scope = " (pads-only — no routed copper yet)" if pads_only else ""
         if not errors:
+            # A board that could not be fully checked never reads clean:
+            # "0 errors, N warn(s) ✓" over an uncached-footprint board
+            # reports the part nobody looked at as verified copper.
+            unchecked = sorted(
+                {
+                    str(o.get("refdes"))
+                    for f in findings
+                    if f.rule == "undeclared_pad"
+                    for o in f.objects
+                    if o.get("not_checked")
+                }
+            )
+            if unchecked:
+                shown = ", ".join(unchecked[:8]) + (" …" if len(unchecked) > 8 else "")
+                return (
+                    f"⚠️  DRC: not fully checked — {len(unchecked)} "
+                    f"footprint(s) uncached ({shown}) — run {run_id[:8]}"
+                    f"{scope}",
+                    0,
+                )
             n_warn = len(findings)
             return (
                 f"DRC: 0 errors, {n_warn} warn(s) — run {run_id[:8]}{scope} ✓",

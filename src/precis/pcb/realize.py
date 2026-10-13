@@ -6743,6 +6743,16 @@ def _footprint_pad_rows(
             placed_pad["synthesized"] = False
             if part_lcsc:
                 placed_pad["part_lcsc"] = str(part_lcsc)
+            if pad.pin == NO_PIN:
+                # No declared pin claims this land (Slice 2): keep it in
+                # the model as always — it is real copper — but flag it so
+                # `drc.py::check_undeclared_pads` can complain that the
+                # netlist has no name for it (and so a same-named sibling
+                # pad is told apart from a never-declared one). `pad`'s
+                # footprint number rides along so the finding can name
+                # the physical land, not only the resolved label.
+                placed_pad["undeclared"] = True
+                placed_pad["pad_number"] = pad.number
             rows.append((pad, placed_pad))
     return rows
 

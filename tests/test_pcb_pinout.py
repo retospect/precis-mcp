@@ -299,7 +299,11 @@ def test_native_handler_rows_and_database_read_only(board, store, monkeypatch):
     assert "8.0000" in front and "21.0000" in front
     assert "31.0000" in bottom and "38.0000" in bottom and "B.Cu" in bottom
     assert "explicit-pin-pad" in bottom and "J_BOTTOM_VCC" in bottom
-    assert "unconnected" in front and "unclaimed" in front and "[6, 7]" in front
+    # Since Slice 2 (declare-all completion, pcb-lazy-netlist-and-checks.md)
+    # pads 6/6 have no pin_map entry but DO have a pin — completed as pin
+    # "6" — so they read `unconnected`, never `unclaimed`.
+    assert "unconnected" in front and "unclaimed" not in front
+    assert "[6, 7]" in front
     assert "board coordinates: unavailable (unplaced/invalid pose)" in unplaced
     assert "footprint holes (non-plated):" in front
     assert "-19.0000" in front and "6.4000" in front
