@@ -115,6 +115,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 import math
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -130,6 +131,7 @@ from shapely.ops import nearest_points
 from shapely.strtree import STRtree
 
 from precis.finding_id import finding_hash
+from precis.pcb import PIN_ETYPES
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
@@ -2867,12 +2869,47 @@ PHASES = ("netlist", "placed", "routed", "fab")
 def derive_phase(*, placed: bool, routed: bool) -> str:
     """The design's phase from what the store can observe (§1g): nothing
     placed → ``netlist``; placed but the router never ran → ``placed``;
-    else ``routed``. ``fab`` is authored, never derived — a check that
+    else ``routed``. ``fab`` is never derived — a check that
     escalates at ``fab`` can only reach that tier when the author (Slice
     8's ``op='phase'``) says so."""
     if not placed:
         return "netlist"
     return "routed" if routed else "placed"
+
+
+#: Severity as a function of ``(rule, phase)`` — §1g's one extra axis on
+#: the ``jlc_min``/``house_default`` two-tier machinery. ``unrouted``
+#: while the design is still being built is a work item, not a defect:
+#: "the board is not finished" is true by construction before routing
+#: ever ran, and reporting it at ``error`` for a netlist-phase board is
+#: the noise that trains a reader to ignore the check. At ``routed``/``fab``
+#: it stays its base severity — the router has run (or the author claims
+#: tape-out) and a net without copper IS the defect then.
+#:
+#: ``todo`` is a PRESENTED tier only: :attr:`DrcFinding.severity` keeps
+#: the base tier (``error``/``warn`` — ``pcb_drc_findings.severity``'s
+#: CHECK accepts nothing else) and the check view renders
+#: :func:`severity_at`'s value. Nothing stored ever claims "todo", so a
+#: persisted run's severity stays the rule's own verdict, not the phase
+#: it happened to be judged under.
+PHASE_SEVERITY: dict[str, dict[str, str]] = {
+    "unrouted": {"netlist": "todo", "placed": "todo"},
+}
+
+
+def severity_at(rule: str, severity: str, phase: str) -> str:
+    """The tier ``view='check'`` shows for ``rule`` at ``phase`` —
+    :data:`PHASE_SEVERITY` when it names the pair, the rule's base
+    severity otherwise. (Rules whose phase-response is intrinsic, like
+    ``unconnected_pin``'s warn-before-fab/error-at-fab, already take
+    ``phase`` themselves and are not listed here.)"""
+    return PHASE_SEVERITY.get(rule, {}).get(phase, severity)
+
+
+# ``PIN_ETYPES`` (the closed §1i pin etype vocabulary) is imported at
+# the top from ``precis.pcb`` — ``ir.py`` reads it too, and
+# ``ir → drc → rules → ir`` would be a cycle — and re-exported here in
+# ``__all__`` since the ERC rules below are its primary reader.
 
 
 def _pin_marker(pin: dict[str, Any]) -> str | None:
@@ -3223,6 +3260,359 @@ def check_coating_extent(
     ]
 
 
+# ── ERC: the §1h rules over §1i pin semantics (Slice 5) ──────────────
+#
+# These are netlist rules — they read the graph's ``nets`` (members
+# carrying ``tags``/``meta`` straight off ``pcb_pins``), never geometry —
+# but they report on THIS surface as the same ``DrcFinding`` row with
+# ``margin_mm=None``. Every one of them has an explicit CANNOT-FIRE path:
+# a design that declares none of the vocabulary a rule needs gets a
+# ``not_checked`` warn naming the gap, never a silent pass — a rule that
+# cannot see is not a rule that passed.
+
+
+def _pin_etype(pin: dict[str, Any]) -> str | None:
+    """The pin's §1i electrical role — the ``PIN_ETYPES`` word in its
+    tags (``_pcb_apply`` validates + stores it there; a footprint
+    ``pin_map`` tag lands the same way through completion)."""
+    tags = {str(t) for t in pin.get("tags") or []}
+    return next((t for t in PIN_ETYPES if t in tags), None)
+
+
+def _pin_obj(pin: dict[str, Any]) -> dict[str, Any]:
+    return {"refdes": pin.get("refdes"), "pin": pin.get("pin")}
+
+
+def _erc_not_checked(rule: str, why: str) -> DrcFinding:
+    """The rule's cannot-fire path: one warn naming what it would have
+    needed — the same "CANNOT be checked" phrasing
+    ``check_undeclared_pads``'s NOT-CHECKED note established."""
+    return DrcFinding(
+        rule=rule,
+        severity="warn",
+        where="netlist",
+        detail=(
+            f"{rule} CANNOT be checked — {why}; the check is a "
+            "not-checked, not a clean pass"
+        ),
+        objects=({"not_checked": True, "rule": rule},),
+    )
+
+
+#: Etypes that exclusively DRIVE a net — two of them tied together is a
+#: push-pull contention (``pin_conflict``). ``open_drain``/``tristate``
+#: are shareable by design (wired-OR, buses); ``bidi`` drives AND reads
+#: so it satisfies ``no_driver`` but two bidis on one net is legal.
+_EXCLUSIVE_DRIVERS = frozenset({"output", "power_out"})
+_DRIVERS = _EXCLUSIVE_DRIVERS | {"bidi", "open_drain", "tristate"}
+_CONSUMERS = frozenset({"input", "power_in"})
+
+
+def check_pin_conflicts(
+    nets: Iterable[dict[str, Any]],
+) -> list[DrcFinding]:
+    """Two exclusive drivers (``output``/``power_out``) on one net — the
+    classic ERC error two outputs tied together hides as. Shareable
+    drivers (``open_drain``, ``tristate``, ``bidi``) never conflict.
+
+    ``nets`` are the graph's net dicts (``members`` carry ``tags``/
+    ``meta``). Cannot fire — and says so — when no pin anywhere declares
+    an etype."""
+    if not any(_pin_etype(m) for n in nets for m in n.get("members") or []):
+        return [
+            _erc_not_checked("pin_conflict", "no pin in the design declares an etype")
+        ]
+    out: list[DrcFinding] = []
+    for net in nets:
+        drivers = [
+            m for m in net.get("members") or [] if _pin_etype(m) in _EXCLUSIVE_DRIVERS
+        ]
+        if len(drivers) < 2:
+            continue
+        out.append(
+            DrcFinding(
+                rule="pin_conflict",
+                severity="error",
+                where=f"net {net['name']}",
+                detail=(
+                    f"net {net['name']} has {len(drivers)} exclusive "
+                    "drivers ("
+                    + ", ".join(f"{m['refdes']}/{m['pin']}" for m in drivers)
+                    + ") — two outputs tied together contend"
+                ),
+                objects=tuple(_pin_obj(m) for m in drivers),
+            )
+        )
+    return out
+
+
+def check_no_driver(
+    nets: Iterable[dict[str, Any]],
+) -> list[DrcFinding]:
+    """A net with a declared consumer (``input``/``power_in``) but no
+    pin that can drive it — the net floats by construction. Advisory
+    (``warn``): a connector pin awaiting a second board is the same
+    shape."""
+    if not any(_pin_etype(m) for n in nets for m in n.get("members") or []):
+        return [_erc_not_checked("no_driver", "no pin in the design declares an etype")]
+    out: list[DrcFinding] = []
+    for net in nets:
+        members = net.get("members") or []
+        consumers = [m for m in members if _pin_etype(m) in _CONSUMERS]
+        if not consumers:
+            continue
+        if any(_pin_etype(m) in _DRIVERS for m in members):
+            continue
+        out.append(
+            DrcFinding(
+                rule="no_driver",
+                severity="warn",
+                where=f"net {net['name']}",
+                detail=(
+                    f"net {net['name']} has input(s) "
+                    + ", ".join(f"{m['refdes']}/{m['pin']}" for m in consumers)
+                    + " but nothing that drives them"
+                ),
+                objects=tuple(_pin_obj(m) for m in consumers),
+            )
+        )
+    return out
+
+
+def check_over_voltage(
+    nets: Iterable[dict[str, Any]],
+    net_class_rules: dict[str, Any] | None = None,
+) -> list[DrcFinding]:
+    """A pin on a net whose working voltage exceeds the pin's declared
+    ``max_voltage_v`` — a 20 V rail on a 12 V-tolerant input.
+
+    The net's working voltage is ``pcb_nets.working_voltage_v`` when
+    authored, else its class's ``rules['working_voltage_v']`` (the Slice
+    4c net-class key — one key, two consumers). Cannot fire — and says
+    so — when nothing declares either side (no net voltage AND no pin
+    bound). A net with no voltage and a pin with no bound simply
+    cannot be compared and is skipped, which the not-checked row covers
+    only when NO net/pin carries anything at all."""
+    class_rules = net_class_rules or {}
+    any_voltage = False
+    any_bound = False
+    out: list[DrcFinding] = []
+    for net in nets:
+        v = net.get("working_voltage_v")
+        if v is None:
+            cls = class_rules.get(str(net.get("net_class") or ""))
+            v = (cls or {}).get("working_voltage_v") if isinstance(cls, dict) else None
+        if v is not None:
+            any_voltage = True
+        for m in net.get("members") or []:
+            bound = (m.get("meta") or {}).get("max_voltage_v")
+            if bound is None:
+                continue
+            any_bound = True
+            # Absolute values — a negative rail (−12 V against a 5 V pin
+            # bound) is just as over.
+            if v is None or abs(float(bound)) >= abs(float(v)):
+                continue
+            out.append(
+                DrcFinding(
+                    rule="over_voltage",
+                    severity="error",
+                    where=f"net {net['name']}",
+                    detail=(
+                        f"net {net['name']} works at {float(v):g} V but "
+                        f"{m['refdes']}/{m['pin']} is rated "
+                        f"{float(bound):g} V max"
+                    ),
+                    objects=(_pin_obj(m),),
+                )
+            )
+    if not out and not (any_voltage and any_bound):
+        return [
+            _erc_not_checked(
+                "over_voltage",
+                "no net carries working_voltage_v or no pin carries max_voltage_v",
+            )
+        ]
+    return out
+
+
+def check_rail_crossing(
+    nets: Iterable[dict[str, Any]],
+    roles_by_refdes: dict[str, Any] | None = None,
+) -> list[DrcFinding]:
+    """Pins of two DIFFERENT rails joined on one net — a 3.3 V-domain
+    output directly driving a 5 V-domain input. Clean when a member's
+    component is a declared translator (``roles: ['level_shifter']`` —
+    the part that spans two rails on purpose).
+
+    A pin's rail is ``pcb_pins.meta['rail']``; pins that declare none
+    take no part in the comparison. Cannot fire — and says so — when no
+    pin declares a rail."""
+    roles_by_refdes = roles_by_refdes or {}
+    if not any(
+        (m.get("meta") or {}).get("rail") for n in nets for m in n.get("members") or []
+    ):
+        return [
+            _erc_not_checked("rail_crossing", "no pin in the design declares a rail")
+        ]
+    out: list[DrcFinding] = []
+    for net in nets:
+        members = net.get("members") or []
+        by_rail: dict[str, dict[str, Any]] = {}
+        for m in members:
+            rail = (m.get("meta") or {}).get("rail")
+            if rail is not None and str(rail) not in by_rail:
+                by_rail[str(rail)] = m
+        if len(by_rail) < 2:
+            continue
+        if any(
+            "level_shifter" in (roles_by_refdes.get(str(m.get("refdes"))) or [])
+            for m in members
+        ):
+            continue
+        out.append(
+            DrcFinding(
+                rule="rail_crossing",
+                severity="error",
+                where=f"net {net['name']}",
+                detail=(
+                    f"net {net['name']} joins pins of rails "
+                    + ", ".join(
+                        f"{r!r} ({m['refdes']}/{m['pin']})"
+                        for r, m in sorted(by_rail.items())
+                    )
+                    + " with no level_shifter between them"
+                ),
+                objects=tuple(_pin_obj(m) for m in by_rail.values()),
+            )
+        )
+    return out
+
+
+#: How far from an IC's ``power_in`` pin a rail capacitor may sit before
+#: ``no_decoupling`` warns — a rule parameter's house default.
+#: ``SOURCE NEEDED`` (the spec's own marker): the µs-scale instinct is
+#: "as close as the package allows"; 5 mm is the round figure a 0402
+#: can share a pour within. Tune per design via the ``max_distance_mm``
+#: argument.
+DEFAULT_DECOUPLING_DISTANCE_MM = 5.0
+
+
+def check_no_decoupling(
+    nets: Iterable[dict[str, Any]],
+    positions: dict[tuple[str, str], tuple[float, float]] | None = None,
+    *,
+    max_distance_mm: float = DEFAULT_DECOUPLING_DISTANCE_MM,
+    roles_by_refdes: dict[str, Any] | None = None,
+) -> list[DrcFinding]:
+    """Every ``power_in`` pin needs a capacitor on its rail within
+    ``max_distance_mm`` — the bypass cap that keeps a switching IC's
+    supply stiff. A capacitor here is a member pin of a ``^C\\d+$``
+    refdes (the schematic convention), or of a component carrying the
+    ``capacitor`` role — a ``passive`` etype alone does NOT count (a
+    resistor or inductor on the rail within reach must not silence it),
+    and neither does a connector-style refdes (``CN1``, ``CAM1``).
+
+    ``positions`` maps ``(refdes, pin)`` to board mm — the pad geometry
+    the run already built; ``roles_by_refdes`` is the instance's
+    ``roles`` list. Cannot fire — and says so — when no pin declares
+    ``power_in``, or when the board is not yet placed (nothing has a
+    position)."""
+    nets = list(nets)
+    positions = positions or {}
+    power_in = [
+        (net, m)
+        for net in nets
+        for m in net.get("members") or []
+        if _pin_etype(m) == "power_in"
+    ]
+    if not power_in:
+        return [
+            _erc_not_checked(
+                "no_decoupling", "no pin in the design declares etype power_in"
+            )
+        ]
+    if not positions:
+        return [
+            _erc_not_checked(
+                "no_decoupling",
+                "the board is not placed — pin positions do not exist",
+            )
+        ]
+
+    def _rail(net: dict[str, Any], pin: dict[str, Any]) -> str | None:
+        rail = (pin.get("meta") or {}).get("rail")
+        if rail is None:
+            rail = (net.get("meta") or {}).get("rail")
+        return None if rail is None else str(rail)
+
+    # Rail -> member pins a capacitor could be. Strictly: the C<digits>
+    # refdes convention or a `capacitor` component role — a passive-
+    # etype resistor/inductor on the rail does not decouple anything.
+    roles_by_refdes = roles_by_refdes or {}
+    rail_caps: dict[str, list[dict[str, Any]]] = {}
+    for net in nets:
+        net_rail = str((net.get("meta") or {}).get("rail") or "")
+        if not net_rail:
+            continue
+        for m in net.get("members") or []:
+            refdes = str(m.get("refdes") or "")
+            if re.fullmatch(r"C\d+", refdes) or "capacitor" in (
+                roles_by_refdes.get(refdes) or []
+            ):
+                rail_caps.setdefault(net_rail, []).append(m)
+
+    out: list[DrcFinding] = []
+    unrailed: list[dict[str, Any]] = []
+    for net, pin in power_in:
+        rail = _rail(net, pin)
+        pos = positions.get((str(pin["refdes"]), str(pin["pin"])))
+        if rail is None:
+            unrailed.append(pin)
+            continue
+        if pos is None:
+            continue  # unplaced pin — covered by the not-checked row below
+        nearest: float | None = None
+        for c in rail_caps.get(rail, []):
+            cpos = positions.get((str(c["refdes"]), str(c["pin"])))
+            if cpos is None:
+                continue
+            d = math.hypot(cpos[0] - pos[0], cpos[1] - pos[1])
+            if nearest is None or d < nearest:
+                nearest = d
+        if nearest is not None and nearest <= max_distance_mm:
+            continue
+        out.append(
+            DrcFinding(
+                rule="no_decoupling",
+                severity="warn",
+                where=f"pin {pin['refdes']}/{pin['pin']}",
+                detail=(
+                    f"power_in pin {pin['refdes']}/{pin['pin']} (rail "
+                    f"{rail!r}) has no capacitor on its rail within "
+                    f"{max_distance_mm:g}mm"
+                    + (
+                        f" — nearest rail capacitor is {nearest:.2f}mm away"
+                        if nearest is not None
+                        else " — no capacitor on that rail at all"
+                    )
+                ),
+                objects=(_pin_obj(pin),),
+            )
+        )
+    if unrailed:
+        out.append(
+            _erc_not_checked(
+                "no_decoupling",
+                "power_in pin(s) "
+                + ", ".join(f"{p['refdes']}/{p['pin']}" for p in unrailed)
+                + " declare no rail — which rail a capacitor must sit on "
+                "cannot be told",
+            )
+        )
+    return out
+
+
 def run_placement_drc(
     model: dict[str, Any],
     *,
@@ -3287,7 +3677,10 @@ def run_placement_drc(
 
 __all__ = [
     "DEFAULT_COURTYARD_RADIUS_MM",
+    "DEFAULT_DECOUPLING_DISTANCE_MM",
     "PHASES",
+    "PHASE_SEVERITY",
+    "PIN_ETYPES",
     "SILK_LEGIBILITY_HEIGHT_MM",
     "WORSE_MARGIN_EPS_MM",
     "DrcFinding",
@@ -3299,9 +3692,14 @@ __all__ = [
     "check_courtyard_hole",
     "check_courtyard_overlap",
     "check_edge_mating",
+    "check_no_decoupling",
+    "check_no_driver",
     "check_npth_clearance",
     "check_octilinear",
     "check_outline_containment",
+    "check_over_voltage",
+    "check_pin_conflicts",
+    "check_rail_crossing",
     "check_silk_edge_clearance",
     "check_silk_missing",
     "check_silk_printability",
@@ -3321,4 +3719,5 @@ __all__ = [
     "process_for_stackup",
     "run_geometric_drc",
     "run_placement_drc",
+    "severity_at",
 ]

@@ -57,7 +57,7 @@ from shapely.geometry import (
 )
 
 from precis.errors import BadInput
-from precis.pcb import landpattern, padplace
+from precis.pcb import PIN_ETYPES, landpattern, padplace
 from precis.pcb.edge_mate import parse_edge_mate
 from precis.utils.units import parse_angle_deg
 
@@ -320,6 +320,24 @@ class PcbIR:
     #: (an authored electrode's real outline, not its bounding square,
     #: is what a courtyard reservation should hug).
     pin_poly: np.ndarray
+    #: object[n_pins] -> str | None — the pin's §1i electrical role
+    #: (``power_in``/``power_out``/``input``/``output``/``bidi``/
+    #: ``passive``/``open_drain``/``tristate``/``nc``), read off the
+    #: pin's tags; ``None`` when undeclared. Slice 5 of
+    #: docs/backlog/pcb-lazy-netlist-and-checks.md — the ERC rules
+    #: read it back off the graph rows; the IR carries it so a
+    #: netlist-level consumer (firmware export, Slice 7) never re-joins
+    #: ``pcb_pins``.
+    pin_etype: np.ndarray
+    #: float64[n_pins], nan = no ``max_voltage_v`` bound declared — the
+    #: pin's absolute-max rating the ``over_voltage`` ERC compares the
+    #: net's working voltage against.
+    pin_max_voltage_v: np.ndarray
+    #: object[n_pins] -> str | None — the named supply rail this pin's
+    #: domain belongs to (``rail`` in ``pcb_pins.meta``); two DIFFERENT
+    #: rails on one net is a ``rail_crossing`` error unless a member is a
+    #: declared level shifter.
+    pin_rail: np.ndarray
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
@@ -1075,9 +1093,14 @@ def from_graph(
     pin_instance: list[int] = []
     pin_label: list[str] = []
     pin_net: list[int] = []
+    pin_etype: list[str | None] = []
+    pin_max_voltage_v: list[float] = []
+    pin_rail: list[str | None] = []
     pin_lookup: dict[tuple[str, str], int] = {}
 
-    def _pin(refdes: str, pin: str, net_id: int) -> int:
+    def _pin(
+        refdes: str, pin: str, net_id: int, row: dict[str, Any] | None = None
+    ) -> int:
         key = (refdes, pin)
         if key in pin_lookup:
             return pin_lookup[key]
@@ -1086,6 +1109,15 @@ def from_graph(
         pin_instance.append(refdes_to_id[refdes])
         pin_label.append(pin)
         pin_net.append(net_id)
+        # §1i semantics (Slice 5): etype is a tag word (PIN_ETYPES is a
+        # closed vocabulary, validated at apply); the bounds ride meta.
+        tags = {str(t) for t in (row or {}).get("tags") or []}
+        meta = (row or {}).get("meta") or {}
+        pin_etype.append(next((t for t in tags if t in PIN_ETYPES), None))
+        mv = meta.get("max_voltage_v")
+        pin_max_voltage_v.append(math.nan if mv is None else float(mv))
+        rail = meta.get("rail")
+        pin_rail.append(None if rail is None else str(rail))
         return pid
 
     # Placement and board side, read BEFORE the net loop: segment
@@ -1129,7 +1161,7 @@ def from_graph(
         member_pins: list[int] = []
         seen_pins: set[int] = set()
         for m in members:
-            pid = _pin(m["refdes"], m.get("pin") or "1", net_id)
+            pid = _pin(m["refdes"], m.get("pin") or "1", net_id, m)
             # A net listing the same (refdes, pin) twice used to produce a
             # segment from a pin to ITSELF, which is not a connection and
             # which the MST below cannot key unambiguously anyway.
@@ -1146,7 +1178,7 @@ def from_graph(
             seg_pin_b.append(pin_b)
 
     for u in graph.get("unconnected") or []:
-        _pin(u["refdes"], u["pin"], NO_NET)
+        _pin(u["refdes"], u["pin"], NO_NET, u)
 
     n_pins = len(pin_instance)
     n_seg = len(seg_net)
@@ -1247,6 +1279,9 @@ def from_graph(
         pin_shape=pin_shape,
         pin_pad_synthesized=pin_pad_synth,
         pin_poly=pin_poly,
+        pin_etype=_obj_array(pin_etype),
+        pin_max_voltage_v=np.array(pin_max_voltage_v, dtype=np.float64),
+        pin_rail=_obj_array(pin_rail),
         net_name=_obj_array(net_name),
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),

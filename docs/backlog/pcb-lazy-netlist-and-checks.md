@@ -478,6 +478,41 @@ wirelength (`cost.py`), `pinswap._instance_edges`, segment spans, and
 sibling-served pin stranded) — fold in with the slice that first makes
 them bite.
 
+**Landed 2026-10-13 (Slice 8, commit on `bl-pcb-netlist-s23`):**
+`view='check'` is the one check surface — geometric, netlist and ERC
+rules on one finding list, filterable on `args.rule`/`severity`/`phase`
+(`handlers/pcb.py::_render_check`). `view='drc'` stays as its preset —
+same run, same table it has always rendered. `op='phase'` writes the
+authored design phase to `pcb_boards.meta['phase']` (no migration —
+the existing board meta); the eval phase is `args.phase` → authored →
+`derive_phase` in that order, and `fab` can only ever be the authored
+claim. Phase gates the RULES, not just severities: `netlist` runs only
+the rules needing no geometry and never reads `pcb_copper`; `placed` is
+the pads-only pass; `routed`/`fab` the full one. Severity is a function
+of `(rule, phase)` (`drc.severity_at` + `PHASE_SEVERITY`): `unrouted`
+reads `todo` before `routed`, `error` after — `todo` is a presented
+tier only (the findings column's CHECK is still `error|warn`; the base
+severity is what persists). Every run persists and deltas by
+`finding_key` (`new / still / resolved`). Tests:
+`tests/test_pcb_check_view.py`.
+
+**Landed 2026-10-13 (Slice 5, commit on `bl-pcb-netlist-s23`):** the §1i
+pin semantics are live: `pins[].etype` (closed `precis.pcb.PIN_ETYPES`
+vocabulary → `pcb_pins.tags`), `max_voltage_v`/`vih`/`vil`/`rail` →
+`pcb_pins.meta`; `nets[].rail` → `pcb_nets.meta['rail']`;
+`working_voltage_v` read from the net or its class's `rules` (the Slice
+4c key — one key, two consumers). `ir.from_graph` carries
+`pin_etype`/`pin_max_voltage_v`/`pin_rail` for the netlist consumer
+(Slice 7). The §1h rules — `check_pin_conflicts`, `check_no_driver`,
+`check_over_voltage`, `check_rail_crossing` (`level_shifter` in a
+member's roles is the declared translator), `check_no_decoupling`
+(5 mm house default, `DEFAULT_DECOUPLING_DISTANCE_MM`) — are `check_*`
+functions in `drc.py` returning `DrcFinding`/`margin_mm=None`, and run
+on the check surface only (`view='check'`; `view='drc'` stays the
+preset). Every rule has a CANNOT-fire path: a design with none of the
+vocabulary gets a `not_checked` warn naming the gap, never a clean pass.
+Tests: `tests/test_pcb_erc.py`.
+
 ## In scope — slices (dependency order; each independently shippable)
 
 ### Slice 1 — `realized` tells the truth; the F.Cu neck reaches its electrode (gr449483, PRIO high)
@@ -514,27 +549,6 @@ pins the vertex).
 - **(e) prod:** re-run `ewod-dogfood-2` with a new seed (`op='route'`
   dedups on `(design, op, content-hash, CODE_VERSION)`); `realized` count
   must equal the connected count in `view='drc'`.
-
-### Slice 5 — pin model + ERC rules on the shared check surface
-
-Build §1i's fields (vocabulary validation in `_pcb_apply`; `ir.py` carries
-`pin_etype`, `pin_max_voltage_v`, `pin_rail`), then the rules of §1h as
-`check_*` functions emitting the existing `DrcFinding` shape with
-`margin_mm=None`: `pin_conflict`, `no_driver`, `over_voltage`,
-`rail_crossing`, `no_decoupling` (`unconnected_pin` and the marker
-semantics already landed with Slice 2 — what remains here is the
-etype/voltage/rail vocabulary and the rules that need it). Net-level inputs:
-`working_voltage_v` on `pcb_net_classes.rules` (already proposed by
-`ewod-controller-and-hv-supply.md` Slice 4(c) — one key, two consumers) and
-a `rail` name per power net. A declared translator is a component whose
-pins carry two different `rail`s on purpose (`roles: ["level_shifter"]`).
-
-*Accept:* a fixture wiring a 20 V net to a pin with `max_voltage_v: 12`
-errors `over_voltage`; a 3.3 V-rail output driving a 5 V-rail input errors
-`rail_crossing`, and the same with a `level_shifter` between them is
-clean; an IC `power_in` with no capacitor on its rail within N mm warns
-`no_decoupling`; every rule has a "cannot fire" path that says so
-(fixture with no `etype` declared → `not-checked` note, never clean).
 
 ### Slice 6 — supply/client roles and the matching solver
 
@@ -586,29 +600,6 @@ on the dogfood; `view='channel-map'` lists 53 rows for `ewod-dogfood-2`
 and changes only when the assignment changes; `pcb_pin_swaps` no longer
 exists after the migration and every reader that consulted it now reads
 the snapshot.
-
-### Slice 8 — `view='check'`: one surface, phase, delta
-
-- `view='check'` with `args={rule?, severity?, phase?}`; `view='drc'` =
-  `check` filtered to the geometric rule set (preset, documented as such
-  in `precis-pcb-help`).
-- `phase ∈ {netlist, placed, routed, fab}` is a design attribute set by
-  the caller (`op='phase'`) with a derived default (no placement → netlist;
-  no copper → placed; …). Severity table per `(rule, phase)`: `unrouted`
-  is `todo` before `routed`, `error` at `fab`; `unconnected_pin` warns
-  before `fab`.
-- Delta (`new / still / resolved`) via `finding_key` — blocked by
-  the shipped finding ids (`precis.pcb.drc.finding_key`); ship the filter and phase first, the delta
-  when that lands (`blocked-by` is per-slice, not per-file).
-- `se` inherits the same `check` rendering through the shared finding
-  contract; no se-specific work here.
-
-*Accept:* `view='drc'` output is byte-identical to today's for an
-unchanged fixture; `view='check' args={'phase':'netlist'}` runs only the
-netlist rules and finishes without touching `pcb_copper`; the same
-finding reads `todo` at `phase=placed` and `error` at `phase=fab`; with
-identity landed, an unchanged design run twice reports `0 new, N still,
-0 resolved`.
 
 ### Slice 9 — per-net clearance in the maze grid (blocker for the HV board)
 
@@ -754,9 +745,10 @@ class, one default net) routes the default net at fab clearance and keeps
   pad)` keying, no suffixing.
 - **Open (Slice 6):** Hungarian from scipy vs in-tree. Check whether scipy
   is already a runtime dependency before adding it for one function.
-- **Open (Slice 8):** is `phase` authored (`op='phase'`) or purely
-  derived? Start derived with an authored override; drop the override if
-  nobody uses it.
+- **Decided 2026-10-13 (Slice 8):** `phase` is both — `op='phase'` writes
+  the authored claim to `pcb_boards.meta['phase']` (the only way `fab`
+  exists), `derive_phase` is the default. `args.phase` on `view='check'`
+  overrides either for a one-off look.
 - **Verify before trusting any prod fabric number:** the design's
   `pcb_generators` params vs the ruled defaults (pitch 2.25,
   `drive_voltage_v` 250) — Slice 3's identical-coordinate finding says

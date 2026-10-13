@@ -323,6 +323,26 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/ir.py::PcbIR.dirty_l4": (
         "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
     ),
+    # ---- PcbIR fields: §1i pin semantics (Slice 5 staged carry) --------
+    # pin_etype/pin_max_voltage_v/pin_rail are carried through the IR per
+    # pcb-lazy-netlist-and-checks.md Slice 5's contract ("ir.py carries
+    # pin_etype, pin_max_voltage_v, pin_rail") so a netlist-level consumer
+    # (Slice 7's firmware export, view='channel-map') never re-joins
+    # pcb_pins. The Slice-5 ERC rules themselves read the GRAPH rows
+    # (they need tags+meta, which the graph's member rows already carry),
+    # so these fields are produced but not yet consumed — the L2-tier
+    # "documented future slice" pattern above.
+    "src/precis/pcb/ir.py::PcbIR.pin_etype": (
+        "Slice-5 staged carry — produced in from_graph for Slice 7's "
+        "netlist consumers (channel-map/firmware export); the ERC rules "
+        "read the graph rows, not the IR"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.pin_max_voltage_v": (
+        "Slice-5 staged carry — see PcbIR.pin_etype's reason"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.pin_rail": (
+        "Slice-5 staged carry — see PcbIR.pin_etype's reason"
+    ),
     "src/precis/pcb/ir.py::PcbIR.dirty_l5": (
         "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
     ),

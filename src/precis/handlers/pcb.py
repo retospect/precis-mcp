@@ -152,6 +152,7 @@ _PROBE_VIEWS = (
     "crossings",
     "ratsnest",
     "drc",
+    "check",
     "trace",
     "proximity",
     "measures",
@@ -211,6 +212,7 @@ _INLINE_EDIT_OPS = (
     "plane_net",
     "class_rules",
     "stackup",
+    "phase",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
@@ -488,6 +490,7 @@ class PcbHandler(Handler):
                 "parts",
                 "footprint",
                 "force",
+                "phase",
             }
         ),
         "get": frozenset(
@@ -505,6 +508,9 @@ class PcbHandler(Handler):
                 "name",
                 "format",
                 "pins",
+                "phase",
+                "rule",
+                "severity",
             }
         ),
     }
@@ -565,7 +571,8 @@ class PcbHandler(Handler):
             "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
             "job (never inline; idempotent per design+op+content-hash) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
-            "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'}) "
+            "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'|"
+            "'phase'}) "
             "are cheap inline edits; put(args={'op':'footprint','part':"
             "'C639448'}) (or parts=[...], force=True to re-pull, or "
             "footprint={...} to author one directly under part=) pulls/"
@@ -901,6 +908,8 @@ class PcbHandler(Handler):
             return self._op_plane_net(ref, args)
         if op == "class_rules":
             return self._op_class_rules(ref, args)
+        if op == "phase":
+            return self._op_phase(ref, args)
         if op == "stackup":
             return self._op_stackup(ref, args)
         if op == "footprint":
@@ -1628,6 +1637,39 @@ class PcbHandler(Handler):
             body=f"# net class {name!r} rules set: {rules}\n" + judged.lines()
         )
 
+    def _op_phase(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'phase','phase':'netlist|placed|routed|fab'})``
+        — the authored design phase (Slice 8), stored on the board's meta
+        and read back by :meth:`_design_phase` ahead of the derived
+        default. ``fab`` can ONLY be claimed here — no board state derives
+        it — and claiming it is what makes fab-tier severities (an
+        unmarked netless pin, an unrouted net) report as errors.
+        ``phase: null`` clears the claim."""
+        raw = args.get("phase")
+        if raw is None:
+            self.store.pcb_set_board_phase(ref.id, None)
+            return Response(
+                body=(
+                    f"{ref.slug}: phase claim cleared — the check surface "
+                    "derives it (netlist/placed/routed from board state; "
+                    "fab is never derived)"
+                )
+            )
+        phase = str(raw).strip().lower()
+        if phase not in pcb_drc.PHASES:
+            raise BadInput(
+                f"op='phase' phase={phase!r} not recognized",
+                options=list(pcb_drc.PHASES),
+            )
+        self.store.pcb_set_board_phase(ref.id, phase)
+        return Response(
+            body=(
+                f"{ref.slug}: phase = {phase} (authored — "
+                "pcb_boards.meta['phase'])\nNext: get(kind='pcb', "
+                f"id='{ref.slug}', view='check')"
+            )
+        )
+
     def _op_stackup(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'stackup','layers':[...]})`` — author the
         board's copper stackup, which until now every board was STUCK on
@@ -2019,6 +2061,8 @@ class PcbHandler(Handler):
             return self._render_planes(ref_id)
         if view == "drc":
             return self._render_drc(ref_id, args)
+        if view == "check":
+            return self._render_check(ref_id, args)
         if view == "svg":
             return self._render_svg(ref_id, args)
         if view == "capability":
@@ -3479,6 +3523,160 @@ class PcbHandler(Handler):
             body=head + "\n" + render_agent_table(rows, schema=schema) + gone
         )
 
+    def _render_check(
+        self, ref_id: int, args: dict[str, Any] | None = None
+    ) -> Response:
+        """The ONE check surface (pcb-lazy-netlist-and-checks.md §1g, Slice
+        8) — geometric, netlist and ERC rules report on the same finding
+        list, filterable on ``rule``/``severity``/``phase``. ``view='drc'``
+        stays as this surface's preset for continuity (the run it shows,
+        in the table it has always rendered); this view is the surface
+        itself.
+
+        ``args.phase`` judges the board AT that phase — overriding the
+        authored ``op='phase'`` claim and the derived default — and it is
+        a real gate, not a label: ``netlist`` runs only the netlist/flag
+        rules and never reads ``pcb_copper``; ``placed`` is the pads-only
+        run; ``routed``/``fab`` the full pass. Severities are tiered by
+        the eval phase (:func:`precis.pcb.drc.severity_at`): an unrouted
+        net reads ``todo`` before ``routed`` and ``error`` at/after it —
+        and ``unconnected_pin`` warns below ``fab``, errors at it
+        (fab-tier severities need the authored claim; derive_phase never
+        invents ``fab``).
+
+        The run persists like every check run, so ``new / still /
+        resolved`` below is against the board's previous run by
+        ``finding_key`` — the same identity ``view='drc'`` reports."""
+        args = args or {}
+        phase_arg = str(args.get("phase") or "").strip().lower()
+        if phase_arg and phase_arg not in pcb_drc.PHASES:
+            raise BadInput(
+                f"view='check' args.phase={phase_arg!r} not recognized",
+                options=list(pcb_drc.PHASES),
+            )
+        severity = str(args.get("severity") or "").strip().lower()
+        if severity and severity not in ("error", "warn", "todo", "info"):
+            raise BadInput(
+                f"view='check' args.severity={severity!r} not recognized",
+                options=["error", "warn", "todo", "info"],
+            )
+        rules = {r.strip() for r in str(args.get("rule") or "").split(",") if r.strip()}
+        design = self.store.pcb_load(ref_id)
+        if design["board"] is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        phase = phase_arg or self._design_phase(design)
+        ran = self._drc_run(ref_id, design, eval_phase=phase, erc=True)
+        if ran is None:
+            return Response(
+                body=f"# check — phase {phase}\n— nothing the rules at this "
+                "phase can check (no pins, pads or copper yet)"
+            )
+        run_id, findings, pads_only, delta = ran
+
+        # Not-checked rows present as ``info`` — the same ruling the se
+        # completeness findings use: "we could not run to a verdict" is
+        # honest information, not a warn-tier complaint, so a clean board
+        # reads clean and the delta table isn't buried in them. The row
+        # still PERSISTS at its base severity (the findings column's
+        # CHECK is error|warn) so the finding_key delta stays stable.
+        def _sev(f: pcb_drc.DrcFinding) -> str:
+            if any(isinstance(o, dict) and o.get("not_checked") for o in f.objects):
+                return "info"
+            return pcb_drc.severity_at(f.rule, f.severity, phase)
+
+        tiered = [(f, _sev(f)) for f in findings]
+        n_error = sum(1 for _f, s in tiered if s == "error")
+        n_warn = sum(1 for _f, s in tiered if s == "warn")
+        n_todo = sum(1 for _f, s in tiered if s == "todo")
+        n_info = sum(1 for _f, s in tiered if s == "info")
+        authored = str((design["board"].get("meta") or {}).get("phase") or "")
+        phase_src = (
+            "args"
+            if phase_arg
+            else ("authored" if authored in pcb_drc.PHASES else "derived")
+        )
+        head = (
+            f"# check — run {run_id[:8]} — phase {phase} ({phase_src}) — "
+            f"{n_error} error(s), {n_warn} warn(s)"
+            + (f", {n_todo} todo" if n_todo else "")
+        )
+        if delta.previous_run_id is None:
+            head += (
+                "\nvs previous run: none to compare against (first run with "
+                "finding ids on this board) — every finding below is reported "
+                "without a new/still verdict"
+            )
+        else:
+            n_worse = len(delta.worse)
+            head += (
+                f"\nvs run {delta.previous_run_id[:8]}: {len(delta.new)} new, "
+                f"{len(delta.still)} still"
+                + (f" ({n_worse} worse)" if n_worse else "")
+                + f", {len(delta.gone)} resolved"
+            )
+        n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
+        if n_synth:
+            head += (
+                f"\n{n_synth} part(s) have no cached footprint — checked at a "
+                "synthesized bound (see the synthesized_footprint finding(s) "
+                "below); their results are not a verdict"
+            )
+        if pads_only:
+            head += "\n(pads-only check — no routed copper in scope)"
+        if n_info:
+            head += (
+                f"\nnot fully checked — {n_info} rule(s) could not reach a "
+                "verdict (info rows)"
+            )
+        # An unknown rule is refused BEFORE the zero-findings answer — a
+        # filter that names nothing that ran is an input error, never a
+        # quiet "no findings".
+        all_rules = {f.rule for f in findings}
+        if rules - all_rules:
+            raise BadInput(
+                f"view='check' args.rule={sorted(rules - all_rules)!r} matches "
+                "no finding in this run",
+                options=sorted(all_rules),
+            )
+        gone = _drc_gone_block(delta)
+        if not findings:
+            return Response(body=head + "\n— no findings ✓" + gone)
+        shown = [
+            (f, sev)
+            for f, sev in tiered
+            if (not severity or sev == severity) and (not rules or f.rule in rules)
+        ]
+        if len(shown) != len(tiered):
+            head += f"\nfiltered: showing {len(shown)} of {len(tiered)} finding(s)"
+        if not shown:
+            return Response(body=head + "\n— no findings match the filter" + gone)
+        # Explicit severity ladder, stable within a tier: error > warn >
+        # todo (the presentation tier) > info.
+        shown.sort(
+            key=lambda fs: {"error": 0, "warn": 1, "todo": 2, "info": 3}.get(fs[1], 4)
+        )
+        rows = [
+            {
+                "id": pcb_drc.finding_key(f),
+                "severity": sev,
+                "rule": f.rule,
+                "where": f.where,
+                "margin_mm": "" if f.margin_mm is None else f"{f.margin_mm:+.3f}",
+                "delta": delta.label(f),
+                "detail": f.detail,
+            }
+            for f, sev in shown
+        ]
+        schema = ["id", "severity", "rule", "where", "margin_mm", "delta", "detail"]
+        if delta.previous_run_id is None:
+            schema.remove("delta")
+        return Response(
+            body=head + "\n" + render_agent_table(rows, schema=schema) + gone
+        )
+
     def _drc_rule_inputs(
         self,
         design: dict[str, Any],
@@ -3556,13 +3754,107 @@ class PcbHandler(Handler):
         }
         return courtyards, courtyard_bottom, net_rules, net_voltages
 
-    def _drc_run(self, ref_id: int, design: dict[str, Any]) -> _DrcRun | None:
-        """One geometric DRC run over ``design`` (which must have a board):
+    def _design_phase(self, design: dict[str, Any]) -> str:
+        """The phase the check surface judges at (Slice 8): the author's
+        claim (``pcb_boards.meta['phase']`` via ``op='phase'``) when one is
+        recorded, else :func:`precis.pcb.drc.derive_phase`'s read of what
+        exists. ``fab`` can ONLY come from the authored claim — nothing
+        observable distinguishes "all routed" from "tape-out ready"."""
+        board = design.get("board") or {}
+        authored = str((board.get("meta") or {}).get("phase") or "")
+        if authored in pcb_drc.PHASES:
+            return authored
+        return pcb_drc.derive_phase(
+            placed=any(
+                i.get("x") is not None and i.get("y") is not None
+                for i in design["instances"]
+            ),
+            routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
+        )
+
+    def _drc_record(
+        self,
+        board_id: int,
+        findings: list[pcb_drc.DrcFinding],
+        pads_only: bool,
+        phase: str | None = None,
+    ) -> _DrcRun:
+        """Persist one run and diff it against the previous — the tail of
+        :meth:`_drc_run` shared by every phase-scoped branch.
+
+        ``phase`` keys the delta BASELINE: the run diffs only against the
+        previous run of the same phase and becomes that phase's baseline —
+        a ``netlist`` eval's zero copper findings must never read to the
+        next full run as "everything resolved"."""
+        prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id, phase=phase)
+        run_id = uuid.uuid4().hex
+        self.store.pcb_write_drc_findings(
+            board_id,
+            run_id,
+            [f.to_row() for f in findings],
+            pads_only=pads_only,
+            phase=phase,
+        )
+        delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
+        return _DrcRun(run_id, list(findings), pads_only, delta)
+
+    def _erc_findings(
+        self,
+        design: dict[str, Any],
+        graph: dict[str, Any],
+        pads: list[dict[str, Any]],
+    ) -> list[pcb_drc.DrcFinding]:
+        """Slice 5's netlist ERC — the §1h rules over the §1i pin
+        semantics, one finding list with the geometric run's. Pin
+        positions come from the pads the run already placed (real
+        footprint geometry where cached), not instance centroids."""
+        roles_by_refdes = {
+            str(i.get("refdes")): list(i.get("roles") or [])
+            for i in design["instances"]
+        }
+        positions = {
+            (str(p["refdes"]), str(p["pin"])): (float(p["x"]), float(p["y"]))
+            for p in pads
+            if p.get("refdes") and p.get("pin") is not None
+        }
+        nets = graph.get("nets") or []
+        return (
+            pcb_drc.check_pin_conflicts(nets)
+            + pcb_drc.check_no_driver(nets)
+            + pcb_drc.check_over_voltage(nets, design.get("net_classes"))
+            + pcb_drc.check_rail_crossing(nets, roles_by_refdes)
+            + pcb_drc.check_no_decoupling(
+                nets, positions, roles_by_refdes=roles_by_refdes
+            )
+        )
+
+    def _drc_run(
+        self,
+        ref_id: int,
+        design: dict[str, Any],
+        *,
+        eval_phase: str | None = None,
+        erc: bool = False,
+    ) -> _DrcRun | None:
+        """One check-surface run over ``design`` (which must have a board):
         the findings persisted under a fresh ``run_id`` (a ``pcb_drc_runs``
         row even when clean), plus the delta against the board's previous
         run (:func:`precis.pcb.drc.delta_against`, by ``finding_key``).
         ``None`` when there is nothing real to check — no realized copper
         and every placed pad a synthesized bound.
+
+        ``eval_phase`` is ``view='check'``'s phase axis (Slice 8): the
+        phase to judge AT — ``args.phase``'s explicit override, or the
+        authored ``op='phase'`` claim, or the derived default when neither
+        caller supplies one. ``netlist`` runs only the netlist/flag rules
+        and never touches ``pcb_copper``; ``placed`` is the pads-only run
+        (pad geometry, no copper); ``routed``/``fab`` the full geometric
+        pass. ``view='drc'`` calls this with ``None``: same run it has
+        always done.
+
+        ``erc=True`` adds Slice 5's netlist ERC rules — ``view='check'``
+        passes it (the check surface is the superset); ``view='drc'`` is
+        the preset and does not.
 
         Split out of :meth:`_render_drc` so ``view='gerber'`` asks the SAME
         question the DRC view answers before it hands over a fab bundle,
@@ -3581,18 +3873,9 @@ class PcbHandler(Handler):
         # that would be fooled by pads in the wrong place.
         pads, courtyard_local, footprints = self._drc_geometry(ref_id, layer_names)
 
-        # Slice 2's netlist-level inputs: the phase this board is in
-        # (derived — `fab` is authored, Slice 8's op='phase'), the
-        # netless-pin rows with their §1j markers, and the refdes set the
-        # `undeclared_pad` rule cannot check because no footprint is
-        # cached for them.
-        phase = pcb_drc.derive_phase(
-            placed=any(
-                i.get("x") is not None and i.get("y") is not None
-                for i in design["instances"]
-            ),
-            routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
-        )
+        # The phase this board is judged at: an explicit ``eval_phase``,
+        # the authored claim, or the derived default — in that order.
+        phase = eval_phase or self._design_phase(design)
         undeclared_unchecked = [
             str(i.get("refdes"))
             for i in design["instances"]
@@ -3600,7 +3883,53 @@ class PcbHandler(Handler):
             and str(i.get("refdes")) not in footprints
         ]
 
-        copper = self.store.pcb_copper_list(int(board["board_id"]))
+        graph = self.store.pcb_graph(ref_id)
+        board_id = int(board["board_id"])
+        authored_phase = str((board.get("meta") or {}).get("phase") or "")
+        if authored_phase not in pcb_drc.PHASES:
+            authored_phase = ""
+        # The phase a caller CLAIMED — args.phase or the authored
+        # op='phase' value — is what may suppress work ("judge as if at
+        # this phase"). A merely derived phase never hides copper that
+        # exists: a board seeded with tracks but nothing placed still
+        # gets them checked.
+        claimed_phase = eval_phase or authored_phase
+        if claimed_phase == "netlist":
+            # Phase gate (Slice 8): netlist phase was ASKED for (args or
+            # an authored claim), so only the rules needing no geometry
+            # and no copper run — ``pcb_copper`` is never even read.
+            # ``unrouted`` joins the set here: its input is
+            # ``pcb_routes`` status (a route row, not copper) and at this
+            # phase it reports as `todo`, a work item. A merely DERIVED
+            # netlist board (nothing placed yet) does not take this
+            # branch — it may still carry seeded copper to check.
+            bail_model = {"layers": layer_names, "pads": pads}
+            findings = (
+                pcb_drc.check_unconnected_pins(graph.get("unconnected"), phase=phase)
+                + pcb_drc.check_undeclared_pads(
+                    bail_model, unchecked=undeclared_unchecked
+                )
+                + pcb_drc.check_synthesized_footprint(bail_model)
+                + pcb_drc.check_unrouted(
+                    [
+                        {"net": r["name"], "note": r.get("note")}
+                        for r in self.store.pcb_route_status(ref_id)
+                        if r["status"] != "realized"
+                    ]
+                )
+            )
+            # The §1h ERC rules are netlist rules — at netlist phase they
+            # are exactly what runs.
+            if erc:
+                findings += self._erc_findings(design, graph, pads)
+            # A claimed netlist eval ALWAYS records its run — even with
+            # zero findings the row is the phase's fresh baseline and the
+            # answer "0 findings at netlist", never "nothing could run".
+            return self._drc_record(board_id, findings, True, phase="netlist")
+
+        copper = (
+            [] if claimed_phase == "placed" else self.store.pcb_copper_list(board_id)
+        )
         # Round-4 contract change (docs/backlog/pcb-ewod-multitile.md's
         # decisions log): this used to bail whenever `copper` (router
         # output) was empty, full stop — but a board whose every net is
@@ -3622,7 +3951,6 @@ class PcbHandler(Handler):
         # EWOD ones — an ordinary placed-but-unrouted board with cached
         # real footprints (e.g. `esp32c3_reference`) now gets pads-only
         # findings here too, instead of "not yet".
-        graph = self.store.pcb_graph(ref_id)
         has_real_pads = any(not p.get("synthesized") for p in pads)
         if not copper and not has_real_pads:
             # No geometry worth checking — but Slice 2's netlist-level
@@ -3643,16 +3971,17 @@ class PcbHandler(Handler):
                 )
                 + pcb_drc.check_synthesized_footprint(bail_model)
             )
+            # Slice 5 ERC — netlist rules, need no geometry either.
+            if erc:
+                findings += self._erc_findings(design, graph, pads)
             if not findings:
-                return None
-            board_id = int(board["board_id"])
-            prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id)
-            run_id = uuid.uuid4().hex
-            self.store.pcb_write_drc_findings(
-                board_id, run_id, [f.to_row() for f in findings], pads_only=True
-            )
-            delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
-            return _DrcRun(run_id, list(findings), True, delta)
+                # ``view='drc'`` keeps its "no realized copper yet" answer;
+                # a check run (an explicit phase eval) still writes the row
+                # — a run that ran clean is a verdict, not an absence.
+                if eval_phase is None:
+                    return None
+                return self._drc_record(board_id, findings, True, phase=phase)
+            return self._drc_record(board_id, findings, True, phase=phase)
         pads_only = not copper
 
         ref = self.store.get_ref(kind="pcb", id=ref_id)
@@ -3750,16 +4079,11 @@ class PcbHandler(Handler):
             ],
             extent_mm=coating_extent_mm(),
         )
-        board_id = int(board["board_id"])
+        if erc:
+            findings += self._erc_findings(design, graph, pads)
         # Read the previous run BEFORE writing this one — it is what this
         # run is compared against; afterwards it would be this run itself.
-        prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id)
-        run_id = uuid.uuid4().hex
-        self.store.pcb_write_drc_findings(
-            board_id, run_id, [f.to_row() for f in findings], pads_only=pads_only
-        )
-        delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
-        return _DrcRun(run_id, list(findings), pads_only, delta)
+        return self._drc_record(board_id, findings, pads_only, phase=phase)
 
     def _validity_findings(self, ref_id: int) -> list[pcb_drc.DrcFinding]:
         """The findings of the geometric-validity rules on the board as
@@ -3989,10 +4313,16 @@ class PcbHandler(Handler):
         a block banner with the count, the per-rule breakdown and the
         first findings when there are errors, one line when it is clean.
         A DRC that could not run is said out loud too; before this the
-        export mentioned DRC nowhere, on a board with 116 errors."""
+        export mentioned DRC nowhere, on a board with 116 errors.
+
+        The banner always judges AT ``fab``: an authored ``phase=placed``
+        claim on a routed board is a statement about progress, not a
+        licence to export quietly — a fab bundle leaving with live
+        clearance/connectivity errors behind a "0 errors" banner is the
+        exact hole ``view='check'``'s phase axis exists to avoid."""
         design = self.store.pcb_load(ref_id)
         try:
-            ran = self._drc_run(ref_id, design)
+            ran = self._drc_run(ref_id, design, eval_phase="fab")
         except BadInput as exc:
             return f"⚠️  DRC NOT RUN — {exc}", 0
         if ran is None:
@@ -4002,7 +4332,13 @@ class PcbHandler(Handler):
                 0,
             )
         run_id, findings, pads_only, _delta = ran
-        errors = [f for f in findings if f.severity == "error"]
+        # Judged AT fab — severities tier at fab too, so a netless pin a
+        # placed board merely warns about is the error it is at tape-out.
+        errors = [
+            f
+            for f in findings
+            if pcb_drc.severity_at(f.rule, f.severity, "fab") == "error"
+        ]
         scope = " (pads-only — no routed copper yet)" if pads_only else ""
         if not errors:
             # A board that could not be fully checked never reads clean:
@@ -4025,7 +4361,11 @@ class PcbHandler(Handler):
                     f"{scope}",
                     0,
                 )
-            n_warn = len(findings)
+            n_warn = sum(
+                1
+                for f in findings
+                if pcb_drc.severity_at(f.rule, f.severity, "fab") == "warn"
+            )
             return (
                 f"DRC: 0 errors, {n_warn} warn(s) — run {run_id[:8]}{scope} ✓",
                 0,

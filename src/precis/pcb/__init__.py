@@ -178,6 +178,26 @@ from typing import Any
 DANGLING_NET_NOTE_PREFIX = "dangling net"
 DANGLING_NET_NOTE = f"{DANGLING_NET_NOTE_PREFIX} (<2 members) — nothing to route"
 
+#: The closed §1i electrical-role vocabulary a pin may declare (Slice 5 of
+#: docs/backlog/pcb-lazy-netlist-and-checks.md): ``power_in``/``power_out``
+#: (supply pins), ``input``/``output``, ``bidi``, ``passive`` (two-pin
+#: passives), ``open_drain``/``tristate`` (drive-shareable), ``nc``.
+#: Validated at ``_pcb_apply``, lands in ``pcb_pins.tags`` — ``nc`` doubles
+#: as the §1j marker since a no-connect IS the electrical fact. It lives
+#: here, not in ``drc.py``, because ``ir.py`` reads it too and
+#: ``ir → drc → rules → ir`` would be a cycle.
+PIN_ETYPES: tuple[str, ...] = (
+    "power_in",
+    "power_out",
+    "input",
+    "output",
+    "bidi",
+    "passive",
+    "open_drain",
+    "tristate",
+    "nc",
+)
+
 #: The pseudo-status a dangling net counts under in a route-status summary.
 ROUTE_DANGLING = "dangling"
 

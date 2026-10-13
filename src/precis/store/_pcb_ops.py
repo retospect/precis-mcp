@@ -40,7 +40,7 @@ from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput, NotFound
-from precis.pcb import DEFAULT_STACKUP, route_summary_status
+from precis.pcb import DEFAULT_STACKUP, PIN_ETYPES, route_summary_status
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import padplace as pcb_padplace
@@ -1463,6 +1463,30 @@ class PcbMixin:
                     meta[marker] = True
             if meta.get("nc") and "nc" not in tags:
                 tags.append("nc")
+            # §1i pin semantics (pcb-lazy-netlist-and-checks.md Slice 5):
+            # `etype` is the closed electrical-role vocabulary — it lands
+            # in `tags` (with the markers) so footprint pin_map tags and
+            # graph reads see one spelling. `max_voltage_v`, `vih`, `vil`
+            # and `rail` are numeric/named bounds — they ride `meta`.
+            etype = str(p.get("etype") or "").strip()
+            if etype:
+                if etype not in PIN_ETYPES:
+                    raise ValueError(
+                        f"component {component}: pin {name!r} etype "
+                        f"{etype!r} is not in the ERC vocabulary "
+                        f"{sorted(PIN_ETYPES)}"
+                    )
+                clash = [t for t in tags if t in PIN_ETYPES and t != etype]
+                if clash:
+                    raise ValueError(
+                        f"component {component}: pin {name!r} declares "
+                        f"etype={etype!r} but tags already carry {clash!r}"
+                    )
+                if etype not in tags:
+                    tags.append(etype)
+            for key in ("max_voltage_v", "vih", "vil", "rail"):
+                if p.get(key) is not None:
+                    meta[key] = p[key]
             try:
                 # A DB pad conflict remains authoritative. Unwind its
                 # savepoint before looking up the owner or translating it.
@@ -1604,6 +1628,15 @@ class PcbMixin:
                 continue
             sets.append(f"{column} = %s")
             values.append(value)
+        # `rail`/`meta` merge into the existing jsonb (top-level keys win)
+        # rather than replacing it — a rail annotation must not blank a
+        # layer hint someone else set.
+        meta_patch = dict(n.get("meta") or {})
+        if n.get("rail") is not None:
+            meta_patch["rail"] = str(n["rail"]).strip()
+        if meta_patch:
+            sets.append("meta = pcb_nets.meta || %s::jsonb")
+            values.append(Jsonb(meta_patch))
         if not sets:
             return False
         values.append(net_id)
@@ -1619,12 +1652,20 @@ class PcbMixin:
         # tuple below would write the edge rate into the voltage column and
         # nothing would fail loudly.
         spec = [column for column, _keys in self._NET_SPEC_FIELDS]
+        # `rail` (Slice 5 — the named supply rail a power net carries,
+        # what `rail_crossing`/`no_decoupling` join on) and a caller's own
+        # `meta` dict share the same jsonb column, `rail` spelled as a
+        # first-class key so `nets: [{'name': '3V3', 'rail': '3v3'}]`
+        # reads like the other net fields.
+        meta = dict(n.get("meta") or {})
+        if n.get("rail") is not None:
+            meta["rail"] = str(n["rail"]).strip()
         row = conn.execute(
             f"""
             INSERT INTO pcb_nets
                 (ref_id, name, net_class, est_current_a, width_mm, note, domain,
-                 {", ".join(spec)})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, {", ".join(["%s"] * len(spec))})
+                 meta, {", ".join(spec)})
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, {", ".join(["%s"] * len(spec))})
             RETURNING net_id
             """,
             (
@@ -1635,6 +1676,7 @@ class PcbMixin:
                 n.get("width_mm") or n.get("width"),
                 n.get("note"),
                 str(n.get("domain") or "electrical").strip(),
+                Jsonb(meta),
                 # The §E-1 spec columns (0171), resolved by PRESENCE — a net
                 # deliberately annotated 0 V (a shield tied to chassis) must
                 # stay 0, not fall through the alias to NULL.
@@ -1827,7 +1869,7 @@ class PcbMixin:
         with no row. It used to count ``pcb_routes`` rows instead, which
         disagreed in both directions at once — see that query's comment."""
         board_row = conn.execute(
-            "SELECT board_id, name, stackup, fold_lines FROM pcb_boards "
+            "SELECT board_id, name, stackup, fold_lines, meta FROM pcb_boards "
             "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
             (ref_id,),
         ).fetchone()
@@ -1837,6 +1879,11 @@ class PcbMixin:
                 "name": board_row[1],
                 "stackup": board_row[2],
                 "fold_lines": board_row[3],
+                # `meta.phase` is the authored design phase (Slice 8's
+                # ``op='phase'``): netlist/placed/routed/fab; absent means
+                # ``drc.derive_phase`` derives it. The board row, not the
+                # ref — fab-readiness is a claim about this board.
+                "meta": dict(board_row[4] or {}),
             }
             if board_row is not None
             else None
@@ -2145,7 +2192,7 @@ class PcbMixin:
             net_rows = conn.execute(
                 "SELECT net_id, name, net_class, domain, est_current_a, "
                 "       working_voltage_v, edge_rate_v_per_ns, impedance_ohm, "
-                "       function_hint FROM pcb_nets "
+                "       function_hint, meta FROM pcb_nets "
                 "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
                 (ref_id,),
             ).fetchall()
@@ -2159,12 +2206,18 @@ class PcbMixin:
                     "edge_rate_v_per_ns": r[6],
                     "impedance_ohm": r[7],
                     "function_hint": r[8],
+                    # `meta.rail` is the net's named supply rail (Slice 5 —
+                    # what `rail_crossing` and `no_decoupling` join on).
+                    "meta": dict(r[9] or {}),
                     "members": [],
                 }
                 for r in net_rows
             }
             for r in conn.execute(
-                "SELECT k.net_id, i.refdes, p.name "
+                # `p.tags`/`p.meta` carry the §1i etype + §1j markers +
+                # the Slice-5 bounds (max_voltage_v, vih/vil, rail) the
+                # ERC rules read.
+                "SELECT k.net_id, i.refdes, p.name, p.tags, p.meta "
                 "FROM pcb_netconns k "
                 "JOIN pcb_nets n ON n.net_id = k.net_id "
                 "JOIN pcb_instances i ON i.instance_id = k.instance_id "
@@ -2175,7 +2228,14 @@ class PcbMixin:
             ).fetchall():
                 nid = int(r[0])
                 if nid in nets:
-                    nets[nid]["members"].append({"refdes": r[1], "pin": r[2]})
+                    nets[nid]["members"].append(
+                        {
+                            "refdes": r[1],
+                            "pin": r[2],
+                            "tags": list(r[3] or []),
+                            "meta": dict(r[4] or {}),
+                        }
+                    )
             unconnected = [
                 # `tags`/`meta` carry the §1j intent markers
                 # (`nc`/`unused`/`must_terminate`) that
@@ -2283,6 +2343,35 @@ class PcbMixin:
         return n
 
     # -- geometric DRC findings (pcb-guided-place-route Slice 8) ----------
+    def pcb_set_board_phase(self, ref_id: int, phase: str | None) -> str | None:
+        """The authored design phase (pcb-lazy-netlist-and-checks.md Slice
+        8, ``op='phase'``) onto ``pcb_boards.meta['phase']`` — the board
+        row, because fab-readiness is a claim about THIS board.
+        ``phase=None`` clears it, returning the check surface to
+        :func:`precis.pcb.drc.derive_phase`'s derived default. Returns the
+        phase now in effect for callers to echo. Raises ``NotFound`` for a
+        design with no board yet."""
+        with self._pcb_tx() as conn:
+            row = conn.execute(
+                "SELECT board_id FROM pcb_boards "
+                "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"pcb {ref_id}: no board to phase")
+            if phase is None:
+                conn.execute(
+                    "UPDATE pcb_boards SET meta = meta - 'phase' WHERE board_id = %s",
+                    (int(row[0]),),
+                )
+            else:
+                conn.execute(
+                    "UPDATE pcb_boards SET meta = meta || %s::jsonb "
+                    "WHERE board_id = %s",
+                    (Jsonb({"phase": phase}), int(row[0])),
+                )
+        return phase
+
     def pcb_write_drc_findings(
         self,
         board_id: int,
@@ -2290,6 +2379,7 @@ class PcbMixin:
         findings: list[dict[str, Any]],
         *,
         pads_only: bool = False,
+        phase: str | None = None,
         conn: Connection | None = None,
     ) -> None:
         """Persist one DRC run — a ``pcb_drc_runs`` row (0191, written even
@@ -2303,12 +2393,22 @@ class PcbMixin:
         Each row carries its ``finding_key`` (:func:`precis.pcb.drc.
         finding_key`, from the finding's own ``to_row``), ``margin_mm``,
         ``location`` and ``first_seen_at`` — the earliest ``created_at``
-        of a row on this board with the same key, or now."""
+        of a row on this board with the same key, or now.
+
+        ``phase`` (Slice 8) records the run as the delta baseline FOR THAT
+        PHASE — ``pcb_boards.meta['drc_runs_by_phase'][phase] = run_id`` —
+        so a phase-scoped run (a ``netlist`` eval says nothing about
+        copper) never becomes the baseline a full run diffs against.
+        The map lives in meta: a new phase is a key, not a migration."""
         if conn is not None:
-            self._pcb_write_drc_findings(conn, board_id, run_id, findings, pads_only)
+            self._pcb_write_drc_findings(
+                conn, board_id, run_id, findings, pads_only, phase
+            )
             return
         with self._pcb_tx() as c:
-            self._pcb_write_drc_findings(c, board_id, run_id, findings, pads_only)
+            self._pcb_write_drc_findings(
+                c, board_id, run_id, findings, pads_only, phase
+            )
 
     def _pcb_write_drc_findings(
         self,
@@ -2317,6 +2417,7 @@ class PcbMixin:
         run_id: str,
         findings: list[dict[str, Any]],
         pads_only: bool,
+        phase: str | None = None,
     ) -> None:
         n_error = sum(1 for f in findings if f["severity"] == "error")
         conn.execute(
@@ -2324,6 +2425,16 @@ class PcbMixin:
             "VALUES (%s, %s, %s, %s, %s)",
             (board_id, run_id, pads_only, n_error, len(findings) - n_error),
         )
+        if phase is not None:
+            row = conn.execute(
+                "SELECT meta FROM pcb_boards WHERE board_id = %s", (board_id,)
+            ).fetchone()
+            meta = dict((row[0] if row else None) or {})
+            meta.setdefault("drc_runs_by_phase", {})[phase] = run_id
+            conn.execute(
+                "UPDATE pcb_boards SET meta = %s WHERE board_id = %s",
+                (Jsonb(meta), board_id),
+            )
         for f in findings:
             conn.execute(
                 "INSERT INTO pcb_drc_findings "
@@ -2427,14 +2538,45 @@ class PcbMixin:
         return [self._drc_finding_row(r) for r in rows]
 
     def pcb_drc_previous_run(
-        self, board_id: int
+        self, board_id: int, *, phase: str | None = None
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """The latest recorded run on ``board_id`` and its rows — what the
         run about to be written diffs against (``view='drc'`` calls this
         BEFORE :meth:`pcb_write_drc_findings`). ``(None, [])`` when no run
-        has ever been recorded."""
+        has ever been recorded.
+
+        With ``phase`` the baseline is the last run OF THAT PHASE — the
+        ``meta['drc_runs_by_phase']`` map ``pcb_write_drc_findings``
+        maintains. A scoped run must never become another phase's
+        baseline: a ``netlist`` eval has no copper findings, so diffing
+        the next full run against it would report every geometric
+        finding as resolved-then-new.
+
+        A phase with no map entry falls back to the latest UNKEYED run —
+        one written before the map existed, or by a raw
+        ``pcb_write_drc_findings`` call — never to another phase's keyed
+        run. Genuinely no baseline → ``(None, [])``."""
         with self._pcb_conn() as conn:
-            run_id = self._pcb_drc_latest_run_id(conn, board_id)
+            if phase is not None:
+                row = conn.execute(
+                    "SELECT meta -> 'drc_runs_by_phase' "
+                    "FROM pcb_boards WHERE board_id = %s",
+                    (board_id,),
+                ).fetchone()
+                by_phase = dict((row[0] if row else None) or {})
+                run_id = by_phase.get(phase)
+                if run_id is None:
+                    keyed = {str(v) for v in by_phase.values()}
+                    for cand in conn.execute(
+                        "SELECT run_id FROM pcb_drc_runs WHERE board_id = %s "
+                        "ORDER BY created_at DESC",
+                        (board_id,),
+                    ).fetchall():
+                        if str(cand[0]) not in keyed:
+                            run_id = str(cand[0])
+                            break
+            else:
+                run_id = self._pcb_drc_latest_run_id(conn, board_id)
             if run_id is None:
                 return None, []
             return run_id, self._pcb_drc_run_rows(conn, board_id, run_id)

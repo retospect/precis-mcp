@@ -35,7 +35,9 @@ one instance / one net / an analysis / an export), `search` (by intent),
 `delete` (soft-retire).
 
 Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
-`op=` surface, once the netlist exists), [[precis-part-select-help]] (pick
+`op=` surface, once the netlist exists), [[precis-pcb-check-help]] (the
+check surface — view='check', phases, finding delta, ERC),
+[[precis-part-select-help]] (pick
 real parts), [[precis-net-class-help]] (name + classify nets),
 [[precis-measures-help]] (the "measuring tapes"), [[precis-pcb-ewod-help]]
 (computed-component **generators** — a `generators: [...]` block on `put`
@@ -294,6 +296,10 @@ get(
     kind="pcb", id="s", view="drc"
 )  # geometric DRC: findings with stable ids + new/still/gone vs the previous run
 get(
+    kind="pcb", id="s", view="check",
+    args={"phase": "fab"},
+)  # THE check surface — every rule one list; drc is its preset (below)
+get(
     kind="pcb", id="s", view="route-status"
 )  # per-net route status: unrouted|sketched|realized|failed
 get(
@@ -327,7 +333,14 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
   score against. Default to a 600px peek in-loop; reserve full 1800px
   (`PRECIS_PCB_PEEK_SIZE`) for milestone/acceptance renders.
 
-### Argue with the design — the board page's text box, `view='notes'`
+## Check the design — `view='check'`
+
+`view='check'` is THE check surface — one finding table, filterable by
+`args={'rule'|'severity'|'phase'}`, phase-gated (`netlist` never reads
+copper; `fab` is a claim via `op='phase'`), deltas by `finding_key`.
+Full contract: **[[precis-pcb-check-help]]**.
+
+## Argue with the design — the board page's text box, `view='notes'`
 
 The human-facing board page (`/pcb/<slug>` on the web UI) has one text box.
 Clicking a pad on the render drops its handle at the caret (`U1.3` —
@@ -555,29 +568,12 @@ height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
 
 ## Read a DRC run as a delta — finding ids
 
-Every DRC finding carries a stable `id` (12 hex chars): a content hash over
-`(rule, participants, layer)` — the two nets of a clearance hit, the pad and
-the via of a keep-out, the two parts of a courtyard overlap — never over
-coordinates, the margin or list position, so the same pair at a different
-margin after a nudge is the SAME finding. Each `view='drc'` call is a
-recorded run (clean runs too) and the head reports the delta against the
-previous run on that board: `vs run b13770b5: 3 new, 127 still (2 worse),
-5 gone` — new and gone counted separately, never netted, because a move
-that fixes three and creates three is not "no change". The table's `delta`
-column reads `new` / `still` / `still, worse (was -0.090)` /
-`still, better (was …)`; a `## gone since run …` list names what went,
-by id. The first run after this landed says "none to compare against"
-rather than calling everything new. Findings persist in
-`pcb_drc_findings` with `finding_key`, `margin_mm` and `first_seen_at`
-(the lifetime start — surviving a clean run in between, so "broken again"
-reads `new` while keeping its original first-seen).
-
-Rows list errors before warnings. With 10 or more findings the head adds a
-`by rule:` tally (rule, count, severity). Narrow the table with
-`args={'severity': 'error'|'warn', 'rule': 'via_pad_keepout'}` (`rule` takes
-a comma list; an unknown rule or severity is refused with the valid
-options). The head counts stay board-wide and a `filtered: showing N of M`
-line says the table is cut.
+Every finding carries a stable `id` (12 hex chars) hashed over
+`(rule, participants, layer)` — a nudge at a different margin is the SAME
+finding. Each check/drc call is a recorded run (clean runs too); the head
+deltas against the previous run of the same phase: `3 new, 127 still
+(2 worse), 5 gone`. Table `delta` column: `new`/`still`/`still, worse`.
+Full contract: **[[precis-pcb-check-help]]**.
 
 ## Find a design — `search`
 
