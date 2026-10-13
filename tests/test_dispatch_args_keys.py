@@ -133,9 +133,11 @@ def test_plugin_handlers_are_discovered() -> None:
 
 
 def test_se_get_keys_are_union_of_view_args() -> None:
-    from precis_se.handler import _VIEW_ARGS, SeHandler
+    from precis_se.handler import _GLOBAL_ARGS, _VIEW_ARGS, SeHandler
 
-    union: set[str] = set().union(*_VIEW_ARGS.values())
+    # Every view's own inputs plus the display knobs every view accepts
+    # (``prefunits``) — the same two sets ``_vet_view_args`` unions.
+    union: set[str] = set().union(*_VIEW_ARGS.values()) | set(_GLOBAL_ARGS)
     assert SeHandler.ARGS_KEYS["get"] == union
 
 
