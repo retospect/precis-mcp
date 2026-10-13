@@ -37,7 +37,6 @@ from .defects import (
     glyph_footprint,
     run_length,
     same_core_recuts,
-    vid_key,
 )
 from .extent import snap_extents
 from .fullerene import C60Data
@@ -422,7 +421,7 @@ def _hex_flake_sites(lat: Lattice, r: int) -> list[Site]:
                         nxt.add(adj)
         cluster |= nxt
         frontier = nxt
-    sites = sorted({v for ri in cluster for v in rings[ri]}, key=vid_key)
+    sites = sorted({v for ri in cluster for v in rings[ri]}, key=str)
     return cast(list[Site], sites)
 
 
@@ -1256,7 +1255,7 @@ def _assemble(
             )
         regions[inst] = sorted(region)
         deg = patch.degrees()
-        for e in sorted(patch.edges, key=lambda e: sorted(map(vid_key, e))):
+        for e in sorted(patch.edges, key=lambda e: sorted(map(str, e))):
             a, b = tuple(e)
             oi, oj = ords[(key, a)], ords[(key, b)]
             bonds.append((min(oi, oj), max(oi, oj), 1))
@@ -1426,7 +1425,7 @@ def _sort_rims(
     largest rim (outer boundary) first, then holes by min vertex id."""
     if kind == "tube":
         return sorted(rims, key=lambda rt: _rim_cell(patch, rt[0]))
-    return sorted(rims, key=lambda rt: (-len(rt[0]), sorted(map(vid_key, rt[0]))[0]))
+    return sorted(rims, key=lambda rt: (-len(rt[0]), sorted(map(str, rt[0]))[0]))
 
 
 def _port_name_normal(
@@ -2273,7 +2272,7 @@ def _apply_hole(
         nbrs = [n for n in neighbors(site) if n in patch.flatpos]
         n1 = min(
             (n for n in nbrs if dir_of(site, n) == d0),
-            key=vid_key,
+            key=str,
             default=None,
         )
         if n1 is None:
@@ -2281,7 +2280,7 @@ def _apply_hole(
                 nbrs,
                 key=lambda n: (
                     min((dir_of(site, n) - d0) % 6, (d0 - dir_of(site, n)) % 6),
-                    vid_key(n),
+                    str(n),
                 ),
                 default=None,
             )
@@ -2291,10 +2290,10 @@ def _apply_hole(
             for want in ((d0 + 2) % 6, (d0 - 2) % 6):
                 got = [n for n in conts if dir_of(n1, n) == want]
                 if got:
-                    n2 = min(got, key=vid_key)
+                    n2 = min(got, key=str)
                     break
             if n2 is None and conts:
-                n2 = min(conts, key=vid_key)
+                n2 = min(conts, key=str)
         if n1 is not None and n2 is not None:
             dead = {site, n1, n2}
         if dead is None:
@@ -2438,13 +2437,10 @@ def _apply_hole(
         if hdir is not None:
             keep = min(
                 target,
-                key=lambda v: (
-                    min((vdir(v) - hdir) % 6, (hdir - vdir(v)) % 6),
-                    vid_key(v),
-                ),
+                key=lambda v: (min((vdir(v) - hdir) % 6, (hdir - vdir(v)) % 6), str(v)),
             )
         else:
-            keep = min(target, key=vid_key)
+            keep = min(target, key=str)
         dead.discard(keep)
     adjacent = {w for e in patch.edges if e & dead for w in e if w not in dead}
     disk = frozenset(v for v in dead | adjacent if isinstance(v, Site))
@@ -2787,7 +2783,7 @@ def _hole_rim_after(patch: Patch, old_rim: frozenset[Vid]) -> frozenset[Vid]:
     for rim, _t in rims:
         rc = np.mean([patch.flatpos[v] for v in rim], axis=0)
         scored.append((float(np.linalg.norm(rc - cen)), frozenset(rim)))
-    return min(scored, key=lambda t: (t[0], sorted(map(vid_key, t[1]))))[1]
+    return min(scored, key=lambda t: (t[0], sorted(map(str, t[1]))))[1]
 
 
 def _record_collar(spec: Spec, ci: int, defs: list[Defect]) -> Spec:
@@ -2891,7 +2887,7 @@ def _cap_patch(lat: Lattice, n: int, m: int) -> Patch | None:
             c = np.mean([pos3[v] for v in r], axis=0)
             axes.append(c / np.linalg.norm(c))
     n_dangling = 10
-    lexmin = min(pos3, key=vid_key)
+    lexmin = min(pos3, key=str)
     best: frozenset[Vid] | None = None
     for axis in axes:
         dots = {v: float(pos3[v] @ axis) for v in pos3}
@@ -2926,9 +2922,7 @@ def _cap_patch(lat: Lattice, n: int, m: int) -> Patch | None:
                 if len(bnd) != n_dangling:
                     continue
                 fs = frozenset(cand)
-                if best is None or sorted(map(vid_key, fs)) < sorted(
-                    map(vid_key, best)
-                ):
+                if best is None or sorted(map(str, fs)) < sorted(map(str, best)):
                     best = fs
     if best is None:
         return None
@@ -4360,7 +4354,7 @@ def _c3_orbits(
     )
     seen: set[frozenset[Vid]] = set()
     orbits: list[list[Vid]] = []
-    for v in sorted(members, key=vid_key):
+    for v in sorted(members, key=str):
         p = pos[v] - centre
         chain = [v]
         ok = True
@@ -4385,8 +4379,8 @@ def _c3_orbits(
         fs = frozenset(chain)
         if ok and len(chain) == 3 and fs not in seen:
             seen.add(fs)
-            orbits.append(sorted(chain, key=vid_key))
-    return sorted(orbits, key=lambda o: [vid_key(x) for x in o])
+            orbits.append(sorted(chain, key=str))
+    return sorted(orbits, key=lambda o: [str(x) for x in o])
 
 
 def _shortest_path(adj: dict[Vid, set[Vid]], a: Vid, b: Vid) -> list[Vid] | None:
@@ -4399,7 +4393,7 @@ def _shortest_path(adj: dict[Vid, set[Vid]], a: Vid, b: Vid) -> list[Vid] | None
         cur = dq.popleft()
         if cur == b:
             break
-        for y in sorted(adj[cur], key=vid_key):
+        for y in sorted(adj[cur], key=str):
             if y not in prev:
                 prev[y] = cur
                 dq.append(y)

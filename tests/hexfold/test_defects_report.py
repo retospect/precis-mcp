@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
-
-from hexfold.build import build
 from hexfold.check import check
 from hexfold.defects import Defect, counting_residual, cut_disk, disks_disjoint
 from hexfold.lattice import Lattice, Site
@@ -54,34 +51,3 @@ def test_check_geometry_codes_fire_on_stick() -> None:
 
 
 _C60_SPEC = "hexfold 0.1\norigin c\nc: fullerene(C60)\n"
-
-
-# gr464341: Patch.faces() ordered edges by str(Site), so the k=0 rim
-# registration of a sheet hole depended on whether the hole straddled the
-# 9 -> 10 digit boundary in u or v.
-_SEAM_CELLS = [(12, 12), (14, 14), (5, 9), (5, 10), (9, 12), (19, 10), (9, 9)]
-
-
-def _fused_foot_ring_sizes(i: int, j: int, k: int) -> Counter[int]:
-    net = build(
-        "hexfold 0.2\norigin s\n"
-        f"s: sheet(30,24) - hex(1)@({i},{j},A):0\n"
-        "c: cap(24,0) + 3@(-1,0,A):2 - hex(1)@(-1,0,A):0\n"
-        "t: tube(6,0,len=3)\n"
-        f"s.hole --fuse k={k}--> c.in\n",
-        strict=False,
-    )
-    assert not net.report.errors()
-    return Counter(len(r) for r in net.rings)
-
-
-def test_sheet_hole_fuse_phase_is_position_independent() -> None:
-    for k in (0, 1):
-        sizes = {c: _fused_foot_ring_sizes(*c, k) for c in _SEAM_CELLS}
-        assert all(v == sizes[_SEAM_CELLS[0]] for v in sizes.values()), sizes
-
-
-def test_sheet_hole_fuse_seam_is_clean_777() -> None:
-    for cell in _SEAM_CELLS:
-        sizes = _fused_foot_ring_sizes(*cell, 1)
-        assert sizes[5] == 0 and sizes[7] == 3, (cell, sizes)

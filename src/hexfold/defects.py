@@ -26,20 +26,6 @@ from .lattice import Lattice, Site, neighbors
 
 Vid = Hashable  # Site for native atoms, ("d", i, u, v, s) for inserted ones
 
-
-def vid_key(v: Vid) -> tuple[Any, ...]:
-    """Numeric total order on vertex ids (never ``str``: "(10,.." < "(8,..").
-
-    Inserted ``("d", i, u, v, s)`` ids sort before native sites, as their
-    ``str`` form (leading quote) always did.
-    """
-    if isinstance(v, Site):
-        return (1, v.u, v.v, v.s)
-    if isinstance(v, tuple):
-        return (0, *v)
-    return (2, str(v))
-
-
 SQRT3 = math.sqrt(3.0)
 
 # Bond direction angles (deg) leaving an A site / B site, for dir classes 0..2.
@@ -481,7 +467,7 @@ class Patch:
             darts[v].sort(key=lambda t: t[0])
         visited: set[tuple[Vid, Vid]] = set()
         out: list[tuple[list[Vid], list[float]]] = []
-        for e in sorted(self.edges, key=lambda e: sorted(map(vid_key, e))):
+        for e in sorted(self.edges, key=lambda e: sorted(map(str, e))):
             a, b = tuple(e)
             for cur in ((a, b), (b, a)):
                 if cur in visited:
