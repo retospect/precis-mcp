@@ -180,7 +180,9 @@ def _apply_assignment(ir, groups, seg_to_pin: dict[int, int]) -> None:
             ir.swap_pins(pivot, pins[i])
 
 
-def _corridor_phase(ir, captured, config, fixed, tgraph, plan, reqs, dilate, soft=None):
+def _corridor_phase(
+    ir, captured, config, fixed, tgraph, plan, reqs, dilate, soft=None, budget=None
+):
     """Route each planned segment inside its corridor on the real
     occupancy grid (most-constrained first), then give leftovers the
     ordinary failures-first re-ordering with the corridor results held as
@@ -218,6 +220,7 @@ def _corridor_phase(ir, captured, config, fixed, tgraph, plan, reqs, dilate, sof
         spec,
         ink_field=captured["ink_field"],
         soft_penalty=soft,
+        max_expansions=budget,
     )
     corridor_count = len(paths)
     leftover = list(unrouted_c) + list(plan.unrouted)
@@ -269,6 +272,12 @@ def _pin_node(graph: globalplan.TileGraph, layer_index: int, ir, pin: int) -> in
     pt = pin_point(ir, pin)
     assert pt is not None
     return graph.node(layer_index, *graph.tile_of(pt[0], pt[1]))
+
+
+#: Search budget for the priced-corridor runs: four times the router's own
+#: (a priced search keeps the unpriced distance heuristic, so it opens more
+#: cells per routed net).
+BIG_BUDGET = 4 * maze.MAX_EXPANSIONS
 
 
 @pytest.mark.slow
@@ -375,7 +384,7 @@ def test_ewod_global_tile_plan_probe(store, monkeypatch):
             )[:12],
         }
         plans[variant] = plan
-        bundles[variant] = (ir_v, captured, reqs)
+        bundles[variant] = (ir_v, captured, reqs, nets, prefs)
 
     # Corridor phase on the best converged plan (fewest vias, then shortest
     # total tile length). None converged is itself the negative result.
@@ -387,7 +396,7 @@ def test_ewod_global_tile_plan_probe(store, monkeypatch):
             key=lambda v: (plans[v].via_count, plans[v].total_length_mm),
         )
         plan = plans[best]
-        ir_v, captured, reqs = bundles[best]
+        ir_v, captured, reqs, _nets, _prefs = bundles[best]
         if best == "negotiated" and plan.assignment:
             assert tile_graph is not None
             goal_li = tile_graph.layers.index(next(iter(reqs.values())).goal_layer)
@@ -428,7 +437,7 @@ def test_ewod_global_tile_plan_probe(store, monkeypatch):
         # so the comparison is not confounded by the pin assignment.
         if "distance" in converged and best != "distance":
             d_plan = plans["distance"]
-            d_ir, d_captured, d_reqs = bundles["distance"]
+            d_ir, d_captured, d_reqs, _nets, _prefs = bundles["distance"]
             t_start = time.monotonic()
             corr_count, exhausted, unrouted_c, final_unrouted, _paths = _corridor_phase(
                 d_ir, d_captured, config, fixed, tile_graph, d_plan, d_reqs, 1, 5.0
@@ -442,19 +451,128 @@ def test_ewod_global_tile_plan_probe(store, monkeypatch):
                 ),
                 "corridor_s": round(time.monotonic() - t_start, 2),
             }
+        # Slice 0b(b) follow-up: the same soft corridor with a 4x search
+        # budget, on the open-model plan — separates "budget-bound" from
+        # "corridor wrong" before the strict model changes the corridors.
+        t_start = time.monotonic()
+        corr_count, exhausted, unrouted_c, final_unrouted, _paths = _corridor_phase(
+            ir_v, captured, config, fixed, tile_graph, plan, reqs, 1, 5.0, BIG_BUDGET
+        )
+        report["corridor"]["soft_1_k5_budget4x"] = {
+            "corridor_routed": corr_count,
+            "exhausted": len(exhausted),
+            "final_routed": 55 - len(final_unrouted),
+            "final_unrouted": sorted(
+                str(ir_v.net_name[int(ir_v.seg_net[s])]) for s in final_unrouted
+            ),
+            "corridor_s": round(time.monotonic() - t_start, 2),
+        }
+
+    # Slice 0b(a): strict capacities (participant copper blocks lanes, a
+    # net's own copper transparent only where it narrows a boundary;
+    # planned through-vias charged on their tile's lanes), same three
+    # assignments, then the soft corridor on the fixed-sink strict plans.
+    # Each fixed-sink assignment gets its own strict graph: pad ownership
+    # (who may pass a pad's copper) follows the assignment. The negotiated
+    # (free-sink) plan reuses the stored graph — its candidate pads are
+    # owned by the stored nets, which biases it against swaps.
+    def strict_graph_for(variant: str) -> globalplan.TileGraph:
+        v_ir, v_captured, v_reqs, _n, _p = bundles[variant]
+        rules = next(iter(v_reqs.values())).rules
+        return globalplan.build_tile_graph(
+            _static_grid(v_ir, v_captured, config, fixed),
+            layers=plan_layers,
+            track_mm=rules.track_width_mm,
+            clearance_mm=float(
+                config.class_rules[ESCAPE_CLASS].get("clearance_mm")
+                or v_captured["clearance"]
+            ),
+            via_dia_mm=rules.via_dia_mm or 0.45,
+            participant_nets={req.net_id for req in v_reqs.values()},
+            strict=True,
+        )
+
+    t_start = time.monotonic()
+    strict_graphs = {"stored": strict_graph_for("stored")}
+    strict_graphs["distance"] = strict_graph_for("distance")
+    strict_graphs["negotiated"] = strict_graphs["stored"]
+    s_graph = strict_graphs["stored"]
+    strict_report: dict[str, Any] = {
+        "tile_graph_s": round((time.monotonic() - t_start) / 2, 2),
+        "via_lanes": s_graph.via_lanes,
+        "exit_edges": len(s_graph.exit_cap),
+        "edge_cap_hist": {
+            "x": np.bincount(s_graph.cap_x.reshape(-1)).tolist(),
+            "y": np.bincount(s_graph.cap_y.reshape(-1)).tolist(),
+        },
+        "variants": {},
+    }
+    strict_plans: dict[str, globalplan.PlanResult] = {}
+    for variant in ("stored", "distance", "negotiated"):
+        _ir_s, _cap_s, _reqs_s, s_nets, s_prefs = bundles[variant]
+        t_start = time.monotonic()
+        s_plan = globalplan.plan_routes(
+            strict_graphs[variant],
+            s_nets,
+            layer_prefs=s_prefs,
+            free_sinks=variant == "negotiated",
+        )
+        strict_plans[variant] = s_plan
+        strict_report["variants"][variant] = {
+            "converged": s_plan.converged,
+            "iterations": s_plan.iterations,
+            "conflicted_tail": list(s_plan.conflicted_per_iter[-5:]),
+            "routed_in_plan": len(s_plan.paths),
+            "plan_vias": s_plan.via_count,
+            "total_tile_len_mm": round(s_plan.total_length_mm, 1),
+            "over_capacity": sum(1 for x in s_plan.saturated if x.use > x.cap),
+            "saturated_rows": sorted(
+                collections.Counter(
+                    (x.kind, x.layer, x.ty) for x in s_plan.saturated if x.use > x.cap
+                ).items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )[:8],
+            "plan_s": round(time.monotonic() - t_start, 2),
+        }
+    # Fixed-sink variants only: their bundles already carry the pin
+    # assignment the plan was made for. Default budget (4x was refuted on
+    # the open model above).
+    for variant in ("stored", "distance"):
+        s_plan = strict_plans[variant]
+        if not s_plan.paths:
+            continue
+        s_ir, s_captured, s_reqs, _n, _p = bundles[variant]
+        t_start = time.monotonic()
+        corr_count, exhausted, unrouted_c, final_unrouted, _paths = _corridor_phase(
+            s_ir,
+            s_captured,
+            config,
+            fixed,
+            strict_graphs[variant],
+            s_plan,
+            s_reqs,
+            1,
+            5.0,
+        )
+        key = f"{variant}_soft_1_k5"
+        strict_report[key] = {
+            "corridor_routed": corr_count,
+            "exhausted": len(exhausted),
+            "final_routed": 55 - len(final_unrouted),
+            "final_unrouted": sorted(
+                str(s_ir.net_name[int(s_ir.seg_net[s])]) for s in final_unrouted
+            ),
+            "corridor_s": round(time.monotonic() - t_start, 2),
+        }
+    report["strict"] = strict_report
     report["elapsed_s"] = round(time.monotonic() - t0, 1)
     report["variants"] = variants
     print("GLOBALPLAN_REPORT " + json.dumps(report, indent=1, default=str))
 
     # Invariants, not pinned measurements: the measured numbers live in
-    # docs/backlog/pcb-global-plan-probe.md (14/38 at d=1, 18/42 at d=2 on
-    # 2026-10-13) and are printed above. The corridor counts are a LOWER
-    # bound: the CONTESTED-stamp corridor restriction disables in-corridor
-    # via placement (the via legality check scans every layer, so the
-    # stamped cells make every off-tile site foreign), so nets needing
-    # inner-layer hops fail in-corridor. The last assertion fires when the
-    # hand-off finally beats the 51/55 replay baseline — that is the
-    # signal to rewrite the note, not a regression.
+    # docs/backlog/pcb-global-plan-probe.md and are printed above. The last
+    # assertion fires when the hand-off finally beats the 51/55 replay
+    # baseline — that is the signal to rewrite the note, not a regression.
     assert [variants[v]["converged"] for v in ("stored", "distance", "negotiated")] == [
         True,
         True,

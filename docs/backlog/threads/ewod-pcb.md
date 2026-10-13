@@ -127,9 +127,11 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    be re-expanded at v6 (handoff item 2), and routing a stale expansion is
    refused. Until then the replay fixture (v3 copy, 51/55) and the plaza
    member of `tests/fixtures/pcb/qfp_fanout.py` (53/55) are the
-   benchmarks; slice 0 showed a tile plan converges but hard corridors
-   from it hurt (38/41), so slice 0b (corridors as a cost, faithful
-   capacities) comes before any prod run.
+   benchmarks. Slices 0/0b (2026-10-13): no plan-guided variant beats
+   the plain router's 51 (hard corridors 38/41, priced 47, strict
+   capacities 40/47); the 0.5 mm tile capacity brackets the fine grid
+   without locating it, so plan corridors wait on a connectivity-based
+   capacity (`pcb-global-plan-probe.md` Part 4).
 0b. **backlog/pcb-anneal-best-state-vs-routability.md** (gr464240) — after
    0: only if routed/55 stays low and `best_at` stays near 0, route the
    anneal's start/best/last states and keep the most-routed (Reto

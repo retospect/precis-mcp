@@ -25,7 +25,10 @@ arguments, so the plan reads exactly what a real pass would route over):
    copper, its own included. Each tile's via capacity counts how many
    ``via_dia + clearance``-spaced envelopes fit in the cells that are via-
    legal on EVERY stackup layer (the router's own ``r_via`` disk plus the
-   pad keep-out mask), packed greedily in scan order.
+   pad keep-out mask), packed greedily in scan order. ``strict=True``
+   (slice 0b(a)) drops the participant exemption — a net's own copper is
+   transparent only on the boundaries it narrows (``exit_cap``) — and
+   charges each planned through-via lanes on its tile's boundaries.
 2. :func:`plan_routes` — negotiated congestion (PathFinder, McMurchie &
    Ebeling 1995, VPR schedule) over the tile graph. Nodes are
    ``(tile, layer)``; in-plane edges cost ``tile_mm`` times the layer's
@@ -37,12 +40,11 @@ arguments, so the plan reads exactly what a real pass would route over):
    one-pad-per-net matching is re-solved each iteration by
    :func:`precis.pcb.pinswap._hungarian` on the negotiated distances.
 3. :func:`corridor_route` — commits the plan to the real
-   ``OccupancyGrid`` by restricting each net's search to its corridor
-   tiles dilated by one tile, implemented by temporarily stamping
-   :data:`~precis.pcb.maze.CONTESTED` on out-of-corridor cells (the
-   router reads CONTESTED as foreign to every net, endpoints excepted —
-   same semantics as a ``mask`` argument, with zero changes to
-   :mod:`precis.pcb.maze`). Leftover nets then get the ordinary
+   ``OccupancyGrid``: each net's track search is confined to its corridor
+   tiles (dilated by one tile) through ``OccupancyGrid.route(mask=)`` —
+   the via disk may overhang the mask — or, with ``soft_penalty``, priced
+   off-corridor through a static :class:`~precis.pcb.maze.Negotiation`
+   history instead of walled. Leftover nets then get the ordinary
    rip-up-and-reorder treatment with the corridor results held fixed as
    proposals (:func:`precis.pcb.realize._route_pass`'s ``preferred=``
    seam, which commits a path verbatim when it is still legal).
@@ -157,6 +159,16 @@ class TileGraph:
     cap_y: np.ndarray
     via_cap: np.ndarray
     row_report: tuple[str, ...]
+    #: ``strict`` graphs only (slice 0b(a)): ``{(kind, li, ty, tx):
+    #: {net_id: cap}}`` — the capacity a participant net sees on a
+    #: boundary its OWN copper narrows, where that copper is transparent
+    #: to it. Every other net sees ``cap_x``/``cap_y``.
+    exit_cap: dict[tuple[str, int, int, int], dict[int, int]] = field(
+        default_factory=dict
+    )
+    #: Track lanes one planned through-via takes from each boundary of its
+    #: tile on every planned layer (0 = vias uncharged, the original model).
+    via_lanes: int = 0
 
     def tile_of(self, x: float, y: float) -> tuple[int, int]:
         tx = math.floor((x - self.ox) / self.tile_mm)
@@ -181,15 +193,22 @@ def build_tile_graph(
     via_dia_mm: float,
     tile_mm: float = DEFAULT_TILE_MM,
     participant_nets: Iterable[int] = (),
+    strict: bool = False,
 ) -> TileGraph:
     """Measure the tile graph's capacities off ``grid``'s stamped claims.
 
-    ``participant_nets`` are the nets being planned (the escape class):
-    their own claims are exempt from the *track* capacity mask so a net
-    can leave the tile its pad or via sits in. Via capacity uses every
-    claim — a drilled via clears copper net-blind — folded with
-    ``grid``'s own pad keep-out mask, so a tile under a pad row reports
-    zero rather than a nominal count the router could never use.
+    ``participant_nets`` are the nets being planned (the escape class).
+    By default their claims are exempt from the *track* capacity mask so
+    a net can leave the tile its pad or via sits in — which also reads
+    every OTHER participant's plaza via as free lanes (the probe's main
+    overestimate). ``strict`` (slice 0b(a)) blocks lanes on every claim
+    and instead records, per participant, the boundaries its own copper
+    narrows with that copper transparent (``exit_cap``), and charges each
+    planned through-via ``via_lanes`` lanes on its tile's boundaries.
+    Via capacity uses every claim either way — a drilled via clears
+    copper net-blind — folded with ``grid``'s own pad keep-out mask, so a
+    tile under a pad row reports zero rather than a nominal count the
+    router could never use.
     """
     spec = grid.spec
     owner = grid.owner
@@ -199,8 +218,11 @@ def build_tile_graph(
     ntx = math.ceil(spec.nx * spec.pitch / tile_mm)
     nty = math.ceil(spec.ny * spec.pitch / tile_mm)
     layer_list = list(layers)
-    participants = np.isin(owner, np.asarray(sorted(participant_nets), np.int32))
-    foreign = (owner != maze.FREE) & ~participants
+    participant_list = sorted(participant_nets)
+    participants = np.isin(owner, np.asarray(participant_list, np.int32))
+    foreign = owner != maze.FREE
+    if not strict:
+        foreign &= ~participants
     # The track keep-out radius mirrors `_route_in`: half the track width
     # plus one cell of discretisation slack.
     r_track = math.ceil((track_mm / 2.0) / spec.pitch) + 1
@@ -209,30 +231,67 @@ def build_tile_graph(
     ty_of = np.clip(((ys - oy) / tile_mm).astype(int), 0, nty - 1)
     cap_x = np.zeros((len(layer_list), nty, ntx - 1), dtype=np.int32)
     cap_y = np.zeros((len(layer_list), nty - 1, ntx), dtype=np.int32)
+    # Cell columns/rows either side of each tile boundary (-1 = none).
+    bx_cells = [
+        int(np.searchsorted(xs, ox + (tx + 1) * tile_mm, side="left")) - 1
+        for tx in range(ntx - 1)
+    ]
+    by_cells = [
+        int(np.searchsorted(ys, oy + (ty + 1) * tile_mm, side="left")) - 1
+        for ty in range(nty - 1)
+    ]
+
+    def boundary_cap(free: np.ndarray, kind: str, ty: int, tx: int) -> int:
+        if kind == "x":
+            i = bx_cells[tx]
+            if i < 0 or i + 1 >= spec.nx:
+                return 0
+            both = free[:, i] & free[:, i + 1]
+            return _run_capacity(both[ty_of == ty], spec.pitch, lane_mm)
+        i = by_cells[ty]
+        if i < 0 or i + 1 >= spec.ny:
+            return 0
+        both = free[i, :] & free[i + 1, :]
+        return _run_capacity(both[tx_of == tx], spec.pitch, lane_mm)
+
+    free_by_layer: list[np.ndarray] = []
     for li, layer in enumerate(layer_list):
         free = ~_dilate_disk(foreign[layer], r_track)
+        free_by_layer.append(free)
         for tx in range(ntx - 1):
-            bx = ox + (tx + 1) * tile_mm
-            ix_l = int(np.searchsorted(xs, bx, side="left")) - 1
-            ix_r = ix_l + 1
-            if ix_l < 0 or ix_r >= spec.nx:
-                continue
-            both = free[:, ix_l] & free[:, ix_r]
             for ty in range(nty):
-                cap_x[li, ty, tx] = _run_capacity(
-                    both[ty_of == ty], spec.pitch, lane_mm
-                )
+                cap_x[li, ty, tx] = boundary_cap(free, "x", ty, tx)
         for ty in range(nty - 1):
-            by = oy + (ty + 1) * tile_mm
-            iy_l = int(np.searchsorted(ys, by, side="left")) - 1
-            iy_r = iy_l + 1
-            if iy_l < 0 or iy_r >= spec.ny:
-                continue
-            both = free[iy_l, :] & free[iy_r, :]
             for tx in range(ntx):
-                cap_y[li, ty, tx] = _run_capacity(
-                    both[tx_of == tx], spec.pitch, lane_mm
-                )
+                cap_y[li, ty, tx] = boundary_cap(free, "y", ty, tx)
+    exit_cap: dict[tuple[str, int, int, int], dict[int, int]] = {}
+    if strict:
+        # Per participant: the boundaries of every tile its own (dilated)
+        # copper reaches, re-measured with that copper transparent.
+        for net_id in participant_list:
+            for li, layer in enumerate(layer_list):
+                own = owner[layer] == net_id
+                if not own.any():
+                    continue
+                own_free = ~_dilate_disk(foreign[layer] & ~own, r_track)
+                reach = _dilate_disk(own, r_track)
+                iys, ixs = np.nonzero(reach)
+                tiles = set(zip(ty_of[iys].tolist(), tx_of[ixs].tolist(), strict=True))
+                edges: set[tuple[str, int, int]] = set()
+                for ty, tx in tiles:
+                    if tx + 1 < ntx:
+                        edges.add(("x", ty, tx))
+                    if tx > 0:
+                        edges.add(("x", ty, tx - 1))
+                    if ty + 1 < nty:
+                        edges.add(("y", ty, tx))
+                    if ty > 0:
+                        edges.add(("y", ty - 1, tx))
+                for kind, ty, tx in sorted(edges):
+                    base = int((cap_x if kind == "x" else cap_y)[li, ty, tx])
+                    mine = boundary_cap(own_free, kind, ty, tx)
+                    if mine > base:
+                        exit_cap.setdefault((kind, li, ty, tx), {})[net_id] = mine
     # Via capacity: a through-via needs its envelope on EVERY layer, plus
     # the router's pad keep-out. All claims count (participants included).
     r_via = math.ceil((via_dia_mm / 2.0) / spec.pitch) + 1
@@ -281,6 +340,8 @@ def build_tile_graph(
         cap_y,
         via_cap,
         tuple(lines),
+        exit_cap,
+        math.floor((via_dia_mm + clearance_mm) / lane_mm) if strict else 0,
     )
 
 
@@ -377,12 +438,30 @@ def plan_routes(
     Hungarian pad matching for ``free_sinks`` (each iteration re-solves
     the one-pad-per-net assignment over the pads not held by
     non-conflicted nets, on the distances the same iteration's searches
-    produced)."""
+    produced).
+
+    On a ``strict`` graph a net prices a boundary its own copper narrows
+    at its ``exit_cap`` entry, and a boundary is over capacity when its
+    use exceeds the largest capacity any of its current users sees there
+    (the strict capacity when none holds an exit entry). Each planned
+    via also takes ``graph.via_lanes`` lanes on every boundary of its tile
+    on every planned layer except the ones its own net's track crosses
+    (:func:`_via_charge`), clamped at the boundary's strict capacity — a
+    via fills its tile's lanes, it never overfills them by itself, so the
+    charge conflicts only with ANOTHER net crossing that tile."""
     ntx, nty = graph.ntx, graph.nty
     n_nodes = len(graph.layers) * ntx * nty
+    net_of = {net.seg_id: net.net_id for net in nets}
+    exit_by_net: dict[int, dict[tuple[str, int, int, int], int]] = {}
+    for key, caps in graph.exit_cap.items():
+        for net_id, cap in caps.items():
+            exit_by_net.setdefault(net_id, {})[key] = cap
     use_x = np.zeros(graph.cap_x.shape, dtype=np.int32)
     use_y = np.zeros(graph.cap_y.shape, dtype=np.int32)
     use_v = np.zeros(graph.via_cap.shape, dtype=np.int32)
+    # Via lane charges, kept apart from track use so they can be clamped.
+    vc_x = np.zeros(graph.cap_x.shape, dtype=np.int32)
+    vc_y = np.zeros(graph.cap_y.shape, dtype=np.int32)
     hx = np.zeros(graph.cap_x.shape, dtype=np.float64)
     hy = np.zeros(graph.cap_y.shape, dtype=np.float64)
     hv = np.zeros(graph.via_cap.shape, dtype=np.float64)
@@ -395,6 +474,16 @@ def plan_routes(
         [graph.tile_mm * _off_axis(pref[li], False) for li in range(len(graph.layers))]
     )
 
+    def ux(li: int, ty: int, tx: int) -> int:
+        return int(use_x[li, ty, tx]) + min(
+            int(vc_x[li, ty, tx]), int(graph.cap_x[li, ty, tx])
+        )
+
+    def uy(li: int, ty: int, tx: int) -> int:
+        return int(use_y[li, ty, tx]) + min(
+            int(vc_y[li, ty, tx]), int(graph.cap_y[li, ty, tx])
+        )
+
     def price(use: int, cap: int, hist: float) -> float:
         over = max(0, use - cap + 1)
         return 1.0 + pres * over + hist_fac * hist
@@ -405,6 +494,14 @@ def plan_routes(
         """Min-cost tree from ``net.sources`` over current usage.
         ``(dist, came)``; early-exits once every member of ``targets``
         is closed (``None`` = run to exhaustion)."""
+        mine = exit_by_net.get(net.net_id, {})
+
+        def cx(li: int, ty: int, tx: int) -> int:
+            return mine.get(("x", li, ty, tx), int(graph.cap_x[li, ty, tx]))
+
+        def cy(li: int, ty: int, tx: int) -> int:
+            return mine.get(("y", li, ty, tx), int(graph.cap_y[li, ty, tx]))
+
         dist = np.full(n_nodes, math.inf)
         came = np.full(n_nodes, -1, dtype=np.int64)
         closed = np.zeros(n_nodes, dtype=bool)
@@ -426,10 +523,10 @@ def plan_routes(
                 if want == 0:
                     break
             li, tx, ty = graph.node_parts(node)
-            if tx + 1 < ntx and graph.cap_x[li, ty, tx] > 0:
+            if tx + 1 < ntx and cx(li, ty, tx) > 0:
                 c = d + cost_x[li] * price(
-                    int(use_x[li, ty, tx]),
-                    int(graph.cap_x[li, ty, tx]),
+                    ux(li, ty, tx),
+                    cx(li, ty, tx),
                     float(hx[li, ty, tx]),
                 )
                 if c < dist[node + 1]:
@@ -437,10 +534,10 @@ def plan_routes(
                     came[node + 1] = node
                     heapq.heappush(heap, (c, seq, node + 1))
                     seq += 1
-            if tx > 0 and graph.cap_x[li, ty, tx - 1] > 0:
+            if tx > 0 and cx(li, ty, tx - 1) > 0:
                 c = d + cost_x[li] * price(
-                    int(use_x[li, ty, tx - 1]),
-                    int(graph.cap_x[li, ty, tx - 1]),
+                    ux(li, ty, tx - 1),
+                    cx(li, ty, tx - 1),
                     float(hx[li, ty, tx - 1]),
                 )
                 if c < dist[node - 1]:
@@ -448,10 +545,10 @@ def plan_routes(
                     came[node - 1] = node
                     heapq.heappush(heap, (c, seq, node - 1))
                     seq += 1
-            if ty + 1 < nty and graph.cap_y[li, ty, tx] > 0:
+            if ty + 1 < nty and cy(li, ty, tx) > 0:
                 c = d + cost_y[li] * price(
-                    int(use_y[li, ty, tx]),
-                    int(graph.cap_y[li, ty, tx]),
+                    uy(li, ty, tx),
+                    cy(li, ty, tx),
                     float(hy[li, ty, tx]),
                 )
                 nb = node + ntx
@@ -460,10 +557,10 @@ def plan_routes(
                     came[nb] = node
                     heapq.heappush(heap, (c, seq, nb))
                     seq += 1
-            if ty > 0 and graph.cap_y[li, ty - 1, tx] > 0:
+            if ty > 0 and cy(li, ty - 1, tx) > 0:
                 c = d + cost_y[li] * price(
-                    int(use_y[li, ty - 1, tx]),
-                    int(graph.cap_y[li, ty - 1, tx]),
+                    uy(li, ty - 1, tx),
+                    cy(li, ty - 1, tx),
                     float(hy[li, ty - 1, tx]),
                 )
                 nb = node - ntx
@@ -502,6 +599,11 @@ def plan_routes(
             use_x[li, ty, tx] += delta
         for li, ty, tx in eys:
             use_y[li, ty, tx] += delta
+        cxs, cys = _via_charge(graph, exs, eys, vts)
+        for li, ty, tx in cxs:
+            vc_x[li, ty, tx] += delta * graph.via_lanes
+        for li, ty, tx in cys:
+            vc_y[li, ty, tx] += delta * graph.via_lanes
         for vt in vts:
             ty_, tx_ = divmod(vt, ntx)
             use_v[ty_, tx_] += delta
@@ -562,8 +664,11 @@ def plan_routes(
                 nodes = path_nodes(came, net.sink)
                 paths[net.seg_id] = nodes
                 add(nodes, 1)
-        over_x = np.argwhere(use_x > graph.cap_x)
-        over_y = np.argwhere(use_y > graph.cap_y)
+        eff_x, eff_y = _effective_caps(graph, paths, net_of)
+        tot_x = use_x + np.minimum(vc_x, graph.cap_x)
+        tot_y = use_y + np.minimum(vc_y, graph.cap_y)
+        over_x = np.argwhere(tot_x > eff_x)
+        over_y = np.argwhere(tot_y > eff_y)
         over_v = np.argwhere(use_v > graph.via_cap)
         for li, ty, tx in over_x:
             hx[li, ty, tx] += 1.0
@@ -581,6 +686,8 @@ def plan_routes(
                 conflicted.add(net.seg_id)
                 continue
             exs, eys, vts = _resources(graph, planned)
+            cxs, cys = _via_charge(graph, exs, eys, vts)
+            exs, eys = exs + cxs, eys + cys
             if (
                 any(e in over_x_set for e in exs)
                 or any(e in over_y_set for e in eys)
@@ -596,26 +703,29 @@ def plan_routes(
     # or tile nobody uses is a wall, not a saturated cut (2553 of them on
     # the dogfood-6 replay would otherwise read as "tight").
     saturated: list[Saturated] = []
-    for li, ty, tx in np.argwhere((use_x >= graph.cap_x) & (graph.cap_x > 0)):
+    eff_x, eff_y = _effective_caps(graph, paths, net_of)
+    tot_x = use_x + np.minimum(vc_x, graph.cap_x)
+    tot_y = use_y + np.minimum(vc_y, graph.cap_y)
+    for li, ty, tx in np.argwhere((tot_x >= eff_x) & (eff_x > 0)):
         saturated.append(
             Saturated(
                 "x",
                 int(graph.layers[li]),
                 int(tx),
                 int(ty),
-                int(use_x[li, ty, tx]),
-                int(graph.cap_x[li, ty, tx]),
+                int(tot_x[li, ty, tx]),
+                int(eff_x[li, ty, tx]),
             )
         )
-    for li, ty, tx in np.argwhere((use_y >= graph.cap_y) & (graph.cap_y > 0)):
+    for li, ty, tx in np.argwhere((tot_y >= eff_y) & (eff_y > 0)):
         saturated.append(
             Saturated(
                 "y",
                 int(graph.layers[li]),
                 int(tx),
                 int(ty),
-                int(use_y[li, ty, tx]),
-                int(graph.cap_y[li, ty, tx]),
+                int(tot_y[li, ty, tx]),
+                int(eff_y[li, ty, tx]),
             )
         )
     for ty, tx in np.argwhere((use_v >= graph.via_cap) & (graph.via_cap > 0)):
@@ -799,6 +909,7 @@ def corridor_route(
     *,
     ink_field: Any = None,
     soft_penalty: float | None = None,
+    max_expansions: int | None = None,
 ) -> tuple[list[Any], list[Any], list[int], dict[int, maze.RoutePath], list[int]]:
     """Route ``order`` on ``grid`` (static copper already claimed), each
     segment confined to ``corridors[seg_id]``'s mask on
@@ -816,7 +927,9 @@ def corridor_route(
     of ``soft_penalty`` with usage zero, so a step there costs
     ``pitch * (1 + soft_penalty)`` and the search may still leave the
     corridor when the corridor is wrong. No new router code — the
-    negotiation seam prices it."""
+    negotiation seam prices it. A priced search expands more cells than
+    a plain one (the heuristic stays the unpriced distance), so
+    ``max_expansions`` overrides the request's own budget."""
     tracks: list[Any] = []
     vias: list[Any] = []
     unrouted: list[int] = []
@@ -831,6 +944,8 @@ def corridor_route(
                 plan_layers.append(need)
         kwargs = dict(req.route_kwargs)
         kwargs["layers"] = sorted(plan_layers)
+        if max_expansions is not None:
+            kwargs["max_expansions"] = max_expansions
         # The corridor is a per-cell track mask on the search itself
         # (``OccupancyGrid.route(mask=)``): the via disk may overhang it.
         # The earlier CONTESTED-stamping restriction (the 2026-10-13 probe
@@ -895,6 +1010,65 @@ def plan_order(
         order,
         key=lambda s: (residual.get(s, math.inf), indexed[s]),
     )
+
+
+def _effective_caps(
+    graph: TileGraph, paths: dict[int, tuple[int, ...]], net_of: dict[int, int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """``cap_x``/``cap_y`` raised, on each boundary with ``exit_cap``
+    entries, to the largest entry among the nets whose track crosses it
+    now. Equal to the stored capacities on a non-strict graph."""
+    if not graph.exit_cap:
+        return graph.cap_x, graph.cap_y
+    eff_x = graph.cap_x.copy()
+    eff_y = graph.cap_y.copy()
+    users: dict[tuple[str, int, int, int], set[int]] = {}
+    for seg_id, nodes in paths.items():
+        exs, eys, _vts = _resources(graph, nodes)
+        for li, ty, tx in exs:
+            users.setdefault(("x", li, ty, tx), set()).add(net_of[seg_id])
+        for li, ty, tx in eys:
+            users.setdefault(("y", li, ty, tx), set()).add(net_of[seg_id])
+    for key, caps in graph.exit_cap.items():
+        held = [caps[n] for n in users.get(key, ()) if n in caps]
+        if not held:
+            continue
+        kind, li, ty, tx = key
+        eff = eff_x if kind == "x" else eff_y
+        eff[li, ty, tx] = max(int(eff[li, ty, tx]), max(held))
+    return eff_x, eff_y
+
+
+def _via_charge(
+    graph: TileGraph,
+    exs: list[tuple[int, int, int]],
+    eys: list[tuple[int, int, int]],
+    vts: list[int],
+) -> tuple[list[tuple[int, int, int]], list[tuple[int, int, int]]]:
+    """The boundaries a path's vias take lanes from: every boundary of each
+    via tile on every planned layer, minus the ones the path's own track
+    crosses (its own track reaches the via through them). One entry per
+    via per boundary; the caller weights each by ``graph.via_lanes``.
+    Empty on a graph with ``via_lanes == 0``."""
+    if graph.via_lanes <= 0 or not vts:
+        return [], []
+    own_x, own_y = set(exs), set(eys)
+    cxs: list[tuple[int, int, int]] = []
+    cys: list[tuple[int, int, int]] = []
+    for vt in vts:
+        ty, tx = divmod(vt, graph.ntx)
+        for li in range(len(graph.layers)):
+            for e in ([(li, ty, tx)] if tx + 1 < graph.ntx else []) + (
+                [(li, ty, tx - 1)] if tx > 0 else []
+            ):
+                if e not in own_x:
+                    cxs.append(e)
+            for e in ([(li, ty, tx)] if ty + 1 < graph.nty else []) + (
+                [(li, ty - 1, tx)] if ty > 0 else []
+            ):
+                if e not in own_y:
+                    cys.append(e)
+    return cxs, cys
 
 
 def _resources(graph: TileGraph, nodes: tuple[int, ...]):

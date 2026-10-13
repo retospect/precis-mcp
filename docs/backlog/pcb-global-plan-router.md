@@ -203,13 +203,16 @@ the unproven one.
    corridors are wrong at the detailed level because the tile capacities
    overestimate (participant keep-outs read free, through-vias uncharged).
    Corridors as a cost (slice 0b(b), same day): 47 (fewest-via plan) /
-   45 (distance plan) vs 51 plain, 4–7 nets budget-exhausted. Reading:
-   the plan level is cheap and converges, but no plan-guided variant has
-   beaten the plain router on the replay yet; slice 1 must make the
-   capacities faithful (participant keep-outs, through-vias) before
-   slice 2's corridors are trusted, and priced searches need a larger
-   expansion budget. Benchmarks: the replay (51) and the plaza fanout
-   member (53/55).
+   45 (distance plan) vs 51 plain; a 4x expansion budget routes fewer
+   (45), so the residual is not budget-bound. Strict capacities (slice
+   0b(a): participant copper blocks lanes, through-vias charged) wall off
+   17–20 nets — 35–38/55 planned, final 40/47. The 0.5 mm boundary-run
+   capacity brackets the fine grid (open 55 ≥ 51 ≥ strict 38) without
+   locating it. Reading: the plan level is cheap, but on this board no
+   plan-guided variant beats the plain router; slice 1 needs capacities
+   from the fine grid's own connectivity (per-tile max-flow over free
+   cells, or smaller tiles), not a setting of the current measure.
+   Benchmarks: the replay (51) and the plaza fanout member (53/55).
 1. `globalplan.py`: tile graph + capacities from stamped copper; a text
    capacity map in `view='congestion'` ("no map yet" ≠ cool).
 2. Negotiated plan with pin assignment folded in; `RoutePlan` persisted

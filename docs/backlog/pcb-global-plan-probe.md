@@ -108,9 +108,47 @@ via disks free to overhang):
 | d=2      | CONTESTED stamps | 18/55                  | 0         | 42/55                 |
 | d=1      | `mask=`          | 15/55                  | 0         | 38/55                 |
 | d=2      | `mask=`          | 19/55                  | 0         | 41/55                 |
+| d=1      | cost k=2         | 40/55                  | 7         | 41/55                 |
+| d=1      | cost k=5         | 45/55                  | 5         | 47/55                 |
+| d=1      | cost k=10        | 45/55                  | 5         | 47/55                 |
+| d=1      | cost k=5, 4x budget | 43/55               | 0         | 45/55                 |
+| d=1, distance plan | cost k=5 | 43/55                | 4         | 45/55                 |
+
+"cost k" = slice 0b(b): no mask; each off-corridor cell carries a static
+`maze.Negotiation` history of k (step cost × (1 + k)). A 4x expansion
+budget (`corridor_route(max_expansions=)`) removed every exhausted search
+and routed FEWER nets — the searches that used to give up now finish on
+long detours that block later nets, so the residual is not budget-bound.
 
 d=1 final unrouted: R0C5 R0C7 R2C4 R2C7 R3C2 R3C3 R3C4 R3C6 R4C5 R5C3
 R5C4 R5C7 R6C2 R6C4 R6C7 R7C5 R7C6. Total experiment ~50 s.
+
+## Part 4 — strict capacities (slice 0b(a))
+
+`build_tile_graph(strict=True)`: every claim blocks lanes, participant
+copper included; a net's own copper is transparent to it only on the
+boundaries it narrows (`exit_cap`, 808 boundaries); each planned
+through-via takes `floor((via + clearance) / lane)` = 3 lanes on every
+boundary of its tile on every planned layer except the ones its own track
+crosses, clamped at the boundary's capacity (a via fills its tile, it
+never overfills it alone). Each fixed-sink assignment gets its own strict
+graph (pad ownership follows the assignment); the free-sink plan reuses
+the stored one. 200 PathFinder iterations each:
+
+| assignment | converged | in plan | vias | over capacity | soft corridor k=5: inside / final |
+|------------|-----------|---------|------|---------------|-----------------------------------|
+| stored     | no        | 38/55   | 15   | 0             | 35 / 40                           |
+| distance   | no        | 35/55   | 15   | 0             | 34 / 47                           |
+| negotiated | no        | 38/55   | 15   | 0             | —                                 |
+
+No resource ends over capacity: the 17–20 conflicted nets have NO tile
+path at all — the strict graph walls them off. The plain fine-grid router
+routes 51, so the strict model UNDER-reads capacity, as the open model
+over-reads it (55/55 feasible). Cause: the boundary-run measure counts a
+lane only where a straight free run of `track + clearance` crosses the
+tile edge; a path that bends inside a 0.5 mm tile around a plaza via is
+legal on the fine grid but crosses no full-width free run, so it reads 0.
+At this tile size neither exemption setting is faithful.
 
 ## What this says
 
@@ -129,10 +167,15 @@ tile model's capacities read lanes the fine grid does not have
 the other layers' lanes), the plan commits nets to those lanes, and the
 confined search fails where the unconfined one finds another way. The
 honest reading: "a feasible plan exists on the tile model: yes";
-"hard corridors from that model help: no — they hurt". Next experiment
-(slice 0b, not built): (a) make the tile capacities faithful (charge
-participant keep-outs and through-vias) and re-plan; (b) corridors as a
-COST, not a wall — the existing `maze.Negotiation` history term with
-usage zero prices off-corridor cells (step cost × (1 + k)) with no new
-router code; measure both on the replay and on the plaza member of
-`tests/fixtures/pcb/qfp_fanout.py` (53/55).
+"hard corridors from that model help: no — they hurt".
+
+Slice 0b settled both follow-ups. Corridors as a cost recover most of the
+loss (47 vs 51) but do not beat the plain router, and a larger budget
+does not help. Strict capacities (Part 4) swing to the other side: 35–38
+nets planned, the rest walled off, final 40/47. The 0.5 mm boundary-run
+capacity brackets the truth (open 55 ≥ fine grid 51 ≥ strict 38) without
+locating it, so a plan made on it is not trustworthy on this board in
+either setting. A capacity that would be faithful has to come from the
+fine grid's own connectivity (per-tile max-flow between boundary cells
+over free cells, or tiles small enough that a bend fits in one), which is
+a different model, not a parameter of this one. Not built.
