@@ -37,7 +37,10 @@ heptagons is refused (a hexfold fuse-phase fault, gr464341).
 **Authored tops (hexfold-toolkit cycle 1).** ``top: "sphere"`` and
 ``top: "lid"`` with ``top_fillet`` are authored surfaces too: the meridian
 carries on past the tube as a top fillet and a sphere arc or a hemisphere
-(:func:`plan_top`), and every atom of the top is tethered to it.
+(:func:`plan_top`), and every atom of the top is tethered to it.  A sphere
+with ``open_pole`` builds the washer and bulge without the lid — the
+bulge's out rim stays open (the H ring when the block terminates), while
+meridian, tether and :func:`plan_top` row stay the closed sibling's.
 
 This module sits in ``precis_se`` because it is the layer that already
 imports both hexfold and precis_surface; hexfold itself never imports
@@ -372,7 +375,11 @@ class SceneFeature:
     nor on the last few tube bonds below a ball, and their joint is reported
     in ``ScenePlan.tops``.  ``top_R`` (sphere only) and ``top_fillet`` (sphere
     or lid) author the top surface; see :func:`plan_top`.  A ``lid`` with
-    ``top_fillet`` is a rounded lid and, like ``sphere``, an authored top."""
+    ``top_fillet`` is a rounded lid and, like ``sphere``, an authored top.
+    ``open_pole`` (sphere only) drops the lid and its fuse: the bulge's
+    ``out`` rim stays open, and the meridian, tether and plan are the closed
+    sibling's — the sphere surface still holds the bulge, so the same
+    ``(n, top_fillet)`` :func:`plan_top` row applies with nothing re-planned."""
 
     name: str
     at: tuple[int, int]
@@ -382,6 +389,7 @@ class SceneFeature:
     top: str = "open"
     top_R: float | None = None
     top_fillet: float | None = None
+    open_pole: bool = False
 
 
 def _authored_top(f: SceneFeature) -> bool:
@@ -390,11 +398,14 @@ def _authored_top(f: SceneFeature) -> bool:
     return f.top == "sphere" or (f.top == "lid" and f.top_fillet is not None)
 
 
-def _top_names(f_name: str, top: str) -> tuple[str, ...]:
+def _top_names(f_name: str, top: str, open_pole: bool = False) -> tuple[str, ...]:
     """Hexfold instances of an authored top, tube end first: a sphere is
     washer ``w``, bulge ``b``, lid ``c`` (suffixes on the tube's name); a
-    rounded lid is ``c`` alone."""
+    rounded lid is ``c`` alone.  An ``open_pole`` sphere has no lid: ``w``
+    and ``b`` only, with ``b``'s ``out`` rim left open."""
     if top == "sphere":
+        if open_pole:
+            return (f"{f_name}w", f"{f_name}b")
         return (f"{f_name}w", f"{f_name}b", f"{f_name}c")
     return (f"{f_name}c",)
 
@@ -414,6 +425,10 @@ def _check_top(f: SceneFeature) -> None:
         )
     if f.top_R is not None and f.top != "sphere":
         raise ValueError(f"{f.name}: top_R belongs to top 'sphere'; top is {f.top!r}")
+    if f.open_pole and f.top != "sphere":
+        raise ValueError(
+            f"{f.name}: open_pole belongs to top 'sphere'; top is {f.top!r}"
+        )
     if f.top_fillet is not None and f.top not in ("sphere", "lid"):
         raise ValueError(
             f"{f.name}: top_fillet belongs to top 'sphere' or 'lid'; top is {f.top!r}"
@@ -466,17 +481,29 @@ class ScenePlan:
 
 
 def _top_text(
-    name: str, n: int, top: str, k: int, length: int
+    name: str, n: int, top: str, k: int, length: int, open_pole: bool = False
 ) -> tuple[list[str], list[str]]:
     """Body and fuse lines of a lid or sphere top on the tube ``name``.  The
     sphere is the washer route measured in ``plan_top``: tube(n,0) -> a
     ``cap(6k,0) - hex(n/6-1)`` washer (six heptagons) -> a ``(6k,0)`` bulge
     of ``length`` periods (six pentagons) -> a ``cap(6k,0)`` lid (six
-    pentagons)."""
+    pentagons).  ``open_pole`` (sphere only) emits the washer and the bulge
+    but no lid and no ``b.out`` fuse: the bulge's out rim stays open."""
     c = f"{name}c"
     if top == "lid":
         return [f"{c}: cap({n},0)"], [f"{name}.out --fuse k=0--> {c}.in"]
     w, b = f"{name}w", f"{name}b"
+    if open_pole:
+        return (
+            [
+                f"{w}: cap({6 * k},0) - hex({n // 6 - 1})@(0,0,A):0",
+                f"{b}: tube({6 * k},0, len={length})",
+            ],
+            [
+                f"{name}.out --fuse k=0--> {w}.hole",
+                f"{w}.in --fuse k=0--> {b}.in",
+            ],
+        )
     return (
         [
             f"{w}: cap({6 * k},0) - hex({n // 6 - 1})@(0,0,A):0",
@@ -523,7 +550,7 @@ def scene_text(
             if top_plans is None or f.name not in top_plans:
                 raise ValueError(f"{f.name}: a sphere top needs its plan_top plan")
             tp = top_plans[f.name]
-            tb, tf = _top_text(f.name, f.n, "sphere", tp.k, tp.length)
+            tb, tf = _top_text(f.name, f.n, "sphere", tp.k, tp.length, f.open_pole)
             body.extend(tb)
             fuses.extend(tf)
         elif f.top == "lid":
@@ -584,7 +611,7 @@ def _scene_masks(
     for f in features:
         authored |= (inst == f.name) | (inst == f"{f.name}f")
         if _authored_top(f):  # a sphere or rounded lid is held to its surface
-            authored |= np.isin(inst, _top_names(f.name, f.top))
+            authored |= np.isin(inst, _top_names(f.name, f.top, f.open_pole))
     balls = np.isin(inst, [f"{f.name}c" for f in features if f.top == "ball"])
     tethered = authored & (_hops_from(bonds, balls) > _BALL_FREE_BONDS)
     near_top = _hops_from(bonds, ~authored) <= 1
@@ -916,11 +943,17 @@ def _resolve_top(
 
 
 def _top_region(
-    bonds: Any, inst: np.ndarray, name: str, top: str, zplus: np.ndarray, z1: float
+    bonds: Any,
+    inst: np.ndarray,
+    name: str,
+    top: str,
+    zplus: np.ndarray,
+    z1: float,
+    open_pole: bool = False,
 ) -> np.ndarray:
     """A top's judged atoms: its own instances, and the tube atoms within
     ``_TOP_HOPS`` bonds of it or above the dome start."""
-    istop = np.isin(inst, _top_names(name, top))
+    istop = np.isin(inst, _top_names(name, top, open_pole))
     hops = _hops_from(bonds, istop)
     return istop | ((inst == name) & ((hops <= _TOP_HOPS) | (zplus > z1)))
 
@@ -1427,7 +1460,7 @@ def _relax_scene(
         rt = tube_radius(f.n, 0)
         if _authored_top(f):
             tp = tplans[f.name]
-            first = _top_names(f.name, f.top)[0]
+            first = _top_names(f.name, f.top, f.open_pole)[0]
             junc = sorted(
                 {
                     a
@@ -1482,7 +1515,13 @@ def _relax_scene(
             # the top and its shoulder are judged by the top's five bars,
             # not the foot's bond window
             region = _top_region(
-                net.bonds, inst, f.name, f.top, -seed[:, 2], z1s[f.name]
+                net.bonds,
+                inst,
+                f.name,
+                f.top,
+                -seed[:, 2],
+                z1s[f.name],
+                open_pole=f.open_pole,
             )
             corner &= ~region
         bl = np.array(
@@ -1531,7 +1570,9 @@ def _relax_scene(
             tops[f.name] = (tmax, tpyr)
             tp = tplans[f.name]
             cols = _top_columns(pos, net.bonds, region, d_all)
-            cols["errors"] = _errors_on(findings, inst, _top_names(f.name, f.top))
+            cols["errors"] = _errors_on(
+                findings, inst, _top_names(f.name, f.top, f.open_pole)
+            )
             top_rows[f.name] = dataclasses.replace(
                 tp.chosen,
                 atoms=int(region.sum()),

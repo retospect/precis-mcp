@@ -275,6 +275,11 @@ removed as met — the transport move it waited on happened 09-29)
        - cycle 2, rest:
          the θp finding plus its band and the R_min refusal on the ball, and
          the MACE/xTB verdict as product evidence;
+       - **open-pole sphere top, landed 2026-10-13** (hex-openpole):
+         `open_pole: true` on a sphere drops the lid so the bulge `out`
+         rim stays open — the H ring at the bud apex (INFO
+         `scene.top.open`, `topology.sites.ring`,
+         `examples/nanobud_open.hx`);
        - next: spread-pentagon rows on the dome, so a ball stays round after
          relax (Reto 2026-10-04, hexfold-toolkit-5 option b: ahead of the
          buds). Scoped 2026-10-04, about 2 cycles. Under MACE the 6+3+3

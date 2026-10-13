@@ -428,6 +428,7 @@ _GENERATED_RECORD_KEYS = (
     "theta_p_max_deg",
     "scene",
     "plan",
+    "sites",
 )
 
 

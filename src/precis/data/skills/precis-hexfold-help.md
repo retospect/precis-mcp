@@ -514,13 +514,19 @@ hemisphere) and every top atom is held to it, like the foot.
   `R_min` 2.70 Å, so the default is 1.5 × 2.70 = 4.05 Å, under the room cap
   `R − r` (4.3 Å at R 9.0). An authored `top_fillet` above that room is
   refused by name.
+- `open_pole: true` on a `sphere` (refused elsewhere) drops the `cap(6k,0)`
+  lid: the bulge `out` rim stays open and the default H cap rings the apex
+  with `6k` H — an instrumentable ring on the closed top's plan row (pole
+  numbers n/a). INFO `scene.top.open` gives rim C/H,
+  mean z and radius; `topology.sites.ring` lists `{host, h, z_A,
+  theta_deg, normal}` in the scene frame.
 
 ## Check sphere fillets and read stored top diagnostics
 
 - Explicit sphere `top_fillet` below finite `R_min` is newly refused before
   planning as a **conservative authored-fillet input policy**. Equality
   clears only this check; other room/geometry limits remain. Input must be
-  positive finite numeric (no bool/string/NaN/infinity). Omitted room-capped
+  a positive finite number. Omitted room-capped
   defaults may fall below the heuristic and remain unchanged; lids keep their
   existing behavior. No clamp or physical stability verdict.
 - `view='block'` adds stored top diagnostics: dedicated
@@ -553,7 +559,7 @@ hemisphere) and every top atom is held to it, like the foot.
   more than one `sphere` per scene op or one with `n > 12`, tabled or not
   (spheres at 12 and 24 in one op relaxed 476 s); or live candidates over
   16 (sphere 9, each distinct `(n, top_fillet)` lid 4). Limits are per
-  scene op: put **one round-top scene op per put** (two ran 143 s on prod).
+  scene op: put **one round-top scene op per put**.
 - Grammar (the CAD-style spec layer maps 1:1): `ball_on(R)` ↔ `top: sphere,
   top_R`; `round(r)` ↔ `top_fillet`; `lid_on` + `round(r)` ↔ `top: lid,
   top_fillet`.
@@ -569,12 +575,11 @@ Limits:
 
 - `top="ball"` always carries WARN `scene.top.joint`: the fused (6,0)→C60
   neck is stick geometry only; MACE-MP small and GFN2-xTB both open 4 of
-  its 6 seam bonds (gr464391). That was measured on a neck seeded
-  mirror-registered (stick left 7–9 pairs at 1.04–1.23 Å; fixed 2026-10-11,
-  now none under 1.8 Å) and is not yet re-run. Bonded alternative: a `(12,0)` feature with `top="lid"` and the C60
-  as a sidewall `[2+2]` bud just under the lid, via `extra`:
-  `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"` (the `(4,-7,A)` site is
-  for `tube_len=4`; it moves with the tube length). It passes both
+  its 6 seam bonds (gr464391), measured before the 2026-10-11 mirror-seed
+  fix (pairs then 1.04–1.23 Å, now none under 1.8 Å) and not yet re-run. Bonded alternative: a `(12,0)` `top="lid"` feature with the C60
+  as a sidewall `[2+2]` bud under the lid, via `extra`:
+  `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"` (for `tube_len=4`;
+  it moves with it). It passes both
   relaxers as an isolated pillar only; inside a tethered scene its seam
   still opens (MACE-MP 2.6/3.6 Å), so it is not a scene recipe yet.
 - `(18,0)` feet crumple (an open row).

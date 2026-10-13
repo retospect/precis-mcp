@@ -61,6 +61,16 @@ authored-input policy refusal before planning, not a physical impossibility
 claim. Defaults and lids keep their existing rules. Block reads render stored
 scene diagnostics separately without changing old reports or running geometry.
 
+**Open pole.** ``open_pole: true`` on a ``sphere`` (refused on any other
+top) builds the washer and bulge without the lid: the bulge's ``out`` rim
+stays open, so the default H-termination caps it with ``6k`` hydrogens — a
+ring at the bud apex. Meridian, tether and plan row are the closed
+sibling's; pole-only numbers read n/a, never a measured zero. INFO
+``scene.top.open`` reports the rim's carbon count, H count, mean z and
+radius, ``topology["sites"]["ring"]`` lists each site (host carbon, H
+ordinal, z/theta about the feature axis, the C→H normal) in the scene
+frame, and the provenance counts them.
+
 **Plan table.** The default tops are measured once and checked in
 (:data:`~precis_se.atomic.generators.authored_foot.TOP_TABLE_PATH`): a sphere
 with the default fillet at n = 12, 18, 24, 30 and 36, and a rounded lid with
@@ -94,6 +104,8 @@ import json
 import math
 from typing import Any, TypeGuard
 
+import numpy as np
+
 from hexfold.build import build
 from hexfold.lattice import tube_radius
 from hexfold.report import Finding, HexfoldError, Report, Severity
@@ -116,11 +128,22 @@ from precis_se.atomic.generators.authored_foot import (
 from precis_se.atomic.generators.hexfold_spec import (
     _block_from_net,
     _internal_message,
+    _terminate_open_edges,
     terminate_mode,
 )
 
 _PARAM_KEYS = ("sheet", "features", "extra", "k_tether", "terminate")
-_FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top", "top_R", "top_fillet")
+_FEATURE_KEYS = (
+    "name",
+    "at",
+    "n",
+    "radius",
+    "tube_len",
+    "top",
+    "top_R",
+    "top_fillet",
+    "open_pole",
+)
 _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
 # Scene-relax ceiling on every sphere top, tabled or not: the table makes
 # planning free, not the tethered relax of the scene around a sphere (a
@@ -187,6 +210,9 @@ def _feature(raw: object, idx: int) -> SceneFeature:
                     f"{where}.{key} must be a number; got {raw[key]!r}"
                 )
             top_kw[key] = float(raw[key])
+    open_pole = raw.get("open_pole", False)
+    if not isinstance(open_pole, bool):
+        raise GeneratorError(f"{where}.open_pole must be a boolean; got {open_pole!r}")
     return SceneFeature(
         name=name,
         at=at,
@@ -194,6 +220,7 @@ def _feature(raw: object, idx: int) -> SceneFeature:
         radius=float(raw["radius"]),
         tube_len=int(raw["tube_len"]),
         top=top,
+        open_pole=open_pole,
         **top_kw,
     )
 
@@ -377,10 +404,14 @@ def stored_top_diagnostics(record: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _top_findings(name: str, tp: TopPlan, scene_row: TopRow) -> list[Finding]:
+def _top_findings(
+    name: str, tp: TopPlan, scene_row: TopRow, open_pole: bool = False
+) -> list[Finding]:
     """The WARNs of an authored top (a sphere or a rounded lid): the five
     bars as re-measured on the scene, an authored ``top_R`` the candidates
-    could not meet, and the relaxed-shape band."""
+    could not meet, and the relaxed-shape band.  ``open_pole`` plans and
+    judges on the closed sibling: the pole-drop figure is then n/a (the rim
+    is open), never reported as zero."""
     out: list[Finding] = [
         _theta_p_band_finding(
             name, scene_row.theta_p_max, scene_row.error, scene_row.misses
@@ -407,6 +438,13 @@ def _top_findings(name: str, tp: TopPlan, scene_row: TopRow) -> list[Finding]:
             )
         )
     if not tp.relaxed_ok:
+        pole = (
+            f"; the pole drop is n/a (open rim; the closed sibling's trial "
+            f"dropped ~{tp.chosen.relaxed_dz:.1f} A there)"
+            if open_pole
+            else f"; relaxes ~{tp.chosen.relaxed_dz:.1f} A flatter at the "
+            "pole in the stick model"
+        )
         out.append(
             Finding(
                 "scene.top.relaxed_shape",
@@ -416,8 +454,7 @@ def _top_findings(name: str, tp: TopPlan, scene_row: TopRow) -> list[Finding]:
                 f"authored surface, band {RELAXED_P95_A:g} A (judged on the "
                 "planner's bare trial tube, no sheet; scene.top.bar uses the "
                 "scene re-measurement); tethered geometry "
-                f"stored; relaxes ~{tp.chosen.relaxed_dz:.1f} A flatter at the "
-                "pole in the stick model. A lower bound: the n=12 sphere probe "
+                f"stored{pole}. A lower bound: the n=12 sphere probe "
                 "under MACE-MP and xTB moved about 2 A at the pole",
             )
         )
@@ -480,15 +517,98 @@ def _scene_findings(
             )
         if f.name in plan.top_plans:
             out.extend(
-                _top_findings(f.name, plan.top_plans[f.name], plan.top_rows[f.name])
+                _top_findings(
+                    f.name,
+                    plan.top_plans[f.name],
+                    plan.top_rows[f.name],
+                    open_pole=f.open_pole,
+                )
             )
     return out
 
 
+def _open_rim_stats(
+    net: Any,
+    plan: ScenePlan,
+    features: tuple[SceneFeature, ...],
+    terminate: str,
+) -> dict[str, dict[str, Any]]:
+    """Per ``open_pole`` feature: the carbons of its bulge ``out`` rim (the
+    open pole), how many of them the termination caps with H, and the rim's
+    mean z and radius about the feature axis, in the scene frame (+z up the
+    feature, the sheet at z = 0)."""
+    if not any(f.top == "sphere" and f.open_pole for f in features):
+        return {}
+    h_hosts, _ = _terminate_open_edges(net, plan.positions, terminate)
+    capped = set(h_hosts)
+    centres = {ft.name: ft.centre for ft in plan.target_features}
+    ports = dict(net.ports)
+    out: dict[str, dict[str, Any]] = {}
+    for f in features:
+        if f.top != "sphere" or not f.open_pole:
+            continue
+        port = ports[f"{f.name}b.out"]
+        rim = list(port.dangling) if port.dangling else list(port.atoms)
+        pos = plan.positions[rim]
+        cx, cy = centres[f.name]
+        out[f.name] = {
+            "rim": rim,
+            "h_count": sum(1 for a in rim if a in capped),
+            "z_A": float((-pos[:, 2]).mean()),
+            "radius_A": float(np.hypot(pos[:, 0] - cx, pos[:, 1] - cy).mean()),
+        }
+    return out
+
+
+def _ring_sites(
+    block: GeneratedBlock,
+    net: Any,
+    plan: ScenePlan,
+    open_rims: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """``topology["sites"]["ring"]``: the open bulge rim's H caps as
+    instrument sites — the host carbon and H ordinals, (``z_A``,
+    ``theta_deg``) about the feature axis and the C→H ``normal``, all in
+    the scene frame (the ``surface_target`` map's frame: sheet at z = 0,
+    +z up the feature)."""
+    if not open_rims:
+        return None
+    target = block.topology.get("surface_target")
+    if not isinstance(target, dict):
+        return None
+    mapping = target["map"]
+    scene = np.asarray(block.coords, dtype=float) @ np.asarray(
+        mapping["Q"], dtype=float
+    ) + np.asarray(mapping["b_A"], dtype=float)
+    n_carbon = len(net.atoms)
+    h_of = {i: j for i, j, *_ in block.bonds if j >= n_carbon}
+    centres = {ft.name: ft.centre for ft in plan.target_features}
+    ring: list[dict[str, Any]] = []
+    for name, st in open_rims.items():
+        cx, cy = centres[name]
+        for host in st["rim"]:
+            h = h_of.get(host)
+            if h is None:
+                continue
+            p, c = scene[h], scene[host]
+            normal = p - c
+            normal = normal / np.linalg.norm(normal)
+            ring.append(
+                {
+                    "host": int(host),
+                    "h": int(h),
+                    "z_A": float(p[2]),
+                    "theta_deg": float(math.degrees(math.atan2(p[1] - cy, p[0] - cx))),
+                    "normal": [float(x) for x in normal],
+                }
+            )
+    return {"ring": ring}
+
+
 def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     """``{"sheet": [w, h], "features": [{"name", "at", "n", "radius",
-    "tube_len", "top"?, "top_R"?, "top_fillet"?}], "extra"?: str,
-    "k_tether"?: float}`` — plan the
+    "tube_len", "top"?, "top_R"?, "top_fillet"?, "open_pole"?}], "extra"?:
+    str, "k_tether"?: float}`` — plan the
     scene, relax it under the tether and mint it (module docstring).
     An exclusive feature ``type='k3-sp2-120-z'`` instead builds the finite
     straight Y; see :mod:`.y_junction` for its strict contract. An exclusive
@@ -520,6 +640,7 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     from precis_se.atomic.surface_target import capture_target
 
     sheet, features, extra, k_tether = _normalize(params)
+    terminate = terminate_mode(params)
     try:
         plan = plan_scene(sheet, features, extra=extra, k_tether=k_tether)
         net = build(plan.text, strict=False)
@@ -531,6 +652,26 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         raise GeneratorError(_internal_message(exc)) from exc
 
     scene = _scene_findings(features, plan)
+    open_rims = _open_rim_stats(net, plan, features, terminate)
+    for f in features:
+        st = open_rims.get(f.name)
+        if st is None:
+            continue
+        scene.append(
+            Finding(
+                "scene.top.open",
+                Severity.INFO,
+                f"{f.name}: open pole — {len(st['rim'])} rim carbons, "
+                + (
+                    f"{st['h_count']} capped with H (the ring at the apex)"
+                    if st["h_count"]
+                    else f"uncapped (terminate={terminate!r}; no site ring)"
+                )
+                + f"; rim mean z {st['z_A']:.2f} A, radius {st['radius_A']:.2f} A "
+                "(sheet at z = 0, radius about the feature axis)",
+                where=f.name,
+            )
+        )
     report = net.report.merge(Report(tuple(plan.findings) + tuple(scene)))
     normalized: dict[str, Any] = {
         "sheet": list(sheet),
@@ -546,6 +687,7 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
                 # stores exactly what it stored before the keywords existed
                 **({"top_R": f.top_R} if f.top_R is not None else {}),
                 **({"top_fillet": f.top_fillet} if f.top_fillet is not None else {}),
+                **({"open_pole": True} if f.open_pole else {}),
             }
             for f in features
         ],
@@ -559,14 +701,24 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         "passes": plan.passes,
     }
     if plan.top_plans:  # only scenes with an authored top carry the key
+        feat = {f.name: f for f in features}
         record["top_plans"] = {
-            n: _top_record(tp, plan.top_rows[n]) for n, tp in plan.top_plans.items()
+            n: {
+                **_top_record(tp, plan.top_rows[n]),
+                # the flag only, never a rewritten number: the plan row is
+                # the closed sibling's (the pole itself is absent)
+                **({"open_pole": True} if feat[n].open_pole else {}),
+            }
+            for n, tp in plan.top_plans.items()
         }
     plan_record = json.loads(json.dumps(record))
-    tail = f"; relax=tethered ks={plan.ks}" + "".join(
-        f"; {f.code}: {f.message}" for f in scene
+    n_sites = sum(st["h_count"] for st in open_rims.values())
+    tail = (
+        f"; relax=tethered ks={plan.ks}"
+        + (f"; {n_sites} ring sites" if n_sites else "")
+        + "".join(f"; {f.code}: {f.message}" for f in scene)
     )
-    return _block_from_net(
+    block = _block_from_net(
         net,
         plan.positions,
         spec=plan.text,
@@ -582,8 +734,12 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         ),
         target_flip=_FLIP,
         provenance_tail=tail,
-        terminate=terminate_mode(params),
+        terminate=terminate,
     )
+    sites = _ring_sites(block, net, plan, open_rims)
+    if sites is not None and sites["ring"]:  # an uncapped rim has no sites
+        block.topology["sites"] = sites
+    return block
 
 
 __all__ = ["build_hexfold_scene"]

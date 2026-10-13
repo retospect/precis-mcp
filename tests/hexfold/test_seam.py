@@ -340,6 +340,10 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         True,
         [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)],
     ),
+    "nanobud_open.hx": (
+        True,
+        [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)],
+    ),
     "pillar.hx": (True, [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)]),
     "sheet_bud_22.hx": (
         True,
