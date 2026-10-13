@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Anthropic-Messages shim in front of castor's vLLM, for `scripts/claude-local`.
 
 vLLM (v0.20.1) serves ``/v1/messages`` but its schema only accepts ``user`` and

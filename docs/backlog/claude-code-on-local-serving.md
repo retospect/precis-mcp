@@ -150,3 +150,22 @@ landed; (3) the window experiment above then runs on a sound server.
 Spark guidance seen on the way: stay on driver 580.x (590 has a CUDA-graph
 deadlock), do not use `--enforce-eager` (halves throughput), keep
 `--gpu-memory-utilization` at or below 0.87 on unified memory.
+
+**Atomic-add env, 2026-10-13 11:47Z: not enough on the stock image.**
+Redeployed with `VLLM_MARLIN_USE_ATOMIC_ADD=1` (confirmed in the unit and
+the engine log still picks MARLIN MXFP4 + TRITON_ATTN). Logprob probe: 4 of
+4 raw completions still start with token 0 `!`; raw output still
+nondeterministic at temperature 0. The forum's fix set also needs the
+SM121 source patches (CUTLASS FP4 device-gate false positive, Marlin
+thread race), which v0.20.1 does not carry. Next: the image track.
+Image track, 2026-10-13 12:10Z: neither castor nor the dev Mac could reach
+Docker Hub or nvcr.io (TLS timeouts), so no new vLLM image is pullable
+today. Zero-pull alternative already on castor: `lmsysorg/sglang:latest-cu130`
+(v0.5.21, the Slice 0 SGLang arm; NVIDIA's showcased Spark stack). SGLang
+serves a native `/v1/messages` with `count_tokens` and documents Claude Code
+as a client, which would also retire `scripts/anthropic-shim.py`. Trial:
+stop the vllm unit, run the image on port 8000 with `--served-model-name
+openai/gpt-oss-120b --context-length 131072 --mem-fraction-static 0.7
+--reasoning-parser gpt-oss --tool-call-parser gpt-oss`, re-run the probes.
+If sound, write an `sglang` role (or a server switch in the vllm role) and
+retire the Marlin workaround.
