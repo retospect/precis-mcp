@@ -284,14 +284,24 @@ new kernel.
    carry a group given seam and curvature constraints: the ring taxonomy
    (spec §6, §9) filtered by steric exposure, plus the Y-carbon face
    assignment above. Runs on all four surfaces independently; only the
-   rim's sites travel.
+   rim's sites travel. **Shipped 2026-10-13** (`precis_se.atomic.sites`):
+   `view='sites'` on a structure-bound block — `args={'block'}` lists
+   every (carbon, free-face) site with ring class (open-edge / 5–8-ring
+   via the C–C bond graph), `in`/`out`/`axial` face, steric exposure
+   (probe sphere on the free direction), and (z, θ, r) about the block's
+   envelope axis; `args={'a','b'}` keeps only sites facing the other
+   block within `pocket_gap_A`.
 4. **Complementarity scorer.** Arc-aware: the same pocket against three
    shell environments as it turns, checking that affinity actually flips
-   between arcs. **Stub first** with a crude shape-and-polarity match so
-   the pipeline runs end to end; real energetics only once it does.
-   Ladder: the se atomic-mode charge/optical panel and mechanism
-   analysis (`se-atomic-round2.md` later phases) are the rungs above the
-   stub.
+   between arcs. **Stub shipped** (`view='clearance'` `args.lining` —
+   shape-and-polarity only, labelled STUB, no energetics): per-block
+   site decoration (`{'site': <ordinal>|'ring:<class>', 'group':
+   OH|NH3+|COO-|CH3|H}`) → polarity classes; each sweep pocket scored
+   by shape (volume vs `args.cargo_A3`) + polarity (like minus unlike
+   decorated contact pairs); the verdict names the admitting/rejecting
+   arcs when the term flips across the sweep. Ladder: the se
+   atomic-mode charge/optical panel and mechanism analysis
+   (`se-atomic-round2.md` later phases) are the rungs above the stub.
 
 Inner shell radius is then a continuous parameter optimised against
 pocket volume for the specific target. **Additional check:** drag versus

@@ -26,6 +26,7 @@ from precis.store import Store
 from precis.structure.scene import Scene as StructScene
 from precis_se import persist
 from precis_se.atomic import clearance as se_atomic_clearance
+from precis_se.atomic import sites as se_atomic_sites
 from precis_se.atomic.clearance import VDW_RADII_A, AtomCloud
 from precis_se.handler import SeHandler, _render_clearance_digest
 from precis_se.ops import SeTree, apply_ops
@@ -474,3 +475,341 @@ def test_dangling_binding_pair_is_skipped_with_a_note(store: Store) -> None:
     body = _render_clearance_digest(store, tree)
     assert "skipped" in body
     assert "structure-bound" in body and "can't measure" in body
+
+
+# ── view='sites' — the attachment-site enumerator ──────────────────────
+
+
+def _site_rows(body: str) -> list[dict[str, str]]:
+    return _toon_rows(body, "ordinal")
+
+
+def _counts(body: str) -> dict[tuple[str, str], int]:
+    """The summary table — the block whose header carries 'count' (the
+    site table itself has a 'ring' column but no 'count')."""
+    for table in body.split("\n\n"):
+        lines = [ln for ln in table.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        header = lines[0].lstrip("{").rstrip("}").split("\t")
+        if "count" not in header or "ring" not in header:
+            continue
+        out: dict[tuple[str, str], int] = {}
+        for ln in lines[1:]:
+            cols = ln.split("\t")
+            row = dict(zip(header, cols))
+            out[(row["ring"], row["face"])] = int(row["count"])
+        return out
+    return {}
+
+
+def test_sites_enumerates_rim_and_ring_carbons(
+    handler: SeHandler,
+) -> None:
+    """The (12,0) zigzag tube: every rim carbon at the open ends is
+    open-edge (degree-2 dangling bond, axial free direction); every
+    interior carbon is 6-ring with both wall faces."""
+    _put_valve(handler, "sites1")
+    body = handler.get(id="sites1", view="sites", args={"block": "rotor"}).body
+    counts = _counts(body)
+    assert counts.get(("open-edge", "axial"), 0) > 0
+    assert ("open-edge", "6-ring") not in counts
+    # interior atoms show both wall faces
+    assert counts.get(("6-ring", "out"), 0) == counts.get(("6-ring", "in"), 0)
+    assert counts.get(("6-ring", "out"), 0) > 0
+    # the two ends each carry the (12,0) rim — 24 open-edge carbons
+    rim = [r for r in _site_rows(body) if r["ring"] == "open-edge"]
+    assert len(rim) == 24
+
+
+def test_sites_face_and_exposure_match_the_geometry(
+    handler: SeHandler,
+) -> None:
+    """The offset rotor's outward-facing wall sites on the +x side are
+    less exposed than its axial rim sites — the probe sphere meets the
+    shell's atoms — and wall sites come in 'in'/'out' pairs per carbon."""
+    _put_valve(handler, "sites2", offset_x_A=2.0)
+    body = handler.get(
+        id="sites2", view="sites", args={"a": "shell", "b": "rotor"}
+    ).body
+    rows = _site_rows(body)
+    assert rows, body
+    # pair view: only sites that face the partner — rotor 'out' and
+    # shell 'in' rows, no axial or far-side rows.
+    faces = {(r["block"], r["face"]) for r in rows}
+    assert faces <= {("rotor", "out"), ("shell", "in")}
+    facing_shell = min(float(r["exposure"]) for r in rows if r["block"] == "rotor")
+    # rim sites face the open ends, not the partner — read them off the
+    # single-block view; an axial dangling bond is wider open than a wall
+    # site pressed against the shell.
+    single = handler.get(id="sites2", view="sites", args={"block": "rotor"}).body
+    open_end = max(
+        float(r["exposure"]) for r in _site_rows(single) if r["face"] == "axial"
+    )
+    assert facing_shell < open_end
+
+
+def test_sites_pair_view_is_facing_only(handler: SeHandler) -> None:
+    """Coaxial: every rotor 'out' site and shell 'in' site faces the
+    partner within the default pocket gap; nothing axial shows."""
+    _put_valve(handler, "sites3")
+    body = handler.get(
+        id="sites3", view="sites", args={"a": "shell", "b": "rotor"}
+    ).body
+    rows = _site_rows(body)
+    assert rows
+    assert all(r["face"] in ("out", "in") for r in rows)
+    assert {r["block"] for r in rows} == {"shell", "rotor"}
+
+
+def test_complementarity_verdict_names_two_arcs(
+    handler: SeHandler, store: Store
+) -> None:
+    """CH3-decorated rotor orbiting inside a shell that is OH on one
+    θ-half and CH3 on the other: the contacted arc alternates through
+    the sweep, so the polarity term flips and the verdict names both
+    arcs. STUB — a polarity flip, not an energetic one."""
+    _put_valve(handler, "sites4", offset_x_A=2.0)
+    ref = store.get_ref(kind="se", id="sites4")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    scene = _scene(store, "sites4-shell")
+    cloud = se_atomic_clearance.atom_cloud(tree.blocks["shell"], scene)
+    # shell carbons split by azimuth into two decorated halves
+    oh_sites = [
+        i
+        for i, p in enumerate(cloud.pts_A)
+        if cloud.elements[i] == "C"
+        and math.degrees(math.atan2(p[1], p[0])) % 360 >= 180
+    ]
+    ch3_sites = [
+        i
+        for i, p in enumerate(cloud.pts_A)
+        if cloud.elements[i] == "C" and math.degrees(math.atan2(p[1], p[0])) % 360 < 180
+    ]
+    assert oh_sites and ch3_sites
+    lining = {
+        "shell": (
+            [{"site": i, "group": "OH"} for i in oh_sites]
+            + [{"site": i, "group": "CH3"} for i in ch3_sites]
+        ),
+        "rotor": [
+            {"site": "ring:6-ring", "group": "CH3"},
+            {"site": "ring:open-edge", "group": "CH3"},
+        ],
+    }
+    body = handler.get(
+        id="sites4",
+        view="clearance",
+        args={
+            "a": "shell",
+            "b": "rotor",
+            "sweep": {"axis": "a", "step_deg": 60},
+            # 1.5 Å keeps the pocket at the touching arc — at the default
+            # 3.5 the far side flags too and the pocket spans every arc.
+            "pocket_gap_A": 1.5,
+            "cargo_A3": 50,
+            "lining": lining,
+        },
+    ).body
+    assert "STUB" in body
+    # arcs are SWEEP-ANGLE ranges [t1°–t2°], not pocket azimuths
+    arcs = re.search(
+        r"admits on arcs? \[([\d.]+)°–([\d.]+)°\].*rejects on arcs? \[([\d.]+)°–([\d.]+)°\]",
+        body,
+    )
+    assert arcs, body
+    admit_lo, admit_hi, reject_lo, reject_hi = (float(v) for v in arcs.groups())
+    # the apolar CH3 half admits, the polar OH half rejects — each arc a
+    # contiguous run of sweep angles (a wrap crossing 360° reads >360).
+    assert admit_lo < admit_hi
+    assert reject_lo <= 180.0 and reject_hi >= 240.0
+    # still read-only
+    after = persist.load_tree(store, ref.id).blocks["rotor"]
+    assert after.pose == tree.blocks["rotor"].pose
+
+
+def test_lining_without_sweep_still_prints_verdict_and_no_pose_header(
+    handler: SeHandler,
+) -> None:
+    """`lining` alone implies the default sweep — the clearance verdict
+    and the read-only header print even without args.sweep."""
+    _put_valve(handler, "sites5")
+    body = handler.get(
+        id="sites5",
+        view="clearance",
+        args={
+            "a": "shell",
+            "b": "rotor",
+            "lining": {"rotor": [{"site": 0, "group": "OH"}]},
+        },
+    ).body
+    assert "read-only, no pose written" in body
+    assert re.search(r"verdict: (free|touching|interpenetrating)", body)
+    assert "lining (STUB" in body
+
+
+def test_complementarity_no_rectification_branch(handler: SeHandler) -> None:
+    """A uniform OH lining on both blocks: every decorated contact is
+    compatible, the polarity term never changes sign → the no-
+    rectification verdict."""
+    _put_valve(handler, "sites6")
+    body = handler.get(
+        id="sites6",
+        view="clearance",
+        args={
+            "a": "shell",
+            "b": "rotor",
+            "sweep": {"axis": "b", "step_deg": 60},
+            "pocket_gap_A": 1.5,
+            "lining": {
+                "shell": [{"site": "ring:6-ring", "group": "OH"}],
+                "rotor": [{"site": "ring:6-ring", "group": "OH"}],
+            },
+        },
+    ).body
+    assert "no rectification" in body
+
+
+def test_sites_face_filter(handler: SeHandler) -> None:
+    """face='out' lists only outward sites, face='in' only inward —
+    each a subset of the unfiltered table."""
+    _put_valve(handler, "sites7")
+    for want in ("out", "in"):
+        body = handler.get(
+            id="sites7",
+            view="sites",
+            args={"block": "rotor", "face": want},
+        ).body
+        rows = _site_rows(body)
+        assert rows and all(r["face"] == want for r in rows)
+        assert all(r["ring"] != "open-edge" for r in rows)  # rim sites are axial
+
+
+def test_ring_defects_classify() -> None:
+    """Hand-built C–C graph: a degree-3 carbon on a pure 5-ring reads
+    '5-ring', one on a 7-ring '7-ring'; its pendant leaves are
+    open-edge and an O-substituted carbon is 'substituted'."""
+    from precis.structure.cell import Cell
+    from precis.structure.scene import Atom, Bond
+
+    for ring_size, want in ((5, "5-ring"), (7, "7-ring")):
+        n = ring_size
+        labels = [f"aC{i + 1}" for i in range(2 * n)]
+        # ring carbons on a circle, one pendant C leaf each → every ring
+        # atom has exactly three C neighbours and closes only the n-ring.
+        pts = np.array(
+            [
+                *[
+                    [
+                        3.0 * math.cos(2 * math.pi * i / n),
+                        3.0 * math.sin(2 * math.pi * i / n),
+                        0.0,
+                    ]
+                    for i in range(n)
+                ],
+                *[
+                    [
+                        4.6 * math.cos(2 * math.pi * i / n),
+                        4.6 * math.sin(2 * math.pi * i / n),
+                        0.0,
+                    ]
+                    for i in range(n)
+                ],
+            ]
+        )
+        atoms = {
+            l: Atom(label=l, element="C", frac=pts[i] / 50.0)
+            for i, l in enumerate(labels)
+        }
+        bonds = [
+            *[Bond(i=labels[i], j=labels[(i + 1) % n], order=1.33) for i in range(n)],
+            *[Bond(i=labels[i], j=labels[n + i], order=1.33) for i in range(n)],
+        ]
+        scene = StructScene(
+            cell=Cell(lattice=np.eye(3) * 50.0, pbc=(False, False, False)),
+            atoms=atoms,
+            bonds=bonds,
+        )
+        cloud = AtomCloud(
+            name="toy",
+            labels=labels,
+            elements=["C"] * (2 * n),
+            pts_A=pts,
+            radii_A=np.full(2 * n, VDW_RADII_A["C"]),
+        )
+        adj, unsat = se_atomic_sites._bond_graph(scene, labels, pts)
+        classes = se_atomic_sites.ring_classes(cloud, adj, unsat)
+        assert classes[:n] == [want] * n
+        assert classes[n:] == ["open-edge"] * n
+
+
+def test_sites_is_read_only(handler: SeHandler, store: Store) -> None:
+    """Single and pair `view='sites'` calls leave the design's pose, rot
+    and the bound structure's atoms untouched."""
+    _put_valve(handler, "sites8", offset_x_A=2.0)
+    ref = store.get_ref(kind="se", id="sites8")
+    assert ref is not None
+    before_tree = persist.load_tree(store, ref.id)
+    before_scene = _carts_A(_scene(store, "sites8-rotor"))
+    handler.get(id="sites8", view="sites", args={"block": "rotor"})
+    handler.get(id="sites8", view="sites", args={"a": "shell", "b": "rotor"})
+    after_tree = persist.load_tree(store, ref.id)
+    assert after_tree.blocks["rotor"].pose == before_tree.blocks["rotor"].pose
+    assert after_tree.blocks["rotor"].rot == before_tree.blocks["rotor"].rot
+    assert np.allclose(_carts_A(_scene(store, "sites8-rotor")), before_scene)
+
+
+def test_fin_graft_atoms_classify_sp3_not_sites(handler: SeHandler) -> None:
+    """A fin-sp3-z scene's graft junctions count under 'sp3' in the
+    summary and never appear as site rows — no free valence."""
+    ops = [
+        {
+            "op": "generate",
+            "generator": "hexfold_scene",
+            "params": {
+                "tube": [6, 4],
+                "features": [
+                    {"name": "fin", "type": "fin-sp3-z", "side": "out", "rows": 3}
+                ],
+            },
+            "name": "finwall",
+        }
+    ]
+    handler.put(id="sites9", text=json.dumps({"ops": ops}))
+    body = handler.get(id="sites9", view="sites", args={"block": "finwall"}).body
+    counts = _counts(body)
+    assert counts.get(("sp3", "—"), 0) > 0, body
+    assert all(r["ring"] != "sp3" for r in _site_rows(body))
+
+
+def test_bad_lining_fails_before_the_sweep(
+    handler: SeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad lining (unknown group) raises BadInput BEFORE any sweep
+    geometry runs — the sweep must never fire on a rejected lining."""
+    _put_valve(handler, "sites10")
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError(
+            "run_sweep ran — the lining should have been rejected first"
+        )
+
+    monkeypatch.setattr(se_atomic_clearance, "run_sweep", _boom)
+    with pytest.raises(BadInput, match="group"):
+        handler.get(
+            id="sites10",
+            view="clearance",
+            args={
+                "a": "shell",
+                "b": "rotor",
+                "lining": {"rotor": [{"site": 0, "group": "bogus"}]},
+            },
+        )
+
+
+def test_sites_rejects_a_non_atomic_block(handler: SeHandler) -> None:
+    ops = [{"op": "add_block", "name": "box", "envelope": "sphere:r1e-09"}]
+    handler.put(id="sites11", text=json.dumps({"ops": ops}))
+    with pytest.raises(BadInput, match="structure-bound"):
+        handler.get(id="sites11", view="sites", args={"block": "box"})

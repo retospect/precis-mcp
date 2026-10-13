@@ -732,9 +732,15 @@ removed as met — the transport move it waited on happened 09-29)
    hex-wheel): the Q4 atomic stub — `view='clearance'` on two bound
    blocks measures Bondi vdW gaps on posed atoms, `args.sweep` sweeps
    the rotor about its axis, and the pocket census reports the metering
-   number (`precis_se.atomic.clearance`). Remaining: the surface-mesh
-   clearance field (item 1's post-§20.6 form), attachment sites, scorer,
-   audit, drag-vs-torque.
+   number (`precis_se.atomic.clearance`). **Second slice same day**
+   (Devin hex-wheel): `view='sites'` enumerates attachment sites per
+   block (ring class × in/out/axial face × steric exposure, (z, θ, r)
+   on the block axis; the pair form keeps sites facing the partner) and
+   `args.lining` on the clearance sweep scores each pocket's
+   shape-vs-`cargo_A3` + like-minus-unlike polarity pairs with an
+   arc-verdict STUB (`precis_se.atomic.sites`). Remaining: the
+   surface-mesh clearance field (item 1's post-§20.6 form), real
+   energetics over the stub, audit, drag-vs-torque.
 9. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 10. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**

@@ -82,6 +82,10 @@ also measure a mapped port's own pose off the atom it resolves to — the
   path: the van der Waals gap between two structure-bound blocks, swept
   over a rotor angle, with the near-contact pocket census (the valve
   doc's metering number).
+- :mod:`precis_se.atomic.sites` — ``view='sites'``: the attachment-site
+  enumerator (ring taxonomy × face × steric exposure per surface) and the
+  shape-and-polarity complementarity stub scored over the clearance
+  sweep's pockets.
 - :mod:`precis_se.atomic.propose` — the ``se_propose_atomic`` job type
   (nm's one ``nm_propose`` ``JobTypeSpec``, renamed for its se home):
   a tool-less LLM call that PROPOSES one block's chemistry as a

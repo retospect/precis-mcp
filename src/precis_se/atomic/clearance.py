@@ -583,9 +583,15 @@ def sweep_angles(step_deg: float, range_deg: float) -> list[float]:
 
 @dataclass
 class SweepRow:
+    """One sweep angle's full payload — the report, the pockets (kept, not
+    just counted: the complementarity stub scores them per angle), and
+    b's rotated cloud for any per-angle pair reads."""
+
     angle_deg: float
     report: GapReport
     n_pockets: int
+    pockets: list[Pocket]
+    cloud_b: AtomCloud
 
 
 def run_sweep(
@@ -597,7 +603,7 @@ def run_sweep(
     pocket_gap_A: float,
 ) -> list[SweepRow]:
     """``cloud_b`` rigidly rotated about ``axis`` per angle; per-angle gap
-    field → report + pocket count."""
+    field → report + pockets."""
     rows: list[SweepRow] = []
     for angle in sweep_angles(step_deg, range_deg):
         rotated = AtomCloud(
@@ -610,13 +616,14 @@ def run_sweep(
             radii_A=cloud_b.radii_A,
         )
         field = gap_field(cloud_a, rotated)
+        pocket_list = pockets(cloud_a, rotated, field, pocket_gap_A, axis=axis)
         rows.append(
             SweepRow(
                 angle_deg=angle,
                 report=gap_report(field),
-                n_pockets=len(
-                    pockets(cloud_a, rotated, field, pocket_gap_A, axis=axis)
-                ),
+                n_pockets=len(pocket_list),
+                pockets=pocket_list,
+                cloud_b=rotated,
             )
         )
     return rows
@@ -806,8 +813,20 @@ def render_atomic_clearance(
         lines.append(f"axis: unresolved ({axis_err}) — pockets omit z/θ")
     lines += _fmt_pockets(pocket_list, a_name, b_name, threshold_A)
 
-    if sweep_raw is not None:
-        axis_arg, step_deg, range_deg = _vet_sweep_args(sweep_raw)
+    lining = (args or {}).get("lining")
+    if sweep_raw is not None or lining is not None:
+        from precis_se.atomic import sites as se_atomic_sites
+
+        polarity: dict[str, dict[int, str]] | None = None
+        cargo_A3 = 0.0
+        if lining is not None:
+            # a bad lining fails BEFORE the sweep runs — the validation
+            # is the bond-graph pass, not a by-product of scoring.
+            polarity = se_atomic_sites.build_polarity(
+                cloud_a, cloud_b, scene_a, scene_b, lining
+            )
+            cargo_A3 = se_atomic_sites.vet_cargo_A3(args or {})
+        axis_arg, step_deg, range_deg = _vet_sweep_args(sweep_raw or {})
         axis = resolve_axis(tree, a_node, b_node, axis_arg)
         rows = run_sweep(cloud_a, cloud_b, axis, step_deg, range_deg, threshold_A)
         lines.append(
@@ -846,6 +865,16 @@ def render_atomic_clearance(
             else f" — min gap {worst.report.min_gap_A:.2f} Å over the sweep"
         )
         lines.append(f"verdict: {verdict}{detail}")
+        if polarity is not None:
+            lines += se_atomic_sites.render_complementarity(
+                cloud_a,
+                cloud_b,
+                rows,
+                polarity,
+                cargo_A3,
+                threshold_A,
+                range_deg,
+            )
     else:
         lines.append(f"verdict: {report.verdict} (min gap {report.min_gap_A:.2f} Å)")
     return "\n".join(lines) + "\n"

@@ -160,6 +160,7 @@ from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.atomic import clearance as se_atomic_clearance
 from precis_se.atomic import render as se_atomic_render
+from precis_se.atomic import sites as se_atomic_sites
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.apply import PendingJob, apply_ops_with_atomic
 from precis_se.chain import drc as se_chain_drc
@@ -299,6 +300,10 @@ class SeHandler(Handler):
                 "bistable",
                 "sweep",
                 "pocket_gap_A",
+                "face",
+                "exposure_A",
+                "lining",
+                "cargo_A3",
                 "prefunits",
             }
         ),
@@ -578,6 +583,7 @@ class SeHandler(Handler):
             "pockets",
             "validate",
             "clearance",
+            "sites",
             "sweep",
             "stations",
             "pick",
@@ -1360,6 +1366,8 @@ class SeHandler(Handler):
             )
         if v == "clearance":
             return Response(body=_render_clearance(self.store, tree, args))
+        if v == "sites":
+            return Response(body=se_atomic_sites.render_sites(self.store, tree, args))
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "stations":
@@ -1434,7 +1442,9 @@ class SeHandler(Handler):
             "view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
             "CONNECTS digest; on two structure-bound blocks the atomic "
-            "vdW path, which also takes 'sweep' and 'pocket_gap_A') | "
+            "vdW path, which also takes 'sweep', 'pocket_gap_A' and "
+            "'lining') | view='sites' (attachment-site enumerator on "
+            "structure-bound blocks — args={'block'} or {'a','b'}) | "
             "view='sweep' (does anything collide in ANY "
             "declared state? — the cross product of every state-carrying "
             "block's declared states, budget-bounded) | view='stations' "
@@ -6188,7 +6198,10 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "datums": frozenset(),
     "pockets": frozenset(),
     "validate": frozenset({"previous", "load_cases"}),
-    "clearance": frozenset({"a", "b", "state", "previous", "sweep", "pocket_gap_A"}),
+    "clearance": frozenset(
+        {"a", "b", "state", "previous", "sweep", "pocket_gap_A", "lining", "cargo_A3"}
+    ),
+    "sites": frozenset({"block", "a", "b", "face", "exposure_A", "pocket_gap_A"}),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
     "pick": frozenset({"block", "atom", "token"}),
@@ -6636,7 +6649,7 @@ def _render_clearance(store: Store, tree: SeTree, args: dict[str, Any] | None) -
         return se_atomic_clearance.render_atomic_clearance(
             store, tree, a_name, b_name, args or {}
         )
-    for key in ("sweep", "pocket_gap_A"):
+    for key in ("sweep", "pocket_gap_A", "lining", "cargo_A3"):
         if (args or {}).get(key) is not None:
             raise BadInput(
                 f"view='clearance' {key!r} only applies to an atomic pair — "

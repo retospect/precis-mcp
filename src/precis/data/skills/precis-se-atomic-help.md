@@ -262,6 +262,57 @@ The header prints each bound structure's `last_relax` rung — `stick`
 means preview geometry (the spring-relaxed stick model), not a relaxed
 minimum; trust rung `geo`/`ml` numbers for placement decisions.
 
+## Atomic mode — `view='sites'` + `lining` (attachment sites, complementarity stub)
+
+```python
+get(kind="se", id="valve", view="sites", args={"block": "pillbox"})
+get(kind="se", id="valve", view="sites",
+    args={"a": "shell6", "b": "pillbox", "pocket_gap_A": 3.5})
+get(kind="se", id="valve", view="clearance", args={
+    "a": "shell6", "b": "pillbox",
+    "sweep": {"axis": "a", "step_deg": 30},
+    "cargo_A3": 120, "pocket_gap_A": 3.5,
+    "lining": {"shell6": [{"site": 137, "group": "OH"},
+                          {"site": "ring:6-ring", "group": "CH3"}],
+               "pillbox": [{"site": "ring:open-edge", "group": "OH"}]}})
+```
+
+`view='sites'` enumerates the carbons that can take a substituent on a
+structure-bound block. Each row is one (atom, free-face) site: `ring` is
+`open-edge` (fewer than three carbon neighbours — the rim dangling bond,
+axial only for a zigzag rim) or the smallest C–C ring it closes (5–8,
+else `non-ring`); `sp3` (a ≥4-coordinated single-bond carbon, e.g. a fin
+graft junction) and `substituted` (carries a non-C non-H group) count in
+the summary but never list — no free valence. `face` is
+`out`/`in`/`axial`, the free direction's sign against the block's own
+envelope axis (`n/a` without an axis-bearing envelope — ring class and
+exposure still report, z/θ/r blank); `exposure` is the free fraction of
+a probe sphere `exposure_A` (default 3.0 Å) out along the free direction
+— 1.0 is wide open; `z`, `θ`, `r` are the same axis frame as the
+clearance pocket report. Wall carbons show once per face.
+`args={'block'}` lists a block alone; `args={'a','b'}` lists only the
+sites that FACE the other block within `pocket_gap_A` — for the valve,
+the rotor's `out` rows and the shell's `in` rows; read-only.
+`face: 'in'|'out'|'both'` filters (default both).
+
+`lining` on `view='clearance'` is the complementarity STUB — shape and
+polarity match, NO energetics (those come later via the atomic-mode
+ladder: relax rungs, charges). It decorates site carbons: `site` is the
+atom `ordinal` from the sites table or `'ring:<class>'` for every carbon
+of that class (`non-ring` excluded); `group` maps to a polarity class —
+OH→polar-donor, NH3+→cationic, COO-→anionic, CH3→apolar,
+H/undecorated→bare. `lining` alone implies the default sweep and the
+lining is validated BEFORE the sweep runs. Each pocket scores per angle:
+shape = pocket volume vs `cargo_A3`, polarity = COMPATIBLE decorated
+contact pairs (+1: polar–polar, cationic–anionic, apolar–apolar,
+polar–charged) minus unlike (−1: polar or charged vs apolar, same-sign
+charges); `bare` never counts. The verdict names the admitting and
+rejecting arcs as SWEEP-ANGLE ranges [t1°–t2°] when the term's sign
+flips across the sweep (contiguous runs, wrapping at 360°), else "no
+rectification". To score alternating shell arcs the pocket must VISIT
+them — e.g. an offset rotor orbited about the shell's axis
+(`sweep.axis='a'`).
+
 ## Atomic mode — `view='validate'`, the chemistry-tier findings
 
 Atomic mode's findings (`precis_se.atomic.validate`) share `view='validate'`
