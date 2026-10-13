@@ -77,7 +77,9 @@ def _measure_specs(
 ) -> list[_MeasureSpec]:
     out: list[_MeasureSpec] = []
     for m in measures:
-        if (m.get("strength") or "gauge") == "gauge":
+        if (m.get("strength") or "gauge") in ("gauge", "invariant"):
+            # A gauge reports; an invariant gates through the always-valid
+            # gate (gr345859 §F). Neither is a placement objective.
             continue
         metric = (m.get("metric") or "").lower()
         if metric == "align":

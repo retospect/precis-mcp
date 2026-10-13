@@ -56,6 +56,22 @@
   </div>
   {% endif %}
 
+  {% if np.source_drift %}
+  <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 space-y-1" data-testid="source-drift">
+    <h3 class="text-sm font-semibold text-amber-800">Source changed since approval</h3>
+    <ul class="text-sm space-y-1">
+      {% for d in np.source_drift %}
+      <li>
+        {{ ref_link('web', d.ref_id, d.url) }}
+        <span class="font-mono text-xs text-amber-700">approved {{ d.frozen_sha256[:12] }} · now {{ d.live_sha256[:12] }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="text-xs text-amber-800/80">The page was re-fetched and its content differs from what was approved.
+      Informational only — nothing is blocked or un-approved.</p>
+  </div>
+  {% endif %}
+
   {% if np.disputes %}
   <div class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 space-y-3">
     <h3 class="text-sm font-semibold text-sky-700">Open question{{ 's' if np.disputes|length != 1 }} — free to file, never blocking</h3>

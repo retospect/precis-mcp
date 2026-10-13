@@ -2148,7 +2148,10 @@ class PcbHandler(Handler):
                 "'goal':10,'strength':'soft','reason':'keep the opamp off the FET'}]})"
             )
         results = eyes.evaluate_measures(
-            graph, measures, self.store.pcb_features_list(ref_id)
+            graph,
+            measures,
+            self.store.pcb_features_list(ref_id),
+            fabric=self._measures_fabric(ref_id, measures),
         )
         rows = [
             {
@@ -2169,6 +2172,43 @@ class PcbHandler(Handler):
             body=f"# measures — {len(results)}\n"
             + render_agent_table(rows, schema=schema)
         )
+
+    def _measures_fabric(
+        self, ref_id: int, measures: list[dict[str, Any]]
+    ) -> dict | None:
+        """The pads/copper/generators bundle that generator-declared
+        invariant metrics and any ``strength='invariant'`` row evaluate
+        against (gr345859 §F — the SAME bundle ``_validity_findings``
+        judges, so the view and the gate cannot disagree on a verdict).
+        ``None`` when no stored measure needs it, so a plain measures view
+        never pays the pad-geometry build. On a design with no board row,
+        the param-only metrics (``hv_pitch_floor``) still evaluate."""
+        needs_fabric = any(
+            str(m.get("metric") or "").strip().lower()
+            in pcb_generators.INVARIANT_METRICS
+            or str(m.get("strength") or "").strip().lower() == "invariant"
+            for m in measures
+        )
+        if not needs_fabric:
+            return None
+        fabric: dict[str, Any] = {
+            "generators": self.store.pcb_generators_for(ref_id),
+            "pads": [],
+            "copper": [],
+            "layers": [],
+        }
+        board = self.store.pcb_load(ref_id)["board"]
+        if board is not None:
+            layer_names = [str(layer.get("name")) for layer in board["stackup"]]
+            fabric["layers"] = layer_names
+            fabric["pads"] = self._drc_pads(ref_id, layer_names)
+            fabric["copper"] = [
+                {**row, "net": row.get("net") or ""}
+                if row.get("fixed")
+                else {**row, "derived": True}
+                for row in self.store.pcb_copper_list(int(board["board_id"]))
+            ]
+        return fabric
 
     # ── exporters ──────────────────────────────────────
     def _export_model(self, ref_id: int) -> dict[str, Any]:
@@ -3703,7 +3743,8 @@ class PcbHandler(Handler):
             else {**row, "derived": True}
             for row in self.store.pcb_copper_list(int(board["board_id"]))
         ]
-        ir = self._build_ir(ref_id, self.store.pcb_graph(ref_id))
+        graph = self.store.pcb_graph(ref_id)
+        ir = self._build_ir(ref_id, graph)
         model = {
             "layers": layer_names,
             "copper": copper,
@@ -3744,6 +3785,19 @@ class PcbHandler(Handler):
                     for h in ir.mounting_holes
                 ],
             )
+        # gr345859 §F — measures at `strength='invariant'` (the generator-
+        # declared fabric rules) gate beside the geometric ones: a violated
+        # one is `rule 'invariant:<metric>'`, state not delta — the after-
+        # state either honours it or the put refuses (see _judged_mutation).
+        findings += pcb_session.invariant_measure_findings(
+            graph=graph,
+            measures=self.store.pcb_measures_list(ref_id),
+            features=self.store.pcb_features_list(ref_id),
+            generators_rows=self.store.pcb_generators_for(ref_id),
+            pads=pads,
+            copper=copper,
+            layers=layer_names,
+        )
         return findings
 
     def _judged_mutation[T](
@@ -3791,14 +3845,38 @@ class PcbHandler(Handler):
             if rid is None:
                 raise ValueError("_judged_mutation: no ref id after the change")
             after = self._validity_findings(rid)
+
+            # `invariant:<metric>` findings (gr345859 §F) are STATE, not
+            # delta: the board either honours every declared invariant
+            # after the change or the change refuses — a pre-existing
+            # violation is not "standing, not caused by this change", it
+            # IS the board being invalid. They never enter _margin_delta.
+            def is_invariant(f: pcb_drc.DrcFinding) -> bool:
+                return f.rule.startswith("invariant:")
+
             worse, standing = _margin_delta(
-                [(_finding_identity(f), f.margin_mm or 0.0) for f in before],
-                [(_finding_identity(f), f.margin_mm or 0.0, f) for f in after],
+                [
+                    (_finding_identity(f), f.margin_mm or 0.0)
+                    for f in before
+                    if not is_invariant(f)
+                ],
+                [
+                    (_finding_identity(f), f.margin_mm or 0.0, f)
+                    for f in after
+                    if not is_invariant(f)
+                ],
             )
             report = JudgeReport(
                 standing=sum(1 for f in standing if f.severity == "error")
             )
             problems: list[str] = []
+            for f in [f for f in after if is_invariant(f)]:
+                nets = pcb_session.router_nets_of(f)
+                if nets:
+                    for net in sorted(nets):
+                        report.ripped.setdefault(net, f.rule)
+                    continue
+                problems.append(f"{f.rule}: {f.where}")
             for f, margin, old_margin in worse:
                 # A constraint authored on a part already placed off the
                 # edge is a request for op='place' to snap it, not an

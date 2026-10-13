@@ -109,7 +109,8 @@ class CacheMixin:
         sql = f"""
             SELECT {_REFS_COLS_FOR_CACHE},
                    cs.ref_id, cs.provider, cs.request_hash, cs.model,
-                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta,
+                   cs.content_sha256
             FROM cache_state cs
             JOIN refs ON refs.ref_id = cs.ref_id
             WHERE cs.provider = %s
@@ -181,7 +182,8 @@ class CacheMixin:
         sql = f"""
             SELECT {_REFS_COLS_FOR_CACHE},
                    cs.ref_id, cs.provider, cs.request_hash, cs.model,
-                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta,
+                   cs.content_sha256
             FROM cache_state cs
             JOIN refs ON refs.ref_id = cs.ref_id
             JOIN ref_identifiers ri
@@ -213,6 +215,7 @@ class CacheMixin:
         model: str | None = None,
         cost_usd: float | None = None,
         cache_meta: dict[str, Any] | None = None,
+        content_sha256: str | None = None,
     ) -> tuple[Ref, CacheEntry]:
         """Refresh body + cache_state for an existing cached ref, **in-place**.
 
@@ -222,7 +225,9 @@ class CacheMixin:
           every tag / link attached to the ref (no DELETE on the row),
         * replaces chunks (``DELETE FROM chunks WHERE ref_id``) with
           the freshly-fetched body — FK CASCADE cleans the per-chunk
-          embeddings / summaries / tags,
+          embeddings / summaries / tags — EXCEPT when ``content_sha256``
+          equals the stored one (byte-identical page): then the chunks
+          stay, so their ids and embeddings remain valid,
         * UPDATEs ``cache_state`` for the ref so freshness, cost,
           model, and meta reflect the new fetch.
 
@@ -258,12 +263,35 @@ class CacheMixin:
                 )
             ref = _row_to_ref(row)
 
-            # Replace chunks (cascades to chunk_embeddings /
-            # chunk_summaries / chunk_tags via FK ON DELETE).
-            # Ref-level tags/links/identifiers are untouched.
-            conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
-            if body_blocks:
-                self.chunks.insert_chunks(ref_id, body_blocks, conn=conn)
+            # An unchanged refresh keeps its chunks: when the new content
+            # sha equals the stored one the body is byte-identical, so
+            # DELETE+INSERT would only strand the chunk ids a nanopub
+            # passage froze (and force a re-embed). Body chunks are never
+            # UPDATEd in place — the only choices are keep or replace.
+            # A NULL stored sha (page cached before migration 0202), a
+            # differing sha, or a page with no live body chunk replaces.
+            prior = conn.execute(
+                "SELECT content_sha256 FROM cache_state WHERE ref_id = %s FOR UPDATE",
+                (ref_id,),
+            ).fetchone()
+            unchanged = (
+                content_sha256 is not None
+                and prior is not None
+                and prior[0] == content_sha256
+                and conn.execute(
+                    "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 "
+                    "AND retired_at IS NULL LIMIT 1",
+                    (ref_id,),
+                ).fetchone()
+                is not None
+            )
+            if not unchanged:
+                # Replace chunks (cascades to chunk_embeddings /
+                # chunk_summaries / chunk_tags via FK ON DELETE).
+                # Ref-level tags/links/identifiers are untouched.
+                conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
+                if body_blocks:
+                    self.chunks.insert_chunks(ref_id, body_blocks, conn=conn)
 
             # Update cache_state. Keep existing request_hash unless
             # caller passed a new one.
@@ -272,10 +300,10 @@ class CacheMixin:
                     "UPDATE cache_state SET "
                     "  model = %s, fetched_at = now(), "
                     f"  fresh_until = {fresh_until_sql}, "
-                    "  cost_usd = %s, meta = %s "
+                    "  cost_usd = %s, meta = %s, content_sha256 = %s "
                     "WHERE ref_id = %s "
                     "RETURNING ref_id, provider, request_hash, model, "
-                    "          fetched_at, fresh_until, cost_usd, meta"
+                    "          fetched_at, fresh_until, cost_usd, meta, content_sha256"
                 )
                 params: tuple[Any, ...] = (model,)
                 if ttl_seconds is not None:
@@ -283,19 +311,25 @@ class CacheMixin:
                         str(ttl_seconds),
                         cost_usd,
                         cache_meta_json,
+                        content_sha256,
                         ref_id,
                     )
                 else:
-                    params = params + (cost_usd, cache_meta_json, ref_id)
+                    params = params + (
+                        cost_usd,
+                        cache_meta_json,
+                        content_sha256,
+                        ref_id,
+                    )
             else:
                 cache_sql = (
                     "UPDATE cache_state SET "
                     "  request_hash = %s, model = %s, fetched_at = now(), "
                     f"  fresh_until = {fresh_until_sql}, "
-                    "  cost_usd = %s, meta = %s "
+                    "  cost_usd = %s, meta = %s, content_sha256 = %s "
                     "WHERE ref_id = %s "
                     "RETURNING ref_id, provider, request_hash, model, "
-                    "          fetched_at, fresh_until, cost_usd, meta"
+                    "          fetched_at, fresh_until, cost_usd, meta, content_sha256"
                 )
                 params = (request_hash, model)
                 if ttl_seconds is not None:
@@ -303,10 +337,16 @@ class CacheMixin:
                         str(ttl_seconds),
                         cost_usd,
                         cache_meta_json,
+                        content_sha256,
                         ref_id,
                     )
                 else:
-                    params = params + (cost_usd, cache_meta_json, ref_id)
+                    params = params + (
+                        cost_usd,
+                        cache_meta_json,
+                        content_sha256,
+                        ref_id,
+                    )
 
             cache_row = conn.execute(cache_sql, params).fetchone()
             if cache_row is None:
@@ -331,6 +371,7 @@ class CacheMixin:
         cost_usd: float | None = None,
         ref_meta: dict[str, Any] | None = None,
         cache_meta: dict[str, Any] | None = None,
+        content_sha256: str | None = None,
     ) -> tuple[Ref, CacheEntry]:
         """Atomically create-or-replace a cached ref + its cache_state row.
 
@@ -403,10 +444,10 @@ class CacheMixin:
             cache_sql = (
                 "INSERT INTO cache_state "
                 "  (ref_id, provider, request_hash, model, fetched_at, "
-                "   fresh_until, cost_usd, meta) "
-                f"VALUES (%s, %s, %s, %s, now(), {fresh_until_sql}, %s, %s) "
+                "   fresh_until, cost_usd, meta, content_sha256) "
+                f"VALUES (%s, %s, %s, %s, now(), {fresh_until_sql}, %s, %s, %s) "
                 "RETURNING ref_id, provider, request_hash, model, "
-                "          fetched_at, fresh_until, cost_usd, meta"
+                "          fetched_at, fresh_until, cost_usd, meta, content_sha256"
             )
             params: tuple[Any, ...] = (
                 ref.id,
@@ -415,9 +456,14 @@ class CacheMixin:
                 model,
             )
             if ttl_seconds is not None:
-                params = params + (str(ttl_seconds), cost_usd, cache_meta_json)
+                params = params + (
+                    str(ttl_seconds),
+                    cost_usd,
+                    cache_meta_json,
+                    content_sha256,
+                )
             else:
-                params = params + (cost_usd, cache_meta_json)
+                params = params + (cost_usd, cache_meta_json, content_sha256)
 
             cache_row = conn.execute(cache_sql, params).fetchone()
             assert cache_row is not None, (
@@ -454,7 +500,7 @@ _REFS_COLS_FOR_CACHE = (
 #: in :meth:`CacheMixin.get_cache_entry` and friends. Pinned to a
 #: named constant so the slice positions in those methods don't have
 #: to track the SELECT list by hand.
-_CACHE_COLS_LEN = 8
+_CACHE_COLS_LEN = 9
 
 # Drift guard. If a future ref-column migration bumps ``_REFS_COLS_LEN``
 # (in ``_mappers.py``) without a matching entry being added to

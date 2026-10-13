@@ -123,6 +123,7 @@ from precis_se.atomic.apply import HANDLER_LEVEL_OPS, all_op_names
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import prepare_generate, prepare_realize_chain
 from precis_se.atomic.join import prepare_join
+from precis_se.flatpack.se_op import prepare_flatpack_box
 from precis_se.handler import (
     SeHandler,
     _binding_line,
@@ -692,6 +693,11 @@ _SE_DRY_RUN_PREPARE: dict[str, Callable[[Any, SeTree, dict[str, Any], str], Any]
     "realize": prepare_realize,
     "realize_chain": prepare_realize_chain,
     "join": prepare_join,
+    # The flat-pack op's read-only half: the generator run, block/port/
+    # connect rewrites on the scratch tree, plus the prior-panel read for
+    # the retire set. The cad mints and retires stay deferred, same as
+    # ``realize``.
+    "flatpack_box": prepare_flatpack_box,
 }
 
 #: Handler-level ops deliberately NOT run in the pure dry-run, or the work

@@ -13,6 +13,14 @@ negative lets a review stand in as a primary. Both are recoverable (a pin
 overrides), so the patterns below favour precision over recall — ambiguous
 words ("perspective", "state-of-the-art", singular "Review" in a journal
 name) are only matched in the shapes that are reliably review-ish.
+
+It also owns the *proceedings-venue* test, :func:`proceedings_venue`, which
+two callers share: :func:`review_reason` (a proceedings venue is not a review
+journal, so "Progress In Electromagnetics Research Symposium" must not fire
+the "Progress in" venue rule) and the ``report`` source-genre gate
+(``nanopub/gates.py::check_report_sources``, which accepts a ``journal-article``
+filed in a conference digest). One definition, so the two cannot disagree
+about what a conference venue is.
 """
 
 from __future__ import annotations
@@ -23,7 +31,7 @@ import re
 #: fallback decision record (:class:`precis.taproot.cite.FallbackDecision`),
 #: so a reading taken under an older pattern set stays identifiable after
 #: the patterns change.
-PATTERNS_VERSION = "2026-10-02.1"
+PATTERNS_VERSION = "2026-10-03.1"
 
 # Journal names that contain "Review" but publish research, not reviews —
 # checked first and win. "Physical Review Letters/B/Applied/X", the APS
@@ -78,11 +86,88 @@ _TITLE_REVIEW_RE = re.compile(
 )
 
 
+# Venue words that mark a proceedings-style venue, canonical case by
+# lowercase key. Word-bounded and case-insensitive: "EPJ Web of Conferences"
+# (plural) does not fire.
+_VENUE_WORDS: dict[str, str] = {
+    "symposium": "Symposium",
+    "digest": "Digest",
+    "proceedings": "Proceedings",
+    "conference": "Conference",
+    "workshop": "Workshop",
+    "meeting abstracts": "Meeting Abstracts",
+}
+_VENUE_RE = re.compile(
+    r"\b(?:Symposium|Digest|Proceedings|Conference|Workshop|Meeting\s+Abstracts)\b",
+    re.IGNORECASE,
+)
+
+# Journals whose names carry a venue word but which are journals (a prod
+# corpus read, 2026-10-03, of journal-article titles matching the venue
+# words). Checked FIRST and win; anchored on the start of the name. The
+# Combustion Institute, Privacy Enhancing Technologies and Civil Engineering
+# in the Ocean entries are borderline (proceedings-style series that Crossref
+# files as journals); they are listed because refusing is the safe direction,
+# a wrongly refused report is re-grounded or re-typed, a wrongly accepted
+# one signs a finding as a report.
+_NOT_VENUE_RE = re.compile(
+    r"^Proceedings of the National Academy of Sciences"
+    r"|^Proceedings of the Royal Society"
+    r"|^Proceedings of the IEEE$"
+    r"|^Proceedings of the (?:IRE|Institute of Radio Engineers)$"
+    r"|^Proceedings of the ACM on "
+    r"|^Proceedings of the Institution of "
+    r"|^Proceedings of the (?:Indian National Science Academy|Japan Academy"
+    r"|Bulgarian Academy of Sciences|Physical Society|Nutrition Society"
+    r"|American Mathematical Society|Combustion Institute|Design Society"
+    r"|Association for Information Science)"
+    r"|^Proceedings of (?:Universities|Engineering and Technology Innovation"
+    r"|the Southwest State University|Civil Engineering in the Ocean)"
+    r"|^Proceedings on Privacy Enhancing Technologies"
+    r"|^Mathematical Proceedings of"
+    r"|^Digest Journal of"
+    r"|^Current Digest of",
+    re.IGNORECASE,
+)
+
+
+def venue_vetoed(journal: str | None) -> bool:
+    """True iff ``journal`` is on the not-venue list (:data:`_NOT_VENUE_RE`):
+    a journal whose name carries a venue word but is not a proceedings
+    venue."""
+    return bool(journal and _NOT_VENUE_RE.search(journal.strip()))
+
+
+def proceedings_venue(journal: str | None) -> str | None:
+    """The proceedings-venue word ``journal`` names — ``"Symposium"``,
+    ``"Digest"``, ``"Proceedings"``, ``"Conference"``, ``"Workshop"`` or
+    ``"Meeting Abstracts"``, canonical case, leftmost match — or ``None``.
+
+    The not-venue list is checked first (``Proceedings of the National
+    Academy of Sciences`` is a journal), and the match is word-bounded
+    (``EPJ Web of Conferences`` does not fire). A venue name says what the
+    publication IS whatever Crossref calls it: the SID Symposium Digest is
+    filed as ``journal-article``."""
+    if not journal or venue_vetoed(journal):
+        return None
+    m = _VENUE_RE.search(journal)
+    if not m:
+        return None
+    return _VENUE_WORDS[re.sub(r"\s+", " ", m.group(0).lower())]
+
+
 def review_reason(title: str | None, journal: str | None) -> str | None:
     """Why :func:`is_review_like` says yes — ``"journal ~ 'Chemical Reviews'"``
     / ``"title ~ 'a review'"`` (the matched text) — or ``None`` for a
-    research-like paper. The venue rule is checked before the title rule."""
-    if journal and not _JOURNAL_PRIMARY_RE.search(journal):
+    research-like paper. The venue rule is checked before the title rule,
+    and is skipped for a proceedings venue (:func:`proceedings_venue`): a
+    conference series is not a review journal, whatever "Progress in" its
+    name carries. The title rule still applies."""
+    if (
+        journal
+        and not _JOURNAL_PRIMARY_RE.search(journal)
+        and proceedings_venue(journal) is None
+    ):
         m = _JOURNAL_REVIEW_RE.search(journal)
         if m:
             return f"journal ~ {m.group(0)!r}"

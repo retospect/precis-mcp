@@ -151,6 +151,35 @@ NOT_HYPOTHESIS_PREDICATE_PARAMS: dict[str, str] = {
 }
 
 
+#: The two non-empirical artifact types (``report``, ``definition``;
+#: ``nanopub/gates.py``). Set only at approve, written to
+#: ``refs.meta.artifact_type`` so a cohort query can see the type before or
+#: without a publish row (the same durable-marker shape as ``hypothesis``).
+NONEMPIRICAL_ARTIFACT_TYPES: tuple[str, ...] = ("report", "definition")
+
+
+def not_nonempirical_predicate_sql(*, ref_alias: str = "r") -> str:
+    """The "this hub's sentence is judged as an empirical claim" clause —
+    AND it onto a pass that *rewrites* a claim sentence into the empirical
+    shape (the reword sweep). A ``report``/``definition`` hub is exempt
+    from the epistemic pair by type and answers to replacement checks
+    instead; rewording one to "name the method that showed this" would
+    move it out of its type or manufacture a method it never had.
+    Separate from :func:`not_hypothesis_predicate_sql` on purpose: the
+    evidence-widening passes (``hub_refine``/``chase_trigger``) have no
+    quarrel with a report or a definition, only the rewrite does."""
+    return (
+        f"NOT COALESCE(({ref_alias}.meta->>'artifact_type') "
+        "= ANY(%(nonempirical_artifacts)s), FALSE)"
+    )
+
+
+#: Bind param for :func:`not_nonempirical_predicate_sql`.
+NOT_NONEMPIRICAL_PREDICATE_PARAMS: dict[str, list[str]] = {
+    "nonempirical_artifacts": list(NONEMPIRICAL_ARTIFACT_TYPES),
+}
+
+
 def claim_sha(title: str) -> str:
     """Stable content hash of a claim sentence (a hub's ``title``).
 
@@ -1768,7 +1797,9 @@ __all__ = [
     "CLAIM_HUB_PREDICATE_PARAMS",
     "MAX_HUBS_PER_CHUNK_PER_RUN",
     "MERGE_CONFIDENCE_THRESHOLD",
+    "NONEMPIRICAL_ARTIFACT_TYPES",
     "NOT_HYPOTHESIS_PREDICATE_PARAMS",
+    "NOT_NONEMPIRICAL_PREDICATE_PARAMS",
     "STATUS_CANONICAL",
     "STATUS_NAMESPACE",
     "TAPROOT_CLAIM",
@@ -1795,5 +1826,6 @@ __all__ = [
     "merge_confirm",
     "nearest_hubs",
     "not_hypothesis_predicate_sql",
+    "not_nonempirical_predicate_sql",
     "place",
 ]

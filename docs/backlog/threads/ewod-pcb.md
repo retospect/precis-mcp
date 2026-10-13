@@ -288,7 +288,11 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 4. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
    vocabulary (creepage at 250 V) and pad-layer validation; wait on 1, where
-   a class becomes enforceable rather than advisory. **gr458878** (filed on
+   a class becomes enforceable rather than advisory. (§F shipped in
+   **gr345859**: `ewod_pad_array` declares its five fabric invariants as
+   `strength='invariant'` measures, evaluated by `view='measures'` and
+   gating put/route through the always-valid gate; `hard` still steers.)
+   **gr458878** (filed on
    Reto's word 2026-09-30) is the pin-level datasheet-provenance gap: a
    datasheet links to a PART, but no pin selector exists so no pin fact can
    cite the page it came from (ruled 2026-10-12: build `part:<C#>~<pin>`,

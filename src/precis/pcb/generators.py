@@ -252,7 +252,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
+from shapely.geometry import Point as ShapelyPoint
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.capabilities import (
@@ -261,6 +262,7 @@ from precis.pcb.capabilities import (
     coating_extent_mm,
     conductor_spacing_mm,
 )
+from precis.pcb.drc import _copper_item_polygon, _via_layer_names
 
 Point = tuple[float, float]
 
@@ -351,7 +353,7 @@ _GEOMETRY_ROUNDING_SLACK_MM = 0.001
 #: generator's expansion to its version here, so changing the output without
 #: bumping this fails the gate instead of serving stale copper on prod.
 VERSIONS: dict[str, int] = {
-    "ewod_pad_array": 4,
+    "ewod_pad_array": 5,
 }
 
 
@@ -425,6 +427,18 @@ class GeneratorExpansion:
     #: (pcb-pre-place-route-blocks Slice 2, :func:`_stub_track_row`/
     #: :func:`_via_row`) is the first real emitter.
     copper: list[dict[str, Any]] = field(default_factory=list)
+    #: docs/backlog/pcb-missing-constraint-classes.md §F (ruled
+    #: 2026-10-12) — the generator's fabric invariants as ``pcb_measures``
+    #: rows at ``strength='invariant'`` (``put``-insertable shape, keyed
+    #: to this call by ``meta.generator``/``operands[{'generator':
+    #: name}]`` so a changed-params re-apply retires exactly its own;
+    #: :meth:`precis.store._pcb_ops.PcbMixin._pcb_apply` merges them into
+    #: the batch's measures). Unlike ``soft``/``hard`` an ``invariant``
+    #: never steers the anneal — it is evaluated by
+    #: :func:`evaluate_invariant` (the emitter-adjacent checker, so rule
+    #: and check cannot drift) and a violated one gates put/route through
+    #: the always-valid gate. :func:`_invariant_measures` emits the rows.
+    measures: list[dict[str, Any]] = field(default_factory=list)
 
 
 def expand(generator: str, name: str, params: dict[str, Any]) -> GeneratorExpansion:
@@ -2741,6 +2755,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         ledger=ledger,
         warnings=warnings,
         copper=copper,
+        measures=_invariant_measures(name, sizing, copper),
         net_classes={
             net_class: {"clearance_mm": gap_clearance_mm},
             escape_class: {
@@ -2749,6 +2764,454 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             },
         },
     )
+
+
+# ── generator-declared fabric invariants (gr345859) ──────────────────────
+# docs/backlog/pcb-missing-constraint-classes.md §F, ruled 2026-10-12: the
+# rules the EWOD fabric must never break ("one via per electrode", "no
+# via-in-pad", "a merged pad may never cover a plaza", "HV separation sets
+# the pitch floor", "matched stub lengths") live in prose and in this
+# module, with nothing evaluating them — and a `hard` measure only steers
+# (priced ~40x soft), it never gates. Each generator now declares those
+# rules itself, as `pcb_measures` rows at the NEW strength `invariant`:
+# `hard` keeps steering; a violated `invariant` is never weighted — the
+# always-valid gate (`precis.pcb.session.invariant_measure_findings`,
+# folded into `handlers/pcb.py::_validity_findings` and the route/place
+# jobs' `placement_drc_findings`) turns it into a finding that refuses the
+# put/route, or rips the ROUTER copper it names. The evaluator sits here,
+# beside the code that emits the fabric, so the rule and its check cannot
+# drift.
+
+#: The measure ``metric`` values this module knows how to evaluate. A row
+#: naming one without a resolvable generator (``meta.generator``, or a
+#: ``{'generator': name}`` operand) stays ``pending`` — the check is
+#: generator-owned, so a row with no generator to ask has no verdict.
+INVARIANT_METRICS: tuple[str, ...] = (
+    "via_per_electrode",
+    "no_via_in_pad",
+    "pad_covers_plaza",
+    "hv_pitch_floor",
+    "stub_length_match",
+)
+
+#: `stub_length_match`'s emitted tolerance. Every stub of one escape
+#: direction class is the same nominal length BY CONSTRUCTION (the cardinal
+#: ``half + gap - slot_a`` and the diagonal ``sqrt(2) * (half + gap -
+#: slot_b)`` — stored coordinates are quantized to 0.1um, an identical
+#: computation), so any real deviation is a hand-edit or a stale row, and
+#: either class difference (~0.5mm at default sizing) dwarfs this. The
+#: measure's own ``goal`` overrides it at evaluation time.
+_STUB_MATCH_TOL_MM = 0.02
+
+
+def _track_geom_length(geom: dict[str, Any]) -> float:
+    """Total length of a ``ctype='track'`` geom's polyline (mm)."""
+    return sum(
+        math.hypot(
+            float(seg["end"][0]) - float(seg["start"][0]),
+            float(seg["end"][1]) - float(seg["start"][1]),
+        )
+        for seg in geom.get("segments") or []
+    )
+
+
+def _invariant_measures(
+    name: str, sizing: dict[str, Any], copper: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The fabric invariants ``ewod_pad_array`` declares on its own output
+    — one ``pcb_measures`` row each at ``strength='invariant'`` (see the
+    section comment above). ``meta.generator`` and the ``{'generator':
+    name}`` operand both key the row to this call: the former is how
+    ``_pcb_generator_retire_expansion`` retires exactly this call's rows on
+    a changed-params re-apply, the latter is the self-describing binding
+    ``view='measures'`` shows.
+
+    ``stub_length_match`` carries the EMITTED stub lengths in
+    ``meta.expected_stub_lengths_mm`` — the generator declares what it
+    drew (one entry per escape class: cardinal, diagonal, plus the rim
+    variant's corner class, which is a THIRD length closed form, not a
+    parameter recombination), rather than the evaluator re-deriving
+    nominal geometry from params — the check then can never drift from
+    the fabric it guards."""
+    operand = [{"generator": name}]
+    meta = {"generator": name}
+    stub_lengths = sorted(
+        {
+            round(_track_geom_length(row["geom"]), 4)
+            for row in copper
+            if row["ctype"] == "track"
+        }
+    )
+
+    def row(
+        metric: str,
+        goal: float,
+        direction: str,
+        reason: str,
+        extra_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "metric": metric,
+            "strength": "invariant",
+            "operands": list(operand),
+            "goal": goal,
+            "direction": direction,
+            "reason": reason,
+            "meta": {**meta, **(extra_meta or {})},
+        }
+
+    return [
+        row(
+            "via_per_electrode",
+            0,
+            "max",
+            "one via per electrode, regardless of pad size (capacitive "
+            "load, negligible current) — a usable pin's net carries "
+            "exactly one via; a withheld one carries none",
+        ),
+        row(
+            "no_via_in_pad",
+            0,
+            "max",
+            "no via-in-pad anywhere — a fab cost adder this fabric avoids "
+            "by giving escapes their own plaza",
+        ),
+        row(
+            "pad_covers_plaza",
+            0,
+            "max",
+            "a merged pad may never cover a plaza — the plaza carries 8 "
+            "other nets' escapes; copper over it shorts them all",
+        ),
+        row(
+            "hv_pitch_floor",
+            round(float(sizing["min_pitch"]), 4),
+            "min",
+            "HV separation sets the pitch floor — the plaza must fit its "
+            "8-slot escape family at the declared drive voltage",
+        ),
+        row(
+            "stub_length_match",
+            _STUB_MATCH_TOL_MM,
+            "max",
+            "matched stub lengths per escape class, for uniform capacitive "
+            "load — every stub holds its class's nominal length",
+            extra_meta={"expected_stub_lengths_mm": stub_lengths},
+        ),
+    ]
+
+
+def _invariant_generator_name(measure: dict[str, Any]) -> str | None:
+    """The generator call a measure row binds to (``meta.generator``,
+    then a ``{'generator': name}`` operand), or ``None``."""
+    meta = measure.get("meta")
+    if isinstance(meta, dict) and str(meta.get("generator") or ""):
+        return str(meta["generator"])
+    for op in measure.get("operands") or []:
+        if isinstance(op, dict) and str(op.get("generator") or ""):
+            return str(op["generator"])
+    return None
+
+
+def _inv_via_per_electrode(
+    name: str, ledger: dict[str, Any], copper: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Each usable electrode pin's net carries exactly one via (the spec's
+    "one via per electrode"; an ``unusable`` pin — no adjacent plaza, or a
+    ``reserve``d slot — deliberately carries none). Value = pins off their
+    expected count; ``objects`` names the off-count nets, tagged
+    ``derived`` only when every EXCESS via on the net is router copper, so
+    the gate can rip it rather than refuse — authored fabric never yields."""
+    ledger_pads = ledger.get("pads") or {}
+    if not ledger_pads:
+        return None
+    vias_by_net: dict[str, int] = {}
+    derived_by_net: dict[str, int] = {}
+    for c in copper:
+        if c.get("ctype") != "via" or not c.get("net"):
+            continue
+        net = str(c["net"])
+        vias_by_net[net] = vias_by_net.get(net, 0) + 1
+        if c.get("derived"):
+            derived_by_net[net] = derived_by_net.get(net, 0) + 1
+    bad = []
+    for pin, info in sorted(ledger_pads.items()):
+        want = 1 if info.get("usable", True) else 0
+        net = f"{name}_{pin}"
+        have = vias_by_net.get(net, 0)
+        if have != want:
+            bad.append((net, want, have))
+    objects = tuple(
+        {"net": net, "derived": True}
+        if have - want > 0 and derived_by_net.get(net, 0) >= have - want
+        else {"net": net}
+        for net, want, have in bad
+    )
+    return {
+        "value": float(len(bad)),
+        "ok": not bad,
+        "detail": "; ".join(
+            f"{net} has {have} via(s), want {want}" for net, want, have in bad[:6]
+        )
+        + (f" (+{len(bad) - 6} more)" if len(bad) > 6 else ""),
+        "over": name,
+        "objects": objects,
+    }
+
+
+def _inv_no_via_in_pad(
+    pads: list[dict[str, Any]], copper: list[dict[str, Any]], layers: list[str]
+) -> dict[str, Any]:
+    """No via's copper disc overlaps any real pad — the fabric gives
+    escapes their own plaza precisely to keep via-in-pad (a fab cost
+    adder) off the board. Synthesized pads are bounds, not lands, and are
+    skipped (never gate on a guess); a via is judged only against the
+    pads on layers it actually flashes (a drilled pad is copper on every
+    layer). ``objects`` carries each (via, pad) pair; ``via_derived``
+    marks ROUTER vias, so the gate rips that net instead of refusing —
+    the same-net authored-via exemption is ``check_via_pad_keepout``'s
+    own policy (a designed drop point), mirrored so rule and measure
+    cannot disagree on it."""
+    pad_polys = []
+    for p in pads:
+        if p.get("synthesized"):
+            continue
+        poly = _copper_item_polygon({**p, "ctype": "pad"})
+        if poly is not None and not poly.is_empty:
+            pad_polys.append((p, poly))
+    bad: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for item in copper:
+        if item.get("ctype") != "via":
+            continue
+        vr = float(item.get("dia_mm") or 0.0) / 2.0
+        if vr <= 0.0:
+            continue
+        vx, vy = float(item["x"]), float(item["y"])
+        via_net = item.get("net")
+        via_fixed = bool(item.get("fixed"))
+        try:
+            via_layers = set(_via_layer_names(item, list(layers)))
+        except (ValueError, IndexError):
+            via_layers = set(layers)
+        centre = ShapelyPoint(vx, vy)
+        for pad, poly in pad_polys:
+            if via_fixed and via_net and via_net == pad.get("net"):
+                continue
+            if not pad.get("drill") and str(pad.get("layer") or "") not in via_layers:
+                continue
+            if poly.distance(centre) < vr - 1e-9:
+                bad.append((item, pad))
+    objects = tuple(
+        {
+            "via_net": item.get("net"),
+            **({"via_derived": True} if item.get("derived") else {}),
+            "via_x": float(item["x"]),
+            "via_y": float(item["y"]),
+            "pad_refdes": pad.get("refdes"),
+            "pad_pin": pad.get("pin"),
+            "pad_net": pad.get("net"),
+        }
+        for item, pad in bad
+    )
+    return {
+        "value": float(len(bad)),
+        "ok": not bad,
+        "detail": "; ".join(
+            f"via[{item.get('net') or '?'}] @ ({item['x']}, {item['y']}) inside "
+            f"pad[{pad.get('refdes')}/{pad.get('pin')}]"
+            for item, pad in bad[:6]
+        )
+        + (f" (+{len(bad) - 6} more)" if len(bad) > 6 else ""),
+        "over": "",
+        "objects": objects,
+    }
+
+
+def _inv_pad_covers_plaza(
+    name: str, params: dict[str, Any], pads: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """No electrode pad polygon reaches into a plaza cell's own
+    ``pitch``-square — the cell a pad was omitted from to host 8 other
+    nets' escapes (``variant='rim'``: every hollow interior cell is one).
+    A pad staying inside its own cell ends ``gap/2`` clear of any
+    neighbour cell's square, so an intersection is always a real
+    overreach, never adjacency noise."""
+    grid = params.get("grid")
+    if not grid or params.get("pitch") is None:
+        return None
+    rows, cols = int(grid[0]), int(grid[1])
+    pitch = float(params["pitch"])
+    if str(params.get("variant") or "full") == "rim":
+        cells = {(r, c) for r in range(1, rows - 1) for c in range(1, cols - 1)}
+    else:
+        cells = {(int(p[0]), int(p[1])) for p in params.get("plazas") or []}
+    if not cells:
+        return {"value": 0.0, "ok": True, "detail": "no plaza cells", "objects": ()}
+    x0, y0 = float(params.get("x") or 0.0), float(params.get("y") or 0.0)
+    h = pitch / 2.0
+    cell_boxes = [
+        (
+            cell,
+            box(
+                x0 + (cell[1] - (cols - 1) / 2.0) * pitch - h,
+                y0 + (cell[0] - (rows - 1) / 2.0) * pitch - h,
+                x0 + (cell[1] - (cols - 1) / 2.0) * pitch + h,
+                y0 + (cell[0] - (rows - 1) / 2.0) * pitch + h,
+            ),
+        )
+        for cell in sorted(cells)
+    ]
+    bad = []
+    for pad in pads:
+        if pad.get("synthesized") or str(pad.get("refdes")) != name:
+            continue
+        poly = _copper_item_polygon({**pad, "ctype": "pad"})
+        if poly is None or poly.is_empty:
+            continue
+        for cell, cell_box in cell_boxes:
+            if poly.intersects(cell_box):
+                bad.append((pad, cell))
+    return {
+        "value": float(len(bad)),
+        "ok": not bad,
+        "detail": "; ".join(
+            f"pad[{name}/{pad.get('pin')}] covers plaza P{cell[0]}_{cell[1]}"
+            for pad, cell in bad[:6]
+        )
+        + (f" (+{len(bad) - 6} more)" if len(bad) > 6 else ""),
+        "over": name,
+        "objects": tuple(
+            {"pad_refdes": name, "pad_pin": pad.get("pin")} for pad, _cell in bad
+        ),
+    }
+
+
+def _inv_hv_pitch_floor(name: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    """The authored ``pitch`` against the plaza-capacity floor RE-DERIVED
+    from the stored sizing params — not the row's recorded ``goal`` — so a
+    code move in :func:`_plaza_capacity` shows up as a violation here
+    rather than being ratified by the stale figure."""
+    try:
+        pitch = float(params["pitch"])
+        gap = float(params["gap"])
+        via_dia = float(params["via_dia"])
+        hv_separation = float(params["hv_separation"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    floor = _plaza_capacity(gap, via_dia, hv_separation)["min_pitch"]
+    return {
+        "value": round(pitch, 4),
+        "ok": pitch >= floor - 1e-9,
+        "detail": (
+            f"pitch {pitch:g}mm vs derived floor {floor:.3f}mm "
+            f"(gap {gap:g}, via_dia {via_dia:g}, hv_separation {hv_separation:g})"
+        ),
+        "over": name,
+        "objects": (),
+    }
+
+
+def _inv_stub_length_match(
+    name: str,
+    measure: dict[str, Any],
+    params: dict[str, Any],
+    ledger: dict[str, Any],
+    copper: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Every stub track this generator owns holds a DECLARED nominal
+    length within the row's ``goal`` (default
+    :data:`_STUB_MATCH_TOL_MM`) — "matched stub lengths for uniform
+    capacitive load". The declared set is ``meta.expected_stub_lengths_mm``
+    (emitted alongside the fabric — cardinal, diagonal, and the rim
+    variant's own corner class); a row without it falls back to the two
+    closed-form classes re-derived from params, which is correct for the
+    ``full`` variant only. A stub matching no declared length, or a stub
+    count disagreeing with the ledger's usable-pad count, is a violation;
+    the count clause is skipped when the ledger carries no pad list."""
+    declared = (measure.get("meta") or {}).get("expected_stub_lengths_mm")
+    if declared:
+        expected = tuple(float(e) for e in declared)
+    else:
+        try:
+            half = float(params["half"])
+            gap = float(params["gap"])
+            slot_a = float(params["slot_a"])
+            slot_b = float(params["slot_b"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        expected = (half + gap - slot_a, math.sqrt(2.0) * (half + gap - slot_b))
+    goal = measure.get("goal")
+    tol = float(goal) if goal is not None else _STUB_MATCH_TOL_MM
+    stubs = [
+        c
+        for c in copper
+        if c.get("generator_name") == name and c.get("ctype") == "track"
+    ]
+    worst = 0.0
+    bad = []
+    for stub in stubs:
+        length = _track_geom_length(stub)
+        dev = min(abs(length - e) for e in expected) if expected else 0.0
+        worst = max(worst, dev)
+        if dev > tol:
+            bad.append((stub, dev))
+    count_note = ""
+    ledger_pads = ledger.get("pads")
+    if ledger_pads:
+        want = sum(1 for info in ledger_pads.values() if info.get("usable", True))
+        if len(stubs) != want:
+            count_note = f"{len(stubs)} stub track(s) but {want} usable electrode(s)"
+    return {
+        "value": round(worst, 4),
+        "ok": not bad and not count_note,
+        "detail": "; ".join(
+            [count_note]
+            + [f"{stub.get('net') or '?'} off by {dev:.3f}mm" for stub, dev in bad[:6]]
+        ).lstrip("; "),
+        "over": name,
+        "objects": tuple({"net": s.get("net")} for s, _dev in bad),
+    }
+
+
+def evaluate_invariant(
+    measure: dict[str, Any],
+    *,
+    generators: dict[str, dict[str, Any]],
+    pads: list[dict[str, Any]],
+    copper: list[dict[str, Any]],
+    layers: list[str],
+) -> dict[str, Any] | None:
+    """One generator-declared invariant measure row → ``{"value", "ok",
+    "detail", "over", "objects"}``, or ``None`` when it cannot be evaluated
+    (the metric is not one of :data:`INVARIANT_METRICS`, the row binds no
+    generator, that generator is not on this design, or its stored params
+    are incomplete) — callers render ``None`` as ``pending``, never
+    ``ok``. ``objects`` carries the offending entities in the shape
+    :func:`precis.pcb.session.router_nets_of` reads, so router copper a
+    violation names yields and authored copper refuses.
+
+    ``pads`` are ``realize.pads_for_ir`` rows (synthesized bounds ride
+    ``synthesized=True``), ``copper`` the ``Store.pcb_copper_list`` union
+    (authored rows carry ``fixed``/``generator_name``, router rows
+    ``derived``), ``layers`` the stackup's name list."""
+    metric = str(measure.get("metric") or "").strip().lower()
+    if metric not in INVARIANT_METRICS:
+        return None
+    name = _invariant_generator_name(measure)
+    row = generators.get(name) if name else None
+    if name is None or row is None:
+        return None
+    params = dict(row.get("params") or {})
+    ledger = dict(row.get("ledger") or {})
+    if metric == "via_per_electrode":
+        return _inv_via_per_electrode(name, ledger, copper)
+    if metric == "no_via_in_pad":
+        return _inv_no_via_in_pad(pads, copper, list(layers))
+    if metric == "pad_covers_plaza":
+        return _inv_pad_covers_plaza(name, params, pads)
+    if metric == "hv_pitch_floor":
+        return _inv_hv_pitch_floor(name, params)
+    return _inv_stub_length_match(name, measure, params, ledger, copper)
 
 
 _REGISTRY: dict[str, Callable[[str, dict[str, Any]], GeneratorExpansion]] = {

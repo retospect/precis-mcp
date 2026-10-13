@@ -27,6 +27,8 @@ class _StubResp:
         headers: dict[str, str] | None = None,
     ) -> None:
         self.text = text
+        # Raw response bytes — what the fetcher hashes for content_sha256.
+        self.content = text.encode("utf-8")
         self.status_code = status_code
         self.headers = headers or {"content-type": "text/html"}
 
@@ -192,6 +194,50 @@ def test_canonicalization_collapses_variants(handler: WebHandler) -> None:
     assert cached is not None
     ref, _ = cached
     assert ref.slug == expected_slug
+
+
+# ── content_sha256 (web anchor, migration 0202) ──────────────────────
+
+
+def _cache_row(handler: WebHandler, url: str) -> Any:
+    cached = handler.store.get_cache_entry(
+        provider="web", request_hash=handler._hash(url)
+    )
+    assert cached is not None
+    return cached
+
+
+def test_fetch_stores_the_sha256_of_the_raw_response_bytes(
+    handler: WebHandler,
+) -> None:
+    import hashlib
+
+    url = "https://example.com/article"
+    handler.get(id=url)
+    ref, cache = _cache_row(handler, url)
+    expected = hashlib.sha256(_SAMPLE_HTML.encode("utf-8")).hexdigest()
+    assert cache.content_sha256 == expected
+    # The raw bytes, not the request hash (the sha of the URL string) and
+    # not the extracted markdown.
+    assert cache.content_sha256 != cache.request_hash
+    assert cache.meta["url"] == url
+
+
+def test_refresh_overwrites_the_content_sha256(handler: WebHandler) -> None:
+    import hashlib
+
+    url = "https://example.com/article"
+    handler.get(id=url)
+    ref, first = _cache_row(handler, url)
+
+    changed = _SAMPLE_HTML.replace("first real paragraph", "REVISED paragraph")
+    _StubClient.response = _StubResp(text=changed)
+    handler.get(id=url, mode="refresh")
+
+    ref2, second = _cache_row(handler, url)
+    assert ref2.id == ref.id  # refreshed in place
+    assert second.content_sha256 == hashlib.sha256(changed.encode("utf-8")).hexdigest()
+    assert second.content_sha256 != first.content_sha256
 
 
 # ── input validation ─────────────────────────────────────────────────

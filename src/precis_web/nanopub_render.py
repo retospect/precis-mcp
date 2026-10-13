@@ -215,6 +215,7 @@ def hub_context(
         "conflict_coverage": conflict_coverage,
         "withheld": _withheld_rows(store, withheld),
         "newer_evidence": newer_evidence,
+        "source_drift": _source_drift(store, row),
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
@@ -820,6 +821,19 @@ def _lazy_enqueue_context_sentences(store: Any, sources: list[Any]) -> None:
         meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
         if not meta.get("context_sentence"):
             _enqueue_context_sentence(store, ref_id)
+
+
+def _source_drift(store: Any, row: Any) -> list[dict[str, Any]]:
+    """Web sources whose page changed since approval ("source changed since
+    approval"): the frozen passages' ``content_sha256`` against the page's
+    live one (:func:`precis.nanopub.evidence.web_source_drift`). Display
+    only — never gates a transition or un-approves anything. Empty before
+    approve (no frozen sha yet)."""
+    from precis.nanopub import evidence
+
+    if row is None or not row.grounding:
+        return []
+    return evidence.web_source_drift(store, row.grounding.get("passages") or [])
 
 
 def _anchor_fields(src: Any) -> dict[str, str]:

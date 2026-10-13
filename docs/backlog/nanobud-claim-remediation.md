@@ -392,20 +392,24 @@ its four evidence chunks was read, and that one was procedural. Read
    `hyphen-numeric-range` regex now carries a fourth guard for Pople
    basis sets, verified by a 119,279-sentence corpus dry run.
 
-## The artifact-exemption route is bigger than one line
+## The artifact-exemption route — shipped as `report` / `definition`
 
-`resolve_artifact_type` returns a closed set of three
-(`claim | composite | hypothesis`); `claim`/`composite` derive from edges,
-`hypothesis` from the mint payload. A new `definition`/`context` type
-needs: the exemption entry, `resolve_artifact_type` support, a persisted
-marker, `reword.py::_blocking_codes` to stop hardcoding
-`artifact_type="claim"`, and a cohort-SQL exclusion beside
-`_NOT_HYPOTHESIS_SQL`.
-
-The gates docstring also sets a bar: `composite` was deliberately left
-strict "pending a decision, because ... the failure mode of exempting it
-has not been measured against the corpus." A new type inherits that bar —
-measure first, then ship. It is its own change, not part of this pass.
+Reto ruled 2026-10-02 (`nanobuds-paper-13`): two non-empirical artifact
+types, `report` and `definition`, set only on the approve payload
+(`nanopub/gates.py::resolve_artifact_type`, `requested_nonempirical_type`).
+They replace the epistemic pair with checks of their own
+(`gates.check_nonempirical`: `report-attribution`, `report-genre`,
+`report-source-genre`, `definition-copula`), persist on
+`nanopub_publish.artifact_type` (migration 0201) and on
+`refs.meta.artifact_type` (the reword cohort skips them via
+`canon.not_nonempirical_predicate_sql`), and sign as `precis:Report`
+(with `prov:wasAttributedTo` its source) / `precis:Definition`. The
+measurement behind the shape (5 non-empirical hubs of ~2,270 failing the
+pair) is in the `_ARTIFACT_LINT_EXEMPTIONS` comment. The non-empirical
+bucket above — fi189535 (already passes, anchored), fi191169, fi191260
+(reports), and the schwarzite/molecular-assembler definitions — is the
+set the types serve; the `web` source identifier part of the ruling is
+open (see the claims-and-evidence thread).
 
 ## Phase 2 owed again
 

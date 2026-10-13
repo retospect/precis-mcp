@@ -75,9 +75,10 @@ exists. Details: [[precis-taproot-help]].
 
 ## Hypothesis — the artifact type an agent can originate
 
-Three artifact types exist: `claim` (an atomic finding, grounded in a
+Five artifact types exist: `claim` (an atomic finding, grounded in a
 verbatim passage), `composite` (a conjunction of already-signed atoms),
-and `hypothesis`. A hypothesis asserts a **conjecture**, so by
+`hypothesis`, and the two human-set non-empirical types `report` and
+`definition` ([[precis-nanopub-types-help]]). A hypothesis asserts a **conjecture**, so by
 definition it has no supporting passage — the gates reject a hypothesis
 that arrives carrying one. What it carries instead is `motivation`
 prose naming the inferential leap and `testable_by` naming the
@@ -164,6 +165,13 @@ envelope and keeps the prior wording in `meta.testable_by_history` /
 are flagged/listed for re-review. Once signed, correction requires a successor
 nanopublication; this edit door refuses.
 
+## Report and definition types
+
+Non-empirical hubs (a company says X; a term means Y) use the human-set
+types `report` / `definition`, set only as `artifact_type` on the approve
+payload — agents cannot create them and must not propose one to get past a
+lint failure. Rules, gate slugs, genre lists: [[precis-nanopub-types-help]].
+
 ## Mint gates (why a claim you drafted may not mint)
 
 **Admissible is not true.** Every gate below checks that a claim is
@@ -201,7 +209,18 @@ failures an extraction agent can avoid up front:
   `edgar` filing by its SEC accession number (the ref slug; the source
   node is its archive URL, with a `precis:secAccession` literal; no
   `pdf_sha256` needed); a `datasheet` by `urn:sha256:` of its PDF, with
-  its fetch URL as `rdfs:seeAlso` when known. A source with no ruled
+  its fetch URL as `rdfs:seeAlso` when known; a `web` page by
+  `urn:sha256:` of the raw bytes of its last fetch (not of the extracted
+  text), with the URL as `rdfs:seeAlso`. The page's sha is frozen onto
+  the passage at approve; it is never read from the payload, and a web
+  page with no sha on record (cached before the sha was recorded) is
+  refused until you re-fetch it with `get(kind='web', id='<url>',
+  mode='refresh')`. If the page is later re-fetched and its content has
+  changed, the claim page shows "source changed since approval" — a
+  display notice only: nothing is blocked or un-approved, and sign still
+  proceeds on the frozen quote and sha. A refresh whose bytes are
+  identical keeps the page's chunks; one whose bytes differ replaces
+  them, so judge whether the quote still holds. A source with no ruled
   identifier — textbook/ISBN, patent — keeps its evidence *edge* (visible
   internally) but its passage stays OUT of the payload until its
   grounding lands (`docs/backlog/nanopub-book-isbn-grounding.md`).
@@ -454,6 +473,10 @@ per class — do not mutate the hub, its edges, or its sources:
 - `[grounding] datasheet has no single pdf_sha256` → the datasheet's
   PDF identity is missing or ambiguous; a re-ingest/sha-hygiene item for
   a human, not a payload fix.
+- `[grounding] web page has no content_sha256 on record` → the page was
+  cached before the sha was recorded; `get(kind='web', id='<url>',
+  mode='refresh')` re-fetches it (stamping the sha), then re-approve.
+  Re-fetch replaces the page's chunks, so re-pick the passage's chunk_id.
 - `[grounding] edgar source has no parseable SEC accession` → the ref's
   slug is not a dashed accession; a re-ingest/slug-repair item for a
   human, not a hub fix.
@@ -463,6 +486,14 @@ per class — do not mutate the hub, its edges, or its sources:
   file that combination, otherwise it's the benign alias pair.
 - `[primary-source]` (hearsay section or in-quote citation marker) →
   hunt-the-primary todo naming the cited work; the claim stays hanging.
+- `[report-attribution]` / `[report-genre]` / `[definition-copula]` →
+  the sentence lacks the named shape; a human rewords it in the approve
+  form. If the sentence is really an empirical result, the type is wrong:
+  approve it as a claim (name the method), never loosen the check.
+- `[report-source-genre]` → the report is grounded in a journal article.
+  File it: either the real reporting document (proceedings, company
+  report, filing) must be acquired and re-grounded, or the sentence is a
+  claim.
 - `[quote-verbatim]` / `[snip]` → the payload needs a human re-trim;
   point at the chunk, don't rewrite the quote yourself.
 

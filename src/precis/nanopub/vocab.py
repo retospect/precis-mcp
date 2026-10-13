@@ -52,6 +52,12 @@ SEC_ACCESSION = PRECIS["secAccession"]
 ATOMIC_CLAIM = PRECIS["AtomicClaim"]
 COMPOSITE_CLAIM = PRECIS["CompositeClaim"]
 HYPOTHESIS = PRECIS["Hypothesis"]
+#: The two non-empirical types (approve-only; ``nanopub/gates.py``). A
+#: ``Report`` asserts that a named source stated something (the provenance
+#: graph carries ``prov:wasAttributedTo`` the source node), never a finding;
+#: a ``Definition`` asserts what a term means.
+REPORT = PRECIS["Report"]
+DEFINITION = PRECIS["Definition"]
 
 #: Quantity bound semantics (review feedback 2026-08-15: a quantity claim
 #: carries whether its figure is exact, an upper bound, a lower bound, or

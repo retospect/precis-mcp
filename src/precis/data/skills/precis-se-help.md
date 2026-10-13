@@ -88,25 +88,22 @@ rolls the whole batch back.
 five-year service) · `mass_production` (100 000, full lifetime physics).
 It decides which checks are meaningful, so `view='validate'` and
 `view='drc'` print the governing scenario — or `scenario: none chosen`.
-An unknown name is rejected; an *absent* key keeps the earlier choice —
-it is design-level context, not part of the tree `put` replaces.
+An unknown name is rejected; an *absent* key keeps the earlier choice.
 
-`view='drc'` always ends with a one-line `validate:` digest (error/warning
+`view='drc'` ends with a one-line `validate:` digest (error/warning
 counts, first finding, or `validate: clean`), and a DRC-clean design with
 validate warnings reads `no DRC findings; validate has N warning(s)` — a
 clean DRC never implies a clean design.
 
-**Every `put`/`edit` reply ends with that same digest line** (`validate: clean`,
+**Every `put`/`edit` reply ends with the digest** (`validate: clean`,
 or `validate: N error(s), M warning(s) — first: <rule> <detail>; see
-view='validate'`), and the `/se/<slug>` page shows it above a collapsible
-findings table — a write never refuses, but it no longer stays silent
-about what it left behind. For bound structures, `atom_clash` fires per
-block pair when posed atoms of two blocks come within 2 Å (error under
-1 Å, warn in [1, 2) Å; count, minimum distance and the closest atom pair
-are in the text). A `connect` between the pair does not excuse it:
-coincident atoms are never intended chemistry — re-pose a block
-(`set_pose`). Blocks generated at the default pose `[0,0,0]` pile up on
-each other and trip it.
+view='validate'`), and `/se/<slug>` shows it above the findings table —
+a write never refuses, but it no longer stays silent. For bound
+structures, `atom_clash` fires per block pair when posed atoms come
+within 2 Å (error under 1 Å, warn in [1, 2) Å — count, min distance,
+closest pair in the text). A `connect` does not excuse it —
+re-pose a block (`set_pose`). Blocks generated at the default pose
+`[0,0,0]` pile up on each other and trip it.
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
 is unique within a design. A block also carries a stable **uid** — `(uid
@@ -212,10 +209,7 @@ the last four delimit region selectors, `precis-se-regions-help`.)
   `set_process_override`/`clear_process_override`
   — `block`, `field` (+ `value`) · `set_build_frame` — `block`, `down`
   [x,y,z] / `clear_build_frame` — `block`. Contracts: `precis-se-print-help`.
-- `flatpack_box` — `params` = the generator's kwargs (mm): one `cad`
-  design + placed block + `rigid` connect per panel, re-runnable in
-  place under `<design>-<panel>` slugs; params live in
-  `meta['flatpack']`. `precis-se-flatpack-help`.
+- `flatpack_box` — flat-pack box (`precis-se-flatpack-help`).
 
 ## Ops — BOM, order, notes, formfind
 
@@ -416,11 +410,10 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 `tree · block · report · ports · topology · chain · measures · revisions · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links · export · cut · ops`. There is **no `mass` view** (mass goes via
-`bom`). `interview`
-elicits what's missing — lead with it. `mechanics`/`literature`/
-`topology` are atomic-mode views. `view='cut'` gives the flat-pack cut
-file — `args={'format':'svg'|'dxf'}` from `meta['flatpack']`.
+literature · fret · links · export · cut · ops`. No `mass` view — mass
+goes via `bom`. `interview` elicits what's missing.
+`mechanics`/`literature`/`topology` are atomic-mode views; `view='cut'`
+is the flat-pack file (`precis-se-flatpack-help`).
 
 `view='revisions'` lists every saved revision of the design — rev number,
 UTC time, op names, block count. `edit(kind='se', id=…,
@@ -480,26 +473,14 @@ Maxwell/Calladine m−s on the axial subgraph:
   declared — nothing to verify", never a pass.
 - A loaded block outside the analysed subgraph is NOT flagged — check
   membership yourself (j of N blocks in the header).
-- **Load path** (`## load path` section): the active-set
-  complementarity solve over the pin reduction (block-pose to
-  block-pose, ports/arms/rotations not modelled) — per member taut /
-  slack / bearing / separated under each load case; members without a
-  declared `rate` are skipped and named, never guessed. The solve needs
-  `rate` (and `free_length`/`preload` for prestress) declared on the
-  axial joint params.
-- **Load cases are an argument, not stored objectives**:
-  `args={'load_cases': [{'name': 'shock', 'loads': {'<block>':
-  [x,y,z]}}]}` layers named cases (complete per-block force fields) on
-  top of the implicit `'declared'` case `objectives.force` makes;
-  accepted on `view='stability'`, `'drc'` and `'validate'` — a case
-  that drives a tie compressive lands as a warn-tier `completeness`
-  finding naming member and case.
-- **Bistability**: `args={'bistable': {'member': 'a.port—b.port',
-  'trans': <m>, 'cis': <m>}}` probes whether a photoswitch member's two
-  free lengths are two stable equilibria of one structure (`bistable:
-  YES/no`, both per-state verdicts, the barrier estimate and the core's
-  honesty notes verbatim — it is an energy-difference scale, never a
-  snap-through barrier).
+- **Load path** (`## load path`): the complementarity solve — per member
+  taut/slack/bearing/separated per load case; unrated members skipped
+  and named.
+- **Load cases**: `args={'load_cases':[{'name':…,'loads':{block:[x,y,z]}}]}`
+  on `view='stability'`/`'drc'`/`'validate'` — a tie driven compressive
+  is a warn `completeness` finding.
+- **Bistability**: `args={'bistable':{'member':'a.p—b.p','trans':m,'cis':m}}`
+  probes two free lengths as two stable states.
 
 ## Checking views — drc, fasten, clearance
 

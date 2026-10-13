@@ -205,6 +205,19 @@ Also: **"phase tags" do not exist.** `run_geometric_drc` is a flat call
 list, and `_render_drc` already runs the whole registry in a "pads-only"
 mode. That mode, not a new tagging scheme, is the thing to build on.
 
+### `invariant`-strength measures gate too (gr345859, 2026-10-12)
+
+The rule set gained a second kind beside the geometric checks: a
+`pcb_measures` row at `strength='invariant'` (what `ewod_pad_array`
+declares for its fabric — `via_per_electrode`, `no_via_in_pad`,
+`pad_covers_plaza`, `hv_pitch_floor`, `stub_length_match`, emitted by the
+generator and evaluated by `generators.evaluate_invariant`) folds into
+`_validity_findings` as an `invariant:<metric>` error and the route/place
+jobs' `placement_drc_findings` gate. One deliberate difference: it is
+**state, not delta** — a violated invariant refuses the put even when it
+predates the change, because the rule is a declared fabric fact, not a
+geometry regression.
+
 ### Closed gap: courtyard-vs-hole rule (2026-10-01)
 
 `check_npth_clearance` tests copper against unplated holes only, so a part

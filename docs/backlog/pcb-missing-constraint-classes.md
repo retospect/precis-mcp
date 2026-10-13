@@ -340,45 +340,6 @@ mains-adjacent or high-voltage board is ever attempted.
 - **Polarity and pin-1 orientation marks** on silk — assembly correctness
   (ties into the silkscreen work).
 
-## F. Generator-owned fabric invariants as measures (gr345859)
-
-The `measures` array (metric/operands/goal/strength/reason, evaluated by
-`view='measures'`) evaluates only separation/proximity/height; the five
-electrical metrics report `pending`. None of the EWOD fabric rules can be
-stated as a measure: one via per electrode, no via-in-pad, a merged pad
-may never cover a plaza, HV separation sets the pitch floor, matched stub
-lengths for uniform capacitive load. They live in prose and in
-`generators.py`, with nothing evaluating them.
-
-Second half: a `hard` measure steers, it does not gate — the placer prices
-it ~40× soft and proceeds, so a violated hard measure never reddens
-anything. Hard measures should gate (fail the check / block `ship`-style
-completion), not merely weight.
-
-Direction: a new metric class — generator-owned fabric invariants,
-evaluable by `view='measures'`, owned by the generator that emits the
-fabric so the rule and its check cannot drift. Owning files:
-`src/precis/pcb/generators.py`, the measures evaluator, `PcbHandler`
-measures view.
-
-**Decided 2026-10-12 (Reto, design-fold):**
-
-1. Metrics are generator-declared. Each generator in `generators.py`
-   emits its invariants as measure rows, and the evaluator sits beside the
-   code that emits the fabric. First set: `via_per_electrode`,
-   `no_via_in_pad`, `pad_covers_plaza`, `hv_pitch_floor`,
-   `stub_length_match`.
-2. `hard` keeps steering (the placer prices it ~40× soft). Changing it to
-   gate would silently alter the placer on every existing board. Gating
-   is a new strength, `invariant`, evaluated by the always-valid gate
-   (`pcb-always-valid-board-invariant.md`). A violated `invariant`
-   reddens the check and refuses the put/route; it is never merely
-   weighted.
-
-Acceptance: on ewod-dogfood-6, `view='measures'` lists the five generator
-invariants with a value each; a hand-moved via into a pad makes
-`no_via_in_pad` fail and the next put refuses with that measure named.
-
 ## Sequencing
 
 None of this blocks the current gap work (per-net width/clearance, via

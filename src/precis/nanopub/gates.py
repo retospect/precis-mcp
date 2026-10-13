@@ -4,8 +4,8 @@ The spec's gate checklist, mechanical subset (each docstring cites its
 entry): contradicts-edge; primary-source hearsay (:func:`check_primary_source`
 — unheld/awaiting/declared source, needs-acquisition body prose, review-title
 by genre); quote verbatim-containment; snip uniqueness; structured-field
-containment; schema lint (claim/composite/hypothesis shape,
-:func:`check_claim_sentence`); quantity-bound presence; llm-attribution;
+containment; schema lint (claim/composite/hypothesis/report/definition
+shape, :func:`check_claim_sentence`, :func:`check_nonempirical`); quantity-bound presence; llm-attribution;
 ``pdf_sha256`` uniqueness; publish-row cardinality; drift
 (:func:`check_drift`); topo/mint-order (:func:`check_mint_order`).
 
@@ -30,14 +30,18 @@ open_disputes`) and never reaches this gate at all.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput
 from precis.nanopub import evidence as ev
 from precis.nanopub import snip as sniplib
 from precis.nanopub.vocab import QUANTITY_BOUNDS
+from precis.taproot.canon import NONEMPIRICAL_ARTIFACT_TYPES
 from precis.taproot.hub import human_rejected
 from precis.taproot.notation import lint_notation
+from precis.taproot.review_like import proceedings_venue, venue_vetoed
 from precis.taproot.sentence_lint import lint_claim_sentence
 
 if TYPE_CHECKING:
@@ -156,19 +160,103 @@ _BLOCKING_LINT_CODES: frozenset[str] = frozenset(
 #: because unlike a hypothesis a composite *does* assert something
 #: established, and the failure mode of exempting it — a conjunction that
 #: names no mode at all — has not been measured against the corpus.
+#:
+#: ``report`` and ``definition`` are exempt from the same pair for the same
+#: structural reason — neither asserts a measurement ("Canatu supplies
+#: films to OEMs"; "negatively curved carbon frameworks are called
+#: schwarzites" have no method to name) — but unlike a hypothesis they do
+#: not get the exemption for free: :func:`check_nonempirical` replaces the
+#: pair with checks that can fail. The measurement behind that choice
+#: (prod export, 2026-10-02, 3,641 live claim hubs, 2,468 failing this
+#: gate): 2,268 fail the epistemic pair, and exactly 5 of those are
+#: genuinely non-empirical (2 reports, 3 definitions). The other ~2,260 are
+#: empirical claims missing a method token — the very failure the pair
+#: exists to catch — so a type that exempted by inference (a verb or a
+#: genre word in the sentence) would be an escape hatch for the 2,260
+#: serving 5 hubs. Hence: the type is explicit and approve-only (never
+#: inferred, never accepted at mint/put, so a reword sweep cannot move a
+#: failing claim into it), the replacement checks look at the SOURCE as
+#: well as the sentence, and ``report``/``definition`` approvals per week
+#: are counted on the nanopub overview so a growing hatch is visible.
+_NONEMPIRICAL_LINT_EXEMPTION: frozenset[str] = frozenset(
+    {"no-epistemic-mode", "no-evidence-verb"}
+)
 _ARTIFACT_LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
     "hypothesis": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
+    "report": _NONEMPIRICAL_LINT_EXEMPTION,
+    "definition": _NONEMPIRICAL_LINT_EXEMPTION,
 }
+
+#: ``report`` — attribution verbs (the sentence says a source said it).
+#: Matched on the sentence AFTER the genre tokens are blanked, so the noun
+#: in "conference reports" is not read as the verb "reports".
+_REPORT_ATTRIBUTION_RE = re.compile(
+    r"\b(?:reports|reported|states|stated|announces|announced|"
+    r"describes|described)\b|\baccording\s+to\b",
+    re.IGNORECASE,
+)
+
+#: ``report`` — the closed source-genre list. The genre stands in for the
+#: method token ("a 2014 conference report" is *how this is known*). The
+#: SOURCE must agree (:func:`check_report_sources`); this half only makes
+#: the sentence say what the artifact is.
+_REPORT_GENRE_RE = re.compile(
+    r"\b(?:conference\s+(?:report|paper)|company\s+report|annual\s+report|"
+    r"technical\s+report|press\s+release|SEC\s+filing|data[\s-]?sheet|"
+    r"product\s+announcement|white\s+paper|website)s?\b",
+    re.IGNORECASE,
+)
+
+#: ``definition`` — a definitional copula.
+_DEFINITION_COPULA_RE = re.compile(
+    r"\b(?:is|are)\s+(?:called|termed|defined\s+as|known\s+as|named)\b|"
+    r"\brefers?\s+to\b|\bdenotes?\b",
+    re.IGNORECASE,
+)
+
+#: Crossref ``type`` of a paper that is a journal article — the one genre a
+#: ``report`` may not be grounded in. A journal article is a finding by
+#: genre; a report quoting one would be a measured claim wearing the
+#: type that skips the method check.
+_JOURNAL_ARTICLE = "journal-article"
+
+
+def requested_nonempirical_type(payload: dict[str, Any]) -> str | None:
+    """The approve payload's explicit ``artifact_type`` (``'report'`` or
+    ``'definition'``), ``None`` when absent. Anything else is a
+    :class:`~precis.errors.BadInput`. Split out so
+    :func:`precis.nanopub.mint.approve` can refuse a bad value BEFORE its
+    review-time reword touches the hub."""
+    requested = payload.get("artifact_type")
+    if requested is None:
+        return None
+    if requested not in NONEMPIRICAL_ARTIFACT_TYPES:
+        raise BadInput(
+            f"artifact_type={requested!r} — the approve payload accepts "
+            f"only {' | '.join(repr(t) for t in NONEMPIRICAL_ARTIFACT_TYPES)} "
+            "here (claim/composite are derived from the hub's edges, "
+            "hypothesis from payload `hypothesis`)",
+            options=list(NONEMPIRICAL_ARTIFACT_TYPES),
+        )
+    return str(requested)
 
 
 def resolve_artifact_type(bundle: ev.HubBundle, payload: dict[str, Any]) -> str:
-    """Which of the three artifact types this mint is —
-    ``'claim' | 'composite' | 'hypothesis'``.
+    """Which artifact type this mint is —
+    ``'claim' | 'composite' | 'hypothesis' | 'report' | 'definition'``.
 
     :attr:`~precis.nanopub.evidence.HubBundle.artifact_type` only ever says
     ``claim`` or ``composite``: those are derived from the hub's edges
     (``conjunct-of`` or not). ``hypothesis`` is a mint-time shape with no
     edge to derive it from, so it is known only from the payload.
+    ``report`` / ``definition`` are known only from the approve payload's
+    ``artifact_type`` key — explicit, never inferred from the sentence, and
+    never accepted at mint/put (``mint_hub`` and ``put(kind='finding')``
+    refuse it). Any other ``artifact_type`` value, or a combination the
+    types do not allow (a hypothesis or a composite cannot also be a
+    report), is a :class:`~precis.errors.BadInput`, not a silent fallback
+    to ``claim`` — a typo must not publish under the strict set unnoticed
+    nor under the wrong one.
 
     One function because three call sites need the same answer and now
     *disagreeing* would be a silent defect rather than a cosmetic one:
@@ -177,6 +265,20 @@ def resolve_artifact_type(bundle: ev.HubBundle, payload: dict[str, Any]) -> str:
     ``mint-preflight`` view prints it. A preflight that says ``hypothesis``
     over gates run as ``claim`` is exactly the sort of lie a shared resolver
     makes impossible."""
+    requested = requested_nonempirical_type(payload)
+    if requested is not None:
+        if payload.get("hypothesis"):
+            raise BadInput(
+                f"artifact_type={requested!r} with hypothesis=true — a "
+                f"conjecture is not also a {requested}",
+            )
+        if bundle.artifact_type == "composite":
+            raise BadInput(
+                f"artifact_type={requested!r} on a composite hub — a "
+                f"{requested} is grounded in its own quoted passage, a "
+                "composite cites no paper (its atoms carry the grounding)",
+            )
+        return requested
     if payload.get("hypothesis"):
         return "hypothesis"
     return bundle.artifact_type
@@ -189,6 +291,7 @@ def run_mint_gates(
     *,
     hub_meta: dict[str, Any] | None = None,
     at_sign: bool = False,
+    frozen: bool = False,
     provenance_body: str | None = None,
 ) -> list[GateViolation]:
     """All Layer-A gates over one hub's frozen mint ``payload`` (the
@@ -201,6 +304,14 @@ def run_mint_gates(
     ``at_sign`` adds the mint-order gate (#15): approval order is free
     (a composite's text can freeze before its atoms sign), only *mint*
     order is constrained — a composite signs after its atoms.
+
+    ``frozen`` marks a payload that has ALREADY been approved (sign, the
+    CLI re-check of a stored row): a ``web`` passage carrying its frozen
+    ``content_sha256`` whose chunk has since vanished (a refresh with
+    changed bytes replaces the page's chunks) is checked against its frozen
+    quote and sha instead of being refused; drift is a display notice,
+    never a void (:func:`_check_frozen_web_passage`). Only web gets this; a
+    paper or datasheet passage whose chunk vanished still refuses.
 
     ``provenance_body`` overrides ``bundle.body`` for the acquisition
     gate's prose arm ONLY (:func:`check_primary_source` — the one check
@@ -227,6 +338,10 @@ def run_mint_gates(
     # Phase 1). Advisory codes are deliberately not surfaced here — see
     # check_claim_sentence's docstring.
     violations += check_claim_sentence(bundle.sentence, artifact_type=artifact_type)
+    # Report/definition: the replacement for the exempted epistemic pair.
+    violations += check_nonempirical(
+        store, bundle.sentence, artifact_type, list(payload.get("passages") or [])
+    )
 
     # 2 + 16 — eligibility / rejection memo. A person's rejection only: the
     # judges' per-source "does not support" memo shares the key (human_rejected).
@@ -270,6 +385,19 @@ def run_mint_gates(
                     "schema-lint",
                     "hypothesis without precis:motivation prose naming the "
                     "inferential leap",
+                )
+            )
+    elif artifact_type in NONEMPIRICAL_ARTIFACT_TYPES:
+        # No `hanging` escape: the replacement checks read the source, so a
+        # report/definition with no grounded passage has nothing to check.
+        if not passages:
+            violations.append(
+                GateViolation(
+                    "schema-lint",
+                    f"{artifact_type} without a grounding quote — a "
+                    f"{artifact_type} is stated by its source, so it needs "
+                    "the quoted passage (quote + snip validated against the "
+                    "source); there is no hanging form of this type",
                 )
             )
     elif artifact_type == "claim":
@@ -356,7 +484,7 @@ def run_mint_gates(
 
     # Per-passage gates (3, 4, 8, and the 2026-08-15 hearsay gate).
     for i, passage in enumerate(passages, start=1):
-        violations += _check_passage(store, i, passage)
+        violations += _check_passage(store, i, passage, frozen=frozen)
 
     # 5 — structured-field quote containment (fi176435 "2–30 GPa" class).
     quotes = [str(p.get("quote") or "") for p in passages]
@@ -381,6 +509,191 @@ def run_mint_gates(
         violations += check_mint_order(store, bundle)
 
     return violations
+
+
+def check_nonempirical(
+    store: Store,
+    sentence: str,
+    artifact_type: str,
+    passages: list[dict[str, Any]],
+) -> list[GateViolation]:
+    """The replacement checks for a ``report`` / ``definition`` (see
+    :data:`_ARTIFACT_LINT_EXEMPTIONS` for why these two types exist and why
+    they are approve-only). Returns nothing for any other type.
+
+    ``report`` (the sentence says a source said it, and the source is the
+    kind of thing that says it):
+
+    * ``report-attribution`` — an attribution verb (reports / reported /
+      states / stated / announces / announced / describes / described,
+      "according to"), matched with the source-genre words blanked first.
+    * ``report-genre`` — a source-genre token from the closed list
+      (conference report/paper, company report, annual report, technical
+      report, press release, SEC filing, datasheet, product announcement,
+      white paper, website). The genre stands in for the method token.
+    * ``report-source-genre`` — the genre also comes from the SOURCE, not
+      only from the minter's sentence (:func:`check_report_sources`).
+
+    ``definition``:
+
+    * ``definition-copula`` — a definitional copula (is/are called |
+      termed | defined as | known as | named; refers to; denotes). An
+      empirical result does not survive being rewritten that way.
+
+    The hearsay, quote-verbatim and snip gates run on the passages as for
+    any claim; nothing here relaxes them."""
+    if artifact_type == "definition":
+        if sentence and not _DEFINITION_COPULA_RE.search(sentence):
+            return [
+                GateViolation(
+                    "definition-copula",
+                    "definition without a definitional copula — the sentence "
+                    "must say what a term means: 'X is called / termed / "
+                    "defined as / known as / named Y', 'X refers to Y' or "
+                    "'X denotes Y'. A sentence that states a result is a "
+                    "claim, not a definition",
+                )
+            ]
+        return []
+    if artifact_type != "report":
+        return []
+
+    out: list[GateViolation] = []
+    if sentence:
+        stripped = _REPORT_GENRE_RE.sub(" ", sentence)
+        if not _REPORT_ATTRIBUTION_RE.search(stripped):
+            out.append(
+                GateViolation(
+                    "report-attribution",
+                    "report without an attribution verb — a report says what "
+                    "a source said: use reports / reported / states / stated "
+                    "/ announces / announced / describes / described, or "
+                    "'according to'",
+                )
+            )
+        if not _REPORT_GENRE_RE.search(sentence):
+            out.append(
+                GateViolation(
+                    "report-genre",
+                    "report without a source-genre token — name what kind of "
+                    "document says it (conference report/paper, company "
+                    "report, annual report, technical report, press release, "
+                    "SEC filing, datasheet, product announcement, white "
+                    "paper, website); the genre stands in for the method "
+                    "token",
+                )
+            )
+    out += check_report_sources(store, passages)
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class ReportSourceVerdict:
+    """Check (c)'s verdict on one grounding source of a ``report``.
+    ``arm`` records WHY an accepted source was accepted — ``kind:<kind>``
+    (a non-paper evidence kind), ``entry_type:<crossref type or none>`` or
+    ``venue:<word>`` — so an audit can count reports that rest on the venue
+    arm alone; for a refused source it is ``refused``. ``detail`` is the
+    refusal text (empty when accepted)."""
+
+    ref_id: int
+    accepted: bool
+    arm: str
+    detail: str = ""
+
+
+def report_source_verdicts(
+    store: Store, passages: list[dict[str, Any]]
+) -> list[ReportSourceVerdict]:
+    """One verdict per distinct grounding source of a ``report`` (see
+    :func:`check_report_sources` for the rule). A passage whose chunk cannot
+    be resolved yields no verdict; the per-passage grounding gate names it."""
+    chunk_ids = [
+        cid
+        for cid in (integral_chunk_id(p.get("chunk_id")) for p in passages)
+        if cid is not None
+    ]
+    if not chunk_ids:
+        return []
+    chunk_ref = {c.chunk_id: c.ref_id for c in ev.fetch_chunks(store, chunk_ids)}
+    refs = store.fetch_refs_by_ids(set(chunk_ref.values())) if chunk_ref else {}
+    out: list[ReportSourceVerdict] = []
+    seen: set[int] = set()
+    for cid in chunk_ids:
+        ref = refs.get(chunk_ref[cid]) if cid in chunk_ref else None
+        if ref is None or ref.id in seen:
+            continue
+        seen.add(ref.id)
+        if ref.kind != "paper":
+            out.append(ReportSourceVerdict(ref.id, True, f"kind:{ref.kind}"))
+            continue
+        meta = ref.meta or {}
+        entry_type = meta.get("entry_type")
+        if entry_type != _JOURNAL_ARTICLE:
+            out.append(
+                ReportSourceVerdict(ref.id, True, f"entry_type:{entry_type or 'none'}")
+            )
+            continue
+        journal = str(meta.get("journal") or "")
+        venue = proceedings_venue(journal)
+        if venue is not None:
+            out.append(ReportSourceVerdict(ref.id, True, f"venue:{venue}"))
+            continue
+        why = (
+            "the journal is on the not-venue list (a journal whose name "
+            "carries a venue word)"
+            if venue_vetoed(journal)
+            else f"journal {journal[:50]!r} is not a proceedings venue"
+            if journal
+            else "no journal on record"
+        )
+        out.append(
+            ReportSourceVerdict(
+                ref.id,
+                False,
+                "refused",
+                f"report grounded in paper ref {ref.id} "
+                f"({(ref.title or '')[:60]}…), which Crossref types as a "
+                f"{_JOURNAL_ARTICLE} and {why} — a journal article is a "
+                "finding by genre, not a report; ground the report in the "
+                "reporting document itself (a proceedings/report/datasheet/"
+                "filing source), or mint it as a claim with the method named",
+            )
+        )
+    return out
+
+
+def check_report_sources(
+    store: Store, passages: list[dict[str, Any]]
+) -> list[GateViolation]:
+    """``report-source-genre``: no grounding passage of a ``report`` may sit
+    in a ``paper`` whose Crossref ``meta.entry_type`` is ``journal-article``.
+
+    The sentence's genre token is written by the minter, so "a company
+    report states that X" would otherwise pass for any X. The source is the
+    check that cannot be typed: a non-paper evidence kind (datasheet,
+    edgar, patent, web) or a paper that Crossref types as proceedings-article /
+    report / posted-content / other, or does not type at all, is
+    acceptable; a journal article is a finding by genre and belongs in a
+    ``claim``.
+
+    Exception (venue rule): a ``journal-article`` whose ``meta.journal``
+    names a proceedings venue
+    (:func:`precis.taproot.review_like.proceedings_venue` — Symposium,
+    Digest, Proceedings, Conference, Workshop, Meeting Abstracts) is
+    accepted, because publishers file conference digests as
+    ``journal-article`` (the SID Symposium Digest, the Canatu hubs' venue).
+    The not-venue list in that module vetoes journals that merely carry a
+    venue word (Proceedings of the National Academy of Sciences).
+    :func:`report_source_verdicts` records which arm accepted each source
+    (``entry_type:<type>`` / ``venue:<word>`` / ``kind:<kind>``);
+    ``mint.approve`` freezes that onto the payload so a later audit can
+    count reports resting on the venue arm alone."""
+    return [
+        GateViolation("report-source-genre", v.detail)
+        for v in report_source_verdicts(store, passages)
+        if not v.accepted
+    ]
 
 
 def check_primary_source(
@@ -709,8 +1022,62 @@ def integral_chunk_id(value: Any) -> int | None:
     return None
 
 
+def _check_frozen_web_passage(
+    store: Store, label: str, passage: dict[str, Any]
+) -> list[GateViolation] | None:
+    """The post-approve check of a web passage whose chunk is gone, or
+    ``None`` when the passage is not such a passage (the caller then refuses
+    as usual). Recognised only by what approve froze from the ref's own
+    record: a ``source_ref_id`` that still names a live ``web`` ref, a
+    ``content_sha256`` and the matching ``urn:sha256`` ``source_uri``. The
+    chunk text is unavailable (a changed page replaced it), so what is
+    checked is the frozen quote and sha: a non-empty quote with no citation
+    marker, a snip that still honours the contract, and the sha/source_uri
+    agreement. The verbatim and unique-snip checks passed at approve against
+    the text as it was quoted; the drift notice says the page changed."""
+    sha = passage.get("content_sha256")
+    ref_id = passage.get("source_ref_id")
+    if (
+        not isinstance(sha, str)
+        or not sha
+        or isinstance(ref_id, bool)
+        or not isinstance(ref_id, int)
+    ):
+        return None
+    ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    if ref is None or ref.kind != "web":
+        return None
+    out: list[GateViolation] = []
+    if passage.get("source_uri") != f"urn:sha256:{sha}":
+        out.append(
+            GateViolation(
+                "grounding",
+                f"{label}: frozen web passage's source_uri does not match its "
+                "frozen content_sha256",
+            )
+        )
+    quote = str(passage.get("quote") or "")
+    if not quote:
+        out.append(GateViolation("grounding", f"{label}: empty quote"))
+    markers = ev.citation_markers(quote)
+    if markers:
+        out.append(
+            GateViolation(
+                "primary-source",
+                f"{label}: quote carries citation marker(s) "
+                f"{', '.join(repr(m) for m in markers[:3])}",
+            )
+        )
+    snip = str(passage.get("snip") or "")
+    if not sniplib.is_valid_snip(snip):
+        out.append(
+            GateViolation("snip", f"{label}: snip {snip!r} violates the contract")
+        )
+    return out
+
+
 def _check_passage(
-    store: Store, index: int, passage: dict[str, Any]
+    store: Store, index: int, passage: dict[str, Any], *, frozen: bool = False
 ) -> list[GateViolation]:
     out: list[GateViolation] = []
     label = f"passage {index}"
@@ -728,6 +1095,10 @@ def _check_passage(
     if chunk_id is not None:
         chunks = ev.fetch_chunks(store, [chunk_id])
         chunk = chunks[0] if chunks else None
+    if frozen and chunk is None and chunk_id is not None:
+        tolerated = _check_frozen_web_passage(store, label, passage)
+        if tolerated is not None:
+            return tolerated
     ref = store.fetch_refs_by_ids([chunk.ref_id]).get(chunk.ref_id) if chunk else None
     kind = ref.kind if ref is not None else "paper"
 
@@ -739,6 +1110,21 @@ def _check_passage(
                     f"{label}: datasheet has no single pdf_sha256 — it is "
                     "cited as urn:sha256 of its ingested PDF, so it needs "
                     "exactly one",
+                )
+            )
+    elif kind == "web":
+        if ref is None or (
+            ev.web_content_sha(store, ref.id)[0] is None
+            # post-approve, the sha frozen at approve stands in
+            and not (frozen and passage.get("content_sha256"))
+        ):
+            out.append(
+                GateViolation(
+                    "grounding",
+                    f"{label}: web page has no content_sha256 on record — it "
+                    "is cited as urn:sha256 of the fetched page, so re-fetch "
+                    "it (get(kind='web', id='<url>', mode='refresh')) to "
+                    "record a sha, then re-submit",
                 )
             )
     elif kind == "edgar":
@@ -861,7 +1247,10 @@ def _check_passage(
 
     # 8 — ingested-chunk / pdf_sha256 gate.
     shas = ev.pdf_sha_rows(store, chunk.ref_id)
-    if kind == "edgar":
+    if kind == "web":
+        # A page has no PDF copy; its pin is the content sha checked above.
+        pass
+    elif kind == "edgar":
         # An HTML filing has no PDF copy to pin: zero shas is the norm and
         # the sha triple is simply omitted; a pinned value we cannot
         # verify, or an ambiguous pair, still fails.

@@ -21,9 +21,6 @@ from shapely.ops import unary_union
 
 from precis_se.flatpack.panels import Frame, Panel
 
-#: A shared volume below this in any axis is a face touch, not a joint.
-_EPS = 1e-9
-
 
 @dataclass(frozen=True)
 class Mate:
@@ -55,10 +52,13 @@ def _box_in_uv(
     lo: tuple[float, ...] | list[float],
     hi: tuple[float, ...] | list[float],
     frame: Frame,
+    eps: float,
 ) -> Polygon | None:
     """A world box as a rectangle in the frame's (u,v) plane, or ``None``
-    when the box has no volume."""
-    if min(hi[i] - lo[i] for i in range(3)) <= _EPS:
+    when the box has no volume. ``eps`` is the degenerate-volume guard —
+    a shared volume below it in any axis is a face touch, not a joint;
+    callers pass it derived from a governing length (panel thickness)."""
+    if min(hi[i] - lo[i] for i in range(3)) <= eps:
         return None
     pts = [
         frame.to_local((x, y, z))
@@ -89,10 +89,11 @@ def mated_pairs(panels: list[Panel] | tuple[Panel, ...]) -> list[Mate]:
                 min(hi_a[1], hi_b[1]),
                 min(hi_a[2], hi_b[2]),
             )
-            region_a = _box_in_uv(lo, hi, a.frame)
+            eps = 1e-9 * min(a.thickness, b.thickness)
+            region_a = _box_in_uv(lo, hi, a.frame, eps)
             if region_a is None:
                 continue
-            region_b = _box_in_uv(lo, hi, b.frame)
+            region_b = _box_in_uv(lo, hi, b.frame, eps)
             assert region_b is not None  # same box, same rule
             out.append(Mate(a, b, region_a, region_b, lo, hi))
     return out

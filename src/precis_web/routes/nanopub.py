@@ -178,6 +178,14 @@ def _index_context(request: Request) -> dict[str, Any]:
         if tally[s]
     ]
 
+    # Escape-hatch gauge: report/definition are approve-only exemptions
+    # from the sentence gate; a weekly count that climbs past a few dozen
+    # means the hatch is in use. Same strip as the stale chip, where a
+    # failing sentence is otherwise seen.
+    nonempirical_weekly: dict[str, dict[str, int]] = {}
+    for week, kind, n in store.nanopub_nonempirical_approvals_by_week():
+        nonempirical_weekly.setdefault(week.date().isoformat(), {})[kind] = n
+
     batches = store.nanopub_batches()
     threshold = datetime.now(UTC) - timedelta(days=STUCK_PENDING_DAYS)
     stuck = [b for b in store.nanopub_pending_batches() if b.created_at < threshold]
@@ -190,6 +198,7 @@ def _index_context(request: Request) -> dict[str, Any]:
         "disputed": disputed,
         "stale_reasons": stale_reasons,
         "n_stale": len(stale_reasons),
+        "nonempirical_weekly": nonempirical_weekly,
         "batches": batches,
         "stuck": stuck,
         "draft_filter": draft_filter,

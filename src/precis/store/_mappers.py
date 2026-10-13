@@ -471,7 +471,7 @@ def _row_to_link(row: tuple) -> Link:
 def _row_to_cache_entry(row: tuple) -> CacheEntry:
     """Map a cache_state row tuple in the order:
     (ref_id, provider, request_hash, model, fetched_at, fresh_until,
-     cost_usd, meta)
+     cost_usd, meta, content_sha256)
     """
     return CacheEntry(
         ref_id=row[0],
@@ -482,6 +482,7 @@ def _row_to_cache_entry(row: tuple) -> CacheEntry:
         fresh_until=row[5],
         cost_usd=float(row[6]) if row[6] is not None else None,
         meta=row[7] or {},
+        content_sha256=row[8] if len(row) > 8 else None,
     )
 
 

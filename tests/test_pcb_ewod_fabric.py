@@ -303,10 +303,11 @@ def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_chang
     this one line failed. An emitted INSTANCE is output too, and a
     placement lock decides whether the placer may touch the part at all,
     so the lock is pinned by the two tests below. Version 4 emits the
-    fixed copper at the array anchor (``test_pcb_generator_version_tripwire``
-    pins that)."""
+    fixed copper at the array anchor; version 5 declares the five fabric
+    invariants as measures (gr345859 §F — ``test_pcb_generator_invariants``
+    and ``test_pcb_generator_version_tripwire`` pin both)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 4
+    assert exp.version == 5
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.

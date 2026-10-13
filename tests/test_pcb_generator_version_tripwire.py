@@ -41,7 +41,7 @@ _CASES: dict[str, list[dict[str, Any]]] = {
 #: generator -> (version, digest over every case's expansion). Re-pin both
 #: together, never the digest alone.
 _PINNED: dict[str, tuple[int, str]] = {
-    "ewod_pad_array": (4, "889788bc99ef8d1b"),
+    "ewod_pad_array": (5, "c96ff254ed4f6459"),
 }
 
 
@@ -69,6 +69,7 @@ def _digest(generator: str) -> str:
             "features": exp.features,
             "copper": exp.copper,
             "net_classes": exp.net_classes,
+            "measures": exp.measures,
             "canonical_params": exp.canonical_params,
         }
         h.update(json.dumps(_rounded(emitted), sort_keys=True).encode("utf-8"))

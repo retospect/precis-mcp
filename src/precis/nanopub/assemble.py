@@ -52,9 +52,11 @@ from precis.nanopub.vocab import (
     CITO,
     COMPOSITE_CLAIM,
     DCT,
+    DEFINITION,
     HYPOTHESIS,
     PRECIS,
     PROV,
+    REPORT,
     SEC_ACCESSION,
 )
 
@@ -129,7 +131,7 @@ class ConjunctInput:
 class MintInput:
     """Everything one artifact says, decoupled from the DB."""
 
-    artifact_type: str  # 'claim' | 'composite' | 'hypothesis'
+    artifact_type: str  # 'claim' | 'composite' | 'hypothesis' | 'report' | 'definition'
     sentence: str  # canonical form (aida.canonical_sentence)
     aida_uri: str
     hub_ref_id: int
@@ -197,6 +199,8 @@ def _type_uri(artifact_type: str) -> URIRef:
         "claim": ATOMIC_CLAIM,
         "composite": COMPOSITE_CLAIM,
         "hypothesis": HYPOTHESIS,
+        "report": REPORT,
+        "definition": DEFINITION,
     }[artifact_type]
 
 
@@ -244,6 +248,10 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
             continue
         src_uri = URIRef(source_node)
         g.add((assertion, PROV.wasDerivedFrom, src_uri))
+        if inp.artifact_type == "report":
+            # A report asserts "the source said so", not a finding: the
+            # assertion is attributed to the source it quotes.
+            g.add((assertion, PROV.wasAttributedTo, src_uri))
         # One node per passage so multi-grounding never mixes quotes and
         # shas; with a single passage this collapses to the wargame's
         # flat shape on the assertion node itself.

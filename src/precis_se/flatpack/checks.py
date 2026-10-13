@@ -51,10 +51,22 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
     from precis_se.ops import SeTree
 
-_TOL_AREA = 1e-6
-_TOL_LEN = 1e-6
 #: Warn past this much shelf sag (mm).
 SAG_LIMIT_MM = 3.0
+
+
+def _tol_len(t: float) -> float:
+    """Length dust, derived from the governing length — the panel
+    thickness (the units gate's rule: no absolute length epsilons).
+    ``t·1e-7`` is float-noise territory on the real comparisons (the
+    clearance it guards is exactly ``fit/2`` within rounding)."""
+    return t * 1e-7
+
+
+def _tol_area(t: float) -> float:
+    """Area dust, same rule: ``t²·1e-8`` sits far below the smallest real
+    feature (a finger tip is order ``t²``) and far above float noise."""
+    return t * t * 1e-8
 
 
 def _regen(params: dict[str, Any]) -> Flatpack:
@@ -113,6 +125,8 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
     panel's material in the joint, not only the partner's."""
     out: list[ValidationIssue] = []
     clearance = fp.figures.fit / 2
+    tol_area = _tol_area(fp.t)
+    tol_len = _tol_len(fp.t)
     for m in mated_pairs(fp.panels):
         for src, dst, region_src, region_dst in (
             (m.a, m.b, m.region_a, m.region_b),
@@ -122,7 +136,7 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
             fingers = material_in_mate(src, dst, region_src)
             dst_material = dst.polygon.intersection(region_dst)
             hit = fingers.intersection(dst_material)
-            if hit.area > _TOL_AREA:
+            if hit.area > tol_area:
                 out.append(
                     ValidationIssue(
                         rule="flatpack_mating",
@@ -137,7 +151,7 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
                 )
             elif not fingers.is_empty:
                 gap = fingers.distance(dst_material)
-                if gap < clearance - _TOL_LEN:
+                if gap < clearance - tol_len:
                     out.append(
                         ValidationIssue(
                             rule="flatpack_mating",
@@ -161,7 +175,8 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
                     material_in_mate(
                         p,
                         dst,
-                        _box_in_uv(m.lo, m.hi, p.frame) or Polygon(),
+                        _box_in_uv(m.lo, m.hi, p.frame, 1e-9 * p.thickness)
+                        or Polygon(),
                     )
                     for p in fp.panels
                     if p.id != dst.id
@@ -169,9 +184,9 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
             )
             comps = list(slots.geoms) if hasattr(slots, "geoms") else [slots]
             for comp in comps:
-                if comp.area <= _TOL_AREA:
+                if comp.area <= tol_area:
                     continue
-                if comp.intersection(fill).area <= _TOL_AREA:
+                if comp.intersection(fill).area <= tol_area:
                     cb = comp.bounds
                     out.append(
                         ValidationIssue(
@@ -214,6 +229,7 @@ def _nesting_findings(fp: Flatpack) -> list[ValidationIssue]:
     """error — post-kerf parts overlapping, or lying outside the sheet
     margin."""
     out: list[ValidationIssue] = []
+    tol_area = _tol_area(fp.t)
     placed = {
         pl.part: placed_polygon(fp.cut_polygons[pl.part], pl.x, pl.y, pl.rotated)
         for pl in fp.nesting.placements
@@ -223,7 +239,7 @@ def _nesting_findings(fp: Flatpack) -> list[ValidationIssue]:
     inside = box(m, m, max(m, w - m), max(m, h - m))
     for pid, poly in placed.items():
         over = poly.difference(inside)
-        if over.area > _TOL_AREA:
+        if over.area > tol_area:
             out.append(
                 ValidationIssue(
                     rule="flatpack_off_sheet",
@@ -239,7 +255,7 @@ def _nesting_findings(fp: Flatpack) -> list[ValidationIssue]:
     for i, a in enumerate(ids):
         for b in ids[i + 1 :]:
             hit = placed[a].intersection(placed[b])
-            if hit.area > _TOL_AREA:
+            if hit.area > tol_area:
                 out.append(
                     ValidationIssue(
                         rule="flatpack_nest_overlap",

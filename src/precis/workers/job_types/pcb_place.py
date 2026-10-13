@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.optimize import MoveKind as _MK
@@ -272,6 +273,24 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 footprints=footprints,
                 fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
                 outline=pcb_session.outline_from_features(features),
+            )
+            # gr345859 §F — violated `strength='invariant'` measures join
+            # the report (advisory here: the poses are already written —
+            # the route job's copy of this gate is the refusing one).
+            layers = [str(layer.get("name")) for layer in ir.stackup]
+            placement_findings += pcb_session.invariant_measure_findings(
+                graph=graph,
+                measures=ctx.store.pcb_measures_list(pcb_ref_id),
+                features=features,
+                generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
+                pads=pcb_realize.pads_for_ir(ir, layers, footprints),
+                copper=[
+                    {**row, "net": row.get("net") or ""}
+                    if row.get("fixed")
+                    else {**row, "derived": True}
+                    for row in ctx.store.pcb_copper_list(int(board_id))
+                ],
+                layers=layers,
             )
             n_placement_errors, placement_report = pcb_session.placement_drc_report(
                 placement_findings

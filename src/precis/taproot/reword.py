@@ -25,6 +25,12 @@ Excluded, each for its own reason:
   pair by type; rewording one to "name the method that showed this"
   would manufacture exactly the false attribution the exemption exists
   to prevent.
+* **report / definition hubs** (``refs.meta.artifact_type`` in
+  ``canon.NONEMPIRICAL_ARTIFACT_TYPES``, stamped at approve) — the same
+  argument: a sweep that "fixed" one would move it into the empirical
+  shape or invent a method it never had. This is also why the sweep can
+  never feed these types: they are approve-only, not a place a failing
+  claim can be reworded into.
 * **disputed hubs** (a live inbound ``contradicts`` edge in ``links``)
   — never reword mid-dispute; adjudication is by artifacts, not edits.
 * **hubs with any ``nanopub_publish`` row past ``candidate``** —
@@ -112,7 +118,9 @@ from precis.nanopub.gates import check_claim_sentence
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
     NOT_HYPOTHESIS_PREDICATE_PARAMS,
+    NOT_NONEMPIRICAL_PREDICATE_PARAMS,
     not_hypothesis_predicate_sql,
+    not_nonempirical_predicate_sql,
 )
 from precis.taproot.hub import human_rejected, refine_claim_sentence
 from precis.taproot.sentence_lint import (
@@ -210,6 +218,12 @@ class HubReword:
 #: The "not a conjecture" clause (shared with hub_refine/chase_trigger).
 _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
 
+#: ... and "not a report/definition" — the other two exempt types. Approve-
+#: only (``nanopub/gates.py``), so a hub carries the marker only after a
+#: human typed it; the sweep must never rewrite one into the empirical
+#: shape.
+_NOT_NONEMPIRICAL_SQL = not_nonempirical_predicate_sql()
+
 #: Structural cohort filters. The two tag ``EXISTS`` clauses are
 #: :func:`~precis.taproot.canon.claim_hub_predicate_sql` PLUS the
 #: ``rt.expires_at`` guard that helper deliberately omits (its hot dedup
@@ -237,6 +251,7 @@ _COHORT_SQL = f"""
                 AND (rt.expires_at IS NULL OR rt.expires_at > now())
            )
        AND {_NOT_HYPOTHESIS_SQL}
+       AND {_NOT_NONEMPIRICAL_SQL}
        AND NOT EXISTS (
              SELECT 1 FROM links l
              JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
@@ -291,8 +306,8 @@ def _evidence_by_hub(
 def _blocking_codes(sentence: str) -> tuple[str, ...]:
     """The sentence's failing blocking lint codes, first-hit order —
     :func:`~precis.nanopub.gates.check_claim_sentence` under the strict
-    ``claim`` artifact type (hypotheses never reach this: the cohort SQL
-    excludes them)."""
+    ``claim`` artifact type (hypotheses, reports and definitions never reach
+    this: the cohort SQL excludes them)."""
     codes: list[str] = []
     for violation in check_claim_sentence(sentence, artifact_type="claim"):
         code = violation.message.split(":", 1)[0].strip()
@@ -321,6 +336,7 @@ def select_reword_cohort(
     params: dict[str, Any] = {
         **CLAIM_HUB_PREDICATE_PARAMS,
         **NOT_HYPOTHESIS_PREDICATE_PARAMS,
+        **NOT_NONEMPIRICAL_PREDICATE_PARAMS,
     }
     hub_clause = ""
     if hub is not None:

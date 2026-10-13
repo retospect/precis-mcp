@@ -475,10 +475,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # Same authored-measure enforcement as pcb_place's anneal — without
     # this, the route job's re-place pass would silently undo whatever a
     # proximity/separation measure had just pulled into shape (one rule,
-    # one call site short).
-    measures = resolve_measures(
-        ctx.store.pcb_measures_list(pcb_ref_id), features=features
-    )
+    # one call site short). `raw_measures` also feeds the invariant gate
+    # below (resolve_measures drops `strength='invariant'` rows).
+    raw_measures = ctx.store.pcb_measures_list(pcb_ref_id)
+    measures = resolve_measures(raw_measures, features=features)
     # part_lcsc -> Store.pcb_footprints_for (LCSC-keyed) -> refdes-keyed,
     # via PcbIR.instance_part_lcsc (the join pcb_graph/from_graph now
     # carry). Without it every pad on every routed board reads as a
@@ -629,6 +629,26 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             footprints=footprints,
             fixed_copper=fixed_copper,
             outline=pcb_session.outline_from_features(features),
+        )
+        # gr345859 §F — violated `strength='invariant'` measures (the
+        # generator-declared fabric rules) join the same gate: judged on
+        # the post-anneal pads plus the whole copper store (stored router
+        # copper a violation names yields as 'derived'), refusing the route
+        # exactly like a placement DRC error unless force=True.
+        layers = [str(layer.get("name")) for layer in ir.stackup]
+        placement_findings += pcb_session.invariant_measure_findings(
+            graph=graph,
+            measures=raw_measures,
+            features=features,
+            generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
+            pads=pcb_realize.pads_for_ir(ir, layers, footprints),
+            copper=[
+                {**row, "net": row.get("net") or ""}
+                if row.get("fixed")
+                else {**row, "derived": True}
+                for row in ctx.store.pcb_copper_list(int(board_id))
+            ],
+            layers=layers,
         )
         n_placement_errors, placement_report = pcb_session.placement_drc_report(
             placement_findings

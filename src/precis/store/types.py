@@ -1350,6 +1350,10 @@ class CacheEntry:
     fresh_until: datetime | None  # NULL = pinned
     cost_usd: float | None
     meta: dict[str, Any]
+    #: sha256 (hex) of what the last fetch received (see ``WebHandler._fetch``
+    #: for exactly what is hashed); ``None`` for a provider that records none
+    #: or a page not re-fetched since migration 0202.
+    content_sha256: str | None = None
 
 
 # ---------------------------------------------------------------------------

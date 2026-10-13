@@ -183,6 +183,11 @@ class FetchResult:
     meta: dict[str, Any] = field(default_factory=dict)
     """Extra structured metadata; lands in `cache_state.meta`."""
 
+    content_sha256: str | None = None
+    """sha256 (hex) of the fetched content, for a provider whose page is a
+    citable source (web). Lands in `cache_state.content_sha256`; every
+    fetch/refresh overwrites it. None = this provider records none."""
+
 
 # ---------------------------------------------------------------------------
 # Chunk-selector grammar (gr311336)
@@ -578,6 +583,7 @@ class CacheBackedHandler(Handler):
             model=result.model,
             cost_usd=result.cost_usd,
             cache_meta=result.meta,
+            content_sha256=result.content_sha256,
         )
         self._apply_tag_ops_if_any(ref.id, tags, untags)
         self._attribute_touch(ref.id)
@@ -619,6 +625,7 @@ class CacheBackedHandler(Handler):
             model=result.model,
             cost_usd=result.cost_usd,
             cache_meta=result.meta,
+            content_sha256=result.content_sha256,
         )
         self._apply_tag_ops_if_any(new_ref.id, tags, untags)
         return self._render(new_ref, cache, hit=False)

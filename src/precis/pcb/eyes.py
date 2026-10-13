@@ -26,6 +26,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from precis.pcb import generators as pcb_generators
 from precis.pcb import padplace, pose
 from precis.pcb.geom import Point, dist
 from precis.utils.coerce import num_finite
@@ -544,6 +545,8 @@ def evaluate_measures(
     graph: dict[str, Any],
     measures: list[dict[str, Any]],
     features: list[dict[str, Any]] | None = None,
+    *,
+    fabric: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate stored measures against the current placement.
 
@@ -557,6 +560,19 @@ def evaluate_measures(
     ``point`` / ``feature_id``) reads ``features`` — the
     ``Store.pcb_features_list`` rows — to resolve a ``feature_id`` operand;
     the graph itself carries none.
+
+    The generator-declared invariant metrics
+    (:data:`precis.pcb.generators.INVARIANT_METRICS` — gr345859 §F) are
+    NOT graph facts: they read pads and copper, which arrive via
+    ``fabric`` (``{"generators": Store.pcb_generators_for's dict, "pads":
+    realize.pads_for_ir rows, "copper": Store.pcb_copper_list rows,
+    "layers": stackup names}`` — the same bundle the always-valid gate
+    judges, so ``view='measures'`` and the gate cannot disagree). Without
+    ``fabric``, or when the row binds a generator that isn't on the
+    design, the row reports ``pending`` — an invariant that cannot be
+    evaluated is never ``ok``. The evaluator's ``objects`` (the offending
+    vias/pads/nets) ride on the result row for the gate's rip-vs-refuse
+    split; ``view='measures'``'s table never renders them.
     """
     measures = bind_feature_operands(measures, features)
     placed = _placed(graph)
@@ -635,6 +651,28 @@ def evaluate_measures(
             val, ok = _judge(heights, bound, goal)
             row["value"] = round(val, 3)
             row["verdict"] = "ok" if ok else "VIOLATED"
+        elif metric in pcb_generators.INVARIANT_METRICS:
+            res = (
+                pcb_generators.evaluate_invariant(
+                    m,
+                    generators=fabric.get("generators") or {},
+                    pads=fabric.get("pads") or [],
+                    copper=fabric.get("copper") or [],
+                    layers=fabric.get("layers") or [],
+                )
+                if fabric is not None
+                else None
+            )
+            if res is None:
+                row["verdict"] = "pending"
+            else:
+                row["value"] = res["value"]
+                row["verdict"] = "ok" if res["ok"] else "VIOLATED"
+                if res.get("detail"):
+                    row["detail"] = res["detail"]
+                if res.get("over"):
+                    row["over"] = res["over"]
+                row["objects"] = tuple(res.get("objects") or ())
         else:
             row["verdict"] = "pending"  # connectivity metrics / unresolved operands
         results.append(row)

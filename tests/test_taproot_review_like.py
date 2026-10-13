@@ -6,7 +6,13 @@ from __future__ import annotations
 
 import pytest
 
-from precis.taproot.review_like import is_review_like, review_reason
+from precis.taproot.review_like import (
+    PATTERNS_VERSION,
+    is_review_like,
+    proceedings_venue,
+    review_reason,
+    venue_vetoed,
+)
 
 
 @pytest.mark.parametrize(
@@ -116,3 +122,91 @@ def test_review_reason_names_the_pattern() -> None:
     assert review_reason("A review of X", "Nature Reviews Chemistry") == (
         "journal ~ 'Reviews'"
     )
+
+
+# ── proceedings_venue: the shared venue test (cite fallback + report gate) ──
+
+_NOT_VENUES = [
+    "Proceedings of the National Academy of Sciences",
+    "Proceedings of the National Academy of Sciences of the United States of America",
+    "Proceedings of the Royal Society A: Mathematical, Physical and Engineering Sciences",
+    "Proceedings of the Royal Society of London. Series A",
+    "Proceedings of the IEEE",
+    "Proceedings of the IRE",
+    "Proceedings of the Institute of Radio Engineers",
+    "Proceedings of the ACM on Programming Languages",
+    "Proceedings of the Institution of Mechanical Engineers, Part C",
+    "Proceedings of the Indian National Science Academy",
+    "Proceedings of the Japan Academy, Series B",
+    "Proceedings of the Bulgarian Academy of Sciences",
+    "Proceedings of the Physical Society",
+    "Proceedings of the Nutrition Society",
+    "Proceedings of the American Mathematical Society",
+    "Proceedings of the Combustion Institute",
+    "Proceedings of the Design Society",
+    "Proceedings of the Association for Information Science and Technology",
+    "Proceedings of Universities. Electromechanics",
+    "Proceedings of Engineering and Technology Innovation",
+    "Proceedings of the Southwest State University",
+    "Proceedings of Civil Engineering in the Ocean",
+    "Proceedings on Privacy Enhancing Technologies",
+    "Mathematical Proceedings of the Cambridge Philosophical Society",
+    "Digest Journal of Nanomaterials and Biostructures",
+    "Current Digest of the Russian Press",
+    # word-bounded: plural is not the venue word
+    "EPJ Web of Conferences",
+]
+
+_VENUES = [
+    ("Journal of Physics: Conference Series", "Conference"),
+    ("IOP Conference Series: Materials Science and Engineering", "Conference"),
+    ("Materials Today: Proceedings", "Proceedings"),
+    ("ECS Meeting Abstracts", "Meeting Abstracts"),
+    ("SID Symposium Digest of Technical Papers", "Symposium"),
+    ("Proceedings of the AAAI Conference on Artificial Intelligence", "Proceedings"),
+    ("Progress In Electromagnetics Research Symposium", "Symposium"),
+    ("some workshop on things", "Workshop"),
+    ("ECS  meeting   abstracts", "Meeting Abstracts"),
+]
+
+
+@pytest.mark.parametrize("journal", _NOT_VENUES)
+def test_journals_carrying_a_venue_word_are_not_venues(journal: str) -> None:
+    assert proceedings_venue(journal) is None
+
+
+@pytest.mark.parametrize(("journal", "word"), _VENUES)
+def test_proceedings_venues_return_the_canonical_word(journal: str, word: str) -> None:
+    assert proceedings_venue(journal) == word
+
+
+@pytest.mark.parametrize("journal", [None, "", "Nature Communications"])
+def test_no_venue_signal(journal: str | None) -> None:
+    assert proceedings_venue(journal) is None
+
+
+def test_the_veto_is_checked_first_and_only_vetoed_names_are_flagged() -> None:
+    assert venue_vetoed("Proceedings of the IEEE")
+    assert not venue_vetoed("Proceedings of the IEEE Conference on Foo")
+    assert proceedings_venue("Proceedings of the IEEE Conference on Foo") == (
+        "Proceedings"
+    )
+    assert not venue_vetoed(None)
+
+
+def test_a_proceedings_venue_is_not_a_review_journal() -> None:
+    # "Progress in" would fire the review-venue rule; the venue wins.
+    assert not is_review_like(None, "Progress In Electromagnetics Research Symposium")
+    assert (
+        review_reason(None, "Progress In Electromagnetics Research Symposium") is None
+    )
+    # the title arm still applies
+    assert is_review_like(
+        "A review of antennas", "Progress In Electromagnetics Research Symposium"
+    )
+    # and a plain review journal is unchanged
+    assert is_review_like(None, "Progress in Materials Science")
+
+
+def test_patterns_version_was_bumped() -> None:
+    assert PATTERNS_VERSION == "2026-10-03.1"

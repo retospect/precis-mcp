@@ -16,6 +16,7 @@ that long-lived caching produces stale answers.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import ClassVar
 
@@ -165,6 +166,13 @@ class WebHandler(CacheBackedHandler):
             )
 
         html = resp.text
+        # What is pinned: the sha256 of the RAW response bytes the server
+        # sent (``resp.content``, after transport decoding of gzip/deflate
+        # but before charset decoding or trafilatura extraction) — not of
+        # the extracted markdown. The nanopub web anchor
+        # (``urn:sha256:<this>``) therefore identifies the page as served;
+        # a rewritten extractor does not fake drift, a changed page does.
+        content_sha256 = hashlib.sha256(resp.content).hexdigest()
         # Trafilatura's `extract` returns markdown when configured; we
         # prefer markdown so blocks read naturally and link-grep works.
         extracted = trafilatura.extract(
@@ -201,6 +209,7 @@ class WebHandler(CacheBackedHandler):
             title=title,
             body_blocks=self._blocks_from_report(body_text),
             cost_usd=None,  # bandwidth only
+            content_sha256=content_sha256,
             meta={
                 "url": key,
                 "host": host_of(key),

@@ -259,6 +259,7 @@ class NanopubMixin:
         claim_sha: str,
         aida_uri: str,
         grounding: dict[str, Any],
+        artifact_type: str | None = None,
     ) -> bool:
         """Freeze the reviewed claim string + grounding and flip
         ``candidate`` → ``reviewed``. CAS on state; ``False`` = the row
@@ -272,7 +273,13 @@ class NanopubMixin:
         is overwritten and a ``checked_at`` (the sign-time stamp,
         :meth:`nanopub_record_signed`) is dropped, so neither can be
         smuggled in to hide newer evidence. Not an artifact input (``mint._mint_input`` reads
-        named keys only)."""
+        named keys only).
+
+        ``artifact_type`` (the type the gates just ran under) is written
+        onto the row when given: a ``candidate`` staged as ``claim`` can be
+        approved as a ``report``/``definition``, and the stored type must be
+        the gated one (``COALESCE`` keeps the column for a caller that
+        passes none)."""
         with self.pool.connection() as conn:
             cur = conn.execute(
                 "UPDATE nanopub_publish SET approved_title = %s, "
@@ -281,11 +288,44 @@ class NanopubMixin:
                 "jsonb_build_object('frozen_at', "
                 "to_char(now() AT TIME ZONE 'UTC', "
                 '\'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\')), '
+                "artifact_type = COALESCE(%s, artifact_type), "
                 "state = 'reviewed', updated_at = now() "
                 "WHERE id = %s AND state = 'candidate'",
-                (approved_title, claim_sha, aida_uri, Jsonb(grounding), row_id),
+                (
+                    approved_title,
+                    claim_sha,
+                    aida_uri,
+                    Jsonb(grounding),
+                    artifact_type,
+                    row_id,
+                ),
             )
             return cur.rowcount == 1
+
+    def nanopub_nonempirical_approvals_by_week(
+        self, *, weeks: int = 8
+    ) -> list[tuple[Any, str, int]]:
+        """``report`` / ``definition`` approvals per ISO week, newest week
+        first: ``(week_start, artifact_type, n)`` over the last ``weeks``
+        weeks. The escape-hatch gauge: both types are approve-only and were
+        measured at 5 hubs of ~3,600, so a count that climbs into the dozens
+        means the hatch is being used as a sentence-gate bypass. Reads
+        ``grounding.approved_at`` (stamped at approve; the row has no other
+        approval timestamp). A reopened row has no grounding and drops out
+        until it is approved again."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT date_trunc('week', (grounding->>'approved_at')::timestamptz) "
+                "AS wk, artifact_type, count(*) "
+                "FROM nanopub_publish "
+                "WHERE artifact_type IN ('report', 'definition') "
+                "AND grounding ? 'approved_at' "
+                "AND (grounding->>'approved_at')::timestamptz "
+                "    >= now() - make_interval(weeks => %s) "
+                "GROUP BY 1, 2 ORDER BY 1 DESC, 2",
+                (weeks,),
+            ).fetchall()
+        return [(r[0], str(r[1]), int(r[2])) for r in rows]
 
     def nanopub_record_signed(
         self,

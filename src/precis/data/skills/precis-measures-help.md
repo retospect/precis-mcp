@@ -2,7 +2,7 @@
 id: precis-measures-help
 family: pcb
 title: precis — PCB measures (the measuring tapes)
-summary: state placement & layout intent as measures the autoplacer optimises and the eyes evaluate — keep the regulator away from the antenna, the bypass cap AT the pin, this part under 3mm tall. Covers separation, proximity, align, height, role-based selection, hard/soft/gauge strength.
+summary: state placement & layout intent as measures the autoplacer optimises and the eyes evaluate — keep the regulator away from the antenna, the bypass cap AT the pin, this part under 3mm tall. Covers separation, proximity, align, height, role-based selection, hard/soft/gauge strength, and the generator-declared `invariant` strength that gates put/route.
 answers:
   - how do I state placement or layout intent as a measure the autoplacer can optimise?
   - how do I evaluate a design's current measures?
@@ -65,7 +65,9 @@ put(
 - **goal** — the target value (mm for geometry).
 - **strength** — `hard` (must hold; heavily penalised in placement), `soft`
   (optimised, traded against crossings/length), `gauge` (measured + reported
-  only, never drives placement — a ruler, not a constraint).
+  only, never drives placement — a ruler, not a constraint), `invariant`
+  (never weighted: a violated one refuses the put/route through the
+  always-valid board gate — a legality wall, not a cost term).
 - **direction** — optional: which side of `goal` is ok. `min`/`keep_above`
   (value must stay ≥ goal), `max`/`keep_below` (≤ goal), `target` (aim at
   goal, ±10%). Without it each metric keeps its natural sense (the table
@@ -93,6 +95,24 @@ The first four (the placement-geometry ones) **evaluate now**; the
 connectivity metrics are **stored and reported `pending`** until their
 evaluators land — write them anyway, they document intent and will light up
 later.
+
+### Generator-declared `invariant` metrics (gr345859 §F)
+
+A generator (`put` `generators[]`) declares the fabric rules it must never
+break as measures at `strength='invariant'` — written by the generator, not
+by hand. `ewod_pad_array` emits five: `via_per_electrode` (each usable
+electrode's net carries exactly one via), `no_via_in_pad` (no via disc inside
+any real pad), `pad_covers_plaza` (no pad reaches into a plaza cell),
+`hv_pitch_floor` (authored pitch ≥ the derived plaza-capacity floor),
+`stub_length_match` (every stub holds a declared nominal length). They read
+pads and copper, not just placement, so they only evaluate where that data
+exists — `view='measures'` shows their values/verdicts, and a `VIOLATED`
+invariant refuses a `put`/`route` the way a geometric DRC error does (router
+copper it names gets ripped; pads and authored copper refuse the change). An
+invariant that can't be evaluated — no generator on the design, or params
+too old to answer — reads `pending`, never `ok` and never gates. Authored
+measures take the strength too: `{'metric':'separation', ...,
+'strength':'invariant'}` refuses any change that would violate it.
 
 ## `align` — line a part up with a part or a fixed datum
 

@@ -171,7 +171,11 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     ships in the ``[chain]`` extra and the fold is O(n³). ``make_steps``
     (se-walker-light-protocol, :mod:`precis_se.chain.protocol`) is
     store-read (transitions) AND writes another kind (a ``make`` tree),
-    never deferred."""
+    never deferred. ``flatpack_box``
+    (docs/backlog/flatpack-furniture-generator.md,
+    :mod:`precis_se.flatpack.se_op`) is the second cad-writing op after
+    ``realize`` — one cad design per panel, minted in the deferred
+    finisher."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
@@ -182,6 +186,7 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
         "fold_layout",
         "realize_chain",
         "make_steps",
+        "flatpack_box",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())
     assert set(HANDLER_LEVEL_OPS) <= all_op_names()

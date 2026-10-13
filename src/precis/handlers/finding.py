@@ -291,6 +291,20 @@ class FindingHandler(NumericRefHandler):
 
         body_text = body if body is not None else text
 
+        # `report` / `definition` are approve-only (nanopub/gates.py): a
+        # mint-time `artifact_type=` would otherwise vanish into **_kw and
+        # leave the caller believing the type was set.
+        if _kw.get("artifact_type") is not None:
+            raise BadInput(
+                f"artifact_type={_kw['artifact_type']!r} cannot be set at put — "
+                "the report/definition artifact types are approve-only",
+                next=(
+                    "put the finding as an ordinary claim; a human sets "
+                    "artifact_type on the nanopub approve payload "
+                    "(web /nanopub review or `precis nanopub approve`)"
+                ),
+            )
+
         # --- Hypothesis-proposal mode ---
         # A finding born with ``hypothesis=True`` is a conjecture, not a
         # finding: it has no evidence by type (the mint gates reject a

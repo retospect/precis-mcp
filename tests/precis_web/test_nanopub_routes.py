@@ -1681,3 +1681,73 @@ def test_counter_claim_door_refuses_an_unconfirmed_chunk(
     )
     assert resp.status_code == 400
     assert "not a confirmed conflicting passage" in resp.text
+
+
+def test_index_counts_report_and_definition_approvals_per_week(
+    client: TestClient, runtime_with_store
+) -> None:
+    """The escape-hatch gauge sits in the header strip, beside the "N stale"
+    chip: nothing while no report/definition was approved, then the week's
+    count by type."""
+    from precis.nanopub import mint
+    from tests.test_nanopub_report_definition import _REPORT, _typed
+
+    store = _store(runtime_with_store)
+    assert "non-empirical approvals per week" not in client.get("/nanopub").text
+
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, _REPORT, paper, chunk)
+    mint.approve(store, hub, payload=_typed(chunk, "report"), interactive=True)
+
+    text = client.get("/nanopub").text
+    assert "non-empirical approvals per week" in text
+    assert "1 report, 0 definitions" in text
+
+
+def test_claim_page_flags_a_web_source_that_changed_since_approval(
+    client: TestClient, runtime_with_store
+) -> None:
+    """Web anchor drift: the approved passage froze the page's sha; a later
+    fetch that stores a different one shows "source changed since approval"
+    on the claim page — and nothing else about the page changes state."""
+    from precis.nanopub import mint
+    from tests.test_nanopub_non_paper_sources import _anchorless_payload
+    from tests.test_nanopub_web_anchor import _set_sha, _web_hub
+
+    store = _store(runtime_with_store)
+    hub, web_ref, chunk = _web_hub(store)
+    mint.approve(store, hub, payload=_anchorless_payload(chunk), interactive=True)
+
+    before = client.get(f"/claim/fi{hub}")
+    assert before.status_code == 200
+    assert "Source changed since approval" not in before.text
+
+    _set_sha(store, web_ref, "cd" * 32)
+    after = client.get(f"/claim/fi{hub}")
+    assert after.status_code == 200
+    assert "Source changed since approval" in after.text
+    assert store.nanopub_publish_row(hub).state == "reviewed"
+
+
+def test_claim_page_shows_the_drift_notice_after_sign_survives_a_changed_page(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    """End to end: approve a web passage, refresh the page with changed
+    bytes (its chunks are replaced), sign anyway, and the claim page says
+    the source changed."""
+    from precis.nanopub import mint
+    from tests.test_nanopub_non_paper_sources import _anchorless_payload
+    from tests.test_nanopub_web_anchor import _SHA_2, _refresh, _web_hub
+
+    store = _store(runtime_with_store)
+    priv, _pub = generate_keypair(2048)
+    monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
+    hub, web_ref, chunk = _web_hub(store)
+    mint.approve(store, hub, payload=_anchorless_payload(chunk), interactive=True)
+    _refresh(store, web_ref, sha=_SHA_2, text="Entirely rewritten page.")
+
+    resp = client.post(f"/nanopub/fi{hub}/sign", follow_redirects=False)
+    assert resp.status_code == 303
+    assert store.nanopub_publish_row(hub).state == "signed"
+    page = client.get(f"/claim/fi{hub}")
+    assert "Source changed since approval" in page.text

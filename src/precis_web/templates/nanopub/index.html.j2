@@ -43,6 +43,14 @@
     </p>
   </div>
 
+  {% if nonempirical_weekly %}
+  <p class="px-1 text-xs text-slate-500 cursor-help"
+    title="report / definition are approve-only exemptions from the epistemic sentence gate (no method token, no evidence verb); they answer to replacement checks instead. Counts are approvals per week (week starting). A count that climbs into the dozens means the exemption is being used as a bypass.">
+    non-empirical approvals per week:
+    {% for wk, c in nonempirical_weekly.items() %}<span class="whitespace-nowrap">{{ wk }}: {{ c.get('report', 0) }} report{{ 's' if c.get('report', 0) != 1 }}, {{ c.get('definition', 0) }} definition{{ 's' if c.get('definition', 0) != 1 }}</span>{{ ' · ' if not loop.last }}{% endfor %}
+  </p>
+  {% endif %}
+
   {% if draft_filter %}
   <div class="px-1">
     <span class="inline-flex items-center gap-1.5 rounded-full bg-sky-100 text-sky-800 text-xs px-2.5 py-1">

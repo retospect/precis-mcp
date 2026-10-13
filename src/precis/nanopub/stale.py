@@ -78,6 +78,8 @@ BLOCKING_LINT_CODES: frozenset[str] = frozenset(
 #: Literal copy of ``precis.nanopub.gates._ARTIFACT_LINT_EXEMPTIONS``.
 LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
     "hypothesis": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
+    "report": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
+    "definition": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
 }
 
 

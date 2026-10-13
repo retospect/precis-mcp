@@ -938,6 +938,76 @@ def fixed_via_pad_findings(
     ]
 
 
+def invariant_measure_findings(
+    *,
+    graph: dict[str, Any],
+    measures: list[dict[str, Any]],
+    features: list[dict[str, Any]] | None,
+    generators_rows: dict[str, dict[str, Any]],
+    pads: list[dict[str, Any]],
+    copper: list[dict[str, Any]],
+    layers: list[str],
+) -> list[DrcFinding]:
+    """The ``strength='invariant'`` half of the always-valid gate
+    (docs/backlog/pcb-missing-constraint-classes.md §F, ruled 2026-10-12):
+    every stored measure at that strength, evaluated by
+    :func:`precis.pcb.eyes.evaluate_measures` over the SAME data the
+    geometric rules see, becomes an error-severity :class:`DrcFinding`
+    under rule ``invariant:<metric>`` when VIOLATED — a ``hard`` measure
+    only steers, an ``invariant`` one gates.
+
+    A ``pending`` row yields nothing — an invariant that cannot be
+    evaluated is not a violation (the same "never gate on a guess" stance
+    as the synthesized-pad filter in ``_validity_findings``). The finding's
+    ``objects`` come from the evaluator (:func:`precis.pcb.generators.
+    evaluate_invariant`), already in :func:`router_nets_of`'s shape, so a
+    violation naming ROUTER copper rips that net and one naming only pads
+    or authored copper refuses the mutation."""
+    inv = [
+        m
+        for m in measures
+        if str(m.get("strength") or "").strip().lower() == "invariant"
+    ]
+    if not inv:
+        return []
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import eyes as pcb_eyes
+
+    fabric = {
+        "generators": generators_rows,
+        "pads": pads,
+        "copper": copper,
+        "layers": layers,
+    }
+    findings: list[DrcFinding] = []
+    for m, res in zip(
+        inv,
+        pcb_eyes.evaluate_measures(graph, list(inv), features, fabric=fabric),
+        strict=True,
+    ):
+        if res.get("verdict") != "VIOLATED":
+            continue
+        goal = res.get("goal")
+        findings.append(
+            pcb_drc.DrcFinding(
+                rule=f"invariant:{res['metric']}",
+                severity="error",
+                where=(
+                    f"{res['metric']} violated — {res.get('detail') or 'off'}"
+                    f" (value {res.get('value')}, goal "
+                    f"{'' if goal is None else f'{goal:g}'}"
+                    f"{'; ' + str(m.get('reason')) if m.get('reason') else ''})"
+                ),
+                detail=(
+                    f"measure #{m.get('measure_id')} (strength=invariant) on "
+                    f"{res.get('over') or m.get('metric')}"
+                ),
+                objects=tuple(res.get("objects") or ()),
+            )
+        )
+    return findings
+
+
 def router_copper_conflicts(
     ir: pcb_ir.PcbIR,
     footprints: dict[str, dict[str, Any]],

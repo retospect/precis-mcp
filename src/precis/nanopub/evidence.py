@@ -275,6 +275,7 @@ def source_anchor(
     *,
     pdf_sha256: str | None = None,
     url: str | None = None,
+    content_sha256: str | None = None,
 ) -> SourceAnchor:
     """The citable identity of one evidence source, by ref kind.
 
@@ -284,7 +285,11 @@ def source_anchor(
     it, a read path must not crash on it); ``datasheet`` → ``urn:sha256:``
     of its PDF, plus ``url`` as a second identifier when known (Reto
     2026-10-02: a datasheet ref may carry no URL, so the content hash is
-    the identifier every datasheet has); ``patent`` → empty (still
+    the identifier every datasheet has); ``web`` → ``urn:sha256:`` of the
+    fetched page's raw response bytes (``content_sha256``, the sha the
+    fetch stored on ``cache_state``), plus the URL as a second identifier
+    — a page is mutable, so the hash is what is cited and the URL is where
+    it was read (Reto 2026-10-03, claims-and-evidence-3); ``patent`` → empty (still
     DOI-gated — docs/backlog/claim-publication-nanopub-ots.md).
     """
     if kind == "paper":
@@ -302,6 +307,10 @@ def source_anchor(
         if not pdf_sha256:
             return SourceAnchor(None)
         return SourceAnchor(f"urn:sha256:{pdf_sha256}", source_url=url or None)
+    if kind == "web":
+        if not content_sha256:
+            return SourceAnchor(None)
+        return SourceAnchor(f"urn:sha256:{content_sha256}", source_url=url or None)
     return SourceAnchor(None)
 
 
@@ -322,6 +331,57 @@ def datasheet_sha(store: Store, ref_id: int) -> str | None:
     pinned copy. ``None`` when there is not exactly one."""
     shas = pdf_sha_rows(store, ref_id)
     return shas[0] if len(shas) == 1 else None
+
+
+def web_content_sha(store: Store, ref_id: int) -> tuple[str | None, str | None]:
+    """``(content_sha256, url)`` of a ``web`` ref's cached page, from its
+    ``cache_state`` row: the sha256 of the raw response bytes of the LAST
+    fetch (every fetch/refresh overwrites it) and the URL it came from
+    (``cache_state.meta.url``). Either is ``None`` when absent — a page
+    cached before migration 0202 has no sha until its next refresh."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT content_sha256, meta->>'url' FROM cache_state WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    if row is None:
+        return None, None
+    return (row[0] or None), (row[1] or None)
+
+
+def web_source_drift(
+    store: Store, passages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Web sources whose page has changed since approval: one entry
+    ``{ref_id, url, frozen_sha256, live_sha256}`` per distinct frozen web
+    source whose live ``cache_state.content_sha256`` differs from the one
+    :func:`precis.nanopub.mint.approve` froze onto the passage
+    (``content_sha256``). Display signal only — nothing reads this to block
+    or un-approve. Looked up by the frozen ``source_ref_id``, not the
+    passage's ``chunk_id`` (a refresh replaces the page's chunks, so the id
+    goes stale while the ref survives). A source with no live sha on record
+    is skipped (nothing to compare)."""
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for p in passages:
+        frozen = p.get("content_sha256")
+        raw_ref = p.get("source_ref_id")
+        if not frozen or isinstance(raw_ref, bool) or not isinstance(raw_ref, int):
+            continue
+        if raw_ref in seen:
+            continue
+        seen.add(raw_ref)
+        live, url = web_content_sha(store, raw_ref)
+        if live is not None and live != frozen:
+            out.append(
+                {
+                    "ref_id": raw_ref,
+                    "url": p.get("source_url") or url,
+                    "frozen_sha256": str(frozen),
+                    "live_sha256": live,
+                }
+            )
+    return out
 
 
 def datasheet_url(store: Store, ref: Any) -> str | None:

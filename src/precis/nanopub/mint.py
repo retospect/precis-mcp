@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
@@ -29,6 +30,7 @@ from precis.nanopub import assemble, evidence, freshness, gates
 from precis.nanopub.aida import aida_uri, canonical_sentence
 from precis.nanopub.keys import fingerprint, load_profile
 from precis.store._nanopub_ops import PublishRow
+from precis.taproot.canon import NONEMPIRICAL_ARTIFACT_TYPES
 from precis.taproot.claim_type import claim_type_of, policy_for
 
 if TYPE_CHECKING:
@@ -73,8 +75,10 @@ def approve(
     crypto requires (the signature covers those exact bytes, underivable
     from a hub that later drifts). ``payload`` is the grounding envelope
     (``passages`` / ``fields`` / ``motivation`` / ``testable_by`` /
-    ``hanging`` / ``hypothesis`` / ``motivated_by_refs`` /
-    ``llm_models``) — every Layer-A
+    ``hanging`` / ``hypothesis`` / ``artifact_type`` / ``motivated_by_refs``
+    / ``llm_models``) — ``artifact_type`` (``"report"`` or ``"definition"``)
+    is accepted HERE ONLY, never at mint/put, so a failing claim cannot be
+    moved into a non-empirical type by an unattended pass — every Layer-A
     gate runs NOW, against the post-reword sentence, so the review queue
     only ever holds strings that can actually mint. One exception, and it
     is deliberate: the acquisition gate
@@ -121,6 +125,17 @@ def approve(
     # An empty/whitespace override is "no override" (the web form posts
     # ""), never a request to freeze a blank sentence.
     requested = title.strip() if title is not None else None
+
+    # An invalid explicit artifact_type is refused before anything (the
+    # reword below included) touches the hub.
+    if (
+        gates.requested_nonempirical_type(payload)
+        and (hub_ref.meta or {}).get("artifact_type") == "hypothesis"
+    ):
+        raise BadInput(
+            f"fi{hub_ref_id} is a hypothesis hub — it cannot be approved as a "
+            f"{payload['artifact_type']}"
+        )
 
     # Resolve the publish row FIRST — not to flip it, but because a row
     # that already left 'candidate' must not be reworded at all: its sha
@@ -219,12 +234,28 @@ def approve(
     approved = bundle.sentence.strip()
     from precis.taproot.canon import claim_sha
 
+    # Same resolver the gates just ran with — the stored type must be the
+    # type that was gated (also for an existing candidate row, which may
+    # have been staged as a plain claim).
+    artifact_type = gates.resolve_artifact_type(bundle, payload)
     if row is None:
-        # Same resolver the gates just ran with — the stored type must be
-        # the type that was gated.
-        artifact_type = gates.resolve_artifact_type(bundle, payload)
         row = store.nanopub_create_publish_row(hub_ref_id, artifact_type=artifact_type)
     frozen_payload = dict(payload)
+    if artifact_type in NONEMPIRICAL_ARTIFACT_TYPES:
+        # The publish row has no approval timestamp (`updated_at` moves with
+        # every later state flip), and the weekly report/definition count
+        # (`Store.nanopub_nonempirical_approvals_by_week`) needs the moment
+        # a human approved one.
+        frozen_payload["approved_at"] = datetime.now(UTC).isoformat()
+    if artifact_type == "report":
+        # Which arm of the source-genre check accepted each source
+        # (entry_type / venue / kind) — the audit trail for the venue rule.
+        frozen_payload["report_source_arms"] = {
+            str(v.ref_id): v.arm
+            for v in gates.report_source_verdicts(
+                store, list(payload.get("passages") or [])
+            )
+        }
     frozen_payload["passages"] = _freeze_source_anchor(
         store, list(payload.get("passages") or [])
     )
@@ -238,12 +269,31 @@ def approve(
         claim_sha=claim_sha(approved),
         aida_uri=aida_uri(approved),
         grounding=frozen_payload,
+        artifact_type=artifact_type,
     )
     if not ok:
         raise BadInput(f"publish row {row.id} left candidate state mid-approve")
+    _sync_hub_type_marker(store, hub_ref, artifact_type)
     refreshed = store.nanopub_publish_row_by_id(row.id)
     assert refreshed is not None
     return refreshed
+
+
+def _sync_hub_type_marker(store: Store, hub_ref: Any, artifact_type: str) -> None:
+    """Persist ``refs.meta.artifact_type`` for a non-empirical hub so the
+    reword/lint cohorts see the type without a publish row (it survives a
+    reopen, which keeps the row's type but nulls its grounding). Mirrors the
+    hypothesis marker (``handlers/_finding_hypothesis.py::
+    META_ARTIFACT_TYPE``). A hub that WAS a report/definition and is now
+    approved as something else has the stale marker overwritten with the new
+    type (a claim then reads as ``'claim'``, which no predicate excludes);
+    the hypothesis marker is never touched here."""
+    current = (hub_ref.meta or {}).get("artifact_type")
+    touched = artifact_type in NONEMPIRICAL_ARTIFACT_TYPES or (
+        current in NONEMPIRICAL_ARTIFACT_TYPES
+    )
+    if touched and current != artifact_type:
+        store.stamp_ref_meta(hub_ref.id, {"artifact_type": artifact_type})
 
 
 def _passage_source_key(p: dict[str, Any]) -> str:
@@ -260,7 +310,8 @@ def _freeze_source_anchor(
     store: Store, passages: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Stamp each passage with ``source_uri`` (and ``accession`` for an
-    edgar source, ``source_url`` for a datasheet whose URL is known),
+    edgar source, ``source_url`` for a datasheet or web page whose URL is
+    known, ``content_sha256`` + ``source_ref_id`` for a web page),
     derived NOW from the passage's own chunk → ref — the reviewer-editable
     payload is never the authority on what a source is called, so a
     submitted ``source_url`` is dropped and only a ref-derived one kept. A
@@ -279,6 +330,8 @@ def _freeze_source_anchor(
     for p in passages:
         p = dict(p)
         p.pop("source_url", None)
+        p.pop("content_sha256", None)
+        p.pop("source_ref_id", None)
         cid = gates.integral_chunk_id(p.get("chunk_id"))
         ref_id = ref_by_chunk.get(cid) if cid is not None else None
         ref = refs.get(ref_id) if ref_id is not None else None
@@ -297,6 +350,23 @@ def _freeze_source_anchor(
             )
             if anchor.source_uri:
                 p["source_uri"] = anchor.source_uri
+                if anchor.source_url:
+                    p["source_url"] = anchor.source_url
+        elif ref is not None and ref.kind == "web":
+            # The page's sha as it stands NOW, frozen with the passage; the
+            # claim page compares it to the live sha to show drift. A page
+            # has no PDF copy, so a payload-typed pdf_sha256 is dropped.
+            sha, page_url = evidence.web_content_sha(store, ref.id)
+            anchor = evidence.source_anchor(
+                ref.kind, ref.slug, None, content_sha256=sha, url=page_url
+            )
+            p.pop("pdf_sha256", None)
+            if anchor.source_uri:
+                p["source_uri"] = anchor.source_uri
+                p["content_sha256"] = sha
+                # The ref outlives a refresh (its chunks do not), so drift
+                # is looked up by it, never by the passage's chunk_id.
+                p["source_ref_id"] = ref.id
                 if anchor.source_url:
                     p["source_url"] = anchor.source_url
         elif ref is not None and (on_record := evidence.ref_doi(store, ref)):
@@ -469,7 +539,12 @@ def sign(
     bundle = evidence.load_bundle(store, hub_ref_id)
     hub_ref = store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
     violations = gates.run_mint_gates(
-        store, bundle, row.grounding, hub_meta=hub_ref.meta or {}, at_sign=True
+        store,
+        bundle,
+        row.grounding,
+        hub_meta=hub_ref.meta or {},
+        at_sign=True,
+        frozen=True,
     )
     drift = gates.check_drift(bundle.sentence, row.claim_sha)
     if drift:

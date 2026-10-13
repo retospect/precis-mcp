@@ -482,7 +482,9 @@ def resolve_measures(
     the pair-distance bounds this engine can enforce. Mirrors
     :func:`precis.pcb.place._measure_specs`'s own filtering — skip
     `strength='gauge'` (report-only, never drives placement per
-    precis-measures-help, verbatim); skip a metric other than proximity/
+    precis-measures-help, verbatim) or `'invariant'` (gates through the
+    always-valid gate instead — gr345859 §F, never a priced objective);
+    skip a metric other than proximity/
     separation; skip a missing goal — but resolves ONLY
     ``{'instance': refdes}`` operand pairs (see :class:`MeasureSpec`'s
     docstring for why role operands can't resolve at this layer) and keeps
@@ -497,8 +499,8 @@ def resolve_measures(
     out: list[MeasureSpec] = []
     for m in bind_feature_operands(list(measures or []), features):
         strength = str(m.get("strength") or "gauge").strip().lower()
-        if strength == "gauge":
-            continue
+        if strength in ("gauge", "invariant"):
+            continue  # report-only / gate-only strengths never steer
         metric = str(m.get("metric") or "").strip().lower()
         if metric == "align":
             al = parse_align(m)

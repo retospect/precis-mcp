@@ -740,6 +740,7 @@ class PcbMixin:
         connections = list(connections)
         footprints = list(footprints or [])
         features = list(features or [])
+        measures = list(measures or [])
         net_classes: dict[str, dict[str, Any]] = {}
         # pcb-pre-place-route-blocks Slice 1 -- an expansion's `copper`
         # (fixed track/via rows) can't be written until `nets` below has
@@ -778,6 +779,12 @@ class PcbMixin:
             connections += expansion.connections
             footprints += expansion.footprints
             features += expansion.features
+            # gr345859 §F — a generator's declared fabric invariants are
+            # `pcb_measures` rows like any authored measure; merged here so
+            # they land through the same insert path (and are retired by
+            # `_pcb_generator_retire_expansion` on a changed re-apply, keyed
+            # by meta.generator).
+            measures += expansion.measures
             net_classes.update(expansion.net_classes)
             self._pcb_generator_upsert(
                 conn,
@@ -3498,6 +3505,16 @@ class PcbMixin:
             "UPDATE pcb_features SET retired_at = now() "
             "WHERE ref_id = %s AND note = %s AND retired_at IS NULL",
             (ref_id, f"generator:{generator_name}"),
+        )
+        # gr345859 §F — the generator's declared invariant measure rows,
+        # keyed by `meta.generator` (emitted with it at expansion time).
+        # Same identity discipline as the mask_open feature above: a
+        # changed-params re-apply replaces them wholesale.
+        conn.execute(
+            "UPDATE pcb_measures SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL "
+            "AND meta ->> 'generator' = %s",
+            (ref_id, generator_name),
         )
         # pcb-pre-place-route-blocks Slice 1 -- a changed-params re-apply
         # must retire this generator's authored fixed copper too, the same

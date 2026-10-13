@@ -40,6 +40,7 @@ from precis.identity import (
 from precis.ingest.provenance import check_ref_retraction
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
+    NONEMPIRICAL_ARTIFACT_TYPES,
     STATUS_CANONICAL,
     STATUS_NAMESPACE,
     TAPROOT_CLAIM,
@@ -549,6 +550,12 @@ def mint_hub(
     service is enabled) — every new claim hunts its own opposition
     shortly after mint, not only when the backfill reaches it.
     """
+    if (extra_meta or {}).get("artifact_type") in NONEMPIRICAL_ARTIFACT_TYPES:
+        raise BadInput(
+            f"artifact_type={(extra_meta or {})['artifact_type']!r} cannot be set at "
+            "mint — report/definition are approve-only (the approve payload's "
+            "`artifact_type`), never a mint-time shape",
+        )
     paper_id = make_taproot_hub_paper_id(claim.sentence, claim.scope)
     pub_id = make_pub_id(paper_id)
     policy = policy_for(claim.claim_type)

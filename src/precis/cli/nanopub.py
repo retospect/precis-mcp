@@ -395,14 +395,16 @@ def _check(args: argparse.Namespace, store) -> None:
 
     hub_id = _hub_id(args.hub)
     payload = _read_payload(args.payload)
+    frozen = False
     if not payload:
         row = store.nanopub_publish_row(hub_id)
         if row is not None:
             payload = row.grounding
+            frozen = True  # an approved payload: web drift is tolerated
     bundle = evidence.load_bundle(store, hub_id)
     hub_ref = store.fetch_refs_by_ids([hub_id])[hub_id]
     violations = gates.run_mint_gates(
-        store, bundle, payload, hub_meta=hub_ref.meta or {}, at_sign=True
+        store, bundle, payload, hub_meta=hub_ref.meta or {}, at_sign=True, frozen=frozen
     )
     # Sign-time freshness: only meaningful against a frozen (reviewed) row.
     row = store.nanopub_publish_row(hub_id)
