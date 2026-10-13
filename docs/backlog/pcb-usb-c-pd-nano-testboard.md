@@ -27,7 +27,17 @@ from that sketch.
 needs to be. A Nano-sized 18 × 45 mm outline is not a constraint. Size it
 for actual power-net widths/clearances and clean routing; the authoring
 agent records the chosen width/height in mm and the placement/routing
-reason here. No dimensions have been selected in this docs-only pass.
+reason here.
+
+**Authored (2026-10-13, fixture landed):** outline **100 × 80 mm**, in
+`tests/fixtures/pcb/nano_usb_pd_testboard.py`. Rationale: four switched
+20 V / 5 A channels plus the VBUS trunk resolve to ~2.8 mm external
+tracks under IPC-2221 at 5 A, three buck stages need inductor +
+input/output-cap area, and the two Nano headers pin a fixed 15.24 mm row
+spacing; sized for the power netlist, generous rather than tight —
+shrink/grow is the anneal item's priced move, not this fixture's. The
+fixture is a test-DB put payload; the measured baseline lives in
+`tests/test_pcb_nano_usb_pd_testboard.py`.
 
 ## Design corrections to fold in before drawing anything
 
@@ -187,3 +197,48 @@ then authors on the dev DB, records outline dimensions/rationale and complete
 DRC/routing limits. No Nano board, chosen outline or parts were created here.
 `status: ready` describes controlled design work; it does not certify hardware,
 routing, PD compliance, pricing or manufacture. Reto retains branch deletion.
+
+## Authored state — 2026-10-13 (fixture + pinned baseline)
+
+Authored as a repo fixture: `tests/fixtures/pcb/nano_usb_pd_testboard.py`
+builds the `put` payload; `tests/test_pcb_nano_usb_pd_testboard.py`
+applies it to the test DB, places and routes it with the shipped pipeline
+(`op='place'`/`op='route'`, seed 1, default iters), and pins the DRC and
+route counts as the baseline the anneal item measures against.
+
+Measured baseline (seed 1, default 4-layer stackup — F.Cu/B.Cu routable,
+In1/In2 planes): **38/64 nets routed, 26 failed** (congestion-dominated,
+some `same-layer-crossing`/`width` reasons). DRC: **89 errors**
+(`connectivity` 26, `unrouted` 26 — both tiers count the same failed
+nets — `silk_missing` 35, `outline_containment` 1, `silk_edge_clearance`
+1) and **15 warnings** (`clearance` 10 at 0.100 mm vs 0.150 mm required,
+`board_edge_clearance` 2, `silk_edge_clearance` 3). The pin is the honest
+tuple, not a claim of cleanliness — §Blockers item 3's residue stands.
+
+Parts discipline: real LCSC C-numbers only where the fixture ships a
+cached `part_footprints` row (C165948 receptacle, C2678061 STUSB4500QTR,
+C14877 ATMEGA328P-AU, C44377 TPS54360 bucks, C919581 N-FETs, C621942
+high-side drivers — all hand-authored stand-in geometry shaped like the
+real package, not datasheet land patterns); design-local `footprints[]`
+for headers/terminals/inductors/electrolytic/crystal/diodes/test points;
+`landpattern` synthesized bounds for the small 2-pin passives and LEDs,
+flagged in each part's `note` and `meta.synthesized_footprint_refdes`.
+The MIC5019 + N-FET high-side choice is marked PROVISIONAL in
+`meta.provisional` and the GATE*/OUT* net notes carry the netlist-review
+TODO; nothing here validates that topology.
+
+**C-number ↔ MPN mapping is UNVERIFIED.** Those six C-numbers were bound
+to hand-authored stand-in footprints seeded into the test DB
+(`part_footprints` rows inside the fixture, not fetched); the mapping was
+never confirmed against the catalog — confirm, at minimum,
+C44377 = TPS54360 and C919581 = YJD40N04A before any order. Because the
+parts look cached, the `synthesized_footprint` DRC rule does not fire for
+them: their geometry is a stand-in that *reads* as real.
+
+**Netlist-review items now carried on the nets** (each marked
+`TODO(netlist-review)` in the fixture, consistent with the GATE*/OUT*
+tags): there is **no sink power switch** — STUSB4500's VBUS_EN_SNK is
+unwired and the bucks, output-FET drains and the 20 V rail LED sit
+directly on VBUS, so they run unregulated from the vSafe5V pre-contract
+stage; and the ERR_LED resistors share D13/D12 with the ISP's SCK/MISO
+while D11 is both MOSI and the EN4 channel drive.
