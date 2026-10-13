@@ -2,11 +2,21 @@
 status: draft
 pillar: memory-graph
 prio: normal
+owner: knowledge-mesh
 ---
 
 # Corpus quantitative extraction
 
 Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
+
+**Ruling 2026-10-12** (Reto, chat): owned by
+[knowledge-mesh](threads/knowledge-mesh.md#resume), not claims-and-evidence.
+The point is comparability: extracted numbers from partially overlapping,
+similar experiments must carry traceability to the source span and
+conditions, and pass validation gates before they count as citable. Claims
+as they stand are not comparable or graphable; this item is the comparable
+layer. The survey paper that consumes it is December at the earliest and
+probably later (the manual-check volume in the sign-off question below).
 
 ## Source-bound quantitative extraction — bind anchors, materialize records
 

@@ -17,6 +17,10 @@ Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); d
 
 **Castor serving, 2026-10-11 (Reto):** model picked by ruling: **gpt-oss 120B** (vLLM), skipping the km-8 quality gate. castor serves it via `49-vllm.yml` (`vllm.service`, port 8000, `--max-num-seqs 64`, gpu-memory-utilization 0.70 until castor leaves the science lanes, then 0.80). Tool calling verified from melchior over the LAN. Card lm162513 carries a `source="static"` `served_by` (max_parallel 32) and prod `resource_slots` has `castor | llm:openai/gpt-oss-120b | 32`. No chain routes to it yet. The overlay does not yet carry the `vllm_serving` group; the run used a layered extra inventory. Castor exclusive (autocatpath/aizynth → pollux, compute/sandbox units stopped) is ruled and queued for the round-24 deploy with the coordinator. Stale DeepSeek-V4-Flash `served_by` (dead castor :8080) and its caspar slot row removed.
 
+**Flipped 2026-10-12 ~19:20Z (Reto: "can we flip soonish"):** `llm.op.llm_summarize` rung 0 is now `openai/gpt-oss-120b` local (castor, slot 32), rung 1 melchior's `glm-4.7-flash` local, rung 2 cloud. Verification read is the llm_call_log model/placement/error split for `llm_summarize` after the flip. REVERTED 20:58Z the same day: castor produced corrupted output after its restart to a 131072 window (see `backlog/claude-code-on-local-serving.md`); re-flip once a castor window is shown sound by three identical temperature-0 replies. Next flips, in order: `llm.chain.small` rung 0 to castor; medium (`chase:verify`) after the 40-task compare.
+
+**Rule, Reto 2026-10-12 (chat):** "cold machine is useless machine." castor never idles: coding helpers (`scripts/claude-local`, item 0 above) and librarian lanes share it. Librarian lanes already specified and waiting on castor, in order: taxonomy-bootstrap agreement test (knowledge-mesh Do next 2, $0 on castor), local-mesh-upkeep slice 0 categorise set (its eval doubles as the quality gate for every lane below), then op overrides to castor for `taproot:classify` (claim_type), `conflict_search:negate`, `taproot:reground-judge` ($64/30 d on Haiku), and `chase:verify` after the 40-task compare. The 30-day spend read (2026-10-12): dream $429 (Sonnet, 29k chars/call), chase:verify $205, review:structural $66, quest_tick $66, doctor_tick $66, reground-judge $65, summarise $56 (now local). Nine BIG sources average 45k–90k request chars, above castor's 16k context until the restart raises it.
+
 **Still open:** the `llm_summarize` placement read (summarise chain live since 2026-10-11 11:53Z; first 24 h 3,521 local / 16,416 overflowed to cloud at melchior's capacity-4 slot). Revert: delete `llm.op.llm_summarize`.
 
 **Status:** ends when the local box continuously improves the graph
@@ -37,6 +41,11 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
 - Next build: a summarise-only local chain.
 
 ## Do next
+
+0. **[Claude Code on local serving](../claude-code-on-local-serving.md)** —
+   filed 2026-10-12 from Reto's credits ask: proxy castor's gpt-oss 120B as
+   an Anthropic endpoint for Sonnet-class fleet roles, measure against
+   Sonnet on a gripe batch, then decide on a cheap cloud fallback plan.
 
 1. **Local share is measurable**: `get(kind='llm', id='/placement')`
    (routed vs landed, per tier and day). `placement_routed` (migration 0179)

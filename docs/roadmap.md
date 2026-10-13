@@ -354,6 +354,24 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-12 — Reto's focus rulings (chat), not a full pass. Active set:
+  (1) graph memory + quantitative extraction from papers, (2) nanobuds
+  paper, (3) the surface-Pourbaix map/view spec, (4) hexfold, (5) platform
+  maintenance, plus local compute ("bring it on"), both PCB threads and
+  ingest-and-fetch ("important too"). `corpus-quantitative-extraction`
+  is owned by `knowledge-mesh`: extracted numbers must be traceable and
+  comparable across partially overlapping experiments, with validation
+  gates for citability (claims as they stand are not comparable or
+  graphable). The survey paper is December at the earliest, likely later,
+  because of the manual-check volume. se-machine-design stays
+  deprioritised except where it serves hexfold machines. Open on Reto:
+  cheap coding assist to stretch Claude credits. Same day, later: "cold
+  machine is useless machine" — local serving is never idle; when nothing
+  routes to it, librarian work drains (classify, link, merge, make things
+  discoverable and comparable for fisheye), measured against the
+  auto-apply bar in `backlog/local-mesh-upkeep.md`. Coding helpers on
+  castor are the other half (`backlog/claude-code-on-local-serving.md`).
+
 - 2026-10-03 — not a full pass: `ship-gate-ci` activated (Reto: "push
   should not break build"); main's CI runs cancelled each other at ~8
   qlands/hour, the drift guard was blind, and the round's local gate held

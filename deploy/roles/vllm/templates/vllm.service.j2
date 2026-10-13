@@ -17,9 +17,12 @@ ExecStart=/usr/bin/{{ vllm_container_cmd }} run --rm --name {{ vllm_service_name
     -v {{ vllm_tiktoken_dir }}:/tiktoken:ro \
     -e TIKTOKEN_ENCODINGS_BASE=/tiktoken \
 {% endif %}
+{% for k, v in (vllm_env | default({})).items() %}
+    -e {{ k }}={{ v }} \
+{% endfor %}
     {{ vllm_image }} \
     --model /model \
-    --served-model-name {{ vllm_served_model_name }} \
+    --served-model-name {{ vllm_served_model_name }}{% for a in vllm_served_model_aliases | default([]) %} {{ a }}{% endfor %} \
     --gpu-memory-utilization {{ vllm_gpu_memory_utilization }} \
     --max-model-len {{ vllm_max_model_len }} \
     --max-num-seqs {{ vllm_max_num_seqs }} \

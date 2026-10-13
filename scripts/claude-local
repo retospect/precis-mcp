@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# scripts/claude-local — run `claude` against castor's vLLM (gpt-oss-120b)
+# instead of Anthropic: a helper that costs no credits.
+#
+#   scripts/claude-local -p "<task>" [claude args...]     headless helper
+#   scripts/claude-local                                  interactive, local model
+#
+# Every model slot (opus/sonnet/haiku) and the background model resolve to the
+# one served model, so `.claude/agents/*.md` `model:` lines and subagents all
+# land on castor. ANTHROPIC_BASE_URL is process-wide in Claude Code, so this is
+# a SEPARATE claude process: dispatch it from a Claude session via Bash (in a
+# worktree), or run it as a tmux worker. It is not a per-subagent switch.
+#
+# Env: CLAUDE_LOCAL_MODEL (default gpt-oss-120b, the vLLM --served-model-name),
+#      CLAUDE_LOCAL_PORT (default 8000), NODE_HOST_CASTOR (bypass the overlay).
+# Needs castor's vLLM to run with --max-model-len well above 16k; a Claude
+# Code turn with CLAUDE.md plus tool schemas does not fit in 16k
+# (docs/backlog/claude-code-on-local-serving.md).
+set -euo pipefail
+. "$(dirname "$0")/lib/node-host.sh"
+addr="$(resolve_node_host castor)"
+case "$addr" in *:*) addr="[$addr]" ;; esac
+model="${CLAUDE_LOCAL_MODEL:-gpt-oss-120b}"
+port="${CLAUDE_LOCAL_PORT:-8000}"
+
+if ! curl -fsS -m 5 "http://$addr:$port/health" >/dev/null 2>&1; then
+    echo "claude-local: castor vLLM not healthy on :$port" >&2
+    exit 2
+fi
+
+# vLLM's /v1/messages rejects the system-role turns Claude Code sends (hook
+# output) and lacks count_tokens; scripts/anthropic-shim.py rewrites them.
+# One shim per machine on loopback, started on demand.
+shim_port="${CLAUDE_LOCAL_SHIM_PORT:-18800}"
+if ! curl -fsS -m 2 "http://127.0.0.1:$shim_port/health" >/dev/null 2>&1; then
+    nohup python3 "$(dirname "$0")/anthropic-shim.py" "$shim_port" "$addr" "$port" \
+        >>"${TMPDIR:-/tmp}/anthropic-shim.log" 2>&1 &
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -fsS -m 2 "http://127.0.0.1:$shim_port/health" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+fi
+
+# Context window: what castor's vLLM was started with (vllm_max_model_len).
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_LOCAL_CONTEXT_TOKENS:-131072}"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$shim_port"
+# vLLM runs without an API key; Claude Code still needs a bearer value.
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-local}"
+export ANTHROPIC_MODEL="$model"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$model"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$model"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
+exec claude --model "$model" "$@"

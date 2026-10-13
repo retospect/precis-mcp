@@ -7,7 +7,25 @@ host under that group in your inventory). Spec:
 `docs/backlog/vllm-per-node-serving.md`.
 
 The unit restarts the container on failure; the role then waits (bounded,
-default 15 min) for `GET /health`. Model load measured 505-641 s.
+default 25 min) for `GET /health`. Model load measured 505-861 s plus engine
+init; two restarts outran the earlier 15 min cap.
+
+Set `vllm_model_dir` and `vllm_tiktoken_dir` in the overlay's host vars for
+the serving host: the defaults name `/srv/models/...`, and a host that keeps
+weights under the deploy user's home fails the model-dir check until they are
+passed (`-e vllm_model_dir=... -e vllm_tiktoken_dir=...`). From a worktree,
+pass the main checkout's `--vault-password-file` and overlay inventory, plus a
+layered extra inventory that puts the host in `vllm_serving`.
+
+`vllm_env` passes container environment. Its default is the GB10 (SM121)
+workaround `VLLM_MARLIN_USE_ATOMIC_ADD=1`: without it the stock image's
+Marlin MXFP4 MoE kernel races and gpt-oss emits a stray leading `!` with
+nondeterministic output at temperature 0 (vllm-project/vllm#37030; seen on
+castor at every window, 2026-10-12/13). If the env is not enough, move
+`vllm_image` to the CUDA 13 track (`cu130-nightly` pinned by digest, or the
+NGC image). `vllm_max_model_len` defaults to 16384 (the Slice 0 setting);
+`scripts/claude-local` needs more (a Claude Code first request exceeds 16k),
+see `docs/backlog/claude-code-on-local-serving.md`.
 
 ## Prerequisites on the host
 

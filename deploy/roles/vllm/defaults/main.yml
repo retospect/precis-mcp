@@ -28,6 +28,11 @@ vllm_port: 8000
 vllm_model_dir: /srv/models/gpt-oss-120b
 # Name clients send as `model`.
 vllm_served_model_name: gpt-oss-120b
+# Extra names the same model answers to. precis routes by its llm card name
+# (`openai/gpt-oss-120b`, resource_slots `llm:openai/gpt-oss-120b`); a call
+# with that name 404s unless it is served under it too (seen 2026-10-12).
+vllm_served_model_aliases:
+  - openai/gpt-oss-120b
 # --tool-call-parser value. gpt-oss: openai. Nemotron 3 Super: qwen3_xml.
 vllm_tool_call_parser: openai
 # gpt-oss loads the harmony tokenizer vocab from the internet at startup and
@@ -37,14 +42,30 @@ vllm_tool_call_parser: openai
 vllm_tiktoken_dir: /srv/models/tiktoken
 # Extra flags appended verbatim (list), e.g. ["--trust-remote-code"].
 vllm_extra_args: []
+# Container environment (`-e K=V` each). Default is the GB10 (SM121) MXFP4
+# workaround: the stock image's Marlin MoE kernel has a shared-memory race on
+# SM121 that yields flat logits for the first token (token 0 `!`, nondeterministic
+# at temperature 0; vllm-project/vllm#37030, NVIDIA forum "SM121 4 bugs causing
+# ! output"). Measured on castor 2026-10-13 at 16384/0.70 before this env.
+vllm_env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: "1"
 
 # ── Sizing (Slice 0 measured; local-compute-15 ruling) ──
-vllm_gpu_memory_utilization: 0.80
+# GB10 memory is unified: this fraction of the WHOLE box goes to vLLM. At 0.80
+# on a 121 GiB castor the engine held 98 GiB, the host had 1 GiB free and was
+# swapping, and generation was garbage from the first token (2026-10-12, see
+# docs/backlog/claude-code-on-local-serving.md). 0.70 leaves the OS ~36 GiB.
+vllm_gpu_memory_utilization: 0.70
+# 16384 is the only window measured sound on castor with this image: 65536 and
+# 131072 produced empty replies, stray token-0 `!` and nondeterministic output at
+# temperature 0 (2026-10-12). Claude Code turns (scripts/claude-local) need more;
+# that is the window experiment in docs/backlog/claude-code-on-local-serving.md.
 vllm_max_model_len: 16384
 # Server sized for 64 streams; a separate feedback controller holds ~32.
 vllm_max_num_seqs: 64
 
 # ── Health wait ──
-# Model load takes up to ~10 min (measured 505-641 s). Bounded: retries*delay.
-vllm_health_retries: 90
+# Model load measured 505-861 s, then ~45 s engine init; a cold image pull adds
+# more. Two runs outran the old 900 s cap (924 s, 1230 s). Bounded: retries*delay.
+vllm_health_retries: 150
 vllm_health_delay: 10

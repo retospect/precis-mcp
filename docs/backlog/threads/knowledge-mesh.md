@@ -69,6 +69,14 @@ graph-health-metrics, five parked gripes, and the seam with
    slice 1 unblocked for the gated migration path, refs/links only). Owner-led,
    independent review per slice; not for automatic fixer pickup.
 
+0b. **[Corpus quantitative extraction](../corpus-quantitative-extraction.md)**
+   — assigned here by Reto 2026-10-12 (chat): sourced numbers from papers,
+   traceable to span and conditions, comparable across overlapping
+   experiments, behind validation gates for citability. Still `draft`:
+   the ready pass must settle the sign-off shape (per-value, per-descriptor
+   or sampled with an error bar) and the trust-state tie-in to item 0 before
+   any build. Feeds a survey paper, December at the earliest.
+
 1. **backlog/taxon-facet-navigation.md slice 0 AC 0** — the
    `precis-classify-help` guide and `includes`/`excludes` validation/rendering
    landed in source 2026-10-05 (04c13fd28, Opus-reviewed), deployed in R16 (prod 8.35.15).
