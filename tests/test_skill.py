@@ -841,6 +841,106 @@ def test_title_boost_two_word_match_at_full_coverage_beats_one_word_match(
     assert "title match" not in out.body, out.body
 
 
+# ── hyphenated compounds + family-root pin (skill-search audit 2026-10) ──
+#
+# The third skill-search review found two under-ranking shapes: a
+# hyphenated compound tokenised into generic parts ("child-failed-parked"
+# → child/failed/parked, so the skill literally documenting the term lost
+# to skills mentioning the parts), and a family-root word ("cad") shared
+# by sibling slugs so the DF==1 relief couldn't fire and the root skill
+# sank below a pile of section-word matches. The matcher now indexes the
+# unsplit compound alongside its parts (weighted above them in the
+# lexical leg and the title boost) and pins ``precis-<word>-help`` /
+# ``precis-<word>`` when a query token is a ≥2-member slug family's root
+# word.
+
+
+def test_content_tokens_emit_compound_and_parts() -> None:
+    """A hyphenated run yields the unsplit compound AND its parts (each
+    part under the usual ≥3-char/stopword rules)."""
+    from precis.handlers.skill import _content_tokens
+
+    tokens = set(_content_tokens("why is my todo child-failed-parked today"))
+    assert "child-failed-parked" in tokens
+    assert {"child", "failed", "parked"} <= tokens
+    # A compound survives whole even when one part would be dropped
+    # (stopword or too short) — it is its own token.
+    tokens = set(_content_tokens("pass-dead"))
+    assert "pass-dead" in tokens and {"pass", "dead"} <= tokens
+
+
+def test_family_root_slugs_only_pins_canonical_roots() -> None:
+    """``_family_root_slugs`` requires ≥2 members and a canonical root
+    slug — a group without ``precis-<word>-help``/``precis-<word>``
+    (e.g. claim-adversary + claim-fidelity-help) pins nothing."""
+    from precis.handlers.skill import _family_root_slugs, _list_skills
+
+    roots = _family_root_slugs(_list_skills())
+    assert roots["cad"] == "precis-cad-help"
+    assert roots["mermaid"] == "precis-mermaid-help"  # -help beats the bare slug
+    for word in ("job", "help", "claim", "review", "doi"):
+        assert word not in roots, (word, roots.get(word))
+
+    # Synthetic shapes: -help preferred, bare precis-<word> next, a
+    # group with no canonical root unpinned, one member is no family.
+    slugs = [
+        "precis-foo-help",
+        "precis-foo-build",
+        "precis-bar",
+        "precis-bar-x",
+        "precis-baz-one",
+        "precis-baz-two",
+        "precis-solo-help",
+        "patent-abstract",
+        "patent-claim",
+    ]
+    roots = _family_root_slugs(slugs)
+    assert roots["foo"] == "precis-foo-help"
+    assert roots["bar"] == "precis-bar"
+    assert "baz" not in roots  # no canonical root slug
+    assert "solo" not in roots  # one member — not a family
+    assert "patent" not in roots  # only precis-* slugs form families
+
+
+def test_search_hyphenated_compound_finds_owning_skill(
+    skill: SkillHandler,
+) -> None:
+    """Audit acceptance: ``search(q='child-failed-parked')`` puts
+    precis-job-help in the top 2 — the skill that literally documents
+    the compound, not skills matching its generic parts."""
+    ranked = _ranked_slugs(skill.search(q="child-failed-parked").body)
+    assert "precis-job-help" in ranked[:2], ranked[:5]
+
+
+def test_search_family_root_word_pins_root_skill(skill: SkillHandler) -> None:
+    """Audit acceptance: ``cad`` heads the precis-cad-* family, so the
+    root skill pins top-2 even though the word is shared by sibling
+    slugs (DF>1 — unreachable by the gr259665 bypass)."""
+    ranked = _ranked_slugs(
+        skill.search(
+            q="cad units mm primitives shell hollow frame lattice pattern"
+        ).body
+    )
+    assert "precis-cad-help" in ranked[:2], ranked[:5]
+
+
+def test_family_root_pin_is_the_root_only_never_siblings(
+    skill: SkillHandler,
+) -> None:
+    """Padding a family-root word to kill coverage still pins the root
+    — and pins NOTHING for a sibling slug or a one-member stem."""
+    body = skill.search(q="cad banana orange grape mango kiwi").body
+    pinned = [
+        ln.split("\t", 1)[0].strip()
+        for ln in body.splitlines()
+        if "\t" in ln and "title match" in ln
+    ]
+    assert pinned == ["precis-cad-help"], pinned
+
+    out = skill.search(q="job banana orange grape mango kiwi")
+    assert "title match" not in out.body, out.body
+
+
 # ── search hides unwired skills + surfaces escalation hint ───────────
 
 

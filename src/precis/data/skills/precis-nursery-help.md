@@ -9,6 +9,7 @@ answers:
   - how do I tell if a worker is dead vs just quiet?
   - why is a leaf stuck in doable and not getting picked up?
   - what counts as a spin loop and what threshold triggers it?
+  - what does a lane-skipping alert mean (a job_type that mostly cancels)?
 applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
 status: active
 tags: [troubleshooting]
@@ -46,6 +47,7 @@ the push merges dark and everything else stays pull-only.
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
 | `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
 | `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
+| `lane-skipping` | a job_type's runs are mostly `STATUS:cancelled` — the handler's deliberate-skip path became the lane's normal outcome, invisible to err/warn counts and `child-failed` | ≥10 cancelled and ≥5× succeeded in 24 h · warn |
 
 `orphan` enforces the strategic invariant: every open todo must trace to
 a `rotation_root` ancestor. It raises **no alert** (`_NO_ALERT`, Reto's
@@ -87,6 +89,20 @@ Recurring subtrees (children of a root carrying `meta.schedule`) are
 exempt from the strategic invariant — they're scheduled work, not
 strategic work. The Watches umbrella itself doesn't appear in any
 detector.
+
+## `lane-skipping` — a job_type whose runs are mostly cancelled
+
+`STATUS:cancelled` is a handler's *deliberate* skip (a refused run, not
+an error), so a lane that mostly cancels looks clean everywhere else: no
+worker-log ERROR, no `child-failed` bubble. `_detect_lane_skipping`
+(`src/precis/workers/nursery.py`) reads the `STATUS:` tag transitions of
+the last 24 h (`LANE_SKIP_WINDOW_H`) and fires one `warn` alert per
+job_type — fingerprint `lane-skipping:<job_type>` — when cancelled ≥ 10
+(`LANE_SKIP_MIN_CANCELLED`) and cancelled ≥ 5× succeeded
+(`LANE_SKIP_RATIO`). A few skips beside a healthy success rate, or a
+rarely-run lane, stays quiet. Auto-resolves when the ratio recovers; the
+alert detail quotes the newest skip's `job_event` line so it names the
+leg (token / daemon / image / timeout) the handler recorded.
 
 ## Where the findings land
 

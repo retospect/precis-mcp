@@ -480,7 +480,7 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
 
 
 def _lexical_row(
-    slug: str, count: int, preview: str, *, verbatim: bool
+    slug: str, count: int, preview: str, *, verbatim: bool, compounds: int = 0
 ) -> _SkillSearchRow:
     """Build a row from a lexical hit — verbatim phrase or word overlap.
 
@@ -491,6 +491,10 @@ def _lexical_row(
     matched. Both map to a ``[0.0, 0.5)`` score so lexical ranks below a
     genuine semantic hit, and a verbatim hit is floored above every
     word-overlap hit (a literal phrase match beats a bag-of-words one).
+
+    ``compounds`` is how many of the matched words are unsplit hyphenated
+    compounds (``child-failed-parked``) — each counts as an extra word for
+    scoring, so the specific term outweighs its generic parts.
     """
     if verbatim:
         score = min(0.49, 0.30 + count / 50.0)
@@ -499,7 +503,7 @@ def _lexical_row(
         # Gentle slope so longer queries keep ranking headroom (more
         # matched words → higher) instead of saturating the cap and
         # tying; always floored below a verbatim hit's 0.30.
-        score = min(0.29, 0.10 + 0.02 * count)
+        score = min(0.29, 0.10 + 0.02 * (count + compounds))
         label = f"{count} word {'match' if count == 1 else 'matches'}"
     short = (preview[:160] + "…") if len(preview) > 160 else preview
     return _SkillSearchRow(
@@ -935,10 +939,12 @@ class SkillHandler(Handler):
             existing = merged.get(hit.slug)
             if existing is None or row.score > existing.score:
                 merged[hit.slug] = row
-        for slug, count, preview, verbatim in lexical_hits:
+        for slug, count, preview, verbatim, compounds in lexical_hits:
             if slug in merged:
                 continue
-            merged[slug] = _lexical_row(slug, count, preview, verbatim=verbatim)
+            merged[slug] = _lexical_row(
+                slug, count, preview, verbatim=verbatim, compounds=compounds
+            )
 
         # Title / header intent boost. A query whose content words
         # overlap a skill's stated purpose ("how to cite a paper, add a
@@ -970,6 +976,7 @@ class SkillHandler(Handler):
             ident_df: Counter[str] = Counter()
             for ident, _sections in title_tokens.values():
                 ident_df.update(ident)
+            family_roots = _family_root_slugs(all_slugs)
 
             for slug in all_slugs:
                 ident, sections = title_tokens[slug]
@@ -1001,19 +1008,37 @@ class SkillHandler(Handler):
                 # deliberately narrow so a merely-uncommon word can't
                 # promote a skill the query isn't really about, and a
                 # ubiquitous word ("help", DF>100) never can.
+                #
+                # Family-root pin (skill-search audit 2026-10): a query
+                # token that *is* a family's root slug word — ``cad``
+                # for the ``precis-cad-*`` group — names the root skill
+                # (``precis-cad-help``) even though the word is shared
+                # by sibling slugs (DF>1, so the gr259665 bypass can't
+                # fire) and a long query dilutes coverage below the bar.
+                # Only the root pins, not the siblings, and a word that
+                # heads a one-member group never qualifies — so a lone
+                # common word still can't promote an unrelated skill.
                 if not ident_matched:
                     continue
                 rare_identity_hit = any(ident_df[t] == 1 for t in ident_matched)
+                family_root_hit = any(
+                    family_roots.get(t) == slug for t in ident_matched
+                )
                 if (
                     not single
                     and not rare_identity_hit
+                    and not family_root_hit
                     and (len(matched) < 2 or coverage < 0.7)
                 ):
                     continue
+                # An unsplit hyphenated identity token
+                # (``child-failed-parked`` in a title/H1) counts double:
+                # the specific compound outweighs its generic parts.
+                ident_weight = len(ident_matched) + sum(
+                    1 for t in ident_matched if "-" in t
+                )
                 boost = (
-                    _TITLE_MATCH_SCORE
-                    + len(ident_matched) / len(qtokens)
-                    + 0.01 * coverage
+                    _TITLE_MATCH_SCORE + ident_weight / len(qtokens) + 0.01 * coverage
                 )
                 existing_row = merged.get(slug)
                 if existing_row is None or existing_row.score < boost:
@@ -1234,10 +1259,10 @@ class SkillHandler(Handler):
         # are always-ready by construction.
         return True
 
-    def _lexical_hits(self, q: str) -> list[tuple[str, int, str, bool]]:
+    def _lexical_hits(self, q: str) -> list[tuple[str, int, str, bool, int]]:
         """Score every skill body against ``q`` (whole-phrase + word overlap).
 
-        Yields ``(slug, count, preview, verbatim)``. Two signals:
+        Yields ``(slug, count, preview, verbatim, compounds)``. Two signals:
 
         1. **Whole-query substring** (``verbatim=True``) — the query
            appears verbatim (hyphen/whitespace-normalised) somewhere in
@@ -1247,19 +1272,22 @@ class SkillHandler(Handler):
         2. **Token overlap** (``verbatim=False``) — when the verbatim
            phrase misses, a multi-word query still scores a skill that
            contains a *majority* of its content words; ``count`` is the
-           number of matched words. The fix for punctuated natural-
-           language queries (``how to cite a paper, add a citation``)
-           that never appear as one contiguous run but whose words all
-           live in the target skill. Guarded to ≥2 matched content words
-           and ≥50% coverage so a single common word can't drag in half
-           the catalogue.
+           number of matched words and ``compounds`` how many of them are
+           unsplit hyphenated compounds (weighted double downstream — a
+           literal ``child-failed-parked`` beats generic ``child`` /
+           ``failed`` / ``parked`` scattered in prose). The fix for
+           punctuated natural-language queries (``how to cite a paper,
+           add a citation``) that never appear as one contiguous run but
+           whose words all live in the target skill. Guarded to ≥2
+           matched content words and ≥50% coverage so a single common
+           word can't drag in half the catalogue.
 
-        :func:`_lexical_row` turns ``(count, verbatim)`` into a score that
-        floors verbatim hits above every word-overlap hit.
+        :func:`_lexical_row` turns ``(count, verbatim, compounds)`` into a
+        score that floors verbatim hits above every word-overlap hit.
         """
         needle = _norm_for_substr(q)
         qtokens = set(_content_tokens(q))
-        out: list[tuple[str, int, str, bool]] = []
+        out: list[tuple[str, int, str, bool, int]] = []
         for slug in _list_skills():
             text = _load_skill(slug)
             if text is None:
@@ -1276,16 +1304,18 @@ class SkillHandler(Handler):
                     continue
             elif not verbatim:
                 continue
+            compounds = 0
             if verbatim:
                 count, probe = verbatim, needle
             else:
                 count, probe = len(matched), next(iter(matched))
+                compounds = sum(1 for t in matched if "-" in t)
             preview = ""
             for line in text.splitlines():
                 if probe in _norm_for_substr(line):
                     preview = line.strip()
                     break
-            out.append((slug, count, preview, bool(verbatim)))
+            out.append((slug, count, preview, bool(verbatim), compounds))
         return out
 
     def _get_index(self) -> FileCorpusIndex | None:
@@ -3208,6 +3238,15 @@ _STOPWORDS = frozenset(
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+#: Contiguous hyphenated runs (``child-failed-parked``) are *also* indexed
+#: unsplit, alongside their parts: a compound names one specific concept and
+#: a match on it is a much stronger signal than a match on its parts
+#: scattered through prose (skill-search audit 2026-10 — the compound query
+#: ``child-failed-parked`` lost to generic ``child``/``failed``/``parked``
+#: matches when only the parts were tokens). Replication over cleverness:
+#: both forms index, the compound simply weights higher downstream.
+_COMPOUND_TOKEN_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
+
 
 def _content_tokens(s: str) -> list[str]:
     """Lower-case topic tokens of ``s``: alnum runs minus stopwords / <3 char.
@@ -3218,10 +3257,17 @@ def _content_tokens(s: str) -> list[str]:
     query (``how to cite a paper, add a citation``) still credits a skill
     whose headers read ``## How do I cite a paper?`` even though the two
     never line up as one contiguous run.
+
+    Hyphenated compounds emit *two* forms: each bare part (``child``,
+    ``failed``, ``parked`` — the usual stopword/length rules apply) and the
+    whole unsplit run (``child-failed-parked``). The unsplit form is the
+    discriminating token — a body or header that literally carries it
+    matches where a parts-only bag-of-words hit would drown in noise.
     """
+    low = s.lower()
     return [
-        t for t in _TOKEN_RE.findall(s.lower()) if len(t) >= 3 and t not in _STOPWORDS
-    ]
+        t for t in _TOKEN_RE.findall(low) if len(t) >= 3 and t not in _STOPWORDS
+    ] + [t for t in _COMPOUND_TOKEN_RE.findall(low) if len(t) >= 3]
 
 
 _FM_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
@@ -3288,6 +3334,41 @@ def _skill_title_tokens(slug: str) -> tuple[frozenset[str], frozenset[str]]:
         frozenset(_content_tokens(" ".join(ident))),
         frozenset(_content_tokens(" ".join(sections))),
     )
+
+
+def _family_root_slugs(slugs: list[str]) -> dict[str, str]:
+    """Map each skill-family root word to its root skill's slug.
+
+    A word is a *family root* when at least two skills' slugs share the
+    ``precis-<word>-`` shape (or equal ``precis-<word>``) — ``cad`` for
+    ``precis-cad-help`` / ``precis-cad-build-help`` /
+    ``precis-cad-assembly-help``. The pin lands only on a canonical root
+    slug — ``precis-<word>-help``, else the bare ``precis-<word>`` — so a
+    group with no explicitly-named root (``claim`` → claim-adversary /
+    claim-fidelity-help) pins nothing rather than guessing.
+
+    A word heading a one-member group (``job`` → ``precis-job-help``
+    alone) is an ordinary identity token, not a family root: the
+    catalogue-DF path already handles it (gr259665) and requiring ≥2
+    members is what keeps a single common word from promoting a skill
+    the query isn't about. Used by the title boost in
+    :meth:`SkillHandler.search`.
+    """
+    groups: dict[str, int] = {}
+    for slug in slugs:
+        parts = slug.split("-")
+        if len(parts) >= 2 and parts[0] == "precis":
+            groups[parts[1]] = groups.get(parts[1], 0) + 1
+    roots: dict[str, str] = {}
+    slug_set = set(slugs)
+    for word, n in groups.items():
+        if n < 2:
+            continue
+        for candidate in (f"precis-{word}-help", f"precis-{word}"):
+            if candidate in slug_set:
+                roots[word] = candidate
+                break
+    return roots
 
 
 # ---------------------------------------------------------------------------

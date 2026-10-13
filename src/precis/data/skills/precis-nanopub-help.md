@@ -11,6 +11,7 @@ answers:
   - how do I check my payload against the mint gates without approving?
   - when does signing freeze a claim's content?
   - why does a claim hub show as unmintable?
+  - how does the OpenTimestamps (OTS) batch anchor work, and when does a signed nanopub get timestamped?
 applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); precis nanopub CLI (human-run); reading publish state
 status: active
 tags: [workflow, troubleshooting]
@@ -459,3 +460,40 @@ supersede, reopen, restage and a second publish all refuse the row. A registry
 ambiguous (the registry may hold the bytes), so the row stays `publishing`:
 run `precis nanopub reconcile [--older-than MINUTES]` to look up its trusty URI
 at the registry (present -> `published`, 404 -> `anchored`, else untouched).
+
+## OpenTimestamps (OTS) anchoring — the daily batch sweep
+
+A daily `ots_sweep` pass anchors signed artifacts to Bitcoin via
+OpenTimestamps (`src/precis/nanopub/ots.py`). An anchor proves existence
+**no later than** T — an upper bound only, nothing about authorship — and
+exists for key-rotation scoping, so granularity caps at one batch per day.
+Only a 32-byte content-blind digest leaves the box. The sweep ships dark
+until an operator sets `PRECIS_OTS_ENABLED`; the calendar defaults to
+`DEFAULT_CALENDAR` (`PRECIS_OTS_CALENDAR` overrides), with a 30 s
+per-request timeout (`CALENDAR_TIMEOUT_S` — an unreachable calendar once
+hung a manual anchor for 12 h).
+
+- **Stamp** (`ots.stamp_batch`): every publish row in `signed` whose
+  artifact exists becomes one leaf; dependency-dirty and title-drifted
+  rows are skipped (an anchor over soon-superseded bytes buys nothing).
+  Leaf digest = `sha256(exact stored trig bytes)`, re-checked against the
+  generated `byte_sha256` column; leaves sort by ascending artifact id;
+  `make_merkle_tree` builds the root; **one calendar request per batch**.
+  The batch row retains the construction-rule string, the Merkle root,
+  each leaf's serialized inclusion path, and the root proof as `pending`
+  — the leaf table plus the rule string ARE the proof and exist nowhere
+  else.
+- **Upgrade** (`ots.upgrade_sweep`): polls the calendar for pending
+  batches; a completed proof INSERTs a new `upgraded` row (append-only —
+  the `pending` row stays as history). A batch still `pending` past 3
+  days (`STUCK_PENDING_DAYS`) raises the `nanopub_ots` alert
+  `stuck-pending:{batch_id}` at `warn`; the remedy is
+  `precis nanopub re-stamp BATCH_ID` — the raw bytes are retained, so a
+  lost commitment re-anchors under a later date, and a superseded or
+  late-upgraded batch's alert auto-resolves.
+- **Audit** (`ots.audit`): recompute-everything detection over the
+  retained bytes — `byte_sha256` vs a live sha256, the TriG re-parses,
+  the trusty URI / AIDA URI / DOI extracts appear in the parsed quads,
+  each leaf's inclusion path re-derives the recorded root, the latest
+  proof deserializes. Any mismatch raises a `critical` `audit-mismatch`
+  alert. Runs even while the network flag is dark, once proof rows exist.
