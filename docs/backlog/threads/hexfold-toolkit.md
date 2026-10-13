@@ -36,6 +36,7 @@ kept), Mac-local, on small siblings of the prod scenes (the 30×30 Y at
 | scene (prod design) | atoms | converged | result |
 |---|---|---|---|
 | pillbox rotor (`hexfold-relax-valve/pillbox`) | 240 C | 44 steps | lid seams 1.422 Å, bonds 1.39–1.45 Å, rms move 0.11 Å: a clean cage |
+| valve shell (`hexfold-relax-valve/shell6`, bulge len=6) | 996 C + 36 H | 178 steps (4.5 h) | C–C 1.38–1.48 Å, no contacts; bulge mid radius 9.42→9.38 Å (round to 0.03 Å), length +1.2 Å: no collapse. With the relaxed pillbox (R 4.75→4.70 Å) the wall-to-wall gap is ~4.7 Å centre-to-centre, ~1.3 Å free after vdW: the rotor still fits and turns |
 | sp3 fin out (`hexfold-relax-fin-out`) | 323 C + 48 H | 112 steps | graft bonds 1.52–1.55 Å, host angles mean 109.3° (96.5–114.4°), strip planar, no new contacts: a real tetrahedral graft |
 | sp2 Y 8×8 (`hexfold-relax-y-a`) | 488 C + 84 H | 120 steps | **seam dimerises**: adjacent seam atoms bond at 1.60–1.64 Å, sheet bonds 1.50–1.53 Å, angle sums ~341°; the `k3-sp3-z` dimer chain (period 2a: 1.6 Å dimer + 3.3 Å gap) |
 | seam tube out (`hexfold-relax-seam-out`) | 408 C + 56 H | 313 steps | same dimerisation on the tube (pairs 1.60–1.62 Å, sums ~341°) |
@@ -45,8 +46,8 @@ kept), Mac-local, on small siblings of the prod scenes (the 30×30 Y at
 
 Finite-segment artefacts: the three guard-column H at a seam end crowd
 to 1.35 Å; guard carbons of neighbouring sheets bond at the segment
-start; one H cap migrated onto a wall carbon on the seam tube. Still
-running at 19:10Z: valve shell (len=6 bulge). Consequence: the sp2 120° seam is a construction
+start; one H cap migrated onto a wall carbon on the seam tube. Campaign
+complete 19:31Z. Consequence: the sp2 120° seam is a construction
 convenience, not a minimum; author seam scenes on `k3-sp3-z`.
 
 ## Prod runs and measurements 2026-10-07
