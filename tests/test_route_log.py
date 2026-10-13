@@ -351,6 +351,143 @@ def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
     assert route_log.gc(store, retention_days=30) >= 1
 
 
+def _age_call_rows(store: Any, source: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_call_log SET ts = now() - interval '100 days' WHERE source=%s",
+            (source,),
+        )
+        conn.commit()
+
+
+def _count_calls(store: Any, source: str) -> int:
+    with store.pool.connection() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM llm_call_log WHERE source=%s", (source,)
+        ).fetchone()[0]
+
+
+def _count_blobs_like(store: Any, pattern: str) -> int:
+    # Match on text, not hash — hash is the sha256 of the text, so a blob is
+    # identifiable only by its stored text.
+    with store.pool.connection() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM llm_blob WHERE text LIKE %s", (pattern,)
+        ).fetchone()[0]
+
+
+def test_gc_batches_stop_at_budget_and_second_run_continues(
+    store: Any, monkeypatch: Any
+) -> None:
+    # The retention phase loops bounded DELETEs (gr482932): a capped pass
+    # deletes exactly the budget and the next pass drains the rest, instead of
+    # one unbounded DELETE that outlives statement_timeout.
+    monkeypatch.setattr(route_log, "_CALL_GC_BATCH", 2)
+    tag = uuid4().hex[:8]
+    src = f"gcbatch-{tag}"
+    for i in range(5):
+        route_log.record_call(
+            _rec(
+                source=src,
+                request_text=f"BREQ-{tag}-{i}",
+                response_text=f"BRESP-{tag}-{i}",
+            ),
+            store=store,
+        )
+    _age_call_rows(store, src)
+    # Budget 3 with batch 2 → two statements (2 + 1 rows) this pass.
+    assert route_log.gc(store, retention_days=30, call_budget=3) == 3
+    assert _count_calls(store, src) == 2
+    # Uncapped second run finishes the backlog.
+    assert route_log.gc(store, retention_days=30) == 2
+    assert _count_calls(store, src) == 0
+
+
+def test_gc_blob_sweep_keeps_referenced_blobs(store: Any) -> None:
+    # The split anti-join must delete only blobs no call row references —
+    # through EITHER hash column. A blob used as some row's request_hash and
+    # one used as another row's response_hash both survive; a never-referenced
+    # blob and the aged row's freshly-orphaned blobs are swept.
+    tag = uuid4().hex[:8]
+    req_text, resp_text = f"KEPT-REQ-{tag}", f"KEPT-RESP-{tag}"
+    route_log.record_call(
+        _rec(source=f"live-{tag}", request_text=req_text, response_text="x"),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(source=f"live-{tag}", request_text="y", response_text=resp_text),
+        store=store,
+    )
+    orphan = f"ORPHAN-{tag}"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO llm_blob (hash, text, bytes) VALUES (%s, %s, %s)",
+            (orphan, orphan, len(orphan)),
+        )
+        conn.commit()
+    src = f"aged-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            request_text=f"AGED-REQ-{tag}",
+            response_text=f"AGED-RESP-{tag}",
+        ),
+        store=store,
+    )
+    _age_call_rows(store, src)
+    assert route_log.gc(store, retention_days=30) == 1
+    assert _count_blobs_like(store, orphan) == 0
+    assert _count_blobs_like(store, f"AGED-%-{tag}") == 0
+    assert _count_blobs_like(store, f"KEPT-%-{tag}") == 2
+
+
+def test_gc_blob_sweep_stops_at_budget_and_second_run_continues(
+    store: Any, monkeypatch: Any
+) -> None:
+    # The blob sweep is batched + budgeted too (gr482932): a pass deletes at
+    # most blob_budget orphans; a later deleting pass finishes the backlog.
+    monkeypatch.setattr(route_log, "_BLOB_GC_BATCH", 1)
+    tag = uuid4().hex[:8]
+    for i in range(3):
+        orphan = f"ORPH-{tag}-{i}"
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO llm_blob (hash, text, bytes) VALUES (%s, %s, %s)",
+                (orphan, orphan, len(orphan)),
+            )
+            conn.commit()
+    src = f"aged-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            request_text=f"ORPH-{tag}-R",
+            response_text=f"ORPH-{tag}-S",
+        ),
+        store=store,
+    )
+    _age_call_rows(store, src)
+    # First pass: the aged row deletes (5 orphans exist: 3 direct + the row's
+    # own two blobs), then the sweep stops at blob_budget=2.
+    assert route_log.gc(store, retention_days=30, blob_budget=2) == 1
+    assert _count_blobs_like(store, f"ORPH-{tag}-%") == 3
+    # A no-delete pass leaves the leftovers (the sweep runs only behind
+    # deletions); the next pass that deletes drains the rest.
+    assert route_log.gc(store, retention_days=30) == 0
+    assert _count_blobs_like(store, f"ORPH-{tag}-%") == 3
+    src2 = f"aged2-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src2,
+            request_text=f"ORPH-{tag}-R2",
+            response_text=f"ORPH-{tag}-S2",
+        ),
+        store=store,
+    )
+    _age_call_rows(store, src2)
+    assert route_log.gc(store, retention_days=30) == 1
+    assert _count_blobs_like(store, f"ORPH-{tag}-%") == 0
+
+
 def test_record_call_persists_reason_class(store: Any) -> None:
     # Migration 0204: the promoted column round-trips beside the features
     # copy; an unclassed (successful) row stays NULL.

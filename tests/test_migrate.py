@@ -64,7 +64,11 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     assert expected.issubset(names), f"missing tables: {expected - names}"
 
 
-def test_llm_call_log_hash_indexes_removed_but_foreign_keys_kept(fresh_db: str) -> None:
+def test_llm_call_log_hash_indexes_and_foreign_keys_kept(fresh_db: str) -> None:
+    # gr482932: 0200 dropped both indexes on an idx_scan=0 reading, but the
+    # orphan-blob sweep's OR'd anti-join was unsargable and the llm_blob-delete
+    # RI probes never ran — both real consumers. 0208 restores them beside the
+    # split-NOT-EXISTS gc(); this pins "indexes present, FKs intact".
     Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
     indexes = _fetch(
         fresh_db,
@@ -72,7 +76,10 @@ def test_llm_call_log_hash_indexes_removed_but_foreign_keys_kept(fresh_db: str) 
         "AND indexname IN ('llm_call_log_request_hash_idx', "
         "'llm_call_log_response_hash_idx')",
     )
-    assert indexes == []
+    assert {row["indexname"] for row in indexes} == {
+        "llm_call_log_request_hash_idx",
+        "llm_call_log_response_hash_idx",
+    }
     foreign_keys = _fetch(
         fresh_db,
         "SELECT conname FROM pg_constraint "

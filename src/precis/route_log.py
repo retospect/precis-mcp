@@ -34,12 +34,27 @@ RETENTION_DAYS_ENV = "PRECIS_LLM_LOG_RETENTION_DAYS"
 DEFAULT_RETENTION_DAYS = 90
 
 #: Fleet-wide advisory-lock key for :func:`gc`. Every host runs a system-profile
-#: sweeper, and each pass called ``gc`` with no guard — so the (table-scanning)
-#: orphan-blob sweep piled up concurrently and pegged the DB host's CPU. A fixed,
-#: arbitrary signed-64 constant (ascii ``"llm_gc"``) makes the sweep single-flight
-#: across the fleet: one worker holds it, the rest fast-fail. Xact-scoped, so it
+#: sweeper, and each pass called ``gc`` with no guard — so the orphan-blob sweep
+#: piled up concurrently and pegged the DB host's CPU. A fixed, arbitrary
+#: signed-64 constant (ascii ``"llm_gc"``) makes the sweep single-flight across
+#: the fleet: one worker holds it, the rest fast-fail. Xact-scoped, so it
 #: auto-releases at commit/rollback — no unlock bookkeeping.
 _GC_LOCK = 0x6C6C6D5F6763
+
+#: Retention phase limits (rows per DELETE statement / per pass). Each batch is
+#: a bounded index-driven DELETE, so no single statement can outlive
+#: ``statement_timeout``; the per-pass budget bounds the whole transaction so a
+#: never-pruned backlog drains over sweeps instead of pinning the GC lock and
+#: its row locks behind one long delete.
+_CALL_GC_BATCH = 10_000
+_CALL_GC_BUDGET = 250_000
+
+#: Orphan-blob sweep limits (blobs per DELETE statement / per pass). Each
+#: candidate costs two index probes on ``llm_call_log`` (the 0208 hash-column
+#: b-trees), so a batch is a bounded probe loop; the budget bounds the pass when
+#: a huge orphan backlog exists.
+_BLOB_GC_BATCH = 2_000
+_BLOB_GC_BUDGET = 100_000
 
 
 def bind_store(store: Store | None) -> None:
@@ -346,20 +361,37 @@ def spend_rollup(
         ]
 
 
-def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
+def gc(
+    store: Store,
+    *,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+    call_budget: int = _CALL_GC_BUDGET,
+    blob_budget: int = _BLOB_GC_BUDGET,
+) -> int:
     """Delete log rows past the retention window; GC orphaned blobs. Returns the
     number of call rows deleted (0 when another worker holds the GC lock).
 
-    Two guards keep this cheap on the per-pass sweeper hot path:
+    Guards that keep this cheap on the per-pass sweeper hot path:
 
     * **Single-flight** — a fleet-wide advisory lock (:data:`_GC_LOCK`). Every
       host runs a sweeper, so without it they ran concurrent orphan-blob sweeps
       and saturated the DB host. Xact-scoped: released at commit/rollback.
+    * **Batched + budgeted** — each phase is a loop of bounded DELETEs
+      (:data:`_CALL_GC_BATCH` / :data:`_BLOB_GC_BATCH` rows per statement,
+      ``call_budget`` / ``blob_budget`` per pass). One unbounded DELETE over a
+      multi-GB log table outlives ``statement_timeout`` (gr482932); bounded
+      batches can't, and a big backlog drains over successive sweeps.
     * **Skip when idle** — the orphan-blob sweep only runs when this pass
-      actually deleted call rows. No deleted calls → no newly-orphaned blobs, so
-      the anti-join on ``request_hash``/``response_hash`` is skipped entirely
-      on the common no-op pass. When it does run, it still clears *any* orphan,
-      so a one-off backlog is reclaimed next sweep.
+      actually deleted call rows. No deleted calls → no newly-orphaned blobs,
+      so the sweep is skipped entirely on the common no-op pass.
+
+    The orphan check is two separate ``NOT EXISTS`` probes, not one ``OR`` —
+    an OR'd join filter is unsargable, so the planner nested-looped a full
+    seq scan of ``llm_call_log`` per blob row (cost ~2e10 at 11.5M rows) even
+    while the hash-column indexes existed, which is why they measured
+    ``idx_scan=0`` and were dropped (0200 → the timeouts). Split, each probe
+    hits its own b-tree (migration 0208), which the ``llm_blob``-delete FK
+    checks need too.
     """
     with store.pool.connection() as conn:
         got = conn.execute(
@@ -367,17 +399,42 @@ def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
         ).fetchone()
         if not got or not got[0]:
             return 0  # another worker is already GC'ing — don't pile on
-        cur = conn.execute(
-            "DELETE FROM llm_call_log WHERE ts < now() - (%s || ' days')::interval",
-            (retention_days,),
-        )
-        deleted = cur.rowcount
-        if deleted:
-            conn.execute(
-                "DELETE FROM llm_blob b WHERE NOT EXISTS ("
-                "  SELECT 1 FROM llm_call_log l"
-                "   WHERE l.request_hash = b.hash OR l.response_hash = b.hash)"
+        deleted = 0
+        while deleted < call_budget:
+            batch = min(_CALL_GC_BATCH, call_budget - deleted)
+            cur = conn.execute(
+                "DELETE FROM llm_call_log WHERE id IN ("
+                "  SELECT id FROM llm_call_log"
+                "   WHERE ts < now() - (%s || ' days')::interval"
+                "   ORDER BY ts LIMIT %s)",
+                (retention_days, batch),
             )
+            n = cur.rowcount or 0
+            deleted += n
+            if n < batch:
+                break
+        if deleted:
+            swept = 0
+            while swept < blob_budget:
+                batch = min(_BLOB_GC_BATCH, blob_budget - swept)
+                cur = conn.execute(
+                    "DELETE FROM llm_blob b WHERE b.hash IN ("
+                    "  SELECT c.hash FROM llm_blob c"
+                    "   WHERE NOT EXISTS ("
+                    "     SELECT 1 FROM llm_call_log l"
+                    "      WHERE l.request_hash = c.hash)"
+                    "     AND NOT EXISTS ("
+                    "     SELECT 1 FROM llm_call_log l"
+                    "      WHERE l.response_hash = c.hash)"
+                    "   LIMIT %s)",
+                    (batch,),
+                )
+                n = cur.rowcount or 0
+                swept += n
+                if n < batch:
+                    break
+            if swept:
+                log.info("route_log: GC'd %d orphan llm_blob row(s)", swept)
         conn.commit()
     return deleted
 

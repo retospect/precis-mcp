@@ -70,12 +70,6 @@ UNINDEXED_FKS: frozenset[str] = frozenset(
         "links.links_set_by_fkey",
         "ref_tags.ref_tags_set_by_fkey",
         "refs.refs_set_by_fkey",
-        # gr461596 (Reto 2026-10-12: drop them): the request/response hash
-        # indexes on llm_call_log (115 + 113 MB, idx_scan=0 since 2026-08)
-        # covered these FKs to llm_blob only for parent DELETE/UPDATE, a
-        # path never taken; migration 0200 drops them.
-        "llm_call_log.llm_call_log_request_hash_fkey",
-        "llm_call_log.llm_call_log_response_hash_fkey",
     }
 )
 
