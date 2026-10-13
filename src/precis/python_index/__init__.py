@@ -39,7 +39,7 @@ an explicit alias's identity before indexing and grants no new access.
 from __future__ import annotations
 
 from precis.python_index.cache import RepoCache
-from precis.python_index.indexer import index_module, index_repo
+from precis.python_index.indexer import index_module, index_module_bytes, index_repo
 from precis.python_index.types import (
     CallEdge,
     ModuleIndex,
@@ -56,5 +56,6 @@ __all__ = [
     "Symbol",
     "SymbolKind",
     "index_module",
+    "index_module_bytes",
     "index_repo",
 ]

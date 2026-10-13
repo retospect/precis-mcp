@@ -119,18 +119,39 @@ def index_module(
     each Symbol's `file` field — defaults to the file's name if not
     given (useful for ad-hoc tests against a single file).
     """
-    raw = path.read_bytes()
+    return index_module_bytes(
+        path.read_bytes(),
+        qualname=qualname,
+        file_relative=file_relative,
+        filename=str(path),
+    )
+
+
+def index_module_bytes(
+    raw: bytes,
+    *,
+    qualname: str,
+    file_relative: str | None = None,
+    filename: str = "<bytes>",
+) -> ModuleIndex:
+    """`index_module` over in-memory bytes — no filesystem read.
+
+    Used by the impact view to index a Git blob (`git show <rev>:path`)
+    so a committed snapshot can be compared with the working tree
+    without materialising it on disk. `filename` is only the label
+    ``ast.parse`` reports in a SyntaxError's context.
+    """
     indexed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     source = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     bytes_sha = hashlib.sha256(raw).hexdigest()
     sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    rel = file_relative if file_relative is not None else path.name
+    rel = file_relative if file_relative is not None else filename
 
     total_lines = source.count("\n") + (0 if source.endswith("\n") else 1)
     total_lines = max(total_lines, 1)
 
     try:
-        tree = ast.parse(source, filename=str(path))
+        tree = ast.parse(source, filename=filename)
     except SyntaxError as e:
         # Graceful degrade: keep the module addressable, no inner symbols.
         module_sym = Symbol(

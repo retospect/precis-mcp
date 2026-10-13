@@ -16,7 +16,10 @@ Address grammar accepted by `get`:
     <alias>::<dotted.qualname>     → symbol drill-down (cross-ref)
 
 Views: ``toc`` (repo-level), ``outline`` (file/symbol; default),
-``source`` (file or symbol body).
+``source`` (file or symbol body), ``callgraph``, ``entries``,
+``runtrace``, ``callers`` / ``importers`` / ``imports``, ``provenance``,
+``tests`` (evidence-labelled test discovery), ``impact`` (bounded
+change impact over a git revision pair or a changed symbol).
 """
 
 from __future__ import annotations
@@ -34,9 +37,11 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
+from precis.handlers import _python_impact as impact_mod
 from precis.handlers import _python_render as render
 from precis.handlers import _python_reverse as reverse
 from precis.handlers import _python_runtrace as rtrace
+from precis.handlers import _python_tests as ptests
 from precis.handlers import _python_write as write
 from precis.handlers._mode_help import require_mode
 from precis.handlers._python_provenance import (
@@ -80,6 +85,8 @@ _SUPPORTED_VIEWS = (
     "importers",
     "imports",
     "provenance",
+    "tests",
+    "impact",
 )
 _REVERSE_VIEWS = ("callers", "importers", "imports")
 _SEARCH_MODES = ("pattern", "lexical", "semantic")
@@ -337,6 +344,9 @@ class PythonHandler(Handler):
         view: str | None = None,
         entry: str | None = None,
         depth: int = 3,
+        max_results: int = 25,
+        base: str | None = None,
+        head: str | None = None,
         cross_repo: bool = False,
         argv: list[str] | None = None,
         env: dict[str, str] | None = None,
@@ -370,6 +380,28 @@ class PythonHandler(Handler):
         # here we only register the file(s) the id addresses.
         if view == "provenance":
             return self._render_provenance_target(parsed, idx)
+
+        # Test discovery — file or symbol id; never executes anything.
+        if view == "tests":
+            return self._render_tests(
+                parsed=parsed,
+                idx=idx,
+                root=root,
+                depth=depth,
+                max_results=max_results,
+            )
+
+        # Bounded change impact — alias/file+base rev, or a symbol id.
+        if view == "impact":
+            return self._render_impact(
+                parsed=parsed,
+                idx=idx,
+                root=root,
+                base=base,
+                head=head,
+                depth=depth,
+                max_results=max_results,
+            )
 
         # Callgraph view — alias-only id; entry= required.
         if view == "callgraph":
@@ -1783,6 +1815,191 @@ class PythonHandler(Handler):
         # Default and view='outline'.
         return Response(body=render.render_symbol(alias, sym, idx))
 
+    def _render_tests(
+        self,
+        *,
+        parsed: _ParsedId,
+        idx: RepoIndex,
+        root: Path,
+        depth: int,
+        max_results: int,
+    ) -> Response:
+        """`view='tests'` — ranked test candidates for a file or symbol.
+
+        Evidence is labelled per row (measured coverage > direct call >
+        indirect call/fixture > imports > naming). Reads the optional
+        per-test ``.coverage`` DB produced by ``scripts/test --coverage``;
+        never runs tests or source itself.
+        """
+        if parsed.start_line is not None or parsed.block_selector is not None:
+            raise BadInput(
+                "view='tests' takes a file or qualname id (no selector)",
+                next=f"get(kind='python', id='{parsed.alias}/pkg/mod.py', "
+                "view='tests')",
+            )
+        if not isinstance(depth, int) or depth < 1 or depth > ptests.MAX_DEPTH:
+            raise BadInput(
+                f"depth must be an int in [1, {ptests.MAX_DEPTH}]; got {depth!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='tests', "
+                f"args={{'depth': {ptests.DEFAULT_DEPTH}}})",
+            )
+        if (
+            not isinstance(max_results, int)
+            or max_results < 1
+            or max_results > ptests.MAX_LIMIT
+        ):
+            raise BadInput(
+                f"max_results must be an int in [1, {ptests.MAX_LIMIT}]; "
+                f"got {max_results!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='tests', "
+                f"args={{'max_results': {ptests.DEFAULT_LIMIT}}})",
+            )
+        if parsed.qualname is not None:
+            sym = idx.symbol(parsed.qualname)
+            if sym is None:
+                raise NotFound(
+                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
+                    next=f"search(kind='python', "
+                    f"q='{parsed.qualname.split('.')[-1]}', scope={parsed.alias!r})",
+                )
+        elif parsed.file is not None:
+            mod = idx.file(parsed.file)
+            if mod is None:
+                raise NotFound(
+                    f"file {parsed.file!r} not found in repo {parsed.alias!r}",
+                    next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+                )
+            sym = mod.module_symbol
+        else:
+            raise BadInput(
+                "view='tests' requires a file or symbol id",
+                next=f"get(kind='python', id='{parsed.alias}::pkg.mod.func', "
+                "view='tests')",
+            )
+        mod = idx.file(sym.file)
+        assert mod is not None
+        note_file(idx, mod)
+        measured = ptests.load_measured(root, idx)
+        hits = ptests.discover_tests(sym, idx, depth=depth, measured=measured)
+        return Response(
+            body=ptests.render_tests(
+                alias=parsed.alias,
+                sym=sym,
+                hits=hits,
+                measured=measured,
+                depth=depth,
+                limit=max_results,
+            )
+        )
+
+    def _render_impact(
+        self,
+        *,
+        parsed: _ParsedId,
+        idx: RepoIndex,
+        root: Path,
+        base: str | None,
+        head: str | None,
+        depth: int,
+        max_results: int,
+    ) -> Response:
+        """`view='impact'` — bounded change impact.
+
+        ``id='<alias>'`` (or ``<alias>/<file.py>``) + ``args={'base':
+        '<rev>'[, 'head': '<rev>'|'worktree']}`` diffs two snapshots and
+        fans out over the indexed worktree. ``id='<alias>::<qualname>'``
+        takes one symbol as the change seed (no diff).
+        """
+        if not isinstance(depth, int) or depth < 1 or depth > impact_mod.MAX_DEPTH:
+            raise BadInput(
+                f"depth must be an int in [1, {impact_mod.MAX_DEPTH}]; got {depth!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='impact', "
+                f"args={{'base': 'HEAD~1', 'depth': {impact_mod.DEFAULT_DEPTH}}})",
+            )
+        if (
+            not isinstance(max_results, int)
+            or max_results < 1
+            or max_results > impact_mod.MAX_LIMIT
+        ):
+            raise BadInput(
+                f"max_results must be an int in [1, {impact_mod.MAX_LIMIT}]; "
+                f"got {max_results!r}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='impact', "
+                "args={'base': 'HEAD~1'})",
+            )
+        measured = ptests.load_measured(root, idx)
+        other_roots = [
+            a for a in (*self.roots, *self._worktree_listing()) if a != parsed.alias
+        ]
+
+        if parsed.qualname is not None:
+            if base is not None or head is not None:
+                raise BadInput(
+                    "view='impact' on a qualname takes no base=/head= — "
+                    "the symbol is the change seed",
+                    next=f"get(kind='python', id='{parsed.alias}::"
+                    f"{parsed.qualname}', view='impact')",
+                )
+            sym = idx.symbol(parsed.qualname)
+            if sym is None:
+                raise NotFound(
+                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
+                    next=f"search(kind='python', "
+                    f"q='{parsed.qualname.split('.')[-1]}', scope={parsed.alias!r})",
+                )
+            mod = idx.file(sym.file)
+            assert mod is not None
+            note_file(idx, mod)
+            imp = impact_mod.impact_symbol(
+                alias=parsed.alias,
+                sym=sym,
+                idx=idx,
+                depth=depth,
+                limit=max_results,
+                measured=measured,
+                other_roots=other_roots,
+            )
+            return Response(
+                body=impact_mod.render_impact(
+                    parsed.alias, imp, depth=depth, limit=max_results
+                )
+            )
+
+        if base is None or not base.strip():
+            raise BadInput(
+                "view='impact' on an alias or file requires args={'base': "
+                "'<rev>'} (head= defaults to the working tree)",
+                next=f"get(kind='python', id={parsed.alias!r}, view='impact', "
+                "args={'base': 'HEAD~1'})",
+            )
+        if head is not None and not head.strip():
+            head = None
+        if head in ("worktree", "WORKTREE", "wt"):
+            head = None
+        git = impact_mod._Git(root, self.git_dir_for(root))
+        imp = impact_mod.impact_diff(
+            alias=parsed.alias,
+            root=root,
+            idx=idx,
+            git=git,
+            base=base,
+            head=head,
+            only_file=parsed.file,
+            depth=depth,
+            limit=max_results,
+            measured=measured,
+            other_roots=other_roots,
+        )
+        for rel in imp.changed_files:
+            m = idx.file(rel)
+            if m is not None:
+                note_file(idx, m)
+        return Response(
+            body=impact_mod.render_impact(
+                parsed.alias, imp, depth=depth, limit=max_results
+            )
+        )
+
     def _render_reverse(
         self, parsed: _ParsedId, idx: RepoIndex, view: str | None
     ) -> Response:
@@ -2048,18 +2265,9 @@ def _split_scope(scope: str | None) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _is_test_path(file: str) -> bool:
-    """True when `file` (repo-relative, posix) looks like a test module.
-
-    Covers both a `tests/` root directory and the `test_*.py` /
-    `*_test.py` filename conventions, so a file like `src/foo/test_helper.py`
-    (no `tests/` root) still counts on the basename rule.
-    """
-    parts = file.split("/")
-    if parts and parts[0] == "tests":
-        return True
-    basename = parts[-1] if parts else file
-    return basename.startswith("test_") or basename.endswith("_test.py")
+# Canonical implementation lives in `_python_tests` (the ``tests`` view);
+# the name stays importable here for the search demotion path and tests.
+_is_test_path = ptests.is_test_path
 
 
 #: Score multiplier per demotion reason (tests, nested defs); they stack.

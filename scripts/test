@@ -19,6 +19,11 @@
 #   scripts/test -k "registry or env"         # a -k expression
 #   scripts/test tests/test_foo.py::test_bar -x
 #   scripts/test --fast                       # no-DB fast set (-m 'not db')
+#   scripts/test --coverage [pytest args…]    # opt-in: run under pytest-cov with
+#                                             # per-test contexts, leaving
+#                                             # .coverage + .coverage.precis.json
+#                                             # at the worktree root (feeds the
+#                                             # python `tests` view's measured tier)
 #   scripts/test --impacted                   # ONLY tests your changes affect
 #   scripts/test --typecheck                  # `uv run mypy src tests` in the container
 #   scripts/test --bg <args…>                 # detach the run; prints an --await line
@@ -76,6 +81,7 @@ Usage:
   scripts/test -k "registry or env"         # a -k expression
   scripts/test tests/test_foo.py::test_bar -x
   scripts/test --fast | -f                  # no-DB fast set (-m 'not db and not slow')
+  scripts/test --coverage [pytest args…]    # per-test .coverage + manifest
   scripts/test --impacted | -i              # ONLY tests your changes affect (testmon)
   scripts/test --bg <args…>                 # detach the run; prints an --await line
   scripts/test --await <run-id>             # bounded wait: exits with the run's
@@ -184,6 +190,14 @@ fi
 # changes; NOT authoritative before a deploy (/go still runs the full suite).
 IMPACTED=0
 FAST=0
+# --coverage : opt-in per-test-context coverage (NOT the default; the ship
+# gate keeps its own coverage path). Passes pytest-cov's
+# `--cov=src --cov-context=test` (dynamic_context=test_function under the
+# hood) so .coverage gains a per-test context dimension, then writes
+# .coverage.precis.json — a sha256-per-measured-file manifest the python
+# `tests` view verifies against indexed bytes before trusting the DB.
+COVERAGE=0
+if [[ "${1:-}" == "--coverage" ]]; then COVERAGE=1; shift; fi
 if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; fi
 if [[ "${1:-}" == "--fast" || "${1:-}" == "-f" ]]; then FAST=1; shift; fi
 
@@ -278,6 +292,14 @@ cleanup() {
     # Capture the real exit status up front and re-raise it at the end: the
     # best-effort teardown below must never change what the caller sees.
     local rc=$?
+    # --coverage: fingerprint the measured bytes alongside the DB so the
+    # python `tests` view can verify the DB against its index. Best-effort,
+    # host-side (stdlib only); a failed write just means the view reports
+    # the DB as unverifiable instead of measured.
+    if [[ "$COVERAGE" == "1" && -f .coverage ]]; then
+        python3 "${WORKTREE}/scripts/lib/coverage_manifest.py" .coverage \
+            || echo "WARNING: .coverage.precis.json not written — the tests view will report the DB as unverified" >&2
+    fi
     gate_slot_release
     # `if`, not `[[ ]] && …`: an EXIT trap's own exit status becomes the
     # script's exit status, and `&&` on a false test would silently turn
@@ -352,6 +374,12 @@ for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
 # uv.lock without an image rebuild; this passthrough gives the fast loop the
 # same reach).
 UV_WITH="${UV_WITH:-}"
+# --coverage: no report artifacts (just the sqlite DB + manifest); pytest-cov
+# is a baked dev dep. Works with or without --impacted.
+COV_ARGS=()
+if [[ "$COVERAGE" == "1" ]]; then
+    COV_ARGS=(--cov=src "--cov-context=test" "--cov-report=")
+fi
 TESTMON_ARGS=()
 TESTMON_ENV=()
 if [[ "$IMPACTED" == "1" ]]; then
@@ -462,7 +490,8 @@ run_pytest() {
         -v "${WORKTREE}":/app precis-dev \
         bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
         _ "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
-        "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" "$@"
+        "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
+        "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@"
 }
 
 if [[ -n "$TESTMON_LOG" ]]; then

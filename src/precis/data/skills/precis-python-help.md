@@ -181,6 +181,51 @@ many edges traversable.
 | `callers` | call sites that reference a symbol (`<alias>::<qualname>`) |
 | `importers` | modules that import a module (`<alias>::<module>`) |
 | `imports` | what a module imports, in-repo vs external |
+| `tests` | ranked test nodeids for a file or symbol, evidence-labelled |
+| `impact` | bounded change impact: symbol diff, callers/importers, tests, docs |
+
+## What does this change touch?
+
+```python
+# Diff a revision pair (head defaults to the working tree — uncommitted
+# bytes get exact sha256 fingerprints):
+get(kind="python", id="precis", view="impact",
+    args={"base": "origin/main", "head": "HEAD"})
+get(kind="python", id="precis", view="impact", args={"base": "HEAD~1"})
+# Scope to one file:
+get(kind="python", id="precis/src/precis/registry.py", view="impact",
+    args={"base": "HEAD~1"})
+# Or take one symbol as the change (no diff):
+get(kind="python", id="precis::precis.registry.Registry.get",
+    view="impact")
+```
+
+Sections: changed symbols (`added` / `removed` / `signature` / `body` /
+`moved`), bounded transitive callers and importers
+(`args={'depth': 1-6, 'max_results': 1-200}`), affected tests (same
+evidence ladder as `tests`), and docs/skills naming the qualname.
+`Unknowns:` lists unresolved dynamic dispatch, unparsed files and
+unscanned roots — fan-out always runs on the indexed worktree, so a
+`head=` revision diff labels that caveat. Git reads are plumbing only;
+nothing executes source.
+
+## Which tests cover this symbol?
+
+```python
+get(kind="python", id="precis::precis.registry.Registry.get", view="tests")
+```
+
+Each row is a pytest nodeid labelled with evidence and confidence —
+strongest first: `measured` (per-test `.coverage` contexts verified
+against indexed bytes via `.coverage.precis.json`) > `strong` (direct
+call) > `medium` (indirect through helpers/fixtures within
+`args={'depth': N}`, default 3) > `low` (imports only) > `lowest`
+(name match). A `coverage:` line names the DB state; absent or
+unverifiable means static evidence only — never complete coverage.
+`Run:` lines give the exact `scripts/test <nodeid>` invocations.
+Produce measured evidence with `scripts/test --coverage` (opt-in; the
+default gate does not write per-test contexts). Bounds:
+`args={'depth': 1-6, 'max_results': 1-100}`.
 
 ## Map a stack trace to a symbol
 ## I have a line number — what symbol is it in?
