@@ -229,6 +229,45 @@ gate kept from that side. The label is read off the join record
 is live. Joins recorded before 2026-10-09 show `radius_source` alone.
 Read-only, no geometry; the dry-run for `join` is a later slice.
 
+## Atomic mode — `view='clearance'` on a bound pair (vdW gap, rotor sweep, pockets)
+
+```python
+get(kind="se", id="valve", view="clearance",
+    args={"a": "shell6", "b": "pillbox"})
+get(kind="se", id="valve", view="clearance", args={
+    "a": "shell6", "b": "pillbox",
+    "sweep": {"axis": "b", "step_deg": 15, "range_deg": 360},
+    "pocket_gap_A": 3.5})
+```
+
+When `a` and `b` are both bound to `structure` designs, `view='clearance'`
+takes the atomic path instead of the cad-kernel envelope gap: every atom's
+nearest cross-block centre distance minus the two Bondi van der Waals radii
+(C 1.70, H 1.20, N 1.55, O 1.52 Å). It reports the minimum gap and the pair
+that makes it (block, element, scene ordinal each), the p05/p50 of the
+per-atom gap distribution, and the counts under 0/1/2 Å — under 0 is real
+interpenetration. Verdict: `free` (min gap ≥ 0.5 Å), `touching` (0–0.5),
+`interpenetrating` (<0). Pockets: atoms whose nearest cross-block gap is
+under `pocket_gap_A` (default 3.5 Å), clustered by 3.0 Å same-block
+connectivity merged across the pair — one connected near-contact region per
+void; the count at the loading angle is the valve's metering number. Each
+pocket lists per-block atom counts, centroid (z, θ about the axis), angular
+extent, and an approximate convex-hull volume.
+
+`sweep` rigidly rotates `b` about the axis and re-measures per angle —
+read-only, never a pose write. `axis`: `"b"`/`"a"` (that block's own
+z-axis envelope through its posed origin) or `[point, direction]` in
+metres; omitted, a declared revolute `joint.axis` between the pair wins,
+else `b`'s envelope. The table is angle | min gap | worst pair | n<1Å |
+pockets, plus the worst/best angle and a one-line verdict. On the no-args
+CONNECTS digest, atomic pairs measure atoms and the rest measure
+envelopes on the same table, worst first. `sweep`/`pocket_gap_A` on a
+non-atomic pair is a rejection.
+
+The header prints each bound structure's `last_relax` rung — `stick`
+means preview geometry (the spring-relaxed stick model), not a relaxed
+minimum; trust rung `geo`/`ml` numbers for placement decisions.
+
 ## Atomic mode — `view='validate'`, the chemistry-tier findings
 
 Atomic mode's findings (`precis_se.atomic.validate`) share `view='validate'`

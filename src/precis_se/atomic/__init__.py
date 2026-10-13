@@ -78,14 +78,19 @@ also measure a mapped port's own pose off the atom it resolves to — the
   ``put``/``edit``.
 - :mod:`precis_se.atomic.render` — ``view='mechanics'``/
   ``view='literature'`` plus the atomic filled-fraction line.
+- :mod:`precis_se.atomic.clearance` — the atomic ``view='clearance'``
+  path: the van der Waals gap between two structure-bound blocks, swept
+  over a rotor angle, with the near-contact pocket census (the valve
+  doc's metering number).
 - :mod:`precis_se.atomic.propose` — the ``se_propose_atomic`` job type
   (nm's one ``nm_propose`` ``JobTypeSpec``, renamed for its se home):
   a tool-less LLM call that PROPOSES one block's chemistry as a
   dry-run-validated ``job_result``, and applies nothing.
 
 Everything here is pure except :mod:`~precis_se.atomic.bind`,
-:mod:`~precis_se.atomic.generate`, :mod:`~precis_se.atomic.render` and
-:mod:`~precis_se.atomic.propose`, which take a store explicitly (the
+:mod:`~precis_se.atomic.generate`, :mod:`~precis_se.atomic.render`,
+:mod:`~precis_se.atomic.clearance` and :mod:`~precis_se.atomic.propose`,
+which take a store explicitly (the
 last one via its job ``ctx``) — the ``ops.py`` discipline holds for the
 op table itself, and the three ops that genuinely need the store are
 intercepted before it.

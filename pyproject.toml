@@ -188,6 +188,11 @@ dependencies = [
     # [dft-ml]. The MLIP rung ([dft-ml], torch) stays optional.
     "ase>=3.22",
     "spglib>=2.1",
+    # scipy — already present in every install transitively via ase;
+    # promoted to a direct dep for the se atomic clearance path (cKDTree
+    # + ConvexHull in precis_se/atomic/clearance.py) so the guarantee is
+    # declared, not borrowed from ase's requirements.
+    "scipy>=1.14",
     # Nanopub publication (docs/backlog/claim-publication-nanopub-ots.md).
     # `nanopub` is the ecosystem's reference Python implementation: rdflib
     # TriG serialization, trusty-URI hashing (spec: never hand-rolled), and
@@ -883,6 +888,10 @@ module = [
     "ray.*",
     "rdkit",
     "rdkit.*",
+    # present in every install transitively (core dep ase requires it);
+    # ships no stubs for scipy.spatial (precis_se/atomic/clearance.py).
+    "scipy",
+    "scipy.*",
     # ViennaRNA's module is `RNA` and ships no stubs; it is the `[chain]`
     # extra, absent from the dev image until it is rebuilt, and imported
     # lazily (precis_se/chain/fold.py::rna_module).

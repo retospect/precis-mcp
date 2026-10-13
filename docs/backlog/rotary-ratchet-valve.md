@@ -266,11 +266,20 @@ new kernel.
    parameterised by rotor angle — the §27 broad-phase machinery
    *measuring* the gap instead of rejecting overlap. Lands as
    `view='surface'` (spec §25.3) with a `clearance` query, or the se
-   measure vocabulary once the surface binding kind exists.
+   measure vocabulary once the surface binding kind exists. **The Q4
+   atomic stub shipped 2026-10-13** (`precis_se.atomic.clearance`):
+   `view='clearance'` on two structure-bound blocks takes the atomic
+   path — Bondi vdW gap on posed atoms, `args.sweep` re-measures per
+   rotor angle about a resolved axis (read-only), plus the pocket census
+   of item 2. The smooth-mesh form above remains for the post-§20.6
+   rung.
 2. **Pocket extractor.** Connected-component labelling on the region
    where clearance drops below a threshold → enclosed voids with volumes.
    The **pocket count falls out of geometry**, which is the metering
-   number.
+   number. **Shipped with item 1** (`args.pocket_gap_A`, default 3.5 Å;
+   per-block counts, centroid (z, θ), angular extent, approximate
+   convex-hull volume; count at the loading angle = the metering
+   number).
 3. **Attachment-site enumerator.** Which positions on each surface can
    carry a group given seam and curvature constraints: the ring taxonomy
    (spec §6, §9) filtered by steric exposure, plus the Y-carbon face

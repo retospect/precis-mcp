@@ -705,7 +705,13 @@ removed as met — the transport move it waited on happened 09-29)
    backlog/precis-surface-kernel.md) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 8.
+   clearance stub is gated on Do-next 8. **Landed 2026-10-13** (Devin
+   hex-wheel): the Q4 atomic stub — `view='clearance'` on two bound
+   blocks measures Bondi vdW gaps on posed atoms, `args.sweep` sweeps
+   the rotor about its axis, and the pocket census reports the metering
+   number (`precis_se.atomic.clearance`). Remaining: the surface-mesh
+   clearance field (item 1's post-§20.6 form), attachment sites, scorer,
+   audit, drag-vs-torque.
 9. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 10. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**

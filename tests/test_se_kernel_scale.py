@@ -318,7 +318,7 @@ def test_dof_probe_skips_cross_scale_pair() -> None:
     assert "cross-scale" in probe.outcome
 
 
-def test_clearance_view_names_the_degenerate_cause() -> None:
+def test_clearance_view_names_the_degenerate_cause(store: Store) -> None:
     """handler BadInput must carry the WHY: a planetary-aspect box (1e9:1)
     whose kernel-scaled solid degenerates names a 'degenerate' cause, not
     a bare 'invalid' — regardless of which retry path names it (post
@@ -347,7 +347,7 @@ def test_clearance_view_names_the_degenerate_cause() -> None:
         ],
     )
     with pytest.raises(BadInput, match="degenerate"):
-        _render_clearance(tree, {"a": "sliver", "b": "cube"})
+        _render_clearance(store, tree, {"a": "sliver", "b": "cube"})
 
 
 # ── kernel defense-in-depth ─────────────────────────────────────────────

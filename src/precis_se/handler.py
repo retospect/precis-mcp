@@ -158,6 +158,7 @@ from precis_se import printing as se_printing
 from precis_se import printscale as se_printscale
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
+from precis_se.atomic import clearance as se_atomic_clearance
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.apply import PendingJob, apply_ops_with_atomic
@@ -296,6 +297,8 @@ class SeHandler(Handler):
                 "scale",
                 "load_cases",
                 "bistable",
+                "sweep",
+                "pocket_gap_A",
                 "prefunits",
             }
         ),
@@ -1356,7 +1359,7 @@ class SeHandler(Handler):
                 self.hub, self.store, tree, ref, block_name=lit_block
             )
         if v == "clearance":
-            return Response(body=_render_clearance(tree, args))
+            return Response(body=_render_clearance(self.store, tree, args))
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "stations":
@@ -1430,7 +1433,9 @@ class SeHandler(Handler):
             "regions and their measure specs) | view='validate' | "
             "view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
-            "CONNECTS digest) | view='sweep' (does anything collide in ANY "
+            "CONNECTS digest; on two structure-bound blocks the atomic "
+            "vdW path, which also takes 'sweep' and 'pocket_gap_A') | "
+            "view='sweep' (does anything collide in ANY "
             "declared state? — the cross product of every state-carrying "
             "block's declared states, budget-bounded) | view='stations' "
             "(args={'walker':...,'cursor'?:...,'target'?:'<block>.<port>'}: "
@@ -6183,7 +6188,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "datums": frozenset(),
     "pockets": frozenset(),
     "validate": frozenset({"previous", "load_cases"}),
-    "clearance": frozenset({"a", "b", "state", "previous"}),
+    "clearance": frozenset({"a", "b", "state", "previous", "sweep", "pocket_gap_A"}),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
     "pick": frozenset({"block", "atom", "token"}),
@@ -6464,6 +6469,10 @@ class _PairClearance:
     resolution_m: float
     verdict: str
     witness_m: list[float]
+    #: which path measured it — ``"envelope"`` (cad kernel SDF) or
+    #: ``"atoms"`` (structure-bound vdW); the digest shows it so the two
+    #: verdict vocabularies can't be misread as one scale.
+    via: str = "envelope"
 
 
 class _ClearanceUnavailable(Exception):
@@ -6476,8 +6485,17 @@ class _ClearanceUnavailable(Exception):
     skip note instead — a survey shouldn't abort on one bad pair."""
 
 
-def _pair_clearance(tree: SeTree, a_name: str, b_name: str) -> _PairClearance:
-    """Signed minimum envelope gap between two named blocks
+def _pair_clearance(
+    tree: SeTree,
+    a_name: str,
+    b_name: str,
+    bound_full_scenes: Mapping[str, Any] | None = None,
+) -> _PairClearance:
+    """Signed minimum gap between two named blocks. Two paths, chosen by
+    what the blocks are bound to: **both structure-bound** (atomic mode)
+    measures atom-to-atom with van der Waals radii in Å
+    (:mod:`precis_se.atomic.clearance` — the valve doc's clearance stub);
+    anything else measures the envelope SDF
     (:func:`precis.cad.relate.clearance`, the exact-sign CSG SDF at
     metres — nm's ``_render_clearance`` transferred; its shaft-in-bored-hub
     case is literally se's hub-through-wheel interface). **Nested blocks
@@ -6494,6 +6512,25 @@ def _pair_clearance(tree: SeTree, a_name: str, b_name: str) -> _PairClearance:
     b_node = tree.blocks.get(b_name)
     if b_node is None:
         raise NotFound(_block_not_found(tree, b_name))
+
+    if se_atomic_clearance.is_atomic_pair(a_node, b_node):
+        hit = se_atomic_clearance.pair_gap_m(a_node, b_node, bound_full_scenes or {})
+        if hit is None:
+            raise _ClearanceUnavailable(
+                f"blocks {a_name!r} and {b_name!r} are structure-bound, but "
+                "a bound structure is missing or has no atoms — the atomic "
+                "clearance path can't measure this pair"
+            )
+        gap_m, verdict, witness_m = hit
+        return _PairClearance(
+            a_name=a_name,
+            b_name=b_name,
+            gap_m=gap_m,
+            resolution_m=0.0,
+            verdict=verdict,
+            witness_m=witness_m,
+            via="atoms",
+        )
 
     envelopes: dict[str, str] = {}
     for name, node in ((a_name, a_node), (b_name, b_node)):
@@ -6569,16 +6606,19 @@ def _joint_class_for(tree: SeTree, a_name: str, b_name: str) -> str | None:
     return None
 
 
-def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
+def _render_clearance(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str:
     """``view='clearance'`` — with ``args={'a': ..., 'b': ...}``, one
-    targeted signed envelope gap between two named blocks. With no args
+    targeted signed gap between two named blocks: atom-and-vdW when both
+    are structure-bound (:mod:`precis_se.atomic.clearance`, which also
+    takes ``sweep``/``pocket_gap_A`` for the rotor-angle table and the
+    pocket census), the envelope SDF otherwise. With no args
     (or an empty dict), an all-pairs digest instead: every unique block
     pair named by the design's CONNECTS, worst gap first — a design-wide
     interference/contact survey rather than a single probe (gr338444)."""
     a_name = (args or {}).get("a")
     b_name = (args or {}).get("b")
     if not a_name and not b_name:
-        return _render_clearance_digest(tree, se_finding_id.parse_previous(args))
+        return _render_clearance_digest(store, tree, se_finding_id.parse_previous(args))
     if not a_name or not b_name:
         raise BadInput(
             "get(kind='se', view='clearance') requires "
@@ -6587,6 +6627,22 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
     a_name, b_name = str(a_name).strip(), str(b_name).strip()
     if a_name == b_name:
         raise BadInput("get(kind='se', view='clearance'): 'a' and 'b' must differ")
+    a_node, b_node = tree.blocks.get(a_name), tree.blocks.get(b_name)
+    if a_node is None:
+        raise NotFound(_block_not_found(tree, a_name))
+    if b_node is None:
+        raise NotFound(_block_not_found(tree, b_name))
+    if se_atomic_clearance.is_atomic_pair(a_node, b_node):
+        return se_atomic_clearance.render_atomic_clearance(
+            store, tree, a_name, b_name, args or {}
+        )
+    for key in ("sweep", "pocket_gap_A"):
+        if (args or {}).get(key) is not None:
+            raise BadInput(
+                f"view='clearance' {key!r} only applies to an atomic pair — "
+                f"{a_name!r} vs {b_name!r} is not two structure-bound "
+                "blocks; drop it to query the envelope gap"
+            )
     try:
         pc = _pair_clearance(tree, a_name, b_name)
     except _ClearanceUnavailable as exc:
@@ -6617,11 +6673,16 @@ def _render_pair_clearance(tree: SeTree, pc: _PairClearance) -> str:
     return "\n".join(lines)
 
 
-def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) -> str:
+def _render_clearance_digest(
+    store: Store, tree: SeTree, previous: list[str] | None = None
+) -> str:
     """All-pairs clearance survey: every unique block pair named by a
     CONNECTS edge (self-connects excluded), worst gap first. A pair that
-    can't be queried (missing/invalid envelope, incompatible scales) is
-    skipped with a one-line note rather than aborting the whole survey."""
+    can't be queried (missing/invalid envelope, incompatible scales, a
+    dangling structure binding) is skipped with a one-line note rather
+    than aborting the whole survey. Atomic pairs (both structure-bound)
+    measure atoms, the rest measure envelopes — mixed designs get both
+    paths on the same rows."""
     seen: set[frozenset[str]] = set()
     pairs: list[tuple[str, str]] = []
     for conn in tree.connects:
@@ -6646,11 +6707,25 @@ def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) ->
     if truncated:
         pairs = pairs[:_CLEARANCE_DIGEST_BUDGET]
 
+    needs_scenes = any(
+        (na := tree.blocks.get(a_name)) is not None
+        and (nb := tree.blocks.get(b_name)) is not None
+        and se_atomic_clearance.is_atomic_pair(na, nb)
+        for a_name, b_name in pairs
+    )
+    _bound_scenes, bound_full_scenes = (
+        se_atomic_render.hydrate_bound_scenes(store, tree) if needs_scenes else ({}, {})
+    )
+
     computed: list[_PairClearance] = []
     notes: list[str] = []
     for a_name, b_name in pairs:
         try:
-            computed.append(_pair_clearance(tree, a_name, b_name))
+            computed.append(
+                _pair_clearance(
+                    tree, a_name, b_name, bound_full_scenes=bound_full_scenes
+                )
+            )
         except (_ClearanceUnavailable, NotFound) as exc:
             notes.append(f"- {a_name!r} vs {b_name!r}: skipped — {exc}")
 
@@ -6670,6 +6745,7 @@ def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) ->
                 "b": pc.b_name,
                 "joint": _joint_class_for(tree, pc.a_name, pc.b_name) or "—",
                 gap_key: gap_cell,
+                "via": pc.via,
                 "tag": pc.verdict,
             }
             for pc, gap_cell in zip(computed, gap_cells, strict=True)
@@ -6683,7 +6759,23 @@ def _render_clearance_digest(tree: SeTree, previous: list[str] | None = None) ->
     header = f"# clearance digest — {len(computed)} pair(s) from CONNECTS"
     if truncated:
         header += f" (showing first {_CLEARANCE_DIGEST_BUDGET} of {total_pairs})"
-    schema = ["id", "a", "b", "joint", gap_key, "tag"]
+    # Atomic rows carry each bound structure's relaxation rung in the
+    # header, like the targeted view — 'stick' means preview geometry.
+    rungs = {
+        name: se_atomic_clearance._rung_of(store, tree.blocks[name])
+        for pc in computed
+        if pc.via == "atoms"
+        for name in (pc.a_name, pc.b_name)
+        if name in tree.blocks
+    }
+    if rungs:
+        header += (
+            "\nrungs: "
+            + ", ".join(f"{name}={rung}" for name, rung in rungs.items())
+            + " — stick/preview geometry unless the bound structures "
+            "were relaxed"
+        )
+    schema = ["id", "a", "b", "joint", gap_key, "via", "tag"]
     if previous is not None:
         schema.insert(1, "delta")
     table = render_agent_table(rows, schema=schema)
