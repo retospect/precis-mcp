@@ -318,6 +318,13 @@ class Handler(ABC):
     #: validated.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {}
 
+    #: Extra ``search(sort=…)`` values this handler accepts beyond the
+    #: generic vocabulary. The surface check in ``tools/core.py`` unions
+    #: this with ``recency``/``prio``/``relevance`` before dispatch, so a
+    #: handler-owned sort (cfp ``deadline``) is not rejected up front
+    #: (gr481617).
+    EXTRA_SORTS: ClassVar[frozenset[str]] = frozenset()
+
     def _register_with(self, hub: Hub) -> None:
         """Register every verb declared supported in ``self.spec``.
 

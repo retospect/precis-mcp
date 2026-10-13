@@ -120,6 +120,10 @@ class CfpHandler(PaperHandler):
     #: deadline is the reason to browse the corpus at all.
     _BROWSE_SORT_DEFAULT: ClassVar[str] = "deadline"
 
+    #: The browse sorts are handler-owned; declare them so the surface
+    #: sort check lets them through (gr481617).
+    EXTRA_SORTS: ClassVar[frozenset[str]] = frozenset(PaperHandler._BROWSE_SORTS)
+
     def _edit_args(
         self, ref_id: int, args: dict[str, Any] | None, *, dry: bool
     ) -> list[str]:

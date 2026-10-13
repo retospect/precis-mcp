@@ -70,3 +70,5 @@ into a durable doc and delete the memory).
 **2026-09-27** — ✓ clean
 
 **2026-10-05** — ✓ clean
+
+**2026-10-13** — 8 stale path(s): me474315: ~/work/projects/code/CatHub — no longer on disk (repo retired/renamed? fix or drop the ref); me474333: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me474364: ~/work/projects/code/glassfoam-sim — no longer on disk (repo retired/renamed? fix or drop the ref); me474402: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me474437: ~/work/projects/code/slullama — no longer on disk (repo retired/renamed? fix or drop the ref); me477677: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me477684: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me477685: ~/work/projects/code/precis-dft — no longer on disk (repo retired/renamed? fix or drop the ref); 
