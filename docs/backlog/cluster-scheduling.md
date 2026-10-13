@@ -107,6 +107,18 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   scheduler cadences:** `heartbeat` (+ its capability probe) must fire on
   every host — it moves into the worker loop as a plain per-host pass and
   must not depend on the claim machinery it vouches for.
+- **§A′ — hourly cadences off the melchior loop cycle (gr479615, folded
+  2026-10-13).** Cadence callables fire once per worker-loop cycle, so an
+  "hourly" cadence on melchior slips by up to one cycle; the per-pass wall
+  budget for `fetch_oa` (4fbad9c45, `PRECIS_OA_FETCH_PASS_WALL_S`) bounded
+  the cycle, but a prod read on 2026-10-13 09:06Z still showed 11 of 99
+  scheduler-pass gaps over 25 min (max 120 min) in 12 h. Remaining design:
+  run the scheduler tick on its own timer (thread or lease-backed clock,
+  the §A pattern) so cadence lateness is bounded by the tick, not by the
+  slowest ref pass sharing the loop; cadence callables then run
+  concurrently with ref passes on the shared pool, which needs a
+  concurrency cap. Acceptance: consecutive scheduler-pass rows on melchior
+  ≤ 25 min apart over 12 h; `structural`/`dream_agent` fire ≤ 25 min late.
 - **§L residuals** (cutover itself shipped): the gr187627/gr191264
   serial-rotation class — `chase` starving same-band reviewers under
   `--profile all`; gr192752's fix = `structural`/`deep_review` onto
