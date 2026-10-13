@@ -83,7 +83,8 @@ landing.
 - Does a compute-backed claim need a distinct hub type, or is `[fi]` with a
   pathway evidence edge enough? Leaning the latter — the hub asserts, the edges
   explain what supports it, and mixing paper + compute support on one hub is
-  desirable rather than a problem.
+  desirable rather than a problem. **Settled by the build:** `[fi]` + the
+  `corroborates`/`tier: "computed"` edge is what shipped; no new hub type.
 - Should the pathway's `config_snapshot_yaml` be part of what a citation pins,
   or is the content key (which already folds it) sufficient? Key is probably
   enough; the snapshot is for humans reading the audit trail.
@@ -130,23 +131,36 @@ A hub whose only evidence is computed stays `inflight` / `unverified` in
 `claim_trust` — nothing prints, so the label is accurate; a computed-tier
 trust label is a decision for the admissibility work below, not a read fix.
 
+## Status 2026-10-13 — the four open parts landed
+
+- **Fresher re-dispatch of a `ready` pathway** (was Still-open 1):
+  `dispatch_autocatpath` stamps `meta.reaction_key` (sha of the reaction
+  part of the content-key inputs — canonical spec, no engine token, no
+  slab) at mint, and supersedes a prior `ready` pathway in the same tx
+  when the new mint's `reaction_key` matches — exactly the `computing`
+  case's stamp. A `ready` prior for a different reaction (or one
+  predating the stamp) is untouched. The read-time `stale_reason` now
+  sees the supersession.
+- **Magnitude re-check** (was Still-open 2): `hub.py`'s
+  `pathway_barrier_mismatch` is the `_validate_quote` analogue, shared
+  by both doors. A caller passing `meta.claimed_barrier` (±
+  `claimed_barrier_std`) gets it compared against the pathway's
+  `meta.graph.links` reaction-step `barrier`/`barrier_std` — a mismatch
+  beyond the stated uncertainty (or `2*barrier_std` with none) refuses
+  with a `BadInput` naming both numbers; `ComputedEdge.mismatch_reason`
+  re-computes the same note at read time and the claim page + fisheye
+  render it. No LLM call.
+- **Nanopub bundle visibility** (was Still-open 3): `_EVIDENCE_KINDS`
+  admits `pathway`; `HubBundle.computed` carries the edges as a separate
+  list (never folded into the DOI-anchored `sources`), rendered as
+  `pw<id>` nodes in the claim page's provenance DAG.
+- **Web attach form** (was Still-open 4): the `/nanopub/fi<id>/evidence/add`
+  door parses `pw<id>` beside `pa`/`pt` and surfaces the refusal text.
+
 Still open:
 
-- **Fresher re-dispatch of a `ready` pathway.**
-  `quest/compute.py::dispatch_autocatpath` only stamps a prior pathway
-  `superseded` when it was still `"computing"`, so a pinned `ready` pathway
-  keeps its own content key after a re-dispatch and the read-time check
-  above cannot see it. Detecting it needs "the candidate's current pathway
-  for the same reaction", which the slug alone does not give (the key folds
-  the reaction config, so two reactions under one candidate also differ).
-- **Magnitude re-check.** No verbatim-quote analogue yet: a claim's stated
-  barrier value is not re-checked against `results.graph.links[].barrier` /
-  `barrier_std` at attach time or read time.
-- **Nanopub bundle visibility.** `src/precis/nanopub/evidence.py`'s
-  `_EVIDENCE_KINDS` is still paper/patent only, so a pathway-sourced
-  evidence edge is invisible to nanopub assembly even once attached here.
-  `load_bundle` can now read `HubEvidence.computed`; what a compute-backed
-  nanopub asserts is the admissibility question in "Target + blast radius".
-- **Web attach form.** `precis_web/routes/nanopub.py`'s evidence-attach
-  form only parses `pa`/`pt` source-ref prefixes; a `pw` pathway can be
-  attached only through `attach_evidence` directly.
+- **Admissibility rubric.** What a compute-backed nanopub asserts — the
+  question in "Target + blast radius". `load_bundle` exposes the edges
+  for review, but nothing feeds a mint gate or the artifact, and
+  `approve` is unchanged: a compute-backed claim still goes through the
+  same human gate as any other.

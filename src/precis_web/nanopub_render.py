@@ -1213,6 +1213,11 @@ def _graph(
 
     papers = list(bundle.sources) + list(bundle.contradicts)
     hub_paper_ids = {p.ref_id for p in papers}
+    # Computed (pathway) evidence — seniority's separate group, rendered
+    # as its own node class beside the papers, never folded into the
+    # paper set (no DOI, no year, no print visibility).
+    computed = list(bundle.computed)
+    hub_computed_ids = {c.pathway_ref_id for c in computed}
     # A composite's grounding lives on its conjunct atoms (the composite-shape
     # gate: "a composite cites its conjunct atoms' artifacts, not papers"),
     # so the hub's own evidence list is empty by design and the papers row
@@ -1220,11 +1225,13 @@ def _graph(
     # deduped across atoms — and remember which atom(s) each paper grounds
     # so its edge lands on the atom, not the hub.
     paper_atom_ids: dict[int, list[int]] = {}
+    computed_atom_ids: dict[int, list[int]] = {}
     if bundle.conjunct_atoms:
         from precis.errors import BadInput
         from precis.nanopub import evidence as ev
 
         seen_paper_ids = {p.ref_id for p in papers}
+        seen_computed_ids = set(hub_computed_ids)
         for atom_id, _sentence in bundle.conjunct_atoms:
             try:
                 atom_bundle = ev.load_bundle(store, atom_id)
@@ -1235,8 +1242,13 @@ def _graph(
                 if src.ref_id not in seen_paper_ids:
                     seen_paper_ids.add(src.ref_id)
                     papers.append(src)
-    paper_xs = _spread(len(papers))
-    for x, src in zip(paper_xs, papers):
+            for c in atom_bundle.computed:
+                computed_atom_ids.setdefault(c.pathway_ref_id, []).append(atom_id)
+                if c.pathway_ref_id not in seen_computed_ids:
+                    seen_computed_ids.add(c.pathway_ref_id)
+                    computed.append(c)
+    top_xs = _spread(len(papers) + len(computed))
+    for x, src in zip(top_xs, papers):
         nodes.append(
             {
                 "id": f"pc{src.ref_id}",
@@ -1258,6 +1270,29 @@ def _graph(
                         [["DOI", f"https://doi.org/{src.doi}"]] if src.doi else []
                     )
                     + [["paper page", f"/papers/{src.ref_id}"]],
+                },
+            }
+        )
+    for x, c in zip(top_xs[len(papers) :], computed):
+        stale = f" · ⚠ {c.stale_reason}" if c.stale_reason else ""
+        nodes.append(
+            {
+                "id": f"pw{c.pathway_ref_id}",
+                "cls": "computed",
+                "x": x,
+                "y": 40,
+                "label": (c.title or f"pw{c.pathway_ref_id}")[:38],
+                "sub": f"pathway · {c.relation}{stale}",
+                "detail": {
+                    "kind": "pathway",
+                    "title": c.title,
+                    "fields": [
+                        ["role", c.relation],
+                        ["tier", "computed"],
+                        ["content key", (c.content_key or "—")[:10]],
+                        ["stale", c.stale_reason or "—"],
+                    ],
+                    "links": [["pathway page", f"/r/pathway/{c.pathway_ref_id}"]],
                 },
             }
         )
@@ -1331,6 +1366,20 @@ def _graph(
                     "dst": dst,
                     "label": src.role,
                     "cls": "contradicts" if src.role == "contradicts" else "",
+                }
+            )
+    for c in computed:
+        # Same rule as papers: an atom-aggregated pathway edges onto the
+        # atom(s) citing it, the hub's own onto the hub.
+        dsts = ["hub"] if c.pathway_ref_id in hub_computed_ids else []
+        dsts += [f"fi{a}" for a in computed_atom_ids.get(c.pathway_ref_id, [])]
+        for dst in dsts:
+            edges.append(
+                {
+                    "src": f"pw{c.pathway_ref_id}",
+                    "dst": dst,
+                    "label": c.relation,
+                    "cls": "computed",
                 }
             )
 

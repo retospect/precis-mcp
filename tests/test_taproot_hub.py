@@ -783,17 +783,21 @@ def _seed_pathway(
     content_key: str | None = "sha-abc123",
     barrier_available: bool = True,
     status: str = "ready",
+    links: list[dict[str, Any]] | None = None,
     extra_meta: dict[str, Any] | None = None,
 ) -> int:
     """Insert a minimal ``pathway`` ref carrying a catpath-shaped ``meta``
     (:func:`precis_pathway.persist.pathway_meta`'s output shape:
     ``content_key``/``status`` top-level, ``trust_summary`` nested under
-    ``results``)."""
+    ``results``, ``links`` under ``graph`` — the rows the magnitude
+    re-check reads ``barrier``/``barrier_std`` off)."""
     _seed_pathway_kind(store)
     meta: dict[str, Any] = {
         "status": status,
         "results": {"trust_summary": {"barrier": {"available": barrier_available}}},
     }
+    if links is not None:
+        meta["graph"] = {"links": links}
     if content_key is not None:
         meta["content_key"] = content_key
     if extra_meta:
@@ -860,6 +864,179 @@ def test_attach_evidence_pathway_without_content_key_refuses(store: Any) -> None
         attach_evidence(
             store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates"
         )
+
+
+# ── magnitude re-check — the compute analogue of _validate_quote ────────
+# (same item, "Magnitude re-check": a claim's stated barrier is re-read
+# against the pathway's own graph.links barriers, at attach AND at read.)
+
+
+def test_attach_evidence_pathway_matching_claimed_barrier_attaches(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-eee555",
+        content_key="sha-eee555",
+        links=[
+            {"source": "A", "target": "B", "barrier": 1.21, "barrier_std": 0.08},
+            # supply bridges carry no activation barrier and never match
+            {"source": "S", "target": "A", "kind": "supply", "delta_e": 0.3},
+        ],
+    )
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta={"claimed_barrier": 1.2},
+    )
+
+    edge_meta = _link_meta(store, pathway, hub)
+    assert edge_meta["claimed_barrier"] == 1.2
+    assert edge_meta["tier"] == "computed"
+
+
+def test_attach_evidence_pathway_mismatched_claimed_barrier_refuses(
+    store: Any,
+) -> None:
+    """Stated 2.0 eV vs computed 1.2±0.08 eV — beyond 2*barrier_std (the
+    claim gave no uncertainty), refused naming both numbers."""
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-fff666",
+        content_key="sha-fff666",
+        links=[{"source": "A", "target": "B", "barrier": 1.2, "barrier_std": 0.08}],
+    )
+
+    with pytest.raises(BadInput, match="2.*1.2"):
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=pathway,
+            role="corroborates",
+            meta={"claimed_barrier": 2.0},
+        )
+    assert _edge(store, pathway, hub) is None
+
+
+def test_attach_evidence_pathway_claimed_barrier_within_two_std_attaches(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-ggg777",
+        content_key="sha-ggg777",
+        links=[{"source": "A", "target": "B", "barrier": 1.2, "barrier_std": 0.1}],
+    )
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta={"claimed_barrier": 1.39},  # |Δ| = 0.19 < 2 * 0.1
+    )
+    assert _edge(store, pathway, hub) == "corroborates"
+
+
+def test_attach_evidence_pathway_claimed_barrier_stated_uncertainty(
+    store: Any,
+) -> None:
+    """A stated uncertainty REPLACES the 2*barrier_std tolerance: 0.15 eV
+    of claimed slack admits |Δ| = 0.12 even though that exceeds 2*0.03."""
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-hhh888",
+        content_key="sha-hhh888",
+        links=[{"source": "A", "target": "B", "barrier": 1.2, "barrier_std": 0.03}],
+    )
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta={"claimed_barrier": 1.32, "claimed_barrier_std": 0.15},
+    )
+    assert _edge(store, pathway, hub) == "corroborates"
+
+
+def test_attach_evidence_pathway_claimed_barrier_any_step_matches(
+    store: Any,
+) -> None:
+    """The stated value need only match SOME reaction step — a sub-step
+    barrier is still the pathway's own number."""
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-iii999",
+        content_key="sha-iii999",
+        links=[
+            {"source": "A", "target": "B", "barrier": 0.8, "barrier_std": 0.05},
+            {"source": "B", "target": "C", "barrier": 1.2, "barrier_std": 0.05},
+        ],
+    )
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta={"claimed_barrier": 0.82},
+    )
+    assert _edge(store, pathway, hub) == "corroborates"
+
+
+def test_attach_evidence_pathway_claimed_barrier_no_graph_refuses(
+    store: Any,
+) -> None:
+    """A claim that states a number the pathway never produced has
+    nothing to stand on."""
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="probe-rx-jjj000", content_key="sha-jjj")
+
+    with pytest.raises(BadInput, match="no reaction-step barrier"):
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=pathway,
+            role="corroborates",
+            meta={"claimed_barrier": 1.0},
+        )
+
+
+def test_attach_evidence_pathway_non_numeric_claimed_barrier_refuses(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="probe-rx-kkk111", content_key="sha-kkk")
+
+    with pytest.raises(BadInput, match="claimed_barrier"):
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=pathway,
+            role="corroborates",
+            meta={"claimed_barrier": "high"},
+        )
+
+
+def test_attach_evidence_pathway_without_claimed_barrier_unchecked(
+    store: Any,
+) -> None:
+    """No stated barrier → no magnitude check (the web door attaches
+    without one)."""
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="probe-rx-lll222", content_key="sha-lll")
+
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+    assert _edge(store, pathway, hub) == "corroborates"
 
 
 # ── apply_placement — routes every place() action ───────────────────────

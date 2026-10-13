@@ -94,6 +94,29 @@ def test_source_filter_accepts_exactly_the_evidence_src_kinds(store: Any) -> Non
     assert {s.kind for s in bundle.sources} == set(EVIDENCE_SRC_KINDS)
 
 
+def test_pathway_evidence_reaches_the_bundle_as_computed(store: Any) -> None:
+    """A pathway evidence edge is visible to nanopub assembly — as its
+    own ``computed`` list (a pathway is content-keyed, not DOI-anchored,
+    so it must not fold into ``sources``). Admissibility stays open: the
+    list is visibility only, no gate or artifact reads it."""
+    from tests.test_taproot_hub import _seed_pathway
+
+    hub = mint_hub(store, CanonicalClaim(sentence=_SENTENCE, scope={}))
+    pathway = _seed_pathway(store, slug="np-rx-aaa111", content_key="sha-aaa111")
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        check_retraction=False,
+    )
+
+    bundle = evidence.load_bundle(store, hub)
+
+    assert [c.pathway_ref_id for c in bundle.computed] == [pathway]
+    assert {s.kind for s in bundle.sources} == set()
+
+
 def test_edgar_supporter_reaches_bundle_with_archive_url(store: Any) -> None:
     ref_id, chunk = _seed_non_paper_source(store, "edgar", slug=_ACCESSION)
     hub = _seed_hub(store, _SENTENCE, ref_id, chunk)

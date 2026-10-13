@@ -57,7 +57,13 @@ _PC_HANDLE = re.compile(r"^pc(\d+)$")
 _AWAITS_EVIDENCE = "awaits-evidence"
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_ACQUIRING = "acquiring"
-_EVIDENCE_KINDS = ("paper", "patent")
+#: Kinds admitted into :func:`load_bundle`'s evidence accounting —
+#: ``pathway`` edges surface as :attr:`HubBundle.computed` (a separate
+#: list, never folded into the DOI-anchored ``sources`` — what a
+#: compute-backed nanopub asserts is still the open admissibility
+#: question in docs/backlog/computed-pathways-cannot-be-cited-as-claim-
+#: evidence.md, so nothing here feeds a mint gate or the artifact).
+_EVIDENCE_KINDS = ("paper", "patent", "pathway")
 
 #: ``refs.meta`` key declaring "this hub's primary source is not in the
 #: corpus" for the shapes no edge can express: a primary known only by
@@ -554,6 +560,14 @@ class HubBundle:
     acquiring: bool = False
     #: Hub declares :data:`PRIMARY_UNHELD_META_KEY` in ``refs.meta``.
     primary_source_unheld: bool = False
+    #: Computed (``pathway``) evidence edges — seniority's own group,
+    #: deliberately NOT in ``sources``: an ``EvidenceSource`` is a
+    #: DOI/sha-anchored bibliographic node, a pathway is a content-keyed
+    #: compute artifact with no citation identifier. Visibility only —
+    #: whether a compute-backed nanopub may assert these is the open
+    #: admissibility question (the mint gates and ``approve`` do not read
+    #: this list).
+    computed: list[seniority.ComputedEdge] = field(default_factory=list)
 
 
 def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
@@ -672,6 +686,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
         awaiting_sources=_awaiting_sources(store, hub_ref_id),
         acquiring=store.has_tag(hub_ref_id, _STATUS_NAMESPACE, _STATUS_ACQUIRING),
         primary_source_unheld=bool((hub_ref.meta or {}).get(PRIMARY_UNHELD_META_KEY)),
+        computed=list(evidence.computed),
     )
 
 

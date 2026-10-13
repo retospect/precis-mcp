@@ -5805,13 +5805,15 @@ class TestDispatchAutocatpath:
         second_meta = store.fetch_refs_by_ids({second_id})[second_id].meta or {}
         assert second_meta.get("status") == "computing"
 
-    def test_ready_prior_tier_pathway_is_never_touched(
+    def test_ready_prior_same_reaction_is_superseded(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """A "ready" prior tier result feeds `_pathway_tier_sibling` and
-        `handler._compare`'s status='ready' SQL — the supersede stamp must
-        only ever touch a stale in-flight "computing" prior, never a
-        completed tier result."""
+        """A re-dispatch that mints a new pathway (content-key change)
+        IS the fresher evaluation of the same reaction — the pinned
+        ``ready`` pathway's own content_key never moves, so the mint
+        stamps it superseded for the read-side stale check to see
+        (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
+        evidence.md)."""
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
@@ -5822,10 +5824,70 @@ class TestDispatchAutocatpath:
 
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        second_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert second_id is not None and second_id != first_id
+
+        first_meta = store.fetch_refs_by_ids({first_id})[first_id].meta or {}
+        assert first_meta.get("status") == "superseded"
+        assert first_meta.get("superseded_by") == second_id
+
+    def test_ready_prior_different_reaction_is_never_touched(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A "ready" prior for a DIFFERENT reaction under the same
+        candidate keeps standing: the supersede compares the reaction
+        part of the content-key inputs (``meta.reaction_key``), not the
+        slug — two reactions under one candidate hold independent
+        pathways."""
+        other_rx = {"substrate": "CO", "target": "CH3OH", "network": "co2r"}
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        first_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert first_id is not None
+        store.stamp_ref_meta(first_id, {"status": "ready"})
+
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        compute_mod.dispatch_autocatpath(store, sid, other_rx)
 
         first_meta = store.fetch_refs_by_ids({first_id})[first_id].meta or {}
         assert first_meta.get("status") == "ready"
         assert "superseded_by" not in first_meta
+
+    def test_ready_prior_without_reaction_key_is_never_touched(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A "ready" prior that predates the reaction_key stamp (null in
+        meta) can't be proven same-reaction — conservative: untouched."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        first_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert first_id is not None
+        store.stamp_ref_meta(first_id, {"status": "ready", "reaction_key": None})
+
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+
+        first_meta = store.fetch_refs_by_ids({first_id})[first_id].meta or {}
+        assert first_meta.get("status") == "ready"
+        assert "superseded_by" not in first_meta
+
+    def test_pathway_mint_stamps_the_reaction_key(self, store: Any) -> None:
+        """``meta.reaction_key`` lands on the minted pathway — the dispatch
+        spec's canonical hash (tier overlay folded, no engine token, no
+        slab), readable by the supersede check above."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        pw_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert pw_id is not None
+        meta = store.fetch_refs_by_ids({pw_id})[pw_id].meta or {}
+        assert meta.get("reaction_key") == compute_mod._autocatpath_reaction_key(
+            compute_mod._apply_tier_config(self._RX, compute_mod._TIER_NEB)
+        )
 
     def test_redispatch_candidates_reevaluates_all_non_ruled_out(
         self, store: Any, monkeypatch: Any

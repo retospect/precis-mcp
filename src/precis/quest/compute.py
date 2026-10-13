@@ -1290,6 +1290,23 @@ def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _autocatpath_reaction_key(config: dict[str, Any]) -> str:
+    """The reaction part of :func:`_autocatpath_content_key`'s inputs —
+    the canonical spec alone, no engine token and no slab geometry.
+
+    Stamped on the pathway ref at dispatch (``meta.reaction_key``) so a
+    re-dispatch can tell "the candidate's current pathway for the same
+    reaction" apart from "a pathway for a different reaction" — the slug
+    can't answer that (its key folds reaction + geometry + engine
+    together), and ``meta.config`` on a ready pathway is catpath's
+    normalized *effective* config, not the dispatch-time spec this hashes.
+    Two reactions under one candidate therefore keep independent pathways,
+    while a fresher evaluation of the SAME reaction supersedes the prior
+    (see :func:`dispatch_autocatpath`'s supersede stamp).
+    """
+    return hashlib.sha256(_canonical_spec(config).encode()).hexdigest()
+
+
 def _autocatpath_seed_content_key(
     config: dict[str, Any], slab_extxyz: str, seed: int, model_index: int
 ) -> str:
@@ -1497,10 +1514,14 @@ def dispatch_autocatpath(
     :func:`_find_tier_pathway`, the promotion-eligibility +
     `refines`-lineage seam). A re-dispatch of the SAME (candidate, tier)
     under changed config/geometry/engine mints a new content-addressed
-    pathway; the mint stamps any prior still-``"computing"`` pathway for
-    that pair ``meta.status = "superseded"``/``meta.superseded_by = <new
-    id>`` in the same transaction (gr197692, never unreachable forever). A
-    ``"ready"`` prior tier is untouched.
+    pathway; the mint stamps a prior ``"computing"`` pathway for that pair
+    ``meta.status = "superseded"``/``meta.superseded_by = <new id>`` in the
+    same transaction (gr197692, never unreachable forever). A ``"ready"``
+    prior is superseded too when the new mint is a fresher evaluation of
+    the SAME reaction (``meta.reaction_key`` match,
+    :func:`_autocatpath_reaction_key`) — the read-side staleness check
+    sees only the pathway's own ``status`` — while a ``"ready"`` prior for
+    a different reaction stays a completed tier result, untouched.
 
     §B-1 (gr180096): exports the candidate's relaxed geometry as extxyz,
     ensures a `pathway` ref for the write-back, then mints a **job tree**
@@ -1666,6 +1687,7 @@ def dispatch_autocatpath(
         # lever (paired with best_first NEB scheduling below). Explicit override wins.
         run_config["mlip"].setdefault("dtype", "mixed")
     key = _autocatpath_content_key(run_config, slab_extxyz)
+    reaction_key = _autocatpath_reaction_key(run_config)
     pslug = f"{ref.slug}-rx-{key[:10]}"
 
     # A prior pathway for this (candidate, tier), if any — captured BEFORE
@@ -1688,6 +1710,12 @@ def dispatch_autocatpath(
                     title=f"pathway {pslug} (computing)",
                     meta={
                         "content_key": key,
+                        # The reaction half of the content key — survives
+                        # persist_result's meta merge like tier/candidate_ref
+                        # do, and is what the ready-prior supersede below
+                        # compares (NOT the slug, which folds geometry and
+                        # engine in too).
+                        "reaction_key": reaction_key,
                         "status": "computing",
                         "candidate_ref": structure_ref_id,
                         # dispatch-time tier stamp — the promotion-eligibility
@@ -1707,17 +1735,31 @@ def dispatch_autocatpath(
                 # key), so a prior still-"computing" pathway would sit
                 # unreachable, permanently, from here on (gr197692). Stamp
                 # it superseded in the SAME tx as the mint so the two never
-                # diverge. A "ready" prior is left strictly alone — it's a
-                # completed tier result that `_pathway_tier_sibling` and
-                # `handler._compare`'s status='ready' SQL still read; only a
-                # stale in-flight "computing" pathway is debris.
+                # diverge.
+                #
+                # A "ready" prior is superseded too — but ONLY when the new
+                # mint evaluates the same reaction (``meta.reaction_key``
+                # match, :func:`_autocatpath_reaction_key`): a re-dispatch
+                # that mints a new pathway IS the fresher evaluation of
+                # that reaction, and a completed pathway's own
+                # ``content_key`` never moves, so without the stamp the
+                # read-side stale check
+                # (``seniority._computed_stale_reason``) could not see it.
+                # A "ready" prior for a DIFFERENT reaction (reaction_key
+                # differs — or it predates the stamp and carries none) is
+                # left strictly alone: it's a completed tier result that
+                # `_pathway_tier_sibling` and `handler._compare`'s
+                # status='ready' SQL still read.
                 if prior_pathway_id is not None and prior_pathway_id != pathway_ref_id:
                     row = conn.execute(
                         "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'pathway'",
                         (prior_pathway_id,),
                     ).fetchone()
                     prior_meta = dict(row[0] or {}) if row else {}
-                    if prior_meta.get("status") == "computing":
+                    if prior_meta.get("status") == "computing" or (
+                        prior_meta.get("status") == "ready"
+                        and prior_meta.get("reaction_key") == reaction_key
+                    ):
                         store.stamp_ref_meta(
                             prior_pathway_id,
                             {

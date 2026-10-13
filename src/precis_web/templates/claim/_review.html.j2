@@ -217,7 +217,7 @@
         {% for n in np.graph.nodes %}
         <g class="np-node cursor-pointer" data-id="{{ n.id }}" transform="translate({{ n.x - 100 }},{{ n.y - 28 }})">
           <rect width="200" height="56" rx="8" fill="#ffffff"
-                stroke="{% if 'contradicts' in n.cls or 'disputed' in n.cls %}#e11d48{% elif 'paper' in n.cls %}#b7791f{% elif 'atom' in n.cls %}#2b6cb0{% elif 'anchor' in n.cls %}#94a3b8{% else %}#059669{% endif %}"
+                stroke="{% if 'contradicts' in n.cls or 'disputed' in n.cls %}#e11d48{% elif 'paper' in n.cls %}#b7791f{% elif 'computed' in n.cls %}#7c3aed{% elif 'atom' in n.cls %}#2b6cb0{% elif 'anchor' in n.cls %}#94a3b8{% else %}#059669{% endif %}"
                 stroke-width="2" {% if 'anchor' in n.cls %}stroke-dasharray="5 3"{% endif %}/>
           {% if 'disputed' in n.cls %}<text x="184" y="16" font-size="12" fill="#e11d48">◆</text>{% endif %}
           <text x="10" y="22" font-size="11" class="fill-slate-800">{{ n.label }}</text>
@@ -404,7 +404,7 @@
       <details class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
         <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">Add evidence edge</summary>
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/evidence/add" class="mt-2 flex flex-wrap items-center gap-2">
-          <input name="source" placeholder="pa1234 (paper/patent)" required
+          <input name="source" placeholder="pa1234 / pw1234" required
                  class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-40">
           <input name="chunk" placeholder="pc5678 (passage, optional)"
                  class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">

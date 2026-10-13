@@ -1663,3 +1663,55 @@ def test_derive_evidence_bulk_matches_singular_for_computed(store: Any) -> None:
     assert bulk[hub_a] == derive_evidence(store, hub_a)
     assert bulk[hub_b] == derive_evidence(store, hub_b)
     assert bulk[hub_b].computed == []
+
+
+def test_derive_evidence_computed_mismatch_reason(store: Any) -> None:
+    """The read-time half of the magnitude re-check: the edge's stored
+    ``claimed_barrier`` is re-checked against the pathway's CURRENT
+    ``graph.links`` — a claim whose stated value drifts out of tolerance
+    reads the mismatch back on the edge (same check the attach door ran).
+    """
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="sen-rx-hhh888",
+        content_key="sha-hhh888",
+        links=[{"source": "A", "target": "B", "barrier": 1.2, "barrier_std": 0.05}],
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta={"claimed_barrier": 1.21},
+    )
+
+    computed = derive_evidence(store, hub).computed[0]
+    assert computed.mismatch_reason is None  # |0.01| < 2 * 0.05
+
+    # The pathway's computed number moved under the citation.
+    _set_pathway_meta(
+        store,
+        pathway,
+        {
+            "graph": {
+                "links": [
+                    {"source": "A", "target": "B", "barrier": 1.9, "barrier_std": 0.05}
+                ]
+            }
+        },
+    )
+
+    reason = derive_evidence(store, hub).computed[0].mismatch_reason
+    assert reason is not None
+    assert "1.21" in reason and "1.9" in reason
+
+
+def test_derive_evidence_computed_no_claimed_barrier_no_mismatch(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="sen-rx-iii999", content_key="sha-iii999")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+
+    assert derive_evidence(store, hub).computed[0].mismatch_reason is None

@@ -293,7 +293,8 @@ def _computed_line(edge: ComputedEdge) -> str:
         title = title[:89].rstrip() + "…"
     label = f"{handle} — {title}" if title else handle
     stale = f" — ⚠ stale: {edge.stale_reason}" if edge.stale_reason else ""
-    return f"⚙ {label}{stale}"
+    mismatch = f" — ⚠ mismatch: {edge.mismatch_reason}" if edge.mismatch_reason else ""
+    return f"⚙ {label}{stale}{mismatch}"
 
 
 def _claim_link_line(prefix: str, cr: Any) -> str:

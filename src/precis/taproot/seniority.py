@@ -51,8 +51,15 @@ from typing import Any
 from precis.errors import BadInput
 from precis.store.protocols import PoolStore
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
-from precis.taproot.hub import EVIDENCE_SRC_KINDS, PATHWAY_EVIDENCE_KINDS
+from precis.taproot.hub import (
+    CLAIMED_BARRIER_META_KEY,
+    CLAIMED_BARRIER_STD_META_KEY,
+    EVIDENCE_SRC_KINDS,
+    PATHWAY_EVIDENCE_KINDS,
+    pathway_barrier_mismatch,
+)
 from precis.utils import handle_registry
+from precis.utils.coerce import num_finite
 
 #: The two roles that feed the seniority split (`establishes` is the
 #: already-derived role from a previous call; `corroborates` is the
@@ -171,6 +178,12 @@ class ComputedEdge:
     support: str | None
     caveats: list[str]
     stale_reason: str | None = None
+    #: Why the claim's stated barrier no longer matches the pathway's own
+    #: results — the read-time half of the magnitude re-check
+    #: (:func:`~precis.taproot.hub.pathway_barrier_mismatch`), computed the
+    #: same way as the attach-time refusal against the pathway's CURRENT
+    #: meta. ``None`` when the edge states no barrier or the check passes.
+    mismatch_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -376,6 +389,24 @@ def _computed_stale_reason(
     return None
 
 
+def _computed_mismatch(
+    meta: dict[str, Any], pathway_meta: dict[str, Any]
+) -> str | None:
+    """Read-time half of the magnitude re-check: the edge's stored
+    ``claimed_barrier``/``claimed_barrier_std`` re-checked against the
+    pathway's CURRENT graph, same way the attach door did
+    (:func:`~precis.taproot.hub.pathway_barrier_mismatch`). An edge that
+    states no barrier has nothing to mismatch."""
+    claimed = num_finite(meta.get(CLAIMED_BARRIER_META_KEY))
+    if claimed is None:
+        return None
+    return pathway_barrier_mismatch(
+        claimed=claimed,
+        claimed_std=num_finite(meta.get(CLAIMED_BARRIER_STD_META_KEY)),
+        pathway_meta=pathway_meta,
+    )
+
+
 def _build_computed(
     rows: list[tuple[int, str, dict[str, Any]]],
     facts: dict[int, tuple[str, dict[str, Any]]],
@@ -398,6 +429,7 @@ def _build_computed(
             support=meta.get("support"),
             caveats=list(meta.get("caveats") or []),
             stale_reason=_computed_stale_reason(pinned, pmeta),
+            mismatch_reason=_computed_mismatch(meta, pmeta),
         )
     return [seen[r] for r in sorted(seen)]
 

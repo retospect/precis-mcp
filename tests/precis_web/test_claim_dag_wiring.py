@@ -28,6 +28,20 @@ def _src(ref_id: int, role: str = "corroborates") -> SimpleNamespace:
     )
 
 
+def _computed(ref_id: int, stale: str | None = None) -> SimpleNamespace:
+    """A ``seniority.ComputedEdge``-shaped stub — one pathway evidence edge."""
+    return SimpleNamespace(
+        pathway_ref_id=ref_id,
+        title=f"pathway {ref_id}",
+        relation="corroborates",
+        content_key="sha-deadbeef",
+        support=None,
+        caveats=[],
+        stale_reason=stale,
+        mismatch_reason=None,
+    )
+
+
 def _bundle(**kw: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "hub_ref_id": 99,
@@ -35,6 +49,7 @@ def _bundle(**kw: Any) -> SimpleNamespace:
         "sources": [],
         "contradicts": [],
         "conjunct_atoms": [],
+        "computed": [],
     }
     base.update(kw)
     return SimpleNamespace(**base)
@@ -95,3 +110,32 @@ class TestCompositePapersRow:
         g = nanopub_render._graph(_Store(), bundle, None, "claim", blocked=False)
         assert [n["id"] for n in g["nodes"] if n["cls"].startswith("paper")] == ["pc7"]
         assert {e["dst"] for e in g["edges"] if e["src"] == "pc7"} == {"hub"}
+
+
+class TestComputedNodes:
+    """Pathway (computed) evidence renders as its own node class beside
+    the papers — never folded into the paper set."""
+
+    def test_computed_edge_renders_a_pw_node_to_the_hub(self) -> None:
+        bundle = _bundle(
+            sources=[_src(7)], computed=[_computed(41, stale="superseded by pw42")]
+        )
+        g = nanopub_render._graph(_Store(), bundle, None, "claim", blocked=False)
+        (node,) = [n for n in g["nodes"] if n["id"] == "pw41"]
+        assert node["cls"] == "computed"
+        assert "superseded" in node["sub"]
+        assert node["detail"]["kind"] == "pathway"
+        assert {e["dst"] for e in g["edges"] if e["src"] == "pw41"} == {"hub"}
+
+    def test_atom_computed_evidence_edges_to_the_atom(self, monkeypatch) -> None:
+        from precis.nanopub import evidence as ev
+
+        monkeypatch.setattr(
+            ev,
+            "load_bundle",
+            lambda store, hub_id: _bundle(hub_ref_id=hub_id, computed=[_computed(41)]),
+        )
+        bundle = _bundle(conjunct_atoms=[(1, "atom one")])
+        g = nanopub_render._graph(_Store(), bundle, None, "composite", blocked=False)
+        assert [n["id"] for n in g["nodes"] if n["cls"] == "computed"] == ["pw41"]
+        assert {e["dst"] for e in g["edges"] if e["src"] == "pw41"} == {"fi1"}

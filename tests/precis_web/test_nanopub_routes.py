@@ -856,6 +856,50 @@ def test_evidence_add_and_remove_doors(client: TestClient, runtime_with_store) -
         assert resp.status_code == 400
 
 
+def test_evidence_add_accepts_a_pw_pathway_source(
+    client: TestClient, runtime_with_store
+) -> None:
+    """``pw<id>`` parses beside pa/pt and routes to the same
+    attach_evidence door — the edge lands, and a refusal (e.g. a pathway
+    whose trust summary reports no available barrier) surfaces its text
+    on the page rather than a bare 400."""
+    from tests.test_taproot_hub import _seed_pathway
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A compute-backed claim.", paper, chunk)
+    pathway = _seed_pathway(store, slug="web-rx-aaa111", content_key="sha-aaa111")
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/evidence/add",
+        data={"source": f"pw{pathway}", "relation": "corroborates"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT relation, meta->>'tier' FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (pathway, hub),
+        ).fetchone()
+    assert row == ("corroborates", "computed")
+
+    # Refusals carry the door's own text — here the trust-summary guard.
+    untrusted = _seed_pathway(
+        store,
+        slug="web-rx-bbb222",
+        content_key="sha-bbb222",
+        barrier_available=False,
+    )
+    resp = client.post(
+        f"/nanopub/fi{hub}/evidence/add",
+        data={"source": f"pw{untrusted}", "relation": "corroborates"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "barrier.available" in resp.text
+
+
 def test_tree_nests_conjunct_atom_under_composite(
     client: TestClient, runtime_with_store
 ) -> None:

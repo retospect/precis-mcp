@@ -418,16 +418,21 @@ async def nanopub_evidence_add(
     chunk: str = Form(""),
     relation: str = Form("corroborates"),
 ) -> Response:
-    """Human curation door: attach one paper/patent evidence edge to the
-    hub. The new edge starts withheld (no ``support`` verdict), so it
-    still needs sign-off or refine-verification before publish."""
+    """Human curation door: attach one paper/patent/pathway evidence edge
+    to the hub (``pa<id>``/``pt<id>``/``pw<id>``). The new edge starts
+    withheld (no ``support`` verdict), so it still needs sign-off or
+    refine-verification before publish."""
     from precis.errors import BadInput
     from precis.nanopub import evidence as ev
     from precis.taproot.hub import attach_evidence
 
     store = get_store(request)
     try:
-        paper_ref_id = _parse_ref(source, ("pa", "pt"))
+        # ``pw<id>`` parses beside the paper/patent prefixes — a pathway
+        # attaches through the same attach_evidence door (its own guards:
+        # corroborates-only, trust summary, magnitude re-check; the
+        # refusal text lands on this page via the BadInput arm below).
+        paper_ref_id = _parse_ref(source, ("pa", "pt", "pw"))
         meta: dict[str, Any] = {}
         if chunk.strip():
             chunk_id = _parse_ref(chunk, ("pc",))

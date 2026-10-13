@@ -59,6 +59,7 @@ from precis.taproot.claim_type import (
     register_sentence_id,
 )
 from precis.taproot.notation import lint_notation
+from precis.utils.coerce import num_finite
 from precis.utils.link_tag_ops import validate_relation
 
 if TYPE_CHECKING:
@@ -911,8 +912,84 @@ def _pathway_trust_summary(meta: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+#: Edge-``meta`` keys a caller uses to state the claim's measured
+#: magnitude for the magnitude re-check — the compute analogue of
+#: ``reground._validate_quote`` (docs/backlog/computed-pathways-cannot-
+#: be-cited-as-claim-evidence.md): there is no text to quote, so the
+#: claim's stated barrier (eV) is re-read against the pathway's own
+#: ``meta['graph']['links']`` numbers instead. ``claimed_barrier`` opts
+#: the check in (a pathway attach without it is not magnitude-checked —
+#: nothing was stated to check); ``claimed_barrier_std`` is the stated
+#: uncertainty, with ``2 * barrier_std`` of the pathway's own link
+#: standing in when the claim gives none. Both ride onto the stored edge
+#: meta so the read side
+#: (:func:`precis.taproot.seniority._computed_mismatch`) re-checks the
+#: same pair against the pathway's CURRENT graph.
+CLAIMED_BARRIER_META_KEY = "claimed_barrier"
+CLAIMED_BARRIER_STD_META_KEY = "claimed_barrier_std"
+
+
+def _pathway_graph_barriers(meta: dict[str, Any]) -> list[tuple[float, float]]:
+    """``(barrier, barrier_std)`` per reaction step of a pathway's stored
+    graph — ``meta['graph']['links']``, the shape
+    :func:`precis_pathway.persist.pathway_meta` writes (``graph_json``
+    verbatim). ``kind='supply'`` stoichiometry bridges carry no activation
+    barrier and are skipped (same filter as
+    :func:`precis.utils.reaction_graph._reaction_edges`), as is any link
+    whose barrier didn't survive as a finite number."""
+    graph = meta.get("graph")
+    links = graph.get("links") if isinstance(graph, dict) else None
+    out: list[tuple[float, float]] = []
+    for e in links or []:
+        if not isinstance(e, dict) or e.get("kind") == "supply":
+            continue
+        b = num_finite(e.get("barrier"))
+        if b is None:
+            continue
+        out.append((b, num_finite(e.get("barrier_std")) or 0.0))
+    return out
+
+
+def pathway_barrier_mismatch(
+    *, claimed: float, claimed_std: float | None, pathway_meta: dict[str, Any]
+) -> str | None:
+    """Why a claim's stated barrier disagrees with the pathway's own
+    results, or ``None`` when it matches — the read/write-shared half of
+    the magnitude re-check.
+
+    The stated barrier must land within tolerance of SOME reaction-step
+    barrier in the pathway's graph (:func:`_pathway_graph_barriers`): the
+    stated uncertainty when the claim gives one, ``2 * barrier_std`` of
+    that step when it doesn't. The note names the claimed number and the
+    nearest computed one (so a refusal reads as evidence, not a bare
+    no). A pathway with no computable barrier at all mismatches outright —
+    a claim that states a number the pathway never produced has nothing
+    to stand on.
+    """
+    barriers = _pathway_graph_barriers(pathway_meta)
+    if not barriers:
+        return (
+            "the pathway reports no reaction-step barrier in "
+            "results.graph.links to check against"
+        )
+    for b, std in barriers:
+        tol = claimed_std if claimed_std is not None else 2 * std
+        if abs(claimed - b) <= tol:
+            return None
+    nearest_b, nearest_std = min(barriers, key=lambda bs: abs(claimed - bs[0]))
+    tol = claimed_std if claimed_std is not None else 2 * nearest_std
+    return (
+        f"claimed barrier {claimed:g} eV vs the pathway's computed "
+        f"{nearest_b:g}±{nearest_std:g} eV (nearest of {len(barriers)} "
+        f"step(s), tolerance {tol:g} eV)"
+    )
+
+
 def _pathway_evidence_meta(
-    *, pathway_ref_id: int, src_meta: dict[str, Any]
+    *,
+    pathway_ref_id: int,
+    src_meta: dict[str, Any],
+    edge_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate a ``pathway`` src is citable evidence for a claim hub and
     return the edge ``meta`` to merge in.
@@ -930,6 +1007,12 @@ def _pathway_evidence_meta(
     * no (string) ``meta.content_key`` — the citation pins
       ``(pathway_ref_id, content_key)``, so a pathway that predates
       content-key stamping has nothing to pin.
+    * a stated-barrier mismatch — when ``edge_meta`` carries
+      :data:`CLAIMED_BARRIER_META_KEY`, the claim's stated barrier is
+      re-checked against the pathway's own ``graph.links`` barriers
+      (:func:`pathway_barrier_mismatch`, the ``_validate_quote``
+      analogue); a mismatch beyond the stated uncertainty names both
+      numbers.
 
     Returns ``{"tier": "computed", "content_key": ..., "pathway_ref_id":
     ...}`` to merge into the evidence edge's ``meta``.
@@ -968,6 +1051,40 @@ def _pathway_evidence_meta(
                 "so the evidence edge can pin (pathway_ref_id, content_key)"
             ),
         )
+
+    # Magnitude re-check (the _validate_quote analogue): a caller that
+    # states the claim's barrier has it re-read against the pathway's own
+    # computed numbers rather than accepted on the LLM's word.
+    claimed = (edge_meta or {}).get(CLAIMED_BARRIER_META_KEY)
+    if claimed is not None:
+        claimed_num = num_finite(claimed)
+        if claimed_num is None:
+            raise BadInput(
+                f"meta.{CLAIMED_BARRIER_META_KEY} must be a finite number "
+                f"(eV), got {claimed!r}",
+                next="pass the claim's stated barrier in eV, or omit the key",
+            )
+        claimed_std_raw = (edge_meta or {}).get(CLAIMED_BARRIER_STD_META_KEY)
+        claimed_std = num_finite(claimed_std_raw)
+        if claimed_std_raw is not None and claimed_std is None:
+            raise BadInput(
+                f"meta.{CLAIMED_BARRIER_STD_META_KEY} must be a finite "
+                f"number (eV) or absent, got {claimed_std_raw!r}",
+                next="pass the stated uncertainty in eV, or omit the key",
+            )
+        mismatch = pathway_barrier_mismatch(
+            claimed=claimed_num,
+            claimed_std=claimed_std,
+            pathway_meta=src_meta,
+        )
+        if mismatch is not None:
+            raise BadInput(
+                f"pathway ref_id={pathway_ref_id}: {mismatch}",
+                next=(
+                    "correct the claim's stated barrier, or attach the "
+                    "pathway that actually computed it"
+                ),
+            )
 
     return {
         "tier": "computed",
@@ -1113,7 +1230,9 @@ def attach_evidence(
                     ),
                 )
             pathway_extra = _pathway_evidence_meta(
-                pathway_ref_id=paper_ref_id, src_meta=dict(src.meta or {})
+                pathway_ref_id=paper_ref_id,
+                src_meta=dict(src.meta or {}),
+                edge_meta=meta,
             )
             pathway_edge_meta = dict(meta or {})
             pathway_edge_meta.update(pathway_extra)

@@ -318,6 +318,7 @@ def _computed_row(edge: ComputedEdge) -> dict[str, Any]:
         "title": " ".join((edge.title or "").split()),
         "content_key": (edge.content_key or "")[:10] or None,
         "stale": edge.stale_reason,
+        "mismatch": edge.mismatch_reason,
         "caveats": edge.caveats,
     }
 

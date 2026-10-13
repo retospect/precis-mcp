@@ -106,8 +106,8 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    clause of a citing draft sentence (dr173020: 100 votes = 53 bad · 25
    redundant · 21 needed; review item `nanobuds-paper-21`, awaiting Reto) ·
    `taproot-inbound-grounding` · `computed-pathways-cannot-be-cited-as-
-   claim-evidence` (open: magnitude re-check, re-dispatch of a `ready`
-   pathway, nanopub visibility, web attach form).
+   claim-evidence` (all four code parts shipped 2026-10-13 — open: the
+   compute-admissibility rubric only).
 5. **Composite + publication, last** — `taproot-compound-migration` (L;
    blocked on `reground.py`'s embedding-ranking TODO; blocks
    `claim-publication-nanopub-ots`) → `claim-publication-nanopub-ots` ·

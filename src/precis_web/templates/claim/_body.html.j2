@@ -297,6 +297,7 @@
       {% if c.title %}<span class="text-slate-700">{{ c.title }}</span>{% endif %}
       {% if c.content_key %}<span class="font-mono text-[11px] text-slate-400">key {{ c.content_key }}</span>{% endif %}
       {% if c.stale %}<span class="rounded bg-amber-100 text-amber-800 px-1.5 py-0.5 text-[11px]">⚠ stale: {{ c.stale }}</span>{% endif %}
+      {% if c.mismatch %}<span class="rounded bg-rose-100 text-rose-800 px-1.5 py-0.5 text-[11px]">⚠ mismatch: {{ c.mismatch }}</span>{% endif %}
     </li>
     {% endfor %}
   </ul>
