@@ -61,6 +61,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SRC = REPO_ROOT / "scripts" / "deploy"
 SHIP_SRC = REPO_ROOT / "scripts" / "ship"
 DEPLOY_STATE_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "deploy-state.sh"
+ENV_POINTERS_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "env-pointers.sh"
 
 
 def _test_env(**extra: str) -> dict[str, str]:
@@ -73,6 +74,10 @@ def _test_env(**extra: str) -> dict[str, str]:
             "GIT_COMMITTER_EMAIL": "test@example.com",
         }
     )
+    # The deploy's prod-clone step must resolve against the throwaway repo,
+    # never a developer machine's real served clone.
+    env.pop("PRECIS_PROD_CHECKOUT", None)
+    env.pop("PRECIS_ENV_POINTERS", None)
     env.update(extra)
     return env
 
@@ -193,6 +198,7 @@ def fx(tmp_path: Path) -> Fixture:
     lib_dir.mkdir(parents=True)
     shutil.copy2(DEPLOY_SRC, scripts_dir / "deploy")
     shutil.copy2(DEPLOY_STATE_LIB_SRC, lib_dir / "deploy-state.sh")
+    shutil.copy2(ENV_POINTERS_LIB_SRC, lib_dir / "env-pointers.sh")
     (scripts_dir / "deploy").chmod(0o755)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add deploy scripts")
@@ -503,6 +509,43 @@ def test_canary_path_refuses_a_sha_no_remote_branch_reaches(
     assert result.returncode != 0
     assert "not on any remote-tracking branch" in result.stderr
     assert "phase 1" not in result.stdout
+
+
+# ─────────────── the prod-clone runtime confirmation (gr482226) ────────────
+
+
+def test_prod_clone_left_behind_fails_the_deploy(fx: Fixture, tmp_path: Path) -> None:
+    """gr482226: the served clone is moved by the same step that moves
+    origin/prod. When the machine HAS a prod clone but it cannot be brought
+    to the deployed sha (here: local edits block the checkout), the deploy's
+    runtime confirmation must fail loudly naming both shas and the fix — not
+    report green while the session MCP keeps serving the previous release."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    # The clone env_prod_checkout_dir derives: <repo>-prod, a sibling of the
+    # deploying checkout. Dirty a file the checkout to `gated` would remove,
+    # so env_prod_checkout_sync's `checkout --detach` refuses and the clone
+    # stays on origin/main (sibling2).
+    clone = Path(f"{fx.repo}-prod")
+    _git(
+        tmp_path, "clone", "-q", "-b", "main", str(tmp_path / "origin.git"), str(clone)
+    )
+    (clone / "sibling2.txt").write_text("local edit\n", encoding="utf-8")
+
+    result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
+
+    assert result.returncode != 0, (
+        "a deploy that leaves the served clone behind must not report success\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "prod clone" in result.stderr
+    assert fx.gated in result.stderr, (
+        f"stderr must name the deployed sha:\n{result.stderr}"
+    )
+    assert fx.sibling2 in result.stderr, (
+        f"stderr must name the sha the clone is stuck on:\n{result.stderr}"
+    )
+    assert "precis-mcp-http-ensure.sh" in result.stderr
 
 
 # ──────────────────────── scripts/ship writes the pin (g) ────────────────────

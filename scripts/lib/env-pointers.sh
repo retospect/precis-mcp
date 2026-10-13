@@ -70,17 +70,28 @@ env_prod_checkout_dir() {
 # a `git worktree`: the server's checkout watchdog reads .git/HEAD inside a
 # container, where a worktree's .git pointer leads nowhere.
 #
-# No clone on this machine -> nothing to do, quietly (returns 1): most
-# machines that deploy do not host the session server. A clone with local
-# edits is left alone and warned about — it is nobody's working tree, so
-# edits there mean something is wrong, and discarding them is not this
-# function's call. Never exits.
+# No clone at the resolved path -> one warning line and return 1. The path is
+# derived from THIS checkout's git common dir, so a deploy run from a second
+# checkout (a fleet tree, another machine's clone) looks at a sibling that
+# may not exist while the real served clone sits elsewhere — silence there
+# left the session server on the previous release with deploys reporting
+# green (gr482226). PRECIS_PROD_CHECKOUT is the override, and the warning
+# names it either way. A clone with local edits is left alone and warned
+# about — it is nobody's working tree, so edits there mean something is
+# wrong, and discarding them is not this function's call. Never exits.
 env_prod_checkout_sync() {
     local root="$1" sha="$2" dir
     [[ "${PRECIS_ENV_POINTERS:-1}" != 0 ]] || return 1
     [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
     dir="$(env_prod_checkout_dir "$root")" || return 1
-    [[ -f "${dir}/.git/HEAD" ]] || return 1
+    if [[ ! -f "${dir}/.git/HEAD" ]]; then
+        if [[ -n "${PRECIS_PROD_CHECKOUT:-}" ]]; then
+            printf 'warning: PRECIS_PROD_CHECKOUT=%s is not a checkout (no .git/HEAD) — the session server keeps serving its old sha\n' "$dir" >&2
+        else
+            printf 'warning: no prod clone at the derived path %s — the session server keeps serving its old sha; if this machine hosts the clone elsewhere, set PRECIS_PROD_CHECKOUT to it\n' "$dir" >&2
+        fi
+        return 1
+    fi
     if ! git -C "$dir" cat-file -e "${sha}^{commit}" 2>/dev/null; then
         git -C "$dir" fetch -q origin >/dev/null 2>&1 || true
     fi

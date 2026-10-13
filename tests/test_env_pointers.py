@@ -282,13 +282,34 @@ def test_sync_fetches_a_sha_the_clone_has_not_seen(
     assert _git(clone, "rev-parse", "HEAD") == later
 
 
-def test_sync_without_a_clone_is_a_quiet_no(
+def test_sync_without_a_clone_warns_and_names_the_override(
     repo: tuple[Path, Path, list[str]],
 ) -> None:
+    """The derived path is <checkout>-prod: a deploy run from a second
+    checkout (a fleet tree, another machine's clone) derives a sibling that
+    does not exist, and used to return 1 silently — the session server then
+    kept serving the previous release while the deploy reported green
+    (gr482226). The sync still returns 1 so callers' flow is unchanged, but
+    stderr must name the derived path and the PRECIS_PROD_CHECKOUT escape
+    hatch."""
     work, _origin, shas = repo
     res = _sync(work, shas[0])
     assert res.returncode == 1
-    assert res.stderr == ""
+    assert "no prod clone at the derived path" in res.stderr
+    assert f"{work.name}-prod" in res.stderr
+    assert "PRECIS_PROD_CHECKOUT" in res.stderr
+
+
+def test_sync_warns_when_the_override_points_at_nothing(
+    repo: tuple[Path, Path, list[str]], tmp_path: Path
+) -> None:
+    """A PRECIS_PROD_CHECKOUT that names a non-checkout is the same failure
+    wearing the other hat: the warning names the var and the bad path."""
+    work, _origin, shas = repo
+    missing = tmp_path / "not-a-clone"
+    res = _sync(work, shas[0], PRECIS_PROD_CHECKOUT=str(missing))
+    assert res.returncode == 1
+    assert f"PRECIS_PROD_CHECKOUT={missing}" in res.stderr
 
 
 def test_sync_leaves_a_clone_with_local_edits_alone(

@@ -60,6 +60,15 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    gate has passed (a `/qgo`). Moving a ref is best-effort — a refused push is
    a warning, and the local `.ship-sha` / deploy-state marker stay the guards'
    inputs.
+
+   The same deploy step also moves the **prod clone** the shared session MCP
+   serves (`env_prod_checkout_sync` — see `mcp-http/README.md` for how the
+   server mounts it). The clone's path is derived as the sibling `-prod` of
+   the checkout's repo (`<dirname of git common dir>-prod`); set
+   `PRECIS_PROD_CHECKOUT` when deploying from a second checkout whose
+   sibling is not the served clone. A resolved clone left behind the
+   deployed sha fails the deploy's runtime confirmation; a path that
+   resolves to nothing warns on stderr.
 6. App secrets: once the web role is up, load API keys via the `/secrets`
    page or `precis secret set` — **not** the ansible vault (scope boundary:
    `inventory.example/group_vars/all/vault.yml.example`).

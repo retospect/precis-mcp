@@ -309,7 +309,27 @@ _move_prod_pointer() {
     if env_prod_checkout_sync "$REPO_ROOT" "$sha"; then
         say "prod clone → ${sha:0:8} ($(env_prod_checkout_dir "$REPO_ROOT"))"
     fi
+    _confirm_prod_clone "$sha"
     return 0
+}
+
+# Runtime confirmation for the served clone (gr482226). env_prod_checkout_sync
+# above already tried to move it and warned on failure; a clone that resolves
+# but still does not name the deployed sha means the session MCP keeps serving
+# the previous release while every deploy report reads green — that was the
+# 2026-10-13 r32 incident (served 18f9c9f43 under prod ec345b895). Failing
+# here fails the deploy's success path on purpose: the marker and the pin are
+# already consistent, and the fix is one command, not a silent divergence.
+# No clone resolved at all -> nothing to confirm (machines that deploy but
+# do not host the session server); the sync's warning already said so.
+_confirm_prod_clone() {
+    local sha="$1" dir head
+    dir="$(env_prod_checkout_dir "$REPO_ROOT" 2>/dev/null || true)"
+    [[ -n "$dir" && -f "${dir}/.git/HEAD" ]] || return 0
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$head" == "$sha" ]] || die "prod clone ${dir} is at ${head:-unknown} but this deploy put ${sha} on the fleet — the session MCP keeps serving the old sha. Fix it with:
+    bash ~/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh
+or  git -C ${dir} fetch origin && git -C ${dir} checkout --detach ${sha}"
 }
 
 _rollout_converged() {

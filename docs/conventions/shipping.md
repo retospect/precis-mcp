@@ -107,6 +107,20 @@ never committed to (`deploy/README.md`). While a release is open,
 `release/r<N>` is the frozen sha being gated/deployed; `deployed/r<N>` tags
 each one that went live.
 
+The shared session MCP serves a plain clone kept on `origin/prod`, moved by
+the same deploy step (`env_prod_checkout_sync` in
+`scripts/lib/env-pointers.sh`). Its path is derived as `<dirname of the git
+common dir>-prod` — the sibling `-prod` of the checkout's repo — which only
+matches a machine that deploys from the repo the server was installed
+against. A deploy run from a second checkout (a fleet worktree of another
+clone, another machine) derives a path that may not exist; the sync then
+warns instead of staying silent, and the served clone goes stale
+(gr482226). `PRECIS_PROD_CHECKOUT=<clone path>` overrides the derivation;
+`deploy/mcp-http/`'s ensure script also re-follows `origin/prod` at
+SessionStart. When a clone does resolve but still is not at the deployed
+sha after the sync attempt, `scripts/deploy`'s confirmation
+(`_confirm_prod_clone`) fails the run naming both shas.
+
 ## Rounds and the fleet
 
 When a coordinator has a peer round open (`scripts/round status`), end your
