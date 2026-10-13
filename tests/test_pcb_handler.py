@@ -1274,6 +1274,47 @@ def test_op_route_negotiate_out_of_range_is_bad_input_not_a_long_job(pcb, negoti
         pcb.put(id="op-negotiate", args={"op": "route", "negotiate": negotiate})
 
 
+@pytest.mark.parametrize("loop", [-1, 4])
+def test_op_route_loop_out_of_range_is_bad_input_not_a_long_job(pcb, loop):
+    pcb.put(id="op-loop", args=_CROSSED)
+    with pytest.raises(BadInput, match="loop"):
+        pcb.put(id="op-loop", args={"op": "route", "loop": loop})
+
+
+def test_op_route_loop_enqueues_params_and_forwards_authored_caps(store, monkeypatch):
+    """``loop`` reaches the job params (gr469872's contract — an
+    unregistered param is refused at enqueue), and the design's authored
+    ``meta.expansion_caps`` rides along verbatim so the dedup hash sees
+    it; an omitted knob stays absent, exactly like ``negotiate``."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    caps = {
+        "outline_max_mm": [120.0, 100.0],
+        "max_copper_layers": 6,
+        "max_fab_usd": 200.0,
+    }
+    hub = Hub(store=store)
+    PcbHandler(hub=hub).put(
+        id="op-loop-caps",
+        args={**_CROSSED, "meta": {"expansion_caps": caps}},
+    )
+    ref = store.get_ref(kind="pcb", id="op-loop-caps")
+    assert ref is not None
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="job captured")
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+    handler._enqueue_op(ref, "route", {"loop": 2})
+    params = job.put.call_args.kwargs["params"]
+    assert params["loop"] == 2
+    assert params["expansion_caps"] == caps
+    handler._enqueue_op(ref, "route", {})
+    params = job.put.call_args.kwargs["params"]
+    assert "loop" not in params
+    assert "expansion_caps" not in params
+
+
 def test_op_route_force_must_be_boolean(pcb):
     pcb.put(id="op-force-bad", args=_CROSSED)
     with pytest.raises(BadInput, match="force"):

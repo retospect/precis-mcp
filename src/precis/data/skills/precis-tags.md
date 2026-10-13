@@ -51,8 +51,12 @@ priority lives in one sortable place. Prefer the direct kwarg —
 by `tags=['PRIO:...']`; nothing stores it.
 
 Closed prefixes are **kind-gated** — `PRIO:` and `STATUS:` only apply
-to workflow kinds (`todo`, `gripe`); `memory` and other
-free-form kinds reject them. See the per-kind axis matrix below.
+to workflow kinds (`todo`, `gripe`, `job`, `quest`); `memory` and other
+free-form kinds reject them. `STATUS:` is one closed axis but each kind
+accepts only its own lifecycle subset (a `quest` is active / dormant /
+abandoned; a `todo` open / done / …); the union (32 values) is what
+`get(kind='tag', id='STATUS:done')` lists as siblings. See the per-kind
+axis matrix below.
 
 ## How do I remove a tag?
 ## Drop a tag from a ref

@@ -773,9 +773,31 @@ class PcbMixin:
             ):
                 continue  # unchanged -- no-op, nothing to merge/re-insert
             if existing_gen is not None:
+                # gr481705 — an expansion's emitted x/y/rot is a SEED for
+                # the placer, not placement truth (`_expand_ewod_pad_array`'s
+                # own sink-centroid comment). A retire-and-reinsert that
+                # drops the stored pose resets a placed part back to that
+                # seed — which for an `ewod_pad_array` sink can be a pose
+                # the always-valid gate must refuse (its centroid lands
+                # pads on the array's own plaza vias). Placement is real
+                # board state a re-apply carries forward; only the
+                # explicit `regenerate` escape resets it (its documented
+                # contract — "retires the whole expansion, placement and
+                # routing with it").
+                kept = (
+                    {}
+                    if g.get("regenerate")
+                    else self._pcb_generator_poses(
+                        conn, ref.id, existing_gen["refdes"], existing_gen["name"]
+                    )
+                )
                 self._pcb_generator_retire_expansion(
                     conn, ref.id, existing_gen["refdes"], existing_gen["name"]
                 )
+                for c in expansion.components:
+                    pose = kept.get(str(c.get("refdes") or ""))
+                    if pose is not None:
+                        c.update(pose)
             components += expansion.components
             nets += expansion.nets
             connections += expansion.connections
@@ -3816,6 +3838,29 @@ class PcbMixin:
             """,
             (ref_id, name, generator, version, Jsonb(params), refdes, Jsonb(ledger)),
         )
+
+    def _pcb_generator_poses(
+        self, conn: Connection, ref_id: int, refdes: str, generator_name: str
+    ) -> dict[str, dict[str, Any]]:
+        """Live ``{refdes: {x, y, rot, layer}}`` for the instances a
+        generator expansion owns — the same ``refdes = <refdes> OR refdes
+        LIKE '<generator_name>_%'`` ownership convention
+        :meth:`_pcb_generator_retire_expansion` retires by (the expansion's
+        own component plus its ``{name}_SINK_{i}``-style secondaries). The
+        caller folds these onto a re-expansion's emitted components so a
+        re-apply keeps the placement the placer/user committed instead of
+        resetting every instance to the emitted seed pose (gr481705 — the
+        ``ewod_pad_array`` sink centroid seed can itself be a pose the
+        always-valid gate refuses)."""
+        rows = conn.execute(
+            "SELECT refdes, x, y, rot, layer FROM pcb_instances "
+            "WHERE ref_id = %s AND retired_at IS NULL "
+            "AND (refdes = %s OR refdes LIKE %s)",
+            (ref_id, refdes, generator_name + "\\_%"),
+        ).fetchall()
+        return {
+            str(r[0]): {"x": r[1], "y": r[2], "rot": r[3], "layer": r[4]} for r in rows
+        }
 
     def _pcb_generator_retire_expansion(
         self, conn: Connection, ref_id: int, refdes: str, generator_name: str

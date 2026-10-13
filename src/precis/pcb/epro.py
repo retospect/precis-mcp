@@ -375,27 +375,133 @@ def board_outline(pcb: EproDocument) -> tuple[list[tuple[float, float]], Frame]:
             "without one every geometry consumer falls back to a bounding box "
             "around the placed parts, which is not the board."
         )
-    if len(polys) > 1:
-        raise EproError(
-            f"{len(polys)} outline polygons on the board-outline layer; this "
-            f"reader takes exactly one (a multi-board panel needs --board)"
-        )
-    path = polys[0]["path"]
-    mils = _poly_points(path)
+    if len(polys) == 1:
+        mils = _poly_points(polys[0]["path"])
+    else:
+        # Pro also stores an outline drawn edge by edge: several OPEN
+        # line-only POLYs on the outline layer whose ends meet (Reto's TAZ
+        # control board, 2026-10-13: eleven pieces, chamfered corners).
+        # Chain them into the one ring the rest of the reader expects;
+        # anything that does not chain into exactly one closed ring is
+        # refused with the reason, never guessed at.
+        mils = _chain_outline_pieces(polys)
     if not mils:
         raise EproError("the outline POLY has no vertices")
     frame = Frame(min_x_mil=min(x for x, _ in mils), max_y_mil=max(y for _, y in mils))
     return [frame.xy(x, y) for x, y in mils], frame
 
 
+#: Two outline-piece endpoints closer than this (mil) are the same corner.
+#: Pro writes the shared corner of two edges to 0.001 mil; 0.1 mil is 2.5 um.
+_OUTLINE_JOIN_TOL_MIL = 0.1
+
+
+def _chain_outline_pieces(polys: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    """Join open outline POLYs end to end into one closed vertex ring.
+
+    Greedy walk from the first piece: at each step take the unused piece
+    whose start (or, reversed, end) lies within :data:`_OUTLINE_JOIN_TOL_MIL`
+    of the ring's current end. Refuses an arc opcode (a chorded arc would
+    be a silently wrong board edge), a piece that cannot be attached, a
+    leftover piece (two rings = a panel), and a ring whose last vertex
+    does not return to its first.
+    """
+    pieces: list[list[tuple[float, float]]] = []
+    for b in polys:
+        extra = _outline_opcodes(b["path"]) - {"L"}
+        if extra:
+            raise EproError(
+                f"outline POLY {b.get('id', '?')} uses {sorted(extra)} opcodes; "
+                f"this reader chains line-only outline pieces (an arc edge "
+                f"would be chorded silently — draw the arc as a polyline)"
+            )
+        pts = _poly_points(b["path"])
+        if len(pts) >= 2:
+            pieces.append(pts)
+    if not pieces:
+        return []
+
+    def _near(a: tuple[float, float], b: tuple[float, float]) -> bool:
+        return (
+            abs(a[0] - b[0]) <= _OUTLINE_JOIN_TOL_MIL
+            and abs(a[1] - b[1]) <= _OUTLINE_JOIN_TOL_MIL
+        )
+
+    ring = list(pieces[0])
+    unused = pieces[1:]
+    while unused:
+        tail = ring[-1]
+        pick = next(
+            (
+                (i, p if _near(p[0], tail) else list(reversed(p)))
+                for i, p in enumerate(unused)
+                if _near(p[0], tail) or _near(p[-1], tail)
+            ),
+            None,
+        )
+        if pick is None:
+            # Nothing continues from this end; the file may list the
+            # pieces in any order, so grow from the other end instead and
+            # refuse only when neither end has a continuation.
+            head = ring[0]
+            if any(_near(p[0], head) or _near(p[-1], head) for p in unused):
+                ring.reverse()
+                continue
+            raise EproError(
+                f"{len(polys)} outline POLYs on the board-outline layer do not "
+                f"chain into one ring: no piece continues from "
+                f"({tail[0]:.3f}, {tail[1]:.3f}) or ({head[0]:.3f}, "
+                f"{head[1]:.3f}) mil and {len(unused)} piece(s) remain (a "
+                f"multi-board panel needs --board; a gap needs closing in Pro)"
+            )
+        i, piece = pick
+        ring.extend(piece[1:])
+        del unused[i]
+    if not _near(ring[0], ring[-1]):
+        raise EproError(
+            f"the chained outline does not close: it runs from "
+            f"({ring[0][0]:.3f}, {ring[0][1]:.3f}) to "
+            f"({ring[-1][0]:.3f}, {ring[-1][1]:.3f}) mil"
+        )
+    return ring[:-1]
+
+
 def layer_map(pcb: EproDocument) -> dict[int, tuple[str, str]]:
     """``layerId -> (layerType, layerName)`` for every layer the document
     declares in use. Self-describing, so no id table to drift."""
     out: dict[int, tuple[str, str]] = {}
-    for b in pcb.bodies("LAYER"):
-        if b.get("use") and "layerId" in b:
-            out[int(b["layerId"])] = (str(b["layerType"]), str(b["layerName"]))
+    for rec in pcb.of_type("LAYER"):
+        b = rec.body or {}
+        if not b.get("use"):
+            continue
+        lid = b.get("layerId")
+        if lid is None:
+            # Newer Pro exports (Reto's TAZ board, 2026-10-13) carry the
+            # id only in the record header, as the JSON string
+            # '["LAYER", <n>]'; the body has layerType/layerName/use alone.
+            lid = _layer_id_from_header(rec.id)
+        if lid is None:
+            continue
+        out[int(lid)] = (str(b["layerType"]), str(b["layerName"]))
     return out
+
+
+def _layer_id_from_header(rec_id: str | None) -> int | None:
+    """``'["LAYER", 15]'`` -> ``15``; anything else -> ``None``."""
+    if not rec_id or not rec_id.startswith("["):
+        return None
+    try:
+        parsed = json.loads(rec_id)
+    except json.JSONDecodeError:
+        return None
+    if (
+        isinstance(parsed, list)
+        and len(parsed) == 2
+        and parsed[0] == "LAYER"
+        and isinstance(parsed[1], int | float)
+    ):
+        return int(parsed[1])
+    return None
 
 
 def copper_layers(pcb: EproDocument) -> dict[int, str]:
@@ -756,6 +862,15 @@ def live_nets(pcb: EproDocument) -> tuple[list[str], list[str]]:
     used = set(live_pad_nets(pcb)[0].values())
     for t in ("LINE", "ARC", "VIA", "POUR"):
         used |= {str(b["netName"]) for b in pcb.bodies(t) if b.get("netName")}
+    if not pcb.of_type("NET"):
+        # Reto's TAZ V1.15 export (2026-10-13) carries no NET records at
+        # all: the netlist exists only as the names its PAD_NETs and
+        # copper mention. Those names ARE the live nets then — the
+        # intersection below would drop every connection on the board.
+        return sorted(used), [
+            f"no NET records; {len(used)} net(s) taken from the pads and copper "
+            f"that name them"
+        ]
     kept = sorted({n for n in declared if n in used})
     dropped = sorted(set(declared) - used)
     notes = []
@@ -787,6 +902,14 @@ _COMP_TOP, _COMP_BOTTOM = 1, 2
 #: rect pads, so a non-zero one is warned about rather than assumed
 #: impossible.
 _PAD_SHAPES = {"RECT": "rect", "ELLIPSE": "circle", "OVAL": "obround"}
+
+
+def _footprint_ref(attrs: dict[str, str]) -> str | None:
+    """The footprint uuid a component's attributes point at. The 2025
+    heater-base export keyed it ``Footprint``; Reto's TAZ V1.15 export
+    (2026-10-13) keys the same uuid ``FootprintName``. Either, first
+    non-empty wins."""
+    return attrs.get("Footprint") or attrs.get("FootprintName") or None
 
 
 def component_attrs(pcb: EproDocument) -> dict[str, dict[str, str]]:
@@ -1123,7 +1246,7 @@ def extract_footprints(
         if not r.id or not r.body:
             continue
         a = attrs.get(r.id, {})
-        fp_uuid = a.get("Footprint")
+        fp_uuid = _footprint_ref(a)
         if fp_uuid:
             placed.setdefault(fp_uuid, set()).add(a.get("Device") or "")
 
@@ -1293,7 +1416,7 @@ def extract_components(
             "rot": (angle + (180.0 if bottom else 0.0)) % 360.0,
             "layer": "bottom" if bottom else "top",
         }
-        fp_uuid = a.get("Footprint") or ""
+        fp_uuid = _footprint_ref(a) or ""
         fp_name = footprint_names.get(fp_uuid)
         if fp_name:
             comp["footprint"] = fp_name

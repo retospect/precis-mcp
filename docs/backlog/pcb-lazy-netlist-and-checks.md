@@ -451,67 +451,21 @@ from "you forgot".
   means never. The ~24 spare channels per sink are free terminals and
   exactly the slack that makes a bijective matching easy instead of tight.
 
-**Landed 2026-10-13 (Slice 2, commit on `bl-pcb-netlist-s23`):** the model
-above is live. `_pcb_apply` completes a component's pins from the cached
-footprint's `pin_map` (`_pcb_ops.py::_pcb_complete_footprint_pins` — a pad
-with no `pin_map` entry gets a pin named by its number; names already
-declared are never re-stated, so author `pad=` numbers always win). The
-EWOD generator declares every `channel_pins` name and marks the unwired
-share `unused`. Markers ride `pcb_pins.meta` (the `nc` marker also sets
-the `nc` tag; footprint `pin_map` tags propagate through completion).
-`drc.py::check_unconnected_pins` is phase-aware via `derive_phase`
-(netlist/placed/routed derived; `fab` is authored, Slice 8's `op='phase'`)
-and `drc.py::check_undeclared_pads` is the safety net: a footprint pad no
-pin claims warns, and a part with no cached footprint reports NOT-CHECKED
-instead of passing silently. Tests: `tests/test_pcb_declared_pins.py`.
+Slices 2, 5 and 8 landed 2026-10-13 (history of `bl-pcb-netlist-s23`;
+behaviour documented where it lives: `_pcb_ops.py::_pcb_complete_footprint_pins`,
+`drc.py` (`check_unconnected_pins`, `check_undeclared_pads`, the §1h
+`check_*` ERC rules, `severity_at`/`PHASE_SEVERITY`), `handlers/pcb.py::
+_render_check`, and skill `precis-pcb-check-help`; tests
+`tests/test_pcb_declared_pins.py`, `tests/test_pcb_erc.py`,
+`tests/test_pcb_check_view.py`).
 
-**Known nuances carried:** courtyards did NOT grow — the footprint pad
-set already hulls every pad since gr451276; what grows is the pin list,
-so pre-existing boards see new `unconnected_pin` warns (or `undeclared_pad`
-notes), not new geometry. Two pads sharing one name declare ONE pin; the
-second is that pin's sibling — `ir.footprint_pad_set` claims it,
-`_sibling_pad_terminals_by_pin` offers it to the router — which resolves
-the HV507 duplicate-names question (one pin per name; sibling pads stay
-claimed). Consumers that still read the PRIMARY alone — placement
-wirelength (`cost.py`), `pinswap._instance_edges`, segment spans, and
-`layer_lock.layer_locked_pins` (counts pads not pins, can call a
-sibling-served pin stranded) — fold in with the slice that first makes
-them bite.
-
-**Landed 2026-10-13 (Slice 8, commit on `bl-pcb-netlist-s23`):**
-`view='check'` is the one check surface — geometric, netlist and ERC
-rules on one finding list, filterable on `args.rule`/`severity`/`phase`
-(`handlers/pcb.py::_render_check`). `view='drc'` stays as its preset —
-same run, same table it has always rendered. `op='phase'` writes the
-authored design phase to `pcb_boards.meta['phase']` (no migration —
-the existing board meta); the eval phase is `args.phase` → authored →
-`derive_phase` in that order, and `fab` can only ever be the authored
-claim. Phase gates the RULES, not just severities: `netlist` runs only
-the rules needing no geometry and never reads `pcb_copper`; `placed` is
-the pads-only pass; `routed`/`fab` the full one. Severity is a function
-of `(rule, phase)` (`drc.severity_at` + `PHASE_SEVERITY`): `unrouted`
-reads `todo` before `routed`, `error` after — `todo` is a presented
-tier only (the findings column's CHECK is still `error|warn`; the base
-severity is what persists). Every run persists and deltas by
-`finding_key` (`new / still / resolved`). Tests:
-`tests/test_pcb_check_view.py`.
-
-**Landed 2026-10-13 (Slice 5, commit on `bl-pcb-netlist-s23`):** the §1i
-pin semantics are live: `pins[].etype` (closed `precis.pcb.PIN_ETYPES`
-vocabulary → `pcb_pins.tags`), `max_voltage_v`/`vih`/`vil`/`rail` →
-`pcb_pins.meta`; `nets[].rail` → `pcb_nets.meta['rail']`;
-`working_voltage_v` read from the net or its class's `rules` (the Slice
-4c key — one key, two consumers). `ir.from_graph` carries
-`pin_etype`/`pin_max_voltage_v`/`pin_rail` for the netlist consumer
-(Slice 7). The §1h rules — `check_pin_conflicts`, `check_no_driver`,
-`check_over_voltage`, `check_rail_crossing` (`level_shifter` in a
-member's roles is the declared translator), `check_no_decoupling`
-(5 mm house default, `DEFAULT_DECOUPLING_DISTANCE_MM`) — are `check_*`
-functions in `drc.py` returning `DrcFinding`/`margin_mm=None`, and run
-on the check surface only (`view='check'`; `view='drc'` stays the
-preset). Every rule has a CANNOT-fire path: a design with none of the
-vocabulary gets a `not_checked` warn naming the gap, never a clean pass.
-Tests: `tests/test_pcb_erc.py`.
+**Open after Slice 2 — consumers that still read the PRIMARY pad alone:**
+two pads sharing one name declare ONE pin; the second is that pin's
+sibling (`ir.footprint_pad_set` claims it, `_sibling_pad_terminals_by_pin`
+offers it to the router). Placement wirelength (`cost.py`),
+`pinswap._instance_edges`, segment spans, and `layer_lock.layer_locked_pins`
+(counts pads not pins, can call a sibling-served pin stranded) still read
+the primary only — fold them in with the slice that first makes them bite.
 
 ## In scope — slices (dependency order; each independently shippable)
 

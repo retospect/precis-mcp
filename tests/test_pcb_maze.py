@@ -138,6 +138,75 @@ def test_a_success_clears_the_exhausted_flag():
     assert grid.last_route_exhausted is False
 
 
+# ── mask= : a corridor for the track, not for the via disk ───────────────
+def _cells(grid: OccupancyGrid, path) -> list[tuple[int, int, int]]:
+    return [(layer, *grid.spec.to_cell(x, y)[::-1]) for x, y, layer in path.points]
+
+
+def test_mask_confines_the_track_to_the_corridor():
+    """Every centreline cell lies inside the mask, and a mask that leaves
+    no way through makes the route fail (not exhaust)."""
+    spec = _spec(n_layers=1)
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    mask = np.zeros((1, spec.ny, spec.nx), dtype=bool)
+    mask[0, 25:35, :] = True  # a band y in [2.5, 3.5)
+    mask[0, :, :8] = True  # the start column, so a detour must come back
+    path = grid.route(2, (0.5, 0.5), (5.5, 3.0), layers=[0], width_mm=0.1, mask=mask)
+    assert path is not None
+    assert all(mask[layer, iy, ix] for layer, iy, ix in _cells(grid, path))
+    walled = np.zeros_like(mask)
+    walled[0, 25:35, :30] = True
+    walled[0, :, :8] = True
+    assert (
+        grid.route(2, (0.5, 0.5), (5.5, 3.0), layers=[0], width_mm=0.1, mask=walled)
+        is None
+    )
+    assert grid.last_route_exhausted is False
+
+
+def test_an_all_true_mask_is_the_unmasked_route():
+    spec = _spec(n_layers=1)
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    plain = grid.route(2, (0.5, 0.5), (5.5, 3.0), layers=[0], width_mm=0.1)
+    masked = grid.route(
+        2,
+        (0.5, 0.5),
+        (5.5, 3.0),
+        layers=[0],
+        width_mm=0.1,
+        mask=np.ones((1, spec.ny, spec.nx), dtype=bool),
+    )
+    assert plain is not None and masked is not None
+    assert plain.points == masked.points
+
+
+def test_a_via_may_overhang_the_mask():
+    """The mask gates the layer-change CELL on both layers, never the via
+    keep-out disk: a 0.5 mm via (radius 2.5 cells + slack) changes layer
+    inside a corridor overlap only 2 cells wide."""
+    spec = _spec(n_layers=2)
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    mask = np.zeros((2, spec.ny, spec.nx), dtype=bool)
+    mask[0, 25:35, :31] = True  # layer 0: x < 3.1
+    mask[1, 25:35, 29:] = True  # layer 1: x >= 2.9 — overlap x in [2.9, 3.1)
+    path = grid.route(
+        2,
+        (0.5, 3.0),
+        (5.5, 3.0),
+        layers=[0, 1],
+        width_mm=0.1,
+        via_dia_mm=0.5,
+        start_layer=0,
+        goal_layer=1,
+        mask=mask,
+    )
+    assert path is not None
+    assert len(path.vias) == 1
+    vx, _vy, _lo, _hi = path.vias[0]
+    assert 2.85 <= vx <= 3.15
+    assert all(mask[layer, iy, ix] for layer, iy, ix in _cells(grid, path))
+
+
 def test_a_detour_outside_the_search_window_still_routes(monkeypatch):
     """The first search is boxed to the endpoints; a wall spanning the
     whole box forces a path around it, which only the full-grid retry can

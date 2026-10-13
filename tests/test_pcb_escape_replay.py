@@ -62,29 +62,28 @@ def _hydrate(store):
 
 
 def _refresh_stale_generators(store, ref):
-    """Re-put each stale generators entry — the refresh the route-enqueue
-    refusal's own ``next`` names — through :meth:`Store.pcb_apply`, the
-    same generators apply a ``put`` runs: the version mismatch re-expands
-    at the current code version. It is not routed through the judged
-    ``put`` surface because this fixture's re-expansion draws pads over
-    its own vias, which the judged put rightly refuses — the enqueue
-    plumbing these tests exercise only needs the stored row at the code
-    version."""
+    """Re-put each stale generators entry through the judged
+    ``PcbHandler.put`` surface — exactly the refresh the route-enqueue
+    refusal's own ``next`` names: the version mismatch re-expands at the
+    current code version. It used to bypass the judge through
+    ``store.pcb_apply`` because the re-expansion reset the placed sink to
+    its emitted seed, which ``no_via_in_pad`` refused (14 hits, gr481705
+    — a re-apply now carries each generator-owned instance's stored pose
+    forward, so the real surface passes)."""
+    handler = PcbHandler(hub=Hub(store=store))
     rows = store.pcb_generators_for(ref.id)
     for name, generator, _stored, _current in pcb_generators.stale_generators(rows):
-        store.pcb_apply(
-            slug=str(ref.slug),
-            title=ref.title,
-            components=[],
-            nets=[],
-            connections=[],
-            generators=[
-                {
-                    "name": name,
-                    "generator": generator,
-                    "params": rows[name]["params"],
-                }
-            ],
+        handler.put(
+            id=str(ref.slug),
+            args={
+                "generators": [
+                    {
+                        "name": name,
+                        "generator": generator,
+                        "params": rows[name]["params"],
+                    }
+                ]
+            },
         )
 
 

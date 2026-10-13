@@ -1200,7 +1200,18 @@ def _resolve_route_end(
     ``grid.route`` call (``start_layer``/``goal_layer`` outside its own
     ``layers=`` set refuses unconditionally)."""
     if native_layer in allowed_set:
-        return native_point, native_layer, candidates
+        # A drilled primary pad's OTHER-layer landings (kind
+        # "pad_through", `_sibling_pad_terminals_by_pin`) exist for the
+        # locked case below only: offered as extra seeds when the native
+        # pad is already routable they changed every through-hole board's
+        # search (Nano USB-PD 38 -> 28/64, a dogfood I2C track ending on a
+        # header pad's B.Cu landing the test's own copper model does not
+        # carry), so they are dropped here and the search is unchanged.
+        return (
+            native_point,
+            native_layer,
+            tuple(c for c in candidates if c[0].kind != "pad_through"),
+        )
     for i, (term, layer) in enumerate(candidates):
         if layer in allowed_set:
             return term.point, layer, candidates[:i] + candidates[i + 1 :]
@@ -5982,6 +5993,42 @@ def _sibling_pad_terminals_by_pin(
             )
             for i in layer_idxs
         )
+    # A pin whose PRIMARY pad is drilled — a through-hole connector pin,
+    # a test point, a plated land standing in for a via — is copper on
+    # every signal layer too, and `_footprint_pad_rows` above yields the
+    # non-primary pads only. Offer the primary's own point on every OTHER
+    # signal layer, so a net-class lock that excludes the mount side
+    # (`_resolve_route_end`) starts on an allowed layer AT the pad instead
+    # of failing `layer_lock`. Found by the synthetic QFP fanout family
+    # (tests/fixtures/pcb/qfp_fanout.py, 2026-10-13): through-hole sources
+    # on a top-mounted part with an In2.Cu+B.Cu class routed 0/16 while
+    # the same board with F.Cu allowed routed 16/16. Kind "pad_through"
+    # so `_resolve_route_end` uses them ONLY when the native layer is
+    # locked out — as plain extra seeds they moved every through-hole
+    # board's routing (see that function).
+    if signal_layers and footprints:
+        geoms = pad_geometry(ir, footprints)
+        for pin in range(ir.n_pins):
+            if pin >= len(geoms) or not geoms[pin].drill_mm:
+                continue
+            primary = pin_point(ir, pin)
+            if primary is None:
+                continue
+            inst = int(ir.pin_instance[pin])
+            native = _side_layer(ir, inst, signal_layers)
+            key = (str(ir.instance_refdes[inst]), str(ir.pin_label[pin]))
+            out.setdefault(key, []).extend(
+                (
+                    pcb_connectivity.FixedTerminal(
+                        point=primary,
+                        layer=str(ir.stackup[i].get("name")),
+                        kind="pad_through",
+                    ),
+                    i,
+                )
+                for i in signal_layers
+                if i != native
+            )
     return {key: tuple(terms) for key, terms in out.items()}
 
 

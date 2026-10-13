@@ -13,8 +13,18 @@
 
 ## Current source evidence
 
+- **2026-10-13 (pcbfixes):** architecture plan for the 55/55 target in
+  [pcb-global-plan-router](../pcb-global-plan-router.md): a capacity-aware
+  global plan (tile graph + negotiated congestion + pin assignment) between
+  the annealer and the maze, corridor-guided detail, and the LLM confined to
+  intent → constraints, a priced unlock menu on a min-cut witness, and
+  review. Slice 0 is a numbers-only probe on the dogfood-6 replay.
+
 - **Current evidence:** R13 d33bf4b /8.35.12 verified/CLOSED by root; same-owner preview dogfood26 assertions PASS, exposed snapshots unchanged. R14 frozen53e6cb255 has no deployment; independent snapshot correction/escape source PASS did not establish whole-suite grid safety. 23 P1 checks remain historical PASS.
+- **2026-10-13 (pcb-plan-probe):** tile-capacity global-plan probe on the dogfood-6 replay — capacity-feasible 55/55 plans converge in ≤9 PathFinder iterations under all three pad assignments, but corridor-guided routing measured 38–42/55 (the CONTESTED-stamp corridor kills in-corridor vias; not a clean corridor yield). Detail: docs/backlog/pcb-global-plan-probe.md.
 - **2026-10-13 (bl-nano-testboard):** the synthetic Nano PD acceptance board for `pcb-anneal-closes-router-loop.md` is authored as `tests/fixtures/pcb/nano_usb_pd_testboard.py` with pinned measured baseline in `tests/test_pcb_nano_usb_pd_testboard.py` — 38/64 nets routed / 26 failed, 89 DRC errors / 15 warnings at seed 1, honest state (not clean), per `pcb-usb-c-pd-nano-testboard.md` §Authored state.
+- **2026-10-13 (pcbfixes):** slice 0 of [pcb-global-plan-router](../pcb-global-plan-router.md) measured ([pcb-global-plan-probe](../pcb-global-plan-probe.md)): a capacity-feasible 55/55 tile plan exists under all three pin assignments (7–9 PathFinder iterations, < 3 s); the corridor hand-off as built routed 38–42/55 (below 51) because contested-cell walls block in-corridor vias — slice 3 needs a real route mask. Reto's TAZ V1.15 board imported to prod (`taz15` yardstick, `taz15-blank` target) after three reader fixes (header layer ids, edge-by-edge outline, implicit nets). Synthetic QFP fanout family (`tests/fixtures/pcb/qfp_fanout.py`): the EWOD-shaped member with sources on a grid routes 55/55 (4 vias, 0.9 s) after the distance warm start; the same sources packed into nine 0.65 mm plazas route 53/55 (35 vias) — the plaza packing alone is the wall, and that member is the benchmark for slices 1–3. First engine fix from the family: a drilled primary pad now offers a route terminal on every signal layer (an In2+B.Cu class on through-hole sources routed 0/16 before).
+- **2026-10-13 (pcb-loop-surface):** `pcb-anneal-closes-router-loop.md` open items 1+4 closed — `op='route'` gains `loop=N` (0 off, max 3) running `optimize.anneal_route_loop` under the same refusal/DRC/never-worse guards; `meta.expansion_caps` authors the priced bounds; `meta.last_route.loop` persists per-round counts + the conflict digest (`view='route-status'` shows one line). Seeded Nano determinism: measured — two full runs at seed 1 give an identical `RouteLoopResult`, accepted moves, digest text and IR state (`test_nano_loop_deterministic_same_seed`, 431 s for both runs, 2026-10-13). The job commits only rounds on the stored board shape; grown rounds become `proposed_expansions`.
 - **2026-10-13 (bl-pcb-anneal):** `pcb-anneal-closes-router-loop.md`'s core is built (committed, not landed; doc kept as in-progress — open items filed inside it: surface wiring op, the cleanly-routed power-nets evidence run, the capped-conflict Nano case, seeded Nano repeat determinism). `optimize.py` gains priced `OUTLINE_GROW`/`LAYER_ADD` moves under authored `ExpansionCaps` (missing caps disable, missing fab price is an explicit unavailable-price refusal, never zero or infinity), `apply_route_feedback` folds each route's failed-net/failed-escape/present-congestion evidence into `route_failure`/`route_escape`/`route_demand` margin terms (routing-demand units kept out of USD; normalisation `_ROUTE_DEMAND_FULL_USAGE=3`, gap warnings on their own `_GAP_WARNING_FULL_OVERAGE`), and `anneal_route_loop` runs the bounded route → penalise → anneal → route loop (default 2 rounds, hard max 3) ending in a `ConflictDigest` of binding constraints + witnesses + marginal prices — no placement advice. `realize.py` exposes the negotiation's final present-congestion per cell (`RealizeResult.congestion_cells`) and the actual failed drop-via pins (`UnroutedReason.pins`); `feedback.py` adapts `RealizeResult` to the loop's `RouteOutcome`. Measured on the Nano fixture at seed 1 (slow test `test_pcb_route_loop.py`, ~221 s): round 0 reproduces the pinned 38/64 baseline exactly, the loop accepts outline growth to ~113×85mm within the 120×100 cap and reaches **43/64 routed**; `LAYER_ADD` is refused illegal-stack (no 6-layer capability row). Pipeline baseline unchanged (38/64) — the loop is an opt-in entry point and does not touch the pinned job path.
 - **Routing:** Reto authorizes ewod-dogfood-N route/place/rebuild and public fixtures; non-dogfood boards remain protected. Exact ewod-dogfood-6 replay preserves all raw routing inputs and stored22 routed/33 failed/3 dangling. Actual-terminal/B.Cu probes classify all17 no_path labels as congestion. Half-grid experiment23/32/3, zero routed DRC errors, with12 gained/11 lost nets remains reproduced. Its global default regresses reference5/fab2/3/4; repair restores2/3 and route epoch4, default EWOD22/33/3. No thresholds/budgets/API changes; explicit fine experiment retained, global gain withdrawn. Diagnostic endpoint/layer parity remains separate.
 
@@ -57,22 +67,25 @@ se-machine-design's input shape (Do-next).
 
 1. **gr464240** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
    ruled 2026-10-12: route start/best/last, keep the most-routed).
-2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4). Re-put
-   its generators entry, route, report routed count before/after — after
-   step 1, so the two effects are not confounded. gr480010 (job 479998
-   routed over the stale v3 expansion and committed 10→76 DRC errors,
-   4→38 failed nets) made both halves hard guards: `op='route'` now
-   REFUSES on a stale expansion (re-put is required, not just warned),
-   and `pcb_route` commits nothing when the result is worse than the
-   incumbent (more nets unrealized, or more DRC errors measured by the
-   same rule sets on both sides).
+2. **ewod-dogfood-6 re-put still owed — now BLOCKED on slice 5b** (ARR1
+   stored v3, code v6). gr480010 is closed: both guards shipped
+   (6d9139ab4) and were verified on prod at r32 (2026-10-13): `op='route'`
+   on the stale board is refused with no job minted, and `pcb_route`
+   commits nothing worse than the incumbent. The hinted re-put is itself
+   refused by the always-valid judge — with the stored sink pose carried
+   forward AND with `regenerate` — because v6's plaza vias land inside
+   ARR1_SINK_0's pads (gr481705 comment 6, 13 vias, nothing changed).
+   Fix: slice 5b of [pcb-global-plan-router](../pcb-global-plan-router.md)
+   (legalise generator secondaries before the judge), or Reto rules the
+   sink out from under the array at v6.
 3. Build 4 is landed (round 3: 5f145c3a, 4d58cefc, 4def048c, 796fc1b4).
    Batch put, class_rules and op='footprint' are judged. Next is Do-next 2
    (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).
    After the deploy, dogfood: a put that shrinks the outline under routed
    copper rips the net and does not refuse.
-4. gr464537: JLCPCB's getComponentInfos 500s for every body (upstream
-   or account side; ask JLCPCB support). `parts` holds 2.0M rows from the
+4. gr464537 (only the graceful degrade landed, 9440c6ed8; the walk
+   itself is still owed): JLCPCB's getComponentInfos 500s for every body
+   (upstream or account side; ask JLCPCB support). `parts` holds 2.0M rows from the
    jlcparts v2 dump, but that dump has nothing below ~C6.37M: upstream
    re-bootstrapped its cache ~2026-09-14 mid-walk and keeps walking up
    from there. The low range returns when upstream's next walk starts
@@ -110,6 +123,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    and **mx456–mx467**. Steps: prod re-route with the landed warm start and
    pin swaps on; then a placement pass that may move the driver and parts
    and enlarge the outline. Report routed/55, vias, length, and what moved.
+   **Blocked on prod (2026-10-13)** until slice 5b lands: the board cannot
+   be re-expanded at v6 (handoff item 2), and routing a stale expansion is
+   refused. Until then the replay fixture (v3 copy, 51/55) and the plaza
+   member of `tests/fixtures/pcb/qfp_fanout.py` (53/55) are the
+   benchmarks; slice 0 showed a tile plan converges but hard corridors
+   from it hurt (38/41), so slice 0b (corridors as a cost, faithful
+   capacities) comes before any prod run.
 0b. **backlog/pcb-anneal-best-state-vs-routability.md** (gr464240) — after
    0: only if routed/55 stays low and `best_at` stays near 0, route the
    anneal's start/best/last states and keep the most-routed (Reto
@@ -247,10 +267,9 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    - *What is left:* 10 nets — R2C4, R3C3, R3C5, R5C4, R5C7, R6C1, R6C4,
      R6C6, R6C7, R7C6 — mostly rows 5–7, the far side from the driver.
      Past In2.Cu the lever is a third routable layer, or the escape
-     order/placement, not iterations. Every route put still warns that
-     generator ARR1 is stored at version 3 against code version 4; not
-     re-expanded, to keep the runs comparable (re-putting the generators
-     entry redoes placement and routing).
+     order/placement, not iterations. (Since gr480010 a route put on the
+     stale v3 expansion is REFUSED, not warned; the re-expansion is
+     handoff item 2's blocker.)
 5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
    only registered generator is `ewod_pad_array`). Sits beside 4: both are

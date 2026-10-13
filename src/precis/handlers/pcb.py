@@ -471,6 +471,7 @@ class PcbHandler(Handler):
                 "seed",
                 "warm_start",
                 "negotiate",
+                "loop",
                 "moves",
                 "refdes",
                 "x",
@@ -994,6 +995,25 @@ class PcbHandler(Handler):
                     f"to {cap} negotiated-congestion iterations."
                 )
             params["negotiate"] = negotiate
+        # Opt-in route -> penalise -> anneal -> route outer loop
+        # (optimize.anneal_route_loop); off unless asked for.
+        if op == "route" and opts.get("loop") is not None:
+            loop = int(opts["loop"])
+            cap = pcb_optimize.LOOP_MAX_ROUNDS
+            if not 0 <= loop <= cap:
+                raise BadInput(
+                    f"pcb: loop={loop} is out of range; give 0 (off) "
+                    f"to {cap} route rounds."
+                )
+            params["loop"] = loop
+        # Authored expansion bounds for the loop's priced moves ride the
+        # design's own meta (put(args={'meta': {'expansion_caps': {...}}})
+        # — see precis-pcb-route-help). Forwarded verbatim into the job
+        # params so the dedup hash sees them; the job validates the shape.
+        if op == "route" and params.get("loop"):
+            caps = (ref.meta or {}).get("expansion_caps")
+            if caps is not None:
+                params["expansion_caps"] = caps
         # Override for the pre-route placement DRC gate; absent unless True.
         if op == "route" and opts.get("force") is not None:
             if not isinstance(opts["force"], bool):
@@ -3240,6 +3260,17 @@ class PcbHandler(Handler):
                 "\nlen_ratio = routed track mm / pad-to-pad spanning-tree mm "
                 "(~1 = direct; large = detour, gr451277)"
             )
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        loop_meta = (
+            ((ref.meta or {}).get("last_route") or {}).get("loop")
+            if ref is not None
+            else None
+        )
+        if loop_meta:
+            # The loop run's one-line verdict; the full conflict digest
+            # text stays in meta.last_route.loop.digest.
+            first = str(loop_meta.get("digest") or "").split("\n", 1)[0]
+            body += f"\n{first} (full digest: meta.last_route.loop)"
         return Response(body=body)
 
     def _net_length_ratios(self, ref_id: int) -> dict[str, str]:

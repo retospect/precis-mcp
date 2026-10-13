@@ -1047,8 +1047,17 @@ class OccupancyGrid:
         extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         negotiation: Negotiation | None = None,
+        mask: np.ndarray | None = None,
     ) -> RoutePath | None:
         """Search a window around the endpoints first, then the whole grid.
+
+        ``mask`` (optional, ``(n_layers, ny, nx)`` bool) confines the
+        TRACK to cells marked True — a corridor from a global plan
+        (``precis.pcb.globalplan``). It gates the cells the centreline may
+        occupy, including the cell a via changes layer AT on both layers,
+        but NOT the via's keep-out disk: a via may overhang the corridor's
+        edge, which is what a plan that reserves lanes rather than via
+        sites needs. ``None`` (the default) changes nothing.
 
         Everything per-call in the search — the other-net dilation, the via
         mask, the open set — is proportional to the area searched, and on a
@@ -1084,6 +1093,7 @@ class OccupancyGrid:
             "extra_start_terminals": extra_start_terminals,
             "extra_goal_terminals": extra_goal_terminals,
             "negotiation": negotiation,
+            "mask": mask,
         }
         generation = self._via_generation
         path = self._route_in(window, net_id, start, goal, **kwargs)
@@ -1117,6 +1127,7 @@ class OccupancyGrid:
         extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         negotiation: Negotiation | None = None,
+        mask: np.ndarray | None = None,
     ) -> RoutePath | None:
         """Weighted-A* from ``start`` to ``goal`` for a trace of
         ``width_mm``, through cells this net's centreline may legally
@@ -1231,6 +1242,8 @@ class OccupancyGrid:
             iy, ix = divmod(rem, spec.nx)
             if not (wy0 <= iy < wy1 and wx0 <= ix < wx1):
                 return False
+            if mask is not None and not mask[layer, iy, ix]:
+                return False
             return not _disk_hits_foreign(
                 owner, layer, iy, ix, r_cells, half_track, net_id
             )
@@ -1249,6 +1262,8 @@ class OccupancyGrid:
             layer, rem = divmod(idx, plane)
             iy, ix = divmod(rem, spec.nx)
             if not (wy0 <= iy < wy1 and wx0 <= ix < wx1):
+                return False
+            if mask is not None and not mask[layer, iy, ix]:
                 return False
             return not _disk_hits_net(owner, layer, iy, ix, r_cells, half_track, net_id)
 
@@ -1375,6 +1390,7 @@ class OccupancyGrid:
                 step_cost[layer, k] = pitch * weight * _step_penalty(pref, dx, dy)
         body = self._body_mask
         no_mask = np.zeros((1, 1), dtype=np.bool_)
+        no_corridor = np.zeros((1, 1, 1), dtype=np.bool_)
         no_soft = np.zeros((1, 1, 1), dtype=np.int16)
         no_hist = np.zeros((1, 1, 1), dtype=np.float32)
         outcome, goal_cell, length, path = _astar_kernel(
@@ -1388,6 +1404,8 @@ class OccupancyGrid:
             no_mask if pad_keep is None else pad_keep,
             no_mask if body is None else body,
             body is not None,
+            no_corridor if mask is None else np.ascontiguousarray(mask, dtype=np.bool_),
+            mask is not None,
             nx,
             plane,
             wx0,
@@ -1611,6 +1629,8 @@ def _astar_kernel(
     pad_keep: np.ndarray,
     body: np.ndarray,
     has_body: bool,
+    corridor: np.ndarray,
+    has_corridor: bool,
     nx: int,
     plane: int,
     wx0: int,
@@ -1647,6 +1667,10 @@ def _astar_kernel(
     order. Cells are full-grid flat indices (``layer * plane + iy * nx +
     ix``); the bookkeeping arrays (``g``, ``came``, ``state``) cover only
     the window.
+
+    ``corridor``/``has_corridor`` (:meth:`OccupancyGrid.route`'s ``mask``)
+    gate the track cells and the layer-change cell on its new layer, never
+    the via disk.
 
     Keep-outs are decided when the search first reaches a cell and
     memoised in ``state``: a track cell is blocked when
@@ -1759,6 +1783,8 @@ def _astar_kernel(
             nyi = iy + step_dy[layer, k]
             if nxi < wx0 or nxi >= wx1 or nyi < wy0 or nyi >= wy1:
                 continue
+            if has_corridor and not corridor[layer, nyi, nxi]:
+                continue
             nidx = cur + step_off[layer, k]
             nli = lbase + (nyi - wy0) * ww + (nxi - wx0)
             sv = state[nli]
@@ -1825,6 +1851,8 @@ def _astar_kernel(
         for a in range(allowed.shape[0]):
             other = allowed[a]
             if other == layer:
+                continue
+            if has_corridor and not corridor[other, iy, ix]:
                 continue
             nidx = other * plane + rem
             nli = other * wplane + lrem

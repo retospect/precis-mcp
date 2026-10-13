@@ -5128,14 +5128,16 @@ def _capped_list(items: Sequence[str]) -> str:
 
 #: The authored maximum number of route rounds the loop may ever run —
 #: a hard bound, clamped, not a hint (the backlog's "two rounds by
-#: default and an authored maximum of three").
-_LOOP_MAX_ROUNDS = 3
+#: default and an authored maximum of three"). Public so the ``pcb_route``
+#: job's params contract and the handler's ``loop=`` bound read the same
+#: number (:data:`precis.pcb.realize.MAX_NEGOTIATE_ITERATIONS` precedent).
+LOOP_MAX_ROUNDS = 3
 
 
 @dataclass(frozen=True, slots=True)
 class RouteLoopConfig:
     """Budgets for :func:`anneal_route_loop`. ``rounds`` is the requested
-    route count (default two), hard-clamped to :data:`_LOOP_MAX_ROUNDS`
+    route count (default two), hard-clamped to :data:`LOOP_MAX_ROUNDS`
     (the authored maximum of three) and to at least one. ``budget_s`` is
     the wall-clock bound across the whole loop, checked before each route
     and each anneal — a budget that expires ends the loop early with the
@@ -5514,7 +5516,7 @@ def anneal_route_loop(
     and the full legal move set anneals again — including the two priced
     expansion moves when ``config.expansion`` is authored.
 
-    Two rounds by default, hard-clamped to :data:`_LOOP_MAX_ROUNDS`
+    Two rounds by default, hard-clamped to :data:`LOOP_MAX_ROUNDS`
     (the authored maximum of three) and to :attr:`RouteLoopConfig.
     budget_s` of wall clock. The board the caller gets back is the
     BEST round's state — fewest failures, then lowest cost — restored
@@ -5525,7 +5527,7 @@ def anneal_route_loop(
     marginal prices — not placement advice.
     """
     loop = loop or RouteLoopConfig()
-    n_rounds = max(1, min(loop.rounds, _LOOP_MAX_ROUNDS))
+    n_rounds = max(1, min(loop.rounds, LOOP_MAX_ROUNDS))
     config = config or OptimizeConfig()
     config = replace(config, schedule=loop.schedule or _loop_schedule(config))
     # The loop-level seed wins when set — the caller's OptimizeConfig
@@ -5664,6 +5666,7 @@ def conflict_digest_text(result: RouteLoopResult) -> str:
 
 __all__ = [
     "DEFAULT_SCHEDULE",
+    "LOOP_MAX_ROUNDS",
     "MOVE_GENERATORS",
     "BindingConstraint",
     "ConflictDigest",

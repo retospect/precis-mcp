@@ -31,6 +31,13 @@ conflict trail, budget, proposals committed, whether its result was taken)
 and the route job prints that line — on the EWOD dogfood board's B.Cu lock
 it never converges (ewod-pcb thread, 2026-10-07).
 
+`op='route'` with `loop=N` runs :func:`~precis.pcb.optimize.anneal_route_loop`
+instead of one anneal plus realize, behind the same guards; priced
+outline/layer growth needs the design's `meta.expansion_caps`. The job
+writes only rounds on the stored board shape and records grown rounds as
+priced proposals under `meta.last_route.loop` (parameters, keys and the
+route-status line: skill `precis-pcb-route-help`).
+
 Footprint-owned geometry (pads, polygon vertices, holes, courtyard) is
 stored footprint-local and only mapped to world through :mod:`~precis.pcb.pose`
 (mirror-X for bottom, rotate clockwise, translate); never persist a part-owned
@@ -61,6 +68,8 @@ Map, in pipeline order (design doc:
   (IR↔DB glue for the ``pcb_place``/``pcb_route`` jobs).
 * **Copper** — :mod:`~precis.pcb.realize` (sketch → copper geometry),
   :mod:`~precis.pcb.maze` (grid router that cannot violate clearance),
+  :mod:`~precis.pcb.globalplan` (tile-capacity plan probe, experiment
+  only — docs/backlog/pcb-global-plan-router.md),
   :mod:`~precis.pcb.planes` (pours), :mod:`~precis.pcb.tiling` (a net
   owns a region on a layer), :mod:`~precis.pcb.silk` +
   :mod:`~precis.pcb.stroke_font` (silkscreen), :mod:`~precis.pcb.geom`

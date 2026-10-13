@@ -138,6 +138,72 @@ def test_pcb_route_direct_job_refuses_out_of_range_before_board_read(
     assert not ctx.summaries
 
 
+@pytest.mark.parametrize("loop", [-1, 4])
+def test_pcb_route_direct_job_refuses_bad_loop_before_board_read(
+    store: Store, monkeypatch, loop
+):
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("invalid loop must refuse before reading the board")
+
+    monkeypatch.setattr(store, "pcb_graph", unexpected_read)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": -1, "loop": loop})
+    _route(ctx)
+    assert len(ctx.failures) == 1
+    assert "loop=" in str(ctx.failures[0])
+    assert not ctx.summaries
+
+
+def test_pcb_route_loop_runs_rounds_and_persists_digest(store: Store):
+    """``loop=N`` drives ``anneal_route_loop`` end to end under the same
+    guards as the single anneal: a clean round-0 route ends the loop
+    early (``complete``), the summary gains the loop line, and
+    ``meta.last_route.loop`` persists per-round counts plus the conflict
+    digest — which ``view='route-status'`` then shows a line of."""
+    ref_id = _seed(store, "route-loop", _DESIGN)
+    ctx = _FakeCtx(
+        store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 0, "loop": 2}
+    )
+    _route(ctx)
+
+    assert not ctx.failures
+    ref = store.get_ref(kind="pcb", id="route-loop")
+    assert ref is not None
+    loop_meta = ref.meta["last_route"]["loop"]
+    assert loop_meta["complete"] is True
+    assert loop_meta["rounds_run"] == 1  # round 0 routed the only net
+    assert loop_meta["expansion_status"] == "disabled:no-caps"
+    assert loop_meta["rounds"][0]["routed"] == 1
+    assert loop_meta["proposed_expansions"] == []
+    assert loop_meta["committed_round"] == loop_meta["best_round"]
+    assert loop_meta["refused_rounds"] == []
+    assert "route-loop: complete" in loop_meta["digest"]
+    summary = "\n".join(text for kind, text in ctx.summaries if kind == "job_summary")
+    assert "route-loop: complete" in summary
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+    resp = PcbHandler(hub=Hub(store=store)).get(id="route-loop", view="route-status")
+    assert "route-loop: complete" in resp.body
+    assert "meta.last_route.loop" in resp.body
+
+
+def test_pcb_route_loop_malformed_expansion_caps_fails_input(store: Store):
+    """A malformed ``expansion_caps`` on a loop job is an input failure,
+    never silently ignored — a refused cap must read as one."""
+    ref_id = _seed(store, "route-loop-badcaps", _DESIGN)
+    ctx = _FakeCtx(
+        store,
+        params={
+            "pcb_ref_id": ref_id,
+            "iters": 50,
+            "loop": 2,
+            "expansion_caps": {"outline_max_mm": [120.0, 100.0]},
+        },
+    )
+    _route(ctx)
+    assert len(ctx.failures) == 1
+    assert "expansion_caps" in ctx.failures[0][0]
+    assert ctx.failures[0][1] == "input"
+
+
 def test_pcb_route_summary_says_what_the_negotiation_did(store: Store, monkeypatch):
     """gr469872's follow-up: job 470129 (``negotiate=10`` on the EWOD
     dogfood board) reported the same counts as ``negotiate=0`` and nothing

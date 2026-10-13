@@ -169,6 +169,76 @@ def test_missing_outline_is_a_refusal_not_a_bounding_box():
         epro.board_outline(doc)
 
 
+def _doc_with_outline_pieces(pieces: list[list[float | str]]) -> epro.EproDocument:
+    """The tiny fixture with its one closed outline POLY replaced by
+    several open ones (each ``path`` list is one piece)."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    lines = [line for line in stream.split("\n") if '"id":"outline1"' not in line]
+    for i, path in enumerate(pieces):
+        body = {
+            "netName": "",
+            "layerId": 11,
+            "width": 10,
+            "path": path,
+            "polyType": "NORMAL",
+        }
+        head = {"type": "POLY", "ticket": 900 + i, "id": f"edge{i}"}
+        lines.insert(3, f"{json.dumps(head)}||{json.dumps(body)}|")
+    return epro.split_documents("\n".join(lines))[0]
+
+
+def test_outline_drawn_edge_by_edge_chains_into_one_ring():
+    """Pro also stores an outline as several OPEN line-only POLYs whose
+    ends meet (Reto's TAZ control board V1.15: eleven pieces). Pieces are
+    given out of order and one reversed; the ring must still be the same
+    1000 x 500 mil rectangle the single-POLY fixture draws."""
+    doc = _doc_with_outline_pieces(
+        [
+            [0, 0, "L", 1000, 0],
+            [0, 500, "L", 0, 0],  # last edge, listed second
+            [1000, 500, "L", 1000, 0],  # reversed
+            [1000, 500.0004, "L", 0, 500],  # shared corner off by 0.0004 mil
+        ]
+    )
+    outline, _ = epro.board_outline(doc)
+    assert len(outline) == 4
+    xs = [x for x, _ in outline]
+    ys = [y for _, y in outline]
+    assert (min(xs), max(xs)) == (0.0, pytest.approx(1000 * _MIL))
+    assert (min(ys), max(ys)) == (0.0, pytest.approx(_H_MIL * _MIL))
+
+
+def test_outline_pieces_that_do_not_close_are_refused():
+    doc = _doc_with_outline_pieces(
+        [[0, 0, "L", 1000, 0], [1000, 0, "L", 1000, 500], [1000, 500, "L", 0, 500]]
+    )
+    with pytest.raises(epro.EproError, match="does not close"):
+        epro.board_outline(doc)
+
+
+def test_outline_piece_with_an_arc_opcode_is_refused_not_chorded():
+    doc = _doc_with_outline_pieces(
+        [
+            [0, 0, "L", 1000, 0],
+            [1000, 0, "A", 1000, 500],
+            [1000, 500, "L", 0, 500, 0, 0],
+        ]
+    )
+    with pytest.raises(epro.EproError, match="opcodes"):
+        epro.board_outline(doc)
+
+
+def test_detached_outline_piece_is_refused_as_a_panel():
+    doc = _doc_with_outline_pieces(
+        [
+            [0, 0, "L", 1000, 0, 1000, 500, 0, 500, 0, 0],
+            [2000, 0, "L", 3000, 0, 3000, 500, 2000, 500, 2000, 0],
+        ]
+    )
+    with pytest.raises(epro.EproError, match="do not chain into one ring"):
+        epro.board_outline(doc)
+
+
 def test_coordinates_round_to_the_nanometre(frame):
     """Determinism: the mil->mm multiply leaves float residue that makes
     two runs over one file compare unequal."""
@@ -203,6 +273,26 @@ def test_unused_layers_are_not_in_the_map(pcb):
     """The spike board declares 92 LAYER records and uses 27. A reader
     that took them all would claim a 60-layer stackup."""
     assert 13 not in epro.layer_map(pcb)
+
+
+def test_layer_id_only_in_the_record_header_is_still_mapped():
+    """Newer Pro exports (Reto's TAZ board, 2026-10-13) drop ``layerId``
+    from the LAYER body; the id is the header's ``'["LAYER", n]'``. The
+    map, the copper layers and the outline must all still resolve."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    out = []
+    for line in stream.split("\n"):
+        if line.startswith('{"type":"LAYER"'):
+            head, body = line.split("||", 1)
+            payload = json.loads(body.rstrip("|"))
+            payload.pop("layerId")
+            line = f"{head}||{json.dumps(payload)}|"
+        out.append(line)
+    doc = epro.split_documents("\n".join(out))[0]
+    assert epro.layer_map(doc)[11] == ("OUTLINE", "Board Outline Layer")
+    assert epro.copper_layers(doc) == {1: "F.Cu", 15: "In1.Cu", 16: "In2.Cu", 2: "B.Cu"}
+    xs = [x for x, _ in epro.board_outline(doc)[0]]
+    assert (min(xs), max(xs)) == (0.0, pytest.approx(1000 * _MIL))
 
 
 # ── copper ───────────────────────────────────────────────────────────────
@@ -532,6 +622,21 @@ def test_nets_nothing_references_are_dropped(pcb):
     assert any("no pad and no copper" in n for n in notes)
 
 
+def test_a_document_without_net_records_takes_nets_from_pads_and_copper():
+    """Reto's TAZ V1.15 export (2026-10-13) declares no NET records; its
+    netlist exists only as the names PAD_NETs and copper carry. The
+    declared-and-used intersection dropped all 386 connections."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    stripped = "\n".join(
+        line for line in stream.split("\n") if not line.startswith('{"type":"NET"')
+    )
+    doc = epro.split_documents(stripped)[0]
+    kept, notes = epro.live_nets(doc)
+    assert {"SIG", "GND", "CURVE"} <= set(kept)
+    assert "ORPHAN" not in kept
+    assert any("no NET records" in n for n in notes)
+
+
 def test_the_empty_named_net_record_is_dropped_and_counted(pcb):
     kept, notes = epro.live_nets(pcb)
     assert "" not in kept
@@ -581,6 +686,27 @@ def test_real_board_parses_without_surprises():
         and (b["startX"], b["startY"]) != (b["endX"], b["endY"])
     )
     assert sum(len(t["geom"]["segments"]) for t in ext.tracks) == src
+
+
+def test_footprint_link_keyed_footprintname_still_resolves_pads(project):
+    """Reto's TAZ V1.15 export (2026-10-13) keys the component's footprint
+    uuid ``FootprintName``, not ``Footprint``; every component imported
+    with no pads. Both spellings must resolve to the same footprints."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    renamed = stream.replace('"key":"Footprint"', '"key":"FootprintName"')
+    assert renamed != stream
+    doc = epro.split_documents(renamed)
+    pcb_doc = next(d for d in doc if d.doc_type == "PCB")
+    renamed_proj = epro.EproProject(
+        title=project.title, editor_version=project.editor_version, documents=doc
+    )
+    fps, names, _warnings = epro.extract_footprints(renamed_proj, pcb_doc)
+    base_fps, base_names, _ = epro.extract_footprints(
+        project, project.by_type("PCB")[0]
+    )
+    assert names == base_names
+    assert [fp["name"] for fp in fps] == [fp["name"] for fp in base_fps]
+    assert all(fp["pads"] for fp in fps)
 
 
 def test_a_multi_layer_fill_in_a_footprint_imports_as_a_footprint_hole(project):

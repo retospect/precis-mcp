@@ -116,14 +116,26 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
-    "src/precis/pcb/optimize.py::anneal_route_loop": (
-        "opt-in loop; surface wiring is the filed follow-up"
+    "src/precis/pcb/globalplan.py::TileGraph.tile_of": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
     ),
-    "src/precis/pcb/optimize.py::conflict_digest_text": (
-        "opt-in loop; surface wiring is the filed follow-up"
+    "src/precis/pcb/globalplan.py::build_tile_graph": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
     ),
-    "src/precis/pcb/feedback.py::outcome_from_realize": (
-        "opt-in loop; surface wiring is the filed follow-up"
+    "src/precis/pcb/globalplan.py::plan_routes": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    ),
+    "src/precis/pcb/globalplan.py::plan_order": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    ),
+    "src/precis/pcb/globalplan.py::corridor_tiles": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    ),
+    "src/precis/pcb/globalplan.py::corridor_mask": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    ),
+    "src/precis/pcb/globalplan.py::corridor_route": (
+        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
     ),
     "src/precis/pcb/_http.py::reset_circuit": (
         "own docstring: 'for tests, and for an operator retrying by hand' "

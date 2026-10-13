@@ -60,6 +60,29 @@ put(kind="pcb", id="sensor-node", args={"op": "route", "iters": 3000, "seed": 0}
   experimental negotiated-congestion iterations, tried only when the
   normal rip-up passes leave nets unrouted; capped at 60 s, and the result
   is kept only if it routes more nets. Unmeasured on real boards yet.
+- `op='route'` also accepts `loop` (int 0–3, default 0 = off): the
+  bounded **route → penalise → anneal → route** outer loop
+  (`optimize.anneal_route_loop`). Each round routes the current board,
+  folds its failed nets/escapes and congestion into the next anneal's
+  margins, and re-places — including two *priced* expansion moves
+  (grow the outline, add a symmetric layer pair) **only when the design
+  authors bounds**. Set them on the design's meta at authoring time:
+  `args={'meta': {'expansion_caps': {'outline_max_mm': [w, h],
+  'max_copper_layers': n, 'max_fab_usd': usd}}}` — every field required;
+  absent caps disable both moves (never treated as infinity). The loop
+  ends in a conflict digest — binding constraints, net/pad/region
+  witnesses, marginal fab-USD prices — not placement advice. The job
+  commits the best round whose board shape is still the stored one: it
+  never writes a grown outline or an added layer pair, so a round that
+  only routed because the board grew is reported, not stored —
+  `meta.last_route.loop.proposed_expansions` lists each growth with its
+  round, routed count and fab-USD delta; apply it as a design edit
+  (outline feature / stackup) and re-run. The job summary and
+  `view='route-status'` show the one-line verdict; the full digest lives
+  at `meta.last_route.loop.digest` next to per-round routed/failed/
+  dangling counts, outline mm, layers, `best_round`, `committed_round`
+  and any `refused_rounds` (a later round the pre-route gate refused
+  counts as zero routed instead of failing the whole job).
 - **Idempotent per (design, op, content-hash).** A re-submit against
   *unchanged* netlist/placement state and the same `iters`/`seed`
   collapses onto the in-flight/prior job instead of minting a duplicate —

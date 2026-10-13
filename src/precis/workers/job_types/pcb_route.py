@@ -39,6 +39,19 @@ sides). After the post-route gate, an attempt with more unrealized nets
 or more DRC errors writes nothing at all — no planes, pin swaps, poses,
 statuses or copper — and the job fails ``non-convergence`` carrying the
 attempt's summary. An equal or better result commits as usual.
+
+**``loop=N`` (0 off, ≤ :data:`precis.pcb.optimize.LOOP_MAX_ROUNDS`) swaps
+the single anneal+realize for** :func:`precis.pcb.optimize.anneal_route_loop`
+— the budgeted route → penalise → anneal → route outer loop
+(docs/backlog/pcb-anneal-closes-router-loop.md). ``realize()`` runs once
+per round behind the same pre-route DRC/invariant gate (a refusal thrown
+out of the round callable writes nothing, like the inline refusal), the
+loop restores the IR to its best round, and that round's realized result
+feeds the same post-route strip and never-worse ratchet. Authored
+``meta.expansion_caps`` (``{outline_max_mm: [w, h], max_copper_layers: n,
+max_fab_usd: usd}``) enables the priced expansion moves; absent caps
+disable them. ``meta.last_route.loop`` records per-round counts and the
+conflict digest the loop ends in.
 """
 
 from __future__ import annotations
@@ -48,10 +61,12 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import DANGLING_NET_NOTE
+from precis.pcb import feedback as pcb_feedback
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
+from precis.pcb.cost import outline_bbox
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import (
     UNSET_LAYER,
@@ -60,7 +75,15 @@ from precis.pcb.ir import (
     segment_points,
 )
 from precis.pcb.optimize import (
+    LOOP_MAX_ROUNDS,
+    ExpansionCaps,
     OptimizeConfig,
+    RouteLoopConfig,
+    RouteOutcome,
+    _ir_state_restore,
+    _ir_state_snapshot,
+    anneal_route_loop,
+    conflict_digest_text,
     digest_toon,
     optimize,
     resolve_measures,
@@ -70,6 +93,7 @@ from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
     from precis.pcb.ir import PcbIR
+    from precis.pcb.optimize import OptimizeResult, RouteLoopResult
     from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
@@ -102,6 +126,14 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "minimum": 0,
             "maximum": pcb_realize.MAX_NEGOTIATE_ITERATIONS,
         },
+        # The route -> penalise -> anneal -> route outer loop
+        # (optimize.anneal_route_loop): 0 = the single anneal+realize
+        # (default), 1..LOOP_MAX_ROUNDS = that many budgeted rounds.
+        "loop": {"type": "integer", "minimum": 0, "maximum": LOOP_MAX_ROUNDS},
+        # Authored ExpansionCaps forwarded verbatim from the design's
+        # meta.expansion_caps by the handler (into params so the dedup
+        # hash sees them); the job validates the shape itself.
+        "expansion_caps": {"type": "object"},
         # Route despite pre-route placement DRC errors (recorded in the summary).
         "force": {"type": "boolean"},
     },
@@ -347,6 +379,34 @@ def _apply_pin_swap_warm_start(
     return reports
 
 
+class _LoopGateRefusal(Exception):
+    """The pre-route gate's refusal, thrown out of the loop's route
+    callable so it can cross ``anneal_route_loop`` — the same refusal the
+    single-anneal path issues inline, with the same outcome: the job
+    fails ``input`` and nothing is written."""
+
+
+def _round_shape(ir: PcbIR, outcome: RouteOutcome) -> dict[str, Any]:
+    """One loop round's persisted summary for ``meta.last_route.loop``:
+    the honest per-NET counts (dangling = a <2-member net, the same
+    definition the rows below count under) plus the board shape that
+    round's route actually saw — outline bbox mm and copper layers, the
+    two axes a priced expansion can move."""
+    member_counts = net_member_counts(ir)
+    dangling = sum(1 for n in range(ir.n_nets) if member_counts.get(n, 0) < 2)
+    outline_mm: list[float] | None = None
+    if ir.outline and len(ir.outline) >= 3:
+        x0, y0, x1, y1 = outline_bbox(ir.outline)
+        outline_mm = [round(x1 - x0, 3), round(y1 - y0, 3)]
+    return {
+        "routed": outcome.routed,
+        "failed": outcome.total - outcome.routed,
+        "dangling": dangling,
+        "outline_mm": outline_mm,
+        "layers": ir.n_layers,
+    }
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     warm_start = str(params.get("warm_start", "distance"))
@@ -363,6 +423,16 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         ctx.record_failure(
             f"pcb_route: negotiate={negotiate} is out of range; give 0 (off) "
             f"to {pcb_realize.MAX_NEGOTIATE_ITERATIONS} iterations",
+            failure_class="input",
+        )
+        return
+    loop_rounds = int(params.get("loop") or 0)
+    # Same arm as `negotiate` above: an out-of-range loop count refuses
+    # before the board is ever read.
+    if not 0 <= loop_rounds <= LOOP_MAX_ROUNDS:
+        ctx.record_failure(
+            f"pcb_route: loop={loop_rounds} is out of range; give 0 (off) "
+            f"to {LOOP_MAX_ROUNDS} route rounds",
             failure_class="input",
         )
         return
@@ -586,66 +656,43 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     warm_start_report = _apply_pin_swap_warm_start(
         ir, pin_swap_groups, footprints, fixed_copper, warm_start
     )
+    force = bool(params.get("force", False))
+    expansion_caps: ExpansionCaps | None = None
+    if loop_rounds:
+        # Authored bounds for the loop's priced expansion moves, forwarded
+        # verbatim from the design's meta.expansion_caps by the handler
+        # (or supplied directly on a job put — the params contract admits
+        # the key either way). Absent caps leave OUTLINE_GROW/LAYER_ADD
+        # disabled exactly as the bare loop treats them; a malformed cap
+        # is an input failure, never silently ignored.
+        raw_caps = params.get("expansion_caps")
+        if raw_caps is not None:
+            try:
+                outline_max = raw_caps["outline_max_mm"]
+                expansion_caps = ExpansionCaps(
+                    outline_max_mm=(float(outline_max[0]), float(outline_max[1])),
+                    max_copper_layers=int(raw_caps["max_copper_layers"]),
+                    max_fab_usd=float(raw_caps["max_fab_usd"]),
+                )
+            except (KeyError, TypeError, ValueError, IndexError) as exc:
+                ctx.record_failure(
+                    f"pcb_route: expansion_caps is malformed ({exc}); "
+                    "expected {'outline_max_mm': [w_mm, h_mm], "
+                    "'max_copper_layers': n, 'max_fab_usd': usd}",
+                    failure_class="input",
+                )
+                return
     config = OptimizeConfig(
         iters=iters,
         seed=seed,
         locked_plane_nets=locked_plane_nets,
         measures=measures,
         pin_swap_groups=pin_swap_groups,
+        # None on the single-anneal path AND on a cap-less loop — the
+        # priced generators refuse without authored bounds, and the
+        # single path's schedule never draws them anyway.
+        expansion=expansion_caps,
     )
-    result = optimize(ir, config)
-    # The anneal moves unfrozen parts, so check again before any write: a
-    # placement that parks a pad on fixed copper is not persisted either.
-    collisions = _fixed_copper_collisions(ir, footprints, fixed_copper, fab_caps)
-    if collisions:
-        ctx.record_failure(
-            _collision_reason("the anneal placed pads on fixed copper", collisions),
-            failure_class="non-convergence",
-        )
-        return
-
-    # Write back the anneal's settled plane decisions (gr267526: this used
-    # to be dropped entirely — PLANE_PROMOTE/DEMOTE moves mutated
-    # net_plane_layers freely during search, but nothing ever persisted the
-    # result, so a promoted GND/VCC-class net reverted to a full-length
-    # trace the moment the job ended). Only nets NOT covered by an
-    # authored row are written — an authored net's persisted assignment
-    # must stay exactly what the human asked for, never what this run's
-    # search happened to leave it at.
-    #
-    # `pcb_planes_replace_derived`'s ``assignments`` is still ``{net_name:
-    # layer_name}`` — ONE layer per net — because a derived (search-only)
-    # net structurally never carries more than one bit:
-    # `optimize._gen_plane_promote` only ever offers a bare (mask==0),
-    # unlocked net a single new layer, and an authored net is excluded
-    # from this dict entirely by the `authored_net_names` filter below. So
-    # `plane_layers_of` yields at most one entry per net here, and this
-    # dict comprehension stays a straight 1:1 mapping without needing a
-    # store-side change (multi-layer fill for one net is carried entirely
-    # by the AUTHORED path — see `handlers/pcb.py::_op_plane_net`, called
-    # once per desired layer, each landing its own `pcb_planes` row).
-    derived_assignments = {
-        str(ir.net_name[n]): str(ir.stackup[layer]["name"])
-        for n in range(ir.n_nets)
-        if str(ir.net_name[n]) not in authored_net_names
-        for layer in plane_layers_of(int(ir.net_plane_layers[n]))
-    }
-
-    # Write back the anneal's settled pin-swap decisions (pcb-engine-plan
-    # "PIN_SWAP is not persisted": previously `ir.swap_pins` genuinely
-    # mutated pin->net during search and nothing ever wrote the result
-    # back, so the stored netlist and the stored copper would describe two
-    # different boards the moment this job ended). Diffed against the
-    # RAW netconn baseline captured above (not the warm-started state), so
-    # a pin already at its authored net writes nothing; only pins already
-    # covered by an authored override are excluded from the write, same
-    # "never overwrite an authored row" discipline as the plane path.
-    pin_swap_overrides = [
-        entry
-        for entry in pcb_session.pin_swap_diff(ir, baseline_pin_net)
-        if (entry["refdes"], entry["pin"]) not in authored_pin_keys
-    ]
-
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
         class_rules=graph.get("net_classes"),
@@ -654,6 +701,65 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
     # block's own comment for why.
+
+    def _settled_writebacks() -> tuple[dict[str, str], list[dict[str, Any]]]:
+        """The anneal's settled plane + pin-swap decisions, diffed for
+        write-back — read off the CURRENT ``ir``: the single path's
+        post-anneal state, or the loop's restored best round."""
+        # Write back the anneal's settled plane decisions (gr267526: this used
+        # to be dropped entirely — PLANE_PROMOTE/DEMOTE moves mutated
+        # net_plane_layers freely during search, but nothing ever persisted the
+        # result, so a promoted GND/VCC-class net reverted to a full-length
+        # trace the moment the job ended). Only nets NOT covered by an
+        # authored row are written — an authored net's persisted assignment
+        # must stay exactly what the human asked for, never what this run's
+        # search happened to leave it at.
+        #
+        # `pcb_planes_replace_derived`'s ``assignments`` is still ``{net_name:
+        # layer_name}`` — ONE layer per net — because a derived (search-only)
+        # net structurally never carries more than one bit:
+        # `optimize._gen_plane_promote` only ever offers a bare (mask==0),
+        # unlocked net a single new layer, and an authored net is excluded
+        # from this dict entirely by the `authored_net_names` filter below. So
+        # `plane_layers_of` yields at most one entry per net here, and this
+        # dict comprehension stays a straight 1:1 mapping without needing a
+        # store-side change (multi-layer fill for one net is carried entirely
+        # by the AUTHORED path — see `handlers/pcb.py::_op_plane_net`, called
+        # once per desired layer, each landing its own `pcb_planes` row).
+        derived = {
+            str(ir.net_name[n]): str(ir.stackup[layer]["name"])
+            for n in range(ir.n_nets)
+            if str(ir.net_name[n]) not in authored_net_names
+            for layer in plane_layers_of(int(ir.net_plane_layers[n]))
+        }
+        # Write back the anneal's settled pin-swap decisions (pcb-engine-plan
+        # "PIN_SWAP is not persisted": previously `ir.swap_pins` genuinely
+        # mutated pin->net during search and nothing ever wrote the result
+        # back, so the stored netlist and the stored copper would describe two
+        # different boards the moment this job ended). Diffed against the
+        # RAW netconn baseline captured above (not the warm-started state), so
+        # a pin already at its authored net writes nothing; only pins already
+        # covered by an authored override are excluded from the write, same
+        # "never overwrite an authored row" discipline as the plane path.
+        swaps = [
+            entry
+            for entry in pcb_session.pin_swap_diff(ir, baseline_pin_net)
+            if (entry["refdes"], entry["pin"]) not in authored_pin_keys
+        ]
+        return derived, swaps
+
+    def _post_anneal_collision_check() -> bool:
+        """The anneal moves unfrozen parts, so check again before any
+        write: a placement that parks a pad on fixed copper is not
+        persisted either. True when the job refused and must return."""
+        collisions = _fixed_copper_collisions(ir, footprints, fixed_copper, fab_caps)
+        if collisions:
+            ctx.record_failure(
+                _collision_reason("the anneal placed pads on fixed copper", collisions),
+                failure_class="non-convergence",
+            )
+            return True
+        return False
 
     # Pre-route DRC gate (the bug this closes): `drc.run_geometric_drc` had
     # exactly ONE caller — `view='drc'` — so a board could be placed, routed
@@ -679,72 +785,205 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # check that fails closed on the whole job would be worse than the silent
     # gap it replaces. On error it degrades to "no gate result", logged, and
     # routing proceeds exactly as before.
+    def _placement_gate() -> tuple[int, str | None]:
+        """The pre-route placement-DRC + invariant-measure gate over the
+        CURRENT ``ir`` — one block for every seam the router is about to
+        run on: the single path's post-anneal poses, and every loop
+        round's routed state inside ``_route_once``. Returns ``(n_errors,
+        rendered report)``; a raised check degrades to (0, None), logged."""
+        try:
+            placement_findings = pcb_session.placement_drc_findings(
+                ir,
+                capability=fab_caps,
+                footprints=footprints,
+                fixed_copper=fixed_copper,
+                outline=pcb_session.outline_from_features(features),
+            )
+            # gr345859 §F — violated `strength='invariant'` measures (the
+            # generator-declared fabric rules) join the same gate: judged on
+            # the post-anneal pads plus the whole copper store (stored router
+            # copper a violation names yields as 'derived'), refusing the route
+            # exactly like a placement DRC error unless force=True.
+            layers = [str(layer.get("name")) for layer in ir.stackup]
+            placement_findings += pcb_session.invariant_measure_findings(
+                graph=graph,
+                measures=raw_measures,
+                features=features,
+                generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
+                pads=pcb_realize.pads_for_ir(ir, layers, footprints),
+                copper=[
+                    {**row, "net": row.get("net") or ""}
+                    if row.get("fixed")
+                    else {**row, "derived": True}
+                    for row in ctx.store.pcb_copper_list(int(board_id))
+                ],
+                layers=layers,
+            )
+            return pcb_session.placement_drc_report(placement_findings)
+        except Exception:
+            log.exception("pcb_route: pre-route DRC gate raised; routing anyway")
+            return 0, None
+
+    result: OptimizeResult | None = None
+    loop_result: RouteLoopResult | None = None
+    rres: pcb_realize.RealizeResult | None = None
     n_placement_errors = 0
     placement_report: str | None = None
-    try:
-        placement_findings = pcb_session.placement_drc_findings(
-            ir,
-            capability=fab_caps,
-            footprints=footprints,
-            fixed_copper=fixed_copper,
-            outline=pcb_session.outline_from_features(features),
-        )
-        # gr345859 §F — violated `strength='invariant'` measures (the
-        # generator-declared fabric rules) join the same gate: judged on
-        # the post-anneal pads plus the whole copper store (stored router
-        # copper a violation names yields as 'derived'), refusing the route
-        # exactly like a placement DRC error unless force=True.
-        layers = [str(layer.get("name")) for layer in ir.stackup]
-        placement_findings += pcb_session.invariant_measure_findings(
-            graph=graph,
-            measures=raw_measures,
-            features=features,
-            generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
-            pads=pcb_realize.pads_for_ir(ir, layers, footprints),
-            copper=[
-                {**row, "net": row.get("net") or ""}
-                if row.get("fixed")
-                else {**row, "derived": True}
-                for row in ctx.store.pcb_copper_list(int(board_id))
-            ],
-            layers=layers,
-        )
-        n_placement_errors, placement_report = pcb_session.placement_drc_report(
-            placement_findings
-        )
-    except Exception:
-        log.exception("pcb_route: pre-route DRC gate raised; routing anyway")
-    force = bool(params.get("force", False))
-    if n_placement_errors and not force:
-        gate_failure = (
-            "pcb_route: refusing to route — the placement is already "
-            f"illegal; nothing written.\n{placement_report}\n"
-            "Fix the placement (unpin a violator or move it), or pass "
-            "force=True to route anyway; the override is recorded in the "
-            "job summary."
-        )
-        ctx.record_failure(gate_failure, failure_class="input")
-        return
-    if n_placement_errors:
-        log.warning(
-            "pcb_route: force=True — routing a placement with %d pre-route "
-            "DRC error(s)",
-            n_placement_errors,
-        )
-        placement_report = (
-            f"pre-route DRC gate OVERRIDDEN (force=True): routing a placement "
-            f"with {n_placement_errors} error(s)\n{placement_report}"
-        )
+    round_shapes: list[dict[str, Any]] = []
+    committed_round = 0
+    refused_rounds: list[int] = []
+    if loop_rounds:
+        # route -> penalise -> anneal -> route (pcb-anneal-closes-router-
+        # loop.md). `realize()` runs once per round inside `_route_once`,
+        # behind the SAME pre-route gate the single path runs. Round 0
+        # routes the stored board; a refusal there writes nothing, exactly
+        # like the inline refusal below. A LATER round's refusal (the
+        # anneal between rounds parked a part illegally) is recorded as a
+        # zero-routed round instead of discarding the rounds already won.
+        #
+        # Which round commits is decided HERE, not by the loop's own
+        # best-round rank: this job can only write poses, swaps, planes
+        # and copper, never a grown outline or an added layer pair (the
+        # stored features/stackup stay what the design authored), so a
+        # round whose board shape differs from the stored board is not
+        # committable — its copper would describe a board the store does
+        # not hold, and the post-route DRC/ratchet below measure against
+        # the stored outline. Such rounds are reported as PRICED PROPOSALS
+        # in `meta.last_route.loop` (the digest already carries the
+        # marginal prices); applying one is a design edit (outline
+        # feature / stackup) followed by a re-run — the LLM-menu boundary
+        # docs/backlog/pcb-global-plan-router.md draws. Round 0 is always
+        # the stored shape, so an eligible round always exists.
+        realized_by_round: list[pcb_realize.RealizeResult | None] = []
+        round_gates: list[tuple[int, str | None]] = []
+        round_states: list[dict[str, Any]] = []
+        round_outcomes: list[RouteOutcome] = []
+        n_nets_total = len({int(ir.seg_net[s]) for s in range(ir.n_segments)})
 
-    # Authored fixed copper (`fixed_copper`, read before the anneal for the
-    # collision gate; pcb-pre-place-route-blocks Slice 1, "Realize seam"):
-    # claimed on the occupancy grid as real obstacles for every OTHER net,
-    # and short-circuits any ratsnest segment its own two pins already
-    # bridge (`RealizeResult.fixed_realized` below) — see `realize()`'s own
-    # `fixed_copper` keyword docstring for both halves.
-    rres = pcb_realize.realize(
-        ir, config=realize_config, footprints=footprints, fixed_copper=fixed_copper
-    )
+        def _route_once(ir_: PcbIR) -> RouteOutcome:
+            n_err, report = _placement_gate()
+            round_gates.append((n_err, report))
+            round_states.append(_ir_state_snapshot(ir_))
+            if n_err and not force:
+                if not round_outcomes:
+                    raise _LoopGateRefusal(report or "")
+                refused_rounds.append(len(round_outcomes))
+                realized_by_round.append(None)
+                refused = RouteOutcome(
+                    routed=0,
+                    total=n_nets_total,
+                    complete=False,
+                    note="pre-route gate refused this round's placement",
+                )
+                round_outcomes.append(refused)
+                round_shapes.append({**_round_shape(ir_, refused), "refused": True})
+                return refused
+            if n_err:
+                log.warning(
+                    "pcb_route: force=True — routing a placement with %d "
+                    "pre-route DRC error(s)",
+                    n_err,
+                )
+            rres_ = pcb_realize.realize(
+                ir_,
+                config=realize_config,
+                footprints=footprints,
+                fixed_copper=fixed_copper,
+            )
+            realized_by_round.append(rres_)
+            outcome = pcb_feedback.outcome_from_realize(ir_, rres_)
+            round_outcomes.append(outcome)
+            round_shapes.append(_round_shape(ir_, outcome))
+            return outcome
+
+        try:
+            loop_result = anneal_route_loop(
+                ir,
+                config,
+                _route_once,
+                loop=RouteLoopConfig(rounds=loop_rounds, seed=seed),
+            )
+        except _LoopGateRefusal as exc:
+            ctx.record_failure(
+                "pcb_route: refusing to route — the placement is already "
+                f"illegal; nothing written.\n{exc}\n"
+                "Fix the placement (unpin a violator or move it), or pass "
+                "force=True to route anyway; the override is recorded in the "
+                "job summary.",
+                failure_class="input",
+            )
+            return
+        stored_shape = (round_shapes[0]["outline_mm"], round_shapes[0]["layers"])
+        eligible = [
+            i
+            for i, shape in enumerate(round_shapes)
+            if i not in refused_rounds
+            and (shape["outline_mm"], shape["layers"]) == stored_shape
+        ]
+        if loop_result.best_round in eligible:
+            committed_round = loop_result.best_round
+        else:
+            # The loop's own rank, restricted to committable rounds:
+            # fewest failures, then most routed, then the earliest.
+            committed_round = min(
+                eligible,
+                key=lambda i: (
+                    len(round_outcomes[i].failures),
+                    -round_outcomes[i].routed,
+                    i,
+                ),
+            )
+            _ir_state_restore(ir, round_states[committed_round])
+        rres = realized_by_round[committed_round]
+        assert rres is not None  # an eligible round is never a refused one
+        n_placement_errors, placement_report = round_gates[committed_round]
+        if n_placement_errors:
+            # Only reachable under force=True — a non-forced error count
+            # already refused the whole run out of `_route_once`.
+            placement_report = (
+                f"pre-route DRC gate OVERRIDDEN (force=True): routing a placement "
+                f"with {n_placement_errors} error(s)\n{placement_report}"
+            )
+        if _post_anneal_collision_check():
+            return
+        derived_assignments, pin_swap_overrides = _settled_writebacks()
+    else:
+        result = optimize(ir, config)
+        if _post_anneal_collision_check():
+            return
+        derived_assignments, pin_swap_overrides = _settled_writebacks()
+        n_placement_errors, placement_report = _placement_gate()
+        if n_placement_errors and not force:
+            ctx.record_failure(
+                "pcb_route: refusing to route — the placement is already "
+                f"illegal; nothing written.\n{placement_report}\n"
+                "Fix the placement (unpin a violator or move it), or pass "
+                "force=True to route anyway; the override is recorded in the "
+                "job summary.",
+                failure_class="input",
+            )
+            return
+        if n_placement_errors:
+            log.warning(
+                "pcb_route: force=True — routing a placement with %d pre-route "
+                "DRC error(s)",
+                n_placement_errors,
+            )
+            placement_report = (
+                f"pre-route DRC gate OVERRIDDEN (force=True): routing a placement "
+                f"with {n_placement_errors} error(s)\n{placement_report}"
+            )
+
+        # Authored fixed copper (`fixed_copper`, read before the anneal for the
+        # collision gate; pcb-pre-place-route-blocks Slice 1, "Realize seam"):
+        # claimed on the occupancy grid as real obstacles for every OTHER net,
+        # and short-circuits any ratsnest segment its own two pins already
+        # bridge (`RealizeResult.fixed_realized` below) — see `realize()`'s own
+        # `fixed_copper` keyword docstring for both halves.
+        rres = pcb_realize.realize(
+            ir, config=realize_config, footprints=footprints, fixed_copper=fixed_copper
+        )
+    assert rres is not None  # every non-returning arm above sets it
     # Post-route legality gate. Legality is a hard gate and incompleteness the
     # only permitted failure (docs/backlog/pcb-always-valid-board-invariant.md):
     # router copper that breaks a geometric DRC rule is NOT stored — its net
@@ -1064,6 +1303,32 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # illegal placement is the FIRST thing this summary should say, since
     # (gr451052) it is the thing that made the routing below meaningless.
     placement_summary = f"{placement_report}\n\n" if placement_report else ""
+    if loop_result is not None:
+        d = loop_result.digest
+        loop_line = (
+            f"\nroute-loop: {'complete' if d.complete else 'incomplete'} after "
+            f"{d.rounds_run} round(s), best={loop_result.best_round}, "
+            f"committed={committed_round}, "
+            f"routed={[s['routed'] for s in round_shapes]}, "
+            f"est_fab=${d.estimated_fab_usd:.2f}, "
+            f"expansion={d.expansion_status}"
+            + (", budget exhausted" if d.budget_exhausted else "")
+            + (f", gate refused round(s) {refused_rounds}" if refused_rounds else "")
+        )
+        if committed_round != loop_result.best_round:
+            best_shape = round_shapes[loop_result.best_round]
+            loop_line += (
+                f"\nroute-loop: best round {loop_result.best_round} needs a "
+                f"{best_shape['outline_mm']} mm outline on {best_shape['layers']} "
+                "layers — a board shape this job cannot write; its expansions "
+                "are proposals in meta.last_route.loop.proposed_expansions "
+                "(apply the outline/stackup edit, then re-run)"
+            )
+        digest_text = conflict_digest_text(loop_result)
+    else:
+        loop_line = ""
+        assert result is not None
+        digest_text = digest_toon(result)
     attempt_summary = (
         f"{placement_summary}"
         f"routed {len(rows)} net(s): {n_realized} realized, "
@@ -1074,7 +1339,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{n_placement_errors} pre-route DRC error(s), "
         f"{len(drc_fail)} net(s) stripped by post-route DRC, "
         f"{n_disconnected} net(s) failed as disconnected copper"
-        f"{pin_swap_summary}\n\n" + digest_toon(result)
+        f"{pin_swap_summary}{loop_line}\n\n" + digest_text
     )
 
     if worse:
@@ -1099,7 +1364,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         pcb_ref_id, int(board_id), pin_swap_overrides
     )
     ctx.store.pcb_set_pose(pcb_ref_id, pcb_session.positions(ir))
-    if any(spec.metric == "align" for spec in measures):
+    if result is not None and any(spec.metric == "align" for spec in measures):
         ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
     ctx.store.pcb_routes_write(pcb_ref_id, int(board_id), rows)
 
@@ -1189,38 +1454,89 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
     ctx.store.pcb_copper_replace(int(board_id), copper_rows)
 
+    last_route: dict[str, Any] = {
+        "warm_start": warm_start_report,
+        "iters": iters,
+        "realized": n_realized,
+        "failed": n_failed,
+        "dangling": n_dangling,
+        "vias": len(rres.vias),
+        "warnings": [w.message() for w in rres.warnings][:20],
+        "negotiation": (rres.negotiation.as_dict() if rres.negotiation else None),
+        "class_layer_drops": list(rres.class_layer_drops),
+        "pre_route_drc": {
+            "errors": n_placement_errors,
+            "forced": force and n_placement_errors > 0,
+        },
+        # The worse-board guard's own scoreboard (gr480010): what
+        # the incumbent measured before the anneal vs what this
+        # attempt would have stored — the numbers a later reader
+        # needs to see why the commit was allowed.
+        "guard": {
+            "unrealized_before": prior_unrealized,
+            "unrealized_after": n_unrealized,
+            "drc_errors_before": prior_drc_errors,
+            "drc_errors_after": n_new_drc_errors,
+        },
+    }
+    if loop_result is not None:
+        d = loop_result.digest
+        # The loop's accepted priced expansions, read as the per-round
+        # delta of the two axes the moves act on (outline bbox area and
+        # copper-layer count; undo only ever happens inside one anneal),
+        # priced on the same fab-table basis the engine used. They are
+        # PROPOSALS: this job never writes an outline or a stackup (see
+        # the committed-round comment at the loop), so each carries the
+        # round it first appeared in and the routed count that shape
+        # bought — the evidence for the design edit that would apply it.
+        proposed: list[dict[str, Any]] = []
+        for i in range(1, len(round_shapes)):
+            prev, cur = round_shapes[i - 1], round_shapes[i]
+            if cur["layers"] > prev["layers"]:
+                proposed.append(
+                    {
+                        "kind": "layer_add",
+                        "round": i,
+                        "routed": cur["routed"],
+                        "layers": cur["layers"],
+                        "fab_usd_delta": round(2.0 * float(config.cost.layer_usd), 4),
+                    }
+                )
+            if prev["outline_mm"] and cur["outline_mm"]:
+                area_delta = cur["outline_mm"][0] * cur["outline_mm"][1] - (
+                    prev["outline_mm"][0] * prev["outline_mm"][1]
+                )
+                if area_delta > 1e-6:
+                    proposed.append(
+                        {
+                            "kind": "outline_grow",
+                            "round": i,
+                            "routed": cur["routed"],
+                            "outline_mm": cur["outline_mm"],
+                            "fab_usd_delta": round(
+                                area_delta * float(config.cost.board_area_usd_per_mm2),
+                                4,
+                            ),
+                        }
+                    )
+        last_route["loop"] = {
+            "rounds_run": d.rounds_run,
+            "best_round": loop_result.best_round,
+            "committed_round": committed_round,
+            "refused_rounds": refused_rounds,
+            "complete": d.complete,
+            "expansion_status": d.expansion_status,
+            "estimated_fab_usd": round(d.estimated_fab_usd, 4),
+            "budget_exhausted": d.budget_exhausted,
+            "unrouted_nets": list(d.unrouted_nets),
+            "rounds": round_shapes,
+            "proposed_expansions": proposed,
+            "digest": conflict_digest_text(loop_result),
+        }
     ctx.store.pcb_set_pose(
         pcb_ref_id,
         {},  # positions already written above; this call is meta-only
-        meta={
-            "last_route": {
-                "warm_start": warm_start_report,
-                "iters": result.iters,
-                "realized": n_realized,
-                "failed": n_failed,
-                "dangling": n_dangling,
-                "vias": len(rres.vias),
-                "warnings": [w.message() for w in rres.warnings][:20],
-                "negotiation": (
-                    rres.negotiation.as_dict() if rres.negotiation else None
-                ),
-                "class_layer_drops": list(rres.class_layer_drops),
-                "pre_route_drc": {
-                    "errors": n_placement_errors,
-                    "forced": force and n_placement_errors > 0,
-                },
-                # The worse-board guard's own scoreboard (gr480010): what
-                # the incumbent measured before the anneal vs what this
-                # attempt would have stored — the numbers a later reader
-                # needs to see why the commit was allowed.
-                "guard": {
-                    "unrealized_before": prior_unrealized,
-                    "unrealized_after": n_unrealized,
-                    "drc_errors_before": prior_drc_errors,
-                    "drc_errors_after": n_new_drc_errors,
-                },
-            }
-        },
+        meta={"last_route": last_route},
     )
     ctx.append_chunk("job_summary", attempt_summary)
     # Reto's ruling (2026-10-01): "it's no good if the wires are not there.

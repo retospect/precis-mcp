@@ -34,23 +34,16 @@ digest with terminal/region witnesses and a fixed-instance witness
 
 **Still open:**
 
-1. **Surface wiring** — an op/job that runs the loop and returns the
-   digest to the LLM (the loop callable today is test-local; the
-   review's `_KNOWN_UNWIRED` carve-out covers this, filed here).
-2. **The power nets routed cleanly, recorded.** The 38→43/64 Nano run
+1. **The power nets routed cleanly, recorded.** The 38→43/64 Nano run
    improved routing but did not route the congested power nets cleanly:
    acceptance wants a run where the congested power nets come out
    routed, with before/after outline dimensions and layer counts,
    routed/failed/dangling counts, and the fab-USD cost delta of the
    accepted expansion recorded explicitly.
-3. **The capped-conflict case on the Nano fixture.** A run where caps
+2. **The capped-conflict case on the Nano fixture.** A run where caps
    forbid both expansions and the digest names the binding
    outline/layer/USD/fixed constraints — the unit controls exist, the
    Nano-level fixture run does not.
-4. **Determinism.** The synthetic-graph determinism test ships with the
-   loop (same seed twice gives identical `RouteLoopResult`); the seeded
-   Nano pipeline repeat (identical state and results on a second full
-   run) is not yet measured.
 
 ## Motivation / why
 

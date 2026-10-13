@@ -710,3 +710,106 @@ def test_nano_loop_digest_shape_and_no_regression(store) -> None:
         f"expansion={d.expansion_status} est_fab=${d.estimated_fab_usd:.2f}"
     )
     print(conflict_digest_text(result))
+
+
+def _nano_loop_inputs(store, slug: str):
+    """Hydrate the Nano fixture once and return ``(ir_factory, route)`` —
+    ``ir_factory()`` builds a fresh, identical IR off the stored rows;
+    ``route`` is the loop's realize adapter and may serve either IR
+    (its inputs — footprints, fixed copper, the class rules — are
+    read-only and shared)."""
+    from precis.dispatch import Hub
+    from precis.handlers.pcb import PcbHandler
+    from precis.pcb import feedback as pcb_feedback
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb import session as pcb_session
+    from tests.fixtures.pcb import nano_usb_pd_testboard as fx
+
+    for lcsc, fp in fx.CATALOG_FOOTPRINTS.items():
+        store.part_footprint_put(lcsc, fp)
+    pcb = PcbHandler(hub=Hub(store=store))
+    created = pcb.put(id=slug, args=dict(fx.DESIGN))
+    assert "created" in created.body
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    board_id = (graph.get("board") or {}).get("board_id")
+    assert board_id is not None
+    fixed_copper = store.pcb_fixed_copper_list(int(board_id))
+    realize_config = pcb_realize.RealizeConfig(
+        class_rules=graph.get("net_classes"), negotiate_iterations=5
+    )
+
+    def ir_factory():
+        features = store.pcb_features_list(ref.id)
+        return pcb_session.build_ir(
+            graph,
+            outline=pcb_session.outline_from_features(features),
+            mounting_holes=pcb_session.mounting_holes_from_features(features),
+            footprints_by_lcsc=store.pcb_footprints_for(ref.id),
+            local_footprints_by_name=store.pcb_local_footprints_for(ref.id),
+            fixed_copper=fixed_copper,
+        )
+
+    probe = ir_factory()
+    footprints = pcb_session.footprints_by_refdes(
+        probe,
+        store.pcb_footprints_for(ref.id),
+        local_footprints_by_name=store.pcb_local_footprints_for(ref.id),
+        local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+    )
+
+    def route(ir_):
+        rres = pcb_realize.realize(
+            ir_,
+            config=realize_config,
+            footprints=footprints,
+            fixed_copper=fixed_copper,
+        )
+        return pcb_feedback.outcome_from_realize(ir_, rres)
+
+    return ir_factory, route
+
+
+@pytest.mark.slow
+def test_nano_loop_deterministic_same_seed(store) -> None:
+    """The seeded Nano pipeline repeat (the spec's determinism
+    acceptance): two full runs at seed 1 — place anneal, then the loop —
+    produce an identical ``RouteLoopResult``: same routed set, same
+    accepted expansions, same digest text, same restored IR."""
+    from precis.pcb.optimize import optimize
+
+    ir_factory, route = _nano_loop_inputs(store, "nano-usb-pd-det")
+    ir1, ir2 = ir_factory(), ir_factory()
+    seed = 1
+    caps = ExpansionCaps(
+        outline_max_mm=(120.0, 100.0), max_copper_layers=6, max_fab_usd=200.0
+    )
+    results = []
+    for ir in (ir1, ir2):
+        optimize(ir, OptimizeConfig(iters=3000, seed=seed))
+        results.append(
+            anneal_route_loop(
+                ir,
+                OptimizeConfig(iters=1500, seed=seed, expansion=caps),
+                route,
+                loop=RouteLoopConfig(rounds=2, budget_s=900.0),
+            )
+        )
+    r1, r2 = results
+    assert r1 == r2, "RouteLoopResult diverged between identical seeded runs"
+    # The named fields, said plainly (== above already covers them):
+    assert r1.outcome.routed == r2.outcome.routed
+    assert [m for m in r1.moves if m.accepted] == [m for m in r2.moves if m.accepted]
+    assert conflict_digest_text(r1) == conflict_digest_text(r2)
+    # The restored boards match too.
+    assert ir1.outline == ir2.outline
+    assert [ly["name"] for ly in ir1.stackup] == [ly["name"] for ly in ir2.stackup]
+    assert (ir1.inst_x == ir2.inst_x).all()
+    assert (ir1.inst_y == ir2.inst_y).all()
+    assert (ir1.inst_rot == ir2.inst_rot).all()
+    assert (ir1.seg_layer == ir2.seg_layer).all()
+    print(
+        f"\ndeterminism: routed {[r.routed for r in r1.rounds]}/"
+        f"{r1.rounds[0].total} identical across two seed-{seed} runs"
+    )
