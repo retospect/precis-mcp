@@ -39,13 +39,14 @@ kept), Mac-local, on small siblings of the prod scenes (the 30×30 Y at
 | sp3 fin out (`hexfold-relax-fin-out`) | 323 C + 48 H | 112 steps | graft bonds 1.52–1.55 Å, host angles mean 109.3° (96.5–114.4°), strip planar, no new contacts: a real tetrahedral graft |
 | sp2 Y 8×8 (`hexfold-relax-y-a`) | 488 C + 84 H | 120 steps | **seam dimerises**: adjacent seam atoms bond at 1.60–1.64 Å, sheet bonds 1.50–1.53 Å, angle sums ~341°; the `k3-sp3-z` dimer chain (period 2a: 1.6 Å dimer + 3.3 Å gap) |
 | seam tube out (`hexfold-relax-seam-out`) | 408 C + 56 H | 313 steps | same dimerisation on the tube (pairs 1.60–1.62 Å, sums ~341°) |
+| seam tube in (`hexfold-relax-seam-in`) | 808 C + 96 H | 218 steps (4.1 h) | same dimerisation inward: seam pairs 1.59–1.61 Å, sheet bonds 1.49–1.54 Å, angle sums 336–342°; end artefacts only (a guard C–C at 1.56 Å, two H at 1.56 Å) |
 | sp3 fin in (`hexfold-relax-fin-in`) | 579 C + 80 H | 103 steps | graft bonds 1.55–1.57 Å, host angles mean 108.8° (88–118.5°), strip planar (sums 360°), min H–H 1.99 Å: the inward graft holds too |
+| open-pole nanobud (`nanobud_open.hx` sibling: 12×12 sheet, n=12 r=5 bud, `open_pole`) | 798 C + 72 H | 142 steps (3.9 h) | C–C 1.34–1.47 Å, no new contacts; the apex rim widens 8.33→9.29 Å and its 24 C–H turn from 30° inward to parallel the bud axis (1–2°): an even H crown at R 9.26 Å, nearest H–H 2.42 Å, z spread 0.05 Å — the instrumentation ring is a stable minimum |
 
 Finite-segment artefacts: the three guard-column H at a seam end crowd
 to 1.35 Å; guard carbons of neighbouring sheets bond at the segment
 start; one H cap migrated onto a wall carbon on the seam tube. Still
-running at 16:10Z: seam-in, valve shell (len=6 bulge), open-pole
-nanobud (870 atoms). Consequence: the sp2 120° seam is a construction
+running at 19:10Z: valve shell (len=6 bulge). Consequence: the sp2 120° seam is a construction
 convenience, not a minimum; author seam scenes on `k3-sp3-z`.
 
 ## Prod runs and measurements 2026-10-07
