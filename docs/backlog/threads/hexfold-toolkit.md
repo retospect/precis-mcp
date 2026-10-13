@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** the two `fin-k3-120-z` prod ops (Reto's 120° seam version: the Y seam along the axis, strip as third sheet, wall halves closed by a far-side zigzag fuse, wall free), outward `tube:[10,20]` and inward `tube:[18,20]`, rows 4, once round 7 (carries a250a7fbb) is deployed: run via the session MCP, hand Reto the /se URLs via chat-interface, cc the coordinator. The sp3 pair ran on prod 2026-10-07 on bb244e093 (round 6): `se:hexfold-dogfood-fin-out` (963 C, 1,031 atoms with H caps) and `se:hexfold-dogfood-fin-in` (1,603 C, 1,703 atoms), both validate clean, URLs handed to Reto. Landed with this commit: the gr470905 review fixes (receipt validated at generation as a typed refusal, reflected map required on read). Open for Reto on gr470905: stored-mode surface deviation scores the H caps too; exclude or label them. Then the re-vet of Do-next 1a (slice 0 split out as backlog/hexfold-tethered-relax-op.md), then gr459928. Local measurements and the Y variant A prod record: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07). Contract/evidence: [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` from a tblite host (`scripts/prod-precis`, background) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row, and the sp2 Y/seam-tube rows need a note in the catalogue. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0; brief ready, launch owed by Reto), then the re-vet of Do-next 1a, then gr459928. Open for Reto on gr470905: stored-mode surface deviation scores the H caps too. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -24,6 +24,28 @@
   `terminate: "ports-open"` leaves join ports' rim atoms bare for a later
   fuse. The scene grammar (Do-next 1a) inherits it as its cross-cutting
   rule.
+
+## Relax campaign 2026-10-13
+
+Free GFN2-xTB (tblite, Te 1000 K, FIRE fmax 0.05 eV/Å, no pins, H caps
+kept), Mac-local, on small siblings of the prod scenes (the 30×30 Y at
+5,790 atoms is out of xTB reach; 516 atoms cost ~12 s/step). Scripts:
+`~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/xtb_free.py`,
+`relax1013/` (reports `*.json`, coordinates `*.after.extxyz`).
+
+| scene (prod design) | atoms | converged | result |
+|---|---|---|---|
+| pillbox rotor (`hexfold-relax-valve/pillbox`) | 240 C | 44 steps | lid seams 1.422 Å, bonds 1.39–1.45 Å, rms move 0.11 Å: a clean cage |
+| sp3 fin out (`hexfold-relax-fin-out`) | 323 C + 48 H | 112 steps | graft bonds 1.52–1.55 Å, host angles mean 109.3° (96.5–114.4°), strip planar, no new contacts: a real tetrahedral graft |
+| sp2 Y 8×8 (`hexfold-relax-y-a`) | 488 C + 84 H | 120 steps | **seam dimerises**: adjacent seam atoms bond at 1.60–1.64 Å, sheet bonds 1.50–1.53 Å, angle sums ~341°; the `k3-sp3-z` dimer chain (period 2a: 1.6 Å dimer + 3.3 Å gap) |
+| seam tube out (`hexfold-relax-seam-out`) | 408 C + 56 H | 313 steps | same dimerisation on the tube (pairs 1.60–1.62 Å, sums ~341°) |
+
+Finite-segment artefacts: the three guard-column H at a seam end crowd
+to 1.35 Å; guard carbons of neighbouring sheets bond at the segment
+start; one H cap migrated onto a wall carbon on the seam tube. Still
+running at 15:45Z: fin-in, seam-in, valve shell (len=6 bulge), open-pole
+nanobud (870 atoms). Consequence: the sp2 120° seam is a construction
+convenience, not a minimum; author seam scenes on `k3-sp3-z`.
 
 ## Prod runs and measurements 2026-10-07
 
