@@ -169,3 +169,20 @@ openai/gpt-oss-120b --context-length 131072 --mem-fraction-static 0.7
 --reasoning-parser gpt-oss --tool-call-parser gpt-oss`, re-run the probes.
 If sound, write an `sglang` role (or a server switch in the vllm role) and
 retire the Marlin workaround.
+SGLang trial, 2026-10-13 12:35Z: two launches at `--mem-fraction-static
+0.8` died with exit 137 during shard loading. Not SGLang: castor's
+`earlyoom` (hardening role, `-m 10,5 -s 10,5`) SIGKILLed the launcher when
+MemAvailable fell to 6.9% with swap exhausted; on the GB10 the "GPU"
+reservation is host memory, so a 0.8 static fraction plus the loader's
+staging exceeds the box. Slice 0 ran at 0.8 before earlyoom was installed.
+Any serving role on a GB10 must size memory so MemAvailable stays above
+earlyoom's 10% through model load (vLLM at 0.70 leaves ~30 GiB and
+survives). Third launch at 0.6.
+Third launch at 0.6 died the same way; fourth with sequential shard loading
+(`--model-loader-extra-config '{"enable_multithread_load": false}'`) got to
+14 of 15 shards: scheduler RSS 41 GB on top of the unified-memory weights,
+MemAvailable 8%, earlyoom fired at 12:48Z. The static fraction is not the
+lever; the loader's host-side staging peaks at the end of load and frees
+after. Fifth launch pauses earlyoom for the load window only (restored by
+a guard on castor itself). If SGLang is sound once up, the role needs
+either that guard or an earlyoom exemption for the serving unit.
