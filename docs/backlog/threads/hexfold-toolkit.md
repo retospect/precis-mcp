@@ -39,11 +39,12 @@ kept), Mac-local, on small siblings of the prod scenes (the 30×30 Y at
 | sp3 fin out (`hexfold-relax-fin-out`) | 323 C + 48 H | 112 steps | graft bonds 1.52–1.55 Å, host angles mean 109.3° (96.5–114.4°), strip planar, no new contacts: a real tetrahedral graft |
 | sp2 Y 8×8 (`hexfold-relax-y-a`) | 488 C + 84 H | 120 steps | **seam dimerises**: adjacent seam atoms bond at 1.60–1.64 Å, sheet bonds 1.50–1.53 Å, angle sums ~341°; the `k3-sp3-z` dimer chain (period 2a: 1.6 Å dimer + 3.3 Å gap) |
 | seam tube out (`hexfold-relax-seam-out`) | 408 C + 56 H | 313 steps | same dimerisation on the tube (pairs 1.60–1.62 Å, sums ~341°) |
+| sp3 fin in (`hexfold-relax-fin-in`) | 579 C + 80 H | 103 steps | graft bonds 1.55–1.57 Å, host angles mean 108.8° (88–118.5°), strip planar (sums 360°), min H–H 1.99 Å: the inward graft holds too |
 
 Finite-segment artefacts: the three guard-column H at a seam end crowd
 to 1.35 Å; guard carbons of neighbouring sheets bond at the segment
 start; one H cap migrated onto a wall carbon on the seam tube. Still
-running at 15:45Z: fin-in, seam-in, valve shell (len=6 bulge), open-pole
+running at 16:10Z: seam-in, valve shell (len=6 bulge), open-pole
 nanobud (870 atoms). Consequence: the sp2 120° seam is a construction
 convenience, not a minimum; author seam scenes on `k3-sp3-z`.
 

@@ -1022,6 +1022,13 @@ def test_relax_rented_rungs_are_gated(monkeypatch) -> None:
         raise RelaxUnsupported("no MLIP backend (test)")
 
     monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
+
+    # 'xtb' is a local-backend rung (tblite), present on x86_64 CI via the
+    # [estimate] extra — force it absent too, as on the aarch64 nodes.
+    def _no_tblite():
+        raise RelaxUnsupported("no tblite (test)")
+
+    monkeypatch.setattr(relax_mod, "_xtb_calculator", _no_tblite)
     scene = Scene(cell=_cubic(20.0))
     apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
     for rung in ("ml", "dft-fast", "xtb"):

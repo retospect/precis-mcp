@@ -4,7 +4,7 @@ pillar: 3d-design
 title: hexfold builds an instrumentable nanoreactor tube — a tube between two sheets with Y-junction attachment rails, H-inlet pores, and a site list
 ---
 
-wip: devin hex-tunnel 2026-10-13
+wip: slice 1 (rail tube, pores, site list) landed b7fcf3328 2026-10-13; next slice (reservoir sheets, armchair-rim opening solver) unassigned
 
 # hexfold: instrumentable nanoreactor tube (T2 of the nanoreactor chain)
 
