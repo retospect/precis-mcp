@@ -7,10 +7,16 @@ only assert the cfp-specific spec + a registration smoke test."""
 
 from __future__ import annotations
 
+import inspect
+
+import pytest
+
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.cfp import CfpHandler
 from precis.handlers.paper import PaperHandler
-from precis.store import ChunkInsert, Store
+from precis.runtime import PrecisRuntime
+from precis.store import ChunkInsert, Store, Tag
 from precis.utils import handle_registry
 
 
@@ -96,3 +102,158 @@ def test_cfp_edit_ack_names_cfp_and_get_offers_no_bibtex(store: Store) -> None:
         body = h.get(id="callfor00" if view else "callfor00~0", view=view).body
         assert "BibTeX" not in body
         assert "bibtex" not in body
+
+
+def _meta(store: Store, slug: str) -> dict:
+    ref = store.get_ref(kind="cfp", id=slug)
+    assert ref is not None
+    return ref.meta
+
+
+class TestTypedDates:
+    """gr462088 slice 1 — ``meta.deadline``/``meta.opens_on`` (ISO
+    YYYY-MM-DD): set via ``edit(args=…)``, shown on the overview, and
+    the queryless ``search`` browses deadline-sorted."""
+
+    def test_edit_sets_deadline_and_opens_on(self, store: Store) -> None:
+        store.insert_ref(kind="cfp", slug="dated000", title="Call")
+        h = CfpHandler(hub=Hub(store=store))
+        ack = h.edit(
+            id="dated000",
+            args={"deadline": "2026-11-15", "opens_on": "2026-08-01"},
+        )
+        assert "deadline=2026-11-15" in ack.body
+        assert "opens_on=2026-08-01" in ack.body
+        meta = _meta(store, "dated000")
+        assert meta["deadline"] == "2026-11-15"
+        assert meta["opens_on"] == "2026-08-01"
+        # A date arg composes with a field edit in one call.
+        h.edit(id="dated000", year=2027, args={"deadline": "2026-12-01"})
+        got = store.get_ref(kind="cfp", id="dated000")
+        assert got is not None
+        assert got.year == 2027 and got.meta["deadline"] == "2026-12-01"
+
+    def test_edit_rejects_bad_dates_without_writing(self, store: Store) -> None:
+        store.insert_ref(kind="cfp", slug="baddate0", title="Call")
+        h = CfpHandler(hub=Hub(store=store))
+        for key, bad in (
+            ("deadline", "Nov 15 2026"),
+            ("deadline", "2026-13-40"),
+            ("deadline", "20261115"),
+            ("opens_on", "15/11/2026"),
+        ):
+            with pytest.raises(BadInput, match=key):
+                h.edit(id="baddate0", args={key: bad})
+        meta = _meta(store, "baddate0")
+        assert "deadline" not in meta and "opens_on" not in meta
+
+    def test_edit_empty_date_clears(self, store: Store) -> None:
+        store.insert_ref(
+            kind="cfp",
+            slug="clear000",
+            title="Call",
+            meta={"deadline": "2026-11-15"},
+        )
+        h = CfpHandler(hub=Hub(store=store))
+        ack = h.edit(id="clear000", args={"deadline": ""})
+        assert "deadline cleared" in ack.body
+        assert _meta(store, "clear000")["deadline"] is None
+
+    def test_overview_shows_typed_dates(self, store: Store) -> None:
+        store.insert_ref(
+            kind="cfp",
+            slug="shownd00",
+            title="Call",
+            meta={"deadline": "2026-11-15", "opens_on": "2026-08-01"},
+        )
+        h = CfpHandler(hub=Hub(store=store))
+        body = h.get(id="shownd00").body
+        assert "deadline: 2026-11-15" in body
+        assert "opens on: 2026-08-01" in body
+        # Undated calls get no date lines at all.
+        store.insert_ref(kind="cfp", slug="nodates0", title="Call 2")
+        plain = h.get(id="nodates0").body
+        assert "deadline" not in plain and "opens on" not in plain
+
+
+class TestBrowseSort:
+    def _three(self, store: Store) -> tuple[CfpHandler, list[str]]:
+        handles = [
+            f"cf{store.insert_ref(kind='cfp', slug=s, title=t, meta=m).id}"
+            for s, t, m in (
+                ("later000", "Later call", {"deadline": "2027-03-01"}),
+                ("sooner00", "Sooner call", {"deadline": "2026-11-15"}),
+                ("undated0", "Undated call", None),
+            )
+        ]
+        return CfpHandler(hub=Hub(store=store)), handles
+
+    def test_bare_search_browses_deadline_sorted(self, store: Store) -> None:
+        h, (later, sooner, undated) = self._three(store)
+        body = h.search().body
+        order = [body.index(sooner), body.index(later), body.index(undated)]
+        assert order == sorted(order)
+        assert "deadline 2026-11-15" in body
+        assert "(no deadline)" in body
+
+    def test_sort_recency_and_opens_on(self, store: Store) -> None:
+        h, (later, sooner, undated) = self._three(store)
+        store.stamp_ref_meta(int(undated[2:]), {"opens_on": "2026-01-01"})
+        recency = h.search(sort="recency").body
+        # Recency = last-written first: undated's meta stamp is newest.
+        assert recency.index(undated) < recency.index(later)
+        opens = h.search(sort="opens_on").body
+        assert opens.index(undated) < opens.index(sooner)
+        assert "opens_on 2026-01-01" in opens
+        assert "(no opens_on)" in opens
+
+    def test_sort_combines_with_tags(self, store: Store) -> None:
+        h, (_, sooner, _) = self._three(store)
+        body = h.search(tags=["WATCH:weekly"]).body
+        assert "no cfp entries tagged" in body
+        watched = store.insert_ref(
+            kind="cfp",
+            slug="watched0",
+            title="Watched",
+            meta={"deadline": "2026-10-01"},
+        )
+        store.add_tag(watched.id, Tag.closed("WATCH", "weekly"))
+        body = h.search(tags=["WATCH:weekly"], sort="deadline").body
+        assert f"cf{watched.id}" in body and sooner not in body
+
+    def test_sort_rejected_with_q_and_unknown_keys(self, store: Store) -> None:
+        h, _ = self._three(store)
+        with pytest.raises(BadInput, match="sort="):
+            h.search(q="materials", sort="deadline")
+        with pytest.raises(BadInput, match="sort="):
+            h.search(sort="bogus")
+        with pytest.raises(BadInput, match="needs q="):
+            h.search(good=True)
+        # Paper never learned sort — the kwarg isn't in its signature.
+        assert "sort" not in inspect.signature(PaperHandler.search).parameters
+
+
+def test_cfp_browse_via_dispatch_extras(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The MCP call shape: ``search(kind='cfp', args={'sort': 'deadline'})``
+    routes the extras dict through dispatch's kwarg flattening."""
+    ref = store.insert_ref(
+        kind="cfp",
+        slug="disp0000",
+        title="Call",
+        meta={"deadline": "2026-11-15"},
+    )
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "cfp", "__extras__": {"sort": "deadline"}}
+    )
+    assert f"cf{ref.id}" in out and "deadline 2026-11-15" in out
+    bad = runtime_with_store.dispatch(
+        "search", {"kind": "cfp", "__extras__": {"sort": "zz"}}
+    )
+    assert "BadInput" in bad
+    # Paper still rejects sort= outright.
+    paper = runtime_with_store.dispatch(
+        "search", {"kind": "paper", "__extras__": {"sort": "deadline"}}
+    )
+    assert "BadInput" in paper

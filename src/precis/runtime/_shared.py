@@ -146,6 +146,9 @@ class RuntimeShape:
     def _is_cross_kind_request(self, kind: Any) -> bool:
         raise NotImplementedError
 
+    def _resolve_folder_scope(self, value: Any) -> tuple[set[int], str]:
+        raise NotImplementedError
+
     def _cross_kind_kinds(self) -> list[str]:
         raise NotImplementedError
 

@@ -618,6 +618,11 @@ class TaxonHandler(NumericRefHandler):
         (excluding it), ``axis=`` to edges with that ``meta.axis``,
         ``depth=N`` to <= N hops. With ``q=`` the ranked hits are intersected
         with that set; without it the set is listed by depth then name."""
+        if under is not None and _kw.get("view") == "count":
+            raise BadInput(
+                "under= is not supported with view='count' on taxon search",
+                next="search(kind='taxon', view='count', q='<term>')",
+            )
         if under is None:
             if axis is not None or depth is not None:
                 raise BadInput(

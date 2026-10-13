@@ -6,6 +6,8 @@ it and we verify schema + seed contents."""
 
 from __future__ import annotations
 
+import hashlib
+
 import psycopg
 import pytest
 from psycopg.rows import dict_row
@@ -193,3 +195,109 @@ def test_checksum_drift_refuses(
     )
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         Migrator(fresh_db, snapshot_dir).apply_all()
+
+
+def test_checksum_drift_rebuilds(
+    fresh_db: str,
+    tmp_path,
+) -> None:
+    """rebuild_on_checksum_mismatch replays from scratch instead of refusing.
+
+    The disposable-test-DB escape hatch (gr479991): a redrafted migration
+    drops every user object and replays the chain, restamping the ledger
+    with the new checksum — the in-DB equivalent of recreating the
+    test-db container.
+    """
+    snapshot_dir = tmp_path / "migrations"
+    snapshot_dir.mkdir()
+    original = (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8")
+    (snapshot_dir / "0001_initial.sql").write_text(original, encoding="utf-8")
+    Migrator(fresh_db, snapshot_dir).apply_all()
+
+    # An object no migration owns — the rebuild must remove it.
+    with psycopg.connect(fresh_db, autocommit=True) as conn:
+        conn.execute("CREATE TABLE stale_junk (x int)")
+
+    # Mutate the sealed file (a "redrafted draft"): same version, new bytes.
+    mutated = original + "\nCREATE TABLE public.drift_marker (x int);\n"
+    (snapshot_dir / "0001_initial.sql").write_text(mutated, encoding="utf-8")
+
+    # Strict callers still refuse.
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        Migrator(fresh_db, snapshot_dir).apply_all()
+
+    # The disposable-DB path drops and replays.
+    applied = Migrator(fresh_db, snapshot_dir).apply_all(
+        rebuild_on_checksum_mismatch=True
+    )
+    assert applied == [("precis", "0001_initial")]
+    tables = {
+        r["tablename"]
+        for r in _fetch(
+            fresh_db,
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+        )
+    }
+    assert "drift_marker" in tables  # the mutated file ran
+    assert "chunks" in tables  # the replayed chain is intact
+    assert "stale_junk" not in tables  # the drop actually ran
+    ledger = _fetch(fresh_db, "SELECT version, checksum FROM _migrations")
+    assert ledger == [
+        {
+            "version": "0001_initial",
+            "checksum": hashlib.sha256(mutated.encode("utf-8")).hexdigest(),
+        }
+    ]
+
+
+def test_renumbered_draft_rebuilds(
+    fresh_db: str,
+    tmp_path,
+) -> None:
+    """A renumbered draft's orphan ledger row triggers the same rebuild.
+
+    Renumbering leaves an applied ``(plugin, version)`` no file
+    provides. Strict mode tolerates it — archived migrations leave the
+    same orphans in real ledgers — but the test-DB rebuild treats it
+    as drift and replays (gr479991).
+    """
+    snapshot_dir = tmp_path / "migrations"
+    snapshot_dir.mkdir()
+    (snapshot_dir / "0001_initial.sql").write_text(
+        (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (snapshot_dir / "9000_draft.sql").write_text(
+        "CREATE TABLE public.draft_tbl (x int);\n", encoding="utf-8"
+    )
+    Migrator(fresh_db, snapshot_dir).apply_all()
+
+    # Renumber the draft; idempotent SQL so the new version can apply
+    # over the already-built table.
+    (snapshot_dir / "9000_draft.sql").unlink()
+    (snapshot_dir / "9001_draft.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS public.draft_tbl (x int);\n", encoding="utf-8"
+    )
+    applied = Migrator(fresh_db, snapshot_dir).apply_all()
+    assert applied == [("precis", "9001_draft")]
+    versions = {
+        r["version"] for r in _fetch(fresh_db, "SELECT version FROM _migrations")
+    }
+    assert versions == {"0001_initial", "9000_draft", "9001_draft"}
+
+    applied = Migrator(fresh_db, snapshot_dir).apply_all(
+        rebuild_on_checksum_mismatch=True
+    )
+    assert applied == [("precis", "0001_initial"), ("precis", "9001_draft")]
+    versions = {
+        r["version"] for r in _fetch(fresh_db, "SELECT version FROM _migrations")
+    }
+    assert versions == {"0001_initial", "9001_draft"}
+    tables = {
+        r["tablename"]
+        for r in _fetch(
+            fresh_db,
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+        )
+    }
+    assert "draft_tbl" in tables

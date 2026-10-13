@@ -106,6 +106,76 @@ _SUMMARY_MAX_CHARS = 180
 _SENTENCE_TERMINATORS = (". ", "! ", "? ")
 
 
+# ``view='count'`` (gr472990): ``group_by=`` facet spellings — ``state``
+# (the ref's ``STATUS:*`` tag), ``meta.<key>`` (``refs.meta`` scalar), and
+# ``tag:<axis>`` (closed axis when the axis is all-caps, open ``prefix:*``
+# tags otherwise). Comma-separated or a list.
+_COUNT_GROUP_BY_META = re.compile(r"^meta\.([A-Za-z_][A-Za-z0-9_]*)$")
+_COUNT_GROUP_BY_TAG = re.compile(r"^tag:([A-Za-z][A-Za-z0-9_-]*)$")
+#: An open-axis ``LIKE 'prefix:%'`` stays safe under ``_like_escape``;
+#: the charset admits ``_``, which LIKE would otherwise read as "any char".
+_COUNT_MAX_FACETS = 3
+#: Facet rows rendered per group_by — past this the answer is a dump, not
+#: a count. The store caps the GROUP BY at the same bound.
+_COUNT_GROUP_LIMIT = 200
+
+
+def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
+    """Parse ``group_by=`` into store facet specs ``(kind, key)``.
+
+    ``'state'``/``'status'`` → the ``STATUS`` tag axis; ``meta.<key>`` →
+    a ``refs.meta`` JSONB scalar; ``tag:<axis>`` → a closed namespace
+    when all-caps (``tag:STATUS``) or an open ``prefix:*`` tag family
+    otherwise (``tag:area``). Comma-separated string or list; order is
+    preserved (rendered left-to-right as ``a | b`` groups). Raises
+    :class:`BadInput` on an unrecognized term rather than silently
+    counting the wrong axis.
+    """
+    if group_by is None:
+        return []
+    raw = group_by if isinstance(group_by, list) else str(group_by).split(",")
+    out: list[tuple[str, str]] = []
+    for tok in raw:
+        t = str(tok).strip()
+        if not t:
+            continue
+        if t in ("state", "status"):
+            spec = ("axis", "STATUS")
+        elif m := _COUNT_GROUP_BY_META.match(t):
+            spec = ("meta", m.group(1))
+        elif m := _COUNT_GROUP_BY_TAG.match(t):
+            axis = m.group(1)
+            spec = ("axis", axis) if axis.isupper() else ("open_axis", axis)
+        else:
+            raise BadInput(
+                f"unknown group_by term {t!r}",
+                options=["state", "meta.<key>", "tag:<axis>"],
+                next=(
+                    "e.g. args={'group_by': 'meta.job_type,state'} or "
+                    "'tag:area' — comma-separated, max "
+                    f"{_COUNT_MAX_FACETS} facets"
+                ),
+            )
+        if spec not in out:
+            out.append(spec)
+    if len(out) > _COUNT_MAX_FACETS:
+        raise BadInput(
+            f"group_by= takes at most {_COUNT_MAX_FACETS} facets, got {len(out)}",
+            next="drop a facet — wide cross products aren't readable anyway",
+        )
+    return out
+
+
+def _count_facet_label(spec: tuple[str, str]) -> str:
+    """Header label for one facet spec: ``meta.job_type``/``state``/``tag:area``."""
+    ftype, key = spec
+    if ftype == "meta":
+        return f"meta.{key}"
+    if key == "STATUS":
+        return "state"
+    return f"tag:{key}"
+
+
 # Browse lifecycle follows each kind's actual vocabulary; dormant quests stay live.
 _BROWSE_TERMINALS: dict[str, tuple[str, ...]] = {
     "todo": ("STATUS:done", "STATUS:won't-do", "STATUS:abandoned"),
@@ -501,6 +571,11 @@ class NumericRefHandler(Handler):
         page: int = 1,
         mode: str | None = None,
         sort: str | None = None,
+        # ``view='count'`` (gr472990): the filtered total + facet counts
+        # instead of a hit page — ``group_by=`` picks the facets
+        # ('state', 'meta.<key>', 'tag:<axis>'; comma-separated or list).
+        view: str | None = None,
+        group_by: str | list[str] | None = None,
         # dispatch-injected (runtime.dispatch._resolve_uncited_exclude /
         # ._resolve_cited_include — ``search(uncited=<draft>)`` /
         # ``search(cited=<draft>)``), pre-resolved. Declared explicitly
@@ -556,6 +631,33 @@ class NumericRefHandler(Handler):
         # Pass kind= so per-kind axis enforcement catches
         # STATUS: filter queries against kinds that don't use STATUS.
         normalized_tags = Tag.normalize_filter(effective_tags, kind=self.kind)
+
+        # ``view='count'``: the aggregate answer — one filtered total
+        # plus per-facet counts — runs the same filters the listing/
+        # ranked paths above resolved (status default, browse-terminal
+        # exclusion, tags=, link=, ref-id include/exclude), so its
+        # numbers match those views' "N of K" headers.
+        if view is not None:
+            if view != "count":
+                raise BadInput(
+                    f"unknown view {view!r} for search(kind={self.kind!r})",
+                    options=["count"],
+                    next=(
+                        f"search(kind={self.kind!r}, view='count', "
+                        "args={'group_by': 'state'})"
+                    ),
+                )
+            return self._count_view(
+                q=q,
+                tags=normalized_tags,
+                exclude_tags=excluded or None,
+                status_note=status_note,
+                link=link,
+                group_by=group_by,
+                sort=sort,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+            )
 
         # ``q=`` is optional when ``tags=`` is supplied — broad
         # usability pass 2026-05-30 (#7 / #13): an agent looking for
@@ -785,6 +887,115 @@ class NumericRefHandler(Handler):
             f"order. To enumerate all {tag_total}, drop q: "
             f"search(kind={self.kind!r}, tags={tags!r})"
         )
+
+    def _count_view(
+        self,
+        *,
+        q: str | None,
+        tags: list[str] | None,
+        exclude_tags: list[str] | None,
+        status_note: str,
+        link: str | None,
+        group_by: Any,
+        sort: str | None,
+        exclude_ref_ids: list[int] | None,
+        include_ref_ids: list[int] | None,
+    ) -> Response:
+        """``search(kind=K, view='count')`` — filtered total + facet counts.
+
+        The aggregate counterpart of the listing/ranked paths (gr472990
+        case a): the total matches ``count_refs``/``count_refs_lexical``
+        — the same numbers the hit-page headers report — and ``group_by=``
+        adds ``GROUP BY`` facets (``state``, ``meta.<key>``,
+        ``tag:<axis>``; ``_parse_count_facets``). Refs missing a facet
+        value land in ``(none)`` rather than vanishing, so group counts
+        can sum past the total only when one ref carries several tags in
+        an open axis.
+        """
+        if sort is not None:
+            raise BadInput(
+                "sort= doesn't apply to view='count' — groups order by "
+                "count, descending",
+                next=f"search(kind={self.kind!r}, view='count', args={{'group_by': 'state'}})",
+            )
+        facets = _parse_count_facets(group_by)
+        link_ref_id: int | None = None
+        link_label = ""
+        if link is not None and str(link).strip():
+            target = parse_link_target(str(link), store=self.store)
+            link_ref_id = target.ref_id
+            link_label = handle_registry.try_format(target.kind, target.ref_id) or str(
+                link
+            )
+        total, groups = self.store.count_refs_facets(
+            kind=self.kind,
+            tags=tags,
+            exclude_tags=exclude_tags,
+            q=q,
+            # Body-chunk kinds (gripe, memory) rank on chunk text, not
+            # the title — the count must filter the same set, including
+            # the synthetic card kinds the kind opted into.
+            q_in_chunks=self.search_body_chunks,
+            q_card_kinds=self.search_card_kinds,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            facets=facets,
+            group_limit=_COUNT_GROUP_LIMIT,
+        )
+
+        filters: list[str] = []
+        if q and q.strip():
+            filters.append(f"q={q!r}")
+        if tags:
+            filters.append(f"tags={tags!r}")
+        if link_label:
+            filters.append(f"linked to {link_label}")
+        head = f"# {total} {self._sense()} entr{'y' if total == 1 else 'ies'}"
+        if filters:
+            head += f" ({', '.join(filters)})"
+        parts = [head]
+        if status_note:
+            parts.append(status_note)
+        if (
+            exclude_tags
+            and not (q and q.strip())
+            and link_ref_id is None
+            and include_ref_ids is None
+            and not exclude_ref_ids
+        ):
+            # Same "hidden terminals" readout _list_by_tags gives the
+            # browse view — suppressed once extra filters make the
+            # subtraction meaningless.
+            hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
+            if hidden > 0:
+                parts.append(f"{hidden} terminal entries hidden; status='*' to include")
+        if facets:
+            parts.append("")
+            parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
+            for vals, n in groups:
+                label = " | ".join(v if v is not None else "(none)" for v in vals)
+                parts.append(f"  {label}: {n}")
+            if len(groups) == _COUNT_GROUP_LIMIT:
+                parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
+        else:
+            parts.append("")
+            parts.append(
+                render_next_section(
+                    [
+                        (
+                            f"search(kind={self.kind!r}, view='count', "
+                            "args={'group_by': 'state'})",
+                            "same filter, counted by STATUS",
+                        ),
+                        (
+                            "args={'group_by': 'meta.<key>'} or 'tag:<axis>'",
+                            "facet by a meta field or a tag axis",
+                        ),
+                    ]
+                ).lstrip("\n")
+            )
+        return Response(body="\n".join(parts))
 
     def _list_by_tags(
         self,

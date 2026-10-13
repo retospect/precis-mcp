@@ -325,6 +325,13 @@ Relation = Literal[
     # 0187_measures.sql.
     "quantifies",
     "quantified-by",
+    # BOM consolidation nudge — migration 0205. `kept-distinct` (part ref ↔
+    # part ref): the human's standing answer to the nudge — these two parts
+    # look mergeable but stay separate on purpose; `links.meta.reason`
+    # carries the why. SYMMETRIC, no inverse — read via
+    # `links_for(direction='both')`. Keep in sync with the `relations`
+    # seed in 0205_bom_consolidation_roles.sql.
+    "kept-distinct",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and

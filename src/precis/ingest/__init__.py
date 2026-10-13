@@ -48,8 +48,9 @@ confirmation, so ordinary papers stay whole. An ambiguous spread keeps the
 whole body and gets the ``multi-article`` tag, which finding links read as
 an advisory. So does a trim that left an unconfirmed boundary inside the
 kept span.
-The bodiless heal (:mod:`precis.ingest.paper_hygiene`) passes no target
-yet, so a spread it heals is neither trimmed nor journalled.
+The bodiless heal (:mod:`precis.ingest.paper_hygiene`) re-extracts with the
+ref's own title/DOI as the target and journals the same ``ingest:spread``
+verdict.
 
 Every ingest/edit author writer funnels through
 :func:`precis.utils.authors.normalize_authors` (the canonical

@@ -755,7 +755,12 @@ def _body_count(store: Store, ref_id: int) -> int:
     return store.chunks.count_chunks(ref_id)
 
 
-def _fake_body(n_chunks: int, *, meta: dict[str, Any] | None = None) -> Any:
+def _fake_body(
+    n_chunks: int,
+    *,
+    meta: dict[str, Any] | None = None,
+    spread: dict[str, Any] | None = None,
+) -> Any:
     from precis.ingest.db_writer import ChunkToWrite
     from precis.ingest.pipeline import BodyExtraction
 
@@ -770,7 +775,18 @@ def _fake_body(n_chunks: int, *, meta: dict[str, Any] | None = None) -> Any:
         page_first=1 if chunks else None,
         page_last=1 if chunks else None,
         page_count=1 if chunks else 0,
+        spread=spread,
     )
+
+
+def _spread_events(store: Store, ref_id: int) -> list[tuple[str, dict[str, Any]]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT event, payload FROM ref_events "
+            "WHERE ref_id=%s AND source='ingest:spread' ORDER BY event_id",
+            (ref_id,),
+        ).fetchall()
+    return [(str(r[0]), dict(r[1] or {})) for r in rows]
 
 
 class TestHealBodilessPdfs:
@@ -786,7 +802,7 @@ class TestHealBodilessPdfs:
 
         calls: list[Any] = []
 
-        def never(path: Any, paper_id: str) -> Any:
+        def never(path: Any, cand: Any) -> Any:
             calls.append(path)
             return _fake_body(5)
 
@@ -857,7 +873,7 @@ class TestHealBodilessPdfs:
         _write_pdf(scan, text=None)
         rid, _ = _bodiless_paper(store, slug="bl-scan", storage_path=str(scan))
 
-        def never(path: Any, paper_id: str) -> Any:
+        def never(path: Any, cand: Any) -> Any:
             raise AssertionError("extractor must not run on a text-less PDF")
 
         out = heal_bodiless_pdfs(
@@ -877,8 +893,8 @@ class TestHealBodilessPdfs:
         rid, sha = _bodiless_paper(store, slug="bl-ok", storage_path=str(pdf))
         seen: list[tuple[Any, str]] = []
 
-        def fake(path: Any, paper_id: str) -> Any:
-            seen.append((path, paper_id))
+        def fake(path: Any, cand: Any) -> Any:
+            seen.append((path, cand.paper_id))
             return _fake_body(3, meta={"glyph_health": {"suspected": True}})
 
         out = heal_bodiless_pdfs(
@@ -912,7 +928,7 @@ class TestHealBodilessPdfs:
         _write_pdf(pdf, text="Some text the probe sees but Marker drops.")
         rid, _ = _bodiless_paper(store, slug="bl-nobody", storage_path=str(pdf))
 
-        def nothing(path: Any, paper_id: str) -> Any:
+        def nothing(path: Any, cand: Any) -> Any:
             return _fake_body(
                 0,
                 meta={"extract_used_fallback": True, "extract_fallback_reason": "boom"},
@@ -956,13 +972,13 @@ class TestHealBodilessPdfs:
             store,
             corpus_dirs=(tmp_path,),
             dry_run=False,
-            extractor=lambda p, pid: _fake_body(0),
+            extractor=lambda p, cand: _fake_body(0),
         )
         out = heal_bodiless_pdfs(
             store,
             corpus_dirs=(tmp_path,),
             dry_run=False,
-            extractor=lambda p, pid: _fake_body(3),
+            extractor=lambda p, cand: _fake_body(3),
         )
         assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extracted")]
         assert not _tags(store, rid)
@@ -980,7 +996,7 @@ class TestHealBodilessPdfs:
             store, rid_prev, "fetch_ok", hours_ago=2, source="fetcher:elsevier"
         )
 
-        def never(path: Any, paper_id: str) -> Any:
+        def never(path: Any, cand: Any) -> Any:
             raise AssertionError("dry run must not extract")
 
         out = heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), extractor=never)
@@ -1004,7 +1020,7 @@ class TestHealBodilessPdfs:
             corpus_dirs=(tmp_path,),
             dry_run=False,
             extract_limit=1,
-            extractor=lambda p, pid: _fake_body(2),
+            extractor=lambda p, cand: _fake_body(2),
         )
         assert [(o.ref_id, o.outcome) for o in out] == [
             (rid_a, "extracted"),
@@ -1016,7 +1032,7 @@ class TestHealBodilessPdfs:
             store,
             corpus_dirs=(tmp_path,),
             dry_run=False,
-            extractor=lambda p, pid: _fake_body(2),
+            extractor=lambda p, cand: _fake_body(2),
         )
         assert [(o.ref_id, o.outcome) for o in again] == [(rid_b, "extracted")]
 
@@ -1063,6 +1079,96 @@ class TestHealBodilessPdfs:
         assert bodiless_extract_per_pass() == 0
         monkeypatch.setenv("PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS", "junk")
         assert bodiless_extract_per_pass() == 5
+
+    def test_extractor_gets_ref_title_and_doi_and_spread_is_journalled(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        """gr463414: the ref's own identity is the article-spread target and
+        a trimmed spread lands an ``ingest:spread`` event, untagged."""
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "spread.pdf"
+        _write_pdf(pdf, text="Two letters share this page.")
+        rid, _ = _bodiless_paper(store, slug="bl-spread", storage_path=str(pdf))
+        store.set_ref_identifier(rid, "doi", "10.1038/24521", source="manual")
+        seen: list[Any] = []
+
+        def fake(path: Any, cand: Any) -> Any:
+            seen.append(cand)
+            return _fake_body(
+                2,
+                spread={
+                    "verdict": "trimmed",
+                    "reason": "title",
+                    "articles": 2,
+                    "kept": {
+                        "blocks": [3, 8],
+                        "pages": [2, 3],
+                        "head": "Paper bl-spread",
+                        "score": 0.9,
+                    },
+                    "cut": [
+                        {
+                            "blocks": [0, 3],
+                            "pages": [1, 2],
+                            "head": "Neighbour letter",
+                            "score": 0.1,
+                        }
+                    ],
+                    "residual": False,
+                },
+            )
+
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=fake
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extracted")]
+        (cand,) = seen
+        assert cand.title == "Paper bl-spread"
+        assert cand.doi == "10.1038/24521"
+        [(event, payload)] = _spread_events(store, rid)
+        assert event == "trimmed"
+        assert payload["verdict"] == "trimmed" and payload["articles"] == 2
+        assert payload["kept"]["blocks"] == [3, 8]
+        assert payload["cut"][0]["head"] == "Neighbour letter"
+        assert payload["file"] == "spread.pdf"
+        # A clean trim needs no multi-article tag.
+        assert "multi-article" not in _tags(store, rid)
+        assert _body_count(store, rid) == 2
+
+    def test_ambiguous_spread_is_journalled_and_tagged(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        """An ambiguous/residual spread keeps the whole body, journals the
+        verdict and tags the paper ``multi-article``, like precis_add."""
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "ambig.pdf"
+        _write_pdf(pdf, text="Two letters share this page.")
+        rid, _ = _bodiless_paper(store, slug="bl-ambig", storage_path=str(pdf))
+
+        def fake(path: Any, cand: Any) -> Any:
+            return _fake_body(
+                4,
+                spread={
+                    "verdict": "ambiguous",
+                    "reason": "no confident match",
+                    "articles": 2,
+                    "found": [
+                        {"blocks": [0, 4], "pages": [1, 1], "head": "A", "score": 0.4},
+                        {"blocks": [4, 8], "pages": [2, 2], "head": "B", "score": 0.4},
+                    ],
+                },
+            )
+
+        out = heal_bodiless_pdfs(
+            store, corpus_dirs=(tmp_path,), dry_run=False, extractor=fake
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extracted")]
+        [(event, payload)] = _spread_events(store, rid)
+        assert event == "ambiguous" and payload["reason"] == "no confident match"
+        assert "multi-article" in _tags(store, rid)
+        assert _body_count(store, rid) == 4
 
 
 class TestRaiseJunkTitlePapers:

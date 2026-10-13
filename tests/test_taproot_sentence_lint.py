@@ -1019,6 +1019,8 @@ def test_numeral_absent_is_silent_without_numbers_or_source() -> None:
         ("Two layers form.", "2 layers"),
         ("A 2 nm gap opens.", "a gap of two nanometres"),
         ("Tunes 1–5% of sites.", "between 1% and 5%"),
+        ("A band sits at 8.4×10⁴ cm⁻¹.", "bands near 8.4 × 1 0 4 cm−1"),
+        ("Conductivity is 2.1×10⁻³ S/cm.", "of 2.1 × 1 0 − 3 S/cm"),
     ],
 )
 def test_numeral_absent_normalizes_equivalent_forms(claim: str, source: str) -> None:
@@ -1037,6 +1039,13 @@ def test_numeral_absent_boundary_before_superscript_run() -> None:
     # td244964: ``10⁵`` must not read as ``105`` against a source ``105``.
     assert _absent("Cycling exceeds 10⁵ cycles.", "after 7 cycles")
     assert not _absent("Cycling exceeds 105 cycles.", "after 105 cycles")
+
+
+def test_numeral_absent_spaced_exponent_fold_only_widens() -> None:
+    # fi349979: folding ``x 1 0 4`` must not hide the digits themselves.
+    assert not _absent("The array has 4 sites.", "a 3 x 1 0 4 array")
+    # ... and a non-exponent spaced run is left alone (``1 2`` is no ``10``).
+    assert _absent("The band is 12 cm⁻¹ wide.", "a 3 x 1 2 array")
 
 
 def test_numeral_absent_never_blocks_a_mint_code() -> None:

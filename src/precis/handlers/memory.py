@@ -1329,13 +1329,14 @@ class MemoryHandler(NumericRefHandler):
                 options=["title", "body"],
                 next="search(kind='memory', q='<words>', scope='title')",
             )
-        if view is None:
+        if view is None or view == "count":
             return super().search(
                 q=q,
                 tags=tags,
                 page_size=page_size,
                 page=page,
                 mode=mode,
+                view=view,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 chunk_scope=chunk_scope,
@@ -1344,7 +1345,7 @@ class MemoryHandler(NumericRefHandler):
         if view != "index":
             raise BadInput(
                 f"unknown view {view!r} for search(kind='memory')",
-                options=["index"],
+                options=["index", "count"],
                 next=(
                     "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
                     "view='index')"

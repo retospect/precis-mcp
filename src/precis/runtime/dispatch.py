@@ -1530,6 +1530,58 @@ class DispatchMixin(RuntimeShape):
         if verb == "search" and str(args.get("view") or "").strip() == "chase-queue":
             return self._dispatch_chase_queue(dict(args))
 
+        # Count view: ``search(kind=K, view='count', group_by=...)`` is
+        # the filtered total + facet counts on numeric-ref kinds
+        # (gr472990). Intercepted here — before the angle/folder/
+        # source-search branches — so args this shape can't honour fail
+        # loudly instead of falling through to a hits-shaped response
+        # that silently dropped ``view``.
+        if verb == "search" and str(args.get("view") or "").strip() == "count":
+            _count_extras = args.get(_EXTRAS_KEY)
+            bad_combo = next(
+                (
+                    a
+                    for a in ("angle", "like", "since", "until", "sort")
+                    if args.get(a) is not None
+                    or (
+                        isinstance(_count_extras, dict)
+                        and _count_extras.get(a) is not None
+                    )
+                ),
+                None,
+            )
+            if bad_combo is not None:
+                raise BadInput(
+                    f"{bad_combo}= is not supported with view='count'",
+                    next=(
+                        "view='count' filters with q=/tags=/status=/link=/"
+                        "folder= and facets with args={'group_by': 'state' | "
+                        "'meta.<key>' | 'tag:<axis>'}"
+                    ),
+                )
+            if kind is None or self._is_cross_kind_request(str(kind)):
+                eligible = [
+                    k
+                    for k in sorted(self.hub.kinds)
+                    if (h := self.hub.handler_for(k)) is not None
+                    and (m := getattr(h, "search", None)) is not None
+                    and "view" in self._accepted_kwargs(m)
+                ]
+                raise BadInput(
+                    "view='count' counts one kind at a time — pass kind=",
+                    options=eligible,
+                    next=(
+                        "search(kind='job', view='count', "
+                        "args={'group_by': 'meta.job_type,state'})"
+                    ),
+                )
+            # ``folder=`` normally routes to the cross-kind fan-out for
+            # post-filtering; for a count it folds into the same
+            # include_ref_ids channel under=/uncited= already used.
+            if args.get("folder") is not None:
+                folder_scope, _ = self._resolve_folder_scope(args.pop("folder"))
+                self._intersect_include_ref_ids(args, folder_scope)
+
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
         # diverse-cone semantic sampler (docs/backlog/dreaming.md), not
         # the lexical+RRF path. Intercept before kind resolution — it

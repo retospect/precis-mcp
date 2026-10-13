@@ -496,6 +496,16 @@ manual escape hatch). `bom`/`cpl` warn about unplaced or non-assemblable
 footprint whose pads are all `role: 'electrode'` or `'probe'`, such as an
 EWOD electrode array) is left out of both: there is nothing to place or buy.
 
+`view='bom'` also ends its **response** with a `## Consolidation` nudge
+(the written CSV is untouched): same-package parts of one jlcparts class
+differing only in a free parametric (`parts.params` — Resistance,
+Capacitance) get a "one value?" line proposing the house-set or plurality
+member with a one-sentence LLM verdict and its cited inputs; a
+`kept-distinct:<label>:<label>[:<reason>]` tag on the design suppresses a
+pair and prints the reason (pcb component types aren't refs, so the
+link-door `rel='kept-distinct'` is the component kind's form). See
+[[precis-component-help]] for the attribute-role model.
+
 ### Mechanical features — the CAD bridge
 
 Add non-electrical geometry so the board can drive an enclosure:

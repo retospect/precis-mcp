@@ -549,6 +549,30 @@ do instead".
 `trust_measured` turns on once 1–4 ship and the re-measured armchair
 threshold is within the same order as zigzag's 0.025° or is explained.
 
+**Built 2026-10-29 (branch `gripe-456641`).** Items 1–4 ship as ruled:
+`measure_environment` grows one translational period at a time, asserts
+`RelaxResult.converged` at every step (the `Relaxer` contract now
+returns `RelaxResult(coords, converged)`; `_stick_relaxer` supplies its
+own chunked-drift verdict at ~1e-3 Å/chunk, budget 40000 iters;
+`geo_relax_pinned` propagates `trace.converged`), H-caps the far ends
+(`terminate:` — pinning free rims to seed was tried first and injects
+~0.7–0.85 ° of boundary strain; capping does not, *provided* C-H cap
+bonds rest at `sigma_CH`, which `_stick_relaxer` now takes as
+`sigma_ch`+`lattice_elements` kwargs — at uniform `sigma` the cap itself
+was a strain source and armchair alternated 4/5 forever), stops when
+`seam_radius` and the leak threshold (compared at the stored precision,
+`0.01 °`) hold for two consecutive increments, and reports
+`coverage="unstable"` past `MEASURE_CAP_A` (50 Å) or `MEASURE_ATOM_CAP`
+(1100 projected atoms, now counted over all four tubes a step builds).
+The convergence length lands in `EdgeMotif.measure_len`; `EnvKey` is
+untouched. Item 5 shipped: `_LEAK_THRESH["a"]` is 2.3°, the (5,5)
+converged reading (2.2702 °, rounded up) in place of the len-3 2.9 °.
+Converged stick readings: (5,0) r=4 @ len 8, (8,0) r=4 @ len 8, (5,5)
+r=4 @ len 9 — the armchair `SEAM_RADIUS` pin of 2 *narrows* the measured
+decay, which `trust_measured` will have to weigh. Note the atom cap, not
+the axial one, binds first for armchair (2.46 Å period → 20 periods to
+5 nm); wider zigzags hit it around len 9.
+
 ## Step 5 join open item 1: ruled (2026-09-29)
 
 `join.reparented` is back as an **INFO**, narrowed to the ordinary-parent

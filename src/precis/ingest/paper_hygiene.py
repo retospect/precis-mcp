@@ -45,7 +45,8 @@ ingestion/edit bugs that the current code no longer produces:
   but no body chunk (``ord >= 0``): the PDF leg promoted the stub and
   wrote no text, and nothing journalled why (gr453860). The one heal
   here that is not pure SQL: for a locally held, readable PDF it re-runs
-  the body extraction (Marker, in a killable subprocess) and writes the
+  the body extraction (Marker, in a killable subprocess, the ref's own
+  title/DOI as the article-spread target, gr463414) and writes the
   chunks; everything else it *judges* once — Elsevier entitlement
   preview, file missing on every node, corrupt or text-less PDF — and
   journals the verdict as a ``ref_events`` row (``source='heal:bodiless'``)
@@ -76,7 +77,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg.types.json import Jsonb
 
 from precis.corpus_layout import resolve_local_pdf
-from precis.identity import PLACEHOLDER_TITLE
+from precis.identity import PLACEHOLDER_TITLE, is_placeholder_title
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.db_writer import PaperToWrite, register_aliases_and_maybe_upgrade
 from precis.store import Store
@@ -676,6 +677,7 @@ class _BodilessCandidate:
     cite_keys: tuple[str, ...]
     last_fetch_source: str | None
     paper_id: str
+    doi: str | None = None
     empty_retries: int = 0
 
 
@@ -692,6 +694,8 @@ def _bodiless_candidates(
                (SELECT pid.id_value FROM ref_identifiers pid
                  WHERE pid.ref_id = r.ref_id AND pid.id_kind = 'paper_id'
                  LIMIT 1) AS paper_id,
+               (SELECT min(rdi.id_value) FROM ref_identifiers rdi
+                 WHERE rdi.ref_id = r.ref_id AND rdi.id_kind = 'doi') AS doi,
                (SELECT count(*) FROM ref_events x
                  WHERE x.ref_id = r.ref_id AND x.source = %s
                    AND x.event = 'extract_retry'
@@ -733,6 +737,7 @@ def _bodiless_candidates(
         cite_keys,
         last_src,
         paper_id,
+        doi,
         retries,
     ) in rows:
         # The slug is one of the ``cite_key`` identifiers (v2: ``refs.slug``
@@ -747,6 +752,7 @@ def _bodiless_candidates(
                 cite_keys=tuple(keys),
                 last_fetch_source=last_src,
                 paper_id=str(paper_id) if paper_id else f"ref{int(ref_id)}",
+                doi=str(doi) if doi else None,
                 empty_retries=int(retries or 0),
             )
         )
@@ -769,11 +775,20 @@ def _probe_pdf(path: Path) -> tuple[int, int]:
 
 def _default_body_extractor(
     marker_timeout_s: float | None,
-) -> Callable[[Path, str], BodyExtraction]:
+) -> Callable[[Path, _BodilessCandidate], BodyExtraction]:
     from precis.ingest.pipeline import extract_body
 
-    def _run(path: Path, paper_id: str) -> BodyExtraction:
-        return extract_body(path, paper_id, marker_timeout_s=marker_timeout_s)
+    def _run(path: Path, cand: _BodilessCandidate) -> BodyExtraction:
+        # The ref's own identity is the article-spread target (gr463414),
+        # so a healed multi-article PDF is trimmed like a fresh ingest.
+        title = "" if is_placeholder_title(cand.title) else (cand.title or "")
+        return extract_body(
+            path,
+            cand.paper_id,
+            marker_timeout_s=marker_timeout_s,
+            target_title=title,
+            target_doi=cand.doi,
+        )
 
     return _run
 
@@ -799,6 +814,26 @@ def _journal_bodiless(
     )
 
 
+def _journal_spread(
+    store: Store, ref_id: int, spread: dict[str, Any], path: Path, *, conn: Any
+) -> None:
+    """Journal a multi-article spread found by the heal's re-extraction
+    (gr463414) — the same ``ingest:spread`` shape and ``multi-article`` tag
+    :func:`precis.ingest.add._note_article_spread` writes on the ingest path,
+    so the one monitoring query covers both."""
+    from precis.ingest.add import ARTICLE_SPREAD_SOURCE, MULTI_ARTICLE_TAG
+
+    store.append_event(
+        ref_id,
+        source=ARTICLE_SPREAD_SOURCE,
+        event=str(spread.get("verdict") or ""),
+        payload={**spread, "file": path.name},
+        conn=conn,
+    )
+    if spread.get("verdict") == "ambiguous" or spread.get("residual"):
+        store.add_tag(ref_id, Tag.open(MULTI_ARTICLE_TAG), set_by="system", conn=conn)
+
+
 def heal_bodiless_pdfs(
     store: Store,
     *,
@@ -807,7 +842,7 @@ def heal_bodiless_pdfs(
     limit: int | None = None,
     extract_limit: int | None = None,
     marker_timeout_s: float | None = BODILESS_MARKER_TIMEOUT_S,
-    extractor: Callable[[Path, str], BodyExtraction] | None = None,
+    extractor: Callable[[Path, _BodilessCandidate], BodyExtraction] | None = None,
 ) -> list[BodilessOutcome]:
     """Judge — and where possible heal — live papers that hold a PDF but no
     body text (gr453860 parts 2 and 3).
@@ -845,15 +880,19 @@ def heal_bodiless_pdfs(
        :func:`precis.ingest.db_writer.register_aliases_and_maybe_upgrade`
        — the same no-body branch a stub upgrade takes, so the healed ref is
        indistinguishable from one ingested normally (content_hash alias,
-       body-owned meta, ``markup_refetch`` pin spent). No metadata cascade
-       and no network: the ref already has its identity.
+       body-owned meta, ``markup_refetch`` pin spent). The ref's own title
+       and DOI are the article-spread target, so a healed multi-article PDF
+       is trimmed like a fresh ingest and a non-``single`` verdict is
+       journalled under ``ingest:spread`` (``multi-article`` tag on
+       ``ambiguous``/``residual``). No metadata cascade and no network:
+       the ref already has its identity.
 
     ``extract_limit`` caps step 4 per call (``None`` = unbounded;
     :func:`bodiless_extract_per_pass` supplies the unattended default);
     readable candidates past the cap are ``deferred`` and picked up next
     pass. A dry run (the default) performs steps 1-3's read-only probes
     and reports step-4 candidates as ``readable``, writing nothing.
-    ``extractor`` is the Marker seam for tests.
+    ``extractor`` is the Marker seam for tests, called ``(path, candidate)``.
 
     Returns one :class:`BodilessOutcome` per candidate considered, in
     ``ref_id`` order.
@@ -974,7 +1013,7 @@ def heal_bodiless_pdfs(
 
         extracted_n += 1
         try:
-            body = extract(path, cand.paper_id)
+            body = extract(path, cand)
         except Exception as exc:
             # extract_blocks_marker already absorbs a Marker failure into
             # the fitz fallback, so a raise here is infrastructure (a
@@ -1061,6 +1100,8 @@ def heal_bodiless_pdfs(
                 path=str(path),
             )
             _journal_bodiless(store, cand, out, conn=conn)
+            if written and body.spread:
+                _journal_spread(store, rid, body.spread, path, conn=conn)
         outcomes.append(out)
         log.info(
             "paper_hygiene: bodiless ref_id=%s extracted %d body chunk(s) from %s",

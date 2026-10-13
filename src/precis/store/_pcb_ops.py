@@ -3869,6 +3869,65 @@ class PcbMixin:
             "ewma_stock": r[11],
         }
 
+    def pcb_bom_components(self, ref_id: int) -> list[dict[str, Any]]:
+        """The design's component TYPES with their instance counts and the
+        catalog parametrics — the rows the bom-view consolidation nudge
+        groups (migration 0205). ``params``/``package``/``datasheet_url``
+        come off ``parts`` by the loose ``part_lcsc`` join; a hand-entered
+        component (no LCSC) gets ``params=None``."""
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT c.component_id, c.label, c.part_lcsc, c.footprint, "
+                "       count(i.instance_id) AS qty, "
+                "       p.params, p.package, p.datasheet_url, p.description "
+                "FROM pcb_components c "
+                "JOIN pcb_instances i ON i.component_id = c.component_id "
+                "                    AND i.retired_at IS NULL "
+                "LEFT JOIN parts p ON p.lcsc = c.part_lcsc "
+                "WHERE c.ref_id = %s AND c.retired_at IS NULL "
+                "GROUP BY c.component_id, c.label, c.part_lcsc, c.footprint, "
+                "         p.params, p.package, p.datasheet_url, p.description "
+                "ORDER BY min(i.refdes)",
+                (ref_id,),
+            ).fetchall()
+        return [
+            {
+                "component_id": int(r[0]),
+                "label": r[1],
+                "part_lcsc": r[2],
+                "footprint": r[3],
+                "qty": int(r[4]),
+                "params": r[5],
+                "package": r[6],
+                "datasheet_url": r[7],
+                "description": r[8],
+            }
+            for r in rows
+        ]
+
+    def pcb_part_design_count(
+        self,
+        *,
+        exclude_ref_id: int,
+        part_lcsc: str | None,
+        label: str | None,
+        footprint: str | None,
+    ) -> int:
+        """How many OTHER live pcb designs use this part — the pcb half of
+        the nudge's "used in N other designs" ranking signal. Keyed on the
+        catalog C-number when there is one, else (label, footprint)."""
+        with self._pcb_conn() as conn:
+            row = conn.execute(
+                "SELECT count(DISTINCT c.ref_id) FROM pcb_components c "
+                "JOIN refs r ON r.ref_id = c.ref_id AND r.retired_at IS NULL "
+                "WHERE c.retired_at IS NULL AND c.ref_id <> %s AND ("
+                "  (%s::text IS NOT NULL AND c.part_lcsc = %s) OR "
+                "  (%s::text IS NULL AND c.part_lcsc IS NULL "
+                "   AND c.label = %s AND c.footprint IS NOT DISTINCT FROM %s))",
+                (exclude_ref_id, part_lcsc, part_lcsc, part_lcsc, label, footprint),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def part_ref_id(self, lcsc: str, *, conn: Connection | None = None) -> int | None:
         """The live part ref for an LCSC C-number, or ``None``. Never mints."""
 

@@ -226,6 +226,15 @@ Each contact row also carries a `welded` flag: `true` when a `weld <a>
 that pair's overlap intended — so a designed-in interference reads as
 declared here too, not as an undeclared defect.
 
+### One driver, one tap
+
+The parts list a cad/se design quotes feeds `view='bom'`'s
+`## Consolidation` footer ([[precis-component-help]]): tool attributes get
+their own "all one?" lines — three drive types is three drivers, a second
+thread size is a second tap. Converging on one drive/one thread per design
+is the cheap win the nudge points at; `kept-distinct` silences a pair you
+meant to keep.
+
 ### Truisms — a real part is one connected solid
 
 A manufacturable part is a *single connected body*: a wheel is its hub, its

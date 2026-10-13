@@ -174,6 +174,24 @@ get(kind="component", id="enclosure", view="bom", spec="coating")
 # coating: MIXED — galvanized ×2, none ×1 (1 leaf has no coating)
 ```
 
+The bom also ends with a **`## Consolidation` nudge** when leaf specs show
+near-duplicates: parts sharing every *identity* spec (thread, package, pin
+count) but differing only in *free* or *envelope* ones get one line each —
+"resistors 0603: 10k x4, 12k x3, 8k x1 — one resistance? propose 10k (the
+house value)". Merge feasibility is a one-sentence LLM verdict printed with
+its cited inputs; it asks, never edits. *Tool* attributes (drive type →
+driver, thread → tap, package → reflow) get their own "all one?" lines —
+fewer drivers, taps and solder profiles. A house set
+(`standard_parts.json`: E6 values, ISO 4762 socket caps) and the
+cross-design usage count rank the proposal. To keep two parts separate on
+purpose, answer once:
+
+```python
+link(kind="component", id="r-8k", target="component:r-10k",
+     rel="kept-distinct", meta={"reason": "8k sets the LED current"})
+# or tag the bom root: kept-distinct:r-8k:r-10k:<reason>
+```
+
 An unregistered `spec=` is rejected with `BadInput` naming it; a spec no
 leaf records reads `coating: not recorded on any of N leaves` — never a
 false "uniform". This answers the motivating "are the washer *and* the

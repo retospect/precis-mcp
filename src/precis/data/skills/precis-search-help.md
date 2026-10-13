@@ -73,7 +73,9 @@ own `under=` (todo subtree, concept descendants).
 handle (`precis-dreaming-help`). `view='dreamable'` / `'stubs'` /
 `'chase-queue'` swap in a different result shape and ignore `q=` — a
 salience pick, or the paper-acquisition backlog (`precis-dreaming-help`,
-`precis-stubs-help`). `status=` is shorthand for
+`precis-stubs-help`). `view='count'` on a numeric-ref kind returns the
+filtered total plus `group_by` facet counts instead of hits — see
+"Count and facet a filtered search" below. `status=` is shorthand for
 `tags=['STATUS:<value>']` on kinds with that axis — see "Enumerating a
 tag" below for the per-kind defaults.
 
@@ -355,6 +357,30 @@ Some kinds fold a **default status** into this: `gripe` defaults to
 `STATUS:open` and `finding` to `STATUS:established` when you pass no
 `status=`/`STATUS:` tag. Pass `status='*'` to opt out. The default is named
 in the response header, never silent.
+
+## Count and facet a filtered search (view='count')
+## How many X are there? Group jobs/gripes/todos by status or tag
+
+On numeric-ref kinds (job, gripe, todo, memory, quest, …) `view='count'`
+returns the **total** matching the same filters — no hit rows — and
+`args={'group_by': ...}` adds facet counts:
+
+```python
+search(kind="gripe", view="count")                    # how many open gripes
+search(kind="gripe", view="count", status="*")        # every gripe
+search(kind="job", view="count", args={"group_by": "meta.job_type,state"})
+search(kind="gripe", view="count", args={"group_by": "tag:area"})
+search(kind="job", view="count", link="gripe:472990")
+```
+
+`group_by` terms: `state` (the `STATUS:` axis), `meta.<key>` (a
+`refs.meta` scalar like `meta.job_type`), `tag:<axis>` (closed axis
+when uppercase — `tag:STATUS` — else the open `prefix:*` tag family).
+Comma-separate up to 3 for a cross facet (`a | b` rows). Refs missing
+the facet land in `(none)`. The totals are exact `COUNT`s over the same
+WHERE as the listing, so they match the "N of K" page headers; `folder=`
+and `under=` fold in as ref-set filters. One kind per call — no
+cross-kind or `sort=`/`since=`/`until=` on this shape.
 
 ## Search inside a specific paper or ref
 ## Where does this paper mention X?

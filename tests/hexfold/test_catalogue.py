@@ -208,6 +208,9 @@ def test_measure_environment_z8_stick() -> None:
     edge, bulk = measure_environment((8, 0), rung="stick")
     assert edge.seam_radius == 4
     assert edge.coverage == "full"
+    # gr456641: the tube grew until the measurement held for two
+    # consecutive increments; the convergence length is stored, not keyed
+    assert edge.measure_len == 8
 
     floor_dl, floor_dtheta = _MEASURE_FLOOR["stick"]
     # absolute pin: a fixed 10x margin over the code's own stick floor
@@ -233,9 +236,14 @@ def test_measure_environment_z8_stick() -> None:
 
 
 def test_measure_environment_a5_stick() -> None:
+    # gr456641: measured to convergence -- (5,5) grows to len 9 and
+    # settles at seam_radius 4 (was a lower-bound 3 on a fixed len=4,
+    # which was itself a tube-length artefact).  ``measure_len`` is the
+    # length the converged value was measured at.
     edge, _bulk = measure_environment((5, 5), rung="stick")
-    assert edge.seam_radius == 3
-    assert edge.coverage == "lower-bound"
+    assert edge.seam_radius == 4
+    assert edge.coverage == "full"
+    assert edge.measure_len == 9
 
 
 def test_measure_environment_flags_far_rim_runaway_unstable() -> None:

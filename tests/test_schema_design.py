@@ -118,7 +118,12 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # open-ended per kind (a DRC finding id, a screenshot handle, free
         # text), never queried by key in slice 1.
         "checklist_verdicts.evidence",
+        # 0205: variable-length role declaration (any subset of
+        # identity/envelope/free/tool, plus the jlcparts params map) read
+        # as a whole by the BOM nudge, never queried per key.
+        "component_categories.spec_roles",
         "component_specs.allowed_values",
+        "component_specs.spec_roles",
         # 0162 (design core). Each is genuinely open-ended at this layer:
         #   * objective_weights — the optimiser's objective vocabulary is
         #     build-order step 4 and does not exist yet; closing it here

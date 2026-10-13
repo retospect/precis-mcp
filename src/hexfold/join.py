@@ -52,7 +52,7 @@ from .build import (
 )
 from .lattice import ideal_angle_deg
 from .report import Finding, Severity
-from .stick import stick_relax_pinned
+from .stick import _ITERS, stick_relax_pinned
 
 #: SPEC 11.3/22.2 "Seam decay, measured": shells of unperturbed geometry
 #: beyond which a block's own atoms are safe to leave frozen during a
@@ -96,7 +96,12 @@ _SEAM_RADIUS_DEFAULT = SEAM_RADIUS["z"]
 #: never sees.
 _LEAK_THRESH: dict[str, tuple[float, float]] = {
     "z": (0.0001, 0.025),  # (dl_A, dtheta_deg)
-    "a": (0.0001, 2.9),
+    # gr457997: the 2.9 below was a tube(5,5,len=3) shortest-tube reading.
+    # Re-measured by `catalogue.measure_environment`'s grow-to-convergence
+    # loop (gr456641): (5,5) settled at seam_radius 4 by len 10 with the
+    # far ends H-capped and every relax asserted converged; doubled
+    # guard-band max dtheta = 2.2702 deg, rounded up here.
+    "a": (0.0001, 2.3),
 }
 _LEAK_THRESH_DEFAULT = _LEAK_THRESH["z"]
 
@@ -131,10 +136,24 @@ LEAK_THRESH_GEO: dict[str, tuple[float, float]] = {
     "a": (0.002, 0.15),
 }
 
-#: `Relaxer(elements, coords, bonds, rings, pinned_mask) -> coords`: the
-#: seam so precis can inject the geo rung (slice 2, `relax_graph`) without
-#: this module importing `precis.structure`.  `pinned_mask` is a 0/1
-#: float array, 1 meaning "never move" -- the same sense as
+
+@dataclass(frozen=True)
+class RelaxResult:
+    """A relaxer's answer: the relaxed coordinates plus its own
+    convergence verdict (gr456641: a caller measuring seam decay asserts
+    on this every step -- before it, the stick rung's unconverged tail at
+    a free rim read as un-decayed seam signal).  ``converged`` means the
+    relaxer's own criterion said so (the geo rung's ``trace.converged``;
+    the stick rung's drift window below), nothing more."""
+
+    coords: np.ndarray
+    converged: bool
+
+
+#: `Relaxer(elements, coords, bonds, rings, pinned_mask) -> RelaxResult`:
+#: the seam so precis can inject the geo rung (slice 2, `relax_graph`)
+#: without this module importing `precis.structure`.  `pinned_mask` is a
+#: 0/1 float array, 1 meaning "never move" -- the same sense as
 #: `precis.structure.georelax.relax_graph`'s `pinned` set, so the slice-2
 #: adapter is a one-line `{i for i, p in enumerate(pinned_mask) if p}`.
 #: Called with the seam sub-graph only (`_seam_subgraph`), not the whole
@@ -148,8 +167,23 @@ Relaxer = Callable[
         list[tuple[int, ...]],
         np.ndarray,
     ],
-    np.ndarray,
+    RelaxResult,
 ]
+
+
+#: `_stick_relaxer`'s convergence test (gr456641): fixed-step gradient
+#: descent has no natural stop, so a chunk loop watches the largest
+#: per-atom displacement over the last `_RELAX_CONV_CHUNK` iterations and
+#: calls it converged under this floor -- the same "biggest single-atom
+#: displacement" idea `relax_graph`'s `tol` early-stops on, read at chunk
+#: granularity because the kernel does not report per-iteration
+#: maxima. 1e-3 A is where long measurement tubes' own drift tails land
+#: (~24k iterations for a fused (5,0) len=10 pair, capped ends included);
+#: the cap is generous headroom, not a typical cost -- the small pinned
+#: seam sub-graphs `compose` hands over settle in the first chunks.
+_RELAX_CONV_CHUNK = 1000
+_RELAX_CONV_TOL = 1e-3  # A, max per-atom displacement over one chunk
+_RELAX_ITERS_CAP = 40000
 
 
 @dataclass
@@ -297,14 +331,29 @@ def _angle_springs_from(rings: tuple[tuple[int, ...], ...], sigma: float) -> np.
     return np.array(out, dtype=np.float64) if out else np.zeros((0, 3))
 
 
-def _stick_relaxer(sigma: float) -> Relaxer:
+def _stick_relaxer(
+    sigma: float,
+    sigma_ch: float | None = None,
+    lattice_elements: set[str] | None = None,
+) -> Relaxer:
     """The default :data:`Relaxer`: :func:`hexfold.stick.stick_relax_pinned`
     over whatever sub-graph it is called with (the seam sub-graph in
     ordinary use), sigma-uniform bond rest lengths (a composed block
     carries no termination/element-pair info of its own -- a future slice
     adding `terminate` support to `Block` would thread `sigma_CH` through
     here too; `compose` flags a termination atom inside the sub-graph with
-    `seam.terminated` so this simplification is never silent)."""
+    `seam.terminated` so this simplification is never silent).  The stick
+    loop has no convergence check of its own (its docstring), so this
+    wrapper supplies one: chunked calls watched for per-atom drift, the
+    ``converged`` verdict the :data:`Relaxer` contract now requires
+    (:data:`_RELAX_CONV_TOL`).
+
+    ``sigma_ch``/``lattice_elements`` (gr456641): when both are given a
+    bond touching a non-lattice element (a `terminate` cap atom, e.g.
+    `measure_environment`'s H-capped far ends) rests at ``sigma_ch``
+    rather than ``sigma`` -- a capped rim pulled to a full C-C rest
+    length injects a boundary strain that reads as un-decayed seam
+    signal all down the tube."""
 
     def relax(
         elements: list[str],
@@ -312,21 +361,48 @@ def _stick_relaxer(sigma: float) -> Relaxer:
         bonds: list[tuple[int, int, int]],
         rings: list[tuple[int, ...]],
         pinned_mask: np.ndarray,
-    ) -> np.ndarray:
-        del elements  # sigma-uniform bonds: element identity unused here
+    ) -> RelaxResult:
         bonds_arr = np.array([(i, j) for i, j, *_ in bonds], dtype=np.int64)
-        brest = np.full(len(bonds_arr), sigma, dtype=np.float64)
+        if sigma_ch is not None and lattice_elements is not None:
+            lat_el = lattice_elements
+            brest = np.array(
+                [
+                    sigma
+                    if elements[i] in lat_el and elements[j] in lat_el
+                    else sigma_ch
+                    for i, j, *_ in bonds
+                ],
+                dtype=np.float64,
+            )
+        else:
+            del elements  # sigma-uniform bonds: element identity unused here
+            brest = np.full(len(bonds_arr), sigma, dtype=np.float64)
         springs = _angle_springs_from(tuple(rings), sigma)
         movable = 1.0 - np.asarray(pinned_mask, dtype=np.float64)
-        pos, _max_force = stick_relax_pinned(
-            np.asarray(coords, dtype=np.float64),
-            bonds_arr,
-            brest,
-            springs,
-            sigma,
-            movable=movable,
-        )
-        return pos
+        pos = np.asarray(coords, dtype=np.float64)
+        # at least `_ITERS` (the pre-gr456641 fixed count): a sub-graph
+        # already settled by then returns the identical positions this
+        # loop used to; only an atom still drifting past the tolerance
+        # costs extra chunks, up to the cap.
+        iters = 0
+        converged = False
+        while iters < _RELAX_ITERS_CAP:
+            prev = pos
+            pos, _max_force = stick_relax_pinned(
+                pos,
+                bonds_arr,
+                brest,
+                springs,
+                sigma,
+                iters=_RELAX_CONV_CHUNK,
+                movable=movable,
+            )
+            iters += _RELAX_CONV_CHUNK
+            drift = float(np.linalg.norm(pos - prev, axis=1).max()) if len(pos) else 0.0
+            if iters >= _ITERS and drift < _RELAX_CONV_TOL:
+                converged = True
+                break
+        return RelaxResult(pos, converged)
 
     return relax
 
@@ -811,10 +887,20 @@ def compose(
         )
 
     relax_fn = relax if relax is not None else _stick_relaxer(a.sigma)
-    sub_new = np.asarray(
-        relax_fn(sub_elements, sub_coords, sub_bonds, sub_rings, sub_pinned),
-        dtype=np.float64,
-    )
+    relax_res = relax_fn(sub_elements, sub_coords, sub_bonds, sub_rings, sub_pinned)
+    sub_new = np.asarray(relax_res.coords, dtype=np.float64)
+    if not relax_res.converged:
+        findings.append(
+            Finding(
+                "seam.unconverged",
+                Severity.WARN,
+                "the seam re-relax did not report convergence; the seam "
+                "region's coordinates are its best-effort state, not a "
+                "settled one",
+                data=(("sub_atoms", len(sub_new)),),
+                fix="regenerate with a relaxer budget that converges",
+            )
+        )
     new_coords = coords.copy()
     new_coords[np.array(seam_set, dtype=np.int64)] = sub_new
 

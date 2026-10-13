@@ -231,7 +231,7 @@ def test_datasheet_worker_reuses_guarded_download_and_independent_ingest(
     store, monkeypatch
 ):
     handler = ComponentHandler(hub=Hub(store=store))
-    handler.put(id="dogfood-datasheet-source", category="electronic")
+    handler.put(id="dogfood-datasheet-source", category="resistor")
     ref = store.get_ref(kind="component", id="dogfood-datasheet-source")
     url = "https://maker.example/data.pdf"
     link = identity_link(
@@ -247,6 +247,10 @@ def test_datasheet_worker_reuses_guarded_download_and_independent_ingest(
         datetime(2026, 10, 5, tzinfo=UTC),
     )
     store.component_supplier_link(ref.id, link)
+    assert (
+        store.get_ref(kind="component", id="dogfood-datasheet-source").meta["category"]
+        == "resistor"
+    )
     calls = []
 
     def download(received, path):
@@ -267,6 +271,10 @@ def test_datasheet_worker_reuses_guarded_download_and_independent_ingest(
     assert result["status"] == "ok" and result["datasheet_ref_id"] == datasheet.id
     assert datetime.fromisoformat(result["at"]).tzinfo is not None
     assert calls == [url]
+    assert (
+        store.get_ref(kind="component", id="dogfood-datasheet-source").meta["category"]
+        == "resistor"
+    )
     with store.pool.connection() as conn:
         assert (
             conn.execute(

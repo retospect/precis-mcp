@@ -1,0 +1,34 @@
+{
+  "comment": "The house set for the BOM consolidation nudge (docs/backlog/bom-consolidation-nudge.md, slice 3): when a group has a member already in this set, the nudge proposes that one. Keys are class ids (component_categories.category_id); each entry constrains named role attributes — E6 resistor values in the two stocked packages, a small ISO 4762 socket-cap ladder, a ceramic-capacitor set. Numeric entries are in the spec's canonical unit (ohm / F / mm) and match with the nudge's SI-suffix parser, so '10k' == 10000.",
+  "classes": {
+    "resistor": {
+      "package": ["0603", "0805"],
+      "resistance": [
+        10, 15, 22, 33, 47, 68,
+        100, 150, 220, 330, 470, 680,
+        1000, 1500, 2200, 3300, 4700, 6800,
+        10000, 15000, 22000, 33000, 47000, 68000,
+        100000, 150000, 220000, 330000, 470000, 680000,
+        1000000
+      ]
+    },
+    "capacitor": {
+      "package": ["0603", "0805"],
+      "capacitance": [
+        1e-12, 2.2e-12, 4.7e-12,
+        1e-11, 2.2e-11, 4.7e-11,
+        1e-10, 2.2e-10, 4.7e-10,
+        1e-9, 2.2e-9, 4.7e-9,
+        1e-8, 4.7e-8, 1e-7, 2.2e-7, 4.7e-7,
+        1e-6, 2.2e-6, 4.7e-6, 1e-5
+      ]
+    },
+    "fastener": {
+      "_series": "ISO 4762 (hex socket head cap)",
+      "thread_size": ["M3", "M4", "M5", "M6", "M8"],
+      "length": [6, 8, 10, 12, 16, 20, 25, 30, 40],
+      "head_form": ["cap"],
+      "drive_type": ["socket"]
+    }
+  }
+}

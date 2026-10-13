@@ -14,6 +14,11 @@ Refuses to run if a previously-applied migration's checksum no
 longer matches its file (someone edited a sealed migration —
 forward-only exists because deployed DBs already ran the old bytes;
 editing history desyncs them silently, so a new file is the only fix).
+Disposable test databases opt out of that refusal via
+``apply_all(rebuild_on_checksum_mismatch=True)``: ledger drift — an
+edited draft's checksum, or an applied version no file provides after
+a renumber — drops every user object and replays from scratch, the
+in-DB equivalent of recreating the test-db container (gr479991).
 
 Dual-track baseline: on a truly-fresh DB (no ``_migrations`` table)
 the runner loads ``migrations/baseline/schema.sql`` — the chain
@@ -54,6 +59,16 @@ MIGRATIONS_PLUGIN_GROUP = "precis.migrations"
 #: backfilled with this value by the column DEFAULT in
 #: ``0023_migrations_plugin.sql``.
 PRECIS_PLUGIN_NAME = "precis"
+
+
+class MigrationChecksumMismatch(RuntimeError):
+    """A sealed migration's file no longer matches the ledger.
+
+    Raised by :meth:`Migrator.apply_all` when a ``(plugin, version)``
+    recorded in ``_migrations`` has a different checksum on disk —
+    the forward-only refusal. A ``RuntimeError`` subclass so existing
+    catches keep working.
+    """
 
 
 class MigrationSource(NamedTuple):
@@ -186,6 +201,77 @@ def _is_fresh_db(conn: psycopg.Connection) -> bool:
         "SELECT to_regclass('public._migrations') IS NOT NULL"
     ).fetchone()
     return not (row and row[0])
+
+
+def _drop_user_objects(conn: psycopg.Connection) -> None:
+    """Drop every non-extension user object, for a from-scratch replay.
+
+    The in-DB equivalent of recreating a disposable database
+    (``compose down -v`` then a fresh start): every non-system schema
+    is dropped wholesale (``vault`` & co.), and ``public`` loses every
+    user-owned relation, type and function. Extension members are
+    kept — pgvector's types/operators live in ``public`` and
+    recreating an extension needs a superuser the test role may not
+    have — identified by their ``pg_depend`` ``deptype='e'`` rows.
+    """
+    with conn.cursor() as cur:
+        schemas = [
+            name
+            for (name,) in cur.execute(
+                "SELECT nspname FROM pg_namespace n "
+                "WHERE nspname !~ '^pg_' "
+                "  AND nspname NOT IN ('public', 'information_schema') "
+                "  AND NOT EXISTS ("
+                "    SELECT 1 FROM pg_depend d "
+                "    WHERE d.objid = n.oid AND d.deptype = 'e'"
+                "  )"
+            ).fetchall()
+        ]
+        for name in schemas:
+            cur.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+        for relkind, drop_kw in (
+            ("v", "VIEW"),
+            ("m", "MATERIALIZED VIEW"),
+            ("r", "TABLE"),
+            ("p", "TABLE"),
+            ("f", "FOREIGN TABLE"),
+            ("S", "SEQUENCE"),
+        ):
+            names = [
+                name
+                for (name,) in cur.execute(
+                    "SELECT c.relname FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'public' AND c.relkind = %s "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM pg_depend d "
+                    "    WHERE d.objid = c.oid AND d.deptype = 'e'"
+                    "  )",
+                    (relkind,),
+                ).fetchall()
+            ]
+            for name in names:
+                cur.execute(f'DROP {drop_kw} IF EXISTS "{name}" CASCADE')
+        for (name,) in cur.execute(
+            "SELECT t.typname FROM pg_type t "
+            "JOIN pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd') "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM pg_depend d "
+            "    WHERE d.objid = t.oid AND d.deptype = 'e'"
+            "  )"
+        ).fetchall():
+            cur.execute(f'DROP TYPE IF EXISTS "{name}" CASCADE')
+        for (name,) in cur.execute(
+            "SELECT p.proname FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'public' "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM pg_depend d "
+            "    WHERE d.objid = p.oid AND d.deptype = 'e'"
+            "  )"
+        ).fetchall():
+            cur.execute(f'DROP FUNCTION IF EXISTS "{name}" CASCADE')
 
 
 # Backcompat: callers built the runner with a single directory.
@@ -351,7 +437,9 @@ class Migrator:
                 _execute_dump_sql(cur, sql)
         conn.execute("RESET search_path")
 
-    def apply_all(self) -> list[tuple[str, str]]:
+    def apply_all(
+        self, *, rebuild_on_checksum_mismatch: bool = False
+    ) -> list[tuple[str, str]]:
         """Apply every pending migration. Returns the
         ``(plugin, version)`` pairs newly applied during this call.
 
@@ -361,6 +449,15 @@ class Migrator:
         it; remaining sources run in the order returned by
         :meth:`discover_sources` (which is the order plugins
         appear in ``importlib.metadata.entry_points``).
+
+        ``rebuild_on_checksum_mismatch=True`` is the disposable-DB
+        escape hatch the test suite uses (gr479991): instead of
+        refusing, ledger drift — a checksum mismatch, or an applied
+        ``(plugin, version)`` no discovered file provides after a
+        draft was renumbered — drops every user object
+        (:func:`_drop_user_objects`) and replays the whole chain.
+        Never pass it on a database holding real data: the refusal
+        is what forward-only is for.
         """
         all_files: list[MigrationFile] = []
         for source in self.sources:
@@ -403,16 +500,55 @@ class Migrator:
             has_plugin_col = _has_plugin_column(conn)
 
             # Integrity check on already-applied migrations.
-            for f in all_files:
-                key = (f.plugin, f.version)
-                if key in applied and applied[key] != f.checksum:
-                    raise RuntimeError(
-                        f"checksum mismatch for already-applied migration "
-                        f"{f.plugin}/{f.version!r}: file has "
-                        f"{f.checksum[:12]}, DB has "
-                        f"{applied[key][:12]}. Refusing to run — sealed "
-                        "migrations must not be edited."
+            drift = next(
+                (
+                    f"checksum mismatch for already-applied migration "
+                    f"{f.plugin}/{f.version!r}: file has "
+                    f"{f.checksum[:12]}, DB has "
+                    f"{applied[(f.plugin, f.version)][:12]}"
+                    for f in all_files
+                    if (f.plugin, f.version) in applied
+                    and applied[(f.plugin, f.version)] != f.checksum
+                ),
+                None,
+            )
+            if drift is None and rebuild_on_checksum_mismatch:
+                # A renumbered or removed draft leaves an applied
+                # (plugin, version) no file provides. Only rows from
+                # plugins whose migrations dir resolved this run count —
+                # a missing plugin dir says nothing about drift, and
+                # archived migrations legitimately orphan rows in real
+                # databases.
+                file_keys = {(f.plugin, f.version) for f in all_files}
+                discovered = {s.plugin for s in self.sources if s.dir.is_dir()}
+                drift = next(
+                    (
+                        f"applied migration {p}/{v!r} has no file "
+                        "(renumbered or removed since it was applied)"
+                        for p, v in sorted(applied)
+                        if p in discovered and (p, v) not in file_keys
+                    ),
+                    None,
+                )
+            if drift is not None:
+                if not rebuild_on_checksum_mismatch:
+                    raise MigrationChecksumMismatch(
+                        f"{drift}. Refusing to run — sealed migrations "
+                        "must not be edited. On a disposable test "
+                        "database the fix is a rebuild — "
+                        "docs/runbooks/reset-test-db.md."
                     )
+                log.warning(
+                    "%s — dropping all user objects and replaying "
+                    "%d migration file(s) (disposable-DB rebuild)",
+                    drift,
+                    len(all_files),
+                )
+                _drop_user_objects(conn)
+                if self.baseline is not None and _is_fresh_db(conn):
+                    self._load_baseline(conn)
+                applied = _applied_versions(conn)
+                has_plugin_col = _has_plugin_column(conn)
 
             for f in all_files:
                 key = (f.plugin, f.version)

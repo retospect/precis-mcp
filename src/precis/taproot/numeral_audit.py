@@ -24,7 +24,9 @@ mismatch never hides a value (looser = fewer false positives):
 - spelled-out ``one``..``ten`` on the *source* side match digits.
 
 Superscript/subscript runs are given a boundary before translation
-(td244964: ``10⁵`` must not read as ``105``). Accepted false positives,
+(td244964: ``10⁵`` must not read as ``105``), and PDF-spaced exponent
+digits (``8.4 x 1 0 4``, a flattened ``x10^4``) are folded back on the
+source side. Accepted false positives,
 by design: derived values (ratios, range midpoints), dimension
 conversions beyond SI prefixes (``Å`` is the only non-prefix unit
 folded), spelled-out claim numerals are not checked at all, values that
@@ -98,6 +100,13 @@ _SPELLED = {
     )
 }
 _SPACE_GROUPED_RE = re.compile(r"(?<![\w.])\d{1,3}(?: \d{3})+(?!\d)")
+#: ``8.4 x 1 0 4`` -- PDF extraction spaces the digits of a flattened
+#: ``x10^4``. The run must start ``1 0`` (the ``10`` base) and carry one
+#: to three more digit tokens (the exponent). Source-side widening only.
+_SPACED_EXP_RE = re.compile(
+    r"(\d{1,3}(?:[,\u202f\u2009\u00a0]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+    r"\s*[×x*·]\s*1\s+0((?:\s+[+-]?\s*\d){1,3})"
+)
 _SPELLED_RE = re.compile(r"\b(" + "|".join(_SPELLED) + r")\b", re.IGNORECASE)
 
 
@@ -224,6 +233,15 @@ def absent_numerals(sentence: str, source_text: str) -> list[str]:
         # general, so it only ever widens the source side.
         if (grouped := _dec(m.group(0).replace(" ", ""))) is not None:
             have.add(grouped)
+    for m in _SPACED_EXP_RE.finditer(_prepare(source_text)):
+        # Widening only: the spaced digits still count as themselves.
+        mant, exp = _dec(m.group(1)), _exp(m.group(2).replace(" ", ""))
+        if mant is None or exp is None:
+            continue
+        try:
+            have.add(mant * Decimal(10) ** exp)
+        except ArithmeticError:
+            continue
     for m in _SPELLED_RE.finditer(source_text):
         have.add(_SPELLED[m.group(1).lower()])
     seen: set[str] = set()

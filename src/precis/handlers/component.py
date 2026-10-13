@@ -47,7 +47,8 @@ facts and the made-of material), ``view='table'`` (tidy one-row-per-value),
 ``view='specs'`` (universal + this component's category specs),
 ``view='categories'`` (the category registry), ``view='tree'`` (the nested
 assembly tree), or ``view='bom'`` (the flattened BOM with cost/mass rollup,
-optionally annotated by ``spec=`` for a cross-leaf consistency check), or
+optionally annotated by ``spec=`` for a cross-leaf consistency check, and
+ending in the ``## Consolidation`` nudge footer — :mod:`precis.bom_nudge`), or
 ``view='series'`` (the standards registry — bare = the index, ``id=`` = one
 family's size table, ``q=`` = the ranked colloquial resolver), or
 ``view='stock'`` (is it buyable: the curated availability tier from the
@@ -73,8 +74,8 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, ClassVar
 
+from precis import bom_nudge, supply
 from precis import component_series as cseries
-from precis import supply
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -1428,6 +1429,16 @@ class ComponentHandler(ValueEntityHandler):
         if spec_row is not None:
             lines.append("")
             lines.append(_spec_uniformity_summary(spec_row["spec_id"], spec_values))
+
+        footer = bom_nudge.component_footer(
+            self.store,
+            root_ref_id=int(ref.id),
+            root_meta=ref.meta or {},
+            leaves=leaves,
+        )
+        if footer:
+            lines.append("")
+            lines.extend(footer)
 
         return Response(body="\n".join(lines))
 

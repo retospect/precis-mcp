@@ -42,11 +42,12 @@ from precis.store._value_entity_ops import entity_upsert, value_insert
 #: FROM as well as a bare one.
 _CURRENT_ORDER = "as_of DESC NULLS LAST, created_at DESC"
 
-_CATEGORY_COLS = "category_id, name, status, description"
+_CATEGORY_COLS = "category_id, name, status, description, spec_roles"
 
 _SPEC_COLS = (
     "spec_id, name, canonical_unit, dimension, value_type, allowed_values, "
-    "standard_ref, status, higher_is_better, description, category_id"
+    "standard_ref, status, higher_is_better, description, category_id, "
+    "spec_roles"
 )
 
 _VALUE_COLS = (
@@ -61,6 +62,9 @@ class ComponentCategoryRow(TypedDict):
     name: str
     status: str
     description: str | None
+    #: Attribute-role declarations for classes with no spec-registry rows
+    #: (the jlcparts-parametric classes the pcb bom reads) — migration 0205.
+    spec_roles: dict[str, Any]
 
 
 class ComponentSpecRow(TypedDict):
@@ -75,6 +79,9 @@ class ComponentSpecRow(TypedDict):
     higher_is_better: bool | None
     description: str | None
     category_id: str | None
+    #: Attribute roles (identity/envelope/free/tool) for the BOM
+    #: consolidation nudge — migration 0205. ``{}`` = undeclared.
+    spec_roles: dict[str, Any]
 
 
 class ComponentValueRow(TypedDict):
@@ -633,6 +640,76 @@ class ComponentMixin:
         with self.pool.connection() as conn:
             rows = _fetchall(conn, sql, params)
         return [cast(ComponentValueSearchRow, r) for r in rows]
+
+    # -- BOM consolidation reads (the nudge — view='bom' footer) ----------
+
+    def component_role_specs(self) -> dict[str, ComponentSpecRow]:
+        """The role-bearing spec registry: ``{spec_id: row}`` for every
+        spec with a non-empty ``spec_roles`` declaration (migration 0205).
+        One query per bom render; the registry is small."""
+        with self.pool.connection() as conn:
+            rows = _fetchall(
+                conn,
+                f"SELECT {_SPEC_COLS} FROM component_specs "
+                "WHERE spec_roles <> '{}'::jsonb",
+            )
+        return {str(r["spec_id"]): cast(ComponentSpecRow, r) for r in rows}
+
+    def component_role_categories(self) -> dict[str, ComponentCategoryRow]:
+        """``{category_id: row}`` for categories declaring ``spec_roles``
+        (the jlcparts-facing part classes — migration 0205)."""
+        with self.pool.connection() as conn:
+            rows = _fetchall(
+                conn,
+                f"SELECT {_CATEGORY_COLS} FROM component_categories "
+                "WHERE spec_roles <> '{}'::jsonb",
+            )
+        return {str(r["category_id"]): cast(ComponentCategoryRow, r) for r in rows}
+
+    def component_bom_roots_of(self, leaf_ref_id: int) -> list[int]:
+        """The BOM *roots* that transitively ``contains`` ``leaf_ref_id`` —
+        every live ancestor that is not itself a contains-child. The
+        consolidation nudge's cross-design usage count ("used in N other
+        designs") counts these, minus the caller's own root."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE anc AS (
+                    SELECT src_ref_id FROM links
+                     WHERE dst_ref_id = %s AND relation = 'contains'
+                    UNION ALL
+                    SELECT l.src_ref_id FROM links l
+                    JOIN anc a ON l.dst_ref_id = a.src_ref_id
+                    WHERE l.relation = 'contains'
+                )
+                SELECT DISTINCT a.src_ref_id FROM anc a
+                JOIN refs r ON r.ref_id = a.src_ref_id
+                 WHERE r.retired_at IS NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM links p
+                        WHERE p.dst_ref_id = a.src_ref_id
+                          AND p.relation = 'contains')
+                """,
+                (leaf_ref_id,),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def component_kept_distinct_pairs(
+        self, ref_ids: list[int]
+    ) -> list[tuple[int, int, str | None]]:
+        """Every ``kept-distinct`` edge with BOTH endpoints inside
+        ``ref_ids`` (one bom's leaf set) — ``(src, dst, meta.reason)``.
+        Symmetric relation; a single direction scan suffices."""
+        if not ref_ids:
+            return []
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT src_ref_id, dst_ref_id, meta->>'reason' "
+                "FROM links WHERE relation = 'kept-distinct' "
+                "AND src_ref_id = ANY(%s) AND dst_ref_id = ANY(%s)",
+                (ref_ids, ref_ids),
+            ).fetchall()
+        return [(int(a), int(b), reason) for a, b, reason in rows]
 
 
 __all__ = [

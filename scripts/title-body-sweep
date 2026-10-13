@@ -9,6 +9,9 @@
 #   scripts/title-body-sweep                        # whole corpus, top 40
 #   scripts/title-body-sweep --limit 5000 --top 60  # first 5000 papers by ref_id
 #   scripts/title-body-sweep --ref 693 --ref 44468  # just these (shows score)
+#   scripts/title-body-sweep --multi-article        # multi-article candidates
+#       (lead/tail split; list only — humans apply the `multi-article` tag)
+#   scripts/title-body-sweep --multi-article --ref 207748  # re-check one paper
 set -euo pipefail
 cd "$(dirname "$0")/.."
 exec uv run python scripts/_title_body_sweep.py "$@"

@@ -95,6 +95,12 @@ off that gap until it closes.
   run by `fasten(reach=True)` in `view='drc'`), so do not file it. Still
   unbuilt: inferring the moving end for `press`/`bearing` joints where
   exactly one end is bought. File that only if Reto asks for it.
+- **BOM consolidation nudge shipped** (2026-10-12, bl-bom-nudge): the
+  `## Consolidation` footer on both bom views, `spec_roles` on the
+  component registry (migration 0205), `kept-distinct` suppression and the
+  house `standard_parts.json`. One open question survives in
+  `backlog/bom-consolidation-nudge.md` (circuit tolerance without asking
+  a human).
 
 ## Do next
 

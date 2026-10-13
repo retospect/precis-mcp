@@ -378,6 +378,33 @@ class TodoHandler(NumericRefHandler):
         under: str | int | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``view='count'`` is the shared numeric-ref aggregate (total +
+        # group_by facets) — it takes no tree args, so under= (todo's
+        # own subtree scope) is refused rather than silently dropped.
+        if view == "count":
+            rest = dict(args or {})
+            if under is not None or rest.pop("under", None) is not None:
+                raise BadInput(
+                    "under= is not supported with view='count' on todo search",
+                    next="search(kind='todo', view='count', tags=['<tag>'])",
+                )
+            unknown = sorted(set(rest) - {"group_by"})
+            if unknown:
+                raise BadInput(
+                    f"args= keys {unknown!r} not supported with view='count' "
+                    f"on kind={self.kind!r}",
+                    options=["group_by"],
+                )
+            merged = dict(_kw)
+            group_by = merged.pop("group_by", rest.get("group_by"))
+            return super().search(
+                q=q,
+                tags=tags,
+                page_size=page_size,
+                view="count",
+                group_by=group_by,
+                **merged,
+            )
         if under is not None:
             if view != "doable":
                 raise BadInput("under= requires view='doable' on todo search")

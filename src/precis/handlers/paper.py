@@ -1918,6 +1918,13 @@ class PaperHandler(Handler):
                 )
         return lines
 
+    def _overview_meta_lines(self, ref: Ref) -> list[str]:
+        """Extra one-line ``meta`` fields shown on the default overview.
+
+        Papers have none; sibling kinds with typed meta fields (cfp's
+        ``deadline``/``opens_on``) override."""
+        return []
+
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
         doi = meta.get("doi")
@@ -1945,6 +1952,7 @@ class PaperHandler(Handler):
         if doi:
             lines.append(f"doi: {doi}")
         lines.extend(self._si_overview_lines(ref))
+        lines.extend(self._overview_meta_lines(ref))
         lines.append("")
         lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
         abstract = meta.get("abstract")
@@ -2901,8 +2909,23 @@ class PaperHandler(Handler):
         )
         return Response(body=body)
 
+    #: Queryless-browse sort keys → ``Store.list_refs`` ``order_by`` and the
+    #: ``meta`` key a date sort annotates each row with. ``sort`` reaches
+    #: this method only from kinds that accept it (cfp); paper's search
+    #: never passes one.
+    _BROWSE_SORTS: ClassVar[dict[str, tuple[str, str | None]]] = {
+        "recency": ("updated_desc", None),
+        "deadline": ("deadline_asc", "deadline"),
+        "opens_on": ("opens_on_asc", "opens_on"),
+    }
+
     def _render_tags_only_search(
-        self, *, tags: list[str], page: int, page_size: int
+        self,
+        *,
+        tags: list[str] | None,
+        page: int,
+        page_size: int,
+        sort: str | None = None,
     ) -> Response:
         """Filter-only enumeration for ``search(kind=..., tags=[...])``.
 
@@ -2913,17 +2936,31 @@ class PaperHandler(Handler):
         (unfiltered) so the tag filter and its "N of TOTAL" count stay
         exact — this refs.count(*) doesn't share the unfiltered path's
         chunk-count callout, which isn't tag-scoped.
+
+        ``sort`` names a :attr:`_BROWSE_SORTS` key; a date sort annotates
+        each row with that ``meta`` date and a missing date reads
+        ``(no <key>)`` (undated rows sort last). ``tags=None`` enumerates
+        the whole kind — only reachable where the kind's own ``search``
+        allows a bare browse (cfp).
         """
         kind = self.spec.kind
         normalized_tags = Tag.normalize_filter(tags, kind=kind)
+        order_by, date_key = self._BROWSE_SORTS.get(
+            sort or "recency", self._BROWSE_SORTS["recency"]
+        )
         page_size = max(1, int(page_size))
         offset = max(0, (int(page) - 1) * page_size)
         refs = self.store.list_refs(
-            kind=kind, tags=normalized_tags, limit=page_size, offset=offset
+            kind=kind,
+            tags=normalized_tags,
+            limit=page_size,
+            offset=offset,
+            order_by=order_by,
         )
         total = self.store.count_refs(kind=kind, tags=normalized_tags)
         if not refs:
-            body = f"no {kind} entries tagged {normalized_tags}"
+            scope = f" tagged {normalized_tags}" if normalized_tags else ""
+            body = f"no {kind} entries{scope}"
             body += render_next_section(
                 [
                     (
@@ -2934,15 +2971,21 @@ class PaperHandler(Handler):
             )
             return Response(body=body)
         suffix = "" if total <= len(refs) and page == 1 else f" of {total}"
+        tag_scope = f" tagged {normalized_tags}" if normalized_tags else ""
+        sort_scope = f" by {sort}" if sort and sort != "recency" else ""
         lines = [
-            f"# {len(refs)} {kind}{'s' if len(refs) != 1 else ''} tagged "
-            f"{normalized_tags}{suffix}"
+            f"# {len(refs)} {kind}{'s' if len(refs) != 1 else ''}"
+            f"{tag_scope}{sort_scope}{suffix}"
         ]
         for r in refs:
             year = (r.meta or {}).get("year") or ""
             preview = _excerpt(_clean_inline_text(r.title), limit=80)
-            yr = f"  ({year})" if year else ""
-            lines.append(f"  {_pa(r):<30}{yr}  {preview}")
+            if date_key:
+                day = (r.meta or {}).get(date_key)
+                when = f"  {date_key} {day}" if day else f"  (no {date_key})"
+            else:
+                when = f"  ({year})" if year else ""
+            lines.append(f"  {_pa(r):<30}{when}  {preview}")
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
         if offset + len(refs) < total:

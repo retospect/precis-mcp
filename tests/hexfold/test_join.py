@@ -22,6 +22,7 @@ from hexfold.build import Net, _frame, build
 from hexfold.join import (
     SEAM_RADIUS,
     Block,
+    RelaxResult,
     _adjacency,
     _seam_subgraph,
     _shells_from,
@@ -410,7 +411,7 @@ def test_relax_receives_only_the_seam_subgraph() -> None:
         bonds: list[tuple[int, int, int]],
         rings: list[tuple[int, ...]],
         pinned_mask: np.ndarray,
-    ) -> np.ndarray:
+    ) -> RelaxResult:
         seen["n"] = len(coords)
         return _stick_relaxer(a.sigma)(elements, coords, bonds, rings, pinned_mask)
 

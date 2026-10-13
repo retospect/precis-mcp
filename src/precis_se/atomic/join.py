@@ -76,7 +76,14 @@ import numpy as np
 
 from hexfold.build import Port as HxPort
 from hexfold.build import _fit_alternatives_finding, build
-from hexfold.join import LEAK_THRESH_GEO, Block, block_from_net, compose, rank_k
+from hexfold.join import (
+    LEAK_THRESH_GEO,
+    Block,
+    RelaxResult,
+    block_from_net,
+    compose,
+    rank_k,
+)
 from hexfold.report import Finding as HxFinding
 from hexfold.report import Report as HxReport
 from hexfold.report import Severity as HxSeverity
@@ -127,7 +134,7 @@ def geo_relax_pinned(
     bonds: list[tuple[int, int, int]],
     rings: list[tuple[int, ...]],
     pinned_mask: np.ndarray,
-) -> np.ndarray:
+) -> RelaxResult:
     """The geo-rung :data:`~hexfold.join.Relaxer` (slice 2): plain
     :func:`~precis.structure.georelax.relax_graph` over the seam sub-graph
     :func:`~hexfold.join.compose` hands it -- bond springs at the
@@ -142,11 +149,12 @@ def geo_relax_pinned(
     interiors are always sp2 in this slice"). ``pinned_mask``'s 1-meaning
     is :data:`~hexfold.join.Relaxer`'s own convention, translated to
     `relax_graph`'s pinned-INDEX-SET convention exactly as that type's
-    docstring spells out."""
+    docstring spells out.  The trace's own ``converged`` is the verdict
+    :class:`~hexfold.join.RelaxResult` carries back (gr456641)."""
     del rings
     pinned = {i for i, p in enumerate(pinned_mask) if p}
     out = np.asarray(coords, dtype=np.float64).copy()
-    relax_graph(
+    trace = relax_graph(
         list(elements),
         out,
         [(i, j) for i, j, *_rest in bonds],
@@ -155,7 +163,7 @@ def geo_relax_pinned(
         iters=_GEO_RELAX_ITERS,
         tol=_GEO_TOL,
     )
-    return out
+    return RelaxResult(out, trace.converged)
 
 
 def _rung_of(ref: Any) -> str:
@@ -171,7 +179,7 @@ def _rung_of(ref: Any) -> str:
 
 def _select_relaxer(
     rung_a: str, rung_b: str, forced: str, sigma: float, a_block: str, b_block: str
-) -> tuple[Callable[..., np.ndarray] | None, str, HxFinding | None]:
+) -> tuple[Callable[..., RelaxResult] | None, str, HxFinding | None]:
     """The rung gate (plan "Re-relax only the seam radii"): both parts'
     detected rung (:func:`_rung_of`) picks the relaxer, unless ``forced``
     (the op's own ``"rung"`` key, default ``"auto"``) overrides it.

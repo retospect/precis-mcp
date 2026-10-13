@@ -75,6 +75,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 
+from precis import bom_nudge
 from precis.config import load_config
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
@@ -2606,7 +2607,18 @@ class PcbHandler(Handler):
             # Not a column of the file (JLCPCB's BOM upload has fixed
             # headers): the datasheet state of each C-number, beside it.
             head += self._datasheet_status_block(ref_id)
-        return Response(body=head + "\n\n```\n" + preview + "\n```")
+        body = head + "\n\n```\n" + preview + "\n```"
+        if view == "bom":
+            # The consolidation nudge rides the RESPONSE, never the file —
+            # the exported CSV is a JLCPCB artifact and stays byte-exact.
+            footer = bom_nudge.pcb_footer(
+                self.store,
+                root_ref_id=ref_id,
+                root_meta=(ref.meta or {}) if ref is not None else {},
+            )
+            if footer:
+                body += "\n\n" + "\n".join(footer)
+        return Response(body=body)
 
     def _datasheet_status_block(self, ref_id: int) -> str:
         rows = [

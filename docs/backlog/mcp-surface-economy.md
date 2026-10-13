@@ -146,16 +146,14 @@ checkout ⇒ no doc), i.e. `get(kind='schema', id='<table>')`.
    judgment call where it should be mechanical. Expose the score, or add
    `view='dupes'` returning trigram + embedding neighbours with both numbers.
 
-2. **Counts and facets.** A `view='count'` on any filtered `search`, plus
-   facet counts by tag/state/kind. "How many claim hubs have no evidence
-   edge" needed SQL; it should be one call. gr472990 (2026-10-08): 133
-   `scripts/prod-psql` calls in 24 h fell back to SQL for count/group-by and
-   for kind-filtered neighbour walks. Kind-filtered neighbours landed for the
-   numeric-id kinds as `get(view='links', args={'of_kind': K})`; left: the same
-   key on the Handler-direct kinds (paper, draft, plan, pres, patent, pcb,
-   structure, make, cad, se).
-   RULED (Reto 2026-10-11): agents get `worker_logs` read access; it is in
-   scope (by host + time window around a job; gr472990 case c).
+2. **Counts and facets — shipped; one leftover.** `view='count'` on a
+   filtered `search` landed for numeric-ref kinds: total +
+   `group_by='state'|'meta.<key>'|'tag:<axis>'` facets (gr472990 case a).
+   Kind-filtered neighbours landed for the numeric-id kinds as
+   `get(view='links', args={'of_kind': K})` (case b); `worker_logs` read
+   access landed as `get(kind='job', id='/logs?job=jo<N>')` (case c).
+   Left: `of_kind` on the Handler-direct kinds (paper, draft, plan, pres,
+   patent, pcb, structure, make, cad, se).
 
 3. **Structural (graph-shape) filters.** Filter by `has_inbound_edges`,
    `edge_count < N`, `source_kind='paper'`, drift state. The single most

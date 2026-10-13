@@ -27,13 +27,9 @@ records, not adjudications. The coverage panel beside it reads the hub's
 ``meta.conflict_search`` ledger as a dated statement; pre-approve, a
 missing or stale ledger *queues* a ``conflict_sweep`` refresh job (one
 per hub per day, dark unless the service is lit) — the web process never
-runs the search itself, and neither panel changes the approval gate. A
-``disputes``-verdict covered row also carries the review sitting's
-counter-claim door (``POST /nanopub/fi<id>/counter-claim`` —
-``workers.conflict_search.mint_counter_claim``): a confirmed opposing
-passage mints as its own hub through the directed-mint path with the
-pair's ``disputes`` edge ensured; a scope/caveat mismatch is a wording
-fix on the claim and is never offered the door.
+runs the search itself, and neither panel changes the approval gate.
+``disputes`` rows offer a counter-claim mint
+(``workers.conflict_search.mint_counter_claim``).
 
 Gripe summary counts link to the existing list route with exact workflow
 status filters; the live total retains the nonterminal cohort. Filtering
@@ -50,14 +46,10 @@ a measured barrier. Legacy graphs fall back to ``kind``.
 **Smartdraft review.** Shared block widget shows read-only F/C/S/A flags
 (✓ current / ~ stale / – unreviewed); structure/adversarial stay on prose,
 headings show S/A. One matrix for full-page and lazy blocks avoids ledger
-queries and keeps flags aligned with the tooltip. Blocks stamped
-``authored_by`` by the grounded-authoring reviewer
-(``store.drafts.authored_provenance``) carry an amber inner stripe + a
-``✎ authored (<lens>)`` chip — an inner box-shadow, not border-left,
-because grounding provenance owns that edge and a block can carry both.
-The Collaborate pane's "👁 around here" bulk-expands every pinned chunk's
-reference ring into eyes (``POST /drafts/{ident}/around`` →
-``draft_eyes.expand_around``).
+queries and keeps flags aligned with the tooltip. Machine-authored
+blocks (``store.drafts.authored_provenance``) get an inner-shadow
+stripe, since grounding provenance owns the left border; "around here"
+is ``draft_eyes.expand_around``.
 
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131; roster via ``precis users``); accounts have
@@ -106,8 +98,7 @@ to ``/drive``; "?" launches a tour only when the path matches a manifest
 (signed-in user's ``abbrev``) → ``/account``.
 
 **Design (`/design`)** — ``routes/design.py``: the hierarchical
-molecule-design workbench's landing tree (docs/backlog/
-the design-workbench build, slice 1), one tree per live ``se`` design (block
+molecule-design workbench's landing tree, one tree per live ``se`` design (block
 graph, array nodes collapsed to ``name ×N``, L0–L3 presence badges
 derived from the loaded columns — never geometry) down to the
 ``structure`` each atomic-mode leaf is bound to
@@ -115,8 +106,7 @@ derived from the loaded columns — never geometry) down to the
 a flat "Loose structures" section for every live ``structure`` no block
 binds. Pure read, ≤ 3 SELECTs per render regardless of design count; a
 node click lands on the existing ``/se/{slug}``/``/structure/{slug}``
-page. Later slices (revision scrubber, chat, realize-in-the-loop) build
-on this same tree.
+page.
 
 SE inspection keeps 3D primary, with ``/se/{slug}/2d`` labeled Envelope
 projections because its outlines are envelope convex hulls, not realized

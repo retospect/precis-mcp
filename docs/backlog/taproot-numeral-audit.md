@@ -49,8 +49,10 @@ endpoints where only one end is stated (fi176696 `300–365 nm`), derived
 values. Treat the flag count as an upper bound on tokenizer FPs of ~10–15%
 and a lower bound on real misses only after paper reading.
 
-Open: fold space-separated exponent digits (`1 0 4`) on the source side;
-decide whether hub_refine consumes the signal.
+Folded 2026-10-12 (gr250034): space-separated exponent digits (`1 0 4`,
+a flattened `x10^4`) now widen the source side only — the spaced digits
+still count as themselves. Open: decide whether hub_refine consumes the
+signal.
 
 ## Explicitly NOT in scope
 

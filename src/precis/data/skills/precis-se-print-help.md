@@ -468,6 +468,12 @@ every row's handle is the export route. A family's handle only appears
 once its implementer actually ships, so the table never advertises an
 export that doesn't run.
 
+The bought lines also carry a process cost the `view='bom'`
+`## Consolidation` footer watches: every extra drive type is a driver,
+every thread size a tap, every package a reflow pass
+([[precis-component-help]]). Preferring the house sizes keeps a design's
+tool set to one of each.
+
 ## What this does not do yet
 
 Support-structure generation, slicing, g-code — the deliverable stops at

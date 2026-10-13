@@ -21,12 +21,10 @@ bound on what an energy rung would show; the *decay length* is set by the
 lattice's elastic screening, which the spring model does carry.  The
 zigzag decay is a thin-shell edge mode and its length grows with tube
 length until the two ends stop interacting: (12,0) measured 5 shells at
-len=4 and 8 shells at len=6 (about 4 hexagon rows).  The short (len=3)
-tubes used here for runtime are too short to reach that asymptote, so
-``measure_environment`` reports ``coverage="lower-bound"`` for both --
-never a confident "full" decay length -- and the pinned bounds below are
-lower bounds, not the true decay lengths; those live in the diamondoid
-backlog item under "Seam decay, measured".
+len=4 and 8 shells at len=6 (about 4 hexagon rows).  Since gr456641,
+``measure_environment`` itself grows the tube one period at a time until
+the measurement holds for two consecutive increments -- the len=3 calls
+below are *start* lengths, not the measured extent.
 
 Lives in top-level ``tests/`` because it imports both ``hexfold`` and
 ``precis.structure`` (``tests/hexfold/`` stays hexfold-only).
@@ -37,8 +35,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hexfold.catalogue import EdgeMotif, measure_environment
-from hexfold.join import Relaxer
+from hexfold.catalogue import CatalogueError, EdgeMotif, measure_environment
+from hexfold.join import Relaxer, RelaxResult
 from precis.structure.georelax import relax_graph
 
 pytestmark = pytest.mark.slow
@@ -67,7 +65,7 @@ def _geo_relaxer() -> Relaxer:
         bonds: list[tuple[int, int, int]],
         rings: list[tuple[int, ...]],
         pinned_mask: np.ndarray,
-    ) -> np.ndarray:
+    ) -> RelaxResult:
         del rings  # relax_graph derives its own angle triples from bonds
         c = np.asarray(coords, dtype=np.float64).copy()
         bonds_ij = [(i, j) for i, j, *_ in bonds]
@@ -75,12 +73,7 @@ def _geo_relaxer() -> Relaxer:
         trace = relax_graph(
             elements, c, bonds_ij, pinned, hybridizations="sp2", iters=_ITERS, tol=_TOL
         )
-        assert trace.converged, (
-            "relaxer did not converge",
-            trace.n_steps,
-            trace.curve[-1],
-        )
-        return c
+        return RelaxResult(c, trace.converged)
 
     return relax
 
@@ -110,28 +103,24 @@ def _assert_localised(edge: EdgeMotif, seam_shell: int) -> None:
     assert not bad, {s: tuple(round(x, 4) for x in v) for s, v in bad.items()}
 
 
-def test_zigzag_seam_perturbation_lower_bound_is_five_shells() -> None:
-    """(8,0) zigzag at len=3: graph shells are half a hexagon row each along
-    the axis, so five shells is about 2.5 rows (~5 A).  A lower bound -- the
-    (12,0) len=6 measurement decays over 8 shells (module docstring).
-    ``seam_radius`` is pinned by exact equality (not "<= 5"): today's
-    calibration of `measure_environment`'s trusted-depth gate
-    (``2 * (table_radius + 2)`` shells, `catalogue.py`) reports this
-    length-3 tube's own measured depth // 2 whenever that gate is not
-    met, which it never is at this length -- a later change to that gate
-    must show up here by name."""
-    edge = _measure(8, 0, 3)
-    assert edge.coverage == "lower-bound"
-    assert edge.seam_radius == 5
-    _assert_localised(edge, seam_shell=5)
+def test_zigzag_geo_growth_fails_on_unconverged_relax() -> None:
+    """(8,0) zigzag at len=3 on the geo rung: `measure_environment` grows
+    the tube one period at a time (gr456641), and `relax_graph`'s own
+    convergence verdict is asserted at every step -- the geo relaxer's
+    4000-iteration budget does not settle a grown fused (8,0), so the
+    call must fail loudly (:class:`CatalogueError`) instead of quoting a
+    still-drifting relax, which is the defect this gripe fixed."""
+    with pytest.raises(CatalogueError, match="did not converge"):
+        _measure(8, 0, 3)
 
 
-def test_armchair_seam_perturbation_lower_bound_is_two_shells() -> None:
-    """(5,5) armchair: one graph shell per hexagon row; the perturbation is
-    below threshold from the first interior shell on (measured 1; pinned
-    at 2 for margin).  ``seam_radius`` pinned by exact equality -- see
-    the zigzag test's docstring for why."""
+def test_armchair_geo_measurement_marks_unstable() -> None:
+    """(5,5) armchair at len=3 on the geo rung: the tube grows to the
+    atom-cap bound without ``seam_radius`` and the leak threshold holding
+    for two consecutive increments, so the row comes back
+    ``coverage="unstable"`` with the length actually measured stored in
+    ``measure_len`` -- the ruled verdict when the ~5 nm/cost caps are
+    reached first (gr456641)."""
     edge = _measure(5, 5, 3)
-    assert edge.coverage == "lower-bound"
-    assert edge.seam_radius == 2
-    _assert_localised(edge, seam_shell=2)
+    assert edge.coverage == "unstable"
+    assert edge.measure_len > 3  # it grew; the start length was not trusted

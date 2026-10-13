@@ -625,30 +625,23 @@ removed as met — the transport move it waited on happened 09-29)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-6. **gr456641 + gr457997** — one root cause: `EnvKey` records no
-   measurement extent, so the seam radius and the armchair leak threshold
-   (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
-   rim-type properties. Do them together. Precondition for
-   `trust_measured`, which is the entire point of the catalogue.
+6. **gr456641 + gr457997** — SHIPPED on branch `gripe-456641`
+   (2026-10-29): the measure-to-convergence ruling landed (grow one
+   period/step, far ends H-capped via `terminate:`, `RelaxResult.converged`
+   asserted per step, stable for two increments → `measure_len` stored
+   beside the value, `coverage="unstable"` past the 50 Å axial / 1100-atom
+   caps, `EnvKey` untouched). `_LEAK_THRESH["a"]` re-measured and re-pinned
+   2.9° → 2.3°. Two findings on the way in: pinning capped rims to seed
+   injects ~0.8° strain (don't), and C-H cap bonds must rest at `sigma_CH`
+   not uniform `sigma` (`_stick_relaxer`'s new kwargs) or the cap itself
+   is a strain source. `trust_measured` stays off — the converged armchair
+   seam radius (4) *exceeds* the pinned 2, so the pin understates decay;
+   that judgement call is Reto's per the ruling's precondition. Details:
+   `hexfold-integration.md` §Step 6 slice 1 "Built 2026-10-29".
    - Reto ruled 2026-10-01 (td458117) that gr456641 belongs to this
-     thread, not the auto-fix lane. Job 457204 timed out, and the branch
-     it reported pushing never existed.
-   - Contained until then: `DbCatalogueStore` withholds measured rows
-     unless `trust_measured=True`, and nothing sets it. Leave it off.
-   - First slice, half shipped (7bf54004b, a stranded fix_gripe branch):
-     a non-monotone `max_disp` downgrades the row to
-     `coverage="unstable"` (`catalogue._STABILITY_RISE_FACTOR`, test
-     `test_measure_environment_flags_far_rim_runaway_unstable`). Still
-     open: asserting convergence. The `join.Relaxer` contract returns
-     coordinates only; the stick relaxer discards its `max_force` and has
-     no tolerance, and the geo relaxer's `trace.converged` is checked only
-     by the test adapter (`tests/test_hexfold_seam_decay.py::_geo_relaxer`).
-     Threading it means changing the `Relaxer` return type, so it is a
-     design call, not a one-liner.
-   - Second slice (ruled 2026-10-12, Reto design-fold): no `EnvKey`
-     extent. Grow the tube per repeat unit until the radius and threshold
-     converge, key the converged value as today, and mark it unstable past
-     a ~5 nm cap. Spec: `hexfold-integration.md` §Step 6 slice 1.
+     thread, not the auto-fix lane.
+   - `DbCatalogueStore` still withholds measured rows unless
+     `trust_measured=True`, and nothing sets it. Leave it off.
 
 ## Horizon
 

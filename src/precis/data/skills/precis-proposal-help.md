@@ -107,6 +107,17 @@ boxes set `edit(id='dc<heading>', args={'char_target': {'max': 350}})`;
 `view='wordcount'` then shows chars and an over/under/ok verdict too
 (all characters count, spaces included; see precis-draft-help).
 
+## Call dates
+
+Set the call's dates as typed fields, not tags:
+`edit(kind='cfp', id='<slug>', args={'deadline': '2026-11-15',
+'opens_on': '2026-08-01'})` — ISO `YYYY-MM-DD`, a bad value is refused,
+an empty string clears. They show on `get(kind='cfp', id='<slug>')`.
+`search(kind='cfp')` browses all calls deadline-sorted (undated last);
+`args={'sort': 'opens_on'|'recency'}` picks another order; `sort=` is
+browse-only (with `q=` the hits rank by relevance). No `due:` tag — a
+tag is free text and cannot sort by date.
+
 ## Watching a call for changes
 
 Tag a cfp `WATCH:weekly` (any `WATCH:<interval>`) and its source page is

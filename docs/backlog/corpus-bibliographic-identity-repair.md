@@ -27,38 +27,6 @@ lack a DOI); (c) flag substantive registry/local title mismatches for a human (c
 
 Who: agent-code.
 
-### 4. Multi-article PDFs (gr353777)
-
-A PDF that bundles several articles is ingested whole under one title.
-pa207748 holds nine helium/superfluid chunks from a different article.
-Fix direction: detect multi-article PDFs when chunk-level title/topic
-clusters split. (The supersede path now fills a blank survivor's
-title/authors from the stub; DOIs already moved with the identifiers.)
-
-RULED (Reto 2026-10-11): multi-article scans are tagged `multi-article`
-rather than split or trimmed (body chunks are append-only). Tagged so far:
-pa44468, pa42559, pa207748. Follow-up: the title/body sweep detector (item
-5) applies the same tag.
-
-Shipped (gr463414): `link` onto a claim hub from a `multi-article` paper
-returns an advisory to confirm the passage's article. Nanopub assembly is
-pure over frozen input with no paper refs, so no refusal there. New PDF
-ingests now trim a page spread to the target article before chunks are
-written (`precis.ingest.article_spread`, `ingest:spread` ref_event), and
-tag `multi-article` when the match is ambiguous. Open: the bodiless heal
-passes no target title; existing rows change only on a re-extract.
-
-RULED (Reto 2026-10-12, design-fold): finding existing untagged
-multi-article PDFs is a candidate list, not auto-tagging. Extend
-`scripts/title-body-sweep` with a read-only listing of papers whose first
-chunks disagree with the title while later chunks agree (or the reverse).
-A human reads each candidate and applies `multi-article` by hand. No
-embedding-distance auto-tag. Before trusting the list, measure it against
-the three known cases (pa44468, pa42559, pa207748) and record the false
-positives among the top 20.
-
-Who: agent-code.
-
 ### 5. No title/body mismatch sweep; downstream gates blind to it (gr264184)
 
 Nothing compares a paper's title with its body, so mismatches surface only

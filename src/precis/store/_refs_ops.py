@@ -45,6 +45,7 @@ from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_ALIASED,
     _REFS_COLS_LEN,
+    _chunk_noise_clauses,
     _row_to_ref,
 )
 from precis.store._stub_predicate import (
@@ -2460,6 +2461,15 @@ class RefsMixin:
         "title_desc": "r.title DESC",
         "id_desc": "r.ref_id DESC",
         "id_asc": "r.ref_id ASC",
+        # cfp deadline browse (gr462088): meta.deadline / meta.opens_on
+        # are ISO dates (YYYY-MM-DD text), so a text sort is a date sort;
+        # NULLS LAST keeps undated calls at the bottom.
+        "deadline_asc": (
+            "r.meta->>'deadline' ASC NULLS LAST, r.updated_at DESC, r.ref_id DESC"
+        ),
+        "opens_on_asc": (
+            "r.meta->>'opens_on' ASC NULLS LAST, r.updated_at DESC, r.ref_id DESC"
+        ),
     }
 
     def touch_viewed(self, ref_id: int) -> None:
@@ -3312,6 +3322,159 @@ class RefsMixin:
             row = conn.execute(sql, params).fetchone()
         assert row is not None
         return int(row[0])
+
+    def count_refs_facets(
+        self,
+        *,
+        kind: str,
+        tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
+        q: str | None = None,
+        q_in_chunks: bool = False,
+        q_card_kinds: tuple[str, ...] | None = None,
+        link_ref_id: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        facets: list[tuple[str, str]] | None = None,
+        group_limit: int = 200,
+    ) -> tuple[int, list[tuple[tuple[str | None, ...], int]]]:
+        """Filtered ``COUNT(*)`` + optional ``GROUP BY`` over one kind.
+
+        Backs ``search(kind=K, view='count')`` (gr472990): the "how many"
+        and "by what" questions agents used to run through
+        ``scripts/prod-psql``. The WHERE clause mirrors the listing/search
+        paths so the totals match their "N of K" headers: ``retired_at``
+        liveness, ``tags=`` (AND semantics via
+        :func:`build_tag_filter`), ``exclude_tags=`` (browse-terminal
+        hides), ``q=`` (title tsv — or a live-chunk ``EXISTS`` when the
+        kind searches body chunks, ``q_in_chunks=True``), ``link_ref_id``
+        (either-direction edge to one ref), and the dispatch-resolved
+        ``include_ref_ids``/``exclude_ref_ids`` channels (``under=``,
+        ``folder=``, ``uncited=``/``cited=``/``hubbed=`` all arrive as
+        these).
+
+        ``facets`` is a list of ``(facet_kind, key)`` pairs from the
+        handler's ``group_by=`` parse:
+
+        * ``("meta", key)`` — group by ``r.meta ->> key``;
+        * ``("axis", NS)`` — group by the ref's tag label in the closed
+          namespace ``NS`` (rendered canonically ``NS:value``; ``FLAG``
+          renders its bare value);
+        * ``("open_axis", prefix)`` — group by each ``prefix:*`` open
+          tag the ref carries (a ref with two ``area:`` tags counts in
+          both groups).
+
+        Tag facets LEFT-JOIN so refs with no tag in the axis still count
+        under a NULL label (rendered ``(none)``). Returns ``(total,
+        groups)`` — ``total`` is the filtered ref count, ``groups`` the
+        ``(value tuple, count)`` rows ordered by count desc then label,
+        capped at ``group_limit`` (``COUNT(DISTINCT ref_id)`` per group:
+        a ref carrying several tags in one open axis lands in each).
+        """
+        clauses = ["r.retired_at IS NULL", "r.kind = %s"]
+        params: list[Any] = [kind]
+        if q is not None and q.strip():
+            if q_in_chunks:
+                from precis.store._chunks_ops import _ord_card_clause
+
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id "
+                    "AND c.retired_at IS NULL "
+                    f"AND {_ord_card_clause(q_card_kinds)} "
+                    "AND c.tsv @@ websearch_to_tsquery('english', %s) AND "
+                    + " AND ".join(_chunk_noise_clauses(text_alias="c.text"))
+                    + ")"
+                )
+            else:
+                clauses.append(
+                    "to_tsvector('english', r.title) @@ "
+                    "websearch_to_tsquery('english', %s)"
+                )
+            params.append(q)
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        for tag in exclude_tags or []:
+            excluded_frag, excluded_params = build_tag_filter([tag], ref_alias="r")
+            clauses.append(f"NOT ({excluded_frag})")
+            params.extend(excluded_params)
+        if link_ref_id is not None:
+            # Mirrors _links_ops._linked_refs_where(direction='both').
+            clauses.append(
+                "EXISTS (SELECT 1 FROM links l WHERE "
+                "(l.src_ref_id = %s AND l.dst_ref_id = r.ref_id) "
+                "OR (l.dst_ref_id = %s AND l.src_ref_id = r.ref_id))"
+            )
+            params.extend([link_ref_id, link_ref_id])
+        if include_ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(include_ref_ids))
+        if exclude_ref_ids:
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+            params.append(list(exclude_ref_ids))
+        where = " AND ".join(clauses)
+
+        select_exprs: list[str] = []
+        select_params: list[Any] = []
+        joins: list[str] = []
+        join_params: list[Any] = []
+        for i, (ftype, key) in enumerate(facets or []):
+            alias = f"_f{i}"
+            if ftype == "meta":
+                select_exprs.append("r.meta ->> %s")
+                select_params.append(key)
+                continue
+            if ftype == "axis":
+                label = (
+                    "CASE WHEN t.namespace = 'FLAG' THEN t.value "
+                    "ELSE t.namespace || ':' || t.value END"
+                )
+                cond = "t.namespace = %s"
+                join_params.append(key)
+            else:  # open_axis: open tags are stored with the full
+                # 'prefix:value' string as the OPEN-namespace value.
+                label = "t.value"
+                cond = "t.namespace = 'OPEN' AND t.value LIKE %s ESCAPE '\\'"
+                join_params.append(_like_escape(key) + ":%")
+            joins.append(
+                f"LEFT JOIN (SELECT rt.ref_id, {label} AS label "
+                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                f"WHERE {cond} "
+                "AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                f") {alias} ON {alias}.ref_id = r.ref_id"
+            )
+            select_exprs.append(f"{alias}.label")
+
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {where}", params
+            ).fetchone()
+            assert row is not None
+            total = int(row[0])
+            groups: list[tuple[tuple[str | None, ...], int]] = []
+            if select_exprs:
+                n = len(select_exprs)
+                ordinals = ", ".join(str(i + 1) for i in range(n))
+                sql = (
+                    f"SELECT {', '.join(select_exprs)}, "
+                    "COUNT(DISTINCT r.ref_id) "
+                    f"FROM refs r {' '.join(joins)} WHERE {where} "
+                    f"GROUP BY {ordinals} "
+                    f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
+                )
+                # Bind order follows textual %s order: SELECT exprs,
+                # JOIN subqueries, WHERE clauses, then the LIMIT.
+                rows = conn.execute(
+                    sql, [*select_params, *join_params, *params, group_limit]
+                ).fetchall()
+                groups = [(tuple(r[:n]), int(r[n])) for r in rows]
+        return total, groups
+
+
+def _like_escape(s: str) -> str:
+    """Escape ``LIKE`` metacharacters in a literal bound under ``ESCAPE '\\'``."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _stub_state_summary(

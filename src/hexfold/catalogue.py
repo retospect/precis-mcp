@@ -35,22 +35,38 @@ from .build import Net, build
 from .lattice import Lattice, n_cells, translation_vector, tube_radius
 from .stick import stick
 
-#: `Relaxer(elements, coords, bonds, rings, pinned_mask) -> coords`, same
-#: seam as `join.Relaxer` -- re-exported so a caller measuring a row never
-#: needs `hexfold.join` directly.
+#: `Relaxer(elements, coords, bonds, rings, pinned_mask) -> RelaxResult`,
+#: same seam as `join.Relaxer` -- re-exported so a caller measuring a row
+#: never needs `hexfold.join` directly.  The return carries the relaxer's
+#: own convergence verdict, which `measure_environment` asserts on.
 Relaxer = join.Relaxer
+RelaxResult = join.RelaxResult
 
-#: seam-decay tube length (periods) `measure_environment` uses when the
-#: caller does not pin one, by rim type -- long enough for an interior
-#: shell to exist beyond the pinned table radius on the stick rung, short
-#: enough to stay well under :data:`MEASURE_ATOM_CAP`.
+#: seam-decay tube length (periods) `measure_environment` starts
+#: measuring at when the caller does not pin one, by rim type -- the
+#: tube then grows one period at a time until the measurement converges
+#: (gr456641) or runs out of budget, so the start is a cost hint, not the
+#: measured quantity it once was.
 MEASURE_LEN: dict[str, int] = {"z": 6, "a": 4}
 
-#: above this projected atom count (free + fused, both tubes),
+#: gr456641 ruling (2026-10-12): a seam environment is local, so
+#: `measure_environment` grows the tube one translational period at a
+#: time until `seam_radius` and the leak threshold are unchanged for two
+#: consecutive increments; this axial cap (~5 nm) bounds that growth --
+#: a tube whose measurement still has not settled by here is reported
+#: `coverage="unstable"` rather than quoting a length-tracked radius.
+MEASURE_CAP_A = 50.0
+
+#: above this projected atom count (all nets a step builds: free + fused
+#: + the leak side's second free tube + the capped rims' H),
 #: `measure_environment` refuses rather than building and relaxing a net
 #: that large -- a catalogue fill is meant to be a cheap, synchronous,
-#: first-use operation (SPEC §26 "fill and read"), not a batch job.
-MEASURE_ATOM_CAP = 800
+#: first-use operation (SPEC §26 "fill and read"), not a batch job.  Set
+#: so the canonical rim families still reach their convergence length --
+#: an (8,0) zigzag converges by len 8 (~1050 atoms); a tube the cap cuts
+#: off short of convergence reports ``coverage="unstable"`` rather than a
+#: radius that tracked its own tube length (gr456641).
+MEASURE_ATOM_CAP = 1100
 
 #: noise floor for the seam-radius decision and the guard-band leak
 #: threshold, by rung -- a relax that happens to converge unusually
@@ -65,25 +81,23 @@ _MEASURE_FLOOR: dict[str, tuple[float, float]] = {
     "geo": (0.002, 0.15),
 }
 
-#: gr456641: the `coverage="unstable"` test.  A free relax that has not
-#: converged at the far, unfused rim leaves that end drifting more than the
-#: settled interior, so the per-shell displacement bottoms out in the
-#: interior and then climbs back toward the far rim instead of decaying
-#: monotonically -- and the measured `seam_radius` tracks the tube length
-#: rather than a physical decay length (`seam_radius` grew 4/14/22/30/34 as
-#: the tube grew 6/8/10/12/13 periods, all silently reported "full").  The
-#: stick rung has no convergence check at all (its own docstring); the geo
-#: rung's `trace.converged` is not threaded back to this function; this
-#: reads the symptom directly off `max_disp` over the core shells (the
-#: free-rim guard band is already excluded) and is therefore rung-
-#: independent.  A profile is flagged when the largest post-minimum core
-#: displacement is BOTH this factor over the interior minimum (a real
-#: rise, not a flat monotone decay whose minimum sits at its last core
-#: shell) AND above the floor -- the floor keeps a short, genuinely-settled
-#: tube whose far rim barely moves from being flagged: the lower-bound
-#: tubes `tests/test_hexfold_seam_decay.py` pins settle to ~0.002 A at the
-#: far rim (a converged geo len=3 (8,0) rises to 0.0018 A there), an order
-#: of magnitude below the >=0.027 A the stick runaway reaches by len=8.
+#: gr456641: the per-step profile veto.  A free relax that has not
+#: settled at the far end leaves that end drifting more than the settled
+#: interior, so the per-shell displacement bottoms out in the interior
+#: and then climbs back toward the far rim instead of decaying
+#: monotonically -- the signature under which `seam_radius` used to
+#: track the tube length (4/14/22/30/34 at lengths 6/8/10/12/13, all
+#: silently "full").  The grow-to-convergence loop now treats a flagged
+#: step as no measurement at all; the check stays as a rung-independent
+#: veto on the profile shape itself (`max_disp` over the core shells --
+#: the far-end guard band is already excluded).  A profile is flagged
+#: when the largest post-minimum core displacement is BOTH this factor
+#: over the interior minimum (a real rise, not a flat monotone decay
+#: whose minimum sits at its last core shell) AND above the floor --
+#: the floor keeps a genuinely-settled tube whose far rim barely moves
+#: from being flagged (a converged geo len=3 (8,0) rises to 0.0018 A at
+#: its far rim, an order of magnitude below the >=0.027 A the stick
+#: runaway reached by len=8).
 _STABILITY_RISE_FACTOR = 2.0
 _STABILITY_RISE_FLOOR = 0.01  # A
 
@@ -256,7 +270,10 @@ class EdgeMotif:
     """The decay of a fused rim: per-shell ``(max_disp, max_dl, max_dtheta)``
     out to :attr:`shells`, the noise floor and decision threshold that
     picked :attr:`seam_radius`, and the guard-band :attr:`leak_thresh`
-    `compose` checks its own re-relax against."""
+    `compose` checks its own re-relax against.  :attr:`measure_len` is
+    the tube length (periods) the measurement converged at -- stored
+    beside the value per the gr456641 ruling, deliberately NOT in
+    `EnvKey`; 0 means "not a measured convergence" (pinned rows)."""
 
     key: EnvKey
     profile: dict[int, tuple[float, float, float]]
@@ -269,6 +286,7 @@ class EdgeMotif:
     coverage: str  # "full" | "lower-bound" | "unstable"
     source: str
     hexfold_version: str
+    measure_len: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -286,6 +304,7 @@ class EdgeMotif:
             "coverage": self.coverage,
             "source": self.source,
             "hexfold_version": self.hexfold_version,
+            "measure_len": self.measure_len,
         }
 
     @classmethod
@@ -306,6 +325,8 @@ class EdgeMotif:
             coverage=str(d["coverage"]),
             source=str(d["source"]),
             hexfold_version=str(d["hexfold_version"]),
+            # a stored row without it predates the convergence measurement
+            measure_len=int(d.get("measure_len", 0)),
         )
 
 
@@ -536,6 +557,35 @@ def _kabsch_align(x: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
     return aligned, rmsd
 
 
+@dataclass
+class _Step:
+    """One length of `measure_environment`'s grow-to-convergence loop:
+    the measured per-shell profile and the values drawn from it, plus
+    the free net/coords the bulk cell is read off at the end."""
+
+    free: Net
+    cf: np.ndarray
+    dist_in: dict[int, int]
+    dist_out: dict[int, int]
+    profile: dict[int, list[float]]
+    noise: tuple[float, float]
+    thresh: tuple[float, float]
+    seam_radius: int
+    leak_thresh: tuple[float, float]
+    shells: int
+    coverage: str
+
+
+def _round_leak(leak: tuple[float, float]) -> tuple[float, float]:
+    """The leak threshold at the precision the comparison can usefully
+    see: it is a doubled max + floor guard-band bound, not a precision
+    measurement -- hundredths of a degree and 1e-4 A is the resolution
+    the stored value carries, and the floor already quantizes anything
+    smaller anyway.  Comparing finer lets a noise-floor jitter (0.02 vs
+    0.0202 deg on a converged tube) stall the growth loop forever."""
+    return (round(leak[0], 4), round(leak[1], 2))
+
+
 def measure_environment(
     nm: tuple[int, int],
     *,
@@ -546,32 +596,46 @@ def measure_environment(
     sigma: float = 1.42,
 ) -> tuple[EdgeMotif, BulkCell]:
     """The seam-decay experiment (`tests/test_hexfold_seam_decay.py`) as a
-    library function: build ``nm`` free and fused tip-to-tip onto an
-    identical copy of itself at ``k=0``, relax both with ``relax`` (default
-    :func:`hexfold.join._stick_relaxer`, called over the *whole* net with
-    an all-zero pinned mask -- a free relax, not a seam sub-relax), and
-    read the per-shell decay off instance ``a``'s own atoms.  ``seam_radius``
-    is the smallest shell beyond which every measured shell is below
-    ``max(3x an interior noise sample, a rung floor)`` -- but only once
-    the tube reaches well past the known table radius for this rim type
-    (below that, a short tube's own far free rim would otherwise be
-    mistaken for a settled interior); short of that depth, or when no
-    shell satisfies the threshold, the report is half the tube's own
-    measured depth, flagged ``coverage="lower-bound"``.  Whatever the
-    depth verdict, if the per-shell ``max_disp`` does not settle past the
-    seam but climbs back toward the far, unfused rim -- the signature of a
-    free relax that did not converge there, on either rung (gr456641) --
-    the report is downgraded to ``coverage="unstable"`` rather than quoting
-    a ``seam_radius`` that is really tracking the tube length
-    (:data:`_STABILITY_RISE_FACTOR`).  One more
-    `join.compose` at that radius (fusing the same free-relaxed block onto
-    itself) reads the guard-band's own leak maxima, doubled and floored,
-    for :attr:`EdgeMotif.leak_thresh` -- the same derivation
-    `join._LEAK_THRESH`'s docstring describes by hand.  The :class:`BulkCell`
-    comes from the same free relax's interior (shells beyond
-    ``seam_radius + 2`` from both rims).  Pure ``z``/``a`` tubes only
-    (:func:`_rim_type_of`); refuses (:class:`CatalogueError`) above
-    :data:`MEASURE_ATOM_CAP` projected atoms, before building anything."""
+    library function, measured to convergence (gr456641 ruling
+    2026-10-12): build ``nm`` free and fused tip-to-tip onto an identical
+    copy of itself at ``k=0`` with the far, unfused ends H-capped
+    (``terminate`` -- a dangling rim's own reconstruction wobble cannot
+    then read as seam signal), relax both with ``relax`` (default
+    :func:`hexfold.join._stick_relaxer`, over the *whole* net -- a free
+    relax, not a seam sub-relax) and read the per-shell decay off
+    instance ``a``'s own atoms.  Each step asserts the relaxer's own
+    ``converged`` verdict and fails loudly when it is not met, rather
+    than quoting a still-drifting relax.  The tube then grows one
+    translational period at a time until ``seam_radius`` and the leak
+    threshold are unchanged for two consecutive increments; still
+    unsettled past ~5 nm of tube (:data:`MEASURE_CAP_A`) or the atom
+    budget, the report is ``coverage="unstable"`` -- a ``seam_radius``
+    keyed without an extent must be a property of the environment, not
+    of however long a tube happened to be measured on (before this,
+    the radius grew with the tube: 4/14/22/30/34 at lengths
+    6/8/10/12/13, all silently reported "full").
+
+    Per step, ``seam_radius`` is the smallest shell beyond which every
+    measured shell is below ``max(3x an interior noise sample, a rung
+    floor)`` -- but only once the tube reaches well past the known table
+    radius for this rim type; short of that depth, or when no shell
+    satisfies the threshold, the step reports half the tube's own
+    measured depth, flagged ``coverage="lower-bound"`` (a lower bound
+    grows with the tube, so it can never satisfy the convergence test
+    and simply drives growth).  A profile whose ``max_disp`` bottoms out
+    and climbs back toward the far end -- the signature of an unsettled
+    rim, should one survive the cap -- vetoes the step.  One
+    `join.compose` per step at that radius (the same free-relaxed block
+    fused onto itself, each block capped at the far end) reads the
+    guard-band's own leak maxima, doubled and floored, for
+    :attr:`EdgeMotif.leak_thresh`.  The converged values key on
+    :class:`EnvKey` unchanged; the convergence length goes into
+    :attr:`EdgeMotif.measure_len`, beside the value.  The
+    :class:`BulkCell` comes from the final free relax's interior (shells
+    beyond ``seam_radius + 2`` from both rims).  Pure ``z``/``a`` tubes
+    only (:func:`_rim_type_of`); refuses (:class:`CatalogueError`) above
+    :data:`MEASURE_ATOM_CAP` projected atoms or past
+    :data:`MEASURE_CAP_A`, before building anything."""
     n, m = nm
     rim_type = _rim_type_of(n, m)
     if rim_type is None:
@@ -579,204 +643,265 @@ def measure_environment(
             f"tube({n},{m}) is not a pure zigzag/armchair rim; "
             "measure_environment only measures pure rims"
         )
-    length_ = length if length is not None else MEASURE_LEN[rim_type]
-    projected = n_cells(n, m) * 2 * length_ * 3  # free (1x) + fused (2x tubes)
-    if projected > MEASURE_ATOM_CAP:
+    lat = Lattice(sigma_A=sigma)
+    t_vec = translation_vector(n, m)
+    pitch_A = lat.a * math.sqrt(
+        t_vec[0] * t_vec[0] + t_vec[1] * t_vec[1] + t_vec[0] * t_vec[1]
+    )
+    start = length if length is not None else MEASURE_LEN[rim_type]
+    max_len = int(MEASURE_CAP_A / pitch_A)
+
+    def _projected(len_: int) -> int:
+        # every atom a step builds and relaxes: free + fused + free_b
+        # (four tubes' worth) + the three capped rims' termination atoms
+        return n_cells(n, m) * 2 * len_ * 4 + 3 * (n + m)
+
+    if start > max_len:
         raise CatalogueError(
-            f"tube({n},{m},len={length_}): ~{projected} atoms projected, over "
-            f"MEASURE_ATOM_CAP={MEASURE_ATOM_CAP}"
+            f"tube({n},{m},len={start}): over the ~{MEASURE_CAP_A:g} A "
+            f"measurement cap ({max_len} periods)"
+        )
+    if _projected(start) > MEASURE_ATOM_CAP:
+        raise CatalogueError(
+            f"tube({n},{m},len={start}): ~{_projected(start)} atoms projected, "
+            f"over MEASURE_ATOM_CAP={MEASURE_ATOM_CAP}"
         )
 
     relaxer_label = relaxer if relaxer is not None else f"{rung}@{__version__}"
-    relax_fn: Relaxer = relax if relax is not None else join._stick_relaxer(sigma)
-
-    free = build(f"hexfold 0.2\na: tube({n},{m}, len={length_})\n")
-    fused = build(
-        f"hexfold 0.2\na: tube({n},{m}, len={length_})\n"
-        f"b: tube({n},{m}, len={length_})\na.out --fuse k=0--> b.in\n"
+    relax_fn: Relaxer = (
+        relax
+        if relax is not None
+        else join._stick_relaxer(
+            sigma, sigma_ch=lat.sigma_CH_A, lattice_elements=set(lat.elements)
+        )
     )
+    lat_el = set(lat.elements)
 
-    def _relax_free(net: Net) -> np.ndarray:
+    def _relax_whole(net: Net) -> np.ndarray:
         coords0 = stick(net).astype(np.float64)
-        elements = [a.element for a in net.atoms]
+        elements = [""] * len(net.atoms)
+        for a in net.atoms:
+            elements[a.ord] = a.element
         bonds = list(net.bonds)
         rings = list(net.rings)
         pinned = np.zeros(len(elements), dtype=np.float64)
-        return np.asarray(
-            relax_fn(elements, coords0, bonds, rings, pinned), dtype=np.float64
-        )
-
-    cf = _relax_free(free)
-    cg = _relax_free(fused)
-
-    free_a = {a.path: a.ord for a in free.atoms if a.instance == "a"}
-    fused_a = {a.path: a.ord for a in fused.atoms if a.instance == "a"}
-    if free_a != fused_a:
-        raise CatalogueError(
-            "instance 'a' ordinal mismatch between the free and fused nets"
-        )
-    ords = sorted(free_a.values())
-
-    adj = join._adjacency(tuple(free.bonds))
-    out_atoms = set(dict(free.ports)["out"].atoms)
-    in_atoms = set(dict(free.ports)["in"].atoms)
-    dist_out = join._shells_from(out_atoms, adj)
-    dist_in = join._shells_from(in_atoms, adj)
-
-    aligned, _rmsd = _kabsch_align(cg[ords], cf[ords])
-    disp = np.linalg.norm(aligned - cf[ords], axis=1)
-
-    profile: dict[int, list[float]] = {}
-    #: per shell (by distance from the fused "out" rim), the shallowest
-    #: distance any of its atoms sit from the tube's OWN opposite ("in")
-    #: rim -- a shell close to that free, unfused end carries that rim's
-    #: own reconstruction noise (an unconstrained 2-bond boundary wobbles
-    #: under a free relax independent of any join elsewhere), which would
-    #: otherwise masquerade as un-decayed seam signal this far from the
-    #: join.  Shells within the guard band of that free end (same
-    #: ``+2`` convention `_seam_subgraph`/the bulk-cell interior cut use)
-    #: are excluded from both the noise estimate and the radius scan.
-    shell_min_dist_in: dict[int, int] = {}
-    for k, o in enumerate(ords):
-        s = dist_out[o]
-        row = profile.setdefault(s, [0.0, 0.0, 0.0])
-        row[0] = max(row[0], float(disp[k]))
-        shell_min_dist_in[s] = min(
-            shell_min_dist_in.get(s, 1 << 30), dist_in.get(o, 1 << 30)
-        )
-        nbrs = adj.get(o, [])
-        if nbrs:
-            th_f = join._angles_at(cf, o, nbrs)
-            th_g = join._angles_at(cg, o, nbrs)
-            row[2] = max(
-                row[2], max(abs(x - y) for x, y in zip(th_f, th_g, strict=True))
+        res = relax_fn(elements, coords0, bonds, rings, pinned)
+        if not res.converged:
+            raise CatalogueError(
+                f"tube({n},{m}) free/fused relax did not converge "
+                f"(rung={rung}); no measurement is taken from an "
+                "unconverged relax"
             )
-    for i, j, *_rest in free.bonds:
-        s = min(dist_out.get(i, 1 << 30), dist_out.get(j, 1 << 30))
-        if s not in profile:
-            continue
-        dl = abs(
-            float(np.linalg.norm(cf[i] - cf[j])) - float(np.linalg.norm(cg[i] - cg[j]))
+        return np.asarray(res.coords, dtype=np.float64)
+
+    def _measure_at(len_: int) -> _Step:
+        free = build(
+            f"hexfold 0.2\na: tube({n},{m}, len={len_})\nterminate: a.in = H\n"
         )
-        profile[s][1] = max(profile[s][1], dl)
+        fused = build(
+            f"hexfold 0.2\na: tube({n},{m}, len={len_})\n"
+            f"b: tube({n},{m}, len={len_})\na.out --fuse k=0--> b.in\n"
+            "terminate: a.in = H\nterminate: b.out = H\n"
+        )
+        # the leak measurement's b side: a second free tube, capped at the
+        # end AWAY from the seam it contributes -- `a`'s own `in` rim is
+        # capped, so `free`'s remaining "out" cannot serve as b's "in".
+        free_b = build(
+            f"hexfold 0.2\na: tube({n},{m}, len={len_})\nterminate: a.out = H\n"
+        )
 
-    shells_sorted = sorted(profile)
-    core_shells = [s for s in shells_sorted if shell_min_dist_in.get(s, 0) > 2]
-    floor_dl, floor_dtheta = _MEASURE_FLOOR.get(rung, _MEASURE_FLOOR["stick"])
-    #: the innermost few core shells (never shell 0 -- the rim itself is
-    #: the signal being measured, not noise), as a noise sample: on the
-    #: geo rung (a real convergence check, `relax_graph`'s own `tol`) this
-    #: is already near the rung floor, so the floor dominates, same as
-    #: `tests/test_hexfold_seam_decay.py` always used a fixed threshold.
-    #: On the stick rung (fixed-iteration gradient descent, no
-    #: convergence check) the interior never fully stops drifting, so
-    #: this sample is itself the rung's own achievable precision, not
-    #: true zero.
-    #:
-    #: DEVIATION from the plan (nanomachine-slice-6-catalogue.md §3):
-    #: it specifies a 10x margin over this noise sample, calibrated
-    #: against the *pinned-guard* stick measurement's near-machine-epsilon
-    #: noise (join.py's `_LEAK_THRESH` docstring). Applied literally to
-    #: THIS free-relax noise sample (measured ~0.01-0.03 deg across the
-    #: stick interior, not machine epsilon -- a free relax has no pin to
-    #: damp drift the way a guard-band re-relax does), 10x sits above
-    #: every shell's own decaying signal (shell 1 here measures ~0.067
-    #: deg) and the scan below never triggers before shell 0, always
-    #: reporting seam_radius=0.  Measured, not guessed: this was the
-    #: actual failure mode this multiplier was tuned against (see the
-    #: session's own dispatch notes and `git log` on this file).  3x
-    #: keeps the same "margin over measured noise" intent while still
-    #: discriminating the real fused-rim perturbation from the flat
-    #: interior; it is a slice-1 calibration choice, not re-derived from
-    #: first principles, and the four `seam_radius` numbers it produces
-    #: are pinned by exact equality in `tests/hexfold/test_catalogue.py`
-    #: and `tests/test_hexfold_seam_decay.py` so a future change to this
-    #: constant is visible, not silent.
-    noise_candidates = [s for s in core_shells if s > 0]
-    tail = noise_candidates[-3:]
-    noise_dl = float(np.median([profile[s][1] for s in tail])) if tail else 0.0
-    noise_dtheta = float(np.median([profile[s][2] for s in tail])) if tail else 0.0
-    thresh = (max(3.0 * noise_dl, floor_dl), max(3.0 * noise_dtheta, floor_dtheta))
+        cf = _relax_whole(free)
+        cg = _relax_whole(fused)
+        cb = _relax_whole(free_b)
 
-    #: a "full" verdict needs the tube to reach well past the *known*
-    #: table radius for this rim type on both sides -- not just enough
-    #: shells for the scan below to find *some* candidate, but enough
-    #: depth that a short measurement tube's own far, free (unfused) rim
-    #: cannot be mistaken for a settled interior (module docstring of
-    #: `tests/test_hexfold_seam_decay.py`: a short tube pins a lower
-    #: bound, a long one the real decay length).  Below that depth, skip
-    #: the scan and report the deepest shell reached as a lower bound.
-    table_radius = join.SEAM_RADIUS.get(rim_type, join._SEAM_RADIUS_DEFAULT)
-    min_trusted_depth = 2 * (table_radius + 2)
-    seam_radius: int | None = None
-    if shells_sorted and shells_sorted[-1] >= min_trusted_depth:
-        for s in core_shells:
-            beyond = [x for x in core_shells if x > s]
-            if beyond and all(
-                profile[x][1] < thresh[0] and profile[x][2] < thresh[1] for x in beyond
+        lat_a = {a.path: a.ord for a in free.atoms if a.instance == "a"}
+        fused_a = {a.path: a.ord for a in fused.atoms if a.instance == "a"}
+        # path-set compare only: ordinals legitimately differ -- the
+        # fused net's `a` instance's own capped-rim H atoms land at
+        # different ords than the free net's.
+        if set(lat_a) != set(fused_a):
+            raise CatalogueError(
+                "instance 'a' atom-path mismatch between the free and fused nets"
+            )
+        ords = [o for o in sorted(lat_a.values()) if free.atoms[o].element in lat_el]
+        fused_ords = [fused_a[free.atoms[o].path] for o in ords]
+
+        adj = join._adjacency(tuple(free.bonds))
+        out_atoms = set(dict(free.ports)["out"].atoms)
+        in_atoms = set(free.term_rims[0][0])  # the capped "in" rim's carbons
+        dist_out = join._shells_from(out_atoms, adj)
+        dist_in = join._shells_from(in_atoms, adj)
+
+        aligned, _rmsd = _kabsch_align(cg[fused_ords], cf[ords])
+        disp = np.linalg.norm(aligned - cf[ords], axis=1)
+
+        profile: dict[int, list[float]] = {}
+        #: per shell (by distance from the fused "out" rim), the shallowest
+        #: distance any of its atoms sit from the tube's OWN opposite
+        #: ("in") rim -- a shell close to that end carries that rim's own
+        #: reconstruction noise (a capped boundary still micro-adjusts),
+        #: which would otherwise masquerade as un-decayed seam signal this
+        #: far from the join.  Shells within the guard band of that end
+        #: (same ``+2`` convention `_seam_subgraph`/the bulk-cell interior
+        #: cut use) are excluded from both the noise estimate and the
+        #: radius scan.
+        shell_min_dist_in: dict[int, int] = {}
+        oid = {o: i for i, o in enumerate(ords)}
+        for k, o in enumerate(ords):
+            s = dist_out[o]
+            row = profile.setdefault(s, [0.0, 0.0, 0.0])
+            row[0] = max(row[0], float(disp[k]))
+            shell_min_dist_in[s] = min(
+                shell_min_dist_in.get(s, 1 << 30), dist_in.get(o, 1 << 30)
+            )
+            nbrs = [x for x in adj.get(o, []) if x in oid]
+            if len(nbrs) >= 2:
+                th_f = join._angles_at(cf, o, nbrs)
+                th_g = join._angles_at(
+                    cg, fused_ords[k], [fused_ords[oid[x]] for x in nbrs]
+                )
+                row[2] = max(
+                    row[2],
+                    max(abs(x - y) for x, y in zip(th_f, th_g, strict=True)),
+                )
+        for i, j, *_rest in free.bonds:
+            if i not in oid or j not in oid:
+                continue
+            s = min(dist_out.get(i, 1 << 30), dist_out.get(j, 1 << 30))
+            if s not in profile:
+                continue
+            dl = abs(
+                float(np.linalg.norm(cf[i] - cf[j]))
+                - float(np.linalg.norm(cg[fused_ords[oid[i]]] - cg[fused_ords[oid[j]]]))
+            )
+            profile[s][1] = max(profile[s][1], dl)
+
+        shells_sorted = sorted(profile)
+        core_shells = [s for s in shells_sorted if shell_min_dist_in.get(s, 0) > 2]
+        floor_dl, floor_dtheta = _MEASURE_FLOOR.get(rung, _MEASURE_FLOOR["stick"])
+        noise_candidates = [s for s in core_shells if s > 0]
+        tail = noise_candidates[-3:]
+        noise_dl = float(np.median([profile[s][1] for s in tail])) if tail else 0.0
+        noise_dtheta = float(np.median([profile[s][2] for s in tail])) if tail else 0.0
+        thresh = (
+            max(3.0 * noise_dl, floor_dl),
+            max(3.0 * noise_dtheta, floor_dtheta),
+        )
+
+        #: a "full" verdict needs the tube to reach well past the *known*
+        #: table radius for this rim type on both sides -- not just enough
+        #: shells for the scan below to find *some* candidate, but enough
+        #: depth that a short measurement tube's own far end cannot be
+        #: mistaken for a settled interior.
+        table_radius = join.SEAM_RADIUS.get(rim_type, join._SEAM_RADIUS_DEFAULT)
+        min_trusted_depth = 2 * (table_radius + 2)
+        seam_radius: int | None = None
+        if shells_sorted and shells_sorted[-1] >= min_trusted_depth:
+            for s in core_shells:
+                beyond = [x for x in core_shells if x > s]
+                if beyond and all(
+                    profile[x][1] < thresh[0] and profile[x][2] < thresh[1]
+                    for x in beyond
+                ):
+                    seam_radius = s
+                    break
+        if seam_radius is None:
+            seam_radius = shells_sorted[-1] // 2 if shells_sorted else 0
+            coverage = "lower-bound"
+        else:
+            coverage = "full"
+
+        # gr456641: even capped and asserted-converged, veto a profile
+        # whose `max_disp` bottoms out and climbs back toward the far end
+        # -- the unsettled-rim signature this check was built on, kept as
+        # a shape veto rather than a convergence test now that the
+        # relaxer's own verdict is asserted every step.
+        core_disps = [profile[s][0] for s in core_shells if s > 0]
+        if len(core_disps) >= 2:
+            min_disp = min(core_disps)
+            tail_max = max(core_disps[core_disps.index(min_disp) :])
+            if tail_max >= _STABILITY_RISE_FACTOR * min_disp and (
+                tail_max >= _STABILITY_RISE_FLOOR
             ):
-                seam_radius = s
+                coverage = "unstable"
+
+        block_a = join.block_from_net(free, cf)
+        block_b = join.block_from_net(free_b, cb)
+        tiny = (1e-12, 1e-12)
+        comp = join.compose(
+            block_a,
+            block_a.ports["out"],
+            block_b,
+            block_b.ports["in"],
+            0,
+            seam_radius={rim_type: seam_radius},
+            leak_thresholds={rim_type: tiny},
+            relax=relax_fn,
+        )
+        if any(f.code == "seam.unconverged" for f in comp.findings):
+            raise CatalogueError(
+                f"tube({n},{m}) leak-measurement seam relax did not "
+                f"converge (rung={rung})"
+            )
+        maxima_dl = 0.0
+        maxima_dtheta = 0.0
+        for f in comp.findings:
+            if f.code == "seam.leak":
+                d = dict(f.data)
+                maxima_dl = max(maxima_dl, float(d["max_dl"]))
+                maxima_dtheta = max(maxima_dtheta, float(d["max_dtheta"]))
+        leak_thresh = (
+            max(2.0 * maxima_dl, floor_dl),
+            max(2.0 * maxima_dtheta, floor_dtheta),
+        )
+        return _Step(
+            free=free,
+            cf=cf,
+            dist_in=dist_in,
+            dist_out=dist_out,
+            profile=profile,
+            noise=(noise_dl, noise_dtheta),
+            thresh=thresh,
+            seam_radius=seam_radius,
+            leak_thresh=leak_thresh,
+            shells=shells_sorted[-1] if shells_sorted else 0,
+            coverage=coverage,
+        )
+
+    prev: tuple[int, tuple[float, float]] | None = None
+    stable = 0
+    converged = False
+    step: _Step | None = None
+    len_ = start
+    measured_len = start
+    while True:
+        step = _measure_at(len_)
+        measured_len = len_
+        if step.coverage != "full":
+            # a vetoed ("unstable") step proves nothing either way, and a
+            # "lower-bound" one reports a floor that tracks the tube
+            # rather than a measurement: neither can advance the chain --
+            # reset it and keep growing.
+            prev, stable = None, 0
+        else:
+            val = (step.seam_radius, _round_leak(step.leak_thresh))
+            stable = stable + 1 if val == prev else 0
+            prev = val
+            if stable >= 2:
+                converged = True
                 break
-    if seam_radius is None:
-        # conservative, not "however far the scan above got": a tube that
-        # failed the depth gate is too short to trust anywhere near its
-        # own far end either (the same free-rim-proximity problem the
-        # noise sample above excludes), so the lower bound is half its
-        # own measured depth, never the near-full-depth `core_shells[-1]`
-        # a short, mostly-core-shells tube would otherwise report.
-        seam_radius = shells_sorted[-1] // 2 if shells_sorted else 0
-        coverage = "lower-bound"
-    else:
-        coverage = "full"
-
-    # gr456641: neither rung's convergence signal reaches this function (the
-    # stick relaxer runs a fixed iteration count and drops its own max_force;
-    # the geo relaxer's `trace.converged` is asserted only by the injecting
-    # caller), so an unconverged free relax whose far, unfused rim is still
-    # drifting was silently reported as a confident "full"/"lower-bound"
-    # decay.  Read the symptom directly off `max_disp`: `core_shells` already
-    # excludes the free-rim guard band, so a genuine monotone decay bottoms
-    # out at its last core shell (its tail equals its minimum), whereas an
-    # unsettled tube bottoms out in the interior and climbs back toward the
-    # far end (see _STABILITY_RISE_FACTOR / _STABILITY_RISE_FLOOR).
-    core_disps = [profile[s][0] for s in core_shells if s > 0]
-    if len(core_disps) >= 2:
-        min_disp = min(core_disps)
-        tail_max = max(core_disps[core_disps.index(min_disp) :])
-        if tail_max >= _STABILITY_RISE_FACTOR * min_disp and (
-            tail_max >= _STABILITY_RISE_FLOOR
-        ):
-            coverage = "unstable"
-
-    free_block = join.block_from_net(free, cf)
-    tiny = (1e-12, 1e-12)
-    comp = join.compose(
-        free_block,
-        free_block.ports["out"],
-        free_block,
-        free_block.ports["in"],
-        0,
-        seam_radius={rim_type: seam_radius},
-        leak_thresholds={rim_type: tiny},
-        relax=relax_fn,
-    )
-    maxima_dl = 0.0
-    maxima_dtheta = 0.0
-    for f in comp.findings:
-        if f.code == "seam.leak":
-            d = dict(f.data)
-            maxima_dl = max(maxima_dl, float(d["max_dl"]))
-            maxima_dtheta = max(maxima_dtheta, float(d["max_dtheta"]))
-    leak_thresh = (
-        max(2.0 * maxima_dl, floor_dl),
-        max(2.0 * maxima_dtheta, floor_dtheta),
-    )
+        len_ += 1
+        if len_ > max_len or _projected(len_) > MEASURE_ATOM_CAP:
+            break
+    assert step is not None
+    coverage = step.coverage if converged else "unstable"
 
     interior = [
         o
-        for o in range(len(free.atoms))
-        if dist_in.get(o, 1 << 30) > seam_radius + 2
-        and dist_out.get(o, 1 << 30) > seam_radius + 2
+        for o, a in enumerate(step.free.atoms)
+        if a.element in lat_el
+        and step.dist_in.get(o, 1 << 30) > step.seam_radius + 2
+        and step.dist_out.get(o, 1 << 30) > step.seam_radius + 2
     ]
     # radius/pitch are combinatorial facts of (n, m) (SPEC §3 lattice
     # arithmetic), not something a relax can improve on measuring --
@@ -787,18 +912,18 @@ def measure_environment(
     # is systematically short by close to a full bond length per end).
     # The relax-dependent facts -- bond lengths, angle -- genuinely need
     # measuring, so those still come from the interior atoms below.
-    lat = Lattice(sigma_A=sigma)
     radius_A = tube_radius(n, m, lat)
-    t_vec = translation_vector(n, m)
-    pitch_A = lat.a * math.sqrt(
-        t_vec[0] * t_vec[0] + t_vec[1] * t_vec[1] + t_vec[0] * t_vec[1]
-    )
 
-    origin = cf[list(in_atoms)].mean(axis=0)
-    axis_vec = cf[list(out_atoms)].mean(axis=0) - origin
+    cf = step.cf
+    free = step.free
+    in_set = set(free.term_rims[0][0])
+    out_set = set(dict(free.ports)["out"].atoms)
+    origin = cf[list(in_set)].mean(axis=0)
+    axis_vec = cf[list(out_set)].mean(axis=0) - origin
     axis_len = float(np.linalg.norm(axis_vec))
     axis_unit = axis_vec / axis_len if axis_len else np.array([0.0, 0.0, 1.0])
 
+    adj = join._adjacency(tuple(free.bonds))
     interior_set = set(interior)
     bond_axial: list[float] = []
     bond_circ: list[float] = []
@@ -841,17 +966,18 @@ def measure_environment(
         key=edge_key,
         profile={
             s: (round(v[0], 5), round(v[1], 5), round(v[2], 4))
-            for s, v in profile.items()
+            for s, v in step.profile.items()
         },
-        noise=(round(noise_dl, 5), round(noise_dtheta, 4)),
-        thresh=(round(thresh[0], 5), round(thresh[1], 4)),
-        seam_radius=seam_radius,
-        leak_thresh=(round(leak_thresh[0], 5), round(leak_thresh[1], 4)),
-        shells=shells_sorted[-1] if shells_sorted else 0,
+        noise=(round(step.noise[0], 5), round(step.noise[1], 4)),
+        thresh=(round(step.thresh[0], 5), round(step.thresh[1], 4)),
+        seam_radius=step.seam_radius,
+        leak_thresh=(round(step.leak_thresh[0], 5), round(step.leak_thresh[1], 4)),
+        shells=step.shells,
         measured_on=today,
         coverage=coverage,
         source="measured",
         hexfold_version=__version__,
+        measure_len=measured_len,
     )
     bulk = BulkCell(
         key=bulk_key,

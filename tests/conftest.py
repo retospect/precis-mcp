@@ -14,7 +14,11 @@ We share **one** postgres database across the whole test session:
 ``PRECIS_TEST_PG_URL``). At session start, an autouse fixture
 **drops every table** in the test DB then applies all migrations
 from ``0001`` so the schema is exactly what the source tree says
-it is, no matter what shape the previous run left it in.
+it is, no matter what shape the previous run left it in. If a
+still-draft migration was edited or renumbered since the template
+applied it, the template rebuilds itself
+(``apply_all(rebuild_on_checksum_mismatch=True)``, gr479991) instead
+of refusing once and cascading an error through every DB test.
 
 Per-test isolation is by ``TRUNCATE … CASCADE`` of every data
 table at fixture entry — fast (ms scale), and preserves the
@@ -666,7 +670,15 @@ def _initialise_test_db() -> Iterator[None]:
         # Do it once per run (first worker claims it), not once per worker —
         # see _claim_template_maintenance.
         if _claim_template_maintenance(admin_dsn):
-            Migrator(PG_TEST_DSN, Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
+            # rebuild_on_checksum_mismatch: the persistent template's
+            # ledger seals every applied migration's checksum, so a run
+            # after a draft was edited or renumbered would refuse once and
+            # cascade through every DB test (gr479991). Rebuilding the
+            # disposable template in place is the same reset a
+            # `compose down -v` gives, without leaving the container.
+            Migrator(PG_TEST_DSN, Migrator.discover_sources(MIGRATIONS_DIR)).apply_all(
+                rebuild_on_checksum_mismatch=True
+            )
             _truncate_data_tables(PG_TEST_DSN)
             _ensure_vocab_seeds(PG_TEST_DSN)
         try:
@@ -844,7 +856,11 @@ def fresh_db() -> Iterator[str]:
     # test in this worker sees an empty vocab table (gr408184).
     # discover_sources: a bare Path is a core-only source, which left the
     # precis.migrations plugin tables (se, pathway, ...) unapplied (gr458360).
-    Migrator(_active_dsn(), restore_sources).apply_all()
+    # The rebuild flag keeps teardown self-healing if a test left a
+    # drifted ledger (e.g. it applied a hand-mutated migration file).
+    Migrator(_active_dsn(), restore_sources).apply_all(
+        rebuild_on_checksum_mismatch=True
+    )
     _ensure_vocab_seeds(_active_dsn())
 
 
@@ -1250,6 +1266,7 @@ def _ensure_component_seed(dsn: str) -> None:
         MIGRATIONS_DIR / "0152_component_geometry_specs.sql",
         MIGRATIONS_DIR / "0163_component_head_form_specs.sql",
         MIGRATIONS_DIR / "0190_thread_size_st.sql",
+        MIGRATIONS_DIR / "0205_bom_consolidation_roles.sql",
     ]
     seed_files = [f for f in seed_files if f.exists()]
     if not seed_files:
@@ -1286,13 +1303,24 @@ def _ensure_component_seed(dsn: str) -> None:
         # and `head_form` / `head_angle` stayed missing — surfacing far
         # downstream as a seatclamp mint reporting "skipped" for an ISO 10642
         # countersunk screw, CI-only and green locally.
+        has_roles_col = conn.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name = 'component_specs' "
+            "AND column_name = 'spec_roles'"
+        ).fetchone()
+        role_probe = (
+            "SELECT count(*) FROM component_specs WHERE spec_roles <> '{}'::jsonb"
+            if has_roles_col and has_roles_col[0]
+            else "SELECT 0"
+        )
         counts = conn.execute(
             "SELECT (SELECT count(*) FROM component_categories "
             "        WHERE status = 'core'), "
             "       (SELECT count(*) FROM component_specs "
             "        WHERE status = 'core' AND category_id IS NOT NULL), "
             "       (SELECT count(*) FROM component_specs "
-            "        WHERE spec_id = 'head_form')"
+            "        WHERE spec_id = 'head_form'), "
+            f"       ({role_probe})"
         ).fetchone()
         if counts and all(c > 0 for c in counts):
             return  # every half intact — nothing to repair
