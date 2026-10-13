@@ -308,9 +308,9 @@ rebuilt its pads-only probe grid per segment (36 of 85 s of realize).
    partials) violate NPTH or via-to-via rules. The 65 → 55 drop was the
    gate catching them, not the holes costing routes. After both fixes,
    zero nets are stripped by the gate (seed-by-seed counts in the thread
-   file). Left: own-path via pairs inside one search
-   (`pcb-router-own-path-via-pair.md`, gate-caught today), and the ~22
-   `unrouted` nets, which are congestion.
+   file). Own-path via pairs inside one search are kept apart by the
+   router since 2026-10-13 (`maze.py::OccupancyGrid._own_vias_apart`).
+   Left: the ~22 `unrouted` nets, which are congestion.
 
 Literature, for the fix owner: grid-maze routers are known to degrade on
 fine-pitch parts on large boards because cell size couples to board size;

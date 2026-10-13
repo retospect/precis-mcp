@@ -22,7 +22,7 @@ import math
 import numpy as np
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP
+from precis.pcb import DEFAULT_STACKUP, maze
 from precis.pcb.geom import dist
 from precis.pcb.ir import from_graph
 from precis.pcb.maze import (
@@ -30,6 +30,7 @@ from precis.pcb.maze import (
     FREE,
     GridSpec,
     OccupancyGrid,
+    RoutePath,
     grid_for,
 )
 from precis.pcb.optimize import OptimizeConfig, optimize
@@ -724,3 +725,74 @@ def test_another_nets_copper_beside_the_endpoint_still_blocks_it():
     g = _fine_pitch_pair()
     g.stamp_disk((0,), 2.0, 1.9, 0.05, 3)
     assert g.route(1, (2.0, 2.08), (2.0, 0.5), layers=[0], width_mm=0.15) is None
+
+
+def _wall_grid(clearance_mm: float) -> OccupancyGrid:
+    """4 mm x 2 mm, two layers, a one-cell foreign wall across layer 0 at
+    x = 2.0: the only route from (0.5, 1) to (3.5, 1) on layer 0 dips
+    under it on layer 1."""
+    grid = OccupancyGrid(GridSpec(0.0, 0.0, 0.05, 80, 40, 2), clearance_mm=clearance_mm)
+    grid._owner[0, :, 40] = 9
+    return grid
+
+
+def _route_under_wall(grid: OccupancyGrid):
+    return grid.route(
+        1,
+        (0.5, 1.0),
+        (3.5, 1.0),
+        layers=[0, 1],
+        width_mm=0.1,
+        via_dia_mm=0.3,
+        start_layer=0,
+        goal_layer=0,
+    )
+
+
+def test_a_dip_under_a_wall_keeps_its_own_vias_a_keepout_apart():
+    # Unrepaired, the search laid its two vias 0.5 mm apart where the
+    # keep-out (via + clearance) asks 0.6 mm.
+    grid = _wall_grid(0.3)
+    path = _route_under_wall(grid)
+    assert path is not None
+    (ax, ay, _, _), (bx, by, _, _) = path.vias
+    assert math.hypot(ax - bx, ay - by) - 0.3 >= 0.3 - 1e-9
+    assert not grid.last_route_own_via_pair
+    # The temporary keep-out used for the re-search is gone afterwards.
+    assert grid._vias == []
+
+
+def test_a_dip_with_no_room_for_two_vias_fails_the_connection():
+    # A 5.3 mm keep-out (0.3 mm via + 5.0 mm clearance) is longer than
+    # the 4 mm x 2 mm board's diagonal: no two via sites are far enough
+    # apart.
+    grid = _wall_grid(5.0)
+    assert _route_under_wall(grid) is None
+    assert grid.last_route_own_via_pair
+
+
+def test_drop_between_vias_straightens_a_down_up_pair():
+    path = RoutePath(
+        1,
+        (
+            (0.0, 0.0, 0),
+            (1.0, 0.0, 0),
+            (1.0, 0.0, 1),
+            (1.2, 0.0, 1),
+            (1.2, 0.0, 0),
+            (2.0, 0.0, 0),
+        ),
+        2.0,
+    )
+    collapsed = maze._drop_between_vias(path, 0, 1)
+    assert collapsed is not None
+    # The run between the vias is gone; the path stays on layer 0 from the
+    # first via's site to the second's and on to the goal.
+    assert collapsed.points == (
+        (0.0, 0.0, 0),
+        (1.0, 0.0, 0),
+        (1.2, 0.0, 0),
+        (2.0, 0.0, 0),
+    )
+    assert collapsed.vias == ()
+    assert collapsed.length_mm == pytest.approx(2.0)

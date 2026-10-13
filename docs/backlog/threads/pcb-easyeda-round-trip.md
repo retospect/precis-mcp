@@ -138,8 +138,9 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    `scratch/pcb_route_offline.py` method, item step 14). With every part
    frozen the seed has nothing to vary, so the three runs agree by
    construction; they show determinism, not robustness. The remaining 22
-   are all `unrouted`, i.e. congestion. Own-path via pairs are filed
-   (`pcb-router-own-path-via-pair.md`); the gate catches them today.
+   are all `unrouted`, i.e. congestion. Own-path via pairs inside one
+   search are kept a keep-out apart by the router itself since
+   2026-10-13 (`maze.py::OccupancyGrid._own_vias_apart`).
 2. **The real board's design-rule table is dropped at import** — the 184
    records once read as keepouts are 16 `RULE` + 168 `RULE_SELECTOR`,
    which in Pro are most likely the design-rule table and its per-net

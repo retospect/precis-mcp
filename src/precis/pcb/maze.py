@@ -65,7 +65,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -114,6 +114,12 @@ MAX_EXPANSIONS = 120_000
 #: inside the window falls back to the whole grid, so these trade speed,
 #: never correctness.
 WINDOW_MARGIN_MM = 5.0
+
+#: Re-searches :meth:`OccupancyGrid.route` spends keeping a path's own two
+#: vias out of one keep-out (:meth:`OccupancyGrid._own_vias_apart`) before
+#: the connection fails. Each blocks one more offending via site; a dip
+#: under one obstacle needs one.
+OWN_VIA_PAIR_RETRIES = 3
 WINDOW_SPAN_FRACTION = 0.5
 
 #: Memory bound for :func:`grid_for` when a design-rule pitch cap asks
@@ -513,6 +519,10 @@ class OccupancyGrid:
         #: dry. Both return ``None``; only the second proves there is no
         #: path. Read by ``realize._diagnose_unrouted``.
         self.last_route_exhausted = False
+        #: Whether the most recent :meth:`route` returned ``None`` because
+        #: every path it found laid two of its OWN vias inside one via
+        #: keep-out and neither repair (:meth:`_own_vias_apart`) worked.
+        self.last_route_own_via_pair = False
         #: ``(ny, nx)`` boolean, or ``None`` — cells under a placed
         #: component's own body, set (once, optionally) via
         #: :meth:`set_body_mask`. ``None`` is the every-caller-today
@@ -1095,16 +1105,101 @@ class OccupancyGrid:
             "negotiation": negotiation,
             "mask": mask,
         }
-        generation = self._via_generation
-        path = self._route_in(window, net_id, start, goal, **kwargs)
-        if path is None and window != full and not self.last_route_exhausted:
-            path = self._route_in(full, net_id, start, goal, **kwargs)
-        if self._via_generation != generation:
-            raise RuntimeError(
-                "OccupancyGrid.register_via ran during a search; it mutates "
-                "the via keep-out mask the search was reading"
-            )
-        return path
+        self.last_route_own_via_pair = False
+
+        def search() -> RoutePath | None:
+            generation = self._via_generation
+            found = self._route_in(window, net_id, start, goal, **kwargs)
+            if found is None and window != full and not self.last_route_exhausted:
+                found = self._route_in(full, net_id, start, goal, **kwargs)
+            if self._via_generation != generation:
+                raise RuntimeError(
+                    "OccupancyGrid.register_via ran during a search; it mutates "
+                    "the via keep-out mask the search was reading"
+                )
+            return found
+
+        path = search()
+        if path is None or via_dia_mm is None or len(path.vias) < 2:
+            return path
+        return self._own_vias_apart(
+            path, search, width_mm=width_mm, via_dia_mm=via_dia_mm, mask=mask
+        )
+
+    def _own_via_pair(self, path: RoutePath, via_r: float) -> tuple[int, int] | None:
+        """First pair ``(i, j)`` of ``path.vias`` closer than the via
+        keep-out :meth:`register_via` holds every committed via to —
+        centre distance minus both radii under ``clearance_mm``, the same
+        arithmetic as :meth:`via_clears_pads`, and the barrel and drill
+        spacing ``drc.check_via_via_keepout`` checks after the route."""
+        vias = path.vias
+        for i in range(len(vias)):
+            for j in range(i + 1, len(vias)):
+                gap = math.hypot(vias[i][0] - vias[j][0], vias[i][1] - vias[j][1])
+                if gap - 2.0 * via_r < self.clearance_mm - 1e-9:
+                    return i, j
+        return None
+
+    def _own_vias_apart(
+        self,
+        path: RoutePath,
+        search: Callable[[], RoutePath | None],
+        *,
+        width_mm: float,
+        via_dia_mm: float,
+        mask: np.ndarray | None,
+    ) -> RoutePath | None:
+        """Keep one search's own vias out of each other's keep-out.
+
+        :meth:`register_via` keeps a new via off every via committed
+        EARLIER; a path's own vias are registered only at commit, so a path
+        that dips one layer under a narrow obstacle can lay two vias inside
+        one keep-out, which the post-route DRC gate then strips as
+        ``via_via_keepout``. Two repairs, in order, for each offending
+        pair: drop the run between the two vias (a straight run when the
+        path returns to its layer, one via when it does not) if
+        :meth:`path_is_legal` passes it; otherwise search again with the
+        pair's first via site registered as a keep-out for this call only,
+        so the search places its vias elsewhere. ``None`` (with
+        :attr:`last_route_own_via_pair`) after
+        :data:`OWN_VIA_PAIR_RETRIES` re-searches."""
+        via_r = via_dia_mm / 2.0
+        saved_vias = list(self._vias)
+        saved_cache = {k: v.copy() for k, v in self._pad_keepout_cache.items()}
+        try:
+            current: RoutePath | None = path
+            for attempt in range(OWN_VIA_PAIR_RETRIES + 1):
+                if current is None:
+                    break
+                pair = self._own_via_pair(current, via_r)
+                if pair is None:
+                    return current
+                if mask is None:
+                    collapsed = _drop_between_vias(current, *pair)
+                    if (
+                        collapsed is not None
+                        and self._own_via_pair(collapsed, via_r) is None
+                        and self.path_is_legal(
+                            collapsed,
+                            width_mm=width_mm,
+                            via_dia_mm=via_dia_mm,
+                            start_exempt=True,
+                            goal_exempt=True,
+                        )
+                    ):
+                        return collapsed
+                if attempt == OWN_VIA_PAIR_RETRIES:
+                    break
+                vx, vy, _lo, _hi = current.vias[pair[0]]
+                self.register_via(vx, vy, via_r)
+                current = search()
+            self.last_route_own_via_pair = True
+            return None
+        finally:
+            if len(self._vias) != len(saved_vias):
+                self._vias = saved_vias
+                self._pad_keepout_cache = saved_cache
+                self._via_generation += 1
 
     def _route_in(
         self,
@@ -1494,6 +1589,31 @@ class OccupancyGrid:
             gxp, gyp = goal_anchor
             points = (*points[:-1], (gxp, gyp, points[-1][2]))
         return RoutePath(net_id, points, length, attached)
+
+
+def _drop_between_vias(path: RoutePath, i: int, j: int) -> RoutePath | None:
+    """``path`` without the run between its ``i``-th and ``j``-th via: a
+    straight run on the original layer when the ``j``-th via returns to
+    it, otherwise one layer change at the ``i``-th via's site straight to
+    the layer the ``j``-th via leaves on. ``None`` when the indices do not
+    resolve (a path whose via list does not match its points)."""
+    changes = [
+        k
+        for k in range(len(path.points) - 1)
+        if path.points[k][2] != path.points[k + 1][2]
+    ]
+    if j >= len(changes):
+        return None
+    k, m = changes[i], changes[j]
+    head = path.points[: k + 1]
+    tail = path.points[m + 1 :]
+    if head[-1][2] != tail[0][2]:
+        head = (*head, (head[-1][0], head[-1][1], tail[0][2]))
+    points = (*head, *tail)
+    length = sum(
+        math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in itertools.pairwise(points)
+    )
+    return RoutePath(path.net_id, points, length, path.attached)
 
 
 @numba.njit(cache=False, nogil=True)

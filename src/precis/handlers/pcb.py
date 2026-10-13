@@ -865,10 +865,14 @@ class PcbHandler(Handler):
         iters: int,
         seed: int,
         measures: list[dict[str, Any]],
+        legal_only: bool = False,
     ) -> tuple[place.PlaceResult, int]:
         """Anneal over the current graph and persist the placement + the
         ``last_place`` meta stamp. Shared by the put-time autoplace and the
-        route round-trip's per-pass re-place (one copy of the store logic)."""
+        route round-trip's per-pass re-place (one copy of the store logic).
+        With ``legal_only`` the anneal's poses are judged by
+        :meth:`_refuse_illegal_placement` first and nothing is written
+        when any conflicts."""
         graph = pcb_session.sorted_graph(self.store.pcb_graph(ref_id))
         res = place.autoplace(
             graph["instances"],
@@ -878,6 +882,8 @@ class PcbHandler(Handler):
             seed=seed,
             features=self.store.pcb_features_list(ref_id),
         )
+        if legal_only:
+            self._refuse_illegal_placement(ref_id, graph, res.positions)
         moved = self.store.pcb_set_placement(
             ref_id,
             res.positions,
@@ -891,6 +897,59 @@ class PcbHandler(Handler):
             },
         )
         return res, moved
+
+    def _refuse_illegal_placement(
+        self,
+        ref_id: int,
+        graph: dict[str, Any],
+        positions: dict[str, tuple[float, float]],
+    ) -> None:
+        """Refuse a whole-board placement any re-placed part of which
+        :meth:`precis.pcb.optimize.OptimizeEngine.pose_conflicts` rejects
+        (courtyard on a part or a mounting hole, solder land on an
+        authored via) — the rule ``op='place'`` and ``op='move'`` hold, on
+        an engine built over the board as ``positions`` leave it. The
+        legacy annealer behind ``view='route'`` (:func:`place.autoplace`)
+        does not check these, so its poses are judged here before the
+        store sees them. As with ``op='move'``, a conflict the stored board
+        already has may stand; only a pair the re-place introduces is
+        refused, each named once."""
+
+        def conflicts(g: dict[str, Any]) -> dict[tuple[str, str, str], str]:
+            ir = self._build_ir(ref_id, g, with_fixed_copper=True)
+            ir.outline = self._move_outline(ref_id)
+            engine = pcb_optimize.OptimizeEngine(ir, pcb_optimize.OptimizeConfig())
+            found: dict[tuple[str, str, str], str] = {}
+            for idx, refdes in enumerate(ir.instance_refdes):
+                x, y = float(ir.inst_x[idx]), float(ir.inst_y[idx])
+                if str(refdes) not in positions or math.isnan(x) or math.isnan(y):
+                    continue
+                for rule, other in engine.pose_conflicts(idx, x, y):
+                    a, b = sorted((str(refdes), other))
+                    found.setdefault((rule, a, b), f"{rule} {refdes} with {other}")
+            return found
+
+        placed = {
+            **graph,
+            "instances": [
+                {**i, "x": positions[rd][0], "y": positions[rd][1]}
+                if (rd := str(i["refdes"])) in positions
+                else i
+                for i in graph["instances"]
+            ],
+        }
+        standing = conflicts(graph)
+        new = [msg for key, msg in conflicts(placed).items() if key not in standing]
+        if new:
+            raise BadInput(
+                "pcb: the re-place would leave an invalid board, so nothing "
+                "was written: " + "; ".join(new),
+                next=(
+                    "re-run view='route' with another iters, add area, or run "
+                    "put(args={'op':'place'}) and route in-tree with "
+                    "put(args={'op':'route'})"
+                ),
+            )
 
     # ── pcb-guided-place-route Slice 10 tool surface ────────────────────
     def _dispatch_op(self, ref: Any, op: str, args: dict[str, Any]) -> Response:
@@ -3142,7 +3201,10 @@ class PcbHandler(Handler):
         """The §9 place↔route round-trip via Freerouting headless. Re-places
         (escalating annealing) and re-routes until the route completes or
         ``max_passes`` is hit. Degrades to a single ``.dsn``-only pass when no
-        router is installed (the gate is at this step only)."""
+        router is installed (the gate is at this step only). Every re-place
+        passes the placer's legality rule before it is stored
+        (:meth:`_refuse_illegal_placement`); kept as the external baseline
+        the in-tree router (``op='route'``) is benchmarked against."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         # max(1,…): '0' is truthy, and 0 passes would report a .dsn that was
@@ -3156,7 +3218,7 @@ class PcbHandler(Handler):
 
         def place_fn(iters: int, seed: int) -> dict[str, Any]:
             res, _moved = self._place_and_store(
-                ref_id, iters=iters, seed=seed, measures=measures
+                ref_id, iters=iters, seed=seed, measures=measures, legal_only=True
             )
             return {"crossings_after": res.crossings_after}
 

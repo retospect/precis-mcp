@@ -291,9 +291,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Horizon
 
-0. **backlog/pcb-freerouting-view-replaces-without-legality.md** — the
-   Freerouting `view='route'` re-place skips the legality gate that
-   op=place/move now enforce; gate it or retire the view (product call).
 1. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
    no longer waits on anything: the placer fix it queued behind landed
    2026-10-01. Still the precondition for trusting any number below this

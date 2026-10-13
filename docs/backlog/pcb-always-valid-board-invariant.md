@@ -370,9 +370,11 @@ extracted *affinity*, which is a different fact.
   always; router copper that now collides is ripped, pad/placement collisions
   are reported as now visible and stand until a re-place; the fetch runs
   before, and the cache writes inside, a `_judged_mutation(refuse=False)`;
-  other designs using the part are named). Still open: `view='route'`
-  (`backlog/pcb-freerouting-view-replaces-without-legality.md`); rulings 1
-  and 2 are built.
+  other designs using the part are named). `view='route'`'s per-pass
+  re-place is gated too (`PcbHandler._refuse_illegal_placement`: a
+  conflict the re-place introduces is refused, nothing written; Reto
+  2026-10-13 kept Freerouting as the external baseline). Rulings 1 and 2
+  are built.
 - On put and class_rules, courtyard findings carry no margin, so a
   deepened standing courtyard overlap counts as standing, not worse;
   `op='move'` measures it by area. Outline-containment findings do carry one

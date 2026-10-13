@@ -12,7 +12,7 @@ from __future__ import annotations
 import stat
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -477,3 +477,42 @@ def test_handler_route_view_degrades(pcb, tmp_path, monkeypatch):
     resp = pcb.get(id="sensor", view="route", args={"dir": str(tmp_path), "iters": 50})
     assert "No Freerouting backend" in resp.body
     assert (tmp_path / "sensor.dsn").exists()
+
+
+def test_handler_route_view_refuses_an_overlapping_replace(pcb, tmp_path, monkeypatch):
+    """docs/backlog/pcb-always-valid-board-invariant.md: the route view's
+    per-pass re-place is judged by the placer's own rule before it is
+    stored, so an anneal that lands C1 on U1 writes nothing."""
+    from precis.errors import BadInput
+    from precis.handlers import pcb as pcb_handler
+    from precis.pcb import place
+
+    monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
+    monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
+    u1, c1 = cast(list[dict[str, Any]], _BOARD["components"])
+    legal = {**_BOARD, "components": [u1, {**c1, "x": 17.0, "y": 17.0}]}
+    pcb.put(id="sensor", args=legal)
+
+    def overlapping(*_a: Any, **_k: Any) -> place.PlaceResult:
+        return place.PlaceResult(
+            positions={"U1": (10.0, 10.0), "C1": (10.0, 10.0)},
+            crossings_before=0,
+            crossings_after=0,
+            length_before=0.0,
+            length_after=0.0,
+            objective_before=0.0,
+            objective_after=0.0,
+            iters=1,
+        )
+
+    monkeypatch.setattr(pcb_handler.place, "autoplace", overlapping)
+    ref = pcb.store.get_ref(kind="pcb", id="sensor")
+    before = {
+        i["refdes"]: (i["x"], i["y"]) for i in pcb.store.pcb_graph(ref.id)["instances"]
+    }
+    with pytest.raises(BadInput, match="courtyard_overlap"):
+        pcb.get(id="sensor", view="route", args={"dir": str(tmp_path), "iters": 50})
+    after = {
+        i["refdes"]: (i["x"], i["y"]) for i in pcb.store.pcb_graph(ref.id)["instances"]
+    }
+    assert after == before
