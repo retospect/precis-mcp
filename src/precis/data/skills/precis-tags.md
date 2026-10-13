@@ -176,8 +176,8 @@ as lowercase tags (`density:dense`, `confidence:strong`) instead.
 
 `STATUS:` is the one axis that hosts multiple lifecycles on the same
 prefix. Kinds with their own lifecycle are enforced per-kind at write
-time (the error lists that kind's options); unlisted kinds accept the
-full union. Pick the row that matches the ref you're tagging:
+time (the error lists that kind's options); unlisted kinds accept
+the union (32 values). Pick the row that matches the ref you're tagging:
 
 | Lifecycle | Kinds | Values |
 |---|---|---|
