@@ -40,7 +40,12 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-10-13 (pcb-lazy-netlist-and-checks Slices 2–3
+**Last reviewed:** 2026-10-14 (soft pin + preferred-number snap shipped on
+`pcb-place`, committed not landed: instance meta `max_travel_mm` leash
+(`op='move'` or component key) and opt-in `op='place' snap=true` —
+the two Reto-approved taz15 follow-ons; the `pcb-soft-pin.md` /
+`pcb-preferred-placement.md` spec items landed 6f06e677c and are deleted
+as shipped). 2026-10-13 (pcb-lazy-netlist-and-checks Slices 2–3
 shipped on `bl-pcb-netlist-s23`, committed not merged: declare-all pins +
 §1j intent markers + `undeclared_pad` + phase-aware `unconnected_pin`;
 both pad disc-approximations verified polygon-aware — the RESV

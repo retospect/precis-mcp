@@ -555,6 +555,8 @@ class PcbHandler(Handler):
                 "rot",
                 "rot_deg",
                 "fixed",
+                "max_travel_mm",
+                "snap",
                 "net",
                 "a",
                 "b",
@@ -1131,6 +1133,8 @@ class PcbHandler(Handler):
             params["iters"] = int(opts["iters"])
         if opts.get("seed") is not None:
             params["seed"] = int(opts["seed"])
+        if op == "place" and opts.get("snap") is not None:
+            params["snap"] = bool(opts["snap"])
         if op == "route" and opts.get("warm_start") is not None:
             warm_start = opts["warm_start"]
             if warm_start not in ("distance", "radial"):
@@ -1271,14 +1275,37 @@ class PcbHandler(Handler):
         kwargs = self._pose_kwargs(args)
         if "fixed" in args:
             kwargs["fixed"] = args["fixed"]
+        if "max_travel_mm" in args:
+            pin = args["max_travel_mm"]
+            if pin is None:
+                # explicit null clears the soft pin (meta - 'max_travel_mm')
+                kwargs["meta"] = {"max_travel_mm": None}
+            else:
+                try:
+                    pin_mm = float(pin)
+                except (TypeError, ValueError):
+                    raise BadInput(
+                        f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})"
+                    ) from None
+                if not math.isfinite(pin_mm) or pin_mm < 0:
+                    raise BadInput(
+                        f"pcb: max_travel_mm must be a number of mm >= 0 "
+                        f"(got {pin!r}); null clears the pin"
+                    )
+                kwargs["meta"] = {"max_travel_mm": pin_mm}
         if not kwargs:
             raise BadInput(
-                "op='move' needs at least one of x / y / rot / fixed",
+                "op='move' needs at least one of x / y / rot / fixed / max_travel_mm",
                 next="args={'op':'move','refdes':'U1','fixed':'xy'}",
             )
         if {"x", "y", "rot"} & kwargs.keys():
             group_body = self._move_poses(ref, [(refdes, kwargs)], single_form=True)
             if group_body is not None:
+                # the rigid-group path writes poses via pcb_move_groups,
+                # which carries `fixed` as `lock` but has no meta arm —
+                # the soft pin (or any instance-meta patch) applies here.
+                if kwargs.get("meta") is not None:
+                    self.store.pcb_move_instance(ref.id, refdes, meta=kwargs["meta"])
                 return Response(body=group_body)
             standing = self._refuse_illegal_pose(ref, refdes, kwargs)
         else:

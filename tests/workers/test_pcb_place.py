@@ -142,6 +142,70 @@ def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
     assert (j1["x"], j1["y"]) == (0.0, 0.0)
 
 
+def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
+    """``snap=true`` runs the preferred-number pass and stamps
+    ``meta.preferred_snap`` on every part it moved; a ``max_travel_mm``
+    instance is reported on the summary's soft-pin line. The frozen part
+    is never snapped."""
+    args = {
+        "components": [
+            {
+                "refdes": "A",
+                "label": "ic",
+                "x": 0.0,
+                "y": 0.0,
+                "fixed": "both",
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "B",
+                "label": "ic",
+                "x": 8.0,
+                "y": 8.0,
+                "max_travel_mm": 2.0,
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
+            {
+                "refdes": "C",
+                "label": "ic",
+                "x": 30.13,
+                "y": 30.37,
+                "pins": [{"name": str(p)} for p in range(1, 7)],
+            },
+        ],
+        "nets": [{"name": "N", "class": "signal"}],
+        "connections": [
+            {"net": "N", "refdes": "A", "pin": "1"},
+            {"net": "N", "refdes": "B", "pin": "1"},
+        ],
+    }
+    ref_id = _seed(store, "place-snap", args)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "iters": 100, "seed": 1, "snap": True},
+    )
+    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    summary = ctx.summaries[0][1]
+    assert "soft-pinned travel used: B " in summary
+    assert "preferred snap:" in summary
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT refdes, meta->'preferred_snap' FROM pcb_instances "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchall()
+    snapped = {r[0]: r[1] for r in rows if r[1] is not None}
+    assert "A" not in snapped  # frozen parts are never snapped
+    assert "C" in snapped and snapped["C"]["pitch_mm"] == 0.5
+    if "B" in snapped:
+        # a soft pin may only snap inside its leash
+        assert abs(snapped["B"]["x"] - 8.0) <= 2.0 + 1e-9
+        assert abs(snapped["B"]["y"] - 8.0) <= 2.0 + 1e-9
+
+
 def test_pcb_place_reapplies_persisted_plane_without_writing_back(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

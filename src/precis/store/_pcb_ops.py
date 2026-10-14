@@ -623,7 +623,11 @@ class PcbMixin:
         ``part``/``part_lcsc``, ``footprint``, ``courtyard``, ``centroid``,
         ``height_mm``, ``x``, ``y``, ``rot``, ``layer``, ``fixed``,
         ``roles``, ``note``, ``pins`` (``[{name, pad?, tags?,
-        description?, note?}]``). A *net* dict: ``name`` (req),
+        description?, note?}]``). Placement-constraint keys ride the
+        instance's ``meta``: ``group``/``group_offset``,
+        ``pattern``/``pattern_instance``, ``edge_mate``, and the soft pin
+        ``max_travel_mm`` (mm a placer may move the part from its stored
+        pose; rotation held). A *net* dict: ``name`` (req),
         ``net_class``/``class``, ``est_current_a``/``current``,
         ``width_mm``/``width``, ``note``, and the 0171 spec annotations
         ``working_voltage_v``/``voltage``, ``edge_rate_v_per_ns``/
@@ -1589,10 +1593,11 @@ class PcbMixin:
         c: dict[str, Any],
     ) -> int:
         # Placement-constraint fields ride `meta` (jsonb) rather than
-        # columns: `group`/`group_offset` (rigid super-footprint) and
-        # `pattern`/`pattern_instance` (repeated-tile identity) are read
-        # back verbatim by `pcb_graph`, which hoists them onto the
-        # instance dict for `precis.pcb.ir.from_graph` to parse.
+        # columns: `group`/`group_offset` (rigid super-footprint),
+        # `pattern`/`pattern_instance` (repeated-tile identity) and
+        # `max_travel_mm` (the soft pin) are read back verbatim by
+        # `pcb_graph`, which hoists them onto the instance dict for
+        # `precis.pcb.ir.from_graph` to parse.
         meta = {
             k: c[k]
             for k in (
@@ -1601,6 +1606,7 @@ class PcbMixin:
                 "pattern",
                 "pattern_instance",
                 "edge_mate",
+                "max_travel_mm",
             )
             if c.get(k) is not None
         }
@@ -2202,6 +2208,7 @@ class PcbMixin:
                             "pattern",
                             "pattern_instance",
                             "edge_mate",
+                            "max_travel_mm",
                         )
                         if k in (r[12] or {})
                     },
@@ -2735,6 +2742,7 @@ class PcbMixin:
         rot: float | None = None,
         layer: str | None = None,
         fixed: str | None = _UNSET,
+        meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
     ) -> bool:
         """The inline move/rotate/(un)lock editor. Unlike
@@ -2745,9 +2753,12 @@ class PcbMixin:
         so a caller can pass ``fixed=None`` to explicitly CLEAR the lock,
         distinct from omitting it (leave the lock alone). ``layer``
         (``top``/``bottom``) is the side — an EasyEDA ``--update`` carries
-        a flip as an edit like any other. Reuses ``conn`` inside an existing
-        transaction. Returns whether a live instance was found and
-        updated."""
+        a flip as an edit like any other. ``meta`` merges a patch into the
+        instance's jsonb; a ``None`` value DELETES the key (``meta - 'k'``),
+        which is how ``max_travel_mm`` is cleared — the soft pin lives on
+        instance meta, same as ``group``/``edge_mate``. Reuses ``conn``
+        inside an existing transaction. Returns whether a live instance was
+        found and updated."""
         sets: list[str] = []
         params: list[Any] = []
         if x is not None:
@@ -2765,6 +2776,10 @@ class PcbMixin:
         if fixed is not _UNSET:
             sets.append("fixed = %s")
             params.append(fixed)
+        if meta is not None:
+            sets.append("meta = (meta - %s::text[]) || %s::jsonb")
+            params.append([k for k, v in meta.items() if v is None])
+            params.append(Jsonb({k: v for k, v in meta.items() if v is not None}))
         if not sets:
             return False
         params += [ref_id, refdes]

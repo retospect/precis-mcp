@@ -55,7 +55,23 @@ executor lane (see `precis-job-help`).
   reproducibility). `fixed='xy'|'rot'|'both'` on a component (set at
   authoring time, or via `op='move'` below) is respected by both — a
   locked instance is never moved, guaranteed at the database write
-  boundary, not just by the optimizer's own move generators.
+  boundary, not just by the optimizer's own move generators. A softer
+  pin exists: component field `max_travel_mm` (or
+  `op='move' ... 'max_travel_mm': <mm>`, `null` clears) lets the placer
+  move the part at most that far from its stored pose with rotation held;
+  `0` behaves like `fixed='both'`. The job summary reports the travel each
+  soft-pinned part used.
+- `op='place'` also accepts `snap` (bool, default `false`): a
+  deterministic post-anneal pass that snaps each non-frozen part's centre
+  onto a part-scaled grid (its own pin pitch for connectors/headers over
+  1mm — 2.54/1.27; 0.5mm general; 0.1mm for <=4-pin parts) and rotation to
+  the nearest 90°. A snap the legality gate rejects keeps the unsnapped
+  pose; hard `align` operands are left alone (hard aligns win);
+  soft-pinned parts snap only inside their leash. Snapped parts get
+  `meta.preferred_snap` stamped. Idempotent.
+
+## Route job options, idempotency and the autoplace alias
+
 - Route `warm_start` defaults to `"distance"` (connected via→pad Manhattan
   distance before annealing); missing via terminals use radial. `"radial"`
   selects the old path. `last_route.warm_start` reports each group's method

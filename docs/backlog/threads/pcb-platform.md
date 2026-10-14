@@ -95,12 +95,15 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   anything in Do-next 2/3 that assumes part selection is a search. Recorded
   in gr458878.
 
-- **backlog/pcb-soft-pin.md** — `draft`; `fixed` with a `max_travel_mm`
-  box (rotation held). First use: taz15 CN2/CN5 courtyard overlap, after
-  the `_sides_clear` THT side fix. Reto approved 2026-10-14.
-- **backlog/pcb-preferred-placement.md** — `idea/low`; post-anneal
-  round-value snap (grid by part class, rotation to 90 deg), wells in the
-  anneal later. Build next time, per Reto 2026-10-14.
+- **soft pin + preferred-number snap — SHIPPED** on `pcb-place`
+  (committed not landed, Reto approved 2026-10-14): instance meta
+  `max_travel_mm` leash (`op='move'`/component key, rotation held,
+  `0` ≡ `fixed='both'`) and opt-in `op='place' snap=true` (part-scaled
+  grid + 90° rotation, legality-gated, idempotent). taz15 CN2/CN5 still
+  needs the pin applied — pcbfixes-c2's job after the `_sides_clear` fix
+  lands. Still open from the item: preferred.py wells as an anneal cost
+  term, only if the snap pass's rejection rate shows parts left
+  unsnapped.
 
 ## Parked
 

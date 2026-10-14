@@ -53,6 +53,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "pcb_ref_id": {"type": "integer"},
         "iters": {"type": "integer", "minimum": 1},
         "seed": {"type": "integer"},
+        "snap": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -120,11 +121,32 @@ def _legalized_note(refdes: tuple[str, ...]) -> str:
     )
 
 
+def _soft_pin_note(travel: dict[str, float]) -> str:
+    """The job summary's per-part travel report for soft-pinned
+    (``max_travel_mm``) instances — the leash the anneal honoured, shown
+    so a bounded part's movement is auditable rather than silent."""
+    if not travel:
+        return ""
+    shown = ", ".join(f"{r} {mm:g}mm" for r, mm in sorted(travel.items()))
+    return f"soft-pinned travel used: {shown}\n\n"
+
+
+def _preferred_snap_note(snapped: dict[str, dict[str, float]]) -> str:
+    """The job summary's line naming parts the preferred-number snap moved
+    (``op='place' snap=true``), grid pitch per part — empty when the pass
+    was off or nothing moved."""
+    if not snapped:
+        return ""
+    shown = ", ".join(f"{r} @{s['pitch_mm']:g}mm" for r, s in sorted(snapped.items()))
+    return f"preferred snap: {shown}\n\n"
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
     iters = int(params.get("iters") or _DEFAULT_ITERS)
     seed = int(params.get("seed") or 0)
+    snap = bool(params.get("snap") or False)
 
     graph = ctx.store.pcb_graph(pcb_ref_id)
     if not graph.get("instances"):
@@ -209,7 +231,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     )
 
     config = OptimizeConfig(
-        iters=iters, seed=seed, schedule=_PLACE_ONLY_SCHEDULE, measures=measures
+        iters=iters,
+        seed=seed,
+        schedule=_PLACE_ONLY_SCHEDULE,
+        measures=measures,
+        preferred_snap=snap,
     )
     result = optimize(ir, config)
 
@@ -231,6 +257,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # every align the snap did not close this run.
     if any(spec.metric == "align" for spec in measures):
         ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
+
+    # Preferred-number snap (op='place' snap=true): the pose write above
+    # already persisted the snapped positions; this stamps WHY they moved
+    # on each instance's meta so a later `view`/`get` can tell a snap from
+    # an anneal landing. The stamp records the snapped pose — clearing it
+    # is the author's call (`op='move'`), never this job's.
+    for refdes, stamp in result.preferred_snapped.items():
+        ctx.store.pcb_move_instance(pcb_ref_id, refdes, meta={"preferred_snap": stamp})
 
     # Pre-route DRC gate at the END of place (the bug this closes): nothing
     # ran a geometric check between placement and routing, so an already-
@@ -306,6 +340,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"cost {result.cost_before:.4f} -> {result.cost_after:.4f}, "
         f"{n_placement_errors} pre-route DRC error(s)\n\n"
         + _legalized_note(result.legalized)
+        + _soft_pin_note(result.soft_pin_travel_mm)
+        + _preferred_snap_note(result.preferred_snapped)
         + _on_fixed_vias_note(result.on_fixed_vias)
         + digest_toon(result),
     )

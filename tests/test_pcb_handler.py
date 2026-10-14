@@ -1390,6 +1390,37 @@ def test_op_move_rot_bad_unit_rejected(pcb):
         pcb.put(id="op-move-rot2", args={"op": "move", "refdes": "A", "rot": "3 mm"})
 
 
+def test_op_move_max_travel_mm_sets_and_clears_the_soft_pin(pcb, store):
+    """The soft pin lives on instance ``meta`` (Reto 2026-10-14): op='move'
+    authors it, ``pcb_graph`` hoists it for ``from_graph``, null clears."""
+    pcb.put(id="op-move-pin", args=_CROSSED)
+    resp = pcb.put(
+        id="op-move-pin",
+        args={"op": "move", "refdes": "A", "max_travel_mm": 0.5},
+    )
+    assert "moved" in resp.body
+    ref = store.get_ref(kind="pcb", id="op-move-pin")
+    assert ref is not None
+    inst = next(i for i in store.pcb_graph(ref.id)["instances"] if i["refdes"] == "A")
+    assert inst["max_travel_mm"] == 0.5
+
+    pcb.put(
+        id="op-move-pin",
+        args={"op": "move", "refdes": "A", "max_travel_mm": None},
+    )
+    inst = next(i for i in store.pcb_graph(ref.id)["instances"] if i["refdes"] == "A")
+    assert "max_travel_mm" not in inst
+
+
+def test_op_move_max_travel_mm_rejects_a_negative(pcb):
+    pcb.put(id="op-move-pin-neg", args=_CROSSED)
+    with pytest.raises(BadInput, match="max_travel_mm"):
+        pcb.put(
+            id="op-move-pin-neg",
+            args={"op": "move", "refdes": "A", "max_travel_mm": -1.0},
+        )
+
+
 def test_op_move_onto_another_part_is_refused_naming_the_rule_and_part(pcb, store):
     """docs/backlog/pcb-always-valid-board-invariant.md acceptance: a move
     that would overlap another part's courtyard is refused, and the board

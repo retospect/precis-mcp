@@ -1448,7 +1448,16 @@ def content_hash(
         }
     """
     instances = sorted(
-        (i["refdes"], i.get("x"), i.get("y"), i.get("rot"), i.get("fixed"))
+        (
+            i["refdes"],
+            i.get("x"),
+            i.get("y"),
+            i.get("rot"),
+            i.get("fixed"),
+            # the soft pin is placement input like `fixed` itself — a
+            # pin change must not collapse onto a job run without it.
+            i.get("max_travel_mm"),
+        )
         for i in graph.get("instances") or []
     )
     nets = sorted(

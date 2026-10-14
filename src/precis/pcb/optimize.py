@@ -150,6 +150,35 @@ lazy-deletion max-heap is the production-scale fix, not built.
 :func:`precis.pcb.cost.hardened_penalty`'s ``schedule`` linearly 0
 (exploratory) → 1 (barrier) over the anneal's iteration count — no second
 hardening mechanism.
+
+**Soft pins** (``max_travel_mm`` — instance meta, on the IR as
+:attr:`~precis.pcb.ir.PcbIR.inst_max_travel_mm`): an authored leash on how
+far an instance's centre may travel from the pose it held at engine
+construction. It is not a cost term — it works through the same machinery
+``fixed`` does: :meth:`OptimizeEngine.bounds_for` intersects the board
+domain with a ±budget box around the (copied) anchor pose, and
+:meth:`OptimizeEngine._placement_is_legal` additionally caps Euclidean
+travel at the budget itself (the box's corners sit ``t·√2`` out). A
+finite pin also holds rotation — a part on a leash may not spin, since
+rotating swings off-centre pads through an arc the budget never capped —
+and a budget of ``0`` joins the ``_movable_xy`` exclusion and so behaves
+exactly like ``fixed='both'``. Hand edits (``op='move'``) are the
+authorized path and ignore it, like they ignore ``fixed``.
+
+**Preferred-number snap** (``OptimizeConfig.preferred_snap``, off by
+default): the anneal's cost never values a round coordinate, so a "good"
+placement still carries 10.137-style positions a human reader can't
+transcribe. :meth:`OptimizeEngine.snap_to_preferred` is a deterministic
+post-anneal cleanup — strictly after :meth:`snap_hard_aligns` (hard
+aligns win) and after the cosmetic outline recentre — that rounds each
+non-frozen part's centre onto a grid scaled to the part and its rotation
+onto the nearest 90°, every candidate gated by the same
+:meth:`_placement_is_legal` a generated move takes. The grid is the
+part's own pin pitch when that exceeds 1 mm (connectors and headers land
+on the round pitch their pins already carry — 2.54, 1.27, a JST's own
+spacing), 0.1 mm for parts of <=4 pins (the small-passive floor), 0.5 mm
+otherwise. Details in :meth:`snap_to_preferred`; the engineer-facing
+design note is ``docs/backlog/threads/pcb-platform.md``.
 """
 
 from __future__ import annotations
@@ -707,6 +736,19 @@ class OptimizeConfig:
     #: default: an optimizer-DERIVED plane assignment stays fully
     #: explorable, only a human's stays fixed.
     locked_plane_nets: frozenset[int] = frozenset()
+    #: Opt-in deterministic cleanup: when ``True``, :func:`optimize` runs
+    #: :meth:`OptimizeEngine.snap_to_preferred` after the anneal's restore
+    #: and :meth:`snap_hard_aligns` — every non-frozen part's centre is
+    #: rounded onto a grid scaled to the part (its own pin pitch when that
+    #: exceeds 1mm — a 2.54 header lands on a 2.54 grid; ``0.1`` for small
+    #: passives; ``0.5`` general) and its rotation onto the nearest
+    #: 90°. A snap that fails :meth:`_placement_is_legal` keeps the
+    #: unsnapped pose; a soft-pinned part may only snap inside its leash;
+    #: hard-align operands are left to :meth:`snap_hard_aligns`
+    #: (``preferred_snap`` runs strictly after it and never re-touches
+    #: them — hard aligns win). ``False`` by default — an anneal without
+    #: the flag is bit-for-bit the run it was.
+    preferred_snap: bool = False
     #: Author-supplied placement measures (``put(args={'measures':[...]})``,
     #: see precis-measures-help) as pre-resolved :class:`MeasureSpec`\\ s —
     #: :func:`resolve_measures` is the caller-side conversion from
@@ -924,6 +966,18 @@ class OptimizeResult:
     #: :meth:`OptimizeEngine.snap_hard_aligns` closed (so the caller can
     #: stamp ``meta.snapped`` on the row; a lucky anneal is not in here).
     snapped: tuple[int, ...] = ()
+    #: refdes -> mm of centre travel each soft-pinned part actually used
+    #: (Euclidean displacement from the pose it held when the engine was
+    #: constructed — always <= its ``max_travel_mm``). Empty when the
+    #: design authors no soft pins; the report exists so a job summary
+    #: shows the leash was honoured rather than silently ignored.
+    soft_pin_travel_mm: dict[str, float] = field(default_factory=dict)
+    #: refdes -> the post-pose stamp
+    #: ``{'x','y','rot','pitch_mm','dx','dy'}`` for every part
+    #: :meth:`OptimizeEngine.snap_to_preferred` moved — the caller stamps
+    #: it onto instance ``meta['preferred_snap']``; empty when
+    #: :attr:`OptimizeConfig.preferred_snap` was off.
+    preferred_snapped: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 # ── constructive seed: connectivity clustering + cluster drop ───────────
@@ -1705,6 +1759,14 @@ def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
         return (0.0, 0.0)
     if any(bool(ir.inst_fixed_xy[i]) for i in placed):
         return (0.0, 0.0)
+    # A soft pin (inst_max_travel_mm) anchors to the pose the instance
+    # held when the engine started — a rigid shift of the whole pack is
+    # that part travelling with no move to show for it, so any authored
+    # pin vetoes the shift the same way a lock does.
+    mt = ir.inst_max_travel_mm
+    if mt is not None and len(mt) == ir.n_instances:
+        if any(math.isfinite(float(mt[i])) for i in placed):
+            return (0.0, 0.0)
     # Authored vias are fixed to the BOARD, like a locked part: sliding
     # the pack past them can park a land on one after the anneal cleared it.
     if ir.fixed_vias:
@@ -1993,6 +2055,31 @@ class OptimizeEngine:
             g: tuple(sorted(m)) for g, m in _members.items()
         }
 
+        #: The SOFT pin (:attr:`PcbIR.inst_max_travel_mm` — instance meta
+        #: ``max_travel_mm``): a per-instance leash on x/y travel measured
+        #: from the pose the instance held AT CONSTRUCTION (post-seed,
+        #: pre-move — ``optimize()`` seeds first, so an unplaced part's
+        #: pin anchors at its seeded pose). ``_soft_pin_anchor`` is a COPY:
+        #: moves write ``inst_x``/``inst_y`` in place, so reading the pin
+        #: budget off the live arrays would let a part creep one move at
+        #: a time past any bound. ``NaN`` = unpinned. A finite pin also
+        #: holds ROTATION (a leash that lets a part spin swings its pads
+        #: through a circle whose radius the budget never capped); a pin
+        #: of ``0`` (or negative) leaves no room at all, so it joins the
+        #: xy mask too and behaves exactly like ``fixed='both'`` — the
+        #: same exclusion a real ``fixed`` gets, including the group-mate
+        #: sweep in ``_movable``.
+        raw_pin = ir.inst_max_travel_mm
+        self._soft_pin_mm = (
+            np.array(raw_pin, dtype=np.float64).reshape(n)
+            if raw_pin is not None and len(raw_pin) == n
+            else np.full(n, math.nan)
+        )
+        self._soft_pin_anchor = np.column_stack([ir.inst_x, ir.inst_y]).astype(
+            np.float64
+        )
+        _pinned = np.isfinite(self._soft_pin_mm)
+
         def _movable(fixed: np.ndarray) -> list[int]:
             # An instance is only movable if NEITHER it nor any of its
             # own group-mates is fixed on this axis — a rigid body can't
@@ -2010,8 +2097,10 @@ class OptimizeEngine:
                 out.append(i)
             return out
 
-        self._movable_xy = _movable(ir.inst_fixed_xy)
-        self._movable_rot = _movable(ir.inst_fixed_rot)
+        self._movable_xy = _movable(
+            ir.inst_fixed_xy | (_pinned & (self._soft_pin_mm <= 0.0))
+        )
+        self._movable_rot = _movable(ir.inst_fixed_rot | _pinned)
         self._movable_set = frozenset(self._movable_xy) | frozenset(self._movable_rot)
         self.board_side = max(20.0, 6.0 * math.sqrt(max(n, 1)))
         #: TRANSLATE's clamp bounds (module docstring's board_edge_
@@ -2990,6 +3079,154 @@ class OptimizeEngine:
                 snapped.append(int(spec.measure_id))
         return tuple(snapped)
 
+    def _preferred_snap_grid_mm(self, inst: int) -> float:
+        """The grid pitch one instance snaps to (the preferred-number snap,
+        :meth:`snap_to_preferred`): the part's own pin pitch when that
+        exceeds 1mm — connectors and THT headers then land on the same
+        round pitch their pins carry (2.54, 1.27, a JST's own pitch);
+        0.1 for a part of <=4 pins (small passives — the floor, not a
+        suggestion); 0.5 for everything else."""
+        ir = self.ir
+        dxs: set[float] = set()
+        dys: set[float] = set()
+        n_pins = 0
+        for p in range(ir.n_pins):
+            if int(ir.pin_instance[p]) != inst:
+                continue
+            n_pins += 1
+            dxs.add(round(float(ir.pin_dx[p]), 4))
+            dys.add(round(float(ir.pin_dy[p]), 4))
+        if not n_pins:
+            # A part whose pads came from a real footprint but no netlist
+            # pin (an unconnected connector) still has a pitch.
+            for pad in ir.footprint_pads:
+                if pad.instance == inst:
+                    n_pins += 1
+                    dxs.add(round(float(pad.raw.get("x", 0.0)), 4))
+                    dys.add(round(float(pad.raw.get("y", 0.0)), 4))
+        pitch = min(
+            (
+                b - a
+                for offs in (dxs, dys)
+                for a, b in zip(sorted(offs), sorted(offs)[1:])
+                if b - a > 1e-3
+            ),
+            default=None,
+        )
+        if pitch is not None and pitch > 1.0 + 1e-9:
+            return pitch
+        return 0.1 if 0 < n_pins <= 4 else 0.5
+
+    def snap_to_preferred(self) -> dict[int, dict[str, float]]:
+        """Deterministic post-anneal preferred-number snap (opt-in via
+        :attr:`OptimizeConfig.preferred_snap`).
+
+        Rounds every non-frozen part's centre onto the part-scaled grid of
+        :meth:`_preferred_snap_grid_mm` and its rotation onto the nearest
+        90°, both gated by :meth:`_placement_is_legal` (the same courtyard
+        / mounting-hole / authored-via / outline / soft-pin-bounds check a
+        generated move takes) — a snap the gate refuses leaves the
+        unsnapped pose. Runs AFTER :meth:`snap_hard_aligns` and skips any
+        operand of a hard align outright: hard aligns win. A rigid group's
+        translate snap is applied to the whole body by the same delta
+        (the pivot keeps rigidity; the group is skipped entirely when any
+        member is frozen or hard-aligned); rotation is snapped only for
+        ungrouped, rotation-free parts. Soft-pinned parts snap like free
+        ones — the pin's own bound is inside the legality gate.
+
+        Idempotent: a second call sees every surviving pose already on
+        its grid and returns ``{}``. Returns ``inst -> {'x','y','rot',
+        'pitch_mm','dx','dy'}`` for the parts that actually moved, so the
+        caller can stamp instance meta (grid used and the delta it caused,
+        per docs/backlog/pcb-preferred-placement.md)."""
+        ir = self.ir
+        # Any operand of a steering hard align is that measure's, not the
+        # grid's — skip it (and its rigid group) whole.
+        hard_paired = {
+            inst
+            for a, b, spec in self._measure_pairs
+            if spec.metric == "align" and spec.hard and spec.weight > 0.0
+            for inst in (a, b)
+            if inst >= 0
+        }
+        snapped: dict[int, dict[str, float]] = {}
+        done: set[int] = set()  # group members already moved rigidly
+        refdes_order = sorted(
+            range(ir.n_instances), key=lambda i: str(ir.instance_refdes[i])
+        )
+        for inst in refdes_order:
+            if inst in done:
+                continue
+            members = self._rigid_members(inst)
+            if (
+                math.isnan(float(ir.inst_x[inst]))
+                or math.isnan(float(ir.inst_y[inst]))
+                or any(bool(ir.inst_fixed_xy[m]) for m in members)
+                or any(m in hard_paired for m in members)
+            ):
+                continue
+            grid = self._preferred_snap_grid_mm(inst)
+            x, y, rot = (
+                float(ir.inst_x[inst]),
+                float(ir.inst_y[inst]),
+                float(ir.inst_rot[inst]),
+            )
+            tx, ty = round(x / grid) * grid, round(y / grid) * grid
+            dx, dy = tx - x, ty - y
+            if abs(dx) > 1e-9 or abs(dy) > 1e-9:
+                old = tuple(
+                    (
+                        float(ir.inst_x[m]),
+                        float(ir.inst_y[m]),
+                        float(ir.inst_rot[m]),
+                    )
+                    for m in members
+                )
+                proposals = [
+                    (m, xx + dx, yy + dy) for m, (xx, yy, _r) in zip(members, old)
+                ]
+                if self._placement_is_legal(proposals):
+                    new = tuple((xx + dx, yy + dy, r) for xx, yy, r in old)
+                    self.apply_move(Move(MoveKind.TRANSLATE, members, old, new))
+                    done.update(members)
+                    # Only the snapped instance is stamped: a rigid-group
+                    # follower moved to keep the body whole, not to land on
+                    # ITS grid — its stamp would claim a pose it doesn't
+                    # have.
+                    snapped[inst] = {
+                        "x": tx,
+                        "y": ty,
+                        "rot": rot,
+                        "pitch_mm": grid,
+                        "dx": dx,
+                        "dy": dy,
+                    }
+            # Rotation: only an ungrouped, rotation-free part (a soft pin
+            # already holds it; a group member's spin would break the
+            # rigid body).
+            if len(members) == 1 and inst in self._movable_rot:
+                snapped_rot = round(rot / 90.0) * 90.0 % 360.0
+                if abs(snapped_rot - (rot % 360.0)) > 1e-9:
+                    x_now, y_now = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+                    if self._placement_is_legal(
+                        [(inst, x_now, y_now)], rotations={inst: snapped_rot}
+                    ):
+                        old = ((x_now, y_now, rot),)
+                        new = ((x_now, y_now, snapped_rot),)
+                        self.apply_move(Move(MoveKind.ROTATE, (inst,), old, new))
+                        if inst in snapped:
+                            snapped[inst]["rot"] = snapped_rot
+                        else:
+                            snapped[inst] = {
+                                "x": x_now,
+                                "y": y_now,
+                                "rot": snapped_rot,
+                                "pitch_mm": grid,
+                                "dx": 0.0,
+                                "dy": 0.0,
+                            }
+        return snapped
+
     # -- board-edge-clearance delta (O(1) per instance) -------------------
     def _refresh_board_edge(self, inst: int) -> None:
         t = board_edge_clearance_term(self.ir, inst, self.level, self.config.cost)
@@ -3227,6 +3464,23 @@ class OptimizeEngine:
             y0 = y1 = (y0 + y1) / 2.0
         else:
             y0, y1 = y0 + r, y1 - r
+        t = float(self._soft_pin_mm[inst])
+        if math.isfinite(t):
+            # A soft pin's own box: the stored pose ± the travel budget,
+            # intersected with the board domain (the fixed-filter shape —
+            # `_gen_translate` clamps its delta range to this, and
+            # `_placement_is_legal` refuses a proposal outside it). An
+            # EMPTY intersection is kept, not collapsed: a pin whose box
+            # misses the domain has no legal centre anywhere, and a
+            # collapsed midpoint would quietly permit exactly the move the
+            # pin exists to forbid.
+            ax, ay = (
+                float(self._soft_pin_anchor[inst, 0]),
+                float(self._soft_pin_anchor[inst, 1]),
+            )
+            if math.isfinite(ax) and math.isfinite(ay):
+                x0, x1 = max(x0, ax - t), min(x1, ax + t)
+                y0, y1 = max(y0, ay - t), min(y1, ay + t)
         return (x0, y0, x1, y1)
 
     def _rigid_members(self, inst: int) -> tuple[int, ...]:
@@ -3309,6 +3563,20 @@ class OptimizeEngine:
             x0, y0, x1, y1 = self.bounds_for(inst)
             if not (x0 <= x <= x1 and y0 <= y <= y1):
                 return False
+            t = float(self._soft_pin_mm[inst])
+            if math.isfinite(t):
+                # The pin budget is a distance, not a square: the
+                # ``bounds_for`` box above is the axis-wise filter (what
+                # the generators clamp into), but its corners sit
+                # ``t*sqrt(2)`` out — this caps travel itself at ``t``.
+                ax = float(self._soft_pin_anchor[inst, 0])
+                ay = float(self._soft_pin_anchor[inst, 1])
+                if (
+                    math.isfinite(ax)
+                    and math.isfinite(ay)
+                    and math.hypot(x - ax, y - ay) > t + 1e-9
+                ):
+                    return False
             dx, dy = ir.inst_x - x, ir.inst_y - y
             d2 = dx * dx + dy * dy
             d2[moving] = math.inf  # a part never collides with its own old slot
@@ -5043,6 +5311,17 @@ def optimize(
         for _a, _b, spec in engine._measure_pairs
     ):
         recentre_in_outline(ir)
+    preferred_snapped: dict[str, dict[str, float]] = {}
+    if config.preferred_snap:
+        # Cosmetic, post-measurement like the recentre above — and it
+        # MUST run after it: the snap lands parts on an absolute grid, so
+        # a rigid pack shift afterwards would slide them straight off it.
+        # Hard aligns still win: the pass runs after snap_hard_aligns
+        # and skips every hard-align operand itself.
+        preferred_snapped = {
+            str(ir.instance_refdes[i]): stamp
+            for i, stamp in engine.snap_to_preferred().items()
+        }
     positions = {
         str(ir.instance_refdes[i]): (
             float(ir.inst_x[i]),
@@ -5050,6 +5329,21 @@ def optimize(
             float(ir.inst_rot[i]),
         )
         for i in range(ir.n_instances)
+    }
+    soft_pin_travel_mm = {
+        str(ir.instance_refdes[i]): round(
+            math.hypot(
+                float(ir.inst_x[i]) - float(engine._soft_pin_anchor[i, 0]),
+                float(ir.inst_y[i]) - float(engine._soft_pin_anchor[i, 1]),
+            ),
+            4,
+        )
+        for i in range(ir.n_instances)
+        if math.isfinite(float(engine._soft_pin_mm[i]))
+        and math.isfinite(float(engine._soft_pin_anchor[i, 0]))
+        and math.isfinite(float(engine._soft_pin_anchor[i, 1]))
+        and math.isfinite(float(ir.inst_x[i]))
+        and math.isfinite(float(ir.inst_y[i]))
     }
     return OptimizeResult(
         seed=config.seed,
@@ -5068,6 +5362,8 @@ def optimize(
         legalized=legalized,
         restored_best_at=engine.restored_best_at,
         snapped=snapped,
+        soft_pin_travel_mm=soft_pin_travel_mm,
+        preferred_snapped=preferred_snapped,
     )
 
 

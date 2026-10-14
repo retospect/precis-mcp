@@ -40,7 +40,11 @@ from precis.pcb.cost import (
     courtyard_overlap_pair_term,
     evaluate_cost,
 )
-from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
+from precis.pcb.geom import (
+    convex_polygons_overlap,
+    convex_polygons_signed_separation,
+    point_in_polygon,
+)
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
     Level,
@@ -57,6 +61,7 @@ from precis.pcb.optimize import (
     MoveKind,
     OptimizeConfig,
     OptimizeEngine,
+    ScheduleStage,
     _hole_keepout_radius_mm,
     _hole_polygon,
     digest_toon,
@@ -72,17 +77,30 @@ _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pcb"
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
 
 
-def _board(n: int = 12, *, seed: int = 0, fixed: dict[int, str] | None = None) -> dict:
+def _board(
+    n: int = 12,
+    *,
+    seed: int = 0,
+    fixed: dict[int, str] | None = None,
+    max_travel: dict[int, float] | None = None,
+) -> dict:
     """A synthetic connectivity graph: a chain (guarantees every instance
     is reachable) plus a handful of 3-member nets (so gap_capacity,
     loop_inductance -- power/ground classes -- and coupling -- rf/clock
     classes -- all have live candidates). Pin labels are unique per
     (net, member) so from_graph never accidentally merges two nets onto
-    one physical pin."""
+    one physical pin. ``max_travel`` authors an instance's soft pin
+    (``meta.max_travel_mm``, hoisted by ``pcb_graph`` the way a real
+    design's is — the graph dict is the IR's input contract)."""
     fixed = fixed or {}
+    max_travel = max_travel or {}
     rng = random.Random(seed)
     instances = [
-        {"refdes": f"U{i}", **({"fixed": fixed[i]} if i in fixed else {})}
+        {
+            "refdes": f"U{i}",
+            **({"fixed": fixed[i]} if i in fixed else {}),
+            **({"max_travel_mm": max_travel[i]} if i in max_travel else {}),
+        }
         for i in range(n)
     ]
     nets = []
@@ -120,6 +138,7 @@ def _seeded_ir(
     graph_seed: int = 0,
     seed_rng_seed: int = 0,
     fixed=None,
+    max_travel=None,
     outline: bool = False,
 ):
     """``outline=True`` authors a generous board profile before seeding.
@@ -129,7 +148,7 @@ def _seeded_ir(
     board that has none (promoting there produces a net `realize.py` can
     only report as ``failed: unpourable_plane``). Off by default so every
     other test keeps the outline-less seeding it was written against."""
-    graph = _board(n, seed=graph_seed, fixed=fixed)
+    graph = _board(n, seed=graph_seed, fixed=fixed, max_travel=max_travel)
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     if outline:
         ir.outline = [
@@ -1174,6 +1193,340 @@ def test_fixed_flags_restrict_move_generator_membership():
     assert 0 not in engine._movable_xy and 0 in engine._movable_rot
     assert 1 not in engine._movable_xy and 1 not in engine._movable_rot
     assert 2 in engine._movable_xy and 2 not in engine._movable_rot
+
+
+# ── soft pin (max_travel_mm) ───────────────────────────────────────────
+def _far_apart_ir(*, max_travel: dict[int, float] | None = None):
+    """Two passive 2-pin parts 40mm apart, both inside the placement
+    domain — nothing between them can ever collide, so a legality verdict
+    reads the pin bound and nothing else."""
+    max_travel = max_travel or {}
+    graph = {
+        "instances": [
+            {
+                "refdes": f"U{i}",
+                "x": 10.0 + 30.0 * i,
+                "y": 10.0 + 30.0 * i,
+                **({"max_travel_mm": max_travel[i]} if i in max_travel else {}),
+            }
+            for i in range(2)
+        ],
+        "nets": [
+            {
+                "name": "N0",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "a"},
+                    {"refdes": "U1", "pin": "b"},
+                ],
+            }
+        ],
+    }
+    return from_graph(graph, stackup=DEFAULT_STACKUP)
+
+
+def test_soft_pin_bounds_for_is_the_anchor_box_intersected():
+    """bounds_for shrinks the domain per instance by the keep-out radius;
+    a soft pin intersects that with the ±max_travel_mm box around the
+    stored pose — when the pin box sits inside the shrunken domain it IS
+    the whole bound."""
+    ir = _far_apart_ir(max_travel={0: 0.5})
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=0))
+    ax, ay = float(ir.inst_x[0]), float(ir.inst_y[0])
+    x0, y0, x1, y1 = engine.bounds_for(0)
+    assert (x0, y0, x1, y1) == pytest.approx((ax - 0.5, ay - 0.5, ax + 0.5, ay + 0.5))
+
+
+def test_soft_pin_radial_cap_rejects_inside_the_box_corners():
+    """The bounds_for box is per-axis; the pin itself is a distance —
+    a corner of the box is inside the box but outside the travel cap."""
+    ir = _far_apart_ir(max_travel={0: 0.5})
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=0))
+    ax, ay = float(ir.inst_x[0]), float(ir.inst_y[0])
+    assert engine._placement_is_legal([(0, ax + 0.45, ay)])
+    assert not engine._placement_is_legal([(0, ax + 0.45, ay + 0.45)])
+
+
+def test_soft_pin_never_leaves_its_box_over_a_real_anneal():
+    ir = _seeded_ir(10, graph_seed=31, seed_rng_seed=31, max_travel={2: 0.5})
+    ax, ay = float(ir.inst_x[2]), float(ir.inst_y[2])
+    result = optimize(ir, OptimizeConfig(seed=31, iters=600))
+    x, y, _rot = result.positions["U2"]
+    assert math.hypot(x - ax, y - ay) <= 0.5 + 1e-9
+    assert result.soft_pin_travel_mm["U2"] == pytest.approx(
+        math.hypot(x - ax, y - ay), abs=1e-4
+    )
+    # unpinned neighbours still report nothing
+    assert set(result.soft_pin_travel_mm) == {"U2"}
+
+
+def test_soft_pin_holds_rotation_over_a_rotate_only_anneal():
+    ir = _seeded_ir(8, graph_seed=32, seed_rng_seed=32, max_travel={2: 0.5})
+    engine = OptimizeEngine(
+        ir,
+        OptimizeConfig(
+            seed=32,
+            iters=300,
+            schedule=(ScheduleStage(1.0, {MoveKind.ROTATE: 1.0}),),
+        ),
+    )
+    assert 2 not in engine._movable_rot
+    assert 2 in engine._movable_xy
+    rot0 = float(ir.inst_rot[2])
+    engine.anneal(random.Random(32))
+    assert float(ir.inst_rot[2]) == rot0
+    # sanity: the run really did exercise rotation on unpinned parts
+    assert any(m.accepted and m.kind == "rotate" for m in engine.moves), (
+        "rotate-only anneal accepted no rotations — the pin claim is untested"
+    )
+
+
+def test_soft_pin_zero_behaves_like_fixed_both():
+    ir = _seeded_ir(8, graph_seed=33, seed_rng_seed=33, max_travel={3: 0.0})
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=33, iters=400))
+    assert 3 not in engine._movable_xy and 3 not in engine._movable_rot
+    before = (
+        float(ir.inst_x[3]),
+        float(ir.inst_y[3]),
+        float(ir.inst_rot[3]),
+    )
+    engine.anneal(random.Random(33))
+    assert (
+        float(ir.inst_x[3]),
+        float(ir.inst_y[3]),
+        float(ir.inst_rot[3]),
+    ) == before
+
+
+def _taz15_headers_graph(*, pin: float | None, fixed: bool) -> dict:
+    """Two frozen/placed 1x4 THT headers whose courtyard polygons overlap
+    0.225mm while their 1.0mm pads stay 0.575mm clear — the shape the
+    prod `taz15` board carries (Reto 2026-10-14): locked in by hand, so
+    the placer could never separate them. A soft pin gives legalize_start
+    room to fix what 'both' cannot."""
+
+    def hdr(refdes: str, y: float) -> dict:
+        inst = {"refdes": refdes, "label": "Pin Header 1x4", "x": 10.0, "y": y}
+        if fixed:
+            inst["fixed"] = "both"
+        if pin is not None:
+            inst["max_travel_mm"] = pin
+        return inst
+
+    return {
+        "instances": [hdr("J1", 10.0), hdr("J2", 11.575)],
+        "nets": [],
+        "unconnected": [
+            {"refdes": refdes, "pin": str(p)}
+            for refdes in ("J1", "J2")
+            for p in range(1, 5)
+        ],
+    }
+
+
+def test_soft_pin_taz15_headers_clear_the_courtyard_overlap():
+    def overlap_mm() -> float:
+        ir = from_graph(
+            _taz15_headers_graph(pin=0.5, fixed=False), stackup=DEFAULT_STACKUP
+        )
+        engine = OptimizeEngine(ir, OptimizeConfig(seed=0))
+        return -convex_polygons_signed_separation(
+            engine._world_courtyard(0), engine._world_courtyard(1)
+        )
+
+    assert overlap_mm() == pytest.approx(0.225, abs=1e-3)
+
+    # The frozen arm stays overlapped forever — the fixture's premise.
+    frozen = from_graph(
+        _taz15_headers_graph(pin=None, fixed=True), stackup=DEFAULT_STACKUP
+    )
+    optimize(frozen, OptimizeConfig(seed=0, iters=200))
+    frozen_engine = OptimizeEngine(frozen, OptimizeConfig(seed=0))
+    assert not frozen_engine._placement_is_legal(
+        [(0, float(frozen.inst_x[0]), float(frozen.inst_y[0]))]
+    )
+
+    pinned = from_graph(
+        _taz15_headers_graph(pin=0.5, fixed=False), stackup=DEFAULT_STACKUP
+    )
+    result = optimize(pinned, OptimizeConfig(seed=0, iters=200))
+    pinned_engine = OptimizeEngine(pinned, OptimizeConfig(seed=0))
+    assert pinned_engine._placement_is_legal(
+        [(i, float(pinned.inst_x[i]), float(pinned.inst_y[i])) for i in range(2)]
+    )
+    for refdes in ("J1", "J2"):
+        assert result.soft_pin_travel_mm[refdes] <= 0.5 + 1e-9
+
+
+# ── preferred-number snap (post-anneal, opt-in) ────────────────────────
+def _placed_ir(specs: list[dict]):
+    """Instances at exactly the authored (x, y, rot) — the snap tests read
+    pose deltas directly, so nothing is seeded (stored poses are the
+    input). ``n_pins`` declares that many unconnected pins, which is what
+    gives a part its package family and so its snap grid."""
+    instances = []
+    unconnected = []
+    for s in specs:
+        inst = {"refdes": s["refdes"], "x": s["x"], "y": s["y"]}
+        for key in ("rot", "label", "fixed", "max_travel_mm"):
+            if key in s:
+                inst[key] = s[key]
+        instances.append(inst)
+        for p in range(1, s.get("n_pins", 2) + 1):
+            unconnected.append({"refdes": s["refdes"], "pin": f"P{p}"})
+    return from_graph(
+        {"instances": instances, "nets": [], "unconnected": unconnected},
+        stackup=DEFAULT_STACKUP,
+    )
+
+
+def test_preferred_snap_grid_scales_to_the_part():
+    """Header -> its own 2.54 pitch; fine multi-pin -> 0.5 general;
+    <=4-pin part -> the 0.1 passive floor; pinless -> 0.5."""
+    ir = _placed_ir(
+        [
+            {"refdes": "J1", "x": 10.0, "y": 10.0, "label": "Pin Header", "n_pins": 4},
+            {"refdes": "U1", "x": 20.0, "y": 20.0, "n_pins": 8},
+            {"refdes": "R1", "x": 30.0, "y": 30.0, "n_pins": 2},
+            {"refdes": "M1", "x": 40.0, "y": 40.0, "n_pins": 0},
+        ]
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig())
+    assert engine._preferred_snap_grid_mm(0) == pytest.approx(2.54)
+    assert engine._preferred_snap_grid_mm(1) == pytest.approx(0.5)
+    assert engine._preferred_snap_grid_mm(2) == pytest.approx(0.1)
+    assert engine._preferred_snap_grid_mm(3) == pytest.approx(0.5)
+
+
+def test_preferred_snap_is_opt_in():
+    ir = _placed_ir([{"refdes": "U1", "x": 10.13, "y": 10.37, "n_pins": 8}])
+    result = optimize(ir, OptimizeConfig(seed=0, iters=50))
+    assert result.preferred_snapped == {}
+
+
+def test_preferred_snap_half_mm_grid_rotation_and_stamp():
+    ir = _placed_ir(
+        [{"refdes": "U1", "x": 10.13, "y": 10.37, "rot": 80.0, "n_pins": 8}]
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig())
+    marks = engine.snap_to_preferred()
+    assert float(ir.inst_x[0]) == pytest.approx(10.0)
+    assert float(ir.inst_y[0]) == pytest.approx(10.5)
+    assert float(ir.inst_rot[0]) == pytest.approx(90.0)
+    # the stamp records the grid used and the delta it caused (the spec's
+    # "grid used, delta" acceptance)
+    assert marks[0]["x"] == pytest.approx(10.0)
+    assert marks[0]["y"] == pytest.approx(10.5)
+    assert marks[0]["rot"] == pytest.approx(90.0)
+    assert marks[0]["pitch_mm"] == pytest.approx(0.5)
+    assert marks[0]["dx"] == pytest.approx(-0.13)
+    assert marks[0]["dy"] == pytest.approx(0.13)
+
+
+def test_preferred_snap_header_lands_on_its_own_pitch():
+    ir = _placed_ir(
+        [{"refdes": "J1", "x": 10.3, "y": 10.9, "label": "Pin Header", "n_pins": 4}]
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig())
+    marks = engine.snap_to_preferred()
+    assert float(ir.inst_x[0]) == pytest.approx(10.16)  # 4 * 2.54
+    assert float(ir.inst_y[0]) == pytest.approx(10.16)  # 4 * 2.54
+    assert marks[0]["pitch_mm"] == pytest.approx(2.54)
+
+
+def test_preferred_snap_rejects_an_illegal_target():
+    """A snap whose target lands inside a frozen neighbour's courtyard is
+    refused by the same `_placement_is_legal` gate a generated move takes;
+    the part keeps its unsnapped pose."""
+    ir = _placed_ir(
+        [
+            {"refdes": "A", "x": 30.0, "y": 10.0, "n_pins": 8, "fixed": "both"},
+            {"refdes": "B", "x": 10.74, "y": 10.0, "n_pins": 8},
+        ]
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig())
+
+    def half_width(inst: int) -> float:
+        xs = [p[0] for p in engine._world_courtyard(inst)]
+        cx = float(ir.inst_x[inst])
+        return max(cx - min(xs), max(xs) - cx)
+
+    # Park A so B is legal where it stands (0.14mm clear) but its 0.5-grid
+    # target (10.5) would sit 0.1mm inside A's courtyard.
+    ir.move_instance(
+        0,
+        x=10.74 - half_width(1) - half_width(0) + 0.1 - (10.74 - 10.5),
+        y=10.0,
+    )
+    assert engine._placement_is_legal([(1, 10.74, 10.0)])
+    assert not engine._placement_is_legal([(1, 10.5, 10.0)])
+
+    marks = engine.snap_to_preferred()
+    assert float(ir.inst_x[1]) == pytest.approx(10.74)
+    assert 1 not in marks
+
+
+def test_preferred_snap_respects_fixed_and_soft_pin_bounds():
+    """Frozen parts never snap; a soft-pinned part snaps only when the
+    grid point is inside its leash."""
+    ir = _placed_ir(
+        [
+            {"refdes": "F", "x": 10.3, "y": 2.0, "n_pins": 8, "fixed": "xy"},
+            {"refdes": "P", "x": 10.44, "y": 10.0, "n_pins": 8, "max_travel_mm": 0.1},
+            {"refdes": "Q", "x": 10.34, "y": 18.0, "n_pins": 8, "max_travel_mm": 0.1},
+        ]
+    )
+    ir.outline = [(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0), (-50.0, 50.0)]
+    engine = OptimizeEngine(ir, OptimizeConfig())
+    marks = engine.snap_to_preferred()
+    assert float(ir.inst_x[0]) == pytest.approx(10.3)  # frozen: untouched
+    assert float(ir.inst_x[1]) == pytest.approx(10.5)  # 0.06 within leash
+    assert float(ir.inst_x[2]) == pytest.approx(10.34)  # 0.16 beyond leash
+    assert marks[1]["pitch_mm"] == pytest.approx(0.5)
+    assert 0 not in marks and 2 not in marks
+
+
+def test_preferred_snap_leaves_hard_aligns_alone():
+    """Hard aligns win: a part that is an operand of a steering hard
+    align is not the grid's to move, even when its aligned pose is
+    off-grid."""
+    ir = _placed_ir(
+        [
+            {"refdes": "A", "x": 10.34, "y": 10.0, "n_pins": 8},
+            {"refdes": "B", "x": 16.4, "y": 15.0, "n_pins": 8},
+        ]
+    )
+    measures = resolve_measures(
+        [
+            {
+                "metric": "align",
+                "strength": "hard",
+                "measure_id": 7,
+                "operands": [{"instance": "A"}, {"point": [10.34, 10.0]}],
+                "meta": {"axis": "xy"},
+            }
+        ]
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig(measures=measures))
+    marks = engine.snap_to_preferred()
+    assert float(ir.inst_x[0]) == pytest.approx(10.34)
+    assert 0 not in marks
+    # a part no hard align names still snaps
+    assert float(ir.inst_x[1]) == pytest.approx(16.5)
+
+
+def test_preferred_snap_is_idempotent():
+    ir = _placed_ir(
+        [
+            {"refdes": "U1", "x": 10.13, "y": 10.37, "rot": 80.0, "n_pins": 8},
+            {"refdes": "R1", "x": 15.21, "y": 15.19, "n_pins": 2},
+        ]
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig())
+    first = engine.snap_to_preferred()
+    assert set(first) == {0, 1}
+    assert engine.snap_to_preferred() == {}
 
 
 def test_fixed_xy_never_translates_fixed_both_never_moves_over_a_real_anneal():

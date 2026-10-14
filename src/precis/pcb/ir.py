@@ -479,6 +479,19 @@ class PcbIR:
     #: without :func:`from_graph`) means no instance has one.
     inst_edge_mate: np.ndarray | None = None
 
+    #: float64[n_inst] — the authored SOFT pin (``max_travel_mm``, carried
+    #: on ``pcb_instances.meta`` and hoisted by :meth:`Store.pcb_graph`
+    #: like ``group``/``edge_mate``): the farthest, mm, the instance's
+    #: centre may stray from the pose it held when the optimiser started
+    #: on it. ``NaN`` = unbounded (the common case); a finite value also
+    #: holds rotation, and ``<= 0`` behaves like ``fixed='both'``. The
+    #: anchor pose itself lives in the engine
+    #: (:meth:`precis.pcb.optimize.OptimizeEngine` captures it at
+    #: construction — post-seed, pre-move), not here; the IR only carries
+    #: the authored number. ``None`` (the default) means an IR built
+    #: without :func:`from_graph`, whose instances are all unpinned.
+    inst_max_travel_mm: np.ndarray | None = None
+
     #: The board's mounting holes (:class:`MountingHole`) — board-config
     #: data with the same status as ``outline`` above: populated once at
     #: hydration from ``ftype='mounting_hole'`` features, never mutated
@@ -1316,6 +1329,17 @@ def from_graph(
         inst_fixed_rot=np.array(
             [(inst.get("fixed") or "") in ("rot", "both") for inst in instances],
             dtype=bool,
+        ),
+        inst_max_travel_mm=np.array(
+            [
+                (
+                    float(inst["max_travel_mm"])
+                    if inst.get("max_travel_mm") is not None
+                    else math.nan
+                )
+                for inst in instances
+            ],
+            dtype=np.float64,
         ),
         inst_group=inst_group,
         inst_group_offset_dx=inst_group_offset_dx,

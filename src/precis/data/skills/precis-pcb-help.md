@@ -168,6 +168,13 @@ Field notes:
   warn for `preferred`) when it is interior or faces inward. Authored, not
   inferred — EasyEDA footprints carry no mating side. A `fixed` or grouped
   part is not moved, only checked.
+  **`max_travel_mm: <mm>`** (component field, or `op='move'` — `null`
+  clears) — a soft pin: a leash, not a lock. The placer may move the part
+  at most that far from its stored pose and never rotates it; `0` behaves
+  like `fixed='both'`. For a header sitting a tenth of a mm inside a
+  neighbour's courtyard, a 0.5mm pin lets `op='place'` clear it without
+  handing the part the whole board. The place job's summary reports the
+  travel each pinned part used.
 
 ## Author a design — nets, connections, board
 
@@ -486,6 +493,14 @@ put(kind="pcb", id="s", args={"op": "place", "iters": 2000, "seed": 0})
 # ... poll get(kind='job', id='<id>') or re-check view='crossings' ...
 put(kind="pcb", id="s", args={"op": "route"})
 ```
+
+`"op": "place"` also takes `"snap": true` (default off) — a deterministic
+post-anneal cleanup: every non-frozen part's centre snaps to a grid scaled
+to the part (its own pin pitch for connectors/headers, 0.5mm general,
+0.1mm for small passives) and rotation to the nearest 90°. A snap that
+would collide or break the soft pin's leash keeps the unsnapped pose, and
+hard `align` measures win; snapped parts get `meta.preferred_snap`
+stamped. Idempotent — a second run is a no-op.
 
 `args={'autoplace': {...}}` is a **deprecated alias** for `op='place'` (same
 enqueue, same params) — kept for one release, then removed.
