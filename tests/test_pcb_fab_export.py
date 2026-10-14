@@ -280,6 +280,30 @@ def test_gerber_zip_contains_pad_copper_drill_and_outline(pcb, tmp_path):
         assert "C0.4000" in drl
 
 
+def test_fab_view_writes_zip_bom_and_cpl_in_jlc_columns(pcb, tmp_path):
+    """``view='fab'`` — the order upload package: the same
+    ``{slug}-fab.zip`` as view='gerber' plus the BOM/CPL in JLC's column
+    formats carrying the parts' C-numbers (docs/backlog/pcb-jlc-order.md)."""
+    slug = _seed(pcb)
+    resp = pcb.get(id=slug, view="fab", args={"dir": str(tmp_path)})
+    assert "FAB PACKAGE" in resp.body
+
+    zpath = tmp_path / "fabtest-fab.zip"
+    assert zpath.exists()
+    with zipfile.ZipFile(zpath) as zf:
+        assert "fabtest-F_Cu.gbr" in zf.namelist()
+
+    bom = (tmp_path / "fabtest-bom.csv").read_text(encoding="utf-8")
+    # JLC BOM columns: Comment, Designator, Footprint, LCSC Part #.
+    assert bom.splitlines()[0] == "Comment,Designator,Footprint,LCSC Part #"
+    assert "C2838500" in bom and "U1" in bom and "C1525" in bom
+
+    cpl = (tmp_path / "fabtest-cpl.csv").read_text(encoding="utf-8")
+    # JLC CPL columns: Designator, Mid X, Mid Y, Layer, Rotation.
+    assert cpl.splitlines()[0] == "Designator,Mid X,Mid Y,Layer,Rotation"
+    assert "U1" in cpl and "C1" in cpl
+
+
 def test_gerber_bottom_instance_pads_land_on_b_cu_not_f_cu(pcb, tmp_path):
     # C1's footprint pads are authored on F.Cu; the design places C1 on
     # the bottom side -- this is the mirror-flip assertion the task brief

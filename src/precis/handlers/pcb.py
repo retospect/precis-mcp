@@ -31,7 +31,10 @@ pixels. The verbs map onto the seven-verb surface:
   clients (:mod:`precis.pcb.footprint`), or authors one directly
   (``footprint={...}`` with ``part=``) when the API has nothing for the
   C-number — per-part failures report in that part's own row, never raise.
-  See ``precis-pcb-route-help``.
+  ``op='order'`` (pcb-jlc-order) dry-runs or places the JLCPCB order
+  (``dry_run`` default True; the live path needs ``confirm='add-to-cart'``
+  and creates an unpaid order — the API's cart equivalent, never a
+  payment). See ``precis-pcb-route-help``.
 - ``get``    — list designs (no id); a design's netlist TOC (``id=slug``,
   now with the board/stackup + net_classes + route-status summary); one
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
@@ -45,10 +48,12 @@ pixels. The verbs map onto the seven-verb surface:
   capability map (usable/reserved pads, plaza slots, pin names, computed
   sizing; ``args={'name'?,'format':'svg'|'ledger'}``, pcb-ewod-multitile
   Slice 2); or an *export*
-  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'|'epro'`` writes a
-  JLCPCB fab artifact — ``'gerber'`` is the full manufacturable bundle
-  (gerbers + Excellon, zipped) off our own realizer/pads, never
-  Freerouting/kicad-cli; ``view='route'`` runs the Freerouting
+  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'|'epro'|'fab'``
+  writes a JLCPCB fab artifact — ``'gerber'`` is the full manufacturable
+  bundle (gerbers + Excellon, zipped) off our own realizer/pads, never
+  Freerouting/kicad-cli, and ``'fab'`` is that zip plus the BOM/CPL in
+  JLC's upload formats, the package ``op='order'`` ships;
+  ``view='route'`` runs the Freerouting
   place↔route round-trip, the demoted escape hatch —
   :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
 - ``search`` — over design names + descriptions (the one summary card).
@@ -107,6 +112,7 @@ from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
 from precis.pcb import jlc_library as pcb_jlc_library
+from precis.pcb import jlc_order as pcb_jlc_order
 from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import optimize as pcb_optimize
@@ -172,7 +178,18 @@ _PROBE_VIEWS = (
 #: unwired) is the odd one out here — it doesn't read ``_export_model``
 #: (the netlist IR), it assembles :mod:`precis.pcb.gerber`'s copper+pad
 #: model straight off the store, see :meth:`PcbHandler._render_gerber`.
-_EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical", "gerber", "epro")
+#: ``fab`` (pcb-jlc-order) is the JLC upload package: the gerber zip plus
+#: BOM and CPL in JLC's column formats, one directory.
+_EXPORT_VIEWS = (
+    "bom",
+    "cpl",
+    "netlist",
+    "dsn",
+    "mechanical",
+    "gerber",
+    "epro",
+    "fab",
+)
 #: How many errors ``view='gerber'``'s DRC banner quotes before pointing at
 #: ``view='drc'`` for the rest — enough to see what kind of failure it is.
 _GERBER_BANNER_FINDINGS = 8
@@ -239,7 +256,11 @@ _INLINE_EDIT_OPS = (
 #: the router's per-board compute, so it runs inline like the edits above,
 #: never as an enqueued worker job.
 _FOOTPRINT_OPS = ("footprint",)
-_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS, "datasheets")
+#: pcb-jlc-order — the JLCPCB order pipeline (upload → quote → create).
+#: Cheap request-building plus bounded HTTP, not worker compute — inline
+#: like ``footprint``, guarded by ``dry_run``/``confirm='add-to-cart'``.
+_ORDER_OPS = ("order",)
+_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS, *_ORDER_OPS, "datasheets")
 
 #: ``view='availability'``: catalog rows older than this (or absent) are
 #: re-checked live, bounded by ``jlc_library._LIVE_BATCH_MAX`` per call.
@@ -622,7 +643,8 @@ class PcbHandler(Handler):
             "or an export (view='bom'|'cpl'|'netlist'|"
             "'dsn'|'mechanical'|'gerber' writes a JLCPCB fab artifact -- "
             "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
-            "zipped); view='epro' writes an EasyEDA Pro .epro2 (outline, "
+            "zipped) and 'fab' is that zip plus JLC-format BOM+CPL in one "
+            "dir; view='epro' writes an EasyEDA Pro .epro2 (outline, "
             "parts, pads, nets; no copper yet, no schematic; not yet opened "
             "in EasyEDA Pro); view='route' runs "
             "the demoted Freerouting escape hatch), all with args={...}; "
@@ -636,7 +658,10 @@ class PcbHandler(Handler):
             "footprint={...} to author one directly under part=) pulls/"
             "authors a catalog part's real pad geometry into the "
             "part_footprints cache -- fixes the synthesized_footprint DRC "
-            "finding; view='notes' is the argument ledger the board page's "
+            "finding; put(args={'op':'order'}) dry-runs a JLCPCB order "
+            "(dry_run default True; confirm='add-to-cart' + dry_run=False "
+            "creates the unpaid order — never a payment); "
+            "view='notes' is the argument ledger the board page's "
             "text box writes (handles REFDES | REFDES.PIN | net:NAME) — "
             "put(kind='job', job_type='pcb_argue', parent_id=<this ref>, "
             "params={'pcb_ref_id':N}) answers every open question in "
@@ -1040,6 +1065,8 @@ class PcbHandler(Handler):
             return self._op_stackup(ref, args)
         if op == "footprint":
             return self._op_footprint(ref, args)
+        if op == "order":
+            return self._op_order(ref, args)
         if op == "datasheets":
             n = self._queue_datasheets(ref.id, force=bool(args.get("force")))
             return Response(
@@ -2186,6 +2213,214 @@ class PcbHandler(Handler):
             "error": error or "",
         }
 
+    # ── JLCPCB order pipeline (docs/backlog/pcb-jlc-order.md) ────────────
+    @staticmethod
+    def _order_dry_run(args: dict[str, Any]) -> bool:
+        """``dry_run`` defaults ON — the live path needs it explicitly off.
+        Anything but a literal ``False``/``'false'``/``'0'``/``'no'``
+        (including ``None``, a missing key, or a typo'd string) stays a dry
+        run: ambiguity resolves toward NOT creating an order."""
+        raw = args.get("dry_run", True)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() not in ("false", "0", "no")
+
+    def _op_order(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'order', ...})`` — build (and optionally place)
+        the JLCPCB order for this board.
+
+        The API has no cart endpoint (docs/backlog/pcb-jlc-order.md): the
+        documented chain is ``uploadGerber`` → ``pcb/calculate`` →
+        ``pcb/create``, and ``create`` produces the unpaid order a human
+        pays on jlcpcb.com — that IS the cart step, and the terminal one
+        this surface reaches. Guards, in order:
+
+        * ``dry_run`` defaults True — builds the exact ``pcb/create``
+          payload, prints it, and attempts the read-only ``pcb/calculate``
+          quote (only when credentials resolve; its failure reports
+          inline, never raises).
+        * ``dry_run=False`` still does nothing without
+          ``confirm='add-to-cart'`` verbatim — and ``create_order``
+          re-checks the same token at the client boundary.
+        * A board already carrying ``meta.jlc_order`` needs
+          ``reorder=True`` too — a silent second order is the footgun.
+
+        Requires an exportable board (``export_fab``'s synthesized-pad
+        refusal applies) and, for the live call, a
+        ``args.shipping_address`` dict (JLC's OrderAddressData fields:
+        firstName/lastName/streetAddress/city/country/postalCode/
+        cellOrMobileNumber/companyName/addressLine2)."""
+        slug = ref.slug if ref.slug else str(ref.id)
+        built = self._fab_zip(ref.id, slug)
+        if built is None:
+            raise BadInput(
+                f"pcb: {slug} has no board yet",
+                next="put(kind='pcb', id='slug', args={'components':[...],"
+                "'nets':[...]}) to create the design",
+            )
+        blob, warnings, files, model = built
+        layer_names = [str(l) for l in model["layers"]]
+        width_mm, length_mm = pcb_jlc_order.board_dimensions_mm(model["outline"])
+        overrides = args.get("pcb_param")
+        param = pcb_jlc_order.pcb_param(
+            layers=len(layer_names),
+            width_mm=width_mm,
+            length_mm=length_mm,
+            qty=int(args.get("qty") or 5),
+            thickness_mm=float(
+                args.get("thickness_mm") or pcb_export.DEFAULT_THICKNESS_MM
+            ),
+            overrides=overrides if isinstance(overrides, dict) else None,
+        )
+        order_type = int(args.get("order_type") or 1)
+        shipping_address = args.get("shipping_address")
+        quote_req = pcb_jlc_order.build_quote_request(
+            pcb=param,
+            order_type=order_type,
+            country=str(args["country"]) if args.get("country") else None,
+            post_code=str(args["postcode"]) if args.get("postcode") else None,
+            city=str(args["city"]) if args.get("city") else None,
+            shipping_method=(
+                str(args["shipping_method"]) if args.get("shipping_method") else None
+            ),
+            smt_stencil=args.get("smt_stencil"),
+        )
+        create_req = pcb_jlc_order.build_order_request(
+            pcb=param,
+            order_type=order_type,
+            shipping_address=(
+                dict(shipping_address) if isinstance(shipping_address, dict) else None
+            ),
+            billing_address=(
+                dict(args["billing_address"])
+                if isinstance(args.get("billing_address"), dict)
+                else None
+            ),
+            billing_address_flag=(
+                int(args["billing_address_flag"])
+                if args.get("billing_address_flag") is not None
+                else None
+            ),
+            tax_or_vat=(str(args["tax_or_vat"]) if args.get("tax_or_vat") else None),
+            shipping_method=quote_req.get("shippingMethod"),
+            smt_stencil=args.get("smt_stencil"),
+            achieve_date=(
+                int(args["achieve_date"]) if args.get("achieve_date") else None
+            ),
+        )
+        preview = dict(create_req)
+        preview["fileKey"] = "<uploaded at confirm>"
+
+        client = pcb_jlc_order.JlcOrderClient(store=self.store)
+        if self._order_dry_run(args):
+            lines = [
+                f"# order {slug} — DRY RUN (nothing created at JLCPCB)",
+                f"fab bundle: {len(files)} file(s), {len(blob):,} bytes",
+                "",
+                "create-order payload (pcbParam craft codes are "
+                "JLC-internal ints — verify against the console docs "
+                "before confirming):",
+                "```",
+                json.dumps(preview, indent=2, sort_keys=True),
+                "```",
+            ]
+            if warnings:
+                lines.append("\n".join(f"⚠️  {w}" for w in warnings))
+            if client.available:
+                try:
+                    quote = client.quote(quote_req)
+                except Exception as exc:
+                    # Any quote failure is a report line, never a raise —
+                    # dry_run exists to *show* what would happen.
+                    lines.append(f"quote: unavailable ({type(exc).__name__}: {exc})")
+                else:
+                    lines.append(
+                        "quote:\n```\n"
+                        + json.dumps(quote, indent=2, sort_keys=True)
+                        + "\n```"
+                    )
+            else:
+                lines.append("quote: skipped — JLCPCB credentials do not resolve here")
+            lines.append(
+                "\nNothing was uploaded or created. To place it (unpaid "
+                "order — the API has no cart or pay endpoint): "
+                "put(kind='pcb', id='" + slug + "', args={'op':'order','dry_run':False,"
+                "'confirm':'add-to-cart','shipping_address':{...},"
+                " ...same params})"
+            )
+            return Response(body="\n".join(lines))
+
+        # ── live path ────────────────────────────────────────────────
+        confirm = args.get("confirm")
+        if confirm != pcb_jlc_order.CONFIRM_ADD_TO_CART:
+            raise BadInput(
+                "pcb: op='order' with dry_run=False requires "
+                "confirm='add-to-cart' verbatim — nothing was sent",
+                next=f"put(kind='pcb', id='{slug}', args={{'op':'order',"
+                "'dry_run':False,'confirm':'add-to-cart','shipping_address'"
+                ":{...}}})",
+            )
+        existing = self.store.pcb_load(ref.id)["board"] or {}
+        prior = (existing.get("meta") or {}).get("jlc_order")
+        if prior and not args.get("reorder"):
+            raise BadInput(
+                f"pcb: {slug} already carries a JLCPCB order "
+                f"(batch {prior.get('batch_num')}) — pass reorder=True to "
+                "place ANOTHER one; nothing was sent",
+            )
+        if not isinstance(shipping_address, dict) or not shipping_address:
+            raise BadInput(
+                "pcb: op='order' needs args.shipping_address — a dict of "
+                "JLC's OrderAddressData fields (firstName, lastName, "
+                "streetAddress, city, country, postalCode, "
+                "cellOrMobileNumber; companyName/addressLine2 optional)",
+            )
+        if not client.available:
+            raise BadInput(
+                "pcb: JLCPCB credentials do not resolve here "
+                "(JLCPCB_APP_ID/ACCESS_KEY/SECRET_KEY live in the prod "
+                "vault) — nothing was sent",
+            )
+        file_key = client.upload_gerber(
+            f"{slug}-fab.zip", blob, meta={"fileName": f"{slug}-fab.zip"}
+        )
+        quote_req["fileKey"] = file_key
+        try:
+            quote = client.quote(quote_req)
+        except Exception as exc:
+            raise BadInput(
+                f"pcb: gerber uploaded (fileKey {file_key}) but the quote "
+                f"failed — order NOT created: {type(exc).__name__}: {exc}"
+            ) from exc
+        create_req["fileKey"] = file_key
+        created = client.create_order(
+            create_req, confirm=pcb_jlc_order.CONFIRM_ADD_TO_CART
+        )
+        ids = pcb_jlc_order.extract_order_ids(created)
+        record = {
+            **ids,
+            "file_key": file_key,
+            "qty": param["qty"],
+            "layers": param["layer"],
+            "size_mm": [width_mm, length_mm],
+            "quote": quote.get("data") if isinstance(quote, dict) else None,
+            "added_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "state": "cart",
+        }
+        self.store.pcb_merge_board_meta(ref.id, {"jlc_order": record})
+        head = (
+            f"# order {slug} — ADDED TO CART (unpaid order at JLCPCB)\n"
+            f"batch: {ids.get('batch_num', '?')}  "
+            f"order: {ids.get('order_id') or ids.get('order_uuid') or '?'}\n"
+            "Payment is a human's step on jlcpcb.com — the API has no pay "
+            "endpoint. Attach the BOM/CPL (view='fab') at checkout for "
+            "assembly."
+        )
+        if warnings:
+            head += "\n" + "\n".join(f"⚠️  {w}" for w in warnings)
+        head += f"\n\nquote:\n```\n{json.dumps(quote, indent=2, sort_keys=True)}\n```"
+        return Response(body=head)
+
     def _render_notes(self, ref_id: int) -> Response:
         """The argument ledger (``pcb_notes``), oldest first. Anchors that no
         longer resolve are reported per note, never raised — se_notes' rule."""
@@ -2866,6 +3101,8 @@ class PcbHandler(Handler):
             return self._render_gerber(ref_id, args)
         if view == "epro":
             return self._render_epro(ref_id, args)
+        if view == "fab":
+            return self._render_fab_package(ref_id, args)
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         model = self._export_model(ref_id)
@@ -3203,22 +3440,14 @@ class PcbHandler(Handler):
         unwired" gap."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
-        built = self._fab_model(ref_id, slug=slug)
+        built = self._fab_zip(ref_id, slug)
         if built is None:
             return Response(
                 body="no board yet\n\nNext: put(kind='pcb', id='slug', "
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
-        model, warnings = built
+        blob, warnings, files, model = built
         pads, drills, copper = model["pads"], model["drills"], model["copper"]
-        try:
-            files = pcb_gerber.export_fab(model, name=slug)
-        except pcb_gerber.SynthesizedPadError as exc:
-            raise BadInput(
-                f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
-                "the board as gerbers without exporting it."
-            ) from exc
-        blob = pcb_gerber.zip_fab(files)
 
         raw_dir = args.get("dir")
         out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
@@ -3239,6 +3468,87 @@ class PcbHandler(Handler):
             head += "\n" + "\n".join(f"⚠️  {w}" for w in warnings)
         listing = "\n".join(sorted(files))
         return Response(body=head + "\n\n```\n" + listing + "\n```")
+
+    def _render_fab_package(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """``view='fab'`` — the JLC order package in one directory:
+        ``{slug}-fab.zip`` (the SAME :func:`export_fab` bundle
+        ``view='gerber'`` writes), plus ``{slug}-bom.csv`` and
+        ``{slug}-cpl.csv`` in JLC's upload column formats off
+        :meth:`_export_model`. The zip is the order upload
+        (:meth:`_op_order`); the BOM/CPL are the assembly attachments a
+        human adds at jlcpcb.com checkout — the order API has no BOM/CPL
+        endpoints (docs/backlog/pcb-jlc-order.md)."""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        built = self._fab_zip(ref_id, slug)
+        if built is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        blob, warnings, _files, _model = built
+        export_model = self._export_model(ref_id)
+        bom = pcb_export.bom_csv(export_model)
+        cpl = pcb_export.cpl_csv(export_model)
+
+        raw_dir = args.get("dir")
+        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        written = []
+        for fname, text in (
+            (f"{slug}-fab.zip", None),
+            (f"{slug}-bom.csv", bom),
+            (f"{slug}-cpl.csv", cpl),
+        ):
+            path = out_dir / fname
+            if text is None:
+                path.write_bytes(blob)
+            else:
+                path.write_text(text, encoding="utf-8")
+            written.append(f"{path}  ({path.stat().st_size:,} bytes)")
+
+        warns = list(warnings)
+        for w in self._export_warnings(export_model, "bom") + self._export_warnings(
+            export_model, "cpl"
+        ):
+            warns.append(w)
+        seen: set[str] = set()
+        unique_warns: list[str] = []
+        for w in warns:
+            if w not in seen:
+                seen.add(w)
+                unique_warns.append(w)
+        warns = unique_warns
+        head = f"# exported {slug} → FAB PACKAGE\n" + "\n".join(written)
+        if warns:
+            head += "\n" + "\n".join(f"⚠️  {w}" for w in warns)
+        head += (
+            "\n\nNext: put(kind='pcb', id='" + slug + "', args={'op':'order'}) "
+            "dry-runs the JLCPCB order; the BOM/CPL attach at checkout."
+        )
+        return Response(body=head)
+
+    def _fab_zip(
+        self, ref_id: int, slug: str
+    ) -> tuple[bytes, list[str], dict[str, str], dict[str, Any]] | None:
+        """The gerber+drill bundle as in-memory bytes, plus its warnings,
+        file map and assembled model — the one assembly
+        :meth:`_render_gerber`, :meth:`_render_fab_package` and
+        :meth:`_op_order` share so the uploaded bytes and the previewed
+        file can never drift. ``None`` when the design has no board row,
+        same contract as :meth:`_fab_model`."""
+        built = self._fab_model(ref_id, slug=slug)
+        if built is None:
+            return None
+        model, warnings = built
+        try:
+            files = pcb_gerber.export_fab(model, name=slug)
+        except pcb_gerber.SynthesizedPadError as exc:
+            raise BadInput(
+                f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
+                "the board as gerbers without exporting it."
+            ) from exc
+        return pcb_gerber.zip_fab(files), warnings, files, model
 
     def _render_epro(self, ref_id: int, args: dict[str, Any]) -> Response:
         """Write an EasyEDA Pro ``.epro2`` (:mod:`precis.pcb.epro_write`)

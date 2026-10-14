@@ -81,7 +81,8 @@ Map, in pipeline order (design doc:
   :mod:`~precis.pcb.svg`, :mod:`~precis.pcb.gerber_view` (render the board
   from its gerbers), :mod:`~precis.pcb.schematic`, :mod:`~precis.pcb.export`
   (the text/dict exporters), :mod:`~precis.pcb.route` (Freerouting via
-  Specctra, optional).
+  Specctra, optional), :mod:`~precis.pcb.jlc_order` (JLCPCB upload → quote →
+  create — the guarded unpaid-order step; docs/backlog/pcb-jlc-order.md).
 * **Argue** — :mod:`~precis.pcb.argue`: the handle grammar (``U1``,
   ``U1.3``, ``net:GND``, ``feature:outline``) the fab render stamps as
   ``data-handle`` and the board page's text box submits; resolution

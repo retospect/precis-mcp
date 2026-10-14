@@ -274,6 +274,53 @@ class JlcApiClient:
         """True iff all three credentials resolved at construction time."""
         return self._creds is not None
 
+    def _roundtrip(
+        self, thunk: Callable[[], httpx.Response], *, policy: Policy
+    ) -> httpx.Response:
+        """Run one prepared send through :func:`with_backoff`; translate a
+        403 into :class:`JlcPermissionError` (see module docstring). Split
+        from :meth:`_call` so :mod:`precis.pcb.jlc_order`'s upload path —
+        which signs a ``meta`` form field instead of the JSON body — gets
+        the identical retry/permission behaviour instead of a copy."""
+        try:
+            return with_backoff(
+                thunk,
+                service="jlcpcb",
+                policy=policy,
+                sleep=self._sleep,
+                now=self._now,
+            )
+        except VendorError as exc:
+            if exc.status == 403:
+                raise JlcPermissionError(
+                    "jlcpcb",
+                    "API insufficient permissions (HTTP 403) — the request "
+                    "signature is valid, but this app has not been granted "
+                    "the scope this endpoint needs (Components for "
+                    "/component/*, PCB for /pcb/*). This is a human action "
+                    "in the JLCPCB Open API console (grant the scope for "
+                    "this app), not an engineering problem — do not "
+                    "re-debug the signing code. Retry once the scope is "
+                    "granted.",
+                    status=403,
+                ) from exc
+            raise
+
+    @staticmethod
+    def _finish(resp: httpx.Response, path: str) -> dict[str, Any]:
+        """The post-wire half of :meth:`_call`: status gate + JSON decode."""
+        if resp.status_code != 200:
+            raise VendorError(
+                "jlcpcb",
+                f"HTTP {resp.status_code} from {path}",
+                status=resp.status_code,
+            )
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise VendorError("jlcpcb", f"non-JSON response from {path}") from exc
+        return data if isinstance(data, dict) else {}
+
     def _call(
         self, path: str, payload: dict[str, Any], *, policy: Policy
     ) -> dict[str, Any]:
@@ -302,38 +349,7 @@ class JlcApiClient:
             }
             return self._send("POST", path, headers, body)
 
-        try:
-            resp = with_backoff(
-                _thunk,
-                service="jlcpcb",
-                policy=policy,
-                sleep=self._sleep,
-                now=self._now,
-            )
-        except VendorError as exc:
-            if exc.status == 403:
-                raise JlcPermissionError(
-                    "jlcpcb",
-                    "API insufficient permissions (HTTP 403) — the request "
-                    "signature is valid, but this app has not been granted "
-                    "the Components API scope. This is a human action in the "
-                    "JLCPCB Open API console (grant the scope for this app), "
-                    "not an engineering problem — do not re-debug the signing "
-                    "code. Retry once the scope is granted.",
-                    status=403,
-                ) from exc
-            raise
-        if resp.status_code != 200:
-            raise VendorError(
-                "jlcpcb",
-                f"HTTP {resp.status_code} from {path}",
-                status=resp.status_code,
-            )
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise VendorError("jlcpcb", f"non-JSON response from {path}") from exc
-        return data if isinstance(data, dict) else {}
+        return self._finish(self._roundtrip(_thunk, policy=policy), path)
 
     def component_info(self, lcsc: str) -> dict[str, Any] | None:
         """One C-number's live existence/stock/price/basic-vs-extended —

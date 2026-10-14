@@ -2426,6 +2426,30 @@ class PcbMixin:
                 )
         return phase
 
+    def pcb_merge_board_meta(
+        self, ref_id: int, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge ``patch`` into the live ``main`` board's ``meta``
+        (``meta || patch`` — top-level keys in the patch win, the rest
+        survive) and return the merged dict. ``op='order'`` records its
+        ``jlc_order`` cart row through here. Raises ``NotFound`` for a
+        design with no board yet — same contract as
+        :meth:`pcb_set_board_phase`."""
+        with self._pcb_tx() as conn:
+            row = conn.execute(
+                "SELECT board_id, meta FROM pcb_boards "
+                "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"pcb {ref_id}: no board to annotate")
+            merged = {**(row[1] or {}), **patch}
+            conn.execute(
+                "UPDATE pcb_boards SET meta = meta || %s::jsonb WHERE board_id = %s",
+                (Jsonb(dict(patch)), int(row[0])),
+            )
+        return merged
+
     def pcb_write_drc_findings(
         self,
         board_id: int,

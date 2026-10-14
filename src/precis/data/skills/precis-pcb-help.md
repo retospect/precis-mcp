@@ -632,6 +632,25 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
 6. **Route** — `op='route'` (enqueued); check `view='route-status'` and
    `view='congestion'`; rip + re-pin + re-route on a failure
    ([[precis-pcb-route-help]]'s rip-up loop).
-7. **Export & order** — `view='bom'` + `view='cpl'` to order at JLCPCB;
-   `view='mechanical'` for the enclosure; `view='route'` (Freerouting) stays
-   available as a demoted escape hatch.
+7. **Export & order** — `view='fab'` writes the JLC package (gerber+drill
+   zip + BOM + CPL) in one dir; `op='order'` dry-runs/places the JLCPCB
+   order (below); `view='mechanical'` for the enclosure; `view='route'`
+   (Freerouting) stays available as a demoted escape hatch.
+
+## Order at JLCPCB — `view='fab'`, `op='order'`
+
+`view='fab'` (args `{dir}`) writes `{slug}-fab.zip`, `{slug}-bom.csv`,
+`{slug}-cpl.csv` — the zip is the order upload; BOM/CPL attach by hand at
+jlcpcb.com checkout (the order API has no PCBA endpoints).
+
+`put(args={'op':'order'})` builds the JLCPCB order payload — layers/size
+from the board; `qty`, `thickness_mm`, `pcb_param={...}` (JLC's int craft
+codes — surface finish, color), `smt_stencil`, `shipping_address`,
+`shipping_method`, `country`/`postcode`/`city`. `dry_run` defaults true:
+prints the exact `pcb/create` body and attempts the read-only quote.
+Placing it is explicit: `{'op':'order','dry_run':False,
+'confirm':'add-to-cart','shipping_address':{...}}` uploads the zip, quotes
+with the file key, then `pcb/create` — an **unpaid order awaiting your
+checkout** (the API's cart equivalent; there is no pay or submit endpoint
+and this op exposes none). Batch/order id lands in the board's meta as
+`jlc_order`; a repeat needs `reorder=True`.
