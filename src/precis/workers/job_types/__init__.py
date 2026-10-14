@@ -763,6 +763,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "diagnose_gripe":
         _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()
         return _REGISTRY["diagnose_gripe"]
+    if name == "graph_garden":
+        from precis.workers.job_types.graph_garden import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "good_search":
         _REGISTRY["good_search"] = _load_good_search()
         return _REGISTRY["good_search"]
@@ -839,6 +844,7 @@ def known_job_types() -> list[str]:
         "cad_discuss",
         "sandbox_run",
         "diagnose_gripe",
+        "graph_garden",
         "good_search",
         "good_search_triage",
         "quest_tick",

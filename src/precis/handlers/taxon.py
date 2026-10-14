@@ -57,6 +57,7 @@ from precis.taxonomy.nodes import (
     BOUNDARY_KEYS,
     EDITABLE_KEYS,
     STATUS_PROPOSED,
+    dimension_clash,
     initial_taxon_meta,
     slugify,
     taxon_card_text,
@@ -64,6 +65,7 @@ from precis.taxonomy.nodes import (
 )
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
+from precis.utils.text import lexical_overlap
 
 log = logging.getLogger(__name__)
 
@@ -89,67 +91,16 @@ DEDUP_MAX_DISTANCE = 0.25
 SIBLING_MAX_DISTANCE = DEDUP_MAX_DISTANCE
 SIBLING_MIN_OVERLAP = 0.7
 
-_WORD = re.compile(r"[a-z0-9]+")
-_STOP = frozenset(
-    [
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "in",
-        "into",
-        "is",
-        "it",
-        "its",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "to",
-        "with",
-        "which",
-        "who",
-        "whose",
-        "this",
-        "these",
-        "those",
-        "than",
-        "then",
-        "such",
-        "per",
-        "each",
-        "any",
-        "not",
-        "no",
-        "aka",
-        "also",
-        "can",
-        "may",
-    ]
-)
-
 #: Dedup candidates named in a refusal (the rest are counted).
 _DEDUP_SHOW = 5
 _GLOSS_CHARS = 80  # definition prefix on a candidate line
 
 
 def _dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """True only on an *explicit* dimension mismatch: both nodes carry a
-    ``dimension_kind`` and the kinds differ, or both are ``si`` and their
-    ``si_vector`` differs. A node with no ``dimension_kind`` never clashes."""
-    ka, kb = a.get("dimension_kind"), b.get("dimension_kind")
-    if not ka or not kb:
-        return False
-    if ka != kb:
-        return True
-    return ka == "si" and a.get("si_vector") != b.get("si_vector")
+    """Alias kept for the call sites below; the rule itself lives in
+    :func:`precis.taxonomy.nodes.dimension_clash` so the graph gardener
+    (which must not import handlers) applies the same hard gate."""
+    return dimension_clash(a, b)
 
 
 def _matches_term(meta: dict[str, Any], seg: str) -> bool:
@@ -160,21 +111,6 @@ def _matches_term(meta: dict[str, Any], seg: str) -> bool:
     if meta.get("norm_name") == norm:
         return True
     return any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or []))
-
-
-def _content_words(text: str) -> frozenset[str]:
-    return frozenset(
-        w for w in _WORD.findall((text or "").lower()) if len(w) > 2 and w not in _STOP
-    )
-
-
-def lexical_overlap(a: str, b: str) -> float:
-    """Jaccard overlap of the content words of two card texts (0..1) — the
-    no-embedder fallback of the nearest-sibling check."""
-    wa, wb = _content_words(a), _content_words(b)
-    if not wa or not wb:
-        return 0.0
-    return len(wa & wb) / len(wa | wb)
 
 
 def _lede(definition: str) -> str:

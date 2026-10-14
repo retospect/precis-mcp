@@ -205,6 +205,26 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "sweep."
         ),
     ),
+    "graph_garden:propose": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Graph gardener proposer",
+        description=(
+            "The per-candidate proposal verdict inside the `graph_garden` "
+            "job — decides whether a deterministic upkeep candidate "
+            "(duplicate pair, orphan, stale node, dangling edge, untagged "
+            "ref, polysemy/sibling signal) is worth a `proposed` reviews row "
+            "for a human/frontier judge. Writes proposals only, never graph "
+            "edits."
+        ),
+        note=(
+            "MEDIUM by default — candidate volume is daily-cadence small and "
+            "the accepted row only proposes (the second bar is the human or "
+            "frontier review of the proposal itself). Steer with an "
+            "`llm.op.graph_garden:propose` row when the judge should run "
+            'bigger (e.g. `{"tier": "big"}` for a weekly frontier pass).'
+        ),
+    ),
     "llm_summarize": OpDefault(
         tier=Tier.SMALL,
         model=None,

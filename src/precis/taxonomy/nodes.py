@@ -107,6 +107,24 @@ def canonical_si_vector(value: Any) -> str:
     return s
 
 
+def dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True only on an *explicit* dimension mismatch: both nodes carry a
+    ``dimension_kind`` and the kinds differ, or both are ``si`` and their
+    ``si_vector`` differs. A node with no ``dimension_kind`` never clashes.
+
+    Shared between the put-time dedup refusal
+    (:class:`~precis.handlers.taxon.TaxonHandler`) and the graph gardener's
+    merge candidates (``precis.graph.garden.candidates``) — the same hard
+    gate, one implementation.
+    """
+    ka, kb = a.get("dimension_kind"), b.get("dimension_kind")
+    if not ka or not kb:
+        return False
+    if ka != kb:
+        return True
+    return ka == "si" and a.get("si_vector") != b.get("si_vector")
+
+
 def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
     """Check a node ``meta`` against the fixed key set and per-key rules.
     Returns a normalised copy (``si_vector`` canonicalised); raises

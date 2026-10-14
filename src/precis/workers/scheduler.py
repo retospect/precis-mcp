@@ -215,6 +215,30 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     log.info("scheduler: minted doctor_tick job for window %s", idem_key)
 
 
+def _run_graph_garden_mint(store: Store, batch_size: int) -> None:
+    """Mint ONE queued ``graph_garden`` job per UTC day — the proposals-
+    only graph-upkeep pass (docs/backlog/graph-gardener.md). Same shape as
+    ``_run_doctor_tick_mint``: host-agnostic cadence (the lease is the
+    fleet-singleton throttle), ``meta.idem_key='garden:<date>'`` is the
+    per-day dedup, and the minted job drains under the ``job_inproc``
+    executor like every other bounded in-proc job.
+
+    Two gates inside :func:`precis.graph.garden.service.mint_job` keep a
+    dark service free: the ``graph_garden`` service_config row lights it
+    (absent = off, operator opt-in only), and the empty-run cooling backs
+    the mint off to weekly after ``DRY_REST_ESCALATE`` consecutive
+    zero-proposal days. ``batch_size`` is unused — the idem_key IS the
+    per-day cap. ``spends`` stays unset: minting is free, the LLM spend
+    lives in the job's proposer calls.
+    """
+    del batch_size
+    from precis.graph.garden.service import mint_job
+
+    minted = mint_job(store)
+    if minted is not None:
+        log.info("scheduler: minted graph_garden job id=%d", minted)
+
+
 #: ``anki_sync`` failure backoff (§A). A failed tick holds the *cadence* back
 #: ``min(fail_count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS``
 #: before the next attempt — the whole-account analogue of
@@ -754,6 +778,17 @@ CADENCES: tuple[Cadence, ...] = (
         name="cfp_watch",
         interval_s=7 * 24 * 3600 + 53 * 60,
         run=_run_cfp_watch,
+    ),
+    # docs/backlog/graph-gardener.md: the graph gardener's daily mint.
+    # Host-agnostic like doctor_tick — the lease is the fleet-singleton
+    # throttle and the idem_key the per-day dedup. Off the exact day
+    # boundary (+59m) so it doesn't pile onto the nanopub/catalog fires.
+    # No `eligible` check: the mint itself is dark-gated on the
+    # graph_garden service_config row, so an unset fleet just no-ops.
+    Cadence(
+        name="graph_garden",
+        interval_s=24 * 3600 + 59 * 60,
+        run=_run_graph_garden_mint,
     ),
 )
 

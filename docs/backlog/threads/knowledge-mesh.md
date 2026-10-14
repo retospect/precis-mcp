@@ -69,6 +69,12 @@ graph-health-metrics, five parked gripes, and the seam with
   §"Next slice" — Spark reader, pa5044 first, the versioned anchor
   scheme ported first.
 - **Next:** local-mesh-upkeep slice 1b.
+- **Graph gardener v1 built (2026-10-14, worktree `gardener`, landed):** deterministic detectors → routed LLM proposer →
+  reviews-ledger proposals (never a graph write), the `graph_garden`
+  job dark until a `service_config` row lights it, a merge apply/undo
+  door behind `precis garden`, AC 1–6 green on dev-DB fixtures
+  (`tests/test_garden.py`). Open in the item: `links.meta.agentlog_id`
+  stamping and non-merge apply paths.
 
 ## Do next
 
@@ -198,10 +204,12 @@ graph-health-metrics, five parked gripes, and the seam with
 4. **backlog/experiment-loop.md** — waits on Do-next 7; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
-5. **backlog/graph-gardener.md** — waits on a populated mesh
-   from Horizon 1; earned axes and merges without hand curation. Its
-   sibling-disjointness pass (added 2026-10-05) reads confusion from the
-   taxonomy-bootstrap probe runs, so it can start before Horizon 1.
+5. **backlog/graph-gardener.md** — v1 built 2026-10-14 on the
+   `gardener` worktree (proposals-only, dark until lit, pending land);
+   what remains is a populated mesh from Horizon 1 to garden, plus the
+   item's open `agentlog_id` stamping. Its sibling-disjointness pass
+   (added 2026-10-05) reads confusion from the taxonomy-bootstrap probe
+   runs, so it can start before Horizon 1.
 6. **backlog/session-history-into-precis.md** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
    split); waits on the shared redaction path, whichever item ships it

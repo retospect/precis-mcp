@@ -1140,6 +1140,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # The graph gardener (docs/backlog/graph-gardener.md): a daily
+        # `graph_garden` scheduler cadence mints the job — gated inside
+        # service.mint_job on the `graph_garden` service_config row, so
+        # the pass is dark until an operator lights it. kind=JOB (drained
+        # by job_inproc, registered unconditionally like diagnose_gripe —
+        # a hand-put garden job works even where the cadence is off).
+        # Proposals only: the job writes `reviews` rows, never graph
+        # edits.
+        name="graph_garden",
+        label="Graph garden (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("graph_garden",),
+        one_line="Proposals-only graph upkeep — merge/split/relink/"
+        "prune/tag candidates judged by an LLM, filed to the reviews "
+        "ledger; minted daily, dark until service_config lights it.",
+        doc_skill="precis-gardener-help",
+    ),
+    ServiceSpec(
         name="watch_poll",
         label="Citation-forward watcher",
         category="acquisition",

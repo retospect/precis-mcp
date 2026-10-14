@@ -8,6 +8,41 @@ model: sonnet
 
 # Graph gardener — maintenance passes over the knowledge graph
 
+## Shipped (2026-10-14, worktree `gardener` — pending land; `git log` is the record)
+
+v1 landed proposals-only, exactly as designed: nothing merges, splits,
+prunes, relinks or retags on its own.
+
+- **Deterministic detectors** (`precis.graph.garden.candidates`) — dup
+  pairs (embedding + normalized-name legs, `dimension_clash` hard gate),
+  orphan taxa (reach no start node), stale nodes, dangling edges
+  (retired endpoint) and taxon 2-cycles, tag-sweep gaps, polysemy
+  signals (open `meta.annotation='polysemy'` findings; the ≥2-start-node
+  disjoint-cluster hint), exclusive-axis sibling confusion (shared
+  classified instance, or per-run label swaps via `links.meta.run`).
+- **The proposer** (`precis.graph.garden.proposer` / `runner`) — one
+  routed LLM verdict per candidate, `source='graph_garden:propose'`
+  (placement steerable via `llm.op.*`; nothing pinned in code).
+- **The ledger write** (`precis.graph.garden.proposals`) — accepted
+  candidates land as `reviews` rows: `verdict='proposed'`,
+  `actor='graph-garden'`, `garden.{key,action,detector,evidence,payload,
+  rationale}` JSON in `note`. Dedup by key; `resolve_proposal` writes
+  the terminal verdict echoing the key; `pending_proposals` is the read
+  view.
+- **The job** — `graph_garden` job_type on `job_inproc`, bounded
+  (`limit`/`max_proposals`), minted at most once per UTC day by a
+  scheduler cadence (`idem_key='garden:<date>'`), dark until a
+  `graph_garden` service_config row is lit, backing off to weekly after
+  three consecutive zero-proposal runs. A clean tick writes nothing.
+- **The apply door** (`precis.graph.garden.apply`,
+  `precis garden apply|undo|reject|proposals`) — merge only:
+  loser→winner link repoint with dedup + self-loop drop, loser retired
+  as a winner alias with `meta.superseded_by`, a full reversal record in
+  `meta.garden_merge`, the proposal flipped to `approved`.
+  `undo_merge` replays the record.
+- **AC 1–6 green on dev-DB fixtures** (`tests/test_garden.py`), and the
+  `precis-gardener-help` skill documents the surface.
+
 ## Motivation / why
 
 Reto, 2026-09-28: *"gardening, do we have agents combine and split and
@@ -126,14 +161,20 @@ applies unchanged here.
 ## In scope
 
 1. Five passes behind one `graph_garden` job type with a `pass=` selector.
-2. Proposal emission as `todo` + `waiting-for:reto`, with a reversal
-   record on merges.
+   **Done** (plus `siblings` for the 2026-10-05 axis ruling and `all`).
+2. Proposal emission — **done as `reviews` rows, not per-proposal
+   todos**: the 2026-10-03 ruling (a reviewed pass writes `proposed`
+   ledger rows, no `waiting-for:reto` todo) is what shipped; the todo
+   path remains the shape for an unreviewed pass should one be added.
 3. An apply verb for an accepted proposal, and an undo for an applied
-   merge.
+   merge. **Done for merge** (`precis garden apply|undo`); split, prune,
+   relink and tag proposals remain manual follow-through.
 4. Scheduling: off by default, enabled per pass by service config.
-5. Runtime docs: `precis-gardener-help`.
+   **Done** (one `graph_garden` service row lights the whole pass set;
+   per-pass granularity via `params.pass` on a hand-put job).
+5. Runtime docs: `precis-gardener-help`. **Done.**
 6. Stamp `agentlog_id` into `links.meta` at write time; the tool_calls
-   ledger records names only and cannot supply it.
+   ledger records names only and cannot supply it. **Open.**
 
 ## Explicitly NOT in scope
 
