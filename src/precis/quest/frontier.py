@@ -187,6 +187,8 @@ _AXIS_LABELS: dict[str, str] = {
     "shapley_ipr": "Effective bottlenecks (IPR)",
     "ridge_churn": "Ridge churn",
     "her_margin_at_Uopt": "HER margin at U_opt (eV)",
+    "reset_window_area": "Guaranteed-reset window (V·pH)",
+    "reset_window_fraction": "Guaranteed-reset window fraction",
 }
 
 
@@ -326,6 +328,20 @@ _AXIS_DESCRIPTIONS: dict[str, str] = {
         "staircase_masks.her_mask's margin: positive means the main "
         "route's limiting step beats hydrogen evolution (e.g. NORR wins "
         "over HER). Higher is better."
+    ),
+    "reset_window_area": (
+        "Area of the guaranteed-reset window (V·pH): the operating "
+        "window intersected with the slice-7 reset_ok mask — every "
+        "staircase edge downhill by its priced overdrive margin "
+        "(overdrive η, BEP fit, or measured NEB barrier per edge), "
+        "launched from the far edge of each rung's propagated σ (the "
+        "§6.3 pessimistic series composition). Stamped beside "
+        "window_area_VpH, never blended into it. Higher is better."
+    ),
+    "reset_window_fraction": (
+        "The guaranteed-reset window as a fraction of the swept "
+        "(U_RHE, pH) grid — reset_window_area normalised. Higher is "
+        "better."
     ),
 }
 
@@ -1137,6 +1153,8 @@ _DEFAULT_SENSE: dict[str, str] = {
     "her_margin_at_Uopt": "max",
     "shapley_ipr": "min",
     "ridge_churn": "min",
+    "reset_window_area": "max",
+    "reset_window_fraction": "max",
 }
 
 #: Window measures are optional unless the rubric item says
@@ -1151,6 +1169,8 @@ _DEFAULT_OPTIONAL: frozenset[str] = frozenset(
         "shapley_ipr",
         "ridge_churn",
         "her_margin_at_Uopt",
+        "reset_window_area",
+        "reset_window_fraction",
     }
 )
 

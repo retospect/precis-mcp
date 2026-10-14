@@ -77,11 +77,12 @@ def _map_ctx(
     *,
     u_marker: float | None = None,
     vlines: list[dict[str, Any]] | None = None,
+    reset: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One map for the template: the SVG plus its provenance footer and
     the region list the slider bank's resting-state label reads."""
     return {
-        "svg": map_svg(m, u_marker=u_marker, vlines=vlines),
+        "svg": map_svg(m, u_marker=u_marker, vlines=vlines, reset=reset),
         "anchor_key": str(m.get("anchor_key") or "?"),
         "models": m.get("models") or [],
         "engine_version": m.get("engine_version"),
@@ -103,22 +104,25 @@ def _map_ctx(
     }
 
 
-def _staircase_ctx(store: Store, ref: Any) -> dict[str, Any] | None:
+def _staircase_ctx(store: Store, ref: Any) -> tuple[dict[str, Any] | None, Any]:
     """The affine staircase of the candidate's best linked pathway —
-    JSON-safe rungs for the client-side re-tilt, the engine's own
-    per-route scalars, the HER competitor, footing and the honest
-    ``missing`` list. ``None`` when no ready pathway is linked."""
+    JSON-safe rungs for the client-side re-tilt (each carrying its
+    slice-7 reset margin + estimator label), the engine's own per-route
+    scalars, the HER competitor, footing and the honest ``missing``
+    list. Returns ``(ctx, staircase_routes)``; ``(None, None)`` when no
+    ready pathway is linked."""
     from precis.quest import staircase as sq
-    from precis_pathway import staircase_routes
+    from precis_pathway import reset_contour, staircase_routes
 
     pw = sq.best_pathway(store, int(ref.id))
     if pw is None:
-        return None
+        return None, None
     sr = staircase_routes.routes_for_pathway(store, pw)
     handle = handle_registry.try_format("pathway", int(pw.id)) or f"pathway:{pw.id}"
     routes = []
     for r in sr.routes:
         stats = sr.route_stats.get(r.name) or {}
+        edges = {e.rung.name: e for e in reset_contour.reset_edges(r)}
         routes.append(
             {
                 "name": r.name,
@@ -132,6 +136,15 @@ def _staircase_ctx(store: Store, ref: Any) -> dict[str, Any] | None:
                         "n_e": rg.n_e,
                         "kind": rg.kind,
                         "sigma": rg.sigma,
+                        # m_e + sigma — the required overdrive the client
+                        # re-evaluates live as the U slider moves
+                        "margin": (
+                            edges[rg.name].required_eV if rg.name in edges else None
+                        ),
+                        "estimator": (
+                            edges[rg.name].estimator if rg.name in edges else None
+                        ),
+                        "eps": rg.eps,
                     }
                     for rg in r.rungs
                 ],
@@ -153,16 +166,83 @@ def _staircase_ctx(store: Store, ref: Any) -> dict[str, Any] | None:
             "dG_H_star": (sr.her_stats or {}).get("dG_H_star"),
             "product": (sr.her_stats or {}).get("product"),
         }
-    return {
-        "pathway_id": int(pw.id),
-        "pathway_handle": handle,
-        "pathway_url": ref_url("pathway", pw.id, getattr(pw, "slug", None)),
-        "title": (pw.title or "").splitlines()[0] if pw.title else "",
-        "routes": routes,
-        "her": her,
-        "footing": sr.footing,
-        "missing": list(sr.missing),
-    }
+    return (
+        {
+            "pathway_id": int(pw.id),
+            "pathway_handle": handle,
+            "pathway_url": ref_url("pathway", pw.id, getattr(pw, "slug", None)),
+            "title": (pw.title or "").splitlines()[0] if pw.title else "",
+            "routes": routes,
+            "her": her,
+            "footing": sr.footing,
+            "missing": list(sr.missing),
+        },
+        sr,
+    )
+
+
+def _u_edges(axis: Any) -> Any:
+    """Cell edges of a 1-D axis (midpoints, half a step beyond the ends)
+    — mirrors ``staircase_masks``'s cell measure on the display grid."""
+    import numpy as np
+
+    axis = np.asarray(axis, dtype=float)
+    n = axis.size
+    if n == 1:
+        return np.array([axis[0] - 0.5, axis[0] + 0.5])
+    edges = np.empty(n + 1)
+    edges[1:n] = 0.5 * (axis[:-1] + axis[1:])
+    edges[0] = axis[0] - 0.5 * (axis[1] - axis[0])
+    edges[n] = axis[-1] + 0.5 * (axis[-1] - axis[-2])
+    return edges
+
+
+def _mask_intervals(row: Any, axis: Any) -> list[list[float]]:
+    """Contiguous True runs of a pH-flat mask row as ``[u_lo, u_hi]``
+    spans (cell edges — the layer covers what the mask owns)."""
+    import numpy as np
+
+    edges = _u_edges(axis)
+    idx = np.flatnonzero(np.asarray(row, dtype=bool))
+    out: list[list[float]] = []
+    for grp in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+        if grp.size:
+            out.append([float(edges[grp[0]]), float(edges[grp[-1] + 1])])
+    return out
+
+
+def _reset_layer(sr: Any, u_window: Any) -> list[dict[str, Any]]:
+    """Per-route guaranteed/hysteretic spans over the map's U window —
+    the slice-7 layer (``reset_contour`` on a display grid; every mask is
+    pH-flat on the RHE scale, so row 0 is the whole picture)."""
+    import numpy as np
+
+    from precis_pathway import reset_contour
+    from precis_pathway import staircase_masks as sm
+
+    routes = list(getattr(sr, "routes", None) or [])[:_MAX_LINED_ROUTES]
+    if not routes:
+        return []
+    win = list(u_window or [None, None])[:2]
+    if win[0] is None or win[1] is None or not float(win[0]) < float(win[1]):
+        return []
+    u_axis = np.linspace(float(win[0]), float(win[1]), 201)
+    resting = sm.RestingMap.full(u_axis, np.array([0.0, 14.0]))
+    out: list[dict[str, Any]] = []
+    for i, route in enumerate(routes):
+        c = reset_contour.reset_contour(resting, route)
+        ok = _mask_intervals(c.reset_ok[0], u_axis)
+        band = _mask_intervals(c.hysteretic[0], u_axis)
+        if ok or band:
+            out.append(
+                {
+                    "name": f"r{i + 1}",
+                    "color": _ROUTE_COLORS[i % len(_ROUTE_COLORS)],
+                    "ok": ok,
+                    "band": band,
+                }
+            )
+    return out
 
 
 def _vlines(staircase: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -201,9 +281,14 @@ def _candidate_ctx(
     from precis_pathway import pourbaix_map
 
     handle = handle_registry.try_format("structure", int(ref.id)) or f"st{ref.id}"
-    staircase = _staircase_ctx(store, ref)
+    staircase, sr = _staircase_ctx(store, ref)
     maps = [
-        _map_ctx(m, u_marker=u_marker, vlines=_vlines(staircase))
+        _map_ctx(
+            m,
+            u_marker=u_marker,
+            vlines=_vlines(staircase),
+            reset=_reset_layer(sr, m.get("U_RHE_window")),
+        )
         for m in pourbaix_map.maps_for_structure(store, ref)
     ]
     coads = sq.coads_of(ref.meta or {})

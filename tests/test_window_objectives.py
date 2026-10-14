@@ -162,6 +162,80 @@ def test_best_route_is_the_largest_window() -> None:
     assert any("wide" in n for n in out["window_notes"])
 
 
+# ── slice 7: reset measures beside the thermodynamic window ──────────────
+
+
+def test_reset_window_is_the_window_intersected_with_reset_ok() -> None:
+    """dg = -0.5 + U: the thermodynamic window is cols U <= 0.5 (7), the
+    guaranteed window is cols U <= 0.3 (6) — stamped beside, never
+    blended."""
+    r = _resting()
+    route = sm.Route("main", (_rung("r1", -0.5),))
+    out = wo.window_measures(r, [route], None)
+    assert out["window_area_VpH"] == pytest.approx(7 * COL_VPH)
+    assert out["reset_window_area"] == pytest.approx(6 * COL_VPH)
+    assert out["reset_window_fraction"] == pytest.approx(6 / 9)
+    assert out["reset_estimators"] == {"r1": "overdrive"}
+    assert out["reset_limited_by"] == "r1"
+
+
+def test_reset_window_dies_on_a_shallow_flat_rung() -> None:
+    """A chemical step 0.1 eV downhill is viable everywhere and
+    guaranteed nowhere — the whole map is the hysteretic band and the
+    reset window is empty (the thermodynamic window is untouched)."""
+    r = _resting()
+    route = sm.Route("main", (_rung("ch", -0.1, n_e=0, kind="chemical"),))
+    out = wo.window_measures(r, [route], None)
+    assert out["window_fraction"] == pytest.approx(1.0)
+    assert out["reset_window_area"] == pytest.approx(0.0)
+    assert out["reset_window_fraction"] == pytest.approx(0.0)
+
+
+def test_reset_margins_price_bep_and_neb_edges() -> None:
+    """Rung kinetics carried through the adapter: the BEP edge prices
+    (β − floor)/α, the barrier edge its measured E_a, the bare edge η."""
+    r = _resting()
+    route = sm.Route(
+        "main",
+        (
+            _rung("a", -0.5, bep=(0.5, 0.4)),  # m = 0.8 → U <= -0.3
+            _rung("b", -0.5, barrier_ea=0.05),  # m = 0.05 → U <= 0.45
+            _rung("c", -0.5),  # m = η = 0.2 → U <= 0.3
+        ),
+    )
+    out = wo.window_measures(r, [route], None)
+    assert out["reset_estimators"] == {
+        "a": "bep",
+        "b": "neb",
+        "c": "overdrive",
+    }
+    assert out["reset_limited_by"] == "a"
+    # window (all rungs viable: U <= 0.5) ∩ reset (a needs U <= -0.3)
+    assert out["window_fraction"] == pytest.approx(7 / 9)
+    assert out["reset_window_fraction"] == pytest.approx(3 / 9)
+
+
+def test_reset_eta_is_a_quest_knob() -> None:
+    r = _resting()
+    route = sm.Route("main", (_rung("r1", -0.5),))
+    out = wo.window_measures(r, [route], None, reset_eta_eV=0.6)
+    # guaranteed dg <= -0.6 → U <= -0.1 → cols through -0.25 (4)
+    assert out["reset_window_area"] == pytest.approx(4 * COL_VPH)
+
+
+def test_reset_measures_survive_a_missing_contour_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The contour module absent degrades to a note, not a crash."""
+    monkeypatch.setitem(sys.modules, "precis_pathway.reset_contour", None)
+    r = _resting()
+    route = sm.Route("main", (_rung("r1", -0.5),))
+    out = wo.window_measures(r, [route], None)
+    assert out["reset_window_area"] is None
+    assert any("reset_contour" in n for n in out["window_notes"])
+    assert out["window_area_VpH"] == pytest.approx(7 * COL_VPH)
+
+
 # ── stamp_window_measures (store) ─────────────────────────────────────────
 
 AREA = 10.0
@@ -537,3 +611,41 @@ def test_window_keys_default_to_max_sense_and_optional(store: Store, hub: Hub) -
     assert _optional_objectives_for(store, qid) == frozenset(
         {"window_area_VpH", "her_margin_at_Uopt", "shapley_ipr"}
     )
+
+
+def test_stamp_stamps_the_guaranteed_window_beside_the_thermodynamic_one(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slice 7: declared ``reset_window_area`` stamps the guaranteed
+    window (window ∩ reset_ok) next to the thermodynamic one, plus the
+    per-edge estimator labels and the limiting edge."""
+    qid = _mk_quest(
+        store,
+        hub,
+        rubric_objectives=[
+            {"key": "window_area_VpH", "sense": "max"},
+            {"key": "reset_window_area", "sense": "max"},
+        ],
+        operating_conditions={"U_RHE": -0.3, "pH": 7},
+    )
+    sid = _mk_candidate(store, qid)
+    _scan(store, sid, _sweep({"m": _payload("m", {"H": [-0.02]})}))
+    store.insert_ref(
+        kind="pathway", slug=f"pwreset{sid}", title="pw", meta={"candidate_ref": sid}
+    )
+    # viable dg <= 0 → U <= 0.125 (13 cols); guaranteed dg <= -0.2 →
+    # U <= -0.075 (9 cols). Both boundaries land mid-cell.
+    route = sm.Route("norr", (_rung("r1", -0.125),))
+    _fake_routes(monkeypatch, [route], None)
+
+    note = wo.stamp_window_measures(store, qid, _structure_ref(store, sid))
+    assert note is not None
+    meta = dict(store.fetch_refs_by_ids({sid})[sid].meta or {})
+    # 21-pt grid over [-0.5, 0.5]: the H* region is wanted for U <= 0.15
+    # (14 cols), the thermodynamic window cuts it to 13, the guaranteed
+    # window to 9.
+    assert meta["window_fraction"] == pytest.approx(13 / 21)
+    assert meta["reset_window_fraction"] == pytest.approx(9 / 21)
+    assert meta["reset_window_area"] == pytest.approx((9 / 21) * 15.225, rel=0.02)
+    assert meta["reset_limited_by"] == "r1"
+    assert meta["reset_estimators"] == {"r1": "overdrive"}

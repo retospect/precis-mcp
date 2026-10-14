@@ -89,6 +89,7 @@ def map_svg(
     height: int = 460,
     u_marker: float | None = None,
     vlines: list[dict[str, Any]] | None = None,
+    reset: list[dict[str, Any]] | None = None,
 ) -> str:
     """One map → an inline ``<svg>`` fragment. ``m`` is the
     :func:`precis.quest.pourbaix_map.build_map` object.
@@ -98,7 +99,15 @@ def map_svg(
     draws fixed verticals (the campaign carry-over: each route's ``U_L``
     and ``U_opt`` as ``{"u", "label", "color", "dash"}``). The ``data-*``
     attributes on the root carry the plot's coordinate transform so the
-    shared slider bank can move the marker client-side."""
+    shared slider bank can move the marker client-side.
+
+    Slice 7: ``reset`` draws the guaranteed-reset layer as one togglable
+    ``<g class="pbx-reset">`` group — per route ``{"name", "color",
+    "ok": [(u_lo, u_hi)…], "band": [(u_lo, u_hi)…]}`` where ``ok`` is the
+    guaranteed window (solid tint, the route's own colour) and ``band``
+    the hysteretic zone — viable but not guaranteed, the region §6.2
+    says not to rely on — drawn dashed at the same colour. It is its own
+    layer, never merged with the propagated/model-form bands."""
     window = m.get("U_RHE_window") or [None, None]
     if window[0] is None or window[1] is None or not (window[0] < window[1]):
         return (
@@ -219,6 +228,35 @@ def map_svg(
             f'fill="none" stroke="#111827" stroke-width="1.6"/>'
         )
 
+    # Slice 7: the guaranteed-reset layer — one togglable group per map.
+    # ``ok`` spans (guaranteed) get a solid tint, ``band`` spans (the
+    # hysteretic zone: viable, not guaranteed) a dashed, denser tint in
+    # the same route colour. Drawn under the fixed verticals and marker.
+    legend_reset: list[tuple[str, str]] = []
+    if reset:
+        parts.append('<g class="pbx-reset">')
+        for rr in reset:
+            color = str(rr.get("color") or "#0f766e")
+            for lo, hi in rr.get("ok") or []:
+                x0, x1 = X(float(lo)), X(float(hi))
+                parts.append(
+                    f'<rect x="{x0:.1f}" y="{_MT}" '
+                    f'width="{max(x1 - x0, 0.5):.1f}" height="{plot_h}" '
+                    f'fill="{color}" fill-opacity="0.14"/>'
+                )
+            for lo, hi in rr.get("band") or []:
+                x0, x1 = X(float(lo)), X(float(hi))
+                parts.append(
+                    f'<rect x="{x0:.1f}" y="{_MT}" '
+                    f'width="{max(x1 - x0, 0.5):.1f}" height="{plot_h}" '
+                    f'fill="{color}" fill-opacity="0.28" stroke="{color}" '
+                    'stroke-width="1" stroke-dasharray="3 3" '
+                    'stroke-opacity="0.6"/>'
+                )
+            if rr.get("ok") or rr.get("band"):
+                legend_reset.append((str(rr.get("name") or "?"), color))
+        parts.append("</g>")
+
     # Slice 3: route U_L / U_opt verticals (fixed — the affine terms they
     # come from are U-invariant), then the draggable U marker last so it
     # sits on top.
@@ -307,6 +345,15 @@ def map_svg(
             'stroke-dasharray="3 2" fill-opacity="0.35"/>'
             f'<text x="{lx + 13}" y="{ly}" font-size="9" fill="#334155">'
             "bulk layer (uncertain)</text>"
+        )
+    for label, color in legend_reset:
+        lx += 115
+        parts.append(
+            f'<rect x="{lx}" y="{ly - 9}" width="10" height="10" '
+            f'fill="{color}" fill-opacity="0.2" stroke="{color}" '
+            'stroke-dasharray="2 2"/>'
+            f'<text x="{lx + 13}" y="{ly}" font-size="9" fill="#334155">'
+            f"{_esc(label)} reset (dashed = hysteretic)</text>"
         )
     parts.append("</svg>")
     return "".join(parts)

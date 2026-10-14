@@ -37,6 +37,13 @@
              value="{{ ph0 }}" data-offgrid="0" class="ml-1 w-28 align-middle">
     </label>
     <span id="pbx-ph-read" class="font-mono"></span>
+    <label class="text-slate-600">
+      <input type="checkbox" id="pbx-reset-toggle" checked class="ml-1 align-middle">
+      reset layer
+    </label>
+    <span class="text-slate-400" title="guaranteed reset (solid) vs the hysteretic
+band — viable but not guaranteed (dashed); each in its route's colour">
+      reset: solid = guaranteed, dashed = hysteretic</span>
     <span id="pbx-offgrid" class="hidden rounded bg-amber-100 px-2 py-0.5 text-amber-800">
       off the computed grid — this axis needs fresh anchors
     </span>
@@ -113,22 +120,26 @@
                 <th class="pr-3 text-left font-normal">kind</th>
                 <th class="pr-3 text-left font-normal">n_e</th>
                 <th class="pr-3 text-left font-normal">ΔG0 eV</th>
+                <th class="pr-3 text-left font-normal">m_e eV</th>
                 <th class="text-left font-normal">ΔG(U) eV</th></tr>
           </thead>
           <tbody>
           {% for rg in r.rungs %}
           <tr class="pbx-rung" data-dg0="{{ rg.delta_g0 }}" data-ne="{{ rg.n_e }}"
-              data-name="{{ rg.name }}">
+              data-name="{{ rg.name }}" data-eps="{{ rg.eps }}"
+              data-rmargin="{{ rg.margin if rg.margin is not none else '' }}">
             <td class="pr-3">{{ rg.name }}</td>
             <td class="pr-3">{{ rg.kind }}</td>
             <td class="pr-3">{{ rg.n_e }}</td>
             <td class="pr-3">{{ '%+.3f'|format(rg.delta_g0) }}{% if rg.sigma is not none %}±{{ '%.3f'|format(rg.sigma) }}{% endif %}</td>
+            <td class="pr-3"{% if rg.estimator %} title="{{ rg.estimator }}"{% endif %}>{{ '%.2f'|format(rg.margin) if rg.margin is not none else '—' }}</td>
             <td class="pbx-dgu"></td>
           </tr>
           {% endfor %}
           </tbody>
         </table>
         <div class="pbx-lim text-[11px] text-slate-600"></div>
+        <div class="pbx-reset-verdict text-[11px] text-teal-700"></div>
         {% if sc.her %}<div class="pbx-her-margin text-[11px] text-slate-600"></div>{% endif %}
       </div>
       {% endfor %}
@@ -253,9 +264,17 @@
 
       sec.querySelectorAll('.pbx-route').forEach((rt) => {
         let lim = null;
+        let worst = null;  // min reset slack: -ΔG(U) - m_e (σ already in m_e)
         rt.querySelectorAll('.pbx-rung').forEach((row) => {
           const dg = parseFloat(row.dataset.dg0) + parseFloat(row.dataset.ne) * u;
           row.querySelector('.pbx-dgu').textContent = fmt(dg);
+          const rm = parseFloat(row.dataset.rmargin);
+          if (Number.isFinite(rm)) {
+            const s = -dg - rm;
+            const eps = parseFloat(row.dataset.eps);
+            if (worst === null || s < worst.s)
+              worst = { s, dg, eps: Number.isFinite(eps) ? eps : 0, name: row.dataset.name };
+          }
           if (!lim || dg > lim.dg) lim = { row, dg, name: row.dataset.name };
         });
         rt.querySelectorAll('.pbx-rung').forEach((row) => row.classList.remove('pbx-limit'));
@@ -264,6 +283,22 @@
           const el = rt.querySelector('.pbx-lim');
           if (el) el.textContent = 'limiting at U: ' + lim.name + ' (ΔG ' + fmt(lim.dg) + ' eV)';
           rt.dataset.limG = String(lim.dg);
+        }
+        const rv = rt.querySelector('.pbx-reset-verdict');
+        if (rv) {
+          if (worst === null) {
+            rv.textContent = '';
+          } else if (worst.s >= 0) {
+            rv.textContent = 'reset at ' + fmt(u) + ' V: guaranteed ' +
+              '(limiting ' + worst.name + ', slack ' + fmt(worst.s) + ' eV)';
+          } else if (worst.dg <= worst.eps) {
+            rv.textContent = 'reset at ' + fmt(u) + ' V: hysteretic — ' +
+              worst.name + ' is ' + (-worst.s).toFixed(3) +
+              ' eV short of its reset margin';
+          } else {
+            rv.textContent = 'reset at ' + fmt(u) + ' V: outside the ' +
+              'viable window (' + worst.name + ' uphill)';
+          }
         }
       });
 
@@ -286,9 +321,21 @@
       }
     });
   }
+  // slice 7: the reset layer is a per-map <g class="pbx-reset"> group —
+  // the bank toggle shows/hides it without touching the DFT bands.
+  const resetT = document.getElementById('pbx-reset-toggle');
+  function applyResetLayer() {
+    const on = !resetT || resetT.checked;
+    document.querySelectorAll('svg.pbx-map g.pbx-reset').forEach((g) => {
+      g.style.display = on ? '' : 'none';
+    });
+  }
+  if (resetT) resetT.addEventListener('change', applyResetLayer);
+
   uEl.addEventListener('input', update);
   phEl.addEventListener('input', update);
   update();
+  applyResetLayer();
 })();
 {% endraw %}
 </script>

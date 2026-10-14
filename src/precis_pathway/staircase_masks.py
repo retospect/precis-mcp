@@ -95,7 +95,14 @@ class Rung:
     proton-electron pairs consumed (positive for a reduction step,
     negative for an oxidation, 0 = chemical/desorption, U-flat). ``sigma``
     is the propagated error bar on ``delta_g0`` — it marks an uncertain
-    band, never moves the mask."""
+    band, never moves the mask.
+
+    Slice-7 input slots (``reset_contour``'s estimator ladder reads
+    them): ``bep`` is the edge's Brønsted–Evans–Polanyi fit
+    ``(alpha, beta)`` for ``E_a = alpha * dG + beta``, ``barrier_ea`` a
+    measured forward barrier in eV. Both optional, both ``None`` when the
+    pathway recorded no kinetics — the edge then stays on the flat
+    overdrive proxy."""
 
     name: str
     delta_g0: float
@@ -103,6 +110,8 @@ class Rung:
     kind: str = "electrochemical"
     eps_eV: float | None = None
     sigma: float | None = None
+    bep: tuple[float, float] | None = None
+    barrier_ea: float | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in RUNG_KINDS:

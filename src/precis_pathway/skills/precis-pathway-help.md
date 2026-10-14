@@ -213,6 +213,19 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   the default is the config's recorded operating point (else 0 V). Linked
   structures' resting maps name the starting surface with the
   coads-mismatch verdict. Same panel on the web at `/pourbaix/<handle>`.
+- The staircase's **reset contour** (the guaranteed-reset layer): every
+  rung is a reset edge — a cycle must close for the surface to reset.
+  Each edge is guaranteed where it is downhill by its priced overdrive
+  margin m_e, the estimator labelled per edge: `overdrive` (flat η =
+  0.2 eV) · `bep` (the edge's recorded α/β fit — guaranteed where the
+  predicted barrier hits the floor) · `neb` (a measured barrier — the
+  driving force must exceed it). Margins launch past each rung's σ —
+  pessimistic series composition, never averaged. `view='staircase'`
+  prints the per-route verdict at U; `/pourbaix/<handle>` draws the
+  guaranteed span and the dashed hysteretic band (viable, not
+  guaranteed) as a togglable layer. `reset_window_area` /
+  `reset_window_fraction` are declared quest measures beside
+  `window_area_VpH` — the guaranteed window, never blended into it.
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.
 - `view='warnings'` — where to distrust the numbers, in three sections:
   **blocking** (real fatal, on-route trust-record fails — read these first),

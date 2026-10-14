@@ -326,3 +326,66 @@ def test_map_svg_draws_regions_bands_and_bulk_overlay() -> None:
 def test_map_svg_empty_map_is_an_honest_placeholder() -> None:
     svg = map_svg({"U_RHE_window": [None, None]})
     assert "no sweep window" in svg
+
+
+# ── slice 7: the reset layer on the map ──────────────────────────────────
+
+
+def _reset_results() -> dict[str, Any]:
+    """A route whose reset layer is non-degenerate over the swept
+    window: e1 flat-downhill (guaranteed everywhere), e2 electrochemical
+    (viable U <= 0, guaranteed U <= -0.2 at η = 0.2)."""
+    r = _pathway_results()
+    che = r["che_affine"]
+    assert isinstance(che, dict)
+    route = che["per_route"][0]
+    route["route"] = "* -> NO -> *~nh3"
+    route["steps"] = [
+        {"edge": "e1", "delta_g0": -0.6, "n_e": 0},
+        {"edge": "e2", "delta_g0": 0.0, "n_e": 1},
+    ]
+    return r
+
+
+def test_map_svg_draws_the_reset_layer_apart_from_the_dft_bands() -> None:
+    m = {
+        "U_RHE_window": [-0.5, 0.5],
+        "pH_window": [0.0, 14.0],
+        "regions": [],
+        "boundaries": [],
+    }
+    svg = map_svg(
+        m,
+        reset=[
+            {
+                "name": "r1",
+                "color": "#7c3aed",
+                "ok": [[-0.5, -0.2]],
+                "band": [[-0.2, 0.0]],
+            }
+        ],
+    )
+    assert 'class="pbx-reset"' in svg
+    assert 'stroke-dasharray="3 3"' in svg  # the hysteretic band edge
+    assert "r1 reset (dashed = hysteretic)" in svg
+    svg_off = map_svg(m)
+    assert "pbx-reset" not in svg_off
+
+
+def test_pourbaix_page_draws_reset_layer_and_ships_rung_margins(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store)
+    pw = _pathway(store, "pw_reset", _reset_results())
+    store.add_link(
+        src_ref_id=sid, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    r = pb_client.get(f"/pourbaix/st{sid}")
+    assert r.status_code == 200
+    text = r.text
+    assert 'id="pbx-reset-toggle"' in text
+    assert 'class="pbx-reset"' in text
+    assert "hysteretic" in text
+    # the client-side verdict needs the per-rung required overdrive
+    assert "data-rmargin" in text and "m_e" in text

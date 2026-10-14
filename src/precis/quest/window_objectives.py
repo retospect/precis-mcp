@@ -20,8 +20,10 @@ never a crash and never a fabricated value (the same rule
 quest's ``meta.rubric_objectives`` declares at least one of
 :data:`WINDOW_MEASURE_KEYS` — an unflagged quest is bit-identical to
 before this module existed. Optional knobs ride
-``meta.window_objectives = {"eps_eV": …, "her_margin_eV": …}`` (ε
-defaults to each rung's own ``eps_eV`` then 0; the HER margin to 0).
+``meta.window_objectives = {"eps_eV": …, "her_margin_eV": …,
+"reset_eta_eV": …, "reset_ea_floor_eV": …}`` (ε defaults to each rung's
+own ``eps_eV`` then 0; the HER margin to 0; η to the contour module's
+default; the barrier floor to 0).
 
 **Stamps** (:func:`stamp_window_measures`, called once per candidate from
 ``compute.harvest_measures``): the numeric measures below (the frontier
@@ -60,6 +62,8 @@ WINDOW_MEASURE_KEYS: tuple[str, ...] = (
     "shapley_ipr",
     "ridge_churn",
     "her_margin_at_Uopt",
+    "reset_window_area",
+    "reset_window_fraction",
 )
 
 #: pH grid the resting map is rebuilt on. The sweep and every rung mask
@@ -84,6 +88,15 @@ def _staircase_routes() -> ModuleType | None:
     has not landed / the plugin is absent — treated as "routes missing"."""
     try:
         return importlib.import_module("precis_pathway.staircase_routes")
+    except ImportError:
+        return None
+
+
+def _reset_contour() -> ModuleType | None:
+    """The slice-7 guaranteed-reset contour (the estimator ladder's
+    hysteresis mask), or ``None`` while it has not landed."""
+    try:
+        return importlib.import_module("precis_pathway.reset_contour")
     except ImportError:
         return None
 
@@ -126,6 +139,8 @@ def window_measures(
     *,
     eps_eV: float | None = None,
     her_margin_eV: float = 0.0,
+    reset_eta_eV: float | None = None,
+    reset_ea_floor_eV: float = 0.0,
 ) -> dict[str, Any]:
     """The window robustness + Shapley scalars for one candidate.
 
@@ -135,7 +150,10 @@ def window_measures(
     ``Route``s and ``her`` the HER competitor ``Route`` (or ``None``).
     ``eps_eV`` fills in the viability tolerance on rungs that carry none
     (a rung's own ``eps_eV`` always wins); ``her_margin_eV`` is the
-    selectivity margin of ``staircase_masks.her_mask``.
+    selectivity margin of ``staircase_masks.her_mask``. ``reset_eta_eV``
+    is the slice-7 overdrive margin η (``None`` = the contour module's
+    default); ``reset_ea_floor_eV`` the barrier floor the BEP/NEB rungs
+    price their margin against.
 
     With several routes the best-windowed one wins — the route a smart
     operator would run — and ``window_notes`` names it. Every measure is
@@ -150,10 +168,19 @@ def window_measures(
     * ``bottleneck_rung`` = the limiting rung (max ΔG) at that point —
       the constraint closest to binding there, ``None`` on an empty
       window.
+    * ``reset_window_area`` / ``reset_window_fraction`` = the
+      *guaranteed* window ``window ∩ reset_ok`` (slice 7: every edge
+      downhill by its priced margin, launched past the propagated σ) —
+      stamped beside the thermodynamic window, never blended into it.
+      ``reset_limited_by`` names the edge binding the guarantee at the
+      same U centroid; ``reset_estimators`` records each edge's ladder
+      rung (``overdrive``/``bep``/``neb``).
     """
     notes: list[str] = []
     out: dict[str, Any] = dict.fromkeys(WINDOW_MEASURE_KEYS)
     out["bottleneck_rung"] = None
+    out["reset_limited_by"] = None
+    out["reset_estimators"] = None
     out["window_notes"] = notes
 
     sm = _staircase_masks()
@@ -212,6 +239,27 @@ def window_measures(
     out["shapley_ipr"] = float(red.ipr_mean)
     out["ridge_churn"] = float(red.churn)
 
+    rc = _reset_contour()
+    contour = None
+    if rc is None:
+        notes.append(
+            "precis_pathway.reset_contour is not importable — reset measures unset"
+        )
+    else:
+        contour = rc.reset_contour(
+            resting_map,
+            route,
+            eta_eV=rc.DEFAULT_ETA_EV if reset_eta_eV is None else reset_eta_eV,
+            ea_floor_eV=reset_ea_floor_eV,
+        )
+        # window := window ∩ reset_ok — the guaranteed layer stamped
+        # beside the thermodynamic one (series composition, §6.3).
+        guaranteed = win.mask & contour.reset_ok
+        out["reset_window_area"] = float(resting_map.area(guaranteed))
+        out["reset_window_fraction"] = float(resting_map.fraction(guaranteed))
+        out["reset_estimators"] = {e.rung.name: e.estimator for e in contour.edges}
+        notes.extend(contour.notes)
+
     weights = resting_map.cell_areas() * win.mask
     total = float(weights.sum())
     if total <= 0.0:
@@ -239,6 +287,9 @@ def window_measures(
         )
     rung = max(route.rungs, key=lambda r: float(r.delta_g(u_best)))
     out["bottleneck_rung"] = rung.name
+    if contour is not None:
+        verdict = contour.at(u_best, float(resting_map.ph[0]))
+        out["reset_limited_by"] = verdict["limiting"] or None
     return out
 
 
@@ -439,6 +490,8 @@ def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | No
         her,
         eps_eV=_num(cfg.get("eps_eV")),
         her_margin_eV=_num(cfg.get("her_margin_eV")) or 0.0,
+        reset_eta_eV=_num(cfg.get("reset_eta_eV")),
+        reset_ea_floor_eV=_num(cfg.get("reset_ea_floor_eV")) or 0.0,
     )
     all_notes = notes + list(out.get("window_notes") or [])
 
@@ -451,6 +504,8 @@ def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | No
             else None
         )
     desired["bottleneck_rung"] = out.get("bottleneck_rung") or None
+    desired["reset_limited_by"] = out.get("reset_limited_by") or None
+    desired["reset_estimators"] = out.get("reset_estimators") or None
     desired["window_notes"] = all_notes or None
     validity = _validity_region_at_point(m, point_u)
     if validity is not None:

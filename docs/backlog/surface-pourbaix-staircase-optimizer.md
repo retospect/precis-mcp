@@ -15,7 +15,9 @@ owner = the catalysis session; see §Rulings below. **Build plan approved
 4+5 as the pure library `src/precis_pathway/staircase_masks.py` (A4) in main
 01b36dba7, A5 = the slice-1 proof below. **Wave B (quest wiring)**: B1 anchors rung (`meta.surface_anchors`),
 slice 3 staircase panel (B2) and slice 6 window/Shapley/HER objectives
-(B3) all landed 2026-10-13 — wave B complete. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
+(B3) all landed 2026-10-13 — wave B complete. **Wave C: slice 7 built
+2026-10-14** (Reto: "continue with wave C") — contract below.
+Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
 this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
@@ -90,7 +92,12 @@ slab's anchor energies exist. In it:
    squares, IPR, ridge churn).
 6. Robustness score plus the Shapley vector fed to the outer Pareto front,
    with active-learning anchor placement.
-7. Reset contour: proxy 1 → BEP → active-learned NEBs.
+7. Reset contour: proxy 1 → BEP → active-learned NEBs. **Built
+   2026-10-14** (wave C): overdrive + the BEP/NEB margin ladder,
+   pessimistic series composition with the DFT band, reset-window
+   measures and the /pourbaix layer — contract below. Remaining on this
+   rung: real `bep` exports from catpath (spso-c1) and active-learned
+   NEB placement.
 8. End to end on Fe-doped Pd, for the paper.
 
 ## Open questions (OPEN in the prompt, §10)
@@ -368,6 +375,53 @@ never mixed in one contract.
   (`threads/chemistry.md`) both sit under qu459585's one-paper-a-month.
   Unresolved.
 
+## Slice 7 contract (the §6.2 guaranteed-reset hysteresis contour)
+
+Built 2026-10-14 as wave C (Reto: "continue with wave C"). This is the
+slice's `ready` record plus its I/O contract.
+
+**Inputs** — per-edge affine CHE from `results.json`:
+`che_affine.per_route[].steps[] = {edge, delta_g0, n_e}` (the signed
+convention above: ΔG(U) = ΔG0 + n_e·U, n_e = pairs consumed, pH-flat on
+RHE) and `nodes[].std` → the rung's propagated σ. Per-edge kinetics when
+the pathway provides them: `edges[<name>].barrier` (a measured NEB
+Estimate) and `edges[<name>].bep = {alpha, beta[, n_fit, rmse]}` — the
+catpath spso-c1 export, E_a = alpha·ΔE + beta fitted on that run's sparse
+NEBs. Edge names join che_affine `steps[].edge` to `edges[].name`.
+
+**Estimator ladder** (§6.2's order) — each edge gets a *required
+overdrive margin* m_e with the rung's label kept per edge:
+
+- `overdrive` — m_e = η (default 0.2 eV, "several hundred meV";
+  parameter, not measured).
+- `bep` — m_e = (β − floor)/α, clipped ≥ 0: guaranteed where ΔG ≤ −m_e,
+  i.e. where the predicted forward barrier hits `floor` (default 0, "no
+  barrier left"). α ≤ 0 can't extrapolate → `overdrive`, noted degenerate.
+- `neb` — m_e = the measured barrier itself: guaranteed where the driving
+  force exceeds the recorded barrier (a lone barrier can't be re-tilted
+  without α; it tightens or loosens flat η honestly).
+
+A `bep` block wins over `barrier`, which wins over `overdrive`. Nothing
+invented: an edge with no kinetics record stays `overdrive`.
+
+**Outputs** — per grid point on the slice-2 (U_RHE, pH) grid: `reset_ok`
+(every edge of the cycle guaranteed: slack_e = −ΔG_e − m_e − σ_e ≥ 0 — a
+cycle must close to reset), `margin` (min_e slack_e, the limiting edge's
+pessimistic slack), `limiting` (the argmin edge's name), and the *band*:
+`viable & ¬reset_ok`, the hysteretic zone §6.2 says not to rely on.
+
+**Series composition, pessimistic** (§6.3): σ_e — the propagated DFT band
+on ΔG, hypot of the endpoint stds — is added to m_e before the margin is
+applied. The reset requirement launches from the far edge of the DFT
+band, never the nominal line; the two bands are never averaged.
+
+**Feeding the window and the frontier.** `window := window ∩ reset_ok`
+— the guaranteed window is stamped *beside* the thermodynamic one:
+`reset_window_area`/`reset_window_fraction` are new declared measure keys
+(`window_area_VpH` keeps its meaning; the layers compose, they don't
+blend). On `/pourbaix` the hysteretic band draws as its own layer,
+separate from the propagated/model-form bands.
+
 ## Follow-ups from wave review (2026-10-13, non-blocking)
 
 - `pourbaix_map`: region edges built from sampled rows leave gaps;
@@ -400,6 +454,6 @@ never mixed in one contract.
 
 ## Explicitly NOT in scope
 
-- Slices 3, 6–8: ordered, not scheduled; each needs its own `ready`.
-  (Slices 2, 4, 5 are in build, 2026-10-13.)
+- Slice 8: ordered, not scheduled; needs its own `ready`.
+  (Slices 2–7 are built as of 2026-10-14.)
 - The hydride pilot itself (item 23) and any re-run under item 25.

@@ -51,6 +51,29 @@ def _results(*, her: bool = True) -> dict[str, Any]:
         "selectivity": {
             "side_products": [{"leaf": "*~h2", "product": "H2", "span_eV": 0.9}]
         },
+        "edges": [
+            {
+                "name": "no_ads",
+                "reactant": "*",
+                "product": "NO",
+                "delta_e": {"mean": -0.5, "std": 0.05, "n": 1},
+                "barrier": {"mean": 0.4, "std": 0.05, "n": 2},
+            },
+            {
+                "name": "no_reduce",
+                "reactant": "NO",
+                "product": "N+OH",
+                "delta_e": {"mean": 0.2, "std": 0.08, "n": 1},
+                "bep": {"alpha": 0.55, "beta": 0.6, "n_fit": 3, "rmse": 0.04},
+                "barrier": {"mean": 0.9, "std": 0.1, "n": 3},
+            },
+            {
+                "name": "nh3_desorb",
+                "reactant": "N+OH",
+                "product": "*~nh3",
+                "delta_e": {"mean": 0.3, "std": None, "n": 1},
+            },
+        ],
         "che_affine": {
             "scale": "RHE",
             "T": 298.15,
@@ -145,6 +168,43 @@ def test_routes_from_results_flags_missing_her_and_empty_routes() -> None:
     sr = routes_from_results(r)
     assert sr.routes == []
     assert any("per_route empty" in m for m in sr.missing)
+
+
+def test_rungs_carry_edge_kinetics_when_recorded() -> None:
+    """Slice-7 ladder inputs: ``edges[name].bep`` → the rung's ``bep``
+    tuple, ``edges[name].barrier.mean`` → ``barrier_ea``; an edge with
+    neither keeps both ``None`` (the overdrive proxy's input)."""
+    sr = routes_from_results(_results(), engine_version="0.25.0")
+    a, b, c = sr.routes[0].rungs
+    assert a.barrier_ea == pytest.approx(0.4) and a.bep is None
+    assert b.bep == pytest.approx((0.55, 0.6)) and b.barrier_ea == pytest.approx(0.9)
+    assert c.bep is None and c.barrier_ea is None
+
+
+def test_kinetics_malformed_blocks_attach_nothing() -> None:
+    r = _results()
+    edges = r["edges"]
+    assert isinstance(edges, list)
+    edges[0]["bep"] = {"alpha": 0.5}  # beta missing → not a BEP record
+    edges[0]["barrier"] = "n/a"  # not an Estimate dict → nothing
+    edges[1]["bep"] = {"alpha": 0.5, "beta": None}
+    sr = routes_from_results(r)
+    a, b, _c = sr.routes[0].rungs
+    assert a.bep is None and a.barrier_ea is None
+    assert b.bep is None and b.barrier_ea == pytest.approx(0.9)
+
+
+def test_reset_estimators_flow_through_the_adapter() -> None:
+    """The adapted rungs feed the reset ladder directly: no_ads prices
+    'neb' (barrier only), no_reduce 'bep' (BEP beats barrier),
+    nh3_desorb 'overdrive' (no kinetics recorded)."""
+    from precis_pathway import reset_contour as rc
+
+    sr = routes_from_results(_results())
+    edges = rc.reset_edges(sr.routes[0])
+    assert [e.estimator for e in edges] == ["neb", "bep", "overdrive"]
+    assert edges[0].margin_eV == pytest.approx(0.4)
+    assert edges[1].margin_eV == pytest.approx(0.6 / 0.55)
 
 
 def test_sigma_is_none_when_no_spread_was_recorded() -> None:

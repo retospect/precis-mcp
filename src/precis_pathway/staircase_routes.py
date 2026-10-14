@@ -21,7 +21,13 @@ The input is a stored pathway's ``meta.results`` — the engine's
   (``network.her``), kept out of the headline ``U_L``;
 * ``nodes[name].std`` carries the per-state pooled spread — a rung's
   ``sigma`` is ``hypot(std_reactant, std_product)``, and only ever set
-  when a spread was actually recorded (ruling: no invented sigmas).
+  when a spread was actually recorded (ruling: no invented sigmas);
+* ``edges[name]`` carries the per-edge kinetics the slice-7 reset ladder
+  reads (``reset_contour``): ``barrier`` — a measured-NEB ``Estimate``
+  (``mean`` is the rung's ``barrier_ea``) — and ``bep =
+  {alpha, beta[, n_fit, rmse]}`` — the catpath BEP export fitted on the
+  run's sparse NEBs (the rung's ``bep``). Missing or malformed blocks
+  attach nothing; an edge with neither stays on the overdrive proxy.
 
 :class:`StaircaseRoutes` is what B3's frontier objectives and the
 ``view='staircase'`` / ``/pourbaix/<handle>`` surfaces consume: typed
@@ -38,6 +44,7 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from . import reset_contour
 from .staircase_masks import PREFAC_V, Route, Rung, u_she
 
 if TYPE_CHECKING:
@@ -120,6 +127,38 @@ def _sigma(results: dict[str, Any], a: Any, b: Any) -> float | None:
     return math.sqrt(var) if seen else None
 
 
+def _edges_by_name(results: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """``results.edges`` keyed by step name — the join key
+    ``che_affine`` steps and ``her.edges`` both carry as ``edge``."""
+    edges = results.get("edges")
+    out: dict[str, dict[str, Any]] = {}
+    if isinstance(edges, list):
+        for e in edges:
+            if isinstance(e, dict) and isinstance(e.get("name"), str):
+                out[e["name"]] = e
+    return out
+
+
+def _kinetics(edge_record: dict[str, Any] | None) -> dict[str, Any]:
+    """``{bep, barrier_ea}`` kwargs for a :class:`Rung` from one
+    ``results.edges`` record — the slice-7 kinetics inputs. Only present
+    when recorded and finite; nothing is fabricated for a missing block."""
+    if not isinstance(edge_record, dict):
+        return {}
+    out: dict[str, Any] = {}
+    bep = edge_record.get("bep")
+    if isinstance(bep, dict):
+        alpha, beta = _num(bep.get("alpha")), _num(bep.get("beta"))
+        if alpha is not None and beta is not None:
+            out["bep"] = (alpha, beta)
+    barrier = edge_record.get("barrier")
+    if isinstance(barrier, dict):
+        mean = _num(barrier.get("mean"))
+        if mean is not None:
+            out["barrier_ea"] = mean
+    return out
+
+
 def routes_from_results(
     results: dict[str, Any] | None, *, engine_version: str | None = None
 ) -> StaircaseRoutes:
@@ -143,6 +182,7 @@ def routes_from_results(
     scale: str | None = None
     T: float | None = None
     ph: float | None = None
+    edges_by_name = _edges_by_name(r)
     che = r.get("che_affine")
     if not isinstance(che, dict):
         missing.append("che_affine absent (engine < 0.25.0)")
@@ -168,13 +208,15 @@ def routes_from_results(
                     continue
                 a = nodes[j] if j < len(nodes) else ""
                 b = nodes[j + 1] if j + 1 < len(nodes) else ""
+                edge_name = str(s.get("edge") or f"{a}->{b}")
                 rungs.append(
                     Rung(
-                        name=str(s.get("edge") or f"{a}->{b}"),
+                        name=edge_name,
                         delta_g0=dg0,
                         n_e=ne,
                         kind=_step_kind(b, ne),
                         sigma=_sigma(r, a, b),
+                        **_kinetics(edges_by_name.get(edge_name)),
                     )
                 )
             name = str(pr.get("route") or f"route {i + 1}")
@@ -198,13 +240,15 @@ def routes_from_results(
             dg0, ne = _num(e.get("delta_g0")), _n_e(e.get("n_e"))
             if dg0 is None or ne is None:
                 continue
+            edge_name = str(e.get("edge") or e.get("step") or "?")
             rungs.append(
                 Rung(
-                    name=str(e.get("edge") or e.get("step") or "?"),
+                    name=edge_name,
                     delta_g0=dg0,
                     n_e=ne,
                     kind="her",
                     sigma=_sigma(r, e.get("reactant"), e.get("product")),
+                    **_kinetics(edges_by_name.get(edge_name)),
                 )
             )
         if rungs:
@@ -363,6 +407,26 @@ def render_staircase(
         assert best is not None
         lines.append(
             f"  limiting rung at U = {u:+.2f} V: {best[0].name} (ΔG {best[1]:+.3f} eV)"
+        )
+        edges = reset_contour.reset_edges(route)
+        worst = min(edges, key=lambda e: float(e.slack(u)))
+        slack = float(worst.slack(u))
+        est = "/".join(sorted({e.estimator for e in edges}))
+        if slack >= 0:
+            verdict = (
+                f"guaranteed — every edge downhill by its margin "
+                f"(limiting {worst.rung.name}, slack {slack:+.3f} eV)"
+            )
+        elif all(float(rung.delta_g(u)) <= rung.eps for rung in route.rungs):
+            verdict = (
+                f"hysteretic — {worst.rung.name} is {-slack:.3f} eV "
+                "short of its reset margin"
+            )
+        else:
+            verdict = f"outside the viable window ({worst.rung.name} uphill)"
+        lines.append(
+            f"  reset (slice 7): {verdict} "
+            f"[estimators: {est}, η {reset_contour.DEFAULT_ETA_EV:g} eV]"
         )
     if sr.her is not None:
         lines.append("")
