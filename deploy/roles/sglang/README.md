@@ -10,19 +10,27 @@ token-0 `!`, nondeterministic at temperature 0, at every context window
 (vllm-project/vllm#37030, verified on the serving host 2026-10-12/13). Keep the
 `vllm` role for the day a fixed image is pullable.
 
-Verified on the serving host 2026-10-14 (`sglang-trial` container, these defaults):
+Verified on the serving host 2026-10-14 (`sglang-trial` container, these
+defaults then at `--mem-fraction-static 0.86` / `--max-running-requests
+64`):
 byte-identical temperature-0 replies at 1,009 / 16,369 / 66,481-token
 prompts with a planted needle, clean tool calls
 (`--tool-call-parser gpt-oss`), and a native `/v1/messages` that accepts
 Claude-Code-shaped requests — so `scripts/claude-local` needs no
-`anthropic-shim` against this stack. KV pool: fp8_e4m3 gives ~211k
-full-attention + ~169k sliding-window tokens; the bf16 default fit only
-~37k, below one max-length request.
+`anthropic-shim` against this stack. KV pool: fp8_e4m3 measured ~211k
+full-attention + ~169k sliding-window tokens at 0.86 (smaller at the
+shipped 0.80); the bf16 default fit only ~37k, below one max-length
+request. The same trial hung the host under load that afternoon
+(scheduler 100% CPU, gr485635) — hence 0.80 / 32.
 
 Two load-time traps on unified memory, both encoded in the defaults:
 
 - `--mem-fraction-static` counts against the WHOLE box (weights + KV +
-  graphs). 0.86 leaves ~15-21 GiB for the OS — sized for the host exclusive to this service.
+  graphs — GB10 memory is unified CPU/GPU). 0.80 leaves ~24 GiB for the
+  OS; the earlier 0.86 sizing hung the serving host under load on
+  2026-10-14 (gr485635), so do not raise it while anything shares the
+  box. `--max-running-requests` is likewise capped at 32 (the feedback
+  controller's level); 64 was the other half of that hang.
 - The default weight loader stages ~41 GiB of host buffers and trips
   earlyoom (10% MemAvailable) at shard 14/15. The `runai_streamer` loader
   with a 4 GiB `memory_limit` plus `--weight-loader-drop-cache-after-load`

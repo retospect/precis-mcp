@@ -54,22 +54,22 @@ sglang_extra_args: []
 sglang_env: {}
 
 # ── Sizing (measured on the serving host 2026-10-14) ──
-# GB10 memory is unified: this fraction of the WHOLE box is SGLang's static
-# pool (weights + KV + graphs). 0.86 leaves the OS ~15-21 GiB, above
-# earlyoom's 10% MemAvailable line — sized for a host exclusive to this service. If the box shares, lower this before raising
-# earlyoom risk. At 0.82 with fp8 KV the pool still held ~150k tokens.
-sglang_mem_fraction_static: 0.86
+# GB10 memory is unified CPU/GPU: this fraction of the WHOLE box is SGLang's
+# static pool (weights + KV + graphs). 0.86 hung the serving host under load
+# on 2026-10-14 (scheduler 100% CPU, gr485635); 0.80 leaves the host
+# headroom while staying above earlyoom's 10% MemAvailable line.
+sglang_mem_fraction_static: 0.80
 # Full 131072 window. Soundness verified: 3× byte-identical temperature-0
 # replies with a planted needle at 1,009 / 16,369 / 66,481 prompt tokens.
 sglang_context_length: 131072
 # fp8 KV halves the pool cost: bf16 KV at 0.86 fit only ~37k tokens total
 # (the 131k window would never fit); fp8_e4m3 measured 211,691 full +
-# 169,352 sliding-window tokens — one max-length call fits, ~64 concurrent
-# short ones too.
+# 169,352 sliding-window tokens at 0.86 — the 0.80 pool is smaller.
 sglang_kv_cache_dtype: fp8_e4m3
-# Server ceiling (local-compute-15 ruling: limit 64; a separate feedback
-# controller holds ~32).
-sglang_max_running_requests: 64
+# Server ceiling: 64 ran the scheduler at 100% CPU and hung the serving
+# host under load on 2026-10-14 (gr485635); 32 is the level the feedback
+# controller holds anyway.
+sglang_max_running_requests: 32
 
 # ── Weight loader (the earlyoom fix) ──
 # On unified memory the GPU reservation is host RAM: the default loader

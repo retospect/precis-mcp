@@ -188,12 +188,11 @@ Docs only. Reads: prod `resource_slots`, `app_settings` `llm.chain.%`,
     today (see `claude-code-on-local-serving.md`), and one server for
     several tiers is exactly the capacity plan's own D-variant shape.
 
-  Memory/slot budget: SGLang `--mem-fraction-static 0.86` ≈ 104 GiB static
-  on the 121 GiB box, ~15-21 GiB left for the OS — sized for castor
-  exclusive. If the science move off castor has not landed when this
-  deploys, run `sglang_mem_fraction_static: 0.82` (fp8 KV still ~150k
-  tokens) to keep MemAvailable clear of earlyoom's 10% while a science
-  lane is resident. Slot accounting: the existing cap-32 row is the
+  Memory/slot budget: SGLang `--mem-fraction-static 0.80` ≈ 97 GiB static
+  on the 121 GiB box, ~24 GiB left for the OS. The earlier 0.86 sizing
+  hung castor under load on 2026-10-14 (scheduler 100% CPU, gr485635) and
+  Reto authorized 0.80 + `--max-running-requests 32` the same day; keep
+  at or below 0.80 while anything shares the box. Slot accounting: the existing cap-32 row is the
   fleet-wide semaphore; the router's bounded local-wait (slice: keep
   routed-local calls on local) plus 32 slots absorbs the observed bursts
   (peak ~10 calls/min × ~3-4 s ≪ 32).

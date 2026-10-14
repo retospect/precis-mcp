@@ -244,3 +244,17 @@ the whole test without disturbing it. The fix is committed as
 stops the vllm unit). Left: `max_tokens` 20 replies still spend the whole
 budget on reasoning (the reasoning channel eats `max_tokens` — test with
 ≥500), and the notation eval rerun below is unblocked.
+
+**Hang under load + role-default fix, 2026-10-14 ~14:25Z (gr485635).**
+The `sglang-trial` container at the then-defaults
+(`--mem-fraction-static 0.86`, `--max-running-requests 64`) hung castor:
+scheduler at 100% CPU, python at 416%; Reto power-cycled at 14:47Z. The
+still-enabled `vllm` unit came back at boot serving gpt-oss-120b on :8000
+at `max_model_len` 16384 (both model names answer, but long-prompt calls
+are rejected) until playbook 49a lands — the sglang role's supersedes task
+stops AND disables that unit, so a reboot cannot bring it back beside
+sglang. Reto authorized the same day: `sglang_mem_fraction_static` 0.80
+and `sglang_max_running_requests` 32 (the feedback-controller level). The
+KV-pool numbers above were measured at 0.86 and shrink at 0.80 — weights
+alone need ≥0.80 of the box, so if a max-length call stops fitting, the
+next lever is `sglang_context_length`, not the fraction.
