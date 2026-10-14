@@ -15,8 +15,10 @@ documents:
   outline ``POLY`` on the ``OUTLINE`` layer, then per placed part
   ``COMPONENT`` + ``ATTR`` ``Designator`` + ``ATTR`` ``Footprint`` +
   ``PAD_NET`` per netted pad;
-* one ``FOOTPRINT`` document per placed INSTANCE (``R1_0402``,
-  ``R2_0402``, … — the decided first cut, ``docs/backlog/pcb-epro-export.md``);
+* one ``FOOTPRINT`` document per DISTINCT footprint (slice 2f): the
+  placed instances that un-place to the same authored pad set share one
+  document, as Pro's own libraries do — ``COMPONENT.angle`` carries the
+  real rotation so the footprint stores authored (unrotated) pads;
 * copper (slice 2c): every ``ctype='track'`` segment as a ``LINE`` or
   ``ARC`` on its copper layer, every ``ctype='via'`` as a through-hole
   ``VIA``. The records are the ones the reader decodes
@@ -28,12 +30,13 @@ documents:
   inverse of the reader's ``cw = sweep > 0``). A blind/buried via is
   written through-hole and named in a warning: ``VIA`` is documented
   through-hole only, and flattening one silently would short layers;
-* pours (slice 2d): a ``ctype='pour'`` whose polygon is an axis-aligned
-  rectangle becomes a ``POUR`` zone (the ``"R"`` rectangle op, the only
-  zone shape Pro has been seen to write), which Pro RE-POURS on open with
-  its own clearances — precis' realized fill (holes, islands) is not
-  carried, and the response says so. A free-polygon pour is dropped with
-  a warning rather than written in a path shape no Pro file has shown;
+* pours (slices 2d/2f): a ``ctype='pour'`` becomes a ``POUR`` zone — the
+  ``"R"`` rectangle op for an axis-aligned rectangle (Pro 3.2.149's
+  shape), else the vertex-list ``"L"`` path Pro 3.2.206 writes on the
+  TAZ V1.15 board (slice 2f's missing non-rectangular shape, observed
+  there). Pro RE-POURS on open with its own clearances — precis'
+  realized fill (antipads, islands, interior holes) is not carried, and
+  the response says so;
 * silk (slice 2e): courtyard outlines, pin-1 marks and board-frame text
   strokes as ``POLY`` on the silk layers; the refdes label as the
   editable ``Designator`` ``ATTR`` anchored at the silk pass's own text
@@ -41,43 +44,52 @@ documents:
   ``origin`` LEFT_BOTTOM) with its stroked twin suppressed, so no label
   prints twice. Pro's font replaces precis' stroke glyphs; the ``mirror``
   flag is written ``False`` on both sides, which assumes Pro mirrors
-  bottom-layer text by layer — unverified until a human opens one.
+  bottom-layer text by layer — unverified until a human opens one;
+* holes (slice 2f): a footprint-owned non-plated hole rides its
+  FOOTPRINT document as a ``FILL`` ``CIRCLE`` on ``MULTI`` (the shape the
+  reader's ``_footprint_holes`` parses back); a board-level
+  mounting-hole drill becomes a free ``PAD`` with ``plated: false`` —
+  the shape the reader's ``extract_mounting_holes`` parses;
+* the imported rule table, verbatim (slice 2f):
+  ``model["epro_rules"]``/``model["epro_board"]`` carry the records the
+  reader preserved (``meta.epro_rules`` on the ref — RULE, RULE_SELECTOR,
+  LAYER_PHYS, CANVAS, PREFERENCE, SILK_OPTS, PRIMITIVE, ACTIVE_LAYER,
+  META) and are written back unchanged, so the file keeps the board's
+  own design rules and physical stackup even where precis has no
+  constraint class for them.
 
-**What it deliberately does not emit** — mask-open regions,
-mounting-hole/fiducial free pads, per-pad paste/mask intent (2f); and NO
-``SCH``/``SCH_PAGE``/``DEVICE``/``SYMBOL`` document, on purpose: a
-schematic invites "update PCB from schematic", which rewrites the netlist
-and destroys the board. Each omission that drops something present in the
-model is reported in :attr:`EproExport.warnings`, never silent.
+**What it deliberately does not emit** — mask-open regions and per-pad
+paste/mask intent (no Pro record for a board-level mask region has been
+observed; the fill records on solder/paste layers inside footprint
+documents are library art, not regions), teardrops (precis places none;
+Pro's ``TEARDROP`` records are generated geometry and re-derive on
+repour), and NO ``SCH``/``SCH_PAGE``/``DEVICE``/``SYMBOL`` document, on
+purpose: a schematic invites "update PCB from schematic", which rewrites
+the netlist and destroys the board. Each omission that drops something
+present in the model is reported in :attr:`EproExport.warnings`, never
+silent.
 
-**Orientation is BAKED.** Every ``COMPONENT`` is written at angle 0 and
-every footprint's pads are expressed in a frame where that is true: the
-pad's board position minus the component position, inverted through the
-reader's R1 convention (``component (x, y) + R(+angle) · (px, ±py)`` in the
-Y-down frame, a bottom-side part mirrored in **Y**) for angle 0. So the
-file does not depend on how Pro reads ``angle``; the cost is that each part
-has its own footprint document. :func:`to_footprint_local` is that
-inversion and is pinned against the reader by
-``tests/test_pcb_epro_export.py``.
+**Orientation is REAL, not baked.** ``COMPONENT.angle`` is the precis
+``rot`` for a top part and ``(rot + 180) % 360`` for a bottom one — the
+exact inverse of the reader's convention — and every pad is written in
+the footprint's AUTHORED local frame (:func:`to_footprint_xy`), which is
+what lets instances share one document. The bottom-side Y-mirror is part
+of that convention: a bottom part's pads land where Pro puts them only if
+Pro mirrors the footprint in Y on READ. What the convention was verified
+against: Pro 3.2.149's own WRITE of ``heaterBaseTest.epro2`` (Reto's
+board, bottom-side parts included), by net agreement of 573 track
+endpoints with zero cross-net hits (:mod:`precis.pcb.epro`). Pro reading
+our file the same way is assumed, not observed; the tests here check the
+writer against the same reader, so they cannot catch it. A human opening
+an asymmetric bottom-side part in Pro is the check.
 
-**Bottom-side parts still depend on the mirror convention.** Baking the
-angle does not remove the Y-mirror: a bottom part's pads land where Pro
-puts them only if Pro mirrors that footprint in Y on READ. What the
-convention was verified against: Pro 3.2.149's own WRITE of
-``heaterBaseTest.epro2`` (Reto's board, bottom-side parts included), by net
-agreement of 573 track endpoints with zero cross-net hits, where the
-X-mirror candidate disagrees (:mod:`precis.pcb.epro`). Pro reading our file
-the same way is assumed, not observed; the tests here check the writer
-against the same reader, so they cannot catch it. A human opening an
-asymmetric bottom-side part in Pro is the check.
-
-**Oblique pads are warned, not rotated.** A rect/obround pad at a
-non-right-angle board rotation arrives with its authored ``w``/``h`` and an
-``oblique_rot`` marker (:func:`precis.pcb.padplace.board_pads`); it is
-written with ``padAngle`` 0 and named in a warning. Writing the real angle
-would add a second unverified convention (Pro's ``padAngle`` sense, and
-how it composes with the bottom mirror); that waits for a Pro-written
-file that exercises it.
+**A pad's authored rotation survives only when the board pad says so.**
+``padplace.board_pads`` marks a pad that landed non-axis-aligned with
+``oblique_rot`` (the total rotation); the authored ``padAngle`` is
+recovered as ``oblique_rot - inst_rot``. An axis-aligned board pad
+decomposes as ``padAngle 0`` plus ``w``/``h`` un-swapped by the instance
+rotation — the rendered shape is identical; only the "rotated inside the
+footprint" label is chosen canonically.
 
 **Determinism.** A re-export must re-open as the same project: document
 uuids are ``uuid5`` of the slug, record ids ``uuid5`` of slug + refdes +
@@ -95,7 +107,7 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.pcb import padplace
+from precis.pcb import padplace, pose
 from precis.pcb.gerber import SynthesizedPadError
 
 #: 1 mil = 0.0254 mm — the ``.epru`` body unit. Pinned equal to the
@@ -168,26 +180,27 @@ def to_epro_xy(x_mm: float, y_mm: float, frame: EproFrame) -> tuple[float, float
     return to_mils(x_mm - frame.x0_mm), to_mils(frame.y1_mm - y_mm)
 
 
-def to_footprint_local(
-    pad_xy_mm: tuple[float, float],
-    comp_xy_mm: tuple[float, float],
-    *,
-    bottom: bool,
+def to_footprint_xy(
+    pad_xy_mm: tuple[float, float], inst: dict[str, Any]
 ) -> tuple[float, float]:
-    """A pad's footprint-local ``(centerX, centerY)`` in mil for a
-    ``COMPONENT`` at angle 0.
-
-    The reader's R1 convention at angle 0 is a plain translate in the
-    Y-down frame, with a bottom-side part mirrored in **Y** (the pad's
-    local ``centerY`` negated). In the board's Y-up frame the pad offset is
-    ``(dx, dy)``, so ``centerX = dx`` always and ``centerY`` is ``-dy`` on
-    top, ``+dy`` on the bottom. Verified against
-    :func:`precis.pcb.padplace.place_pad_point` through the reader, for
-    every side x rotation, in ``tests/test_pcb_epro_export.py``.
+    """A board-frame position as AUTHORED footprint-local mm (+Y up): the
+    exact inverse of :func:`precis.pcb.pose.point_to_world` — un-rotate by
+    the instance's (clockwise) ``rot``, then un-mirror X for a bottom
+    part. The footprint document stores ``(x, -y)`` of this in mils.
     """
-    dx = pad_xy_mm[0] - comp_xy_mm[0]
-    dy = pad_xy_mm[1] - comp_xy_mm[1]
-    return to_mils(dx), to_mils(dy if bottom else -dy)
+    dx = float(pad_xy_mm[0]) - float(inst["x"])
+    dy = float(pad_xy_mm[1]) - float(inst["y"])
+    ux, uy = pose.rotate_cw(dx, dy, -float(inst.get("rot") or 0.0))
+    return (-ux, uy) if padplace.is_bottom_instance(inst) else (ux, uy)
+
+
+def epro_angle(inst: dict[str, Any]) -> float:
+    """The ``COMPONENT.angle`` for an instance: precis ``rot`` on top,
+    ``(rot + 180) % 360`` on the bottom — the exact inverse of the
+    reader's ``rot = (angle + 180 if bottom) % 360``
+    (:func:`precis.pcb.epro.extract_components`)."""
+    rot = float(inst.get("rot") or 0.0) % 360.0
+    return (rot + 180.0) % 360.0 if padplace.is_bottom_instance(inst) else rot
 
 
 def arc_sweep_deg(
@@ -361,6 +374,9 @@ class _Part:
     refdes: str
     bottom: bool
     pads: list[dict[str, Any]] = field(default_factory=list)
+    #: ``pads`` un-placed into the authored footprint frame — populated by
+    #: :func:`_group_pads` once every board pad is filed.
+    local_pads: list[_LocalPad] = field(default_factory=list)
 
 
 def _group_pads(model: dict[str, Any], parts: dict[str, _Part]) -> int:
@@ -384,7 +400,86 @@ def _group_pads(model: dict[str, Any], parts: dict[str, _Part]) -> int:
             continue
         seen.add(key)
         part.pads.append(pad)
+    for part in parts.values():
+        part.local_pads = [_local_pad(p, part.inst) for p in part.pads]
     return orphans
+
+
+@dataclass
+class _FpGroup:
+    """The placed instances that share one ``FOOTPRINT`` document — the
+    set that un-places to the same authored pads (and footprint holes).
+    Content-keyed, never name-keyed: two cache rows may carry the same
+    footprint name with different geometry, and the reader's own
+    ``name~hash`` disambiguation proves equal names need not be equal
+    footprints. ``index`` maps a pad's :meth:`_LocalPad.canon` to its
+    position in ``pads``, so each member's ``PAD_NET`` can point at the
+    shared pad element."""
+
+    name: str
+    pads: list[_LocalPad]
+    holes: list[dict[str, Any]]
+    members: list[str]
+    uuid: str = ""
+    index: dict[tuple[Any, ...], int] = field(default_factory=dict)
+
+
+def _footprint_groups(
+    parts: dict[str, _Part],
+    holes_by_refdes: dict[str, list[dict[str, Any]]],
+) -> list[_FpGroup]:
+    """Dedup placed parts into one group per identical authored pad set +
+    footprint-hole set. Names are picked deterministically (the lowest
+    member footprint name, ``~N``-suffixed when distinct groups share
+    one), so the file does not depend on model ordering."""
+    keyed: dict[str, _FpGroup] = {}
+    for refdes in sorted(parts):
+        part = parts[refdes]
+        holes = sorted(
+            holes_by_refdes.get(refdes) or [],
+            key=lambda h: (float(h["x"]), float(h["y"]), float(h["dia_mm"])),
+        )
+        key = json.dumps(
+            [
+                [p.canon() for p in part.local_pads],
+                [
+                    [
+                        round(float(h["x"]), 4),
+                        round(float(h["y"]), 4),
+                        round(float(h["dia_mm"]), 4),
+                    ]
+                    for h in holes
+                ],
+            ]
+        )
+        group = keyed.get(key)
+        if group is None:
+            group = _FpGroup(
+                name="",
+                pads=part.local_pads,
+                holes=[dict(h) for h in holes],
+                members=[],
+            )
+            group.index = {p.canon(): i for i, p in enumerate(part.local_pads)}
+            keyed[key] = group
+        group.members.append(refdes)
+
+    groups = [keyed[k] for k in sorted(keyed)]
+    # Name after the content sort, so a "~2" never depends on which
+    # instance the model listed first.
+    seen_names: dict[str, int] = {}
+    for group in groups:
+        names = sorted(
+            {
+                str(parts[r].inst.get("footprint") or "")
+                for r in group.members
+                if str(parts[r].inst.get("footprint") or "")
+            }
+        )
+        base = names[0] if names else "FP"
+        seen_names[base] = seen_names.get(base, 0) + 1
+        group.name = base if seen_names[base] == 1 else f"{base}~{seen_names[base]}"
+    return groups
 
 
 def _poly_path(points: list[tuple[float, float]]) -> list[Any]:
@@ -397,54 +492,238 @@ def _poly_path(points: list[tuple[float, float]]) -> list[Any]:
     return path
 
 
-def _pad_record(
-    pad: dict[str, Any], num: str, part: _Part, comp_xy: tuple[float, float]
-) -> dict[str, Any]:
-    """One footprint ``PAD`` body, in the footprint-local frame."""
+# ── footprint-local pads (slice 2f) ────────────────────────────────────
+@dataclass
+class _LocalPad:
+    """One pad expressed in the footprint's AUTHORED frame (mm, +Y up) —
+    what a shared ``FOOTPRINT`` document stores. ``num`` is the pin
+    label the model carries (``padplace.board_pads`` resolves it through
+    the footprint's pin_map); two instances share a document exactly when
+    their local pad sets agree, fields rounded to the same 0.0001-mm
+    quantum :func:`_group_pads` dedups board pads on."""
+
+    num: str
+    shape: str
+    x: float
+    y: float
+    rot: float  # padAngle, degrees
+    w: float
+    h: float
+    net: str = ""
+    drill: float | None = None
+    slot: tuple[float, float] | None = None  # (width, height) in the pad frame
+    slot_rounded: bool = False  # an off-axis slot written as a round hole
+    poly: tuple[tuple[float, float], ...] | None = None
+
+    def canon(self) -> tuple[Any, ...]:
+        """The identity a footprint group dedups on. Rounded to 1 um:
+        un-placing through an odd instance angle and back accumulates
+        ~0.1 um of float noise, and library footprints differ by tens of
+        microns at the smallest — 1 um splits the noise without ever
+        merging two real footprints."""
+        return (
+            self.num,
+            self.shape,
+            round(self.x, 3),
+            round(self.y, 3),
+            round(self.rot, 3),
+            round(self.w, 3),
+            round(self.h, 3),
+            None if self.drill is None else round(self.drill, 3),
+            self.slot,
+            (
+                tuple((round(vx, 3), round(vy, 3)) for vx, vy in self.poly)
+                if self.poly
+                else None
+            ),
+        )
+
+
+def _local_pad(pad: dict[str, Any], inst: dict[str, Any]) -> _LocalPad:
+    """Un-place one board-frame model pad into its instance's authored
+    footprint frame.
+
+    Position inverts exactly through :func:`to_footprint_xy`. The
+    ``w``/``h``/``padAngle`` triple needs the decomposition the board pad
+    only partly carries: ``board_pads`` emits AUTHORED ``w``/``h`` (swapped
+    only when the total rotation lands on 90 mod 180) and marks a
+    non-axis-aligned placed pad ``oblique_rot`` = instance + pad rotation.
+    From that: an oblique pad's authored angle is ``oblique_rot - rot``
+    exactly; an axis-aligned one is written ``padAngle 0`` with ``w``/``h``
+    un-swapped by the instance rotation — rendered identically (module
+    docstring, "A pad's authored rotation").
+    """
+    bottom = padplace.is_bottom_instance(inst)
+    rot = float(inst.get("rot") or 0.0)
+    lx, ly = to_footprint_xy((float(pad["x"]), float(pad["y"])), inst)
     shape = str(pad.get("shape") or "rect")
     w = float(pad.get("w") or 0.0)
     h = float(pad.get("h", w) or 0.0)
-    cx, cy = to_footprint_local(
-        (float(pad["x"]), float(pad["y"])), comp_xy, bottom=part.bottom
+    oblique = pad.get("oblique_rot")
+    pad_rot = 0.0
+    if oblique is not None:
+        pad_rot = _clean((float(oblique) - rot) % 360.0)
+    elif shape in ("rect", "obround") and padplace.rect_swaps_wh(rot):
+        w, h = h, w
+    local = _LocalPad(
+        num=str(pad.get("pin") or ""),
+        shape=shape,
+        x=lx,
+        y=ly,
+        rot=pad_rot,
+        w=w,
+        h=h,
+        net=str(pad.get("net") or ""),
+        drill=float(pad["drill"]) if pad.get("drill") else None,
     )
-    default: dict[str, Any] = {"padType": _PAD_TYPES.get(shape, "RECT")}
     if shape == "polygon" and pad.get("poly"):
-        # The reader takes polygon vertices as footprint-local (not
-        # pad-centre-relative), Y negated exactly like ``centerY``.
+        local.poly = tuple(
+            to_footprint_xy((float(vx), float(vy)), inst) for vx, vy in pad["poly"]
+        )
+    if local.drill and pad.get("slot"):
+        # model pads carry the slot as board-frame end centres; the hole's
+        # w/h live in the PAD frame (padAngle turns both, same as the pad's
+        # own w/h). Un-rotate by the total rotation, un-mirroring on the
+        # bottom side — a mirror only flips an axis, so the axis check is
+        # what survives.
+        (sx1, sy1), (sx2, sy2) = pad["slot"]
+        dx, dy = float(sx2) - float(sx1), float(sy2) - float(sy1)
+        long_ = math.hypot(dx, dy) + local.drill
+        ux, uy = pose.rotate_cw(dx, dy, -rot)
+        if bottom:
+            ux = -ux
+        ux, uy = pose.rotate_cw(ux, uy, -pad_rot)
+        if abs(uy) < 1e-6:
+            local.slot = (round(long_, 4), round(local.drill, 4))
+        elif abs(ux) < 1e-6:
+            local.slot = (round(local.drill, 4), round(long_, 4))
+        else:
+            local.slot_rounded = True
+    return local
+
+
+def _pad_body(local: _LocalPad) -> dict[str, Any]:
+    """One footprint ``PAD`` body in the authored frame — ``(x, -y)`` in
+    mils, the exact inverse of the reader's ``_pad_to_precis``."""
+    default: dict[str, Any] = {"padType": _PAD_TYPES.get(local.shape, "RECT")}
+    if local.shape == "polygon" and local.poly:
         default["path"] = _poly_path(
-            [
-                to_footprint_local((float(vx), float(vy)), comp_xy, bottom=part.bottom)
-                for vx, vy in pad["poly"]
-            ]
+            [(to_mils(vx), to_mils(-vy)) for vx, vy in local.poly]
         )
     else:
-        default["width"] = to_mils(w)
-        default["height"] = to_mils(h if shape != "circle" else w)
+        default["width"] = to_mils(local.w)
+        default["height"] = to_mils(local.w if local.shape == "circle" else local.h)
     body: dict[str, Any] = {
         "netName": "",
-        "layerId": _L_MULTI if pad.get("drill") else _L_TOP,
-        "num": num,
-        "centerX": cx,
-        "centerY": cy,
-        "padAngle": 0,
+        "layerId": _L_MULTI if local.drill else _L_TOP,
+        "num": local.num,
+        "centerX": to_mils(local.x),
+        "centerY": to_mils(-local.y),
+        "padAngle": _clean(round(local.rot, 4)),
         "defaultPad": default,
+        "plated": True,
+        "padType": "NORMAL",
     }
-    if pad.get("drill"):
-        d = to_mils(float(pad["drill"]))
-        body["hole"] = {"holeType": "ROUND", "width": d, "height": d}
-        slot = pad.get("slot")
-        if slot:
-            # padAngle is written 0 (board frame), so only a slot along a
-            # board axis can be expressed; an oblique one stays round.
-            (sx1, sy1), (sx2, sy2) = slot
-            long_ = to_mils(math.hypot(sx2 - sx1, sy2 - sy1) + float(pad["drill"]))
-            if abs(sy2 - sy1) < 1e-6:
-                body["hole"] = {"holeType": "SLOT", "width": long_, "height": d}
-            elif abs(sx2 - sx1) < 1e-6:
-                body["hole"] = {"holeType": "SLOT", "width": d, "height": long_}
-    body["plated"] = True
-    body["padType"] = "NORMAL"
+    if local.drill:
+        d = to_mils(local.drill)
+        if local.slot:
+            body["hole"] = {
+                "holeType": "SLOT",
+                "width": to_mils(local.slot[0]),
+                "height": to_mils(local.slot[1]),
+            }
+        else:
+            body["hole"] = {"holeType": "ROUND", "width": d, "height": d}
     return body
+
+
+def _fp_hole_fill(hole: dict[str, Any]) -> dict[str, Any]:
+    """A footprint-owned non-plated hole as the ``FILL`` ``CIRCLE`` on
+    ``MULTI`` the reader's ``_footprint_holes`` parses back
+    (:func:`precis.pcb.epro._footprint_holes` — the shape Pro itself
+    writes for a footprint's NPTH). ``hole`` is authored-local
+    ``{"x","y","dia_mm"}`` in mm."""
+    return {
+        "layerId": _L_MULTI,
+        "netName": "",
+        "width": 0.2,
+        "fillStyle": "SOLID",
+        "path": [
+            [
+                "CIRCLE",
+                to_mils(float(hole["x"])),
+                to_mils(-float(hole["y"])),
+                to_mils(float(hole["dia_mm"]) / 2.0),
+            ]
+        ],
+        "isBridgingCopper": False,
+    }
+
+
+def loose_drills(
+    model: dict[str, Any],
+    parts: dict[str, _Part],
+    copper_items: list[dict[str, Any]],
+    groups: list[_FpGroup],
+) -> list[dict[str, Any]]:
+    """``model["drills"]`` rows that no exported pad, via or footprint hole
+    already covers — the candidates for free ``PAD`` records. A drill at
+    a placed footprint hole's world position is covered by the ``FILL``
+    the group writes; everything else is a board-level hole."""
+    covered = {
+        (round(float(p["x"]), 3), round(float(p["y"]), 3))
+        for part in parts.values()
+        for p in part.pads
+        if p.get("drill")
+    } | {
+        (round(float(i["x"]), 3), round(float(i["y"]), 3))
+        for i in copper_items
+        if i.get("ctype") == "via" and i.get("x") is not None
+    }
+    for group in groups:
+        for refdes in group.members:
+            inst = parts[refdes].inst
+            for h in group.holes:
+                wx, wy = pose.point_to_world(
+                    float(h["x"]),
+                    float(h["y"]),
+                    float(inst["x"]),
+                    float(inst["y"]),
+                    float(inst.get("rot") or 0.0),
+                    mirrored=parts[refdes].bottom,
+                )
+                covered.add((round(wx, 3), round(wy, 3)))
+    return [
+        d
+        for d in sorted(
+            (d for d in model.get("drills") or []),
+            key=lambda d: (float(d["x"]), float(d["y"])),
+        )
+        if (round(float(d["x"]), 3), round(float(d["y"]), 3)) not in covered
+    ]
+
+
+def _free_pad_body(drill: dict[str, Any], num: str, frame: EproFrame) -> dict[str, Any]:
+    """A board-level drill as a free ``PAD`` — the shape the reader's
+    ``extract_mounting_holes`` parses (``plated`` + ``hole.width``). A
+    non-plated hole gets a hole-sized pad: there is no copper ring to
+    keep. The plated case (a drilled test point that escaped its part)
+    gets the same; no net is carried because the drill row has none."""
+    dia = to_mils(float(drill["dia_mm"]))
+    x, y = to_epro_xy(float(drill["x"]), float(drill["y"]), frame)
+    plated = bool(drill.get("plated"))
+    return {
+        "netName": "",
+        "layerId": _L_TOP if plated else _L_MULTI,
+        "num": num,
+        "centerX": x,
+        "centerY": y,
+        "padAngle": 0,
+        "defaultPad": {"padType": "ELLIPSE", "width": dia, "height": dia},
+        "hole": {"holeType": "ROUND", "width": dia, "height": dia},
+        "plated": plated,
+        "padType": "NORMAL",
+    }
 
 
 # ── copper (slices 2c/2d) ───────────────────────────────────────────────
@@ -521,15 +800,36 @@ def _write_copper(
         net = str(item.get("net") or "")
         if ctype == "pour":
             lid = ids.get(str(item.get("layer") or ""))
-            rect = _axis_aligned_rect(item.get("polygon") or [])
-            if lid is None or rect is None:
+            if lid is None:
                 out.pours_dropped += 1
                 continue
-            (x0, y0), (x1, y1) = rect
-            fx, fy = to_epro_xy(x0, y0, frame)
+            polygon = item.get("polygon") or []
+            rect = _axis_aligned_rect(polygon)
+            if rect is None and len(polygon) < 3:
+                out.pours_dropped += 1
+                continue
             if item.get("holes"):
                 out.pours_with_holes += 1
             out.pours += 1
+            if rect is not None:
+                (x0, y0), (x1, y1) = rect
+                # "R" anchors at (x, y) = min-x/MAX-y in the file frame —
+                # the box spans x..x+w, y-h..y (verified on Pro's own
+                # write, pcb-epro-export.md slice 2d), which is the
+                # board's (x0, y0) corner.
+                fx, fy = to_epro_xy(x0, y0, frame)
+                path: list[Any] = [
+                    ["R", fx, fy, to_mils(x1 - x0), to_mils(y1 - y0), 0, 0]
+                ]
+            else:
+                # The vertex-list "L" path Pro 3.2.206 writes for a
+                # free-form zone (observed on TAZ V1.15's four pours).
+                # Interior rings are not expressible: Pro re-derives the
+                # clearance gaps when it re-pours anyway.
+                ring = [(float(p[0]), float(p[1])) for p in polygon]
+                if ring[0] != ring[-1]:
+                    ring.append(ring[0])
+                path = [_poly_path([to_epro_xy(px, py, frame) for px, py in ring])]
             s.record(
                 "POUR",
                 {
@@ -538,7 +838,7 @@ def _write_copper(
                     "width": _POUR_WIDTH,
                     "name": f"POUR{out.pours}",
                     "order": 0,
-                    "path": [["R", fx, fy, to_mils(x1 - x0), to_mils(y1 - y0), 0, 0]],
+                    "path": path,
                     "pourType": {"pourType": "SOLID", "fineness": _POUR_FINENESS},
                     "keepIsland": False,
                 },
@@ -633,16 +933,16 @@ def _copper_warnings(cu: _CopperOut) -> list[str]:
     out: list[str] = []
     if cu.pours:
         out.append(
-            f"{cu.pours} pour(s)/plane(s) written as POUR zones over their "
-            "rectangle — Pro re-pours them on open with ITS clearance rules, "
-            "so the fill differs from precis' (antipads, islands, thermals)"
+            f"{cu.pours} pour(s)/plane(s) written as POUR zones — Pro "
+            "re-pours them on open with ITS clearance rules, so the fill "
+            "differs from precis' (antipads, islands, interior holes, "
+            "thermals)"
         )
     if cu.pours_dropped:
         out.append(
-            f"{cu.pours_dropped} pour(s)/plane(s) are NOT exported: a "
-            "non-rectangular zone, or a layer the stackup does not declare — "
-            "Pro's POUR path for a free polygon has not been observed in a "
-            "Pro-written file, so it is not guessed"
+            f"{cu.pours_dropped} pour(s)/plane(s) are NOT exported: fewer "
+            "than three outline vertices, or a layer the stackup does not "
+            "declare"
         )
     if cu.blind:
         shown = ", ".join(cu.blind[:6]) + ("…" if len(cu.blind) > 6 else "")
@@ -813,9 +1113,27 @@ def epro_files(
     for r in padless:
         del parts[r]
 
+    # Footprint-owned non-plated holes, authored-local mm, by refdes —
+    # `model["footprint_holes"]` (the handler derives it off the cached
+    # footprints). They travel inside the shared FOOTPRINT document.
+    holes_by_refdes = {
+        str(r): [dict(h) for h in holes]
+        for r, holes in (model.get("footprint_holes") or {}).items()
+        if isinstance(holes, list)
+    }
+    groups = _footprint_groups(parts, holes_by_refdes)
+    member_of = {r: g for g in groups for r in g.members}
+    for g in groups:
+        # Content-keyed uuid: same pads, same doc, whichever instances land
+        # it. Naming is already resolved (deterministic per content).
+        g.uuid = _uuid_hex(slug, f"fp:{g.name}")
+
     pcb_uuid = _uuid_hex(slug, "pcb")
-    fp_uuid = {r: _uuid_hex(slug, f"fp:{r}") for r in parts}
     comp_id = {r: _rid(slug, f"comp:{r}") for r in parts}
+    pad_ids = {
+        g.name: [_rid(slug, f"fpd:{g.name}:{k}") for k in range(len(g.pads))]
+        for g in groups
+    }
 
     s = _Stream()
     s.dochead("PCB", pcb_uuid)
@@ -824,9 +1142,44 @@ def epro_files(
     for lay in _layer_records(n_inner):
         s.record("LAYER", lay, _dumps(["LAYER", lay["layerId"]]))
 
+    # Verbatim passthrough: the design-rule table and the board-state
+    # records the reader preserved (meta.epro_rules / meta.epro_board).
+    # Written before first use, in the order they came — these are the
+    # records precis has no constraint model for, kept lossless so the
+    # file opens with the board's own rules and physical stackup.
+    for key in ("epro_board", "epro_rules"):
+        for rec in model.get(key) or []:
+            s.record(
+                str(rec.get("type")),
+                rec.get("body"),
+                str(rec["id"]) if rec.get("id") is not None else None,
+            )
+
     copper_items = sorted_copper(model)
+    # A stackup plane whose authored zone did not survive (meta.epro_pours
+    # covers the imported case) still gets a POUR over the whole outline —
+    # else the plane net never reaches the file. ``model["planes"]`` comes
+    # from ``_fab_model``'s stackup read.
+    pour_layers = {
+        str(i.get("layer")) for i in copper_items if i.get("ctype") == "pour"
+    }
+    for layer, net in sorted((model.get("planes") or {}).items()):
+        if layer in pour_layers or not model.get("outline"):
+            continue
+        copper_items.append(
+            {
+                "ctype": "pour",
+                "layer": layer,
+                "net": net,
+                "polygon": [list(p) for p in model["outline"]],
+            }
+        )
+    # model["nets"] carries the board's full net list (a schematic net
+    # with no board members still needs its NET record, else the net is
+    # gone); the pure-model path falls back to used nets.
     nets = sorted(
-        {str(p["net"]) for part in parts.values() for p in part.pads if p.get("net")}
+        {str(n) for n in model.get("nets") or [] if n}
+        | {str(p["net"]) for part in parts.values() for p in part.pads if p.get("net")}
         | {str(i["net"]) for i in copper_items if i.get("net")}
     )
     for net in nets:
@@ -858,7 +1211,6 @@ def epro_files(
         for lab in model.get("silk_labels") or []
         if lab.get("x") is not None and lab.get("y") is not None
     }
-    pad_ids: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
     for refdes, part in parts.items():
         cid = comp_id[refdes]
         x, y = to_epro_xy(float(part.inst["x"]), float(part.inst["y"]), frame)
@@ -888,9 +1240,9 @@ def epro_files(
                 "layerId": side,
                 "x": x,
                 "y": y,
-                "angle": 0,
+                "angle": _clean(epro_angle(part.inst)),
                 "attrs": {"Unique ID": "gge" + _uuid_hex(slug, f"uid:{refdes}")[:12]},
-                "locked": False,
+                "locked": bool(part.inst.get("fixed")),
             },
             cid,
         )
@@ -914,23 +1266,21 @@ def epro_files(
                 "x": None,
                 "y": None,
                 "key": "Footprint",
-                "value": fp_uuid[refdes],
+                "value": member_of[refdes].uuid,
                 "valueVisible": False,
             },
             cid + "e1",
         )
-        entries: list[tuple[str, str, dict[str, Any]]] = []
-        for k, pad in enumerate(part.pads):
-            num = str(pad.get("pin") or "") or str(k + 1)
-            pad_id = _rid(slug, f"pad:{refdes}:{k}")
-            entries.append((pad_id, num, pad))
-            if pad.get("net"):
+        group = member_of[refdes]
+        for local in part.local_pads:
+            num = local.num or str(group.index[local.canon()] + 1)
+            pad_id = pad_ids[group.name][group.index[local.canon()]]
+            if local.net:
                 s.record(
                     "PAD_NET",
-                    {"padNet": str(pad["net"]), "padLen": None, "attrsMap": {}},
+                    {"padNet": local.net, "padLen": None, "attrsMap": {}},
                     _dumps(["PAD_NET", cid, num, pad_id]),
                 )
-        pad_ids[refdes] = entries
 
     cu = _write_copper(s, copper_items, slug=slug, frame=frame, layers=layers)
     silk_out = _write_silk(s, model, slug=slug, frame=frame)
@@ -962,16 +1312,37 @@ def epro_files(
             f"document layer — do not fabricate this board"
         )
 
-    for refdes, part in parts.items():
-        comp_xy = (float(part.inst["x"]), float(part.inst["y"]))
-        s.dochead("FOOTPRINT", fp_uuid[refdes])
-        fp_name = str(part.inst.get("footprint") or "FP")
+    # Board-level drills that no exported pad, via or footprint hole
+    # covers: non-plated mounting holes become free NPTH pads; a plated
+    # drill that escaped its part becomes a plated free pad (netless —
+    # the drill row carries no net). Both read back through the reader's
+    # PAD branches. These MUST be written before the first FOOTPRINT
+    # DOCHEAD — every record after that lands in another document.
+    npth = 0
+    plated_free = 0
+    for d in loose_drills(model, parts, copper_items, groups):
+        plated = bool(d.get("plated"))
+        if plated:
+            plated_free += 1
+        else:
+            npth += 1
         s.record(
-            "META", {"title": f"{refdes}_{fp_name}", "tags": ["Footprints"]}, "META"
+            "PAD",
+            _free_pad_body(d, str(npth + plated_free), frame),
+            _rid(slug, f"freepad:{npth + plated_free}"),
         )
+
+    for group in groups:
+        s.dochead("FOOTPRINT", group.uuid)
+        s.record("META", {"title": group.name, "tags": ["Footprints"]}, "META")
         s.record("CANVAS", {"originX": 0, "originY": 0, "unit": "mm"}, "CANVAS")
-        for pad_id, num, pad in pad_ids[refdes]:
-            s.record("PAD", _pad_record(pad, num, part, comp_xy), pad_id)
+        for k, local in enumerate(group.pads):
+            num = local.num or str(k + 1)
+            body = _pad_body(local)
+            body["num"] = num
+            s.record("PAD", body, pad_ids[group.name][k])
+        for k, hole in enumerate(group.holes):
+            s.record("FILL", _fp_hole_fill(hole), _rid(slug, f"fph:{group.name}:{k}"))
 
     # ── what the model held that this slice drops ────────────────────
     if unplaced:
@@ -989,60 +1360,28 @@ def epro_files(
             f"rows) and are not exported"
         )
     warnings += _copper_warnings(cu)
-    exported_holes = {
-        (round(float(p["x"]), 3), round(float(p["y"]), 3))
-        for part in parts.values()
-        for p in part.pads
-        if p.get("drill")
-    } | {
-        (round(float(i["x"]), 3), round(float(i["y"]), 3))
-        for i in copper_items
-        if i.get("ctype") == "via" and i.get("x") is not None
-    }
-    loose = [
-        d
-        for d in model.get("drills") or []
-        if (round(float(d["x"]), 3), round(float(d["y"]), 3)) not in exported_holes
-    ]
-    if loose:
+    if plated_free:
         warnings.append(
-            f"{len(loose)} drill(s) belong to no exported pad or via (board "
-            f"mounting holes and footprint holes, which the format code has "
-            f"no free-hole record for) and are not exported"
+            f"{plated_free} plated drill(s) belong to no exported pad or via "
+            "(free test points) and are written as netless plated pads — "
+            "re-attach their nets in Pro"
         )
     if model.get("mask_open_regions"):
         warnings.append(
             f"{len(model['mask_open_regions'])} soldermask-opening region(s) "
-            "are NOT exported — Pro will mask-cover that area"
+            "are NOT exported — Pro will mask-cover that area (no observed "
+            "record carries a board-level mask region)"
         )
     warnings += _silk_warnings(silk_out, labelled=len(labels.keys() & parts.keys()))
-    oblique = sorted(
-        r for r, part in parts.items() if any("oblique_rot" in p for p in part.pads)
-    )
-    if oblique:
-        warnings.append(
-            f"{len(oblique)} part(s) sit at a non-right-angle rotation with "
-            f"rect/obround pads ({', '.join(oblique[:8])}"
-            f"{'…' if len(oblique) > 8 else ''}): pad CENTRES are right, pad "
-            "SHAPES are written unrotated (padAngle 0) — fix their pad angle "
-            "in Pro before fabricating"
-        )
     oblique_slots = sorted(
-        r
-        for r, part in parts.items()
-        if any(
-            p.get("slot")
-            and abs(p["slot"][1][0] - p["slot"][0][0]) >= 1e-6
-            and abs(p["slot"][1][1] - p["slot"][0][1]) >= 1e-6
-            for p in part.pads
-        )
+        r for r, part in parts.items() if any(lp.slot_rounded for lp in part.local_pads)
     )
     if oblique_slots:
         warnings.append(
-            f"{len(oblique_slots)} part(s) have a slot hole at a non-right-angle "
-            f"({', '.join(oblique_slots[:8])}"
-            f"{'…' if len(oblique_slots) > 8 else ''}): written as a ROUND hole "
-            "of the slot width (padAngle 0) — redraw the slot in Pro before "
+            f"{len(oblique_slots)} part(s) have a slot hole off the pad "
+            f"frame's axes ({', '.join(oblique_slots[:8])}"
+            f"{'…' if len(oblique_slots) > 8 else ''}): written as a ROUND "
+            "hole of the slot width — redraw the slot in Pro before "
             "fabricating"
         )
     dropped_nets = sorted(
@@ -1074,6 +1413,7 @@ def epro_files(
         stats={
             "components": len(parts),
             "pads": sum(len(p.pads) for p in parts.values()),
+            "footprint_docs": len(groups),
             "nets": len(nets),
             "tracks": cu.tracks,
             "lines": cu.lines,
@@ -1081,6 +1421,9 @@ def epro_files(
             "vias": cu.vias,
             "pours": cu.pours,
             "pours_dropped": cu.pours_dropped,
+            "npth": npth,
+            "plated_free": plated_free,
+            "rule_records": len(model.get("epro_rules") or []),
             "silk_polys": silk_out.polys,
             "silk_refdes_suppressed": silk_out.refdes,
             "silk_dropped": silk_out.regions + silk_out.clear,
@@ -1114,11 +1457,13 @@ __all__ = [
     "SynthesizedPadError",
     "arc_sweep_deg",
     "copper_layer_ids",
+    "epro_angle",
     "epro_files",
     "frame_for",
+    "loose_drills",
     "sorted_copper",
     "to_epro_xy",
-    "to_footprint_local",
+    "to_footprint_xy",
     "to_mils",
     "zip_epro",
 ]

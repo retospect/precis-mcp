@@ -19,6 +19,7 @@ router.
 from __future__ import annotations
 
 import io
+import json
 import math
 import pathlib
 import zipfile
@@ -132,10 +133,10 @@ def test_dropping_the_half_turn_moves_every_bottom_pad(project, design) -> None:
     assert (right[1] + wrong[1]) / 2 == pytest.approx(u1["y"], abs=1e-6)
 
 
-def _reread(**replacements: str):
-    """Re-read the fixture with literal substitutions applied to the
-    stream — how a case the fixture does not carry (a locked part, a rule
-    area) gets exercised without a second fixture directory."""
+def _reread_zip(**replacements: str) -> bytes:
+    """The fixture stream with literal substitutions applied, re-zipped —
+    how a case the fixture does not carry (a locked part, a rule area, a
+    rule table) gets exercised without a second fixture directory."""
     stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
     for old, new in replacements.items():
         assert old in stream, f"fixture no longer contains {old!r}"
@@ -144,7 +145,14 @@ def _reread(**replacements: str):
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("project2.json", (_FIXTURE / "project2.json").read_bytes())
         zf.writestr("board.epru", stream.encode("utf-8"))
-    return epro.build_design(epro.read_archive(buf.getvalue()))[0]
+    return buf.getvalue()
+
+
+def _reread(**replacements: str):
+    """Re-read the fixture with literal substitutions applied to the
+    stream — how a case the fixture does not carry (a locked part, a rule
+    area) gets exercised without a second fixture directory."""
+    return epro.build_design(epro.read_archive(_reread_zip(**replacements)))[0]
 
 
 def test_a_locked_component_imports_frozen() -> None:
@@ -348,6 +356,251 @@ def test_imported_rule_areas_are_reported_as_binding_nothing() -> None:
         }
     )
     assert any("bind nothing" in w for w in design.warnings)
+
+
+# ── the design-rule table (slice: rule import) ───────────────────────────
+# The record body shapes are the ones TAZ V1.15's Pro 3.2.206 wrote: the
+# id is ["RULE", category, name], values are mils even where the context
+# says unit:"mm" (KiCad's parser carries the same comment), the matrix is
+# lower-triangular over [Track, SMD Pad, TH Pad, SMD TP, TH TP, Via,
+# Fill/Teardrop, Zone, Slot, Line, Text, Outline, Hole] — cells 0..5 of
+# each row are the copper-copper clearances precis reads.
+def _safe_row(cell: float) -> list[list[float]]:
+    """A lower-triangular 13x13 matrix with every cell `cell` mil."""
+    return [[cell] * (i + 1) for i in range(13)]
+
+
+def _rules_zip(*records: str) -> bytes:
+    return _reread_zip(
+        **{
+            '{"type":"COMPONENT","ticket":60,"id":"c1"}': (
+                "".join(records) + '{"type":"COMPONENT","ticket":60,"id":"c1"}'
+            )
+        }
+    )
+
+
+def _rule_rec(ticket: int, cat: str, name: str, body: dict) -> str:
+    return (
+        f'{{"type":"RULE","ticket":{ticket},'
+        f'"id":"[\\"RULE\\",\\"{cat}\\",\\"{name}\\"]"}}||'
+        f"{json.dumps(body, separators=(',', ':'))}|\n"
+    )
+
+
+def test_the_rule_table_imports_into_net_classes_and_passthrough() -> None:
+    design = epro.build_design(
+        epro.read_archive(
+            _rules_zip(
+                _rule_rec(
+                    50,
+                    "SAFE",
+                    "Default",
+                    {
+                        "ruleState": "DEFAULT",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "safeSpacing": [{"layerId": 1, "content": _safe_row(6.0)}],
+                        },
+                    },
+                ),
+                _rule_rec(
+                    51,
+                    "TRACK",
+                    "Default",
+                    {
+                        "ruleState": "DEFAULT",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "track": {
+                                "isOpen": True,
+                                "content": [
+                                    {
+                                        "layerId": 1,
+                                        "stroMin": 8.0,
+                                        "stroDef": 11.811,
+                                        "stroMax": 1000.0,
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                ),
+                _rule_rec(
+                    52,
+                    "RADIUS",
+                    "Default",
+                    {
+                        "ruleState": "DEFAULT",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "minRadius": 5.0,
+                            "defRadius": 11.811,
+                            "minInner": 3.0,
+                            "defInner": 5.9055,
+                        },
+                    },
+                ),
+                _rule_rec(
+                    53,
+                    "SAFE",
+                    "Wide",
+                    {
+                        "ruleState": "NORMAL",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "safeSpacing": [{"layerId": 1, "content": _safe_row(8.0)}],
+                        },
+                    },
+                ),
+                _rule_rec(
+                    54,
+                    "TRACK",
+                    "Wide",
+                    {
+                        "ruleState": "NORMAL",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "track": {
+                                "isOpen": True,
+                                "content": [
+                                    {
+                                        "layerId": 1,
+                                        "stroMin": 16.0,
+                                        "stroDef": 20.0,
+                                        "stroMax": 1000.0,
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                ),
+                _rule_rec(
+                    55,
+                    "OTHER",
+                    "otherClearance",
+                    {
+                        "ruleState": "DEFAULT",
+                        "ruleContext": {"unit": "mm", "holeClearance": 11.8},
+                    },
+                ),
+            )
+        )
+    )[0]
+    # Values are mils: 11.811 -> 0.3mm track, 6 -> 0.1524mm clearance,
+    # 11.811 radius -> 0.6mm via dia, 5.9055 -> 0.3mm drill.
+    default = design.net_classes["Default"]
+    assert default["track_width_mm"] == pytest.approx(0.3, abs=1e-4)
+    assert default["clearance_mm"] == pytest.approx(0.1524, abs=1e-4)
+    assert default["via_dia_mm"] == pytest.approx(0.6, abs=1e-4)
+    assert default["via_drill_mm"] == pytest.approx(0.3, abs=1e-4)
+    assert design.net_classes["Wide"] == {
+        "track_width_mm": pytest.approx(0.508, abs=1e-4),
+        "clearance_mm": pytest.approx(0.2032, abs=1e-4),
+    }
+    # The OTHER category is global, not a group: no class, and it does not
+    # vote for the default. The DEFAULT group is the class every net gets
+    # (no RULE_SELECTOR records in this table).
+    assert "OTHER" not in design.net_classes and len(design.net_classes) == 2
+    assert {n["name"]: n.get("net_class") for n in design.nets} == {
+        "SIG": "Default",
+        "GND": "Default",
+        "CURVE": "Default",
+    }
+    # Every record is preserved verbatim for the export to write back.
+    assert [r["id"] for r in design.epro_rules] == [
+        '["RULE","SAFE","Default"]',
+        '["RULE","TRACK","Default"]',
+        '["RULE","RADIUS","Default"]',
+        '["RULE","SAFE","Wide"]',
+        '["RULE","TRACK","Wide"]',
+        '["RULE","OTHER","otherClearance"]',
+    ]
+    assert all(
+        r["type"] == "RULE" and isinstance(r["body"], dict) for r in design.epro_rules
+    )
+    assert any("no precis equivalent" in w and "OTHER" in w for w in design.warnings)
+
+
+def test_per_layer_track_widths_take_the_widest_and_warn() -> None:
+    design = epro.build_design(
+        epro.read_archive(
+            _rules_zip(
+                _rule_rec(
+                    50,
+                    "TRACK",
+                    "Default",
+                    {
+                        "ruleState": "DEFAULT",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "track": {
+                                "isOpen": True,
+                                "content": [
+                                    {
+                                        "layerId": 1,
+                                        "stroMin": 8.0,
+                                        "stroDef": 10.0,
+                                        "stroMax": 100.0,
+                                    },
+                                    {
+                                        "layerId": 2,
+                                        "stroMin": 8.0,
+                                        "stroDef": 20.0,
+                                        "stroMax": 100.0,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                ),
+            )
+        )
+    )[0]
+    assert design.net_classes["Default"]["track_width_mm"] == pytest.approx(
+        0.508, abs=1e-4
+    )
+    assert any(
+        "different default track widths" in w and "widest" in w for w in design.warnings
+    )
+
+
+def test_rule_selectors_are_preserved_not_applied() -> None:
+    """No observed file has carried RULE_SELECTOR bodies precis could
+    apply (V1.15 has none), so a selector rides the passthrough and every
+    net falls back to the DEFAULT class with a warning saying so."""
+    design = epro.build_design(
+        epro.read_archive(
+            _rules_zip(
+                '{"type":"RULE_SELECTOR","ticket":56,"id":"s1"}||{"nets":["SIG"]}|\n',
+                _rule_rec(
+                    50,
+                    "TRACK",
+                    "Default",
+                    {
+                        "ruleState": "DEFAULT",
+                        "ruleContext": {
+                            "unit": "mm",
+                            "track": {
+                                "isOpen": True,
+                                "content": [
+                                    {
+                                        "layerId": 1,
+                                        "stroMin": 8.0,
+                                        "stroDef": 10.0,
+                                        "stroMax": 100.0,
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                ),
+            )
+        )
+    )[0]
+    assert any(r["type"] == "RULE_SELECTOR" for r in design.epro_rules)
+    assert all(n.get("net_class") == "Default" for n in design.nets)
+    assert any("RULE_SELECTOR" in w and "NOT applied" in w for w in design.warnings)
 
 
 # ── the whole thing is deterministic ─────────────────────────────────────

@@ -147,6 +147,20 @@ Per slice; the real one is a human opening the file.
    real `angle` (R1 is closed, so this is now a size/tidiness change rather
    than a correctness one), rule areas, `mask_open_regions`, NPTH holes,
    teardrops — each either round-trips or is a documented, warned-about drop.
+   **BUILT 2026-10-14 in `p1-epro`:** one document per distinct authored
+   pad/hole geometry (content-keyed uuid, shared by instances — 96 parts →
+   51 docs on taz15) with the real rotation in `COMPONENT.angle`
+   (bottom side = rot + 180); NPTH as board-level `PAD`s and
+   footprint `FILL` circles; free-form pours as `"L"` vertex-list zones
+   (Pro 3.2.206's own shape — V1.15 carries four, so the fixture Reto was
+   asked for was already in hand); uncovered plane layers get an
+   outline-sized zone; `meta.epro_rules`/`epro_board`/`epro_pours`
+   write back verbatim. Documented drops: rule areas and
+   `mask_open_regions` (no EasyEDA record shape ever observed — a
+   guessed shape is the spike's `unk` risk), teardrops (derived fill —
+   Pro regenerates on repour). The taz15 round trip holds at 0.3 µm
+   worst pad / 0.000 elsewhere; still UNVERIFIED until a human opens
+   `epro.local/taz15-roundtrip.epro2`.
 
 Automated (structural, `test_pcb_export.py` house style, not byte-golden): zip
 integrity; every `.e*` line a JSON array with a known type and declared arity;

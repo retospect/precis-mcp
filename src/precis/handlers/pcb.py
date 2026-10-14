@@ -3111,6 +3111,20 @@ class PcbHandler(Handler):
             # additive for the fab path.
             "instances": design["instances"],
             "silk_labels": silk_labels,
+            # Every net name on the board, including the empty ones (a
+            # schematic net with no board members — EasyEDA keeps those
+            # declared in the netlist; dropping the NET record would drop
+            # the net). The writer unions this with pad/copper nets.
+            "nets": [str(n["name"]) for n in graph["nets"]],
+            # {layer name: plane net} from the stackup — the .epro2
+            # writer covers a plane that has no authored pour left over
+            # with an outline-sized zone so its net survives; the gerber
+            # writer realizes its own fill and ignores the key.
+            "planes": {
+                str(e["name"]): str(e["plane_net"])
+                for e in board["stackup"]
+                if e.get("role") == "plane" and e.get("plane_net")
+            },
         }
         return model, warnings
 
@@ -3172,6 +3186,36 @@ class PcbHandler(Handler):
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
         model, warnings = built
+        # The verbatim passthroughs the import stored on the ref: the rule
+        # table (meta.epro_rules) and the geometry-free board records
+        # (meta.epro_board — physical stackup, title) ride back out
+        # unchanged. A board never imported from epro has neither.
+        meta = (ref.meta or {}) if ref is not None else {}
+        if meta.get("epro_rules"):
+            model["epro_rules"] = meta["epro_rules"]
+        if meta.get("epro_board"):
+            model["epro_board"] = meta["epro_board"]
+        # The authored pour zones the source carried (meta.epro_pours,
+        # board coords): an inner one IS the layer's plane, an outer one
+        # has no other home — either way the authored outline goes back
+        # out verbatim rather than precis rebuilding a zone of its own.
+        for pour in meta.get("epro_pours") or []:
+            model["copper"].append({"ctype": "pour", **pour})
+        # Footprint-owned non-plated holes per refdes (authored-local) —
+        # they travel inside the shared FOOTPRINT documents, not as
+        # board-level pads (the drill row stays the hole's board position).
+        footprints = self.store.pcb_footprints_for(ref_id)
+        local_footprints = self.store.pcb_local_footprints_for(ref_id)
+        holes_by_refdes: dict[str, list[dict[str, Any]]] = {}
+        for i in model["instances"]:
+            lcsc = str(i.get("part_lcsc") or "")
+            fp = footprints.get(lcsc) if lcsc else None
+            if fp is None:
+                fp = local_footprints.get(str(i.get("footprint") or ""))
+            if fp and fp.get("holes"):
+                holes_by_refdes[str(i["refdes"])] = list(fp["holes"])
+        if holes_by_refdes:
+            model["footprint_holes"] = holes_by_refdes
         try:
             exported = pcb_epro_write.epro_files(
                 model,

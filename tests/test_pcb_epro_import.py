@@ -228,6 +228,85 @@ def test_an_outer_pour_does_not_become_a_plane(imported) -> None:
     assert any("outer layer B.Cu carries a pour" in w for w in imported.warnings)
 
 
+# ── the design-rule table ────────────────────────────────────────────────
+def _rules_stream() -> bytes:
+    """The tiny fixture + a two-group rule table (mils, per Pro's own
+    units): a DEFAULT group and one NORMAL group, plus a global OTHER
+    that must not become a class."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    rules = "".join(
+        [
+            _RULE
+            % (
+                "SAFE",
+                "Default",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm","safeSpacing":[{"layerId":1,"content":[[4],[6,6],[6,6,6],[6,6,6,6],[6,6,6,6,6],[6,6,6,6,6,6],[6,6,6,6,6,6,6],[10,10,10,10,10,10,10,10],[11.8,6,6,6,6,6,6,6,10,0],[6,6,6,6,6,6,6,10,11.8,6],[6,6,6,6,6,6,6,10,6,6,6],[12,12,12,12,12,12,12,12,12,12,12,12],[14,14,14,14,14,14,14,14,14,14,14,14,14]]}]}}',
+            ),
+            _RULE
+            % (
+                "TRACK",
+                "Default",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm","track":{"isOpen":true,"content":[{"layerId":1,"stroMin":8,"stroDef":11.811,"stroMax":1000}]}}}',
+            ),
+            _RULE
+            % (
+                "RADIUS",
+                "Default",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm","defRadius":11.811,"defInner":5.9055}}',
+            ),
+            _RULE
+            % (
+                "TRACK",
+                "Wide",
+                '{"ruleState":"NORMAL","ruleContext":{"unit":"mm","track":{"isOpen":true,"content":[{"layerId":1,"stroMin":16,"stroDef":20,"stroMax":1000}]}}}',
+            ),
+            _RULE
+            % (
+                "OTHER",
+                "otherClearance",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm","holeClearance":11.8}}',
+            ),
+        ]
+    )
+    stream = stream.replace(
+        '{"type":"COMPONENT","ticket":60,"id":"c1"}',
+        rules + '{"type":"COMPONENT","ticket":60,"id":"c1"}',
+    )
+    return _zip(stream.encode("utf-8"))
+
+
+_RULE = '{"type":"RULE","ticket":49,"id":"[\\"RULE\\",\\"%s\\",\\"%s\\"]"}||%s|\n'
+
+
+def test_the_rule_table_lands_in_net_classes_and_meta(store) -> None:
+    result = pcb_epro.import_epro(
+        store, _rules_stream(), slug="epro-rules-1", title="Rules"
+    )
+    graph = store.pcb_graph(result.ref_id)
+    classes = graph.get("net_classes") or {}
+    assert classes["Default"]["track_width_mm"] == pytest.approx(0.3, abs=1e-4)
+    assert classes["Default"]["via_dia_mm"] == pytest.approx(0.6, abs=1e-4)
+    assert classes["Wide"]["track_width_mm"] == pytest.approx(0.508, abs=1e-4)
+    assert set(classes) == {"Default", "Wide"}  # OTHER is global, not a group
+    # no selectors in the table: the DEFAULT class lands on every net
+    nets = {n["name"]: n.get("net_class") for n in graph["nets"]}
+    assert nets == {
+        "SIG": "Default",
+        "GND": "Default",
+        "CURVE": "Default",
+        "TEE": "Default",
+    }
+    ref = store.get_ref(kind="pcb", id="epro-rules-1")
+    assert ref is not None
+    rules = (ref.meta or {})["epro_rules"]
+    assert len(rules) == 5
+    assert {r["type"] for r in rules} == {"RULE"}
+    # the fixture's outer POUR outline rides meta.epro_pours for re-export
+    pours = (ref.meta or {})["epro_pours"]
+    assert len(pours) == 1 and pours[0]["net"] == "GND"
+    assert pours[0]["layer"] == "B.Cu" and len(pours[0]["polygon"]) >= 3
+
+
 def test_a_single_net_inner_pour_becomes_a_plane(store) -> None:
     """The right precis model for a pour: the far side re-pours it, and
     ``pcb_fixed_copper``'s CHECK (``track|via``) has no room for it

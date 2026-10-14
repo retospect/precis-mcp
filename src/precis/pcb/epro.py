@@ -778,6 +778,322 @@ def extract_vias(pcb: EproDocument, frame: Frame) -> Extraction:
     return out
 
 
+# ── the design-rule table (RULE / RULE_SELECTOR) ───────────────────────
+#: ``safeSpacing`` matrix axis order — the lower-triangular ``content``
+#: pairs these object types. Read off Reto's TAZ V1.15 export
+#: (2026-10-14) and confirmed against KiCad's own ``.epro2`` importer
+#: (``pcb_io_easyedapro_v3_parser.cpp``'s ``safeSpacingNames``): the
+#: track/track cell is ``content[0][0]`` and the row values sit in a
+#: plausible order only under this axis assignment.
+_SAFE_SPACING_AXES = (
+    "Track",
+    "SMD Pad",
+    "TH Pad",
+    "SMD Test Point",
+    "TH Test Point",
+    "Via",
+    "Fill Region / Teardrop",
+    "Copper / Plane Zone",
+    "Slot Region",
+    "Line",
+    "Text / Image",
+    "Board Outline",
+    "Hole",
+)
+
+#: The matrix cells precis' scalar ``clearance_mm`` stands in for: rows
+#: and columns up to ``Via`` are the copper the router and DRC place
+#: (tracks, pads, test points, vias). Zone/fill, line, text, outline and
+#: hole cells are NOT net-copper clearances — a pour keeps its own
+#: clearance semantics (Pro re-pours anyway) and holes/outline are
+#: separate keep-outs precis handles per-feature. Those cells survive
+#: verbatim in the passthrough, so no authored value is lost.
+_SAFE_COPPER_CELLS = 6  # rows and columns 0..5
+
+
+def _rule_name(rec: EproRecord) -> tuple[str, str] | None:
+    """``(category, name)`` of a ``RULE`` record — the second and third
+    elements of its ``["RULE", category, name]`` id — or ``None``."""
+    if not rec.id:
+        return None
+    try:
+        parts = json.loads(rec.id)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parts, list) and len(parts) >= 3 and parts[0] == "RULE":
+        return str(parts[1]), str(parts[2])
+    return None
+
+
+def _spacing_cell_mm(content: list[Any]) -> float | None:
+    """The widest copper-copper spacing in one ``safeSpacing`` entry's
+    lower-triangular matrix (``content``), in mm. ``None`` when the matrix
+    is empty or every copper cell is zero/absent."""
+    best: float | None = None
+    for row_i, row in enumerate(content[:_SAFE_COPPER_CELLS]):
+        if not isinstance(row, list):
+            continue
+        for col_i, cell in enumerate(row[:_SAFE_COPPER_CELLS]):
+            if col_i > row_i or not isinstance(cell, int | float):
+                continue
+            mm = Frame.length(float(cell))
+            if best is None or mm > best:
+                best = mm
+    return best
+
+
+def _track_default_mil(ctx: dict[str, Any]) -> tuple[float | None, set[float]]:
+    """``(max stroDef, distinct stroDefs)`` over the TRACK rule's
+    per-layer ``content`` entries — max because the authored default is a
+    floor for the copper the rule intends, never a cap."""
+    content = (ctx.get("track") or {}).get("content") or []
+    defs = {
+        float(e["stroDef"])
+        for e in content
+        if isinstance(e, dict) and e.get("stroDef") is not None
+    }
+    return (max(defs) if defs else None), defs
+
+
+@dataclass
+class RuleTable:
+    """The design-rule table of one PCB document, split three ways:
+
+    * ``classes``: ``{rule name: rules}`` in the ``pcb_net_classes.rules``
+      shape — the mapped slice (``track_width_mm`` ← ``TRACK.stroDef``,
+      ``clearance_mm`` ← the widest pad/track/via cell of
+      ``SAFE.safeSpacing``, ``via_dia_mm``/``via_drill_mm`` ←
+      ``RADIUS.defRadius``/``defInner`` ×2). Rule category and name
+      combine into one class: an EasyEDA net carries one *named* rule
+      group, which is exactly a precis net class.
+    * ``default``: the name of the ``ruleState == "DEFAULT"`` group —
+      the class every net takes when nothing assigns one (and nothing
+      does when the board has no ``RULE_SELECTOR`` records).
+    * ``records``: every ``RULE``/``RULE_SELECTOR`` record verbatim
+      (``{"type", "id", "body"}``), in document order — the
+      ``meta.epro_rules`` passthrough the writer emits back byte-for-byte.
+      The mapped slice stays in it too: the passthrough is the lossless
+      copy, the classes are what precis actually reads.
+    """
+
+    classes: dict[str, dict[str, float]] = field(default_factory=dict)
+    default: str | None = None
+    selectors: int = 0
+    records: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def extract_rules(board: EproDocument) -> RuleTable:
+    """Read the ``RULE``/``RULE_SELECTOR`` records of ``board``.
+
+    **Every number in ``ruleContext`` is mils, whatever its ``unit`` field
+    says** — KiCad's importer documents the same mislabel ("EasyEDA Pro
+    labels this array 'mm', but its values are always mils"), and the TAZ
+    V1.15 values only make sense in mils (``stroDef`` 11.811 = the 0.3 mm
+    default track; solder expansion 2 = 0.05 mm).
+
+    Unmapped categories (OTHER, CREEPAGE, NET_LENGTH, DIFFER_ENTAIL,
+    BLIND, PLANE, COPPER, PASTE, SOLDER, and any future one) have no
+    precis constraint class today — they are preserved verbatim in
+    :attr:`RuleTable.records` and reported once in ``warnings``.
+    ``RULE_SELECTOR`` records (the per-net/per-area assignments) are
+    counted and preserved but never applied: their body shape has not
+    been observed (the 168 on the 2025 heater board went with the file;
+    V1.15 carries none), so every net falls back to the default class.
+    """
+    out = RuleTable()
+    unmapped: set[str] = set()
+    defaults: set[str] = set()
+    per_layer_width: list[str] = []
+    undecoded = 0
+
+    for rec in board.of_type("RULE"):
+        out.records.append({"type": "RULE", "id": rec.id, "body": rec.body})
+        named = _rule_name(rec)
+        if named is None or rec.body is None:
+            undecoded += 1
+            continue
+        category, name = named
+        ctx = rec.body.get("ruleContext") or {}
+        # Only the per-net categories form a named rule GROUP (= a precis
+        # net class). The singleton categories (OTHER, CREEPAGE, SOLDER,
+        # ...) are board-global rules whose ruleState DEFAULT means "the
+        # global entry", not "the default group" — TAZ V1.15 marks 11 of
+        # them DEFAULT. They map to nothing and vote for nothing.
+        if category == "TRACK":
+            cls = out.classes.setdefault(name, {})
+            width_mil, defs = _track_default_mil(ctx)
+            if width_mil is not None:
+                cls["track_width_mm"] = Frame.length(width_mil)
+            if len(defs) > 1:
+                per_layer_width.append(name)
+        elif category == "SAFE":
+            cls = out.classes.setdefault(name, {})
+            clearances = [
+                mm
+                for entry in ctx.get("safeSpacing") or []
+                if isinstance(entry, dict)
+                for mm in [_spacing_cell_mm(entry.get("content") or [])]
+                if mm is not None
+            ]
+            if clearances:
+                cls["clearance_mm"] = max(clearances)
+        elif category == "RADIUS":
+            cls = out.classes.setdefault(name, {})
+            dia, inner = ctx.get("defRadius"), ctx.get("defInner")
+            if isinstance(dia, int | float):
+                cls["via_dia_mm"] = 2.0 * Frame.length(float(dia))
+            if isinstance(inner, int | float):
+                cls["via_drill_mm"] = 2.0 * Frame.length(float(inner))
+        else:
+            unmapped.add(category)
+            continue
+        if rec.body.get("ruleState") == "DEFAULT":
+            defaults.add(name)
+
+    out.selectors = len(board.of_type("RULE_SELECTOR"))
+    for rec in board.of_type("RULE_SELECTOR"):
+        out.records.append({"type": "RULE_SELECTOR", "id": rec.id, "body": rec.body})
+
+    if len(defaults) == 1:
+        out.default = next(iter(defaults))
+    elif defaults:
+        out.warnings.append(
+            f"the rule table marks {len(defaults)} different groups DEFAULT "
+            f"({', '.join(sorted(defaults))}); nets take {sorted(defaults)[0]!r}"
+        )
+        out.default = sorted(defaults)[0]
+    if undecoded:
+        out.warnings.append(
+            f"{undecoded} RULE record(s) are preserved verbatim but their id "
+            "is not the [RULE, category, name] shape precis decodes — any "
+            "keepout/rule-area among them would bind nothing on the precis "
+            "side (docs/backlog/pcb-keepout-does-not-bind.md)"
+        )
+    if unmapped:
+        out.warnings.append(
+            f"{len(unmapped)} design-rule categor(ies) have no precis "
+            f"equivalent ({', '.join(sorted(unmapped))}) — preserved verbatim "
+            f"in meta.epro_rules and written back on export"
+        )
+    if out.selectors:
+        out.warnings.append(
+            f"{out.selectors} RULE_SELECTOR record(s) (per-net/per-area rule "
+            f"assignments) are preserved verbatim but NOT applied — their "
+            f"body shape has never been observed; affected nets take the "
+            f"default rule instead"
+        )
+    if per_layer_width:
+        out.warnings.append(
+            f"rule group(s) {', '.join(sorted(per_layer_width))} set different "
+            f"default track widths per layer; precis carries one width per "
+            f"class — the widest is used"
+        )
+    return out
+
+
+#: Board-level records with no precis home that carry NO geometry —
+#: preserved verbatim so a re-export keeps the board's physical stackup
+#: (``LAYER_PHYS``, the dielectric table precis' stackup does not model),
+#: its document title (``META``) and its canvas/preference/silk state.
+#: Geometry-bearing records (``IMAGE``, ``DIMENSION``, board silk
+#: ``POLY``/``STRING``) are deliberately absent: their coordinates live in
+#: the source's own frame and would re-emit misplaced.
+_BOARD_PASSTHROUGH = (
+    "LAYER_PHYS",
+    "META",
+    "CANVAS",
+    "PREFERENCE",
+    "SILK_OPTS",
+    "PRIMITIVE",
+    "ACTIVE_LAYER",
+)
+
+
+def extract_board_state(board: EproDocument) -> list[dict[str, Any]]:
+    """The PCB document's geometry-free verbatim records, in document
+    order — the ``meta.epro_board`` passthrough the writer emits back
+    unchanged, so a re-export carries the physical stackup table and the
+    board's title rather than only what precis models."""
+    return [
+        {"type": rec.type, "id": rec.id, "body": rec.body}
+        for rec in board.records
+        if rec.type in _BOARD_PASSTHROUGH
+    ]
+
+
+def extract_pours(
+    pcb: EproDocument, frame: Frame
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """``POUR`` zones as board-frame ``ctype='pour'`` items (``{"layer",
+    "net", "polygon"}`` in precis coords) — the AUTHORED zone outline.
+
+    Import does not model a pour: an inner-layer single-net zone becomes
+    the layer's plane, an outer one a warning, and the polygon is
+    otherwise dropped. These items exist so the design keeps the
+    authored polygon in ``meta.epro_pours`` — the export writes it back
+    verbatim and Pro re-pours inside it on open, which beats rebuilding
+    the zone from the stackup.
+
+    A ``"R"`` rectangle op becomes its four corners; the vertex-list
+    ``"L"`` path Pro 3.2.206 writes for a free-form zone (TAZ V1.15's
+    four pours) carries straight through. A multi-path pour is warned
+    and its first path wins — the writer emits one path the same way.
+    """
+    layers = copper_layers(pcb)
+    pours: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for body in pcb.bodies("POUR"):
+        lid = body.get("layerId")
+        layer = layers.get(int(lid)) if lid is not None else None
+        if layer is None:
+            warnings.append(
+                f"a POUR names layerId {lid}, which the LAYER records do "
+                "not declare as copper; skipped"
+            )
+            continue
+        paths = body.get("path") or []
+        if len(paths) != 1:
+            warnings.append(
+                f"a POUR on {layer} ({body.get('netName')}) carries "
+                f"{len(paths)} path(s); precis keeps the first only"
+            )
+        first = paths[0] if paths else []
+        if first and first[0] == "R":
+            # ["R", x, y, w, h, angle, ?] — the anchor is (x, y) = the
+            # min-x/MAX-y corner in file coords: the box spans x..x+w,
+            # y-h..y (Pro 3.2.149's own write; pcb-epro-export.md 2d).
+            if len(first) < 5:
+                warnings.append("a POUR 'R' path is too short; skipped")
+                continue
+            rx, ry, rw, rh = (float(v) for v in first[1:5])
+            poly = [
+                frame.xy(rx, ry - rh),
+                frame.xy(rx + rw, ry - rh),
+                frame.xy(rx + rw, ry),
+                frame.xy(rx, ry),
+            ]
+        else:
+            pts = _poly_points(first)
+            if len(pts) < 3:
+                warnings.append(
+                    f"a POUR on {layer} ({body.get('netName')}) carries a "
+                    f"path of {len(pts)} vertex/vertices; skipped"
+                )
+                continue
+            poly = [frame.xy(px, py) for px, py in pts]
+        pours.append(
+            {
+                "layer": layer,
+                "net": str(body.get("netName") or ""),
+                "polygon": [[x, y] for x, y in poly],
+                "keep_island": bool(body.get("keepIsland")),
+                "name": str(body.get("name") or ""),
+            }
+        )
+    return pours, warnings
+
+
 def live_components(pcb: EproDocument) -> dict[str, dict[str, Any]]:
     """``component id -> COMPONENT body`` for the components that exist.
 
@@ -1155,6 +1471,25 @@ class Design:
     footprints: list[dict[str, Any]] = field(default_factory=list)
     features: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: ``{name: rules}`` for ``pcb_net_classes`` — the mapped slice of the
+    #: board's RULE table (:func:`extract_rules`). Empty when the file
+    #: carries no rule records.
+    net_classes: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: Every RULE/RULE_SELECTOR record verbatim (``{"type","id","body"}``)
+    #: — the ``meta.epro_rules`` passthrough the writer can emit back
+    #: unchanged. The mapped net classes are derived from these, not from
+    #: this list.
+    epro_rules: list[dict[str, Any]] = field(default_factory=list)
+    #: The board's geometry-free records verbatim (LAYER_PHYS, META,
+    #: CANVAS, … — :func:`extract_board_state`) — the ``meta.epro_board``
+    #: passthrough.
+    epro_board: list[dict[str, Any]] = field(default_factory=list)
+    #: Authored ``POUR`` zone outlines in board coords
+    #: (:func:`extract_pours`) — the ``meta.epro_pours`` passthrough. Not
+    #: precis copper: an inner pour is the layer's plane, an outer one
+    #: was never imported at all; the polygon exists so export writes the
+    #: authored zone back.
+    epro_pours: list[dict[str, Any]] = field(default_factory=list)
     #: Counts the CLI prints, so a human can compare them to the source.
     stats: dict[str, int] = field(default_factory=dict)
 
@@ -1548,6 +1883,22 @@ def build_design(
     design.nets = [{"name": n} for n in nets]
     design.warnings += net_warnings
 
+    # The design-rule table (was dropped pre-2026-10-14): mapped categories
+    # become net classes so re-routing uses the board's OWN track width /
+    # clearance / via size instead of the fab floor; the whole table is
+    # preserved verbatim for export. With no RULE_SELECTOR records (TAZ
+    # V1.15 carries none) EasyEDA's semantic is "every net uses the
+    # DEFAULT-named rule" — mirrored by stamping that class on every net.
+    rules = extract_rules(board)
+    design.net_classes = rules.classes
+    design.epro_rules = rules.records
+    design.epro_board = extract_board_state(board)
+    design.epro_pours, pour_warnings = extract_pours(board, frame)
+    design.warnings += rules.warnings + pour_warnings
+    if rules.default:
+        for n in design.nets:
+            n["net_class"] = rules.default
+
     pad_nets, pad_warnings = live_pad_nets(board)
     design.warnings += pad_warnings
 
@@ -1585,18 +1936,6 @@ def build_design(
         *holes,
     ]
 
-    rules = len(board.of_type("RULE")) + len(board.of_type("RULE_SELECTOR"))
-    if rules:
-        design.warnings.append(
-            f"{rules} RULE/RULE_SELECTOR record(s) are NOT imported — "
-            f"EasyEDA's design-rule table and its per-net/area assignments "
-            f"(clearance, track width, keepout areas). precis has no keepout "
-            f"mechanism (docs/backlog/pcb-keepout-does-not-bind.md), so any "
-            f"keepout among them would bind nothing; the board's own per-net "
-            f"rules are lost too. Set net classes on the imported nets before "
-            f"re-routing"
-        )
-
     design.stats = {
         "components": len(design.components),
         "footprints": len(design.footprints),
@@ -1605,5 +1944,7 @@ def build_design(
         "mounting_holes": len(holes)
         + placed_footprint_hole_count(components, footprints),
         "outline_vertices": len(outline),
+        "rule_records": len(rules.records),
+        "rule_classes": len(rules.classes),
     }
     return design, frame

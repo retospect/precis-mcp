@@ -663,18 +663,34 @@ def import_epro(
     if copper_mode == "fixed":
         # Copper records carry their own explicit netName. Some source files
         # omit the corresponding NET declaration; retain that name rather
-        # than dropping its geometry or inventing a pin connection.
+        # than dropping its geometry or inventing a pin connection. A
+        # copper-only net takes the same default rule class the pad-named
+        # nets got in build_design (EasyEDA's no-selector semantic).
         known_nets = {n["name"] for n in design.nets}
         copper_nets = {str(r["net"]) for r in source_rows}
-        design.nets.extend({"name": n} for n in sorted(copper_nets - known_nets))
+        default_class = next(
+            (str(n["net_class"]) for n in design.nets if n.get("net_class")),
+            None,
+        )
+        design.nets.extend(
+            {"name": n, **({"net_class": default_class} if default_class else {})}
+            for n in sorted(copper_nets - known_nets)
+        )
         result.stats["nets"] = len(design.nets)
     if dry_run:
         # The pads a real import would write, placed in memory: the same
         # normaliser the store applies, so --dry-run measures gaps to pads
         # exactly as the real import's report does (2026-10-02: it measured
-        # tracks and vias only, and said so).
+        # tracks and vias only, and said so). The report resolves rules
+        # against the design's OWN imported classes, so a dry run shows the
+        # same clearances the write would record.
         result.copper, copper_warnings = _report(
-            board, frame, stackup, design.nets, {}, _design_pads(design, stackup)
+            board,
+            frame,
+            stackup,
+            design.nets,
+            design.net_classes,
+            _design_pads(design, stackup),
         )
         result.warnings.extend(copper_warnings)
         return result
@@ -683,7 +699,18 @@ def import_epro(
         "epro": {
             **_provenance(data, project, board, source_name),
             "copper_mode": copper_mode,
-        }
+        },
+        # The design-rule table verbatim — the writer reads it back out of
+        # the ref meta so a re-export carries the same RULE records. The
+        # mapped slice lives in pcb_net_classes; this is the lossless copy.
+        "epro_rules": design.epro_rules,
+        # The geometry-free board records (physical stackup, title, canvas
+        # state) — same verbatim write-back contract.
+        "epro_board": design.epro_board,
+        # The AUTHORED pour zone outlines (board coords). An inner pour
+        # is a plane to precis and an outer pour has no home at all — the
+        # polygon survives here so export writes the authored zone back.
+        "epro_pours": design.epro_pours,
     }
     # ONE transaction for the design, the stackup and the planes. A board
     # that got its instances but not its stackup would silently keep
@@ -708,6 +735,10 @@ def import_epro(
 
         board_id = store.pcb_ensure_board(result.ref_id, conn=conn)
         store.pcb_set_stackup(board_id, stackup, conn=conn)
+        if design.net_classes:
+            result.stats["net_classes"] = store.pcb_upsert_net_classes(
+                result.ref_id, design.net_classes, conn=conn
+            )
         unresolved = [
             layer
             for layer, net in sorted(planes.items())
@@ -929,7 +960,13 @@ def _update(
                 **_provenance(data, project, board, source_name),
                 "imported_at": prior.get("imported_at"),
                 "updated_at": datetime.now(UTC).isoformat(),
-            }
+            },
+            # Refresh the verbatim rule passthrough in the same write — an
+            # update that left the OLD table behind would re-export rules
+            # the source no longer carries.
+            "epro_rules": design.epro_rules,
+            "epro_board": design.epro_board,
+            "epro_pours": design.epro_pours,
         }
         # One transaction: a half-applied update leaves a board that
         # matches neither the old import nor the new source.
@@ -945,6 +982,8 @@ def _update(
                 meta=meta,
                 conn=conn,
             )
+            if design.net_classes:
+                store.pcb_upsert_net_classes(ref_id, design.net_classes, conn=conn)
             store.pcb_features_retire(ref_id, plan.legacy_hole_features, conn=conn)
             for refdes, _old, new, _fixed in plan.moved:
                 store.pcb_move_instance(

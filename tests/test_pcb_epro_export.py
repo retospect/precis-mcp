@@ -211,12 +211,38 @@ def test_to_epro_xy_flips_y_and_is_the_exact_inverse_of_the_reader_frame():
         assert gy == pytest.approx(y, abs=_TOL_MM)
 
 
-def test_to_footprint_local_top_and_bottom():
-    # a pad 1 mm east and 0.5 mm north of the component, Y-up
-    top = epro_write.to_footprint_local((11.0, 10.5), (10.0, 10.0), bottom=False)
-    bot = epro_write.to_footprint_local((11.0, 10.5), (10.0, 10.0), bottom=True)
-    assert top == (pytest.approx(39.3701), pytest.approx(-19.685))  # north = -Y
-    assert bot == (pytest.approx(39.3701), pytest.approx(19.685))  # mirrored in Y
+def test_to_footprint_xy_is_the_inverse_of_place_pad_point_everywhere():
+    # authored-local mm is what place_pad_point maps to world: the writer
+    # function must invert it exactly for every side x rotation.
+    for layer, rot in (
+        ("top", 0.0),
+        ("top", 90.0),
+        ("top", 37.0),
+        ("bottom", 0.0),
+        ("bottom", 90.0),
+        ("bottom", 270.0),
+    ):
+        inst = {"x": 10.0, "y": 10.0, "rot": rot, "layer": layer}
+        local = epro_write.to_footprint_xy((11.0, 10.5), inst)
+        px, py = padplace.place_pad_point({"x": local[0], "y": local[1]}, inst)
+        assert (px, py) == (pytest.approx(11.0), pytest.approx(10.5))
+
+
+def test_to_footprint_xy_top_and_bottom():
+    # a pad 1 mm east and 0.5 mm north of the component, Y-up, at rot 0:
+    # the authored pad sits east/north on top; on the bottom the authored
+    # X is mirrored (precis' bottom convention mirrors X, Pro's file
+    # mirrors Y — the difference lands on the pad, not the placement).
+    inst_t = {"x": 10.0, "y": 10.0, "rot": 0.0, "layer": "top"}
+    inst_b = {"x": 10.0, "y": 10.0, "rot": 0.0, "layer": "bottom"}
+    assert epro_write.to_footprint_xy((11.0, 10.5), inst_t) == (
+        pytest.approx(1.0),
+        pytest.approx(0.5),
+    )
+    assert epro_write.to_footprint_xy((11.0, 10.5), inst_b) == (
+        pytest.approx(-1.0),
+        pytest.approx(0.5),
+    )
 
 
 def test_every_written_coordinate_is_positive_even_off_board():
@@ -264,7 +290,9 @@ def test_every_line_parses_through_the_reader_and_the_shape_is_a_pcb_then_footpr
         b = body[:-1]
         assert b == '""' or isinstance(json.loads(b), dict)
     docs = epro.split_documents(stream)
-    assert [d.doc_type for d in docs] == ["PCB"] + ["FOOTPRINT"] * len(_INSTANCES)
+    # One FOOTPRINT document per DISTINCT footprint (slice 2f), not per
+    # instance — _INSTANCES places ASYM3 eight ways and POLY1 once.
+    assert [d.doc_type for d in docs] == ["PCB"] + ["FOOTPRINT"] * 2
     assert sum(1 for ln in lines if ln.startswith('{"type":"DOCHEAD"')) == len(docs)
 
 
@@ -283,7 +311,7 @@ def test_referential_integrity():
     comp_ids = {r.id for r in pcb.of_type("COMPONENT")}
     assert len(comp_ids) == len(_INSTANCES)
     fp_docs = {d.uuid: d for d in project.by_type("FOOTPRINT")}
-    assert len(fp_docs) == len(_INSTANCES)
+    assert len(fp_docs) == 2  # ASYM3 + POLY1, not one per instance
 
     # NET declared before use: walk the records in stream order
     declared: set[str] = set()
@@ -312,7 +340,8 @@ def test_referential_integrity():
             assert a["value"] in fp_docs
             fp_of[a["parentId"]] = a["value"]
     assert set(fp_of) == comp_ids
-    assert len(set(fp_of.values())) == len(comp_ids)  # one document per instance
+    # every component points at one of the shared footprint documents
+    assert set(fp_of.values()) == set(fp_docs)
 
     # PAD_NET -> a real component, a real pad number and a real pad element
     n_pad_nets = 0
@@ -429,20 +458,28 @@ def test_things_the_slice_does_not_carry_are_warned_about():
     )
     model["drills"].append({"x": 2.0, "y": 2.0, "dia_mm": 3.0, "plated": False})
     model["instances"].append({"refdes": "X9", "x": None, "y": None})
-    text = " | ".join(_export(model).warnings)
+    ex = _export(model)
+    text = " | ".join(ex.warnings)
     for needle in (
         "2 pad(s) belong to no placed part",
         "1 net(s) have no exported pad and are not in the file: LONELY",
-        # R7 sits at 37 degrees with rect pads (review E1)
-        "1 part(s) sit at a non-right-angle rotation with rect/obround pads (R7)",
         "1 pour(s)/plane(s)",
         "1 soldermask-opening",
         "1 refdes silk stroke(s) suppressed",
         "1 silk region fill(s)",
-        "1 drill(s) belong to no exported pad or via",
         "unplaced part(s) omitted: X9",
     ):
         assert needle in text, needle
+    # slice 2f: the loose NPTH drill is now EXPORTED as a free PAD, not
+    # warned away; and R7's 37-degree pads are written with a real
+    # component angle, so no oblique-shape warning fires either.
+    pcb = _read(ex).pcb()
+    npth = [
+        b
+        for b in pcb.bodies("PAD")
+        if not b.get("plated") and (b.get("hole") or {}).get("width")
+    ]
+    assert len(npth) == 1
 
 
 # ── silk + editable designators (slice 2e) ──────────────────────────────
@@ -624,9 +661,10 @@ def test_frame_round_trip_covers_both_sides_and_the_rotations_that_matter():
     _project, design = _round_trip(_model())
     by_refdes = {c["refdes"]: c for c in design.components}
     assert by_refdes["R4"]["layer"] == "bottom" and by_refdes["R1"]["layer"] == "top"
-    # the written angle is baked to 0; the reader's bottom half-turn is 180
-    assert {by_refdes[r]["rot"] for r in ("R1", "R2", "R3", "R7")} == {0.0}
-    assert {by_refdes[r]["rot"] for r in ("R4", "R5", "R6", "R8")} == {180.0}
+    # slice 2f: COMPONENT.angle carries the real rotation — the reader
+    # recovers the instance's own rot on both sides.
+    want_rot = {i["refdes"]: i["rot"] for i in _INSTANCES}
+    assert {r: by_refdes[r]["rot"] for r in want_rot} == want_rot
 
 
 def test_frame_round_trip_catches_a_wrong_mirror_axis():
@@ -635,13 +673,15 @@ def test_frame_round_trip_catches_a_wrong_mirror_axis():
     model = _model()
     ex = _export(model)
     stream = ex.files["epro-test.epru"]
-    # flip centerX sign on every footprint pad of R4 (bottom, rot 0)
-    r4_uuid = epro_write._uuid_hex("epro-test", "fp:R4")
+    # flip centerX sign on every footprint pad of the shared ASYM3 doc —
+    # its bottom-side members (R4/R5/R6/R8) must then land wrong, which is
+    # exactly what a mistaken bottom-mirror axis does to a real Pro write.
+    asym_uuid = epro_write._uuid_hex("epro-test", "fp:ASYM3")
     out: list[str] = []
     in_r4 = False
     for ln in stream.split("\n"):
         if ln.startswith('{"type":"DOCHEAD"'):
-            in_r4 = r4_uuid in ln
+            in_r4 = asym_uuid in ln
         if in_r4 and ln.startswith('{"type":"PAD"'):
             head, _, body = ln.partition("||")
             d = json.loads(body[:-1])
@@ -677,13 +717,14 @@ def test_pad_geometry_round_trips_shape_size_hole_and_polygon():
     comps = {c["refdes"]: c for c in design.components}
     placed = {(p["refdes"], p["pin"]): p for p in model["pads"]}
 
-    # R2 sits at 90: the model already swapped w/h to board axes, and the
-    # file carries them verbatim (the component is baked to angle 0)
+    # slice 2f: the footprint doc carries AUTHORED pad dims (the real
+    # component angle un-swaps the board-side rotation), not the board
+    # extents — so the doc's pad w/h equals _ASYM_FP's authored w/h.
     pads = {p["pin"]: p for p in fps[comps["R2"]["footprint"]]["pads"]}
     assert pads["1"]["shape"] == "rect"
     assert (pads["1"]["w"], pads["1"]["h"]) == (
-        pytest.approx(placed[("R2", "1")]["w"], abs=1e-4),
-        pytest.approx(placed[("R2", "1")]["h"], abs=1e-4),
+        pytest.approx(0.6, abs=1e-4),
+        pytest.approx(0.9, abs=1e-4),
     )
     assert pads["2"]["shape"] == "obround" and pads["3"]["shape"] == "circle"
     assert pads["3"]["drill"] == pytest.approx(0.4, abs=1e-4)
@@ -738,6 +779,8 @@ def test_a_rectangular_pour_is_written_as_an_r_zone_pro_re_pours():
     pcb = _read(ex).pcb()
     (rec,) = pcb.bodies("POUR")
     frame = epro_write.frame_for(model)
+    # the "R" op anchors at its min-x/MAX-y corner in the file frame —
+    # the board rect's (x0, y0)
     fx, fy = epro_write.to_epro_xy(2.0, 2.0, frame)
     assert rec["netName"] == "GND" and rec["layerId"] == 15
     assert rec["path"] == [
@@ -755,19 +798,43 @@ def test_a_rectangular_pour_is_written_as_an_r_zone_pro_re_pours():
     assert "GND" in epro.live_nets(pcb)[0]
 
 
-def test_a_free_polygon_pour_is_dropped_with_a_warning_not_guessed():
+def test_a_free_polygon_pour_is_written_as_a_vertex_list_zone():
+    """Slice 2f: Pro 3.2.206 writes the vertex-list ``"L"`` path for its
+    own non-rectangular pours (observed on TAZ V1.15), so that is what a
+    free polygon becomes — not a drop."""
     tri = {
         "ctype": "pour",
         "layer": "B.Cu",
         "net": "GND",
         "polygon": [[2.0, 2.0], [28.0, 2.0], [15.0, 18.0]],
     }
-    off = {**tri, "layer": "X.Cu", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}
-    ex = _export(_model(copper=[tri, off]))
+    ex = _export(_model(copper=[tri]))
+    model_pcb = _read(ex).pcb()
+    (rec,) = model_pcb.bodies("POUR")
+    assert rec["netName"] == "GND" and rec["layerId"] == 2
+    frame = epro_write.frame_for({"outline": _OUTLINE, "copper": [tri]})
+    pts = [
+        epro_write.to_epro_xy(x, y, frame)
+        for x, y in [[2.0, 2.0], [28.0, 2.0], [15.0, 18.0], [2.0, 2.0]]
+    ]
+    assert rec["path"] == [epro_write._poly_path(pts)]
+    assert ex.stats["pours"] == 1 and ex.stats["pours_dropped"] == 0
+    assert any("re-pours" in w for w in ex.warnings)
+    # and the reader's net census counts the pour's net as used
+    assert "GND" in epro.live_nets(model_pcb)[0]
+
+
+def test_a_pour_on_an_undeclared_layer_is_still_dropped():
+    off = {
+        "ctype": "pour",
+        "layer": "X.Cu",
+        "net": "GND",
+        "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]],
+    }
+    ex = _export(_model(copper=[off]))
     assert _read(ex).pcb().bodies("POUR") == []
-    assert ex.stats["pours"] == 0 and ex.stats["pours_dropped"] == 2
-    assert any("non-rectangular" in w and "2 pour(s)" in w for w in ex.warnings)
-    assert not any("re-pours" in w for w in ex.warnings)
+    assert ex.stats["pours"] == 0 and ex.stats["pours_dropped"] == 1
+    assert any("1 pour(s)" in w for w in ex.warnings)
 
 
 def test_axis_aligned_rect_detection():
@@ -871,7 +938,9 @@ def test_handler_epro_view_writes_a_readable_file(pcb, tmp_path):
     assert path.exists() and str(path) in resp.body
     assert "No schematic is included" in resp.body
     assert "Update PCB from schematic" in resp.body
-    assert "copper: none" in resp.body
+    # the seeded board has no routed copper, but its stackup declares an
+    # In1.Cu GND plane — which now writes an outline-covering POUR zone
+    assert "pour zone(s)" in resp.body
     assert "UNVERIFIED: no file from this writer has been opened" in resp.body
 
     project = epro.read_archive(path.read_bytes())
@@ -1247,9 +1316,10 @@ def test_copper_drops_and_flattenings_are_warned():
     assert [b["netName"] for b in pcb.bodies("LINE")] == [""]  # netless, written
     assert pcb.bodies("ARC") == []  # the degenerate arc was dropped
     assert len(pcb.bodies("VIA")) == 1
-    # the triangle pour is counted as dropped (2d writes rectangles only)
-    assert (ex.stats["lines"], ex.stats["vias"], ex.stats["pours"]) == (1, 1, 0)
-    assert ex.stats["pours_dropped"] == 1
+    # the triangle pour is written as a vertex-list zone (2f); the
+    # re-pour caveat is what warns, not a drop
+    assert (ex.stats["lines"], ex.stats["vias"], ex.stats["pours"]) == (1, 1, 1)
+    assert ex.stats["pours_dropped"] == 0
 
 
 def test_copper_order_does_not_leak_into_the_bytes():
@@ -1335,18 +1405,18 @@ def test_real_board_copper_and_bottom_pads_round_trip():
 
 
 def test_slot_hole_is_written_back_as_a_slot_that_the_reader_reads_again():
-    from types import SimpleNamespace
-
     pad = {
         "x": 5.0,
         "y": 5.0,
         "w": 2.4,
         "h": 1.4,
         "shape": "obround",
+        "pin": "1",
         "drill": 0.5,
         "slot": [[4.5, 5.0], [5.5, 5.0]],
     }
-    body = epro_write._pad_record(pad, "1", SimpleNamespace(bottom=False), (0.0, 0.0))  # type: ignore[arg-type]
+    inst = {"x": 5.0, "y": 5.0, "rot": 0.0, "layer": "top"}
+    body = epro_write._pad_body(epro_write._local_pad(pad, inst))
     hole = body["hole"]
     assert hole["holeType"] == "SLOT"
     back, warns = epro._pad_to_precis(body, "fp")
@@ -1356,14 +1426,502 @@ def test_slot_hole_is_written_back_as_a_slot_that_the_reader_reads_again():
     assert back["slot"]["h"] == pytest.approx(0.5, abs=0.01)
 
 
-def test_an_oblique_slot_warns_that_it_is_written_round():
+def test_a_rotated_instance_writes_its_slot_against_the_pad_frame():
+    # 45 deg on the instance, not in the pad: the slot is axis-aligned in
+    # the pad's own frame, so the file carries a real SLOT hole, not the
+    # round-hole fallback (slice 2f — real component angles).
     ex = _export(_model([_inst("S1", 10.0, 10.0, 45.0, "top", fp="SLOT1")]))
-    assert any(
-        "slot hole at a non-right-angle" in w and "S1" in w and "ROUND" in w
-        for w in ex.warnings
+    assert not any("slot hole" in w for w in ex.warnings)
+    fp = _read(ex).by_type("FOOTPRINT")[0]
+    (hole,) = [b["hole"] for b in fp.bodies("PAD") if "hole" in b]
+    assert hole["holeType"] == "SLOT"
+
+
+def test_an_oblique_slot_warns_that_it_is_written_round():
+    # A slot diagonal in the PAD's own frame cannot be a SLOT hole —
+    # hole w/h are pad-local, so it degrades to ROUND with a warning.
+    model = _model()
+    model["pads"].append(
+        {
+            "refdes": "R1",
+            "pin": "9",
+            "net": "",
+            "shape": "obround",
+            "x": 6.0,
+            "y": 5.0,
+            "w": 2.0,
+            "h": 1.0,
+            "drill": 0.5,
+            "slot": [[5.5, 4.5], [6.5, 5.5]],
+        }
     )
+    ex = _export(model)
+    assert any("slot hole off the pad" in w and "R1" in w for w in ex.warnings)
 
 
 def test_a_right_angle_slot_writes_slot_and_does_not_warn():
     ex = _export(_model([_inst("S1", 10.0, 10.0, 90.0, "top", fp="SLOT1")]))
     assert not any("slot hole" in w for w in ex.warnings)
+
+
+# ── the full structural round trip (slice 3) ────────────────────────────
+def _design_model(design, pcb, frame) -> dict[str, Any]:
+    """Assemble the writer's model from a read-in design — the same
+    assembly ``_fab_model`` runs: footprint pads placed per instance,
+    footprint holes and copper carried, the epro passthroughs attached.
+    Used by the structural round-trip tests so BOTH the committed fixture
+    and the real board go through one code path."""
+    layers = list(epro.copper_layers(pcb).values())
+    flat, _ = epro.measured_copper(pcb, frame)
+    outline = next(f for f in design.features if f["ftype"] == "outline")
+    fps = {f["name"]: f for f in design.footprints}
+    net_of = {(c["refdes"], c["pin"]): c["net"] for c in design.connections}
+    pads: list[dict[str, Any]] = []
+    drills: list[dict[str, Any]] = []
+    footprint_holes: dict[str, list[dict[str, Any]]] = {}
+    for comp in design.components:
+        fp = fps.get(comp.get("footprint"))
+        if fp is None:
+            continue
+        pad_net = {
+            str(p["pad"]): net_of[(comp["refdes"], p["name"])]
+            for p in comp.get("pins", [])
+            if (comp["refdes"], p["name"]) in net_of
+        }
+        raw = [{**p, "number": p["pin"]} for p in fp["pads"]]
+        pp, dd = padplace.place_footprint_pads(
+            raw, comp, layers=layers, pin_to_net=pad_net
+        )
+        pads += pp
+        drills += dd
+        if fp.get("holes"):
+            footprint_holes[str(comp["refdes"])] = list(fp["holes"])
+    # board-level mounting holes -> drills rows, as _fab_model's does
+    for f in design.features:
+        if f["ftype"] == "mounting_hole":
+            g = f["geom"]
+            drills.append(
+                {
+                    "x": f["x"],
+                    "y": f["y"],
+                    "dia_mm": g["diameter"],
+                    "plated": g.get("plated", False),
+                }
+            )
+    for pour in design.epro_pours:
+        flat.append({"ctype": "pour", **pour})
+    model: dict[str, Any] = {
+        "layers": layers,
+        "outline": outline["geom"]["path"],
+        "copper": flat,
+        "pads": pads,
+        "drills": drills,
+        "silkscreen": {"top": [], "bottom": []},
+        "mask_open_regions": [],
+        "instances": design.components,
+        "footprint_holes": footprint_holes,
+        "nets": [n["name"] for n in design.nets],
+        "epro_rules": design.epro_rules,
+        "epro_board": design.epro_board,
+        # derived plane assignments (derive_stackup's semantic: an inner
+        # layer whose pours all name one net) — the writer emits a POUR
+        # for each, so the plane survives the trip.
+        "planes": _derived_planes(pcb),
+    }
+    return model
+
+
+def _derived_planes(pcb) -> dict[str, str]:
+    """derive_stackup's plane rule, pure: an INNER copper layer whose
+    pours all name one net."""
+    layers = epro.copper_layers(pcb)
+    names = list(layers.values())
+    pour_nets: dict[str, set[str]] = {}
+    for b in pcb.bodies("POUR"):
+        name = layers.get(int(b.get("layerId") or 0))
+        if name:
+            pour_nets.setdefault(name, set()).add(str(b.get("netName") or ""))
+    outer = {names[0], names[-1]} if names else set()
+    return {
+        name: next(iter(nets))
+        for name, nets in pour_nets.items()
+        if name not in outer and len(nets - {""}) == 1
+    }
+
+
+def _pad_entries(design, layers) -> list[dict[str, Any]]:
+    """Every placed pad of every instance, in board frame, tagged with
+    its refdes and pad number/name — through the same
+    ``place_footprint_pads`` the import takes. Compared by POSITION, not
+    pin name: a pad the source calls ``BAT`` through its device pin_map
+    is the same copper as pad number ``4`` on the re-imported file (no
+    DEVICE records there)."""
+    fps = {f["name"]: f for f in design.footprints}
+    net_of = {(c["refdes"], c["pin"]): c["net"] for c in design.connections}
+    out: list[dict[str, Any]] = []
+    for comp in design.components:
+        fp = fps.get(comp.get("footprint"))
+        if fp is None:
+            continue
+        pad_net = {
+            str(p["pad"]): net_of[(comp["refdes"], p["name"])]
+            for p in comp.get("pins", [])
+            if (comp["refdes"], p["name"]) in net_of
+        }
+        raw = [{**p, "number": p["pin"]} for p in fp["pads"]]
+        pp, _dd = padplace.place_footprint_pads(
+            raw, comp, layers=layers, pin_to_net=pad_net
+        )
+        for p in pp:
+            out.append({**p, "refdes": comp["refdes"], "pad_num": str(p["pin"])})
+    return out
+
+
+def _match_pads(
+    want: list[dict[str, Any]], got: list[dict[str, Any]]
+) -> tuple[
+    list[tuple[dict[str, Any], dict[str, Any]]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Pair want/got pads by (refdes, nearest position) within 0.005 mm —
+    the exported file's mil quantization and a fresh float transform can
+    shift a pad by ~0.5 um, which straddles any fixed rounding boundary."""
+    unused = list(range(len(got)))
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    missing: list[dict[str, Any]] = []
+    for w in want:
+        best, best_d = None, 0.005
+        for gi in unused:
+            g = got[gi]
+            if g["refdes"] != w["refdes"]:
+                continue
+            d = max(abs(g["x"] - w["x"]), abs(g["y"] - w["y"]))
+            if d < best_d:
+                best, best_d = gi, d
+        if best is None:
+            missing.append(w)
+        else:
+            unused.remove(best)
+            pairs.append((w, got[best]))
+    return pairs, missing, [got[gi] for gi in unused]
+
+
+def _ring(points: list[list[float]]) -> list[tuple[float, float]]:
+    """A polygon ring canonicalised for comparison: closing vertex
+    dropped, rotated to start at the lowest (x, y) vertex."""
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if not pts:
+        return []
+    k = min(range(len(pts)), key=lambda i: pts[i])
+    return pts[k:] + pts[:k]
+
+
+def _structural_diff(src_design, src_pcb, src_frame, out_bytes):
+    """Compare a source design against the design the EXPORTED file
+    re-imports to. Returns ``(summary_lines, failures)`` — failures are
+    the lines a human should read first; the summary is the diff report
+    the backlog asks to print."""
+    project2 = epro.read_archive(out_bytes)
+    pcb2 = project2.pcb()
+    d2, f2 = epro.build_design(project2, pcb2)
+    lines: list[str] = []
+    fails: list[str] = []
+
+    def check(ok: bool, msg: str) -> None:
+        (fails if not ok else lines).append(("FAIL " if not ok else "  ok ") + msg)
+
+    # parts
+    want_c = {c["refdes"]: c for c in src_design.components}
+    got_c = {c["refdes"]: c for c in d2.components}
+    check(set(got_c) == set(want_c), f"parts {len(want_c)} -> {len(got_c)}")
+    worst = 0.0
+    for r, c in want_c.items():
+        if r in got_c:
+            worst = max(
+                worst,
+                abs(got_c[r]["x"] - c["x"]),
+                abs(got_c[r]["y"] - c["y"]),
+            )
+            check(
+                got_c[r]["rot"] == c["rot"] % 360.0 and got_c[r]["layer"] == c["layer"],
+                f"  {r}: rot/layer {c['rot']}/{c['layer']} -> {got_c[r]['rot']}/{got_c[r]['layer']}",
+            )
+    check(worst < _TOL_MM, f"part positions worst {worst * 1000:.3f} um")
+
+    # pads incl. drills and slots — paired by (refdes, nearest position)
+    layers = list(epro.copper_layers(src_pcb).values())
+    layers2 = list(epro.copper_layers(pcb2).values())
+    want_e = _pad_entries(src_design, layers)
+    got_e = _pad_entries(d2, layers2)
+    pairs, missing_p, extra_p = _match_pads(want_e, got_e)
+    check(
+        not missing_p and not extra_p,
+        f"pads {len(want_e)} -> {len(got_e)} "
+        f"(unmatched {[(p['refdes'], p['pad_num']) for p in missing_p][:5]}, "
+        f"extra {[(p['refdes'], p['pad_num']) for p in extra_p][:5]})",
+    )
+    worst = 0.0
+    for p, g in pairs:
+        k = (p["refdes"], p["pad_num"])
+        worst = max(worst, abs(g["x"] - p["x"]), abs(g["y"] - p["y"]))
+        for fld in ("shape", "net"):
+            check(
+                g.get(fld) == p.get(fld),
+                f"  pad {k}: {fld} {p.get(fld)!r} -> {g.get(fld)!r}",
+            )
+        for fld in ("w", "h"):
+            check(
+                abs(float(g.get(fld) or 0) - float(p.get(fld) or 0)) < _TOL_MM,
+                f"  pad {k}: {fld} {p.get(fld)} -> {g.get(fld)}",
+            )
+        check(
+            (g.get("drill") or None) == (p.get("drill") or None),
+            f"  pad {k}: drill {p.get('drill')} -> {g.get('drill')}",
+        )
+        # slot: the two centre-line endpoints, either order, within tol
+        s1, s2 = p.get("slot"), g.get("slot")
+        if s1 or s2:
+            ok = bool(s1) and bool(s2)
+            if s1 and s2:
+                a = {tuple(pt) for pt in s1}
+                b = {tuple(pt) for pt in s2}
+                ok = all(
+                    min(max(abs(px - qx), abs(py - qy)) for qx, qy in b) < _TOL_MM
+                    for px, py in a
+                )
+            check(ok, f"  pad {k}: slot {s1} -> {s2}")
+    check(worst < _TOL_MM, f"pad positions worst {worst * 1000:.3f} um")
+
+    # pad-net membership: every connection resolves onto a paired pad
+    # (the per-pad net check above compares them directly) — count parity
+    # proves no connection row was lost.
+    check(
+        len(d2.connections) == len(src_design.connections),
+        f"connection rows {len(src_design.connections)} -> {len(d2.connections)}",
+    )
+    names_w = {n["name"] for n in src_design.nets}
+    # the FILE's NET declarations are the netlist's survival, not the
+    # re-imported design's live census — a net kept alive in the source
+    # only by stale PAD_NET rows (taz15's S$151) has its declaration but
+    # no member, and precis' reader correctly does not count it live.
+    declared_g = {
+        json.loads(str(r.id))[1]
+        for r in pcb2.of_type("NET")
+        if r.id and str(r.id).startswith("[")
+    }
+    check(
+        names_w <= declared_g,
+        f"net declarations {len(names_w)} -> {len(declared_g)} in file"
+        f" (missing {sorted(names_w - declared_g)[:6]})",
+    )
+    names_g = {n["name"] for n in d2.nets}
+    lines.append(
+        f"  -- {len(names_g)} nets live in the re-imported design"
+        f" ({sorted(names_w - names_g)} declared but memberless)"
+    )
+    cls_w = {
+        n["name"]: n.get("net_class") for n in src_design.nets if n.get("net_class")
+    }
+    cls_g = {n["name"]: n.get("net_class") for n in d2.nets}
+    check(
+        {k: cls_w[k] for k in cls_w if k in cls_g}
+        == {k: v for k, v in cls_g.items() if k in cls_w},
+        f"net classes {len(cls_w)} stamped -> {sorted(str(v) for v in set(cls_g.values()))}",
+    )
+    check(d2.net_classes == src_design.net_classes, "mapped rule classes identical")
+
+    # copper: tracks + vias as canonical segments
+    flat1, _ = epro.measured_copper(src_pcb, src_frame)
+    flat2, _ = epro.measured_copper(pcb2, f2)
+    w_segs, g_segs = _canon_segments(flat1), _canon_segments(flat2)
+    check(set(g_segs) == set(w_segs), f"copper segments {len(w_segs)} -> {len(g_segs)}")
+    worst_cu = _worst_um(w_segs, g_segs)
+    check(worst_cu < _TOL_MM * 1000.0, f"copper worst {worst_cu:.3f} um")
+
+    # pours: authored zone outlines, verbatim
+    key = lambda p: (p["layer"], p["net"])
+    want_pours = {key(p): _ring(p["polygon"]) for p in src_design.epro_pours}
+    got_pours = {key(p): _ring(p["polygon"]) for p in d2.epro_pours}
+    check(
+        set(got_pours) == set(want_pours),
+        f"pours {len(want_pours)} -> {len(got_pours)}",
+    )
+    worst_pour = 0.0
+    for k, ring in want_pours.items():
+        gp = got_pours.get(k)
+        if gp is None or len(gp) != len(ring):
+            fails.append(
+                f"FAIL   pour {k}: vertex count {len(ring)} -> {len(gp or [])}"
+            )
+            continue
+        for (ax, ay), (bx, by) in zip(ring, gp):
+            worst_pour = max(worst_pour, abs(ax - bx), abs(ay - by))
+    check(worst_pour < _TOL_MM, f"pour vertices worst {worst_pour * 1000:.3f} um")
+
+    # rules: every record verbatim
+    want_r = sorted((r["type"], str(r["id"])) for r in src_design.epro_rules)
+    got_r = sorted((r["type"], str(r["id"])) for r in d2.epro_rules)
+    check(got_r == want_r, f"rule records {len(want_r)} -> {len(got_r)}")
+    bodies = {str(r["id"]): r["body"] for r in src_design.epro_rules}
+    bodies2 = {str(r["id"]): r["body"] for r in d2.epro_rules}
+    check(bodies == bodies2, "rule bodies byte-identical")
+
+    # outline
+    o1 = next(f for f in src_design.features if f["ftype"] == "outline")
+    o2 = next((f for f in d2.features if f["ftype"] == "outline"), None)
+    check(o2 is not None, "outline feature present")
+    worst_o = 0.0
+    if o2 is not None:
+        r1, r2 = _ring(o1["geom"]["path"]), _ring(o2["geom"]["path"])
+        check(len(r1) == len(r2), f"outline vertices {len(r1)} -> {len(r2)}")
+        for (ax, ay), (bx, by) in zip(r1, r2):
+            worst_o = max(worst_o, abs(ax - bx), abs(ay - by))
+    check(worst_o < _TOL_MM, f"outline worst {worst_o * 1000:.3f} um")
+
+    # mounting holes (board-level + footprint FILL holes)
+    def holes_of(design):
+        out = set()
+        for f in design.features:
+            if f["ftype"] == "mounting_hole":
+                out.add(
+                    (
+                        round(f["x"], 3),
+                        round(f["y"], 3),
+                        round(f["geom"]["diameter"], 3),
+                    )
+                )
+        fps = {f["name"]: f for f in design.footprints}
+        for comp in design.components:
+            fp = fps.get(comp.get("footprint"))
+            for h in (fp or {}).get("holes", []):
+                wx, wy = padplace.place_pad_point({"x": h["x"], "y": h["y"]}, comp)
+                out.add((round(wx, 3), round(wy, 3), round(h["dia_mm"], 3)))
+        return out
+
+    h_w, h_g = holes_of(src_design), holes_of(d2)
+    check(
+        h_g == h_w, f"holes {len(h_w)} -> {len(h_g)} (missing {sorted(h_w - h_g)[:4]})"
+    )
+
+    # silk: source silk art is not imported (it is regenerated), so the
+    # check is coverage — one editable Designator ATTR per component.
+    designators = {
+        a.get("value") for a in pcb2.bodies("ATTR") if a.get("key") == "Designator"
+    }
+    check(
+        designators >= set(want_c),
+        f"designators {len(want_c)} wanted -> {len(designators)} written",
+    )
+    silk_src = len(src_pcb.bodies("STRING")) + sum(
+        1 for b in src_pcb.bodies("POLY") if str(b.get("layerId")) in {"3", "4"}
+    )
+    lines.append(
+        f"  -- silk: {silk_src} source records are NOT imported "
+        f"(regenerated on export); {len(pcb2.bodies('POLY'))} POLYs + "
+        f"{len(designators)} designators written"
+    )
+    return lines, fails, d2, pcb2
+
+
+#: Reto's TAZ Control Board V1.15 — the gitignored local copy. The test
+#: skips when it is absent, so CI stays green; locally it is the proof
+#: Reto asked for ("I want round trip to work").
+_TAZ = pathlib.Path(__file__).parent.parent / "epro.local" / "taz15.epro2"
+_TAZ_OUT = _TAZ.with_name("taz15-roundtrip.epro2")
+
+
+@pytest.mark.skipif(
+    not _TAZ.exists(), reason="taz15.epro2 lives in the local epro.local/ only"
+)
+def test_taz15_import_export_reimport_structural(store, pcb, tmp_path) -> None:
+    """The real board, through the product path: ``import_epro`` ->
+    ``view='epro'`` -> re-import -> structural diff. Every geometry
+    category within 0.5 um; the written file is left next to the source
+    in ``epro.local/`` for Reto to open in EasyEDA Pro (the UNVERIFIED
+    banner stands until a human does)."""
+    from precis.ingest import pcb_epro
+
+    data = _TAZ.read_bytes()
+    project = epro.read_archive(data)
+    src_pcb = project.pcb("858a5f81603d1987")
+    src_design, src_frame = epro.build_design(project, src_pcb)
+
+    first = pcb_epro.import_epro(
+        store,
+        data,
+        slug="taz15-rt",
+        title="TAZ RT",
+        board_uuid="858a5f81603d1987",
+    )
+    assert first.created
+    resp = pcb.get(id="taz15-rt", view="epro", args={"dir": str(tmp_path)})
+    out = tmp_path / "taz15-rt.epro2"
+    assert out.exists(), resp.body
+
+    out_bytes = out.read_bytes()
+    # The file the diff clears is also the file Reto opens — copy it next
+    # to the source so it survives the tmp dir.
+    _TAZ_OUT.write_bytes(out_bytes)
+
+    lines, fails, d2, pcb2 = _structural_diff(src_design, src_pcb, src_frame, out_bytes)
+    print("\n".join(lines))
+    for line in fails:
+        print(line)
+    # and the exported file re-imports through the store as well — the
+    # product path, not only the reader.
+    second = pcb_epro.import_epro(
+        store, out_bytes, slug="taz15-rt-back", title="TAZ RT back"
+    )
+    assert second.created and second.stats["components"] == len(src_design.components)
+    assert not fails, f"{len(fails)} structural differences:\n" + "\n".join(fails[:30])
+
+
+def test_the_committed_fixture_round_trips_structurally(store, pcb, tmp_path) -> None:
+    """The same structural diff in CI, on the committed tiny fixture —
+    the file a reviewer can regenerate without Reto's board."""
+    from precis.ingest import pcb_epro
+
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in ("project2.json", "board.epru"):
+            zf.writestr(name, (fixture / name).read_bytes())
+    data = buf.getvalue()
+    project = epro.read_archive(data)
+    src_pcb = project.pcb()
+    src_design, src_frame = epro.build_design(project, src_pcb)
+
+    first = pcb_epro.import_epro(store, data, slug="tiny-rt", title="Tiny RT")
+    resp = pcb.get(id="tiny-rt", view="epro", args={"dir": str(tmp_path)})
+    out = tmp_path / "tiny-rt.epro2"
+    assert out.exists(), resp.body
+
+    lines, fails, d2, pcb2 = _structural_diff(
+        src_design, src_pcb, src_frame, out.read_bytes()
+    )
+    print("\n".join(lines))
+    assert not fails, f"{len(fails)} structural differences:\n" + "\n".join(fails[:30])
+
+
+def test_the_committed_fixture_round_trips_through_the_pure_model() -> None:
+    """Same diff without a store: design -> the model assembly -> write
+    -> re-read. Pins that the file alone (not ``_fab_model``'s extras)
+    carries the structure."""
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in ("project2.json", "board.epru"):
+            zf.writestr(name, (fixture / name).read_bytes())
+    project = epro.read_archive(buf.getvalue())
+    src_pcb = project.pcb()
+    src_design, src_frame = epro.build_design(project, src_pcb)
+
+    model = _design_model(src_design, src_pcb, src_frame)
+    ex = epro_write.epro_files(model, slug="tiny-pure")
+    out = epro_write.zip_epro(ex.files)
+    lines, fails, _d2, _pcb2 = _structural_diff(src_design, src_pcb, src_frame, out)
+    print("\n".join(lines))
+    assert not fails, f"{len(fails)} structural differences:\n" + "\n".join(fails[:30])
