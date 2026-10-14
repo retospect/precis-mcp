@@ -70,7 +70,9 @@ get(kind='alert', id='watchdog:discovery/embed')    # one failure id: open? recu
 
 `/health` is `health_digest`'s last eval (hourly snapshot, age shown)
 with the cheap freshness probes re-run live — the same per-subsystem
-states `/status` renders. Each line carries its failure id; follow it
+states `/status` renders. Stale/unknown rows carry the check's detail;
+`ok` rows are terse (id + severity + age) — a check's detail is one
+single-id read away. Each line carries its failure id; follow it
 with the single-id read, which answers **open / not open** (never
 NotFound — "is it broken?" must be answerable "no"), `seen_count`,
 first/last seen, **recurrence** (rows sharing the id; a fix is verified

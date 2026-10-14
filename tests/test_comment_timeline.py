@@ -44,16 +44,29 @@ def test_append_ack_and_display_policy(
     for i in range(1, 6):
         ack = h.put(id=rid, text=f"note-{i}").body
     assert f"appended comment 5 to {which} {rid}." in ack
-    assert "newest 3 in full" in ack and "args={'comment': 5}" in ack
+    # The ack names the kind's own display policy (gripe's bare get is on
+    # the render diet — newest comment only; todo keeps newest-3).
+    full_count = {"gripe": 1, "todo": 3}[which]
+    shown = "the newest comment" if full_count == 1 else f"the newest {full_count}"
+    assert f"shows {shown}" in ack and "args={'comment': 5}" in ack
     out = h.get(id=rid).body
     heads = [ln for ln in out.splitlines() if ln.startswith("## comment ")]
-    assert [ln.split()[2] for ln in heads] == ["5", "4", "3"]
+    assert [ln.split()[2] for ln in heads] == [
+        str(i) for i in range(5, 5 - full_count, -1)
+    ]
     assert "Z" in heads[0] and "·" in heads[0]
     oneliners = [ln for ln in out.splitlines() if ln.startswith("comment ")]
-    assert [ln.split()[1] for ln in oneliners] == ["2", "1"]
-    assert oneliners[0].endswith("· note-2")
+    assert [ln.split()[1] for ln in oneliners] == [
+        str(i) for i in range(5 - full_count, 0, -1)
+    ]
+    assert oneliners[0].endswith(f"· note-{5 - full_count}")
     assert out.index("note-5") < out.index("note-4") < out.index("note-3")
-    assert "comments: newest 3 in full, older as one-liners" in out
+    footer = (
+        "comments: newest head, older as one-liners"
+        if full_count == 1
+        else f"comments: newest {full_count} in full, older as one-liners"
+    )
+    assert footer in out
     assert f"get(kind='{which}', id={rid}, view='comments')" in out
     full = h.get(id=rid, view="comments").body
     assert full.index("note-1") < full.index("note-2") < full.index("note-5")

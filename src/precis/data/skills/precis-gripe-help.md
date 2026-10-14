@@ -114,10 +114,11 @@ get(kind="gripe", id=42)
 #   tags + linked jobs
 ```
 
-`get` composes the body, then the newest 3 comments in full (newest first),
-then older ones as one-line gists, so the current state is never pushed off the
-page. Read every comment, oldest first, with
-`get(kind='gripe', id=42, view='comments')`. `view='log'` remains the audit log.
+`get` composes a body head (a long body cuts with a `+N chars` marker),
+then the newest comment head, then older ones as one-line gists, so the
+current state is never pushed off the page. Read the full body and every
+comment, oldest first, with `get(kind='gripe', id=42, view='comments')`.
+`view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50), and `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of

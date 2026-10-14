@@ -79,7 +79,9 @@ class TestGripe:
         gripe.put(id=gripe_id, text="ranking comparator needs a tiebreaker")
         body = gripe.get(id=gripe_id).body
         assert "search drops duplicate hits" in body
-        assert "## comment 1" in body
+        # Render-diet policy: the newest comment renders in full, older
+        # ones as one-line gists (``comment 1 · <stamp> · <gist>``).
+        assert "## comment 1" not in body
         assert "reproduces on HNSW ties" in body
         assert "## comment 2" in body
         assert "tiebreaker" in body

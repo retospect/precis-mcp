@@ -178,7 +178,7 @@ class AlertHandler(NumericRefHandler):
             head,
             "A check's verdict is the truth for 'is X healthy?' — not process "
             "presence (lazily-loaded services idle-unload by design). Follow an "
-            "id with get(kind='alert', id='<id>').",
+            "id with get(kind='alert', id='<id>') — its rule, state and detail.",
         ]
         checks = panel["checks"]
         for status, title in (("stale", "stale"), ("unknown", "unknown"), ("ok", "ok")):
@@ -190,7 +190,17 @@ class AlertHandler(NumericRefHandler):
                 age_h = c.get("age_hours")
                 age_s = f", {age_h:.1f}h" if isinstance(age_h, (int, float)) else ""
                 live = " (live)" if c.get("live") else ""
-                out.append(f"- {c['id']} [{c['severity']}{age_s}]{live} {c['detail']}")
+                # Render diet (2026-10-14): the ok block is the panel's fat
+                # (~40 checks of boilerplate detail ≈ 80% of the payload).
+                # ok rows keep id + severity + age; the check's detail is one
+                # single-id read away. stale/unknown rows keep detail — that
+                # is the actionable text.
+                if status == "ok":
+                    out.append(f"- {c['id']} [{c['severity']}{age_s}]{live}")
+                else:
+                    out.append(
+                        f"- {c['id']} [{c['severity']}{age_s}]{live} {c['detail']}"
+                    )
         return Response(body="\n".join(out))
 
     # ── one failure id: <source>/<fingerprint> ──────────────────────

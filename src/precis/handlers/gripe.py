@@ -14,9 +14,11 @@ Surface (see ``precis-gripe-help``):
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
   ``tags=``/``untags=`` ride along in the same transaction, so
   comment-then-close is one call.
-- ``get(kind='gripe', id=N)`` composes the body + the newest 3 comments in
-  full (older ones as one-liners; policy in :mod:`_comment_timeline`)
-  alongside header / tags. ``view='comments'`` returns the full timeline;
+- ``get(kind='gripe', id=N)`` composes a body head (``_BODY_HEAD_CHARS``,
+  with a ``+N chars`` marker when cut) + the newest comment head
+  (older ones as one-liners; per-kind policy in
+  :mod:`_comment_timeline`) alongside header / tags.
+  ``view='comments'`` returns the full body + the full timeline;
   ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
@@ -47,6 +49,12 @@ from precis.utils.secret_scan import mask_secrets
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
 _COMMENT_KIND = "gripe_comment"
+
+#: Bare-get body head budget (render diet 2026-10-14: the default read
+#: measured p95 6.7 KB, half of it the body). Over-budget bodies cut at
+#: a line boundary and get a ``+N chars`` marker pointing at
+#: ``view='comments'``, the complete read.
+_BODY_HEAD_CHARS = 1500
 
 
 class GripeHandler(NumericRefHandler):
@@ -466,10 +474,27 @@ class GripeHandler(NumericRefHandler):
         if tags:
             lines.append("tags: " + " ".join(str(t) for t in tags))
         body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
-        lines.extend(["", body])
+        lines.extend(["", body if full else self._body_head(body, ref.id)])
         comments = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
         section = tl.render_comments(ref, comments, kind=self.kind, full=full)
         return "\n".join(lines) + (f"\n\n{section}" if section else "")
+
+    @staticmethod
+    def _body_head(body: str, ref_id: int) -> str:
+        """Bare-get body head: line-boundary cut inside the budget, then
+        a marker naming the view that carries the rest. The pointer is
+        inline (not in a footer) because a comment-free gripe renders no
+        comments footer to point at it."""
+        if len(body) <= _BODY_HEAD_CHARS:
+            return body
+        cut = body.rfind("\n", 0, _BODY_HEAD_CHARS)
+        if cut < _BODY_HEAD_CHARS // 2:
+            cut = _BODY_HEAD_CHARS
+        return (
+            body[:cut].rstrip()
+            + f"\n[+{len(body) - cut} chars — "
+            + f"get(kind='gripe', id={ref_id}, view='comments')]"
+        )
 
     def _render_create_ack(self, ref_id: int) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +
@@ -494,10 +519,6 @@ class GripeHandler(NumericRefHandler):
                     f"link(kind={self.kind!r}, id={ref_id}, "
                     "target='<gripe-handle>', rel='supersedes')",
                     "mark this as superseding/refining another (the other gripe's id)",
-                ),
-                (
-                    f"get(kind={self.kind!r}, id='/recent')",
-                    f"recent {self._sense()} entries",
                 ),
             ]
         )

@@ -950,6 +950,47 @@ def test_handler_health_view_without_snapshot(hub: Hub) -> None:
     assert "watchdog:ingest/papers_ingested" in body
 
 
+def test_handler_health_view_terse_ok_rows(hub: Hub, monkeypatch: Any) -> None:
+    """Render diet: stale/unknown rows keep their detail (the actionable
+    text); ok rows render id + severity + age only — the check's detail
+    is one ``get(kind='alert', id='<id>')`` away."""
+    from datetime import UTC, datetime
+
+    from precis.workers import health_digest
+
+    panel: dict[str, Any] = {
+        "computed_at": datetime(2026, 10, 14, 8, 0, tzinfo=UTC),
+        "snapshot_age_hours": 0.5,
+        "open_alerts": {"warn": 1},
+        "checks": [
+            {
+                "id": "watchdog:discovery/embed",
+                "status": "ok",
+                "detail": "chunks embedded: 0 pending (caught up)",
+                "severity": "warn",
+                "age_hours": 0.4,
+                "live": True,
+            },
+            {
+                "id": "watchdog:ingest/news",
+                "status": "stale",
+                "detail": "a news ref landing: last seen 30.0h ago",
+                "severity": "warn",
+                "age_hours": 30.0,
+                "live": False,
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        health_digest, "health_panel", lambda store, conn=None: dict(panel)
+    )
+    body = AlertHandler(hub=hub).get(id="/health").body
+    assert "a news ref landing: last seen 30.0h ago" in body
+    assert "0 pending (caught up)" not in body
+    assert "- watchdog:discovery/embed [warn, 0.4h] (live)" in body
+    assert "## ok (1)" in body
+
+
 def test_tag_verb_add_resolved_replaces_open(hub: Hub, store: Store) -> None:
     """gr479086: ``alert-state:`` is mutually exclusive — adding
     ``resolved`` alone drops ``open`` and stamps ``resolved_at`` so the

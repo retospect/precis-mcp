@@ -3,10 +3,16 @@
 Why a policy and not "render everything": gr470905 grew 12 comment chunks
 (~30 KB), overflowed the response frame, and the *newest* comment — usually
 the one carrying the current state — landed on page 2. A bare ``get`` now
-renders the body, then the newest 3 visible comments in full (newest first),
-older visible ones as one-liners (so their existence and gist are not lost),
+renders the newest few visible comments in full (newest first), older
+visible ones as one-liners (so their existence and gist are not lost),
 and a footer naming the ways to see more. ``view='comments'`` is the
 complete, oldest-first read.
+
+How many comments render in full (and how far each runs before a head
+cut) is a per-kind choice — ``_KIND_POLICY`` below. Gripe's bare get went
+on the render diet (2026-10-14: measured p95 6.7 KB, dominated by the
+body plus three full comments plus the one-liner list): newest comment
+only, head-capped, eight one-liners. Todo keeps the original newest-3.
 
 Comments are chunks (``gripe_comment`` / ``todo_comment``); chunks are
 append-only, so "hiding a stale comment" is not a chunk write. The hidden
@@ -20,7 +26,7 @@ A comment's number K is its chunk ``ord``: stable, shown in every header.
 from __future__ import annotations
 
 from datetime import UTC
-from typing import Any
+from typing import Any, NamedTuple
 
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
@@ -28,7 +34,7 @@ from precis.errors import BadInput, Upstream
 from precis.response import Response
 from precis.store.types import ChunkInsert, ChunkRow, Ref
 
-#: Comments rendered in full on a bare ``get``.
+#: Comments rendered in full on a bare ``get`` (the default policy).
 FULL_COMMENTS = 3
 #: One-liner cap for the older visible comments.
 ONE_LINER_CAP = 20
@@ -36,6 +42,49 @@ ONE_LINER_CAP = 20
 ONE_LINER_CHARS = 100
 
 HIDDEN_META_KEY = "hidden_comments"
+
+
+class _Policy(NamedTuple):
+    """Default-read comment budgets for one kind.
+
+    ``full_count``: how many of the newest visible comments render in
+    full. ``full_chars``: per-comment head cap on those full renders
+    (``None`` = uncapped). ``one_liner_cap``: how many older visible
+    comments get a one-line gist before ``+N older``.
+    """
+
+    full_count: int
+    full_chars: int | None
+    one_liner_cap: int
+
+
+_DEFAULT_POLICY = _Policy(FULL_COMMENTS, None, ONE_LINER_CAP)
+#: Kinds whose bare get renders a leaner comment timeline than the
+#: default. gripe measured p95 6.7 KB / max 9.5 KB over a 24h mining
+#: window (2026-10-14): the newest comment carries the current state, the
+#: rest is reachable at ``view='comments'``.
+_KIND_POLICY: dict[str, _Policy] = {
+    "gripe": _Policy(full_count=1, full_chars=800, one_liner_cap=8),
+}
+
+
+def _policy(kind: str) -> _Policy:
+    return _KIND_POLICY.get(kind, _DEFAULT_POLICY)
+
+
+def _comment_head(text: str, chars: int | None) -> str:
+    """Cut a full-rendered comment at a line boundary inside the budget.
+
+    ``None`` renders the comment uncapped (the default policy); a short
+    text always passes through whole.
+    """
+    if chars is None or len(text) <= chars:
+        return text
+    cut = text.rfind("\n", 0, chars)
+    if cut < chars // 2:
+        cut = chars
+    return text[:cut].rstrip() + " …"
+
 
 #: ``args=`` keys ``delete`` reads on a comment-capable kind.
 DELETE_ARGS_KEYS = frozenset({"comment", "restore"})
@@ -63,8 +112,9 @@ def render_comments(
 ) -> str:
     """The comment part of a ``get`` ("" when the ref has no comments).
 
-    ``full=False`` is the bare-``get`` policy; ``full=True`` is
-    ``view='comments'`` (all, oldest first, hidden ones marked).
+    ``full=False`` is the bare-``get`` policy (``_KIND_POLICY``);
+    ``full=True`` is ``view='comments'`` (all, oldest first, hidden
+    ones marked) — the complete read the footer points at.
     """
     if not comments:
         return ""
@@ -77,16 +127,22 @@ def render_comments(
             for c in ordered
         ]
         return "\n\n".join(parts)
+    policy = _policy(kind)
     visible = [c for c in ordered if c.ord not in hidden]
-    newest = list(reversed(visible[-FULL_COMMENTS:]))
+    newest = list(reversed(visible[-policy.full_count :]))
     older = (
-        list(reversed(visible[:-FULL_COMMENTS])) if len(visible) > FULL_COMMENTS else []
+        list(reversed(visible[: -policy.full_count]))
+        if len(visible) > policy.full_count
+        else []
     )
-    parts = [f"## comment {c.ord} · {_stamp(c)}\n{c.text}" for c in newest]
+    parts = [
+        f"## comment {c.ord} · {_stamp(c)}\n{_comment_head(c.text, policy.full_chars)}"
+        for c in newest
+    ]
     if older:
-        lines = [_one_liner(c) for c in older[:ONE_LINER_CAP]]
-        if len(older) > ONE_LINER_CAP:
-            lines.append(f"+{len(older) - ONE_LINER_CAP} older")
+        lines = [_one_liner(c) for c in older[: policy.one_liner_cap]]
+        if len(older) > policy.one_liner_cap:
+            lines.append(f"+{len(older) - policy.one_liner_cap} older")
         parts.append("\n".join(lines))
     n_hidden = len([c for c in ordered if c.ord in hidden])
     if n_hidden:
@@ -94,8 +150,20 @@ def render_comments(
             f"{n_hidden} hidden comment{'s' if n_hidden != 1 else ''} — "
             "view='comments' shows them"
         )
+    if policy.full_chars is None:
+        shown = (
+            "newest in full"
+            if policy.full_count == 1
+            else f"newest {policy.full_count} in full"
+        )
+    else:
+        shown = (
+            "newest head"
+            if policy.full_count == 1
+            else f"newest {policy.full_count} heads"
+        )
     parts.append(
-        f"comments: newest {FULL_COMMENTS} in full, older as one-liners · "
+        f"comments: {shown}, older as one-liners · "
         f"all, oldest first: get(kind={kind!r}, id={ref.id}, view='comments') · "
         f"hide a stale one: delete(kind={kind!r}, id={ref.id}, args={{'comment': <K>}})"
     )
@@ -142,12 +210,18 @@ def append_comment(
                 "todo_comment: 0195) against this DB",
             ],
         ) from e
+    policy = _policy(kind)
+    shown = (
+        "the newest comment"
+        if policy.full_count == 1
+        else f"the newest {policy.full_count}"
+    )
     return Response(
         body=(
-            f"appended comment {number} to {kind} {ref.id}. Readers see the "
-            "newest 3 in full (newest first) and older ones as one-liners; "
-            "view='comments' shows all; hide a stale one with "
-            f"delete(kind={kind!r}, id={ref.id}, args={{'comment': {number}}})."
+            f"appended comment {number} to {kind} {ref.id}. A bare get shows "
+            f"{shown} plus older one-liners; view='comments' shows all; hide "
+            f"a stale one with delete(kind={kind!r}, id={ref.id}, "
+            f"args={{'comment': {number}}})."
         )
     )
 

@@ -4501,7 +4501,9 @@ def test_status_health_checks_render_the_agent_panel_object(
     — literally the same object ``get(kind='alert', id='/health')`` reads —
     so page and agent can never disagree on a check's verdict. Both
     surfaces are fed one canned panel; every check row must appear in
-    both renders with the same status and detail."""
+    both renders with the same status. Detail parity holds for
+    stale/unknown rows — the agent panel intentionally drops ok-row
+    detail (render diet; the check's detail is one single-id read away)."""
     from datetime import UTC, datetime
     from typing import Any
 
@@ -4558,8 +4560,11 @@ def test_status_health_checks_render_the_agent_panel_object(
     for check in panel["checks"]:
         assert check["id"] in agent_body
         assert check["id"] in page
-        assert check["detail"] in agent_body
         assert check["detail"] in page
+        if check["status"] != "ok":
+            assert check["detail"] in agent_body
+        else:
+            assert check["detail"] not in agent_body
     # Both surfaces carry the header facts: snapshot age + open alerts.
     assert "2.5h" in agent_body and "2.5h" in page
     assert "2 warn" in agent_body and "2 warn" in page
