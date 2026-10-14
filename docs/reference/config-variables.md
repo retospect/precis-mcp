@@ -198,6 +198,7 @@ env is `PRECIS_UNPAYWALL_EMAIL`.
 | `PRECIS_FIXER_DISCORD_WEBHOOK` / `PRECIS_FIXER_READYZ_URL` | Fixer push + readiness | Fixer-side vars — set where the fixer runs, not on cluster daemons. |
 | `PRECIS_EMBEDDER_URL` | Remote embedder endpoint | Pairs with `PRECIS_EMBEDDER=remote` (§4); typically a loopback `serve-embeddings`. |
 | `PRECIS_ASKCOS_URL` | ASKCOS chem endpoint | Chem route uses the container lane by default; only needed for an ASKCOS HTTP instance. |
+| `PRECIS_SCHEMA_GATE` | Startup schema-gate mode (`store/migrate.py::check_schema_at_startup`): `refuse` (default) exits non-zero while migrations are pending, `warn` logs one loud line and boots, `off` skips the check (same as `PRECIS_SKIP_SCHEMA_CHECK=1`) | `warn` is for read-mostly clients of a DB another host migrates — the session MCP (`deploy/mcp-http/`) sets it so a deploy window can't leave sessions without the MCP. `PRECIS_AUTO_MIGRATE=1` still wins over `warn`. `precis-status` shows the ledger drift as `schema_state`. |
 
 ---
 

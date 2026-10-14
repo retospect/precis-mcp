@@ -714,6 +714,32 @@ def packaged_migrator(dsn: str, *, use_baseline: bool = True) -> Migrator:
     return Migrator(dsn, Migrator.discover_sources(builtin_dir), baseline=baseline)
 
 
+#: Valid values for ``PRECIS_SCHEMA_GATE`` / the ``schema.gate`` setting.
+SCHEMA_GATE_MODES = ("refuse", "warn", "off")
+
+
+def _schema_gate_mode() -> str:
+    """Resolve the startup gate mode: ``refuse`` (default) | ``warn`` | ``off``.
+
+    Read through ``settings.get_str("schema.gate")`` — the settings store is
+    never bound this early in boot, so effectively env
+    (``PRECIS_SCHEMA_GATE``) → default ``refuse``. An unrecognised value is
+    a boot error, not a silent fall-back: a typo'd mode must not quietly
+    become ``refuse`` *or* ``warn``.
+    """
+    from precis import settings
+
+    raw = (settings.get_str("schema.gate") or "refuse").strip().lower()
+    if raw not in SCHEMA_GATE_MODES:
+        print(
+            f"precis: PRECIS_SCHEMA_GATE={raw!r} is invalid — expected one "
+            f"of: {', '.join(SCHEMA_GATE_MODES)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return raw
+
+
 def check_schema_at_startup(
     dsn: str | None,
     *,
@@ -733,6 +759,11 @@ def check_schema_at_startup(
       Emergency / read-only-diagnosis escape hatch; deliberately
       env-only — a DB-resident flag would be unreadable exactly when the
       DB is the problem.
+    * ``PRECIS_SCHEMA_GATE`` selects the mode (:func:`_schema_gate_mode`):
+      ``refuse`` (default), ``warn`` (one loud warning on pending, then
+      boot — for read-mostly clients of a DB another host migrates, like
+      the session MCP), or ``off`` (same as the skip env var). An invalid
+      value is a boot error. ``auto_migrate`` still wins over ``warn``.
     * DB *ahead* of the package (a rolling-deploy peer applied
       migrations this build doesn't ship) → warning, continue. Older
       workers must keep running.
@@ -760,6 +791,13 @@ def check_schema_at_startup(
             "(emergency escape hatch)"
         )
         return
+    gate = _schema_gate_mode()
+    if gate == "off":
+        log.warning(
+            "PRECIS_SCHEMA_GATE=off — skipping the startup schema check; "
+            "this process may run against an unmigrated database"
+        )
+        return
 
     m = migrator if migrator is not None else packaged_migrator(dsn)
     status = m.schema_status()
@@ -782,6 +820,15 @@ def check_schema_at_startup(
 
     if not auto_migrate:
         plugin, version = status.pending[0]
+        if gate == "warn":
+            log.warning(
+                "database is %d migration(s) behind this package (first "
+                "pending: %s/%s); serving anyway (PRECIS_SCHEMA_GATE=warn)",
+                len(status.pending),
+                plugin,
+                version,
+            )
+            return
         print(
             f"precis: database is {len(status.pending)} migration(s) behind "
             f"this package (first pending: {plugin}/{version}); "

@@ -48,10 +48,13 @@ Schema evolves **forward-only** (dual-track baseline; see `store/migrate.py`): n
 `migrations/NNNN_<slug>.sql`, never edit a sealed file; a fresh DB loads the
 `migrations/baseline/schema.sql` snapshot then applies the tail.
 `store/migrate.py::check_schema_at_startup` gates every long-running
-entrypoint (serve/web/worker/ingest-watch/alertmanager) — refuse on pending
-migrations, warn-and-continue when the DB is *ahead*, self-heal under
-`PRECIS_AUTO_MIGRATE` (advisory lock `AUTO_MIGRATE_LOCK_KEY`),
-`PRECIS_SKIP_SCHEMA_CHECK` is the emergency bypass.
+entrypoint (serve/web/worker/ingest-watch/alertmanager) —
+`PRECIS_SCHEMA_GATE` picks the mode: `refuse` on pending migrations
+(default), `warn` for read-mostly clients of a DB another host migrates
+(the session MCP sets it), `off`; warn-and-continue when the DB is
+*ahead*, self-heal under `PRECIS_AUTO_MIGRATE` (advisory lock
+`AUTO_MIGRATE_LOCK_KEY`), `PRECIS_SKIP_SCHEMA_CHECK` is the emergency
+bypass.
 
 ## The lifecycle, end to end
 

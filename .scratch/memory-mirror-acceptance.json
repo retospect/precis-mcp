@@ -9,7 +9,7 @@
   },
   "test_sha256": "d72e4b6d94e03519931677b85d68e7c1d93f0d058517c97f246a84aff4112d20",
   "source_provenance": "generated shape fixture; actual orchestrator source path not established; no real content read",
-  "database": "precis_test_4545a6545a0a",
+  "database": "precis_test_4938165f5659",
   "address_warning": "ALL ids below are ephemeral TEST-DB addresses, NOT production handles",
   "topic_files": 120,
   "index_bytes": 15360,

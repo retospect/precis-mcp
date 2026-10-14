@@ -178,6 +178,9 @@ old schema. Two alternatives to running `precis migrate` by hand: set
 web` / `precis worker`) so each daemon migrates itself under a Postgres
 advisory lock, or set `PRECIS_SKIP_SCHEMA_CHECK=1` to bypass the check
 entirely (emergency escape hatch — loud warning, use for diagnosis only).
+`PRECIS_SCHEMA_GATE=warn` is the middle lane — log a loud warning and
+boot anyway; for read-mostly clients of a DB another host migrates (e.g.
+a session MCP server) that must stay up through a deploy window.
 The docker image defaults `PRECIS_AUTO_MIGRATE=1` for `precis …`
 commands, so a container restart self-migrates.
 

@@ -53,7 +53,11 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    lesson). The startup schema gate is still armed — a daemon that finds
    pending migrations refuses to boot until the migrate step lands, and
    a host running an *older* build against a migrated DB warns and keeps
-   running, which is what makes mid-deploy mixed versions safe.
+   running, which is what makes mid-deploy mixed versions safe. A
+   read-mostly client of the same DB that must not lose service in that
+   window (the session MCP, `deploy/mcp-http/`) sets
+   `PRECIS_SCHEMA_GATE=warn` instead — it boots onto the behind-schema DB
+   with a loud warning rather than refusing, and never migrates.
 
    Two refs on origin publish where a commit has got to; nobody commits to
    either, the scripts move them (`scripts/lib/env-pointers.sh`):

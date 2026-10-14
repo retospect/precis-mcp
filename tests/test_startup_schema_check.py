@@ -171,6 +171,65 @@ def test_skip_check_env_bypasses(
     assert any("PRECIS_SKIP_SCHEMA_CHECK" in r.message for r in caplog.records)
 
 
+def test_gate_warn_logs_and_continues(
+    fresh_db: str, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``PRECIS_SCHEMA_GATE=warn`` serves a behind-schema DB loudly —
+    the session-MCP mode: it must stay up through the window between a
+    deploy publishing new code and the owning host's ``precis migrate``."""
+    _apply_all(fresh_db)
+    _unapply_head(fresh_db)
+    monkeypatch.setenv("PRECIS_SCHEMA_GATE", "warn")
+    with caplog.at_level("WARNING"):
+        check_schema_at_startup(fresh_db)  # no raise despite pending
+    assert any(
+        "1 migration(s) behind" in r.message and "PRECIS_SCHEMA_GATE=warn" in r.message
+        for r in caplog.records
+    )
+    # warn never migrates — the ledger row stays deleted.
+    assert len(packaged_migrator(fresh_db).schema_status().pending) == 1
+
+
+def test_gate_warn_auto_migrate_still_wins(fresh_db: str, monkeypatch) -> None:
+    """``PRECIS_AUTO_MIGRATE=1`` applies under warn mode too — the gate
+    chooses how to *react* to pending, auto-migrate is the stronger ask."""
+    _apply_all(fresh_db)
+    _unapply_head(fresh_db)
+    monkeypatch.setenv("PRECIS_SCHEMA_GATE", "warn")
+    monkeypatch.setenv("PRECIS_AUTO_MIGRATE", "1")
+    check_schema_at_startup(fresh_db)
+    assert packaged_migrator(fresh_db).schema_status().pending == []
+
+
+def test_gate_off_skips_check(
+    fresh_db: str, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``PRECIS_SCHEMA_GATE=off`` is ``PRECIS_SKIP_SCHEMA_CHECK`` spelled
+    as a mode — it returns before the ledger is even read."""
+    _apply_all(fresh_db)
+    _unapply_head(fresh_db)
+    monkeypatch.setenv("PRECIS_SCHEMA_GATE", "off")
+    with caplog.at_level("WARNING"):
+        check_schema_at_startup(fresh_db)  # no raise despite pending
+    assert any("PRECIS_SCHEMA_GATE=off" in r.message for r in caplog.records)
+
+
+def test_gate_invalid_value_is_a_boot_error(
+    fresh_db: str, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A typo'd ``PRECIS_SCHEMA_GATE`` must fail closed with a clear
+    error — never silently degrade to refuse or warn."""
+    _apply_all(fresh_db)
+    _unapply_head(fresh_db)
+    monkeypatch.setenv("PRECIS_SCHEMA_GATE", "warn-ish")
+    with pytest.raises(SystemExit) as exc:
+        check_schema_at_startup(fresh_db)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "PRECIS_SCHEMA_GATE='warn-ish' is invalid" in err
+    assert "refuse" in err and "warn" in err and "off" in err
+
+
 def test_migrate_subcommand_not_blocked(fresh_db: str) -> None:
     """``precis migrate`` never hits the gate — it IS the fix."""
     _apply_all(fresh_db)

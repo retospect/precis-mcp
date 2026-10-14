@@ -446,6 +446,14 @@ ENVS=(
     -e PRECIS_MCP_TOOL_CONCURRENCY="${TOOL_CONCURRENCY}"
     -e PRECIS_DB_POOL_MIN_SIZE="${POOL_MIN}"
     -e PRECIS_DB_POOL_MAX_SIZE="${POOL_MAX}"
+    # This serve launches via `bash -c`, so the docker entrypoint's
+    # PRECIS_AUTO_MIGRATE=1 default never reaches it — correct: the laptop
+    # must never migrate prod. But a deploy publishes origin/prod before the
+    # cluster rollout runs `precis migrate`, so a backend restart in that
+    # window (or after a failed rollout) would refuse to boot and leave every
+    # session without the MCP. warn keeps it serving read-mostly anyway;
+    # precis-status reports the pending count as schema_state.
+    -e PRECIS_SCHEMA_GATE=warn
     # Bounce the server when the source checkout's HEAD moves (ship/sync/qland).
     # Keyed on the resolved sha, NOT mtimes — a git checkout touches every
     # mtime, which is exactly why the install-watchdog arm refuses source trees.

@@ -47,9 +47,15 @@ boots. Alternatives to the manual `precis migrate` step:
   startup, serialized under a Postgres advisory lock. Also available as
   `--migrate` on `serve` / `web` / `worker`. (The docker image defaults
   this on for `precis …` commands.)
+- `PRECIS_SCHEMA_GATE=warn` — log one loud warning and boot anyway. For
+  a read-mostly client of a DB another host migrates (e.g. a session MCP
+  server): it stays up through the window between a deploy publishing new
+  code and `precis migrate` landing, and `precis-status` reports the
+  pending count as `schema_state`.
 - `PRECIS_SKIP_SCHEMA_CHECK=1` — bypass the check entirely with a loud
   warning; emergency escape hatch for read-only diagnosis, not for
-  running services.
+  running services. (`PRECIS_SCHEMA_GATE=off` is the same skip spelled
+  as a mode.)
 
 ## 3. Pick an embedder
 

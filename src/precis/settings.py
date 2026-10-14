@@ -170,6 +170,19 @@ REGISTRY: dict[str, SettingSpec] = {
             "explicitly before daemons start).",
         ),
         SettingSpec(
+            key="schema.gate",
+            type="str",
+            env_var="PRECIS_SCHEMA_GATE",
+            default="refuse",
+            doc="Startup schema gate mode: 'refuse' exits non-zero on pending "
+            "migrations (default), 'warn' logs one loud line and boots anyway "
+            "(read-mostly clients of a DB another host migrates — e.g. the "
+            "session MCP), 'off' skips the check like "
+            "PRECIS_SKIP_SCHEMA_CHECK. Read before the settings store is "
+            "bound, so the DB tier never applies — effectively env/default. "
+            "PRECIS_AUTO_MIGRATE still wins over 'warn'.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

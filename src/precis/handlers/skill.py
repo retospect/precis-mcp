@@ -2978,7 +2978,10 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
     On reachable DBs returns rows: ``dsn_host`` / ``dsn_port`` (parsed
     from ``store.dsn`` — password component is never read), then
     ``current_database()``, ``current_user``, ``version()``, and the
-    last applied migration version + count from ``public._migrations``.
+    last applied migration version + count from ``public._migrations``,
+    plus a ``schema_state`` row when the ledger and the packaged
+    migrations disagree (``N pending`` under ``PRECIS_SCHEMA_GATE=warn``
+    means this process booted onto a DB a migration behind).
 
     Wraps the DB roundtrip in a broad ``except`` — this is the *first*
     surface called when something is wrong, so it must not die when the
@@ -3027,6 +3030,34 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
     rows.append(("server_version", str(server_version).split(",", 1)[0]))
     rows.append(("migration", str(migration) if migration is not None else "(none)"))
     rows.append(("migration_count", str(mig_count)))
+    if store.dsn:
+        try:
+            from precis.store.migrate import packaged_migrator
+
+            status = packaged_migrator(store.dsn).schema_status()
+        except Exception:
+            status = None
+        if status is not None:
+            if status.pending:
+                plugin, version = status.pending[0]
+                rows.append(
+                    (
+                        "schema_state",
+                        f"⚠ {len(status.pending)} migration(s) pending "
+                        f"(first: {plugin}/{version}) — run `precis migrate`",
+                    )
+                )
+            elif status.ahead:
+                plugin, version = status.ahead[0]
+                rows.append(
+                    (
+                        "schema_state",
+                        f"{len(status.ahead)} migration(s) ahead of this "
+                        f"package (first: {plugin}/{version}) — rolling deploy",
+                    )
+                )
+            else:
+                rows.append(("schema_state", "current"))
     return rows
 
 

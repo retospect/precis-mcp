@@ -38,7 +38,8 @@ also counts as a failure for the re-arm backoff. No row at all means the
 `md` kind is registered without an embedder, not that the cache is
 cold),
 **Database** (connected DSN host/port/name/user, postgres server
-version, last applied migration + count), and the existing
+version, last applied migration + count, and `schema_state` —
+ledger-vs-package drift), and the existing
 **Optional dependencies** import probe.
 
 ## Where the git facts come from: the five `served_from` lanes
@@ -215,6 +216,16 @@ e.g. `0005_gripe_first_class_and_jobs`) and `migration_count` (the
 total number of applied migrations). Use these to confirm the
 schema state matches what your branch expects before you start
 debugging "why doesn't this column exist?".
+
+`schema_state` compares the ledger to the migrations *this build
+packages*: `current`, `⚠ N migration(s) pending (first:
+<plugin>/<version>) — run \`precis migrate\``, or `N migration(s)
+ahead of this package` (a rolling-deploy peer migrated ahead). A
+pending `schema_state` on a server whose schema gate is in warn
+mode (e.g. the session MCP) means it booted
+onto a DB a migration behind — expect missing columns/tables for
+whatever the pending migration adds until the owning host's
+`precis migrate` lands.
 
 ## What container am I running in?
 ## What's the container hostname?
