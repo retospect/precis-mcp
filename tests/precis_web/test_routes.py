@@ -4878,6 +4878,73 @@ def test_status_budget_tab_renders_tote_and_caps(client) -> None:
     assert 'action="/budget/resume"' in resp.text
 
 
+class _FrozenUTC:
+    """``datetime.now`` pinned to 2026-10-14 09:21 UTC so a rendered
+    'N left' span is deterministic. Duck-typed, not a datetime subclass —
+    ``until`` only calls ``datetime.now(UTC)`` on the module global."""
+
+    @staticmethod
+    def now(tz=None):
+        from datetime import UTC, datetime
+
+        return datetime(2026, 10, 14, 9, 21, tzinfo=UTC)
+
+
+def test_status_budget_resume_banner_shows_date_and_span(client, monkeypatch) -> None:
+    """The resume-override banner names the day and the span left, not a
+    bare 'HH:MM UTC' clock (overrides can run up to 168h)."""
+    from datetime import UTC, datetime
+
+    import precis_web.timefmt as timefmt
+    from precis.budget import settings as budget_settings
+
+    monkeypatch.setattr(timefmt, "datetime", _FrozenUTC)
+    monkeypatch.setattr(budget_settings, "resume_active", lambda store: True)
+    monkeypatch.setattr(
+        budget_settings,
+        "get_resume_until",
+        lambda store: datetime(2026, 10, 21, 7, 21, tzinfo=UTC),
+    )
+    resp = client.get("/status?tab=budget")
+    assert resp.status_code == 200
+    assert "Wed 2026-10-21 07:21 UTC (6d 22h left)" in resp.text
+
+
+def test_status_budget_quota_window_reset_shows_date_and_span(
+    client, monkeypatch
+) -> None:
+    """A quota window ``resets_at`` days out (the weekly bucket) renders the
+    same day+span form, not the old ``resets_at[11:16]`` clock."""
+    import precis_web.timefmt as timefmt
+    from precis_web.routes import status as status_routes
+
+    monkeypatch.setattr(timefmt, "datetime", _FrozenUTC)
+    monkeypatch.setattr(
+        status_routes,
+        "_quota_view",
+        lambda store: {
+            "outcomes": [],
+            "ts": None,
+            "windows": [
+                {
+                    "name": "seven_day",
+                    "status": "allowed",
+                    "used": 12.0,
+                    "resets_at": "2026-10-18T07:30:00Z",
+                }
+            ],
+            "paused": False,
+            "pause_reason": None,
+            "taper_level": 0,
+            "taper_reason": None,
+            "taper_no_signal": False,
+        },
+    )
+    resp = client.get("/status?tab=budget")
+    assert resp.status_code == 200
+    assert "resets Sun 2026-10-18 07:30 UTC (3d 22h left)" in resp.text
+
+
 # ── todo tag filter ───────────────────────────────────────────────
 
 

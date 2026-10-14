@@ -15,6 +15,7 @@ from precis_web.timefmt import (
     duration,
     relative,
     span_seconds,
+    until,
     utc_date,
 )
 
@@ -119,6 +120,38 @@ def test_span_seconds_backwards_span_clamps_to_zero() -> None:
     start = datetime.now(UTC)
     end = start - timedelta(seconds=30)
     assert span_seconds(start, end) == 0.0
+
+
+def test_until_renders_date_time_and_remaining_span() -> None:
+    """A future instant days out gets weekday + date + the span left."""
+    now = datetime(2026, 10, 14, 9, 21, tzinfo=UTC)
+    end = datetime(2026, 10, 21, 7, 21, tzinfo=UTC)
+    assert until(end, now=now) == "Wed 2026-10-21 07:21 UTC (6d 22h left)"
+
+
+def test_until_subday_span_still_shows_the_date() -> None:
+    now = datetime(2026, 10, 14, 9, 21, tzinfo=UTC)
+    end = datetime(2026, 10, 14, 12, 51, tzinfo=UTC)
+    assert until(end, now=now) == "Wed 2026-10-14 12:51 UTC (3h 30m left)"
+
+
+def test_until_accepts_iso_string() -> None:
+    now = datetime(2026, 10, 14, 9, 21, tzinfo=UTC)
+    assert until("2026-10-18T07:30:00Z", now=now) == (
+        "Sun 2026-10-18 07:30 UTC (3d 22h left)"
+    )
+
+
+def test_until_past_instant_drops_the_span() -> None:
+    now = datetime(2026, 10, 14, 9, 21, tzinfo=UTC)
+    past = datetime(2026, 10, 13, 7, 21, tzinfo=UTC)
+    assert until(past, now=now) == "Tue 2026-10-13 07:21 UTC"
+
+
+def test_until_empty_and_unparseable_return_blank() -> None:
+    assert until(None) == ""
+    assert until("") == ""
+    assert until("not-a-date") == ""
 
 
 def test_utc_date_renders_the_utc_day() -> None:

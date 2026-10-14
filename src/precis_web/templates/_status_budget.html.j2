@@ -13,7 +13,7 @@
 {% if resume_active %}
 <div class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 flex items-center justify-between gap-3">
   <span>Resume override <strong>active</strong> until
-    {{ resume_until.strftime('%H:%M UTC') if resume_until else '—' }} — soft trips
+    {{ resume_until | until if resume_until else '—' }} — soft trips
     are bypassed (a hard Anthropic rejection still fails).</span>
   <form method="post" action="/budget/resume/clear">
     <button class="text-xs text-amber-700 underline hover:text-rose-600">cancel</button>
@@ -92,7 +92,7 @@
           {% if w.status in ('allowed','allowed_warning','ok') %}bg-emerald-50 text-emerald-700
           {% elif w.status in ('rejected','blocked','exhausted') %}bg-rose-50 text-rose-700
           {% else %}bg-slate-100 text-slate-500{% endif %}">{{ w.status }}</span>
-        {% if w.resets_at %}<span class="text-[11px] text-slate-400">resets {{ w.resets_at[11:16] }}Z</span>{% endif %}
+        {% if w.resets_at %}<span class="text-[11px] text-slate-400">resets {{ w.resets_at | until }}</span>{% endif %}
       </span>
     </li>
     {% endfor %}

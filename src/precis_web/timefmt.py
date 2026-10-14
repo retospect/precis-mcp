@@ -19,6 +19,7 @@ Two vocabularies, deliberately kept apart:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -87,6 +88,30 @@ def abs_ts(value: Any) -> str:
     if dt is None:
         return ""
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def until(value: Any, *, now: datetime | None = None) -> str:
+    """Absolute date+time UTC plus remaining span, for a future instant.
+
+    The sibling of :func:`abs_ts` for instants that can land more than a
+    day out — the resume override can run 168h, a weekly quota
+    ``resets_at`` rolls days ahead — where a bare clock ("07:21 UTC")
+    doesn't say which day. Renders
+    ``"Wed 2026-10-21 07:21 UTC (6d 22h left)"``: the weekday and the
+    two-unit span (``duration``'s units, spaced) both pin the day down.
+    An instant already past keeps just the stamp; unparseable gives ``""``.
+    """
+    dt = _as_datetime(value)
+    if dt is None:
+        return ""
+    dt = dt.astimezone(UTC)
+    stamp = dt.strftime("%a %Y-%m-%d %H:%M UTC")
+    at = now.astimezone(UTC) if now is not None else datetime.now(UTC)
+    secs = (dt - at).total_seconds()
+    if secs <= 0:
+        return stamp
+    left = re.sub(r"(?<=[smhd])(?=\d)", " ", duration(secs))
+    return f"{stamp} ({left} left)"
 
 
 def utc_date(value: Any) -> str:

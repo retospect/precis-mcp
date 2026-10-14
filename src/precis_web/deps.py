@@ -68,7 +68,14 @@ def _make_jinja_env() -> jinja2.Environment:
         render_cloze,
         render_markdown,
     )
-    from precis_web.timefmt import abs_ts, ago, duration, relative, utc_date
+    from precis_web.timefmt import (
+        abs_ts,
+        ago,
+        duration,
+        relative,
+        until,
+        utc_date,
+    )
 
     env.filters["linkify_refs"] = linkify_refs
     # Anki cloze bodies ({{c1::answer::hint}}) render as highlighted
@@ -96,6 +103,9 @@ def _make_jinja_env() -> jinja2.Environment:
     # Elapsed span to two units ('4m18s') — a run time compared against a
     # timeout, not a "how long ago".
     env.filters["duration"] = duration
+    # Absolute day+time plus remaining span — a future instant that can be
+    # days out, where a bare 'HH:MM UTC' clock doesn't say which day.
+    env.filters["until"] = until
 
     # ``planner_models()`` → the ordered list of picker rows
     # (``{alias, tier, model, placement, fallbacks, size, context}``) the
