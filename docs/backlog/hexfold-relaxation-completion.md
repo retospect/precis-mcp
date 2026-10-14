@@ -49,7 +49,7 @@ Acceptance, all of:
 - bond-list identity is not evidence: compare geometric coordination and
   contacts, H caps included.
 
-Route under consideration (unruled): GFN-FF (`xtb --gfnff`) whole-block
+Route under consideration (unruled; detail in [hexfold-relax-pipeline](hexfold-relax-pipeline.md)): GFN-FF (`xtb --gfnff`) whole-block
 pre-relax in minutes, then GFN2 on H-capped joint/seam fragments of 500–900
 atoms (1–4 h each on the Mac), plus one overnight full-block GFN2 on the Mac
 as verification. Full-block GFN2 is ~10–20 h on the Mac, 1–4 days on a DGX

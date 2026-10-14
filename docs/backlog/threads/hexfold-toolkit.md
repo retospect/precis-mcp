@@ -791,7 +791,12 @@ removed as met — the transport move it waited on happened 09-29)
     landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs
     on N equal-120 seams, each an inward rib, authored pore cells, the
     lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
-16. **td344088** — the se + hexfold paper. The thread's end state; it
+16. **backlog/hexfold-relax-pipeline.md** — grammar checks, periodic-cell
+    relax, fragment GFN2 and a module cache so blocks above ~1k atoms
+    relax (junction decay < 12 Å, 2026-10-14). Slice order S1–S5 there;
+    sits behind the tunnel slice it makes relaxable (S5 waits on the Mac
+    probe).
+17. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 
 ## Owned quests, kept dormant
