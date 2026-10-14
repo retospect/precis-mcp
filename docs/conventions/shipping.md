@@ -87,6 +87,27 @@ pointers, secret scan) — no full pytest, no gate slot, ~3 min;
 flight — qland them one by one, then one `/go` releases the integrated
 `main` (ship lands nothing when the tree already equals main).
 
+## --checked — the qland burst lane with a selected pytest
+
+`scripts/ship --checked` is `--quick`'s merge machinery plus one more gate
+leg: after the pre-qland lint it runs the selection from
+`scripts/select-tests` — the CONTRACT set of fast repo-invariant tests
+(audited mode/kwarg tables, closed registries, ratchets, vocab and secret
+scans) unconditionally, plus corpus-coupled tests for non-Python inputs
+(skills `.md`, `.hx` examples, reviewed-blob pins, fixtures, deploy/docs
+corpus) and, for Python changes, testmon when the worktree has a
+`.testmondata` map or a static direct-importer scan when it doesn't. The
+pytest leg takes a real fleet gate slot; the lint leg still doesn't. It
+lands like a qland: no `.ship-sha`, no diff-coverage, forward-merge trailer
+`Gate: lint + selected pytest` when it races main.
+
+It exists because every r35 red was a lint-only land whose failure a cheap
+invariant/snapshot/table test would have caught (gr485791). For the burst
+lane it is the recommended default over bare `--quick`; the suite debt is
+still settled by the next full gate. Run the same selection without landing
+via `scripts/test --selected`. Refused with `--remote`, `--impacted`,
+`--full`, `--mutate`, `--release` (also via `PRECIS_SHIP_CHECKED=1`).
+
 ## /qgo — ungated deploy
 
 qland + deploy that sha **ungated**, then a repair gate only if a slot is

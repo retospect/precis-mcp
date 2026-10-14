@@ -68,6 +68,9 @@ scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
 scripts/test --fast                  # fast set (-m 'not db and not slow'), no Postgres
 scripts/test -m 'not slow'           # full-minus-glacial (skips the heavy cluster)
 scripts/test --impacted              # ONLY tests your change affects (testmon)
+scripts/test --selected              # the `ship --checked` selection: contract
+                                     # invariants + corpus/import map (testmon
+                                     # if a .testmondata map exists)
 scripts/test --durations=25 …        # profile: pytest prints the 25 slowest
 scripts/test --shard 2/6             # bucket 2 of a 6-way split (what CI runs per job)
 ```

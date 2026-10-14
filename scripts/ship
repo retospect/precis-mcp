@@ -33,7 +33,9 @@
 #                             pointer gate instead). Red gate aborts (never red).
 #                             --impacted (/land) narrows pytest to testmon's
 #                             affected-tests set; full suite otherwise (/go);
-#                             --quick (/qland) skips pytest (ruff+mypy still run).
+#                             --quick (/qland) skips pytest (ruff+mypy still run);
+#                             --checked runs lint + a cheap selected pytest
+#                             (scripts/select-tests) — the middle rung.
 #                    · ship   (under the lock) squash `commit-tree` onto
 #                             origin/main + a `--force-with-lease` CAS push,
 #                             then the local-main ff, then the lock is released.
@@ -82,6 +84,15 @@
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
 #                                        # many worktrees; the suite is deferred to
 #                                        # the next full gate (/go or bare ship).
+#         scripts/ship --checked "…"    # /qland+: everything --quick does (lint)
+#                                        # PLUS a cheap selected pytest —
+#                                        # contract invariants + corpus/import
+#                                        # selection (scripts/select-tests;
+#                                        # testmon when a .testmondata map
+#                                        # exists, static import scan else).
+#                                        # Same merge machinery as --quick; no
+#                                        # .ship-sha. Would have caught all five
+#                                        # r35 lint-only reds (gr485791).
 #         scripts/ship --release "…"    # a ROUND FIX, on the coordinator's request, from a
 #                                        # fresh tree cut from the RELEASE head: apply the
 #                                        # tree's change (merge-base with origin/main ..
@@ -164,6 +175,16 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
+# --checked (or PRECIS_SHIP_CHECKED=1): the middle rung between --quick and a
+# full gate — --quick's lint PLUS a cheap selected pytest (contract
+# invariants + corpus/import selection from scripts/select-tests; testmon
+# when this worktree has a .testmondata map, the static importer scan when
+# it doesn't — never the full suite). Implies --quick merge machinery:
+# no .ship-sha pin, no diff-coverage, forward-merge on a moved main.
+# CHECKED_GATE_RAN records that the selection actually passed, for the
+# banner/trailer wording.
+CHECKED="${PRECIS_SHIP_CHECKED:-0}"
+CHECKED_GATE_RAN=0
 # Set only once a --quick ship's pre-qland lint has actually passed, so the
 # closing banner reports what ran rather than inferring it from flags that may
 # never have been evaluated on this path.
@@ -215,6 +236,7 @@ while :; do
         --impacted) IMPACTED=1; shift ;;
         --mutate)   MUTATE=1; shift ;;
         --quick)    QUICK=1; shift ;;
+        --checked)  CHECKED=1; QUICK=1; shift ;;
         --remote)   REMOTE=1; shift ;;
         --full)     FULL=1; shift ;;
         --slow)     SLOW=1; shift ;;
@@ -223,7 +245,7 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote --full --slow --release --allow-migration -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --checked --remote --full --slow --release --allow-migration -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -231,7 +253,16 @@ done
 [[ "$RELEASE" == 1 && "$REMOTE" == 1 ]] && { printf '\033[31m✖ --release and --remote are contradictory (the release push'"'"'s own CI run is the gate) — drop --remote.\033[0m\n' >&2; exit 2; }
 [[ "$ALLOW_MIGRATION" == 1 && "$RELEASE" != 1 ]] && { printf '\033[31m✖ --allow-migration only means something with --release.\033[0m\n' >&2; exit 2; }
 
+# --checked implies --quick, so its --remote refusal must come first or it
+# would die on the generic "--remote vs --quick" message.
+[[ "$REMOTE" == 1 && "$CHECKED" == 1 ]] && { printf '\033[31m✖ --remote and --checked are contradictory (GitHub CI gate vs local selection) — pick one.\033[0m\n' >&2; exit 2; }
 [[ "$REMOTE" == 1 && "$QUICK" == 1 ]] && { printf '\033[31m✖ --remote and --quick are contradictory (remote gate vs no gate) — pick one.\033[0m\n' >&2; exit 2; }
+if [[ "$CHECKED" == 1 && "$IMPACTED" == 1 ]]; then
+    printf '\033[31m✖ --checked and --impacted are contradictory (two different local selections) — pick one.\033[0m\n' >&2; exit 2
+fi
+if [[ "$CHECKED" == 1 && ( "$FULL" == 1 || "$MUTATE" == 1 || "$RELEASE" == 1 ) ]]; then
+    printf '\033[31m✖ --checked is a --quick-family mode and does not combine with --full/--mutate/--release.\033[0m\n' >&2; exit 2
+fi
 if [[ "$REMOTE" == 1 ]] && ! command -v gh >/dev/null 2>&1; then
     printf '\033[31m✖ --remote needs the gh CLI (authenticated) to poll the check run.\033[0m\n' >&2; exit 2
 fi
@@ -516,7 +547,8 @@ compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE"
 TEST_DB_ENV=()
 # The test DB exists for pytest. --quick runs ruff+mypy only (the pre-qland
 # lint below), so starting a RAM-backed pgvector for it is pure waste.
-if [[ "$QUICK" != 1 ]]; then
+# --checked runs a selected pytest — it needs the DB.
+if [[ "$QUICK" != 1 || "$CHECKED" == 1 ]]; then
     say "starting co-located tmpfs test DB (precis-test-db)"
     if compose up -d --wait precis-test-db >/dev/null 2>&1; then
         TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
@@ -545,7 +577,9 @@ else
 fi
 }  # end setup_gate_infra
 
-if [[ "$QUICK" == 1 ]]; then
+if [[ "$CHECKED" == 1 ]]; then
+    say "checked ship (--checked) — pre-qland lint + a selected pytest (contract/corpus/import); merge machinery same as --quick"
+elif [[ "$QUICK" == 1 ]]; then
     say "quick ship (--quick) — no pytest, no gate slot; ruff+mypy still run (pre-qland lint, below)"
 elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
     # Pure remote gate: no local containers on the quiet path — GitHub's
@@ -648,13 +682,24 @@ coverage_from_container() {
 # worktree mounted at /app (the map is on the mount already). NB `env UID=…` — a
 # bare `UID=…` fails (UID readonly).
 run_gate() {
+    # Optional leading flags: --slot forces a gate slot even on a --quick-family
+    # ship (--checked runs real pytest — the RAM pressure the semaphore guards);
+    # --testmon carries the .testmondata map in/out of the warm container.
+    local want_slot=0 want_testmon=0
+    while [[ "${1:-}" == --* ]]; do
+        case "$1" in
+            --slot)    want_slot=1 ;;
+            --testmon) want_testmon=1 ;;
+        esac
+        shift
+    done
     # Hold a fleet-wide gate slot for exactly the heavyweight part (gr202193);
     # released on every path below so a red gate's `die` doesn't keep it.
     # NOT taken for --quick: that path runs ruff+mypy without pytest, which is
     # neither the RAM pressure the 2-slot semaphore guards nor worth queueing
     # behind someone's 2h suite — queueing is the exact congestion /qland
     # exists to avoid. gate_slot_release is a no-op when no slot is held.
-    [[ "$QUICK" == 1 ]] || gate_slot_acquire
+    [[ "$QUICK" == 1 && "$want_slot" != 1 ]] || gate_slot_acquire
     local rc=0
     if [[ -n "${PRECIS_SHIP_TEST_GATE_CMD:-}" ]]; then
         # TEST-ONLY seam (tests/test_ship_narrow_lock.py): run this host command instead of the container gate.
@@ -665,7 +710,7 @@ run_gate() {
             echo "✖ could not sync source into precis-gate" >&2
             return 90
         fi
-        [[ "$IMPACTED" == 1 ]] && testmon_into_container
+        [[ "$IMPACTED" == 1 || "$want_testmon" == 1 ]] && testmon_into_container
         compose exec -T precis-gate bash -lc "$1" || rc=$?
         # A failed sync-back is fatal on a green gate: ruff's autofixes stayed
         # in the container, so the tree about to be amended is not the tree
@@ -678,7 +723,7 @@ run_gate() {
             fi
             echo "⚠ could not sync src/tests back out of precis-gate (gate already red)" >&2
         fi
-        [[ "$IMPACTED" == 1 ]] && testmon_from_container
+        [[ "$IMPACTED" == 1 || "$want_testmon" == 1 ]] && testmon_from_container
     else
         compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
             -v "${WORKTREE}":/app precis-dev bash -lc "$1" || rc=$?
@@ -984,7 +1029,9 @@ _forward_merge_in_lock() {
     [[ -n "$mig_ours" ]] && { scripts/migration-check --quiet || true; }
     if [[ "$kind" == quick ]]; then
         if [[ "$QLAND_LINT_RAN" == 1 ]]; then
-            GATE_TRAILER="Gate: lint only; forward-merged over ${FWD_N} commits; linted base ${FWD_BASE}"
+            local _gate_what="lint only"
+            [[ "$CHECKED_GATE_RAN" == 1 ]] && _gate_what="lint + selected pytest"
+            GATE_TRAILER="Gate: ${_gate_what}; forward-merged over ${FWD_N} commits; linted base ${FWD_BASE}"
         else
             GATE_TRAILER="Gate: none; forward-merged over ${FWD_N} commits; base ${FWD_BASE}"
         fi
@@ -1623,7 +1670,35 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             _release_scan_paths
             [[ "$RELEASE_NEW_MIGS" == "$_prev_migs" ]] || _squawk_new_migrations "$RELEASE_NEW_MIGS"
         fi
-        say "quick ship — pytest deferred to the next full gate (/go or bare scripts/ship)"
+        if [[ "$CHECKED" == 1 ]]; then
+            # The middle rung (gr485791): --quick's merge machinery, but the
+            # diff also gets the selected pytest from scripts/select-tests —
+            # contract invariants always, corpus/path-map targets for data
+            # and pin couplings, and for Python changes either testmon (when
+            # this worktree has a .testmondata map) or the static
+            # direct-importer scan — never the full suite. Selection runs
+            # host-side (stdlib only); the pytest leg takes a real gate slot
+            # because it IS the RAM pressure the semaphore guards.
+            setup_gate_infra
+            SEL_OUT="$(printf '%s\n' "$CHANGED" | scripts/select-tests --stdin)" \
+                || die "scripts/select-tests failed — cannot compute the checked selection. Fix it (or land lint-only with --quick deliberately) and re-run scripts/ship --checked."
+            SEL_TESTMON="${SEL_OUT%%$'\n'*}"
+            SEL_LIST="$(tail -n +2 <<<"$SEL_OUT" | tr '\n' ' ')"
+            SEL_N="$(wc -w <<<"$SEL_LIST" | tr -d ' ')"
+            if [[ "$SEL_TESTMON" == "testmon=1" ]]; then
+                say "checked gate — testmon-selected pytest + ${SEL_N} contract/map/corpus targets — ${GATE_MODE} gate, gate slot"
+                run_gate --slot --testmon "TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 -m 'not slow' && uv run pytest -q -n ${PRECIS_GATE_N:-6} -m 'not slow' ${SEL_LIST}" \
+                    || die "checked selection is RED — not shipping. Fix the failure above and re-run scripts/ship --checked."
+            else
+                say "checked gate — ${SEL_N} selected pytest targets (contract + corpus/map + import scan; no testmon map) — ${GATE_MODE} gate, gate slot"
+                run_gate --slot "uv run pytest -q -n ${PRECIS_GATE_N:-6} -m 'not slow' ${SEL_LIST}" \
+                    || die "checked selection is RED — not shipping. Fix the failure above and re-run scripts/ship --checked."
+            fi
+            CHECKED_GATE_RAN=1
+            say "checked ship — selected contract/corpus/impact tests passed; the rest of the suite is deferred to the next full gate (/go)"
+        else
+            say "quick ship — pytest deferred to the next full gate (/go or bare scripts/ship)"
+        fi
     elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 && "$REMOTE_FALLBACK" != 1 ]]; then
         say "remote ship — no local gate; the GitHub matrix below is the gate"
     else
@@ -1978,7 +2053,9 @@ else
         # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived
         # the pre-qland lint by one commit, and a banner that overstates the debt is
         # read as licence to ignore it.
-        if [[ "$QLAND_LINT_RAN" != 1 ]]; then
+        if [[ "$CHECKED_GATE_RAN" == 1 ]]; then
+            printf '\n\033[33m⚡ PARTIALLY TESTED ship — lint + the selected contract/corpus/impact tests passed;\n  the full suite did NOT run. main settles at its CI verdict or the next full gate (/go).\033[0m\n'
+        elif [[ "$QLAND_LINT_RAN" != 1 ]]; then
             printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
         else
             printf '\n\033[33m⚡ UNTESTED ship — ruff/mypy/import contracts and the DB-free hygiene tests passed; the\n  suite did NOT run. main is untested until its CI verdict or the next full gate.\033[0m\n'

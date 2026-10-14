@@ -24,6 +24,17 @@ reason its author did not write.
 `/qland`, `main` may be red *at the test level* — no pytest ran. That is
 accepted and temporary; the debt is settled by the next full gate.
 
+**Prefer `scripts/ship --checked` when the tree carries more than docs.**
+The checked mode is the recommended burst lane (gr485791): same machinery
+as `--quick`, but after the lint it also runs a selected pytest — the
+contract invariants (audited tables, closed registries, ratchets,
+vocab/secret scans) plus corpus-coupled tests for data files and the
+import-scan/testmon set for Python changes — a couple of minutes instead
+of nothing. Every r35 red was a `--quick` land this would have caught.
+`/qland` itself keeps running `--quick`; invoke `scripts/ship --checked`
+directly, and check the same selection beforehand with
+`scripts/test --selected`.
+
 Live state at invocation:
 
 - Branch + status:

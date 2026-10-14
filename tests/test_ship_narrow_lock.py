@@ -142,6 +142,11 @@ class Rig:
             if lib.is_file() and lib.suffix in (".sh", ".py"):
                 shutil.copy2(lib, scripts / "lib" / lib.name)
         shutil.copy2(REPO / "scripts" / "migration-check", scripts / "migration-check")
+        # --checked computes its selection via scripts/select-tests (stdlib,
+        # host-side — works on this minimal tree).
+        sel = REPO / "scripts" / "select-tests"
+        if sel.exists():
+            shutil.copy2(sel, scripts / "select-tests")
         # Drift guard: "age unknown" never refuses (no gh in the rig).
         stub = scripts / "last-gated-main-sha"
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -285,6 +290,54 @@ def test_quick_lost_race_forward_merges_and_lands(rig: Rig) -> None:
     ), msg
     assert rig.g(rig.origin, "rev-parse", "refs/heads/main^") == racer_sha
     assert not rig.lockdir().exists()
+
+
+def test_checked_ship_runs_lint_and_selection(rig: Rig) -> None:
+    """--checked = pre-qland lint + the select-tests selection in one extra
+    gate leg (the fake gate counts two runs), then the --quick merge
+    machinery and the PARTIALLY TESTED banner."""
+    wt = rig.worktree("chk", {"chk.txt": "c\n"})
+    p, log = rig.ship(wt, "--checked", sleep=1)
+    out = _finish(p, log)
+    runs = (rig.lintdir / "chk.runs").read_text(encoding="utf-8").count("run")
+    assert runs == 2, out  # lint leg + selected-pytest leg
+    assert "checked gate" in out and "PARTIALLY TESTED" in out
+    assert "chk.txt" in _tree_files(rig)
+
+
+def test_checked_lost_race_trailer_names_the_selection(rig: Rig) -> None:
+    """A forward-merged --checked land must not read as 'lint only' in the
+    squash trailer — git log is how a reader tells what actually gated."""
+    wt = rig.worktree("qc", {"qc.txt": "q\n"})
+    p, log = rig.ship(wt, "--checked", sleep=4)
+    rig.wait_lint_started(wt)
+    rig.race({"racer.txt": "r\n"})
+    out = _finish(p, log)
+    assert "forward-merged over 1 commits (lint not re-run)" in out
+    msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
+    assert re.search(
+        r"^Gate: lint \+ selected pytest; forward-merged over 1 commits; linted base [0-9a-f]{40}$",
+        msg,
+        re.M,
+    ), msg
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [["--checked", "--impacted"], ["--checked", "--remote"], ["--checked", "--full"]],
+)
+def test_checked_refuses_other_gates(rig: Rig, flags: list[str]) -> None:
+    wt = rig.worktree("badcombo", {"b.txt": "b\n"})
+    proc = subprocess.run(
+        [_BASH, "scripts/ship", *flags, "-m", "chore(test): x"],
+        cwd=wt,
+        env=rig.env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert proc.returncode == 2
+    assert "--checked" in proc.stdout + proc.stderr
 
 
 def test_budget_exhausted_full_gate_lands_without_pin(rig: Rig) -> None:

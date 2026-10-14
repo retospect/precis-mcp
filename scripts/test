@@ -25,6 +25,9 @@
 #                                             # at the worktree root (feeds the
 #                                             # python `tests` view's measured tier)
 #   scripts/test --impacted                   # ONLY tests your changes affect
+#   scripts/test --selected                   # the --checked selection: contract
+#                                             # invariants + corpus/import map
+#                                             # (testmon when a map exists)
 #   scripts/test --typecheck                  # `uv run mypy src tests` in the container
 #   scripts/test --bg <args…>                 # detach the run; prints an --await line
 #   scripts/test --await <run-id>             # bounded wait: exits with the run's
@@ -83,6 +86,9 @@ Usage:
   scripts/test --fast | -f                  # no-DB fast set (-m 'not db and not slow')
   scripts/test --coverage [pytest args…]    # per-test .coverage + manifest
   scripts/test --impacted | -i              # ONLY tests your changes affect (testmon)
+  scripts/test --selected                   # the ship --checked selection locally:
+                                            # contract invariants + corpus/map +
+                                            # import-scan (testmon if a map exists)
   scripts/test --bg <args…>                 # detach the run; prints an --await line
   scripts/test --await <run-id>             # bounded wait: exits with the run's
                                              # code, or 124 = still running (re-run)
@@ -190,6 +196,12 @@ fi
 # changes; NOT authoritative before a deploy (/go still runs the full suite).
 IMPACTED=0
 FAST=0
+# --selected : the `scripts/ship --checked` selection, run locally — the
+# CONTRACT invariant tests + PATH_MAP/corpus-coupled tests + python impact
+# (testmon when ./.testmondata exists, else a static direct-importer scan).
+# Selection is computed host-side by scripts/select-tests; never widens to
+# the full suite. -m 'not slow' applies, same as --impacted.
+SELECTED=0
 # --coverage : opt-in per-test-context coverage (NOT the default; the ship
 # gate keeps its own coverage path). Passes pytest-cov's
 # `--cov=src --cov-context=test` (dynamic_context=test_function under the
@@ -200,6 +212,19 @@ COVERAGE=0
 if [[ "${1:-}" == "--coverage" ]]; then COVERAGE=1; shift; fi
 if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; fi
 if [[ "${1:-}" == "--fast" || "${1:-}" == "-f" ]]; then FAST=1; shift; fi
+if [[ "${1:-}" == "--selected" ]]; then SELECTED=1; shift; fi
+
+# --selected: compute the checked-gate selection host-side (stdlib-only
+# script, no container needed). testmon=1 means a ./.testmondata map exists
+# for this worktree — reuse the --impacted plumbing for the python half and
+# add the static (contract + map + corpus) half on top.
+SEL_ARGS=()
+if [[ "$SELECTED" == 1 ]]; then
+    _sel_out="$(scripts/select-tests)" || { echo "ERR: scripts/select-tests failed" >&2; exit 1; }
+    _sel_first="${_sel_out%%$'\n'*}"
+    while IFS= read -r _l; do [[ -n "$_l" ]] && SEL_ARGS+=("$_l"); done <<< "$(tail -n +2 <<<"$_sel_out")"
+    if [[ "$_sel_first" == "testmon=1" ]]; then IMPACTED=1; fi
+fi
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || {
@@ -493,6 +518,20 @@ run_pytest() {
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
         "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@"
 }
+
+# --selected: the static half (contract + map + corpus-coupled + direct
+# importers when no map) runs first as a normal -n6 run; when a testmon map
+# exists the impacted half falls through to the captured --testmon run below.
+if [[ "$SELECTED" == 1 ]]; then
+    echo "checked selection: ${#SEL_ARGS[@]} static targets$([[ "$IMPACTED" == 1 ]] && echo ' + testmon set')"
+    if [[ ${#SEL_ARGS[@]} -gt 0 ]]; then
+        SEL_MARK=(-m "not slow")
+        for a in "$@"; do [[ "$a" == -m* ]] && SEL_MARK=(); done
+        run_pytest plain -n6 "${SEL_MARK[@]+"${SEL_MARK[@]}"}" "${SEL_ARGS[@]+"${SEL_ARGS[@]}"}" "$@" || exit $?
+    fi
+    # No map → the static list was the whole selection; a map → testmon run below.
+    [[ "$IMPACTED" == 1 ]] || exit 0
+fi
 
 if [[ -n "$TESTMON_LOG" ]]; then
     # --impacted: stream to the terminal AND capture, so a post-run guard can
