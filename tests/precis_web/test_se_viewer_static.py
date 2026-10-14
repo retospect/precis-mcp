@@ -1,7 +1,8 @@
-"""Source-level checks on the se 3D viewer's static files — the three fixes
-of gr461146 (draw order of the atomic surface vs. atoms vs. target),
+"""Source-level checks on the se 3D viewer's static files — the fixes of
+gr461146 (draw order of the atomic surface vs. atoms vs. target),
 gr462703 (the load bar has an error state and clears on the first painted
-frame) and gr458084 (the revision scrubber no longer submits a form).
+frame), gr458084 (the revision scrubber no longer submits a form) and
+gr485857 (no element colour may sit on the canvas background).
 
 The pixel-level proof is ``scripts/viewer_check.py`` (nightly, real
 Chromium); these pin the code shape that proof relies on, so a refactor
@@ -102,3 +103,48 @@ def test_scrubber_rides_the_live_scene_seam() -> None:
     # No template on the page submits the scrubber.
     for tpl in (_TEMPLATES / "blocktree").glob("*.j2"):
         assert "this.form.submit()" not in _read(tpl), tpl.name
+
+
+# ── gr485857 ──────────────────────────────────────────────────────────────
+
+
+def _srgb_luminance(css_hex: str) -> float:
+    """WCAG relative luminance of a ``#rrggbb`` colour."""
+
+    def channel(byte: str) -> float:
+        c = int(byte, 16) / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    return (
+        0.2126 * channel(css_hex[1:3])
+        + 0.7152 * channel(css_hex[3:5])
+        + 0.0722 * channel(css_hex[5:7])
+    )
+
+
+def test_no_element_colour_sits_on_a_canvas_background() -> None:
+    """Hydrogen rendered pure white vanished on the se page's white canvas
+    (gr485857). The CPK table is shared by every host, so each entry — and
+    the unknown-element default — must stand off every canvas the viewer
+    renders on: the se page's white/light background and the standalone
+    host's dark clear colour (molecule-host.js)."""
+    core = _read(_STATIC / "molecule-core.js")
+    table = re.search(r"const _ATOMIC_CPK = \{(.*?)\};", core, re.S)
+    assert table is not None
+    entries = dict(re.findall(r'(\w+):\s*"(#[0-9a-fA-F]{6})"', table.group(1)))
+    assert entries, "no element colours parsed from _ATOMIC_CPK"
+    default = re.search(r'const _ATOMIC_CPK_DEFAULT = "(#[0-9a-fA-F]{6})";', core)
+    assert default is not None
+    entries["<default>"] = default.group(1)
+    backgrounds = {
+        "se page (white/light)": "#ffffff",
+        "standalone host": "#101820",
+    }
+    floor = 0.05
+    for element, colour in entries.items():
+        for name, bg in backgrounds.items():
+            distance = abs(_srgb_luminance(colour) - _srgb_luminance(bg))
+            assert distance >= floor, (
+                f"{element} {colour} is {distance:.3f} luminance from the "
+                f"{name} canvas {bg} (< {floor})"
+            )

@@ -1,8 +1,13 @@
 // Shared atom/bond drawing extracted from the SE viewer. Hosts supply live
 // camera, clipping and redraw hooks; scientific records remain adapter-owned.
 // No fetch, completion classification or geometry mutation is performed here.
+//: gr485857 — H is CPK-ish light grey, NOT the standard's pure white: the
+//: se page's canvas clears to white/#f0f0f0, where #ffffff atoms were
+//: invisible. The table is shared by every host (the standalone host's
+//: canvas is dark 0x101820), so the fix lives here rather than in any one
+//: canvas's background — one colour keeps H readable on both.
 const _ATOMIC_CPK = {
-  H: "#ffffff", He: "#d9ffff", B: "#ffb5b5", C: "#909090",
+  H: "#d9d9d9", He: "#d9ffff", B: "#ffb5b5", C: "#909090",
   N: "#3050f8", O: "#ff0d0d", F: "#90e050", Si: "#f0c8a0",
   P: "#ff8000", S: "#ffff30", Cl: "#1ff01f", Br: "#a62929",
   I: "#940094", Ni: "#50d050", Cu: "#c88033", Pd: "#006985",
