@@ -493,7 +493,9 @@ findings:
   2026-10-03. The 10 unanchored ones are reported, not extracted.
 
 **Found by the pilot write** (prod, 2026-10-04, the three-run spot check).
-Two code gaps, each worked around in the pilot data and still open:
+Two code gaps, each worked around in the pilot data — **all closed
+2026-10-14** (the commits are in the decisions log; rows written through
+the workarounds stay as written and are superseded on re-extraction):
 - **The literal parser misses a typographic minus.** "– 1.0" (en dash
   and a space) or "−0.5" (U+2212) lands as text with no value. Chunks
   print these routinely.
@@ -545,6 +547,79 @@ of the 122 outputs against its chunk.
 
 **Build D: fisheye on the quest (qland, independent).** The ladder on
 `kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.
+
+## Next slice — the extraction pass itself (planned, unbuilt)
+
+The six pilot gaps and the 0188 unit-skip are closed (decisions log,
+2026-10-14) and Reto's sign-off ruling is settled, so numeric extraction
+from papers can restart. This is the plan for the first pass; nothing
+here is built.
+
+**Where it runs.** The extraction pass runs on a local model on Spark
+(Reto, 2026-10-14: restart "on a local model (Spark)"), not the frontier
+tier. The deterministic checks and the materializer stay pure functions
+over chunks (`corpus-quantitative-extraction.md` in-scope 8); the reader
+call is a queued worker job, never an in-process direct call — already
+decided there.
+
+**Acceptance is sampled, not per-value** (Reto, 2026-10-14). A frontier
+model reviews a stratified sample per paper × measurand; the batch is
+accepted when the sampled error rate is under the bar — start at 5 %,
+measured with a Wilson interval — and only escalations reach Reto.
+Per-value human sign-off is retired; the qu202467 batch (122 rows, all
+reviewed) is the last of its kind. The sample size per stratum and which
+failures count as errors are build decisions.
+
+**Start with one big review paper.** Candidates measured in prod,
+read-only, 2026-10-14 (chunks = live chunk count; serves = quest links):
+
+| paper | chunks | serves |
+|---|---|---|
+| pa5044 A Review of Advanced Nanomaterials for Electrochemical Nitrate Reduction to Ammonia | 634 | qu202467, qu164903, qu202468, qu202469 |
+| pa56008 A Critical Review on the Role of Structural Defects in Electrochemical Nitrate Reduction Catalysts | 587 | qu164903, qu202467, qu202469 |
+| pa5449 Electrocatalytic reduction of nitrate – a step towards a sustainable nitrogen cycle | 515 | qu164903, qu202467, qu202468 |
+| pa5362 MXene-based catalysts for electrochemical nitrate and nitrogen reduction | 453 | qu202468, qu202469 |
+| pa328181 Atomic Doping Engineering in Electrocatalytic Nitrate to Ammonia Conversion | 453 | qu164903 |
+| pa304235 Electrifying the nitrogen loop (nitrate → ammonia) | 563 | — |
+| pa4743 Review on Ammonia as a Potential Fuel | 797 | — |
+
+pa5044 is the pick: the largest in-domain review, already serving the
+pilot quest and three siblings, so its rows land in a `best_measure`
+table that exists today. None of the candidates has findings or
+measures yet; pa4743 is bigger but is synthesis/economics, not the
+electrocatalysis domain the pilot taxa cover.
+
+**Port the pilot defects first, in this order** (the full list is
+`corpus-quantitative-extraction.md` In scope; the code is
+`paper-extraction-pilot/`):
+
+1. **The versioned anchor scheme** — `ANCHOR_SCHEME` on maps and binding
+   documents; the materializer refuses a scheme mismatch AND a missing
+   scheme (fails closed); the constant is append-only. Correctness first:
+   a one-line splitter change silently re-pointed 16 % of anchors in
+   the pilot.
+2. **The three verified small bugs** — `expansion_directory` built from a
+   hardcoded path ignoring the map label (`bindings.py`); the sentence
+   splitter breaking after `ca.`/`Fig.`/`satd.` (under a NEW anchor
+   scheme, never in place); `unit_has_text_support`'s `%` letter-
+   lookaround false-negative (all 25 `unit_without_text_support`
+   escalations on one paper).
+3. Then in the item's order: explicit condition roles (2 — landed as the
+   measure row's `role`), group-level condition sets (3), escalation
+   severity (4), sub-sentence anchors + recipe row overrides + units in a
+   third column (5), categorical rows (5b — `value_form='categorical'`),
+   `contradicts` + "stated but unattributed" (6 — `tier='asserted'`).
+
+**The write path is settled.** Rows go in as runs through
+`put(kind='measure')` via `scripts/prod-precis`, Build C's recipe in
+`precis-measure-help`: the Spark model proposes runs, a script checks
+them against chunk text and the taxon list, puts land, and the frontier
+sample writes `edit(kind='measure', review='model', verdict=…)` on the
+sampled ids. The write itself flags order-of-magnitude outliers
+(`implausible_value`) and glyph-suspected sources (`glyph_suspected`);
+flagged rows, anchor mismatches and the sample's rejections are the
+escalation list; a batch under the bar is accepted without a human in
+the loop.
 
 ## In scope
 
@@ -770,6 +845,38 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   a theoretical safeguard against a hypothetical nonzero count.
 
 ## Open questions / decisions log
+
+- **[decided 2026-10-14, Reto — "get started, sampled sign off is
+  good"]** Extracted values are signed off by **SAMPLED acceptance**: a
+  frontier model reviews a stratified sample per paper × measurand; the
+  batch is accepted when the sampled error rate is under the bar (start
+  5 %, with a Wilson interval), and only escalations reach Reto.
+  Per-value human sign-off is retired. Same ruling in
+  `corpus-quantitative-extraction.md`'s decisions log.
+
+- **[landed 2026-10-14] Slice 8 — the implausible-value sanity check**
+  (Reto, coordinator addition): a new output value 3+ orders of magnitude
+  off the measurand's live median escalates `implausible_value` — exactly
+  what a stripped µ produces ("µm" read as "m", gr228594) — and a value
+  sourced from a glyph-flagged paper escalates `glyph_suspected`
+  (gr228652). Both are needs-review flags in `meta.escalation`, never a
+  drop (bca4761f9); `best_measure` already skips escalated rows, and the
+  sampled-acceptance escalation list picks them up.
+
+- **[landed 2026-10-14] The six pilot gaps and the 0188 unit-skip are
+  closed**, one commit each on branch `worktree-measures-gaps`:
+  typographic dashes parse as a leading minus (ab0af62df); required
+  conditions match the input taxon's aliases (97c103031);
+  `best_measure` partitions by the measurand's categorical required
+  conditions — "FE · product=NH3" (f6edeb9d0); a repeated value on the
+  same anchor span is refused (262b3bfa6); bounds stored in
+  `value_low`/`value_high` show their sign, and `get`'s SI line keeps
+  bounds, intervals and ± (211c862c3); a legacy mint whose unit has no
+  SI form logs the skip (5260552e3). The pilot rows written through the
+  workarounds (explicit `value_num` on 23 rows, `condition:
+  "applied-potential"` on 56 items) are valid as stored; the
+  mx212/mx218 and mx215/mx221 duplicates stay and are superseded on
+  re-extraction.
 
 - **[decided 2026-10-02, Reto knowledge-mesh-7]** One canonical unit per
   measurand, values stored normalised to it, the reported value and unit

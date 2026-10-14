@@ -1683,6 +1683,36 @@ class TestMintVerbsRebaseConvertibleUnits:
                 )
                 assert _compat_row(store, "material_properties", key) is None
 
+    def test_a_unit_with_no_si_form_logs_the_skip(
+        self, store: Store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with _minted(store, "material_properties", "zz_usd"):
+            with caplog.at_level("WARNING", logger="precis.store._measures_ops"):
+                store.material_property_mint(
+                    prop_id="zz_usd",
+                    name="zz_usd",
+                    canonical_unit="USD/g",
+                    dimension="x",
+                    value_type="quantity",
+                )
+        assert "measure_unit_compat skip" in caplog.text
+        assert "material_properties" in caplog.text
+        assert "zz_usd" in caplog.text and "USD/g" in caplog.text
+
+    def test_an_si_units_skip_is_quiet(
+        self, store: Store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with _minted(store, "material_properties", "zz_k"):
+            with caplog.at_level("WARNING", logger="precis.store._measures_ops"):
+                store.material_property_mint(
+                    prop_id="zz_k",
+                    name="zz_k",
+                    canonical_unit="K",
+                    dimension="x",
+                    value_type="quantity",
+                )
+        assert "measure_unit_compat skip" not in caplog.text
+
     def test_a_second_mint_of_a_key_does_not_disturb_its_compat_row(
         self, store: Store
     ) -> None:

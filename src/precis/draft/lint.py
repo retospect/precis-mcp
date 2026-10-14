@@ -398,7 +398,7 @@ def glyph_cite_hint(store: Store, text: str) -> str:
     numbers/units can be off by 10^3-10^6x. Advisory only. Scoped to the
     cites present in the touched text; one batched ref fetch, deduped by ref.
     """
-    from precis.ingest.glyph_health import glyph_suspected
+    from precis.utils.glyph_health import glyph_suspected
     from precis.utils.mentions import resolve_handle_target
 
     ids: dict[int, str] = {}

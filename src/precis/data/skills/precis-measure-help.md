@@ -76,7 +76,10 @@ each: `mx12 | subject | measurand: value | conditions | tier | paper handle`.
 
 `get(kind='quest', id=Q, view='measures')` lists, for everything that serves
 the quest at any depth, the best live value per `(measurand, reference,
-normalization)` group, with its conditions, tier, paper and current review state
+normalization)` group, further partitioned by the measurand's *categorical*
+required conditions — a Faradaic efficiency ranks per product, so a line reads
+"FE vs RHE · product=NH3" — with its conditions, tier, paper and current
+review state
 (`approved`, `proposed` or `unreviewed`). The direction comes
 from the taxon's `higher_is_better`; a group without it shows its row count and
 no best. Per-area and per-mass yields, or RHE and SHE potentials, are separate
@@ -200,7 +203,10 @@ measures onto the survivor is not built yet.
 
 `put(kind='measure')` writes one run: the output's printed literal in `text=`,
 its fields in `meta=`, the input rows in `items=`. All in one transaction; a
-refusal writes nothing.
+refusal writes nothing. One more refusal: a live output row with the same
+measurand, subject, anchor scheme, span and value is a **duplicate** — the
+number is already written; `get` it, or re-write the run with
+`meta={'supersedes': id}` when it should replace that row.
 
 ```python
 put(kind="measure", text="95", reason="qu202467 pilot extraction",
@@ -235,7 +241,10 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
 - **`reason=`** goes to the revision context like `edit`'s.
 - **Answer**: the run key, one line per written row (`mx12 output ...`), then
   `flagged:` lines for anything flagged, each with its reason: a
-  `meta.escalation` entry (a missing required condition, no molar mass) or
+  `meta.escalation` entry — a missing required condition, no molar mass, an
+  `implausible_value` (the canonical value sits 3+ orders of magnitude off the
+  measurand's live median — a stripped µ looks exactly like that) or
+  `glyph_suspected` (the source paper's extracted text is flagged) — or
   `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
 
 ## Review a row

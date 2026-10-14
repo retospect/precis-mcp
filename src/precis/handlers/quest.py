@@ -956,10 +956,11 @@ class QuestHandler(NumericRefHandler):
         """`view='measures'` — the quest's number table: the best live value of
         every measurand over everything serving it (``Store.best_measure``,
         ``serves`` at any depth), one line per ``(measurand, reference,
-        normalization)`` group, in the measurand's display unit, with the
+        normalization, categorical-condition partition)`` group, in the
+        measurand's display unit, with the
         run's conditions, current review state and the paper. Groups never mix:
-        a per-area and a per-mass yield, or RHE and SHE potentials, are separate
-        lines."""
+        a per-area and a per-mass yield, RHE and SHE potentials, or FE toward
+        NH3 and toward NO2, are separate lines."""
         from precis.handlers import _measure_render as render
         from precis.utils import handle_registry
 
@@ -980,10 +981,12 @@ class QuestHandler(NumericRefHandler):
             "",
         ]
         for g in groups:
+            part = " · ".join(f"{k}={v}" for k, v in (g.get("by") or {}).items())
             label = (
                 f"{g['measurand']}"
                 + (f" vs {g['reference']}" if g["reference"] else "")
                 + (f" [{g['normalization']}]" if g["normalization"] else "")
+                + (f" · {part}" if part else "")
             )
             best = g["best"]
             if best is None:

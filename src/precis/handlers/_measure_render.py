@@ -48,6 +48,13 @@ def value_text(row: dict[str, Any], *, unit: str | None = None) -> str:
     ``~3 V``, ``9.6 ± 1.7 mV``, a category as printed."""
     form = row.get("value_form")
     num, low, high = row.get("value_num"), row.get("value_low"), row.get("value_high")
+    if num is None:
+        # a bound written into low/high (the pilot's corrections) shows its
+        # sign too — ">80" reads "> 80 %", not the bare number
+        if form == "upper_bound":
+            num = high
+        elif form == "lower_bound":
+            num = low
     if row.get("value_bool") is not None and num is None:
         return "true" if row["value_bool"] else "false"
     if form == "interval" and low is not None and high is not None:

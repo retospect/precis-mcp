@@ -18,7 +18,12 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.measure import MeasureHandler, parse_query
 from precis.handlers.quest import QuestHandler
 from precis.store import Store
-from precis.store._measures_ops import ConditionFilter, MeasureAnchor, MeasureSpec
+from precis.store._measures_ops import (
+    ConditionFilter,
+    MeasureAnchor,
+    MeasureSpec,
+    row_interval,
+)
 from precis.taxonomy.measure_units import (
     display_numbers,
     format_value,
@@ -78,6 +83,16 @@ class TestDisplay:
     def test_an_interval_shares_one_unit(self) -> None:
         nums, label = display_numbers([1e-9, 2e-6], canonical_unit="m")
         assert label == "µm" and nums == pytest.approx([0.001, 2.0])
+
+    def test_a_bound_stored_in_low_or_high_has_an_interval(self) -> None:
+        assert row_interval({"value_form": "lower_bound", "value_low": 0.8}) == (
+            0.8,
+            float("inf"),
+        )
+        assert row_interval({"value_form": "upper_bound", "value_high": 0.8}) == (
+            float("-inf"),
+            0.8,
+        )
 
     def test_to_canonical_covers_the_pilot_cases(self) -> None:
         assert to_canonical(1.4, "Å", "m") == pytest.approx(1.4e-10)
@@ -150,6 +165,8 @@ class TestParseQuery:
     def test_inclusive_operators_and_unicode_minus(self) -> None:
         conds, _ = parse_query("potential>=−0.9 V")
         assert conds == [ConditionFilter("potential", ">=", value=-0.9, unit="V")]
+        conds, _ = parse_query("potential<–0.5 V")
+        assert conds == [ConditionFilter("potential", "<", value=-0.5, unit="V")]
 
     def test_a_bound_on_text_is_refused(self) -> None:
         with pytest.raises(BadInput, match="need a number"):
@@ -429,6 +446,38 @@ class TestBestMeasure:
             assert groups == []
         else:
             assert groups[0]["best"]["review_state"] == "approved"
+
+    def test_faradaic_efficiency_ranks_per_product(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        # pilot gap: best FE ranked across products — a 98% toward NO2 must
+        # not win the NH3 group's slot (and vice versa).
+        nh3 = _fe_run(store, w, "61", "-0.9")
+        no2 = _put(
+            store,
+            w,
+            "fe",
+            "98",
+            unit="%",
+            conds=(
+                _cond(w, "product", "NO2", label="product"),
+                _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
+            ),
+            reference="RHE",
+        )
+        groups = store.best_measure(w["fe"], serving=w["quest"])
+        assert {(g["by"].get("product"), g["best"]["id"]) for g in groups} == {
+            ("NH3", nh3.output_id),
+            ("NO2", no2.output_id),
+        }
+
+    def test_a_numeric_required_condition_does_not_split_the_group(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        _fe_run(store, w, "61", "-0.9")
+        _fe_run(store, w, "95", "-0.5")
+        (g,) = store.best_measure(w["fe"], serving=w["quest"])
+        assert g["n"] == 2 and g["by"] == {"product": "NH3"}
 
     def test_picks_the_best_over_everything_serving_at_any_depth(
         self, store: Store, w: dict[str, Any]
@@ -1040,6 +1089,31 @@ class TestGetRow:
         assert out.count("STALE") == 2 and "current" not in out.split("reviews:")[1]
         assert "anchor: LOST" in out and "flags: anchor lost" in out
 
+    def test_a_bound_stored_in_low_or_high_still_shows_its_sign(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        # pilot corrections mx373/mx376 carried the bound in value_low and
+        # printed as a bare number on get and the quest view.
+        run = _put(
+            store,
+            w,
+            "bond",
+            "1.4",
+            unit="Å",
+            value_low=1.4,
+            value_form="lower_bound",
+        )
+        out = h.get(id=run.output_id).body
+        assert "value: > 1.4 Å" in out and "SI: > 1.4e-10 m" in out
+
+    def test_the_si_line_keeps_bounds_intervals_and_error(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        iv = _put(store, w, "bond", "1.8–2.2", unit="Å")
+        assert "SI: 1.8e-10–2.2e-10 m" in h.get(id=iv.output_id).body
+        er = _put(store, w, "bond", "9.6 ± 1.7", unit="Å")
+        assert "SI: 9.6e-10 ± 1.7e-10 m" in h.get(id=er.output_id).body
+
     def test_one_current_one_stale_on_the_same_row(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
     ) -> None:
@@ -1163,6 +1237,26 @@ class TestQuestMeasuresView:
         assert any("vs SHE: -0.8 V" in ln for ln in ul)
         # a measurand with no direction says so
         assert any(ln.startswith("particle size: 1 row(s), no best") for ln in lines)
+
+    def test_the_group_label_names_the_categorical_partition(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        _fe_run(store, w, "61", "-0.9")
+        _put(
+            store,
+            w,
+            "fe",
+            "98",
+            unit="%",
+            conds=(
+                _cond(w, "product", "NO2", label="product"),
+                _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
+            ),
+            reference="RHE",
+        )
+        out = self._view(store, w["quest"])
+        assert "Faradaic efficiency vs RHE · product=NH3: 61 %" in out
+        assert "Faradaic efficiency vs RHE · product=NO2: 98 %" in out
 
     def test_a_quest_with_nothing_says_so(
         self, store: Store, w: dict[str, Any]

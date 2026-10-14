@@ -56,10 +56,19 @@ graph-health-metrics, five parked gripes, and the seam with
   for converted rows (0187's note said ids are kept; a converted row is a new
   `measures` row), and a rxn put's `id=` is now a `measures.id`.
   `price_per_gram` keeps USD/g (currency is outside SI).
-- **Next:** the six pilot gaps in the measures spec §"Found by the pilot
-  write" plus the unparseable-unit mint log (§"Found landing 0188"),
-  about 2 builds. FE grouped by product and review-aware ranking
-  in `best_measure` go first. Then local-mesh-upkeep slice 1b.
+- **Done 2026-10-14 (worktree-measures-gaps):** the six pilot gaps plus
+  the unparseable-unit mint log, one commit each (ab0af62df…5260552e3),
+  and the coordinator's slice 8 — outlier (`implausible_value`, 3+
+  decades off the measurand's live median) and `glyph_suspected`
+  needs-review flags at write time (bca4761f9).
+  Reto's sign-off ruling is recorded in the two specs: extracted values
+  pass by SAMPLED acceptance — a frontier model reviews a stratified
+  sample per paper × measurand, the batch is accepted under a 5 %
+  Wilson bar, and only escalations reach Reto; per-value human
+  sign-off is retired. The extraction-pass plan is in the spec
+  §"Next slice" — Spark reader, pa5044 first, the versioned anchor
+  scheme ported first.
+- **Next:** local-mesh-upkeep slice 1b.
 
 ## Do next
 

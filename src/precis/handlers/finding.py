@@ -106,13 +106,13 @@ from precis.handlers._finding_common import (
 )
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
-from precis.ingest.glyph_health import glyph_caveat
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import SIGNED_FINDING_STATES, ChunkInsert, Ref, Tag
 from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
+from precis.utils.glyph_health import glyph_caveat
 from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.ref_hybrid import fused_ref_hits

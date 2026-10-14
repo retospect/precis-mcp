@@ -57,7 +57,6 @@ from precis.handlers._slug_ref_shared import (
     resolve_live_slug_ref,
 )
 from precis.ingest.cards import rewrite_cards
-from precis.ingest.glyph_health import glyph_caveat
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -74,6 +73,7 @@ from precis.utils.authors import (
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
+from precis.utils.glyph_health import glyph_caveat
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,

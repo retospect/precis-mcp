@@ -28,17 +28,25 @@ without an anchor.
 
 **Flags, not refusals.** A missing required condition, or a mass-rate yield
 whose product has no formula, lands in ``meta.escalation`` (a list of
-``{"rule": ..., ...}``); ``best_measure`` excludes flagged rows. The
+``{"rule": ..., ...}``); ``best_measure`` excludes flagged rows. Two sanity
+flags join them (needs-review, never a drop): ``implausible_value`` — the
+canonical value sits ``_OUTLIER_DECADES`` or more orders of magnitude off the
+measurand's live median, which is what a stripped ``µ`` looks like ("6 µm"
+extracts as "6 m", gr228594) — and ``glyph_suspected`` — the source paper's
+extracted text carries the ingest ``glyph_health`` flag (gr228652). The
 required names come from the output measurand taxon's ``meta.required_conditions``
 and those of every ancestor along ``specialises`` (union); an input row
 satisfies a name when it has ``role='context'`` and its ``meta.condition``
-label, its taxon's slug or its taxon's name matches. A condition with no
+label, its taxon's slug, name or alias matches. A condition with no
 taxon of its own (``product``) still needs *some* taxon (``measurand_ref_id``
 is NOT NULL): the caller mints a ``reaction product`` taxon and labels the row
 ``meta={'condition': 'product'}``; its formula goes in ``value_text``.
 
 **Refusals.** ``tier='measured'`` without an anchor whose chunk is set;
-``tier='measured'`` with ``source_attribution='cited_work'``; a unit with no
+``tier='measured'`` with ``source_attribution='cited_work'``; a live output
+row that repeats another's measurand, anchor scheme, span and value (one
+chunk value extracted under two findings is one measure, not two); a unit
+with no
 dimension match to the measurand's ``canonical_unit`` (naming both); a
 number with a ``reported_unit`` on a taxon that has no ``canonical_unit``
 (values are stored normalised to one unit per measurand); and (migration 0188,
@@ -74,6 +82,7 @@ Unreviewed and proposed rows remain eligible under the same numeric ranking.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import uuid
@@ -90,9 +99,11 @@ from psycopg.types.json import Jsonb
 from precis.errors import BadInput, NotFound
 from precis.store._taxon_ops import _EDGES
 from precis.taxonomy.measure_units import (
+    MINUS_FOLD,
     Conversion,
     NeedsMolarMass,
     basis_normalization,
+    is_coherent_si,
     make_converter,
     molar_mass,
     parse_literal,
@@ -100,12 +111,21 @@ from precis.taxonomy.measure_units import (
     to_canonical,
 )
 from precis.taxonomy.nodes import slugify
+from precis.utils.glyph_health import glyph_suspected
+
+log = logging.getLogger(__name__)
 
 TIERS = ("measured", "computed", "derived", "asserted")
 ATTRIBUTIONS = ("own_work", "cited_work", "not_established")
 MEASURAND_STATUSES = ("explicit", "interpreted", "ambiguous")
 NORMALIZATION_STATUSES = ("explicit", "inferred", "unresolved")
 ROLES = ("context", "preparation", "model")
+
+#: Slice-8 sanity flag: a new output value this far from the measurand's live
+#: median (log10 decades) is needs-review — a stripped µ gives 6 (gr228594).
+_OUTLIER_DECADES = 3.0
+#: the median needs a distribution: fewer existing values, no flag
+_OUTLIER_MIN_SAMPLE = 3
 INPUT_DIRECTIONS = ("input", "covariate")
 
 
@@ -297,7 +317,11 @@ def register_legacy_unit(
     The factor comes from an existing compat row with the same ``legacy_unit``
     when there is one (the seeded rows stay the one source), else from pint
     (:func:`~precis.taxonomy.measure_units.si_form`). A unit that is already
-    coherent SI, or has no SI form (USD, HV, pH), writes no row. Concurrent mints
+    coherent SI writes no row and stays quiet; a unit with no SI form (USD,
+    HV, pH) writes no row either, but the skip is logged — counted and
+    visible, never silent (the later conversion migration lists the same
+    keys with an anti-join on ``measure_unit_compat``). It does not refuse:
+    the legacy verbs must keep minting. Concurrent mints
     of one key serialise on an advisory lock, like ``precis_measure_taxon``."""
     text = (unit or "").strip()
     if not text:
@@ -312,6 +336,14 @@ def register_legacy_unit(
     else:
         form = si_form(text)
         if form is None:
+            if not is_coherent_si(text):
+                log.warning(
+                    "measure_unit_compat skip: %s %s keeps unit %r — it has "
+                    "no SI form, so no conversion row was written",
+                    table,
+                    key,
+                    text,
+                )
             return
         si_unit, factor, offset = form.si_unit, form.factor, form.offset
     conn.execute(
@@ -349,10 +381,16 @@ def row_interval(row: dict[str, Any]) -> tuple[float, float] | None:
     for a one-sided bound; None when it carries no number (a category)."""
     form = row.get("value_form")
     num, low, high = row.get("value_num"), row.get("value_low"), row.get("value_high")
-    if form == "upper_bound" and num is not None:
-        return (float("-inf"), num)
-    if form == "lower_bound" and num is not None:
-        return (num, float("inf"))
+    if form in ("upper_bound", "lower_bound"):
+        # the parse path puts a bound in num; a caller may write it into
+        # high (<x) or low (>x) — the pilot's corrections did
+        bound = num if num is not None else (high if form == "upper_bound" else low)
+        if bound is not None:
+            return (
+                (float("-inf"), bound)
+                if form == "upper_bound"
+                else (bound, float("inf"))
+            )
     lo = low if low is not None else num
     hi = high if high is not None else num
     if lo is None or hi is None:
@@ -408,7 +446,7 @@ def _check_enum(name: str, value: str | None, allowed: Sequence[str]) -> None:
 def _squash(text: str) -> str:
     """Whitespace-collapsed, minus-folded, case-folded form for the
     literal-in-span test."""
-    t = text.replace("−", "-").replace(" ", " ").replace(" ", " ")
+    t = text.translate(MINUS_FOLD).replace(" ", " ").replace(" ", " ")
     return " ".join(t.split()).casefold()
 
 
@@ -520,6 +558,9 @@ class MeasuresMixin:
             names.add(slugify(label))
         for key in ("slug", "name"):
             val = taxon_meta.get(key)
+            if isinstance(val, str) and val.strip():
+                names.add(slugify(val))
+        for val in taxon_meta.get("aliases") or []:
             if isinstance(val, str) and val.strip():
                 names.add(slugify(val))
         return names
@@ -688,6 +729,120 @@ class MeasuresMixin:
                 return (spec.value_text or spec.literal).strip() or None
         return None
 
+    @staticmethod
+    def _refuse_duplicate_output(
+        c: Connection,
+        spec: MeasureSpec,
+        anchor: MeasureAnchor,
+        values: tuple[Any, ...],
+    ) -> None:
+        """One chunk value extracted under two findings is one measure, not
+        two (the pilot's mx212/mx218 pair): a live output row with the same
+        measurand, subject, anchor scheme and span, and the same literal or
+        parsed value is refused, naming the row. The same span's number about
+        a *different* subject ref is a different claim and lands; a
+        supersession of that row is not a duplicate."""
+        rows = c.execute(
+            "SELECT m.id, m.literal, m.value_num, m.value_low, m.value_high, "
+            "       m.value_text, m.value_bool "
+            "FROM measures m JOIN links l ON l.link_id = m.primary_link_id "
+            "WHERE m.direction = 'output' AND m.superseded_by IS NULL "
+            "  AND m.measurand_ref_id = %s AND m.subject_ref_id = %s "
+            "  AND l.src_chunk_id = %s "
+            "  AND m.anchor_scheme = %s AND m.span = %s::jsonb",
+            (
+                spec.measurand_ref_id,
+                spec.subject_ref_id,
+                anchor.chunk_id,
+                anchor.scheme,
+                Jsonb(anchor.span),
+            ),
+        ).fetchall()
+        lit = _squash(spec.literal)
+        has_value = any(v is not None for v in values)
+        for row in rows:
+            if spec.supersedes is not None and int(row[0]) == spec.supersedes:
+                continue
+            if _squash(row[1] or "") == lit or (
+                has_value and (row[2], row[3], row[4], row[5], row[6]) == values
+            ):
+                raise BadInput(
+                    f"duplicate of measure {int(row[0])}: a live output row "
+                    "already carries this measurand's value on the same "
+                    "anchor span",
+                    next="the number is already written: "
+                    "get(kind='measure', id=…) reads it; to replace it, put "
+                    "the corrected run with meta={'supersedes': …}",
+                )
+
+    def _sanity_escalations(
+        self,
+        c: Connection,
+        spec: MeasureSpec,
+        anchor: MeasureAnchor | None,
+        values: tuple[float | None, ...],
+    ) -> list[dict[str, Any]]:
+        """Slice-8 sanity flags on an output row (canonical ``values`` are
+        ``(value_num, value_low, value_high)``). Both are needs-review, never
+        a refusal or a drop: ``implausible_value`` when a reading sits
+        ``_OUTLIER_DECADES`` or more orders of magnitude from the measurand's
+        live median, and ``glyph_suspected`` when the source paper carries the
+        ingest glyph-health flag."""
+        out: list[dict[str, Any]] = []
+        nums = [float(v) for v in values if v is not None and v != 0]
+        if nums:
+            mags = sorted(
+                math.log10(abs(float(r[0])))
+                for r in c.execute(
+                    "SELECT value_num FROM measures WHERE direction = 'output' "
+                    "AND superseded_by IS NULL AND measurand_ref_id = %s "
+                    "AND value_num IS NOT NULL AND value_num <> 0",
+                    (spec.measurand_ref_id,),
+                ).fetchall()
+            )
+        if nums and len(mags) >= _OUTLIER_MIN_SAMPLE:
+            n = len(mags)
+            med = mags[n // 2] if n % 2 else (mags[n // 2 - 1] + mags[n // 2]) / 2
+            for v in nums:
+                decades = math.log10(abs(float(v))) - med
+                if abs(decades) >= _OUTLIER_DECADES:
+                    out.append(
+                        {
+                            "rule": "implausible_value",
+                            "value": float(v),
+                            "median": 10.0**med,
+                            "decades": round(decades, 1),
+                            "n": n,
+                            "why": (
+                                f"the value sits {abs(decades):.1f} orders of "
+                                f"magnitude "
+                                f"{'above' if decades > 0 else 'below'} the "
+                                "measurand's live median — a stripped µ reads "
+                                "'µm' as 'm' (gr228594)"
+                            ),
+                        }
+                    )
+                    break
+        src = spec.source_ref_id or (anchor.paper_ref_id if anchor else None)
+        if src is not None:
+            row = c.execute(
+                "SELECT kind, meta FROM refs WHERE ref_id = %s", (src,)
+            ).fetchone()
+            if row is not None and row[0] == "paper":
+                if glyph_suspected(row[1]):
+                    out.append(
+                        {
+                            "rule": "glyph_suspected",
+                            "source_ref_id": int(src),
+                            "why": (
+                                "the source paper's extracted text carries the "
+                                "glyph-health flag — a font whose encoding lies "
+                                "can turn 'µm' into 'm' (gr228652, gr228594)"
+                            ),
+                        }
+                    )
+        return out
+
     def _insert_one(
         self,
         c: Connection,
@@ -848,8 +1003,15 @@ class MeasuresMixin:
                 next="set the taxon's canonical_unit first (meta canonical_unit), "
                 "or write the number without a reported_unit if it is unitless",
             )
+        if direction == "output":
+            escalation.extend(
+                self._sanity_escalations(c, spec, anchor, (num, low, high))
+            )
         if escalation:
             meta["escalation"] = escalation
+
+        if direction == "output" and anchor is not None:
+            self._refuse_duplicate_output(c, spec, anchor, (num, low, high, text, flag))
 
         # evidence edge + computed extraction status
         link_id: int | None = None
@@ -1039,6 +1201,33 @@ class MeasuresMixin:
         found = {rid for rid, _depth, _axis in self.taxon_descendants(measurand)}
         return [measurand, *sorted(found - {measurand})]
 
+    def _required_conditions_map(self, measurand_ids: set[int]) -> dict[int, list[str]]:
+        """``_required_conditions`` per measurand, on one connection."""
+        if not measurand_ids:
+            return {}
+        with self.pool.connection() as conn:
+            return {mid: self._required_conditions(conn, mid) for mid in measurand_ids}
+
+    @staticmethod
+    def _group_partition(
+        required: Sequence[str], conditions: Sequence[dict[str, Any]]
+    ) -> tuple[tuple[str, str], ...]:
+        """The run's categorical required-condition values, as a sorted
+        ``(name, value)`` tuple that joins the ``best_measure`` group key:
+        "FE 98%" toward NH3 never ranks against FE toward NO2. A required
+        name whose input is numeric or absent adds nothing."""
+        out: dict[str, str] = {}
+        for name in required:
+            want = slugify(name)
+            for c in conditions:
+                if want not in c["names"] or c["value_form"] != "categorical":
+                    continue
+                value = (c["value_text"] or c["literal"] or "").strip()
+                if value:
+                    out[want] = value
+                break
+        return tuple(sorted(out.items()))
+
     def _measure_rows(
         self, where: str, params: dict[str, Any], *, with_review: bool = False
     ) -> list[dict[str, Any]]:
@@ -1122,15 +1311,20 @@ class MeasuresMixin:
         conversion between references is not built, so a SHE row never stands
         in for an RHE one.
 
-        Rows group by ``(measurand, reference, normalization)`` and are never
-        compared across groups: each group answers for itself. ``sense``
+        Rows group by ``(measurand, reference, normalization)`` plus the
+        values of the measurand's *categorical* required conditions — a
+        Faradaic efficiency is ranked per product, so a group reads "FE ·
+        product=NH3" — and are never compared across groups: each group
+        answers for itself. ``sense``
         (``higher``/``max`` or ``lower``/``min``) overrides the taxon's
         ``higher_is_better``; a group with neither has ``best=None`` and says
         how many rows it holds. Each result is ``{measurand_ref_id, measurand,
-        reference, normalization, sense, n, best}``, ``best`` a row dict with
+        reference, normalization, by, sense, n, best}``, ``by`` the
+        ``{name: value}`` partition (``{'product': 'NH3'}``), ``best`` a row
+        dict with
         its run's ``conditions`` and ``review_state`` (newest current verdict,
         else ``unreviewed``); ordered by measurand name, reference,
-        normalization."""
+        normalization, partition."""
         override = _sense(sense)
         subjects = self._serving_subjects(serving)
         where = [
@@ -1151,14 +1345,28 @@ class MeasuresMixin:
         if reference is not None:
             where.append("m.reference = %(reference)s")
             params["reference"] = reference
-        groups: dict[tuple[int, str | None, str | None], list[dict[str, Any]]] = {}
-        for r in self._measure_rows(" AND ".join(where), params, with_review=True):
-            if r["review_state"] == "rejected":
-                continue
-            key = (r["measurand_ref_id"], r["reference"], r["normalization"])
-            groups.setdefault(key, []).append(r)
+        groups: dict[
+            tuple[int, str | None, str | None, tuple[tuple[str, str], ...]],
+            list[dict[str, Any]],
+        ] = {}
+        rows = [
+            r
+            for r in self._measure_rows(" AND ".join(where), params, with_review=True)
+            if r["review_state"] != "rejected"
+        ]
+        by_run = self._conditions_by_run([r["run_key"] for r in rows])
+        required = self._required_conditions_map({r["measurand_ref_id"] for r in rows})
+        for r in rows:
+            part = self._group_partition(
+                required.get(r["measurand_ref_id"], ()),
+                by_run.get(r["run_key"], []),
+            )
+            groups.setdefault(
+                (r["measurand_ref_id"], r["reference"], r["normalization"], part),
+                [],
+            ).append(r)
         results: list[dict[str, Any]] = []
-        for (mid, ref, norm), members in groups.items():
+        for (mid, ref, norm, part), members in groups.items():
             direction = override or _sense(members[0]["higher_is_better"])
             best: dict[str, Any] | None = None
             if direction == "higher":
@@ -1171,6 +1379,7 @@ class MeasuresMixin:
                     "measurand": members[0]["measurand"],
                     "reference": ref,
                     "normalization": norm,
+                    "by": dict(part),
                     "sense": direction,
                     "n": len(members),
                     "best": best,
@@ -1181,14 +1390,12 @@ class MeasuresMixin:
                 g["measurand"] or "",
                 g["reference"] or "",
                 g["normalization"] or "",
+                sorted(g["by"].items()),
             )
-        )
-        conds = self._conditions_by_run(
-            [g["best"]["run_key"] for g in results if g["best"] is not None]
         )
         for g in results:
             if g["best"] is not None:
-                g["best"]["conditions"] = conds.get(g["best"]["run_key"], [])
+                g["best"]["conditions"] = by_run.get(g["best"]["run_key"], [])
         return results
 
     def measures_census(self, measurand: int) -> list[dict[str, Any]]:

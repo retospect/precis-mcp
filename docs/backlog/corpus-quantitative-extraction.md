@@ -563,11 +563,18 @@ Reto's own, recorded unresolved — **he is deliberately sitting on this**
   needs to … look at the thing itself. It's 'right there' but still,
   that'll be thousands of validations." 95% of ~thousands of extractions
   still leaves hundreds wrong *and* every one needs a human to confirm it
-  is not in the 5%. Open: does review happen per-value (thousands of
-  decisions), per-descriptor-after-normalization (far fewer, but a bad
-  normalization poisons a whole variable), or by sampling with a measured
-  error bar? This question probably decides whether the whole thing is
-  viable, and it is not primarily a technical question.
+  is not in the 5%. **[decided 2026-10-14, Reto: "get started, sampled
+  sign off is good"] — extracted values are signed off by SAMPLED
+  acceptance.** A frontier model reviews a stratified sample per paper ×
+  measurand; the batch is accepted when the sampled error rate is under
+  the bar (start 5 %, with a Wilson interval), and only escalations
+  reach Reto. Per-value human sign-off is retired. The rejected
+  alternatives were per-value review (thousands of decisions, the
+  cost that motivated the question) and per-descriptor review (a bad
+  normalization poisons a whole variable). The sample design — how
+  many rows per (paper, measurand) stratum, and which failures count
+  as errors — is a build decision of the extraction slice in
+  measures-substrate.md §"Next slice".
 - **How much of `material` to generalize vs. build beside.** Not decided.
 - **Is the qualifier-as-descriptor model right?** It is the DRY answer
   and it is unproven here. The alternative — a typed conditions schema

@@ -70,6 +70,16 @@ _SUBSCRIPT_DIGITS: Final[dict[int, str]] = {
 #: parses ``pH`` as petahenry, so they are recognised by name before pint.
 _LOG_UNITS: Final[frozenset[str]] = frozenset({"ph", "poh", "pka", "db"})
 
+#: The dashes print uses for a minus: hyphen, non-breaking hyphen, figure
+#: dash, en and em dash, horizontal bar and the true minus sign. Folded to
+#: ``-`` wherever a sign is read — chunks print these routinely.
+MINUS_CHARS: Final[str] = "‐‑‒–—―−"
+MINUS_FOLD: Final[dict[int, str]] = {ord(c): "-" for c in MINUS_CHARS}
+
+#: A leading dash of any print form, optionally followed by spaces
+#: (``– 1.0``, ``−0.5``, ``‒3``, ``— 5``), folded to a plain minus.
+_LEAD_MINUS_RE: Final[re.Pattern[str]] = re.compile(rf"^[{re.escape(MINUS_CHARS)}]+\s*")
+
 _NUM: Final[str] = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _POINT_RE: Final[re.Pattern[str]] = re.compile(rf"^({_NUM})$")
 _ERR_RE: Final[re.Pattern[str]] = re.compile(rf"^({_NUM})\s*(?:±|\+/-|\+-)\s*({_NUM})$")
@@ -102,7 +112,8 @@ def parse_literal(literal: str) -> ParsedLiteral:
     """``9.6 ± 1.7`` -> point 9.6 err 1.7; ``<1`` -> upper_bound; ``550–575``
     -> interval; ``~3`` -> approximate_point; ``true``/``false`` -> boolean;
     a bare number -> point; anything else -> categorical (text = literal)."""
-    s = literal.strip().replace("−", "-").replace(" ", " ")
+    s = _LEAD_MINUS_RE.sub("-", literal.strip()).translate(MINUS_FOLD)
+    s = s.replace(" ", " ")
     if (m := _ERR_RE.match(s)) is not None:
         return ParsedLiteral("point", num=float(m.group(1)), err=abs(float(m.group(2))))
     if (m := _UPPER_RE.match(s)) is not None:
@@ -356,6 +367,23 @@ def si_form(unit: str | None) -> SiForm | None:
     if factor <= 0 or (factor == 1 and offset == 0):
         return None
     return SiForm(si_unit=si, factor=factor, offset=offset)
+
+
+def is_coherent_si(unit: str | None) -> bool:
+    """The unit already is its coherent SI form (``m``, ``kg m⁻³``, ``1``,
+    ``kg/mol``): a legacy mint in it needs no conversion map, so a missing
+    ``measure_unit_compat`` row is expected, not a defect."""
+    text = (unit or "").strip()
+    if not text:
+        return False
+    try:
+        parsed, _ = _parse_unit(text, what="si")
+    except BadInput:
+        return False
+    try:
+        return bool(_registry().Quantity(1, parsed).to_base_units().magnitude == 1)
+    except _PARSE_ERRORS:
+        return False
 
 
 # ── display: SI value -> the unit a person expects ────────────────────────

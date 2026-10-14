@@ -39,13 +39,14 @@ def _taxon(
     required: list[str] | None = None,
     parent: int | None = None,
     condition: str | None = None,
+    aliases: list[str] | None = None,
 ) -> int:
     meta: dict[str, Any] = {
         "name": name,
         "norm_name": name.lower(),
         "slug": slugify(name),
         "definition": f"{name}.",
-        "aliases": [],
+        "aliases": aliases or [],
         "status": "proposed",
     }
     if unit is not None:
@@ -495,6 +496,14 @@ class TestRoundTrips:
             ("550–575", "interval", None, 550.0, 575.0, None),
             ("~12", "approximate_point", 12.0, None, None, None),
             ("4.2", "point", 4.2, None, None, None),
+            # print's dashes read as a minus, glued or followed by spaces
+            ("−0.5", "point", -0.5, None, None, None),
+            ("– 1.0", "point", -1.0, None, None, None),
+            ("‒2.5", "point", -2.5, None, None, None),
+            ("—0.75", "point", -0.75, None, None, None),
+            ("< −0.5", "upper_bound", -0.5, None, None, None),
+            ("−3 – −1", "interval", None, -3.0, -1.0, None),
+            ("−3 to −1", "interval", None, -3.0, -1.0, None),
         ],
     )
     def test_numeric_literal_forms(
@@ -702,6 +711,141 @@ def test_extra_anchors_get_their_own_edges_listed_in_meta(
     )
 
 
+def test_a_value_repeated_on_the_same_anchor_span_is_refused(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # the pilot's mx212/mx218 pair: one chunk value extracted under two
+    # findings became two rows and doubled the census.
+    spec = MeasureSpec(
+        world["energy"],
+        "1",
+        world["paper"],
+        reported_unit="eV",
+        anchor=_anchor(world, "s1"),
+    )
+    store.insert_measure(spec, actor="reader")
+    with pytest.raises(BadInput, match="duplicate of measure"):
+        store.insert_measure(spec, actor="reader")
+
+
+def test_a_different_value_or_span_is_not_a_duplicate(
+    store: Store, world: dict[str, Any]
+) -> None:
+    anchor = _anchor(world, "s1")
+    store.insert_measure(
+        MeasureSpec(
+            world["energy"], "1", world["paper"], reported_unit="eV", anchor=anchor
+        ),
+        actor="reader",
+    )
+    store.insert_measure(  # same value, another span of the chunk
+        MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            reported_unit="eV",
+            anchor=_anchor(world, "s2"),
+        ),
+        actor="reader",
+    )
+    store.insert_measure(  # same span, another value
+        MeasureSpec(
+            world["energy"], "2", world["paper"], reported_unit="eV", anchor=anchor
+        ),
+        actor="reader",
+    )
+    assert len(store.measures_for(world["paper"])) == 3
+
+
+def test_a_supersession_is_not_a_duplicate(store: Store, world: dict[str, Any]) -> None:
+    anchor = _anchor(world, "s1")
+    first = store.insert_measure(
+        MeasureSpec(
+            world["energy"], "1", world["paper"], reported_unit="eV", anchor=anchor
+        ),
+        actor="reader",
+    )
+    again = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            reported_unit="eV",
+            anchor=anchor,
+            supersedes=first.output_id,
+        ),
+        actor="reader",
+    )
+    assert again.output_id != first.output_id
+    assert _row(store, first.output_id)["superseded_by"] == again.output_id
+
+
+# ── slice 8: implausible-value and glyph-damage sanity flags ───────────────
+
+
+def test_an_order_of_magnitude_outlier_escalates_for_review(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # PDF extraction strips the Greek mu (gr228594): 'um' lands as 'm' and the
+    # value sits ~6 orders of magnitude off the measurand's live median.
+    for v in ("1", "2", "3", "5"):
+        store.insert_measure(
+            MeasureSpec(world["energy"], v, world["paper"], reported_unit="eV"),
+            actor="reader",
+        )
+    outlier = store.insert_measure(
+        MeasureSpec(world["energy"], "1", world["paper"], reported_unit="MeV"),
+        actor="reader",
+    )
+    (esc,) = _row(store, outlier.output_id)["meta"]["escalation"]
+    assert esc["rule"] == "implausible_value" and esc["decades"] > 5
+    assert esc["median"] == pytest.approx(2.45, rel=0.01)
+    # flagged, not dropped: the row lands live; an in-distribution value
+    # written afterwards stays clean
+    clean = store.insert_measure(
+        MeasureSpec(world["energy"], "4", world["paper"], reported_unit="eV"),
+        actor="reader",
+    )
+    assert _row(store, clean.output_id)["meta"].get("escalation") is None
+
+
+def test_a_thin_distribution_flags_nothing(store: Store, world: dict[str, Any]) -> None:
+    store.insert_measure(
+        MeasureSpec(world["energy"], "1", world["paper"], reported_unit="eV"),
+        actor="reader",
+    )
+    run = store.insert_measure(
+        MeasureSpec(world["energy"], "1", world["paper"], reported_unit="MeV"),
+        actor="reader",
+    )
+    assert _row(store, run.output_id)["meta"].get("escalation") is None
+
+
+def test_a_value_from_a_glyph_suspected_paper_escalates(
+    store: Store, world: dict[str, Any]
+) -> None:
+    _update(
+        store,
+        "UPDATE refs SET meta = "
+        '\'{"glyph_health": {"suspected": true}}\'::jsonb WHERE ref_id = %s',
+        (world["paper"],),
+    )
+    run = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            reported_unit="eV",
+            tier="measured",
+            anchor=_anchor(world, "s1"),
+        ),
+        actor="reader",
+    )
+    (esc,) = _row(store, run.output_id)["meta"]["escalation"]
+    assert esc["rule"] == "glyph_suspected"
+    assert esc["source_ref_id"] == world["paper"]
+
+
 # ── runs, flags and conversions (pilot "Done when") ────────────────────────
 
 
@@ -750,6 +894,32 @@ class TestRuns:
         row = _row(store, run.output_id)
         assert row["value_num"] == 52.0  # landed
         assert [e["condition"] for e in row["meta"]["escalation"]] == ["potential"]
+
+    def test_a_required_condition_matches_the_input_taxons_alias(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # the pilot bug: the potential taxon is 'applied-electrode-potential',
+        # alias 'applied-potential' — the name required_conditions uses.
+        out_tax = _taxon(
+            store,
+            "flagged rate",
+            unit="%",
+            required=["applied-potential"],
+            parent=world["start"],
+        )
+        in_tax = _taxon(
+            store,
+            "applied electrode potential",
+            unit="V",
+            parent=world["start"],
+            aliases=["applied-potential"],
+        )
+        run = store.insert_measure(
+            MeasureSpec(out_tax, "1", world["paper"], reported_unit="%"),
+            [MeasureSpec(in_tax, "-0.5", world["paper"], reported_unit="V")],
+            actor="reader",
+        )
+        assert _flags(store, run.output_id) == []
 
     def test_required_conditions_inherit_along_specialises(
         self, store: Store, world: dict[str, Any]
@@ -961,7 +1131,9 @@ class TestRuns:
 
 
 class TestAppendOnlyAndReviews:
-    def _measure(self, store: Store, w: dict[str, Any]) -> int:
+    def _measure(
+        self, store: Store, w: dict[str, Any], chunk: int | None = None
+    ) -> int:
         run = store.insert_measure(
             MeasureSpec(
                 w["fe"],
@@ -969,7 +1141,9 @@ class TestAppendOnlyAndReviews:
                 w["paper"],
                 reported_unit="%",
                 tier="measured",
-                anchor=_anchor(w, [0, 0, len(FE_TEXT)], "offsets"),
+                anchor=MeasureAnchor(
+                    w["paper"], chunk or w["chunk"], "offsets", [0, 0, len(FE_TEXT)]
+                ),
             ),
             [_product(w), _potential(w, "-0.5")],
             actor="reader",
@@ -1056,18 +1230,23 @@ class TestAppendOnlyAndReviews:
         sha = store.target_sha("measure", a)
         _update(store, "UPDATE measures SET trusted = false WHERE id = %s", (a,))
         assert store.target_sha("measure", a) == sha
-        b = self._measure(store, world)
+        other = seed_chunk(store, ref_id=world["paper"], text=FE_TEXT, ord=9)
+        b = self._measure(store, world, chunk=other)
         assert store.target_sha("measure", b) != sha  # different run_key / link
 
 
 class TestAnchorLossAndSupersession:
     def _measured(
-        self, store: Store, w: dict[str, Any], subject: int | None = None
+        self,
+        store: Store,
+        w: dict[str, Any],
+        subject: int | None = None,
+        literal: str = "1",
     ) -> int:
         run = store.insert_measure(
             MeasureSpec(
                 w["energy"],
-                "1",
+                literal,
                 subject or w["paper"],
                 tier="measured",
                 anchor=_anchor(w, "s1"),
@@ -1129,7 +1308,7 @@ class TestAnchorLossAndSupersession:
         self, store: Store, world: dict[str, Any]
     ) -> None:
         a = self._measured(store, world)
-        b = self._measured(store, world)
+        b = self._measured(store, world, literal="2")
         with pytest.raises(psycopg.errors.CheckViolation, match="superseded_by"):
             _update(
                 store, "UPDATE measures SET superseded_by = %s WHERE id = %s", (b, a)
@@ -1175,8 +1354,8 @@ class TestAnchorLossAndSupersession:
         self, store: Store, world: dict[str, Any]
     ) -> None:
         a = self._measured(store, world)
-        b = self._measured(store, world)
-        c = self._measured(store, world)
+        b = self._measured(store, world, literal="2")
+        c = self._measured(store, world, literal="3")
         _update(
             store,
             "UPDATE measures SET superseded_by = %s, superseded_at = now() WHERE id = %s",
@@ -1219,8 +1398,8 @@ class TestAnchorLossAndSupersession:
         self, store: Store, world: dict[str, Any]
     ) -> None:
         a = self._measured(store, world)
-        b = self._measured(store, world)
-        c = self._measured(store, world)
+        b = self._measured(store, world, literal="2")
+        c = self._measured(store, world, literal="3")
         _update(
             store,
             "UPDATE measures SET superseded_by = %s, superseded_at = now() WHERE id = %s",
@@ -1374,6 +1553,9 @@ class TestLiteralAndUnits:
             ("95", "FE of 95% at 25 C", True),
             ("95", "FE was 95.", True),
             ("-0.5", "at -0.5 V vs RHE", True),
+            ("−0.5", "at -0.5 V vs RHE", True),
+            ("-0.5", "at −0.5 V vs RHE", True),
+            ("–1.0", "a drop of –1.0 eV", True),
             ("9.6 ± 1.7", "9.6 ± 1.7 mg", True),
         ],
     )

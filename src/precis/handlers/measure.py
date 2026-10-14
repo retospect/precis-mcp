@@ -50,6 +50,8 @@ from precis.store._measures_ops import ConditionFilter
 from precis.store._salience import current_background_actor
 from precis.store.revision_context import current_revision_context
 from precis.taxonomy.measure_units import (
+    MINUS_CHARS,
+    MINUS_FOLD,
     format_number,
     is_unit,
     pint_unit_text,
@@ -59,7 +61,7 @@ from precis.utils import handle_registry
 
 _DEFAULT_PAGE_SIZE = 20
 
-_NUM = r"[-+−]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+−]?\d+)?"
+_NUM = rf"[{re.escape(MINUS_CHARS)}+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][{re.escape(MINUS_CHARS)}+-]?\d+)?"
 _TERM_RE = re.compile(r"^([^\s=<>]+)(<=|>=|=|<|>)(.+)$")
 _NUMBER_RE = re.compile(rf"^({_NUM})\s*(\S.*)?$")
 
@@ -98,7 +100,7 @@ def parse_query(q: str | None) -> tuple[list[ConditionFilter], str]:
                 )
             conditions.append(ConditionFilter(name=name, op=op, text=raw))
             continue
-        value = float(num.group(1).replace("−", "-"))
+        value = float(num.group(1).translate(MINUS_FOLD))
         unit = (num.group(2) or "").strip() or None
         if unit is None and i < len(tokens) and _TERM_RE.match(tokens[i]) is None:
             if is_unit(tokens[i]):
@@ -312,14 +314,33 @@ class MeasureHandler(Handler):
 
     @staticmethod
     def _si_text(r: dict[str, Any]) -> str:
-        nums = [
-            r[k] for k in ("value_num", "value_low", "value_high") if r[k] is not None
-        ]
-        if not nums:
+        form = r.get("value_form")
+        num, low, high = (
+            r.get("value_num"),
+            r.get("value_low"),
+            r.get("value_high"),
+        )
+        if num is None:
+            if form == "upper_bound":
+                num = high
+            elif form == "lower_bound":
+                num = low
+        if low is not None and high is not None:
+            text = f"{low:.6g}–{high:.6g}"
+        elif num is not None:
+            prefix = {
+                "upper_bound": "< ",
+                "lower_bound": "> ",
+                "approximate_point": "~",
+            }.get(form or "", "")
+            text = prefix + f"{num:.6g}"
+            if r.get("value_err") is not None:
+                text += f" ± {r['value_err']:.6g}"
+        else:
             return "—"
         unit = (r["canonical_unit"] or "").strip()
         unit = "" if pint_unit_text(unit)[0] == "1" else unit
-        return " ".join(f"{n:.6g}" for n in nums) + (f" {unit}" if unit else "")
+        return text + (f" {unit}" if unit else "")
 
     def _anchor_line(self, r: dict[str, Any]) -> str:
         a = r["anchor"]
