@@ -2202,6 +2202,35 @@ def test_opposite_side_instances_may_be_proposed_together_in_one_move():
     assert same._placement_is_legal([(0, 5.0, 5.0), (1, 5.0, 5.0)]) is False
 
 
+def test_a_through_hole_part_blocks_the_opposite_side_too():
+    """A drilled pad stands on both outer layers, so the board is NOT
+    between a through-hole part and an opposite-side one. taz15-blank's
+    anneal (job 484766, 2026-10-14) parked top-side SW3 and C20 on the
+    bottom-side XH headers' pads, 0.000 mm apart on F.Cu, because this
+    exemption read only the side. Same geometry as the arms above; the
+    drilled pad is the only difference."""
+    from precis.pcb.ir import FootprintPad
+
+    for drilled in (0, 1):
+        ir = _two_part_ir(second_layer="bottom")
+        ir.footprint_pads = (
+            FootprintPad(
+                instance=drilled,
+                number="1",
+                label="a" if drilled == 0 else "b",
+                pin=-1,
+                primary=False,
+                raw={"x": 0.0, "y": 0.0, "w": 1.7, "h": 1.7, "drill": 1.0},
+            ),
+        )
+        engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+        assert engine._placement_is_legal([(1, 0.0, 0.0)]) is False
+        assert engine._placement_is_legal([(0, 5.0, 5.0), (1, 5.0, 5.0)]) is False
+        assert [rule for rule, _ in engine.pose_conflicts(1, 0.0, 0.0)] == [
+            "courtyard_overlap"
+        ]
+
+
 def test_courtyard_overlap_cost_agrees_with_legality_about_board_side():
     """The graded term must not price what legality permits. A cost that
     still punished an opposite-side pair would steer the annealer away
