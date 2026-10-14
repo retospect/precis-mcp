@@ -35,8 +35,10 @@ for the next one — no state is lost, only deferred.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
+from precis.quest import needs as needs_mod
 from precis.quest.dossier import dossier_ref_id
 from precis.quest.logbook import append_entry
 from precis.quest.placement import place_papers, residual_paper_ids
@@ -49,6 +51,8 @@ from precis.utils.llm.json_reply import extract_json_object
 if TYPE_CHECKING:
     from precis.store.protocols import RefMetaStore
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 _TOPIC_PREFIX = "topic:"
 
@@ -337,6 +341,24 @@ def weave_tick(
             processed += 1
 
     residual_unplaced = [pid for pid in residual if pid not in clustered_ids]
+
+    # gr485483 — `needs` the model declared on any section's weave apply
+    # once against the quest (a missing tool blocks the ticking quest; the
+    # executor files/dedups the gripe). Degrade-don't-crash, and never on a
+    # dry run (nothing else applied either).
+    if not dry_run:
+        needs_raw: list[Any] = []
+        for r in woven:
+            v = r.get("needs")
+            if isinstance(v, list):
+                needs_raw.extend(v)
+            elif v is not None:
+                needs_raw.append(v)
+        if needs_raw:
+            try:
+                needs_mod.apply_needs(store, quest_id, needs_raw, by="system")
+            except Exception:
+                log.exception("weave_tick: needs apply raised for quest %s", quest_id)
 
     log_entry: int | None = None
     if not dry_run:

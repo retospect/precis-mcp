@@ -263,11 +263,24 @@ with two read-time, mechanical reads (no `% done`):
   grounding), **low-mastery** (a served `concept` you don't understand
   yet), **open-hypothesis** (a `hypothesis` logbook entry with no later
   `result`/`dead-end`), **needs-experiment** (a graduated candidate
-  waiting on a real-world experiment). Gaps *are* where to look next.
+  waiting on a real-world experiment), **needs-tool** (an open gripe the
+  tick filed for a capability that doesn't exist — see the next section).
+  Gaps *are* where to look next.
 
 `view='gaps'` focuses one quest; `id='/gaps'` rolls the queue up across
 every active quest, hottest first. All degrade to empty until quests +
 servers exist.
+
+## A tick can ask for a tool that doesn't exist — `needs`
+
+Every quest body's tick output accepts an optional `needs` list —
+`{"tool", "why", "would_unblock"}` — for a tool, data source, sim lane or
+catalog entry the tick needs but does not have. The **executor** (code,
+not the model) turns it into a gripe: one per `(quest, tool)`, a repeat
+sighting bumping the open gripe with a comment rather than filing a
+second; tagged `quest:<id>` + `needs-tool:<slug>`; linked `blocks` → the
+quest, so the gap list reads `blocked on gr<id>: <tool>` and the dry-rest
+alert cites the handles. Closing the gripe clears the gap.
 
 ## The dossier + a research tick
 

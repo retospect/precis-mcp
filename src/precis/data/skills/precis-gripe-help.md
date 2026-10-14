@@ -40,7 +40,11 @@ don't articulate the fix. A title is optional: `title=` is accepted and
 becomes the first line of the body (the title is just the first line). The system tags it
 `STATUS:open` automatically.
 
-The cost of a wrong gripe is one `delete` call. File freely.
+The cost of a wrong gripe is one `delete` call. File freely. (Quests file
+their own too — a tick's `needs` lands as a `quest:<id>` +
+`needs-tool:<tool>`-tagged gripe linked `blocks` → the quest; a repeat
+sighting becomes a comment, so comment on the existing one rather than
+re-filing.)
 
 Misled by a skill? Every skill ends with a ready-made line: add
 `link='skill:<id>', rel='raises-concern-about'` to the gripe and say what

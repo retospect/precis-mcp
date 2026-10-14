@@ -174,7 +174,12 @@ def _build_prompt(
         '[source_handle] markers>", "papers": [{"index": <int>, '
         '"disposition": "cited-in"|"corroborates"|"superseded-in"|'
         '"off-topic-for", "claims_used": [{"text": <str>, "source_handle": '
-        '<str>, "source_ord": <int>}]}]}. No prose outside the JSON.'
+        '<str>, "source_ord": <int>}]}], "needs": [{"tool": "<a tool, data '
+        'source, sim lane or catalog entry you need that does not exist>", '
+        '"why": "<what you were trying>", "would_unblock": "<what it would '
+        'unblock>"}]}. No prose outside the JSON. If a tool, data source, '
+        "simulation lane or catalog entry you need does not exist, say so "
+        "in `needs` instead of guessing around it."
     )
     return "\n".join(lines)
 
@@ -368,6 +373,9 @@ def weave_section(
         return {"ok": False, "error": "empty_section_text", "applied": False}
 
     papers_out = _normalize_papers_out(parsed.get("papers"), papers_ctx)
+    # gr485483 — the model's declared missing tools ride the result dict
+    # raw; ``weave_tick`` aggregates them and the executor files gripes.
+    needs_raw = parsed.get("needs")
 
     if dry_run:
         return {
@@ -377,6 +385,7 @@ def weave_section(
             "section_text": section_text,
             "papers": papers_out,
             "dropped": dropped,
+            "needs": needs_raw,
         }
 
     # ── apply ──────────────────────────────────────────────────────────
@@ -401,6 +410,7 @@ def weave_section(
                 "error": "conflict",
                 "applied": False,
                 "section_handle": section_handle,
+                "needs": needs_raw,
             }
         assert body_chunk is not None
     else:
@@ -525,6 +535,7 @@ def weave_section(
         "citation_ids": all_citation_ids,
         "section_text_len": len(section_text),
         "dropped": dropped,
+        "needs": needs_raw,
     }
 
 

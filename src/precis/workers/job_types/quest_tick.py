@@ -531,8 +531,28 @@ def _register_dry_rest(store: Store, quest_id: int) -> int:
     if n >= threshold:
         try:
             from precis.alerts import raise_alert
+            from precis.quest import needs as needs_mod
 
             title = (getattr(ref, "title", None) or "").strip() or f"quest {quest_id}"
+            # gr485483: when the loop has already told us WHAT is missing
+            # (needs-gripes it filed), cite them — "stuck on missing input"
+            # with the specific open requests beats the bare generic line.
+            # Own try: a citation-read bug must not cost the alert itself.
+            try:
+                open_needs = needs_mod.open_tool_gripes(store, quest_id)
+            except Exception:
+                log.exception(
+                    "_register_dry_rest: needs-gripe scan failed for quest %s",
+                    quest_id,
+                )
+                open_needs = []
+            cited = ""
+            if open_needs:
+                cited = (
+                    " Open needs-gripe(s) on file: "
+                    + ", ".join(f"gr{gid} ({tool})" for gid, tool in open_needs)
+                    + "."
+                )
             raise_alert(
                 store,
                 source=_DRY_REST_ALERT_SOURCE,
@@ -550,7 +570,7 @@ def _register_dry_rest(store: Store, quest_id: int) -> int:
                     "self-heals the moment a tick sees frontier improvement "
                     "or a non-dry rest — no manual nudge required, though a "
                     "fresh acquisition or setting the quest dormant still "
-                    "resolves it sooner."
+                    "resolves it sooner." + cited
                 ),
                 severity="warn",
                 subject_ref_id=quest_id,

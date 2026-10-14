@@ -648,6 +648,7 @@ class TestReweaveConflict:
             "error": "conflict",
             "applied": False,
             "section_handle": section_handle,
+            "needs": None,
         }
 
         # Body text unchanged (still the first weave's text) — no clobber.

@@ -75,7 +75,7 @@ class Gap:
     """One thin spot in a quest's support — a place to look next."""
 
     kind: str  # thin-support | no-literature | low-mastery | open-hypothesis |
-    #           needs-experiment | fanout-capped | unmet-capability
+    #           needs-experiment | fanout-capped | unmet-capability | needs-tool
     detail: str  # human-readable one-liner
     handle: str | None = None  # the node it concerns, if any
 
@@ -148,6 +148,20 @@ def quest_gaps(
     """
     live = _live_servers(store, quest_id) if servers is None else servers
     gaps: list[Gap] = []
+
+    # 0. Declared blockers first — open needs-gripes the tick's own
+    #    executor filed for this quest (gr485483): a missing tool the model
+    #    asked for outranks every derived thinness signal.
+    from precis.quest import needs as needs_mod
+
+    for gripe_id, tool in needs_mod.open_tool_gripes(store, quest_id):
+        gaps.append(
+            Gap(
+                kind="needs-tool",
+                detail=f"blocked on gr{gripe_id}: {tool}",
+                handle=f"gr{gripe_id}",
+            )
+        )
 
     # 1. Thin support — the striving with (almost) nothing in its service.
     if len(live) < THIN_SUPPORT_MIN:

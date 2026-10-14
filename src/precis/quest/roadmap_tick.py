@@ -78,6 +78,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from precis.quest import needs as needs_mod
 from precis.quest import roadmap_ledger as ledger
 from precis.quest.dossier import (
     AttemptNode,
@@ -448,6 +449,30 @@ _SYS_COMMON = (
     "fi<id>, td<id>, qu<id>). No number, no rung."
 )
 
+#: The ``needs`` channel (gr485483), spliced into every role prompt — one
+#: schema key + one line, identical across bodies. The model declares a
+#: missing tool/data-source/sim-lane/catalog entry instead of guessing
+#: around it; the executor (``precis.quest.needs``) files the gripe.
+_NEEDS_SCHEMA = (
+    ', "needs": [{"tool": "<a tool, data source, sim lane or catalog entry '
+    'you need that does not exist>", "why": "<what you were trying>", '
+    '"would_unblock": "<what it would unblock>"}]'
+)
+_NEEDS_LINE = (
+    " If a tool, data source, simulation lane or catalog entry you need "
+    "does not exist, say so in `needs` instead of guessing around it."
+)
+
+
+def _apply_needs(store: Store, root_id: int, reply: dict[str, Any]) -> None:
+    """Apply a role reply's ``needs`` against the ROOT (the ticking quest a
+    missing tool blocks — the gripe links there). Degrade-don't-crash: a
+    needs bug must never sink the role's own writes."""
+    try:
+        needs_mod.apply_needs(store, root_id, reply.get("needs"), by="agent")
+    except Exception:
+        log.exception("roadmap_tick: needs apply raised for quest %s", root_id)
+
 
 def _statement(choice: RoleChoice) -> str:
     """The capability text a role prompt shows: the full statement, never the
@@ -524,7 +549,8 @@ def _demand_prompt(hub: Hub, root: Ref, choice: RoleChoice) -> str:
         "show the calculation. Return STRICT JSON:\n"
         '{"value": <number>, "source": "se:<slug> | td<id> | qu<id>", '
         '"reason": "<one sentence: why the part needs this>", '
-        '"calculation": "<the arithmetic, handles only, a few lines>"}'
+        '"calculation": "<the arithmetic, handles only, a few lines>"'
+        f"{_NEEDS_SCHEMA}}}\n{_NEEDS_LINE}"
     )
 
 
@@ -559,7 +585,8 @@ def _supply_search_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
         "## Task (bottom-up: what the literature delivers today)\n"
         f"Propose 1–3 literature searches that would surface the best "
         f"reported value of `{choice.key}` for this capability. Return "
-        'STRICT JSON:\n{"searches": ["<query>", ...]}'
+        'STRICT JSON:\n{"searches": ["<query>", ...]'
+        f"{_NEEDS_SCHEMA}}}\n{_NEEDS_LINE}"
     )
 
 
@@ -623,8 +650,10 @@ def _supply_findings_prompt(
         '{"findings": [{"claim": "<one sentence with the number>", '
         '"value": <number>, "paper": "pa<id>", '
         '"quote": "<the sentence from the paper text above that states the '
-        'number, copied verbatim>"}]}\n'
+        'number, copied verbatim>"}]'
+        f"{_NEEDS_SCHEMA}}}\n"
         "An empty list is a valid answer when no paper reports the axis."
+        f"{_NEEDS_LINE}"
     )
 
 
@@ -815,8 +844,10 @@ def _bridge_prompt(
         '"evidence": ["fi<id>", ...]}]},\n'
         ' "pathway": {"title": "<short title>", "statement": "<the bet, 2-4 '
         'sentences>"},\n'
-        ' "dead_end": {"reason": "<why no pathway can close the gap>"}}\n'
+        ' "dead_end": {"reason": "<why no pathway can close the gap>"}'
+        f"{_NEEDS_SCHEMA}}}\n"
         "Fill only the branch matching `outcome`."
+        f"{_NEEDS_LINE}"
     )
 
 
@@ -885,6 +916,7 @@ def _run_demand(
 ) -> dict[str, Any]:
     store = _store(hub)
     reply = _ask(client, prompt)
+    _apply_needs(store, root.id, reply)
     value = num(reply.get("value"))
     source = str(reply.get("source") or "").strip()
     reason = str(reply.get("reason") or "").strip()
@@ -1027,6 +1059,7 @@ def _run_supply(
             client,
             choice,
             prompt,
+            root_id=root.id,
             search_fn=search_fn,
             embedder=embedder,
             queries=queries,
@@ -1085,16 +1118,19 @@ def _supply_tick(
     choice: RoleChoice,
     prompt: str,
     *,
+    root_id: int,
     search_fn: Any,
     embedder: Any,
     queries: list[str],
 ) -> dict[str, Any]:
     """The supply tick proper; appends the query strings it runs to
-    ``queries`` for :func:`_run_supply`'s outcome entry."""
+    ``queries`` for :func:`_run_supply`'s outcome entry. ``root_id`` is where
+    a reply's ``needs`` file (the ticking root, not the capability)."""
     from precis.quest.search import MAX_QUERIES, _parse_search_entry, run_search_step
 
     store = _store(hub)
     reply = _ask(client, prompt)
+    _apply_needs(store, root_id, reply)
     raw_searches = reply.get("searches")
     searches = (
         [s for s in raw_searches if isinstance(s, (str, dict))]
@@ -1127,6 +1163,7 @@ def _supply_tick(
     cards = _supply_cards(store, papers)
     if cards:
         reply2 = _ask(client, _supply_findings_prompt(store, choice, cards))
+        _apply_needs(store, root_id, reply2)
         raw_findings = reply2.get("findings")
         findings = (
             [f for f in raw_findings if isinstance(f, dict)]
@@ -1301,6 +1338,7 @@ def _run_bridge(
         store, root.id, choice
     )
     reply = _ask(client, prompt)
+    _apply_needs(store, root.id, reply)
     outcome = str(reply.get("outcome") or "").strip().lower()
     unit = f" {choice.unit}" if choice.unit else ""
 

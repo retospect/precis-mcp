@@ -39,6 +39,7 @@ import numpy as np
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
 from precis.quest import narrative_budget
+from precis.quest import needs as needs_mod
 from precis.quest.logbook import (
     ENTRY_TYPES,
     LOG_KIND,
@@ -1628,9 +1629,16 @@ refining an existing one>",
 "pbc": [true, true, false]}},
         "ops": [{{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}}]}}}}
   ],
-  "directions": ["<0–3 strategic directions — set these on a frontier review>"]
+  "directions": ["<0–3 strategic directions — set these on a frontier review>"],
+  "needs": [
+    {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
+does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
+it would unblock>"}}
+  ]
 }}
 
+If a tool, data source, simulation lane or catalog entry you need does not \
+exist, say so in `needs` instead of guessing around it. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
@@ -1804,9 +1812,16 @@ strategy tried/settled/still open, not a single fact or citation>",
     {{"op": "mark", "node": "<exact existing node text>", "status": \
 "<open|active|tried|ruled-out>", "parent": "<optional>"}}
   ],
-{dialectic_schema}  "directions": ["<0–3 strategic directions — set these on a review>"]
+{dialectic_schema}  "directions": ["<0–3 strategic directions — set these on a review>"],
+  "needs": [
+    {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
+does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
+it would unblock>"}}
+  ]
 }}
 
+If a tool, data source, simulation lane or catalog entry you need does not \
+exist, say so in `needs` instead of guessing around it. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
@@ -1848,6 +1863,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "proposals",
         "searches",
         "directions",
+        "needs",
     }
 )
 
@@ -2122,6 +2138,15 @@ def _commit_rung(
     if getattr(res, "error", None) or getattr(res, "paused", False):
         return None, True  # transient/breaker/quota trouble — try the next rung
     payload = _payload_from_result(res)
+    # A rung the model declines can still say WHY via `needs` — the stalled
+    # quest this channel exists for (gr485483). Own try/except: a needs bug
+    # must not cost the rung's proposal path.
+    try:
+        needs_mod.apply_needs(store, quest_id, (payload or {}).get("needs"), by=by)
+    except Exception:
+        log.exception(
+            "quest tick: commit-rung needs apply raised for quest %s", quest_id
+        )
     proposals = [
         p for p in ((payload or {}).get("proposals") or []) if isinstance(p, dict)
     ]
@@ -2984,6 +3009,18 @@ class _TickRun:
                     by=by,
                 )
                 added += 1
+
+        # needs — the model's channel for "the tool I need does not exist"
+        # (gr485483): parsed + validated like the other fields, malformed
+        # entries dropped with a logbook note inside :func:`apply_needs`,
+        # never a tick failure. Same degrade-don't-crash convention as
+        # ledger_ops/dialectic_ops above.
+        try:
+            added += needs_mod.apply_needs(
+                store, quest_id, payload.get("needs"), by=by
+            ).logbook_entries
+        except Exception:
+            log.exception("run_quest_tick: needs apply raised for quest %s", quest_id)
 
         self.st.update(
             {
