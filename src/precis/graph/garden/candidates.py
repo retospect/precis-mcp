@@ -30,7 +30,7 @@ import numpy as np
 from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
-from precis.utils.text import lexical_overlap
+from precis.utils.lexical import lexical_overlap
 
 if TYPE_CHECKING:
     from precis.store.store import Store
