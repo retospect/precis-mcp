@@ -95,6 +95,13 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   anything in Do-next 2/3 that assumes part selection is a search. Recorded
   in gr458878.
 
+- **backlog/pcb-soft-pin.md** — `draft`; `fixed` with a `max_travel_mm`
+  box (rotation held). First use: taz15 CN2/CN5 courtyard overlap, after
+  the `_sides_clear` THT side fix. Reto approved 2026-10-14.
+- **backlog/pcb-preferred-placement.md** — `idea/low`; post-anneal
+  round-value snap (grid by part class, rotation to 90 deg), wells in the
+  anneal later. Build next time, per Reto 2026-10-14.
+
 ## Parked
 
 - (none)
