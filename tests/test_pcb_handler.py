@@ -3477,3 +3477,78 @@ def test_drc_view_filters_by_severity_and_rule_and_sorts_errors_first(pcb, monke
         pcb.get(id="sensor-node", view="drc", args={"severity": "fatal"})
     with pytest.raises(BadInput):
         pcb.get(id="sensor-node", view="drc", args={"rule": "no_such_rule"})
+
+
+# ── gr485159: link / unlink ────────────────────────────────────────────
+
+
+def _quest_ref_id(store) -> int:
+    """Mint a quest the design can ``serve`` (gr485159's own pair:
+    pcb → quest, the edge the quest side could only write backwards)."""
+    import re
+
+    from precis.handlers.quest import QuestHandler
+
+    resp = QuestHandler(hub=Hub(store=store)).put(text="Own the board build")
+    m = re.search(r"\bqu(\d+)\b", resp.body)
+    assert m is not None, resp.body
+    return int(m.group(1))
+
+
+def test_pcb_link_serves_round_trip(pcb, store):
+    """``link(kind='pcb', rel='serves')`` writes the edge through the
+    shared link door; it reads back on ``view='links'`` and from the
+    target's side (``served-by`` auto-mirrors), and ``mode='remove'``
+    takes it out."""
+    from precis.handlers.quest import QuestHandler
+
+    pcb.put(id="taz-link", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="taz-link")
+    assert ref is not None
+    qid = _quest_ref_id(store)
+
+    resp = pcb.link(id="taz-link", target=f"quest:{qid}", rel="serves")
+    assert "+1 link" in resp.body
+    out_edges = store.links_for(ref.id, direction="out", relation="serves")
+    assert [e.dst_ref_id for e in out_edges] == [qid]
+
+    # The design's own links view shows the outbound edge…
+    body = pcb.get(id="taz-link", view="links").body
+    assert "serves" in body
+    # …and the quest's neighbourhood shows the mirrored inbound edge.
+    quest_body = QuestHandler(hub=Hub(store=store)).get(id=qid).body
+    assert "serves" in quest_body and "taz-link" in quest_body
+
+    resp = pcb.link(id="taz-link", target=f"quest:{qid}", rel="serves", mode="remove")
+    assert "-1 link" in resp.body
+    assert store.links_for(ref.id, direction="out") == []
+    assert "(no links)" in pcb.get(id="taz-link", view="links").body
+
+
+def test_pcb_link_defaults_to_related_to(pcb, store):
+    """No ``rel=`` adds ``related-to`` (the vocabulary default)."""
+    pcb.put(id="taz-rt", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="taz-rt")
+    assert ref is not None
+    qid = _quest_ref_id(store)
+    pcb.link(id="taz-rt", target=f"quest:{qid}")
+    out_edges = store.links_for(ref.id, direction="out", relation="related-to")
+    assert [e.dst_ref_id for e in out_edges] == [qid]
+
+
+def test_pcb_link_refused_rel_lists_vocabulary(pcb):
+    """An unknown ``rel=`` is refused with the relation vocabulary —
+    the same ``BadInput`` every other link door gives."""
+    pcb.put(id="taz-badrel", args=_DESIGN)
+    with pytest.raises(BadInput, match="unknown relation") as exc:
+        pcb.link(id="taz-badrel", target="quest:1", rel="befriends")
+    options = exc.value.options or []
+    assert "serves" in options and "related-to" in options
+
+
+def test_pcb_link_missing_target_and_bad_mode(pcb):
+    pcb.put(id="taz-arg", args=_DESIGN)
+    with pytest.raises(BadInput, match="requires target="):
+        pcb.link(id="taz-arg")
+    with pytest.raises(BadInput, match="must be 'add' or 'remove'"):
+        pcb.link(id="taz-arg", target="quest:1", mode="detach")

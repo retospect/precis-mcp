@@ -30,9 +30,11 @@ corner**, **+X right, +Y up (north)**, rotation **clockwise from north** in degr
 pivot = the component centroid. (Exporters convert to each fab's convention —
 e.g. the JLCPCB CPL flips rotation to CCW for you.)
 
-Four verbs, no new ones: `put` (create/extend), `get` (list / netlist TOC /
+Five verbs, no new ones: `put` (create/extend), `get` (list / netlist TOC /
 one instance / one net / an analysis / an export), `search` (by intent),
-`delete` (soft-retire).
+`delete` (soft-retire), `link`/`unlink` (edges to other refs — `rel=` per
+`precis-relations`, e.g. `rel='serves'` toward the quest that owns the
+board; `view='links'` reads them back).
 
 Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
 `op=` surface, once the netlist exists), [[precis-pcb-check-help]] (the

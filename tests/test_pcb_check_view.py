@@ -371,3 +371,68 @@ def test_view_drc_byte_identical_for_unchanged_fixture(pcb: PcbHandler) -> None:
     normalized = re.sub(r"run [0-9a-f]{8}", "run XXXXXXXX", body)
     expected = re.sub(r"run [0-9a-f]{8}", "run XXXXXXXX", _DRC_GOLDEN.strip("\n"))
     assert normalized == expected
+
+
+def test_check_netlist_collapses_unrouted_rows(pcb: PcbHandler, store: Any) -> None:
+    """gr485271 — at phase ``netlist`` an unrouted net is the EXPECTED
+    state, not a finding: the per-net rows collapse to one head line so
+    they stop burying the real netlist findings. The rows still persist
+    in the run — the next netlist run reports them ``still``, never
+    ``gone`` — and ``args.rule='unrouted'`` expands them."""
+    pcb.put(id="chk-unrouted", args=_mini_design())
+    body = pcb.get(id="chk-unrouted", view="check", args={"phase": "netlist"}).body
+    assert "3 net(s) unrouted — expected before routing" in body
+    rows = [ln for ln in body.splitlines() if "\t" in ln]
+    assert not any(ln.split("\t")[2] == "unrouted" for ln in rows), body
+    # …while the real netlist findings stay in the table.
+    assert "unconnected_pin" in body
+    # An explicit rule filter expands the collapsed rows.
+    expanded = pcb.get(
+        id="chk-unrouted",
+        view="check",
+        args={"phase": "netlist", "rule": "unrouted"},
+    ).body
+    assert "\ttodo\tunrouted\t" in expanded
+    # The persisted run keeps the rows: a second netlist eval counts them
+    # 'still' — never 'gone'.
+    second = pcb.get(id="chk-unrouted", view="check", args={"phase": "netlist"}).body
+    m = re.search(
+        r"vs run \w+: (\d+) new, (\d+) still(?: \(\d+ worse\))?, (\d+) resolved",
+        second,
+    )
+    assert m, second
+    assert int(m.group(1)) == 0 and int(m.group(2)) > 0 and int(m.group(3)) == 0
+    assert "gone since" not in second
+
+
+def test_check_routed_phase_keeps_unrouted_rows(pcb: PcbHandler) -> None:
+    """``routed``/``fab`` are unchanged — an unrouted net is a per-net
+    ``error`` row again once the router has run."""
+    pcb.put(id="chk-unrouted2", args=_mini_design())
+    body = pcb.get(id="chk-unrouted2", view="check", args={"phase": "routed"}).body
+    assert "\terror\tunrouted\t" in body
+    assert "expected before routing" not in body
+
+
+def test_check_netlist_unrouted_only_board_reads_clean(
+    pcb: PcbHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A netlist-phase run whose ONLY rows are unrouted nets reads clean
+    under the collapse line — ``— no findings ✓``, not the misleading
+    "no findings match the filter" tail (there IS no filter)."""
+    from precis.handlers import pcb as pcb_handler
+    from precis.pcb import drc as pcb_drc
+
+    pcb.put(id="chk-only-unrouted", args=_mini_design())
+    findings = [
+        pcb_drc.DrcFinding("unrouted", "error", f"net {n}", f"net {n} has no route")
+        for n in ("SIG", "VDD", "GND")
+    ]
+    run = pcb_handler._DrcRun(
+        "abcdef0123", findings, True, pcb_drc.FindingDelta(previous_run_id=None)
+    )
+    monkeypatch.setattr(pcb, "_drc_run", lambda ref_id, design, **kw: run)
+    body = pcb.get(id="chk-only-unrouted", view="check", args={"phase": "netlist"}).body
+    assert "3 net(s) unrouted — expected before routing" in body
+    assert "— no findings ✓" in body
+    assert "no findings match" not in body

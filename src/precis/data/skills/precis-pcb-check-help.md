@@ -27,6 +27,8 @@ same findings, same table.
 - Severity is a function of `(rule, phase)`: `unrouted` reads `todo`
   before `routed`, `error` after; a netless pin warns below `fab`,
   errors at it (`todo` is a display tier; stored rows keep `error|warn`).
+  At `netlist` the per-net `unrouted` rows collapse to one head line —
+  expected before routing — `args={'rule':'unrouted'}` expands them.
 - The phase derives from board state; `fab` can only be claimed:
   `put(args={'op':'phase','phase':'fab'})`, `phase: null` clears it.
 - ERC joins DRC here: `pin_conflict`, `no_driver`, `over_voltage`,

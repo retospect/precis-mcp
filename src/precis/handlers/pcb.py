@@ -53,6 +53,8 @@ pixels. The verbs map onto the seven-verb surface:
   :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
 - ``search`` — over design names + descriptions (the one summary card).
 - ``delete`` — soft-retire a whole design.
+- ``link``  — edges to other refs (``rel=`` per ``precis-relations``;
+  ``view='links'`` reads them back).
 
 The in-house topological place+route engine (:mod:`precis.pcb.optimize` /
 :mod:`precis.pcb.realize`, run via the ``pcb_place``/``pcb_route`` jobs) is
@@ -124,6 +126,12 @@ from precis.store._pcb_ops import (
 )
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 from precis.utils.search_merge import SearchHit
 from precis.utils.units import parse_angle_deg
 
@@ -584,7 +592,9 @@ class PcbHandler(Handler):
             "put(kind='job', job_type='pcb_argue', parent_id=<this ref>, "
             "params={'pcb_ref_id':N}) answers every open question in "
             "place; "
-            "search over names; delete soft-retires. "
+            "search over names; delete soft-retires; link/unlink "
+            "edges to other refs (rel= per precis-relations — e.g. a "
+            "board 'serves' the quest it feeds). "
             "Postgres-canonical; routing/gerbers are downstream export. "
             "See precis-pcb-help and precis-pcb-route-help."
         ),
@@ -593,6 +603,7 @@ class PcbHandler(Handler):
         supports_search=True,
         supports_search_hits=True,
         supports_delete=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         views=_VIEWS,
@@ -3750,7 +3761,9 @@ class PcbHandler(Handler):
         net reads ``todo`` before ``routed`` and ``error`` at/after it —
         and ``unconnected_pin`` warns below ``fab``, errors at it
         (fab-tier severities need the authored claim; derive_phase never
-        invents ``fab``).
+        invents ``fab``). At ``netlist`` the per-net ``unrouted`` rows
+        collapse to one head line — expected state, not a finding
+        (gr485271); ``args.rule='unrouted'`` expands them.
 
         The run persists like every check run, so ``new / still /
         resolved`` below is against the board's previous run by
@@ -3796,6 +3809,19 @@ class PcbHandler(Handler):
             return pcb_drc.severity_at(f.rule, f.severity, phase)
 
         tiered = [(f, _sev(f)) for f in findings]
+        # gr485271: at netlist phase an unrouted net is the EXPECTED
+        # state, not a finding to read — the per-net rows (151 on a
+        # blank board) bury the real netlist findings, so the TABLE
+        # collapses them into one head line. The rows still persist in
+        # the run and stay in its delta as ``still``: dropping them from
+        # the persisted set would report every standing unrouted finding
+        # ``gone`` on each netlist run, and ``netlist_drc_clean`` reads
+        # the latest run's rows. An explicit ``args.rule='unrouted'``
+        # still expands them.
+        n_unrouted = 0
+        if phase == "netlist" and "unrouted" not in rules:
+            n_unrouted = sum(1 for f, _s in tiered if f.rule == "unrouted")
+            tiered = [(f, s) for f, s in tiered if f.rule != "unrouted"]
         n_error = sum(1 for _f, s in tiered if s == "error")
         n_warn = sum(1 for _f, s in tiered if s == "warn")
         n_todo = sum(1 for _f, s in tiered if s == "todo")
@@ -3839,6 +3865,11 @@ class PcbHandler(Handler):
                 f"\nnot fully checked — {n_info} rule(s) could not reach a "
                 "verdict (info rows)"
             )
+        if n_unrouted:
+            head += (
+                f"\n{n_unrouted} net(s) unrouted — expected before routing "
+                "(args={'rule':'unrouted'} lists them)"
+            )
         # An unknown rule is refused BEFORE the zero-findings answer — a
         # filter that names nothing that ran is an input error, never a
         # quiet "no findings".
@@ -3860,7 +3891,14 @@ class PcbHandler(Handler):
         if len(shown) != len(tiered):
             head += f"\nfiltered: showing {len(shown)} of {len(tiered)} finding(s)"
         if not shown:
-            return Response(body=head + "\n— no findings match the filter" + gone)
+            # Empty WITHOUT a filter can only be the netlist unrouted
+            # collapse — the board is clean, not "no findings match".
+            tail = (
+                "— no findings match the filter"
+                if (severity or rules)
+                else "— no findings ✓"
+            )
+            return Response(body=head + "\n" + tail + gone)
         # Explicit severity ladder, stable within a tier: error > warn >
         # todo (the presentation tier) > info.
         shown.sort(
@@ -5019,6 +5057,46 @@ class PcbHandler(Handler):
             return Response(body=body)
         except gerber_view.UnsupportedGerber as exc:
             raise BadInput(f"pcb: cannot render this fab set — {exc}") from exc
+
+    # ── link ─────────────────────────────────────────────────────────
+    def link(
+        self,
+        *,
+        id: str | int | None = None,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add or remove a link from this design to another ref
+        (gr485159 — a board could not ``serve`` the quest that owns it;
+        the quest-side ``served-by`` writes the edge backwards, so the
+        verb belongs here). The shared :func:`apply_link_ops` door —
+        the same one every other slug kind uses — carries the relation
+        vocabulary, the constraint table (``serves`` is acyclic) and
+        lazy target minting; ``rel=None`` adds ``related-to``."""
+        if id is None:
+            raise BadInput("pcb link needs id= (the design slug)")
+        target = require_link_target("pcb", target)
+        validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="pcb", id=str(id).strip())
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref.id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=str(ref.slug),
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
