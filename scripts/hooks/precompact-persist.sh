@@ -10,7 +10,7 @@ cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" 2>/dev/null || exit 0
 
 echo "⏳ PreCompact — persist anything that must outlive this context (free text won't):"
 echo "   • residual bugs / next steps → a docs/backlog/ item or a gripe/todo (not the transcript)"
-echo "   • a resume pointer for in-flight work (memory / docs/backlog/)"
+echo "   • in-flight work → update your section:threads node IN PLACE: edit(kind='memory', id=…, mode='replace') — not a fresh put"
 
 # Surface hygiene drift so it can be cleaned before context is lost (advisory).
 scripts/memory-lint 2>/dev/null | grep -iE 'issue|DUE' | sed 's/^/   • memory: /' || true

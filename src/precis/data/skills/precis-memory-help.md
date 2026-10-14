@@ -345,7 +345,26 @@ Search inside one hub or summary node with
 
 `put` and `edit` on a memory end with a `Next:` block of ready-to-run
 calls when a link, type tag or split is missing: the two nearest hubs, up to
-five unlinked gotchas for a thread. No lines means the node is in place.
+five unlinked gotchas for a thread — and, on a `put` whose
+`section:threads` title prefix matches a live thread node's, the
+`edit(mode='replace')` call that updates that node instead. No lines
+means the node is in place.
+
+## Update or new node?
+
+- **Same subject, new state** → edit the node you have: an anchored
+  `edit(mode='find-replace', find='old', text='new')` for one span, or
+  `edit(mode='replace', text='…')` to rewrite the whole body. The id and
+  its links stay; the old body stays readable in `view='log'`.
+- **Replaced by a different node** → `link(rel='supersedes')` from the
+  new node to the old, then `delete` the old. Never write "supersedes
+  meN" in prose alone — the edge is what the graph and the sweeps read.
+- **`section:threads` resume nodes** — one per campaign. First body line
+  is `Left: <what remains>` (`Left: none` when done); rewrite it in place
+  at each resume or compact rather than `put`-ing a fresh node. A daily
+  sweep retires `Left: none` nodes, superseded ones, and nodes untouched
+  14 days — a stale node whose `Left:` names open work becomes a linked
+  todo first.
 
 ## Sticky memories — show up every turn until you unpin them
 

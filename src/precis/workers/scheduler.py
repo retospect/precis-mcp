@@ -464,6 +464,24 @@ def _run_cfp_watch(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
+    """One ``section:threads`` retirement sweep (gr485358 item 1), fired
+    from the daily host-agnostic ``memory_thread_sweep`` cadence.
+    ``batch_size`` is unused — the pass walks every live thread node each
+    fire (a bounded set; prod had 22 on 2026-10-14). See
+    workers/memory_thread_sweep.py; no network, no LLM, purely local SQL.
+    """
+    from precis.workers.memory_thread_sweep import run_memory_thread_sweep_pass
+
+    result = run_memory_thread_sweep_pass(store)
+    log.info(
+        "scheduler: memory_thread_sweep inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
     """One nanopub candidate re-gate sweep (gr279770's sweep half), fired
     from the daily host-agnostic ``nanopub_stale_sweep`` cadence.
@@ -820,6 +838,17 @@ CADENCES: tuple[Cadence, ...] = (
         name="call_errors",
         interval_s=24 * 3600 + 47 * 60,
         run=_run_call_errors,
+    ),
+    # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
+    # none' first lines, nodes another live memory supersedes, and nodes
+    # untouched ≥14 days (minting a carry-over todo first when the Left:
+    # line names open work). Host-agnostic, daily, off the exact day
+    # boundary like the other daily sweeps. No `eligible` check: pure
+    # local SQL. spends=False: no LLM anywhere in the sweep.
+    Cadence(
+        name="memory_thread_sweep",
+        interval_s=24 * 3600 + 43 * 60,
+        run=_run_memory_thread_sweep,
     ),
 )
 

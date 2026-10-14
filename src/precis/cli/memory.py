@@ -876,9 +876,11 @@ def _render_loaded(
 #: ``parent`` (handle of the direct ``part-of`` parent; empty if none),
 #: ``review`` (comma-separated ``td<id>:<created date>`` of the open
 #: ``memory-review`` todos linked to the node; empty if none), ``gotchas_none``
-#: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies). ``hub``
-#: is the nearest ``section:index`` *ancestor* along the part-of chain, so a
-#: detail node under a summary node names the summary's hub.
+#: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies),
+#: ``supersedes`` (comma-separated handles of the node's ``supersedes``
+#: edge targets; empty if none). ``hub`` is the nearest ``section:index``
+#: *ancestor* along the part-of chain, so a detail node under a summary
+#: node names the summary's hub.
 #: Column order is the contract with scripts/memory-lint.
 SECTIONS_MANIFEST = "_sections.tsv"
 
@@ -939,6 +941,7 @@ def export_memory_nodes(
         parents_of,
         qualified_counts,
         review_todos,
+        supersedes_targets,
     )
 
     ids = [r.id for r in refs]
@@ -948,6 +951,22 @@ def export_memory_nodes(
     qualified = qualified_counts(store, ids)
     accessed = accessed_dates(store, ids)
     reviews = review_todos(store, ids)
+    # Column 15: the node's ``supersedes`` targets as handles — the graph
+    # truth memory-lint's prose-vs-edge check compares bodies against.
+    supersede_of = supersedes_targets(store, ids)
+    dst_kinds = {
+        r.id: r.kind
+        for r in store.fetch_refs_by_ids(
+            sorted({d for ds in supersede_of.values() for d in ds})
+        ).values()
+    }
+
+    def _sup_handles(ref_id: int) -> str:
+        return ",".join(
+            handle_registry.try_format(dst_kinds.get(d, "memory"), d) or str(d)
+            for d in supersede_of.get(ref_id, [])
+        )
+
     final = Path(dest)
     tmp = final.with_name(f"{final.name}.tmp.{os.getpid()}")
     old = final.with_name(f"{final.name}.old.{os.getpid()}")
@@ -994,6 +1013,7 @@ def export_memory_nodes(
                 _handle_of(parent_of.get(ref.id, [])),
                 reviews.get(ref.id, ""),
                 1 if "gotchas:none" in values else 0,
+                _sup_handles(ref.id),
             )
             manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")
@@ -1115,6 +1135,20 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--k", type=int, default=5, help="Hits to print with --q (default 5)."
     )
     idx.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    swp = msub.add_parser(
+        "sweep",
+        help=(
+            "List (or with --apply, run) the section:threads retirement "
+            "sweep — the same rules the daily memory_thread_sweep cadence "
+            "applies. Dry-run by default."
+        ),
+    )
+    swp.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually retire the listed nodes (default: plan only).",
+    )
+    swp.add_argument("--database-url", default=None, help="Postgres DSN override.")
     mirror = msub.add_parser(
         "mirror", help="Explicit faithful file/graph snapshot exchange."
     )
@@ -1222,6 +1256,35 @@ def run(args: argparse.Namespace) -> None:
             except ImportRefused as exc:
                 raise SystemExit(f"precis memory import: refused: {exc}") from exc
             print(report.summary())
+        elif args.memory_cmd == "sweep":
+            from precis.utils import handle_registry
+            from precis.workers.memory_thread_sweep import (
+                plan_thread_sweep,
+                run_memory_thread_sweep_pass,
+            )
+
+            plan = plan_thread_sweep(store)
+            if not args.apply:
+                if not plan:
+                    print("memory sweep: nothing to retire")
+                else:
+                    print("memory sweep (dry run — pass --apply to retire):")
+                    for item in plan:
+                        handle = (
+                            handle_registry.try_format("memory", item.ref_id)
+                            or f"me{item.ref_id}"
+                        )
+                        carry = "; Left: line becomes a todo" if item.left else ""
+                        print(
+                            f"  {handle} {item.title!r} — rule {item.rule}: "
+                            f"{item.reason}{carry}"
+                        )
+            else:
+                result = run_memory_thread_sweep_pass(store)
+                print(
+                    f"memory sweep: claimed={result.claimed} "
+                    f"retired={result.ok} failed={result.failed}"
+                )
         elif args.q is not None:
             from precis.embedder import make_embedder
 

@@ -25,7 +25,8 @@
 # The export's manifest (_sections.tsv: handle, section, updated, body chars,
 # chars the fisheye eye shows, live ring links, links hidden by the eye's
 # per-group cap, dead-end links, part-of hub handle, live qualified-by count,
-# last access date (viewed/recalled) —
+# last access date (viewed/recalled), open review todos, gotchas:none flag,
+# the node's supersedes targets as handles —
 # src/precis/cli/memory.py::SECTIONS_MANIFEST) carries what the bodies cannot: check 2 scopes by section, check 7 ages by
 # the node's real updated_at (the export rewrites every file, so mtimes are
 # all "today"), and check 8 lints the graph as recall walks it.
@@ -71,6 +72,13 @@
 #      review todo (tag memory-review, linked todo -> node; the manifest's
 #      review column) is listed as "under review", and as a problem once the
 #      todo is open > 7 days; a manifest without that column skips it.
+#   9. stale thread: a threads node not edited in 14+ days (the daily
+#      memory_thread_sweep cadence retires those; this lists stragglers).
+#  10. thread hygiene: (a) a body that says `supersedes meN` with no such
+#      edge (prose retires nothing — the sweep keys off the edge; the
+#      manifest's supersedes column is the truth); (b) two or more live
+#      threads nodes sharing a title prefix (text before the first
+#      date/timestamp — one node per campaign, gr485358).
 #   6. sibling-repo path currency (always runs; internally weekly-gated, self-
 #      stamping) — deliberately NOT part of check 5's in-repo path scan: that
 #      scan explicitly skips external `~/work/<name>` paths as "legitimately
@@ -298,7 +306,7 @@ fi  # SCAN_DIR (check 3b)
 # number of neighbours per relation, and hides dead ends. The caps live in
 # src/precis/utils/eye_render.py; the export applies them, this only compares.
 if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
-    while IFS=$'\t' read -r h sec upd chars eye live hidden dead hubh qual hubgot members acc review gnone parsec; do
+    while IFS=$'\t' read -r h sec upd chars eye live hidden dead hubh qual hubgot members acc review gnone parsec supc; do
         [[ -n "$dead" ]] || continue          # pre-shape manifest: nothing to check
         tf="$SCAN_DIR/$h.md"
         if (( chars > eye )); then
@@ -380,7 +388,8 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             gn = (NF >= 14 && $14 == 1) ? 1 : 0
             # a part-of child of another thread inherits the parent thread qualification
             ps = ((NF >= 12 && $12 != "") ? secof[$12] : "") ; if (ps == "") ps = "-"
-            print $1, sec, $3, $4, $5, $6, $7, $8, hub, qual, gotchas[hub] + 0, members[$1] + 0, acc, rev, gn, ps
+            sup = (NF >= 15) ? $15 : "?"
+            print $1, sec, $3, $4, $5, $6, $7, $8, hub, qual, gotchas[hub] + 0, members[$1] + 0, acc, rev, gn, ps, sup
         }' "$MANIFEST" "$MANIFEST")
 fi
 
@@ -398,6 +407,44 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             problems=$((problems+1))
         fi
     done < <(awk -F'\t' '$2 == "threads"' "$MANIFEST")
+fi
+
+# 10. thread hygiene (graph mode, manifest + node bodies) — the drift the
+#     memory_thread_sweep cadence and the one-node-per-campaign rule fix:
+#     (a) a body saying `supersedes meN` with NO such edge retires nothing
+#     (the sweep keys off the edge — the manifest's supersedes column is
+#     the truth; a pre-column cache is skipped), and (b) two or more live
+#     section:threads nodes sharing a title prefix — the title text before
+#     the first date/timestamp, same rule as utils/memory_threads.py — are
+#     one campaign filed twice. Report only; the lint never retires.
+if (( GRAPH )) && [[ -n "$MANIFEST" && -n "$SCAN_DIR" ]]; then
+    # 10a. prose-only supersedes
+    while IFS=$'\t' read -r h sup; do
+        [[ -z "$h" || "$sup" == "?" ]] && continue
+        tf="$SCAN_DIR/$h.md"; [[ -f "$tf" ]] || continue
+        while IFS= read -r t; do
+            [[ -z "$t" ]] && continue
+            printf '%s\n' "$sup" | tr ',' '\n' | grep -qxF "$t" && continue
+            echo "  prose-only supersedes → $(label_of "$h.md" "$tf"): body says 'supersedes $t' but no such edge exists — link(kind='memory', id='$h', target='$t', rel='supersedes'), then delete(kind='memory', id='$t') (or drop the claim)"
+            problems=$((problems+1))
+        done < <( { grep -oiE 'supersedes[[:space:]]+me[0-9]+' "$tf" || true; } | grep -oiE 'me[0-9]+' | tr 'A-Z' 'a-z' | sort -u )
+    done < <(awk -F'\t' '{ print $1 "\t" ((NF >= 15) ? $15 : "?") }' "$MANIFEST")
+
+    # 10b. duplicate thread title prefix
+    while IFS=$'\t' read -r prefix handles; do
+        [[ -z "$prefix" ]] && continue
+        echo "  dup thread prefix → $handles — '$prefix': one section:threads node per campaign — keep one and rewrite it in place (edit(kind='memory', mode='replace')), link(rel='supersedes') + delete the rest"
+        problems=$((problems+1))
+    done < <(
+        for h in $(awk -F'\t' '$2 == "threads" { print $1 }' "$MANIFEST"); do
+            tf="$SCAN_DIR/$h.md"; [[ -f "$tf" ]] || continue
+            head -n 1 "$tf" | sed -E 's/^# +//' | tr 'A-Z' 'a-z' \
+                | tr '—–' '--' \
+                | sed -E 's|[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}.*$||; s|[0-9]{1,2}:[0-9]{2}.*$||; s|[[:space:]]+| |g; s|^ +||; s|[-:;,|( ]+$||; s| +$||' \
+                | awk -v h="$h" 'NF { print $0 "\t" h }'
+        done | awk -F'\t' '{ n[$1]++; hs[$1] = hs[$1] ", " $2 }
+                END { for (p in n) if (n[p] > 1) print p "\t" substr(hs[p], 3) }'
+    )
 fi
 
 if (( problems == 0 )) && (( GRAPH )); then

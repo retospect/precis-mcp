@@ -75,6 +75,10 @@ Retire (soft delete, recoverable at the SQL layer) so recall stays current:
 - A mirrored node whose file was deleted: retire it (the importer's
   `--missing retire`, or by hand).
 Any session may retire a node it has shown landed or superseded.
+Since 2026-10-14 the daily `memory_thread_sweep` cadence retires the
+thread cases automatically — `Left: none`, an inbound live `supersedes`
+edge, or 14 days untouched (a `Left:` naming open work becomes a linked
+todo first); `precis memory sweep` dry-runs it.
 `scripts/memory-lint` lists candidates; it never retires. It also lints
 each node as `fisheye+1hop` shows it.
 

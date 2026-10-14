@@ -1877,3 +1877,51 @@ def test_header_card_text_skips_empty_parts() -> None:
     assert header_card_text("  Title ", None) == "Title"
     assert header_card_text("", " hook ") == "hook"
     assert header_card_text(None, "  ") == ""
+
+
+def test_put_thread_node_hints_at_a_same_prefix_peer(
+    handler: MemoryHandler,
+) -> None:
+    """gr485358: one section:threads node per campaign — a second ``put``
+    whose title prefix (text before the first date) matches a live thread
+    node's gets a Next row offering the in-place rewrite."""
+    first = handler.put(
+        text="Left: slice 1 done\n\nstate",
+        title="Fleet wave — 2026-10-13",
+        tags=["SPACE:repo-dev", "section:threads"],
+    )
+    first_id = id_of(first.body)
+
+    second = handler.put(
+        text="Left: slice 2 next\n\nstate",
+        title="Fleet wave — 2026-10-14",
+        tags=["SPACE:repo-dev", "section:threads"],
+    )
+
+    assert f"edit(kind='memory', id='me{first_id}', mode='replace'" in second.body
+    assert "already covers 'fleet wave'" in second.body
+
+
+def test_put_thread_node_no_hint_on_a_fresh_prefix(
+    handler: MemoryHandler,
+) -> None:
+    handler.put(
+        text="Left: slice 1 done\n\nstate",
+        title="Fleet wave — 2026-10-13",
+        tags=["SPACE:repo-dev", "section:threads"],
+    )
+
+    other = handler.put(
+        text="Left: start\n\nstate",
+        title="Parser rewrite — 2026-10-14",
+        tags=["SPACE:repo-dev", "section:threads"],
+    )
+
+    assert "already covers" not in other.body
+    # a non-thread node with a matching prefix is not a duplicate either
+    plain = handler.put(
+        text="a note",
+        title="Fleet wave — 2026-10-15",
+        tags=["SPACE:repo-dev"],
+    )
+    assert "already covers" not in plain.body

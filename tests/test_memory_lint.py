@@ -856,3 +856,143 @@ def test_bare_next_heading_with_list_keeps_thread_open(
     out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
     assert "retire candidate → me31 (Old campaign): thread landed" not in out, out
     assert "retire candidate → me32 (Done campaign): thread landed" in out, out
+
+
+# ---------------------------------------------------------------------------
+# check 10: thread hygiene (gr485358) — prose-only supersedes + dup prefixes
+# ---------------------------------------------------------------------------
+
+
+def _manifest_row(
+    handle: str, section: str, today: str, *, supersedes: str = ""
+) -> str:
+    """A 15-column _sections.tsv row quiet for every other check: recent
+    update (check 9), one live neighbour + no dead/hidden (check 8), a hub
+    (no-hub check), no review todo, not gotchas:none."""
+    return (
+        f"{handle}\t{section}\t{today}\t10\t10\t1\t0\t0\tme1\t0\t\t\t\t0\t{supersedes}"
+    )
+
+
+def test_graph_mode_flags_a_prose_only_supersedes(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """ "Supersedes meN" in a body with no matching edge: the sweep keys off
+    the edge, so the prose alone retires nothing — that's the finding."""
+    home, _mem, cache, nodes = graph_setup
+    today = _today()
+    (nodes / "me51.md").write_text(
+        "# Fleet wave\n\nLeft: land the parser. Supersedes me52 in spirit.\n",
+        encoding="utf-8",
+    )
+    (nodes / "me52.md").write_text(
+        "# Fleet wave old\n\nLeft: same work.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me51", "threads", today)
+        + "\n"
+        + _manifest_row("me52", "threads", today)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "prose-only supersedes → me51 (Fleet wave)" in out, out
+    assert "rel='supersedes'" in out, out
+
+
+def test_graph_mode_prose_supersedes_quiet_when_the_edge_exists(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    today = _today()
+    (nodes / "me51.md").write_text(
+        "# Fleet wave\n\nLeft: land the parser. Supersedes me52.\n",
+        encoding="utf-8",
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me51", "threads", today, supersedes="me52") + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "prose-only supersedes" not in out, out
+
+
+def test_graph_mode_prose_supersedes_skips_a_pre_column_manifest(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """A cache exported before column 15 existed has nothing to check
+    against — skip, don't flag."""
+    home, _mem, cache, nodes = graph_setup
+    today = _today()
+    (nodes / "me51.md").write_text(
+        "# Fleet wave\n\nLeft: work. Supersedes me52.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        f"me51\tthreads\t{today}\t10\t10\t1\t0\t0\tme1\t0\t\t\t\t0\n",
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "prose-only supersedes" not in out, out
+
+
+def test_graph_mode_flags_two_threads_sharing_a_title_prefix(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    today = _today()
+    (nodes / "me61.md").write_text(
+        "# Fleet wave — 2026-10-13\n\nLeft: slice 1.\n", encoding="utf-8"
+    )
+    (nodes / "me62.md").write_text(
+        "# fleet wave — 2026-10-14 15:04\n\nLeft: slice 2.\n", encoding="utf-8"
+    )
+    (nodes / "me63.md").write_text(
+        "# Parser rewrite — 2026-10-14\n\nLeft: start.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        "\n".join(_manifest_row(h, "threads", today) for h in ("me61", "me62", "me63"))
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "dup thread prefix → me61, me62 — 'fleet wave'" in out, out
+    assert "me63" not in out.split("dup thread prefix")[1], out
+
+
+def test_graph_mode_dup_prefix_ignores_non_threads_and_dateless_titles(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    today = _today()
+    # same prefix but one is a runbook — not a thread duplicate
+    (nodes / "me71.md").write_text(
+        "# Fleet wave — 2026-10-13\n\nLeft: work.\n", encoding="utf-8"
+    )
+    (nodes / "me72.md").write_text(
+        "# fleet wave — 2026-10-14\n\nThe recipe.\n", encoding="utf-8"
+    )
+    # a thread whose title is just a stamp has no prefix to share
+    (nodes / "me73.md").write_text("# 2026-10-14\n\nLeft: work.\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        "\n".join(
+            [
+                _manifest_row("me71", "threads", today),
+                _manifest_row("me72", "runbooks", today),
+                _manifest_row("me73", "threads", today),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "dup thread prefix" not in out, out

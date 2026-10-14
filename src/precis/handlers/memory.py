@@ -97,6 +97,7 @@ from precis.utils.edit_resolve import (
 from precis.utils.memory_hubs import (
     link_hints,
     narrowing_hints,
+    thread_dup_hint,
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
@@ -667,8 +668,12 @@ class MemoryHandler(NumericRefHandler):
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         """Lead the create-ack trailer with the title/first-line convention,
-        then the generic read/tag/delete recipes."""
+        a duplicate-thread nudge when the new ``section:threads`` node's
+        title prefix matches a live peer (gr485358 — one thread node per
+        campaign, so a same-prefix ``put`` should have been an in-place
+        rewrite), then the generic read/tag/delete recipes."""
         return [
+            *thread_dup_hint(self.store, ref_id),
             (
                 "get(kind='skill', id='precis-firstline-help')",
                 "title conventions (lead with the conclusion)",

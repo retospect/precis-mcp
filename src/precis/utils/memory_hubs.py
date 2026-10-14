@@ -192,6 +192,25 @@ def review_todos(store: Store, ref_ids: list[int]) -> dict[int, str]:
     return {k: ",".join(v) for k, v in out.items()}
 
 
+def supersedes_targets(store: Store, ref_ids: list[int]) -> dict[int, list[int]]:
+    """``{ref id: [dst ref ids]}`` for its ``supersedes`` edges — retired
+    targets included (the edge is the record, independent of the target's
+    lifecycle). Refs with none are absent."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links "
+            "WHERE relation = 'supersedes' AND src_ref_id = ANY(%s) "
+            "AND dst_ref_id IS NOT NULL ORDER BY dst_ref_id",
+            (list(ref_ids),),
+        ).fetchall()
+    out: dict[int, list[int]] = {}
+    for s, d in rows:
+        out.setdefault(int(s), []).append(int(d))
+    return out
+
+
 def _tag_values(store: Store, ref_id: int) -> set[str]:
     """The ref's tags as strings: ``ns:value`` for a closed-namespace tag
     (``SPACE:repo-dev``), the bare value otherwise (``section:index`` is an
@@ -293,6 +312,61 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
             )
         )
     return lines
+
+
+def thread_dup_hint(store: Store, ref_id: int) -> list[tuple[str, str]]:
+    """The create-ack nudge for a fresh ``section:threads`` node that
+    duplicates a live one.
+
+    One ``section:threads`` node per campaign is the rule — the campaign
+    is identified by the *title prefix* (the title text before its first
+    date/timestamp: ``Fleet wave — 2026-10-13`` and ``… — 2026-10-14``
+    are the same campaign at two resume points). A ``put`` that lands a
+    second node for a prefix an existing live thread node already carries
+    gets a Next row offering the in-place rewrite; advisory only, never a
+    refusal. ``[]`` for non-thread nodes, empty prefixes, or no peer —
+    and never raises, like :func:`link_hints`.
+    """
+    try:
+        return _thread_dup_hint(store, ref_id)
+    except Exception:
+        log.debug("memory thread-dup hint skipped for %s", ref_id, exc_info=True)
+        return []
+
+
+def _thread_dup_hint(store: Store, ref_id: int) -> list[tuple[str, str]]:
+    from precis.utils.memory_threads import THREADS_TAG, title_prefix
+
+    values = _tag_values(store, ref_id)
+    if THREADS_TAG not in values:
+        return []
+    ref = store.get_ref(kind="memory", id=ref_id)
+    if ref is None:
+        return []
+    prefix = title_prefix(ref.title or "")
+    if not prefix:
+        return []
+    # Peers live in the same SPACE — a same-named thread in another space
+    # is a different corpus, not a duplicate.
+    space = _space_tag(values)
+    peers = store.list_refs(
+        kind="memory",
+        tags=[t for t in (space, THREADS_TAG) if t],
+        limit=10_000,
+    )
+    for peer in peers:  # updated_desc — the freshest peer wins
+        if peer.id != ref_id and title_prefix(peer.title or "") == prefix:
+            from precis.utils import handle_registry
+
+            me = handle_registry.try_format("memory", peer.id) or f"me{peer.id}"
+            return [
+                (
+                    f"edit(kind='memory', id='{me}', mode='replace', text='…')",
+                    f"thread node {me} already covers '{prefix}' — update it "
+                    "in place (one thread node per campaign)",
+                )
+            ]
+    return []
 
 
 def _by_word_overlap(query: str, hubs: list[Any]) -> list[int]:
