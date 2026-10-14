@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# scripts/serving-soundness — verify a served LLM endpoint is not corrupt
+# before routing traffic to it (the 2026-10-12 castor corruption gate:
+# stray token-0 `!`, flat first-token logits, nondeterministic temp-0 —
+# vllm#37030 on GB10/SM121).
+#
+#   scripts/serving-soundness <node>                 probe the node's :8000
+#   scripts/serving-soundness <node> --port 11445    other port
+#   scripts/serving-soundness --addr 203.0.113.10    skip the overlay
+#
+# Checks, all against one model alias:
+#   1. /health answers 200.
+#   2. Same needle prompt 3x at temperature 0 at ~1k / ~16k / ~66k prompt
+#      tokens: replies byte-identical, needle echoed, no leading `!`.
+#   3. First-token logprobs on a fact prompt are peaked, not flat
+#      (flat logits were the corruption signature).
+#   4. /v1/messages and a tool_call smoke (the paths the fleet uses).
+#
+# Note: prompts leave max_tokens at 1024 — reasoning models spend their
+# budget before answering and a short cap reads as an empty reply, not
+# corruption (measured: gpt-oss at a 220 cap, 2026-10-14).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+. scripts/lib/node-host.sh
+
+addr="" ; port=8000 ; model="openai/gpt-oss-120b"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --addr) addr="$2"; shift 2 ;;
+    --port) port="$2"; shift 2 ;;
+    --model) model="$2"; shift 2 ;;
+    *) [ -z "$addr" ] && addr="$(resolve_node_host "$1")"; shift ;;
+  esac
+done
+[ -n "$addr" ] || { echo "usage: serving-soundness <node>|--addr <ip> [--port N] [--model M]" >&2; exit 2; }
+case "$addr" in *:*) addr="[$addr]" ;; esac
+export PROBE_BASE="http://$addr:$port" PROBE_MODEL="$model"
+
+exec python3 - <<'PYEOF'
+import json, os, sys, urllib.request, urllib.error
+
+BASE = os.environ["PROBE_BASE"].rstrip("/")
+MODEL = os.environ["PROBE_MODEL"]
+NEEDLE = "ZQ-8814-PHOTON"
+fails = []
+
+def post(path, payload, timeout=600):
+    req = urllib.request.Request(
+        BASE + path, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    except urllib.error.HTTPError as e:
+        return {"_http_error": e.code, "_body": e.read().decode()[:200]}
+
+def report(name, ok, detail=""):
+    print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
+    if not ok:
+        fails.append(name)
+
+# 0. health
+try:
+    code = urllib.request.urlopen(BASE + "/health", timeout=10).status
+except Exception as e:
+    print(f"FAIL  health  {e}")
+    sys.exit(1)
+report("health", code == 200, str(code))
+
+def chat(prompt, max_tokens=1024, **kw):
+    r = post("/v1/chat/completions", {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0, "max_tokens": max_tokens, **kw})
+    if "_http_error" in r:
+        return None, r, r
+    m = r["choices"][0]["message"]
+    return m.get("content"), m, r
+
+# 1. logprob sanity on a fact prompt
+_, _, r = chat("The capital of France is", max_tokens=8,
+               logprobs=True, top_logprobs=5)
+try:
+    tops = r["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+    t0, lp0 = tops[0]["token"], tops[0]["logprob"]
+    gap = lp0 - tops[-1]["logprob"]
+    ok = t0.strip(" \"'") != "!" and gap > 0.1
+    report("logprobs", ok,
+           f"top={t0!r}@{lp0:.2f} gap={gap:.2f} (flat logits = corrupt)")
+except (KeyError, IndexError, TypeError) as e:
+    report("logprobs", False, f"no logprobs in reply: {e}")
+
+# 2. needle determinism at three context sizes. Repeated filler tokenises
+#    ~6 chars/tok on o200k; rebuild once at the measured density if the
+#    measured prompt-token count misses the band.
+FILLER = ("The laboratory notebook records routine observations. Temperature "
+          "held steady, reagents were logged, and no anomalies were noted in "
+          "the afternoon series of measurements. ")
+ASK = ("\nSomewhere above, one code word was recorded. Reply with only that "
+       "code word, nothing else.")
+
+def needle_prompt(chars):
+    body = (FILLER * (chars // len(FILLER) + 1))[:chars]
+    return body + f"\n{NEEDLE}\n" + ASK
+
+def run3(prompt):
+    outs, ptoks = [], 0
+    for _ in range(3):
+        text, _, r = chat(prompt)
+        outs.append(text if text is not None else f"<http {r.get('_http_error')}: {r.get('_body','')[:120]}>")
+        ptoks = (r.get("usage") or {}).get("prompt_tokens") or ptoks
+    return outs, ptoks
+
+for target in (1000, 16000, 66000):
+    prompt = needle_prompt(int(target * 6.0))
+    outs, ptoks = run3(prompt)
+    if ptoks and not 0.8 * target <= ptoks <= 1.6 * target:
+        prompt = needle_prompt(int(len(prompt) * target / ptoks))
+        outs, ptoks = run3(prompt)
+    identical = len(set(outs)) == 1
+    needle = all(NEEDLE in o for o in outs)
+    sane = all(o and not o.lstrip().startswith("!") for o in outs)
+    inband = ptoks >= 0.8 * target
+    report(f"ctx~{target}", identical and needle and sane and inband,
+           f"prompt_tokens={ptoks} identical={identical} needle={needle} sane={sane}")
+
+# 3. /v1/messages smoke (the claude-local shim path)
+r = post("/v1/messages", {"model": MODEL, "max_tokens": 512,
+                          "messages": [{"role": "user", "content": "Reply with the word OK"}]})
+ok = "_http_error" not in r and any(
+    "OK" in (b.get("text") or "") for b in r.get("content", []))
+report("v1-messages", ok, "" if ok else str(r)[:140])
+
+# 4. tool-call smoke
+r = post("/v1/chat/completions", {
+    "model": MODEL, "temperature": 0, "max_tokens": 512,
+    "messages": [{"role": "user", "content": "What time is it in Zurich? Use the tool."}],
+    "tools": [{"type": "function", "function": {
+        "name": "get_time", "description": "Current time in a city",
+        "parameters": {"type": "object",
+                       "properties": {"city": {"type": "string"}},
+                       "required": ["city"]}}}]})
+try:
+    calls = r["choices"][0]["message"].get("tool_calls") or []
+    ok = bool(calls) and calls[0]["function"]["name"] == "get_time"
+    report("tool-call", ok, calls[0]["function"]["arguments"] if calls else "none")
+except (KeyError, IndexError, TypeError):
+    report("tool-call", False, str(r)[:140])
+
+sys.exit(1 if fails else 0)
+PYEOF

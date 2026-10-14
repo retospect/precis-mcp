@@ -1,0 +1,11 @@
+---
+- name: reload systemd (sglang)
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: restart sglang
+  ansible.builtin.systemd:
+    name: "{{ sglang_service_name }}"
+    state: restarted
+  become: true

@@ -5529,3 +5529,57 @@ def test_route_features_degraded_from() -> None:
     assert "degraded_from" not in router._route_features(base)
     deg = LlmRequest(tier=Tier.BIG, prompt="p", degraded_from="frontier")
     assert router._route_features(deg)["degraded_from"] == "frontier"
+
+
+def test_failover_rung_max_tokens_applies_when_request_unpins_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung's ``max_tokens`` fills an unpinned request cap — the knob a
+    ``local`` rung needs so a reasoning model isn't starved by the local
+    wire's 220-token summarizer default (2026-10-14)."""
+    seen: list[int | None] = []
+
+    def _record(req: LlmRequest, *, model: str) -> Any:
+        seen.append(req.max_tokens)
+        return _ok("ok")
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _RunFn(_record))
+    prov = FailoverProvider([Rung(Transport.LOCAL, model="m", max_tokens=1600)])
+    out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x"), model="m")
+    assert out.text == "ok"
+    assert seen == [1600]
+
+
+def test_failover_rung_max_tokens_loses_to_a_caller_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-pinned ``req.max_tokens`` wins over the rung's — the cap is a
+    correctness constraint the rung must not shrink."""
+    seen: list[int | None] = []
+
+    def _record(req: LlmRequest, *, model: str) -> Any:
+        seen.append(req.max_tokens)
+        return _ok("ok")
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _RunFn(_record))
+    prov = FailoverProvider([Rung(Transport.LOCAL, model="m", max_tokens=1600)])
+    out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x", max_tokens=2000), model="m")
+    assert out.text == "ok"
+    assert seen == [2000]
+
+
+def test_parse_chain_rungs_maps_max_tokens() -> None:
+    rungs, bad = router.parse_chain_rungs(
+        [{"transport": "local", "model": "m", "placement": "local", "max_tokens": 1600}]
+    )
+    assert bad is None
+    assert rungs == [Rung(Transport.LOCAL, model="m", label="local", max_tokens=1600)]
+
+
+def test_parse_chain_rungs_rejects_bad_max_tokens() -> None:
+    for bad_val in (0, -5, "1600", 2.5, True):
+        rungs, bad = router.parse_chain_rungs(
+            [{"transport": "local", "model": "m", "max_tokens": bad_val}]
+        )
+        assert rungs == []
+        assert bad is not None and "max_tokens" in bad[0]

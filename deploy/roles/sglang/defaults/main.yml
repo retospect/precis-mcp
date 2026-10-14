@@ -1,0 +1,94 @@
+---
+# Defaults for the sglang role: one SGLang container, one model, one GB10
+# host, run as a permanent systemd service. Targets the inventory group
+# `sglang_serving` (see playbooks/49a-sglang.yml). This is the serving stack
+# that works on the GB10 (SM121): the stock vLLM image's Marlin MXFP4 MoE
+# kernel races on SM121 and produces corrupt output at every context window
+# (vllm-project/vllm#37030 — see docs/backlog/claude-code-on-local-serving.md
+# and the vllm role's `vllm_env` note). SGLang's `latest-cu130` image is
+# NVIDIA's showcased GB10 stack, serves gpt-oss 120B soundly (verified
+# 2026-10-14: identical temperature-0 replies at 1k/16k/66k-token prompts,
+# clean tool calls and native /v1/messages), and is already pulled on the serving host.
+
+# ── Container ──
+sglang_container_cmd: docker
+sglang_image: "lmsysorg/sglang:latest-cu130"
+# Container + systemd unit name (unit is <sglang_service_name>.service).
+sglang_service_name: sglang
+# Registry reach from the LAN is flaky (TLS timeouts). A pre-pulled /
+# docker-load'ed image satisfies the role with no registry call.
+sglang_pull_retries: 6
+sglang_pull_delay: 20
+sglang_pull_timeout: 900          # seconds per pull attempt (hard cap)
+# A unit that must not coexist with this one on the same port: stopped and
+# disabled when present (the vllm role's unit). Empty string = no check.
+sglang_supersedes_service: vllm
+
+# ── Endpoint ──
+# Host networking (as measured on the serving host 2026-10-14); bind narrows the
+# listen address inside it. 0.0.0.0 = LAN-reachable, like llama-swap.
+sglang_bind_addr: "0.0.0.0"
+sglang_port: 8000
+
+# ── Model (gpt-oss 120B MXFP4 defaults) ──
+# Host directory holding the weights (HF format); mounted read-only at /model.
+sglang_model_dir: /srv/models/gpt-oss-120b
+# Names the model answers to (`--served-model-name` takes a list). precis
+# routes by its llm card name (`openai/gpt-oss-120b`, resource_slots
+# `llm:openai/gpt-oss-120b`) — a call naming a card id that isn't served
+# 404s (seen on the vLLM stack 2026-10-12).
+sglang_served_model_names:
+  - gpt-oss-120b
+  - openai/gpt-oss-120b
+# --reasoning-parser / --tool-call-parser values (gpt-oss for both).
+sglang_reasoning_parser: gpt-oss
+sglang_tool_call_parser: gpt-oss
+# gpt-oss's harmony vocab is fetched from the internet at startup and the
+# container cannot reach it: stage o200k_base.tiktoken and
+# cl100k_base.tiktoken in this host dir; mounted at /tiktoken with
+# TIKTOKEN_ENCODINGS_BASE set. Empty string = no mount (non-gpt-oss models).
+sglang_tiktoken_dir: /srv/models/tiktoken
+# Extra flags appended verbatim (list).
+sglang_extra_args: []
+# Container environment (`-e K=V` each).
+sglang_env: {}
+
+# ── Sizing (measured on the serving host 2026-10-14) ──
+# GB10 memory is unified: this fraction of the WHOLE box is SGLang's static
+# pool (weights + KV + graphs). 0.86 leaves the OS ~15-21 GiB, above
+# earlyoom's 10% MemAvailable line — sized for a host exclusive to this service. If the box shares, lower this before raising
+# earlyoom risk. At 0.82 with fp8 KV the pool still held ~150k tokens.
+sglang_mem_fraction_static: 0.86
+# Full 131072 window. Soundness verified: 3× byte-identical temperature-0
+# replies with a planted needle at 1,009 / 16,369 / 66,481 prompt tokens.
+sglang_context_length: 131072
+# fp8 KV halves the pool cost: bf16 KV at 0.86 fit only ~37k tokens total
+# (the 131k window would never fit); fp8_e4m3 measured 211,691 full +
+# 169,352 sliding-window tokens — one max-length call fits, ~64 concurrent
+# short ones too.
+sglang_kv_cache_dtype: fp8_e4m3
+# Server ceiling (local-compute-15 ruling: limit 64; a separate feedback
+# controller holds ~32).
+sglang_max_running_requests: 64
+
+# ── Weight loader (the earlyoom fix) ──
+# On unified memory the GPU reservation is host RAM: the default loader
+# staged ~41 GiB of host buffers on top of the weights and the serving host's
+# earlyoom (10% MemAvailable) SIGKILLed four launches at shard 14/15
+# (2026-10-13). The streaming loader caps the host buffer at
+# `memory_limit` bytes and drop-cache frees it once weights land — the
+# combination loaded with earlyoom fully active. Do NOT serve a GB10
+# without these (or an earlyoom exemption for the load window).
+sglang_load_format: runai_streamer
+sglang_loader_extra_config:
+  distributed: false
+  concurrency: 4
+  memory_limit: 4294967296   # 4 GiB host buffer cap
+sglang_drop_cache_after_load: true
+
+# ── Health wait ──
+# Measured on the serving host 2026-10-14: ~34 s streamed weight load + ~112 s
+# scheduler init + ~45 s CUDA-graph capture ≈ 4 min cold. A cold image pull
+# adds more. Bounded: retries*delay.
+sglang_health_retries: 150
+sglang_health_delay: 10

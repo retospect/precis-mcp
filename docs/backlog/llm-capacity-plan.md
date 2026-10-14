@@ -160,3 +160,50 @@ Docs only. Reads: prod `resource_slots`, `app_settings` `llm.chain.%`,
   cap is the twins', the host label is history). Caveat: read through the
   MCP card view, which may not render an empty `served_by`; the check is
   `refs.meta->'served_by'` on lm162511.
+- 2026-10-14 — **Small tier off the big Mac: plan (Reto: "take local llm
+  traffic off melchior and put it on one of the sparks").**
+
+  What melchior serves today: `glm-4.7-flash` via llama-swap (`s` slot,
+  parallel=4, ctx 49152, ~33 GB, coresident with the `a` 27B dispatcher and
+  `n` 80B). It is the ONLY local lane with routed traffic: every
+  routed-local call in the 7 days to 2026-10-14 was `llm_summarize`
+  (39,947 routed, 8,724 landed, 31,223 fell to cloud; ~5,700/day, bursts
+  to ~630/h, ~3.2 s/call local). The cap-4 slot is the whole bottleneck.
+
+  **Plan: gpt-oss-120b on castor absorbs the small tier.** Rung 0 of
+  `llm.op.llm_summarize` and `llm.chain.small` becomes
+  `{"transport":"local","model":"openai/gpt-oss-120b","placement":"local"}`.
+  Rationale vs the alternatives:
+
+  - pollux is ruled science-only ("must not carry LLM serving",
+    local-compute-5) — out.
+  - spark (.154) is permanently off cluster duty (2026-08-29, paper work;
+    its ruled return is the `embedder` group only) and its GGUF sync would
+    ride the still-hung `/mnt/cluster` mount — out on both counts.
+  - a second server on castor (llama-swap glm) adds a stack and competes
+    with gpt-oss's KV pool for no quality gain.
+  - gpt-oss-120b on castor is already deployed-shaped (slot row
+    `castor | llm:openai/gpt-oss-120b | 32`, card lm162513 `served_by`
+    with a LAN endpoint and `max_parallel` 32), measured sound on SGLang
+    today (see `claude-code-on-local-serving.md`), and one server for
+    several tiers is exactly the capacity plan's own D-variant shape.
+
+  Memory/slot budget: SGLang `--mem-fraction-static 0.86` ≈ 104 GiB static
+  on the 121 GiB box, ~15-21 GiB left for the OS — sized for castor
+  exclusive. If the science move off castor has not landed when this
+  deploys, run `sglang_mem_fraction_static: 0.82` (fp8 KV still ~150k
+  tokens) to keep MemAvailable clear of earlyoom's 10% while a science
+  lane is resident. Slot accounting: the existing cap-32 row is the
+  fleet-wide semaphore; the router's bounded local-wait (slice: keep
+  routed-local calls on local) plus 32 slots absorbs the observed bursts
+  (peak ~10 calls/min × ~3-4 s ≪ 32).
+
+  Departures from the ruled layout, for Reto to confirm: (1) the 10-02
+  table still lists melchior's `s` slot as the SMALL local rung — moving
+  it to castor leaves melchior's llama-swap serving only the agent lanes
+  (`a`/`n`), which is what "traffic off melchior" means here; the glm
+  slot row and `served_by` stay as a warm standby unless Reto wants it
+  torn down. (2) SMALL's local/cloud rungs no longer share one model
+  identity (`glm-4.7-flash` → `z-ai/glm-4.7-flash` was same-weights; now
+  rung 0 is gpt-oss-120b) — quality covered by the summarise op's own
+  soundness gate rather than a quant check.

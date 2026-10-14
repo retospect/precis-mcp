@@ -153,7 +153,8 @@ def test_acquire_pauses_when_all_slots_busy(store) -> None:
     first = local_serving.acquire("solo")
     assert first is not None and first.reserved
     # capacity 1, now full → next acquire is a pause, not a reservation
-    second = local_serving.acquire("solo")
+    # (wait_s=0: the bounded-wait default is exercised in the backoff tests below)
+    second = local_serving.acquire("solo", wait_s=0)
     assert second is not None and second.paused and not second.reserved
     # releasing the pause is a no-op (nothing was reserved); free stays 0
     local_serving.release(second)
@@ -344,7 +345,7 @@ def test_remote_acquire_pauses_when_fleet_cap_full(store) -> None:
     )
     first = local_serving.acquire("remote-solo")
     assert first is not None and first.reserved
-    second = local_serving.acquire("remote-solo")
+    second = local_serving.acquire("remote-solo", wait_s=0)
     assert second is not None and second.paused and not second.reserved
     assert second.endpoint is None  # a paused slot routes nowhere
     local_serving.release(first)
@@ -445,7 +446,7 @@ def test_seeded_slullama_card_reserves_and_caps(store: Any) -> None:
     second = local_serving.acquire("qwen-hpc-test")
     assert second is not None and second.reserved  # cap is 2, still free
 
-    third = local_serving.acquire("qwen-hpc-test")
+    third = local_serving.acquire("qwen-hpc-test", wait_s=0)
     assert third is not None and third.paused and not third.reserved  # cap hit
 
     local_serving.release(first)
@@ -532,6 +533,178 @@ def test_paused_acquire_creates_no_hold(store) -> None:
     _serve(store, "testnode", "solo", 1)
     first = local_serving.acquire("solo")
     assert first is not None and first.reserved
-    second = local_serving.acquire("solo")
+    second = local_serving.acquire("solo", wait_s=0)
     assert second is not None and second.paused and second.hold_id is None
     local_serving.release(first)
+
+
+# ── capacity backoff: bounded wait + remote spill (2026-10-14) ────────────
+# A saturated local slot used to spill straight to the cloud rung (~78% of
+# routed-local calls fell to cloud at melchior's cap-4 slot). acquire now
+# waits a bounded window for a free slot and spills to other LAN-routable
+# serving hosts before the caller ever sees `paused`.
+
+
+def test_acquire_waits_for_a_slot_to_free(store) -> None:
+    """The holder releases inside the window → the waiter reserves instead of
+    pausing (the burst rides local latency, not the cloud rung)."""
+    import threading
+    import time
+
+    meter.bind_store(store)
+    _serve(store, "testnode", "solo", 1)
+    first = local_serving.acquire("solo")
+    assert first is not None and first.reserved
+    timer = threading.Timer(0.3, local_serving.release, args=(first,))
+    timer.start()
+    try:
+        t0 = time.monotonic()
+        slot = local_serving.acquire("solo", wait_s=5)
+        waited = time.monotonic() - t0
+        assert slot is not None and slot.reserved and not slot.paused
+        assert waited >= 0.25  # actually waited, not an instant first-try win
+    finally:
+        timer.cancel()
+    local_serving.release(slot)
+
+
+def test_acquire_pause_only_after_bounded_wait(store) -> None:
+    """Nothing frees inside the window → paused at the deadline, not before."""
+    import time
+
+    meter.bind_store(store)
+    _serve(store, "testnode", "solo", 1)
+    first = local_serving.acquire("solo")
+    assert first is not None and first.reserved
+    t0 = time.monotonic()
+    second = local_serving.acquire("solo", wait_s=1.2)
+    waited = time.monotonic() - t0
+    assert second is not None and second.paused and not second.reserved
+    assert waited >= 1.1
+    local_serving.release(first)
+
+
+def test_acquire_zero_wait_keeps_the_immediate_pause(store) -> None:
+    meter.bind_store(store)
+    _serve(store, "testnode", "solo", 1)
+    first = local_serving.acquire("solo")
+    assert first is not None and first.reserved
+    second = local_serving.acquire("solo", wait_s=0)
+    assert second is not None and second.paused
+    local_serving.release(first)
+
+
+def test_acquire_local_busy_spills_to_remote(store) -> None:
+    """This host serves the model but its row is full → a LAN-routable
+    ``served_by`` on another host takes the spill (reserved against THAT
+    host's row) instead of pausing."""
+    meter.bind_store(store)
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id="hot-model", text="hot.")
+    store.update_ref(
+        rid,
+        meta_patch={
+            "served_by": [
+                {
+                    "host": "testnode",
+                    "max_parallel": 1,
+                    "endpoint": "http://127.0.0.1:11445/v1",
+                },
+                {
+                    "host": "otherhost",
+                    "max_parallel": 4,
+                    "endpoint": "http://203.0.113.10:8080/v1",
+                },
+            ]
+        },
+    )
+    store.reconcile_llm_served_slots(
+        {("testnode", "llm:hot-model"): 1, ("otherhost", "llm:hot-model"): 4}
+    )
+    local_serving.reset_cache()
+    first = local_serving.acquire("hot-model", wait_s=0)
+    assert first is not None and first.reserved and first.host == "testnode"
+    spill = local_serving.acquire("hot-model", wait_s=0)
+    assert spill is not None and spill.reserved and not spill.paused
+    assert spill.host == "otherhost"
+    assert spill.endpoint == "http://203.0.113.10:8080/v1"
+    free = {s.resource: s.free for s in store.resource_slots_for_host("otherhost")}
+    assert free["llm:hot-model"] == 3
+    local_serving.release(first)
+    local_serving.release(spill)
+
+
+def test_acquire_remote_spill_tries_the_next_candidate(store) -> None:
+    """Two remote candidates, first saturated: acquire walks the sorted list
+    and reserves the second instead of pausing on the first."""
+    meter.bind_store(store)
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id="two-remote", text="x.")
+    store.update_ref(
+        rid,
+        meta_patch={
+            "served_by": [
+                {
+                    "host": "aaa-busy",
+                    "max_parallel": 1,
+                    "endpoint": "http://203.0.113.10:8080/v1",
+                },
+                {
+                    "host": "zzz-free",
+                    "max_parallel": 2,
+                    "endpoint": "http://203.0.113.20:8080/v1",
+                },
+            ]
+        },
+    )
+    store.reconcile_llm_served_slots(
+        {("aaa-busy", "llm:two-remote"): 1, ("zzz-free", "llm:two-remote"): 2}
+    )
+    local_serving.reset_cache()
+    held = local_serving.acquire("two-remote", wait_s=0)
+    assert held is not None and held.reserved and held.host == "aaa-busy"
+    spill = local_serving.acquire("two-remote", wait_s=0)
+    assert spill is not None and spill.reserved
+    assert spill.host == "zzz-free"
+    assert spill.endpoint == "http://203.0.113.20:8080/v1"
+    local_serving.release(held)
+    local_serving.release(spill)
+
+
+def test_acquire_all_local_candidates_busy_pauses(store) -> None:
+    """Local row full AND the only remote candidate full → still paused."""
+    meter.bind_store(store)
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id="all-busy", text="x.")
+    store.update_ref(
+        rid,
+        meta_patch={
+            "served_by": [
+                {
+                    "host": "testnode",
+                    "max_parallel": 1,
+                    "endpoint": "http://127.0.0.1:11445/v1",
+                },
+                {
+                    "host": "otherhost",
+                    "max_parallel": 1,
+                    "endpoint": "http://203.0.113.10:8080/v1",
+                },
+            ]
+        },
+    )
+    store.reconcile_llm_served_slots(
+        {("testnode", "llm:all-busy"): 1, ("otherhost", "llm:all-busy"): 1}
+    )
+    local_serving.reset_cache()
+    held_local = local_serving.acquire("all-busy", wait_s=0)
+    spill = local_serving.acquire("all-busy", wait_s=0)
+    assert held_local is not None and held_local.reserved
+    assert spill is not None and spill.reserved and spill.host == "otherhost"
+    third = local_serving.acquire("all-busy", wait_s=0)
+    assert third is not None and third.paused and not third.reserved
+    local_serving.release(held_local)
+    local_serving.release(spill)

@@ -21,9 +21,10 @@ layered extra inventory that puts the host in `vllm_serving`.
 workaround `VLLM_MARLIN_USE_ATOMIC_ADD=1`: without it the stock image's
 Marlin MXFP4 MoE kernel races and gpt-oss emits a stray leading `!` with
 nondeterministic output at temperature 0 (vllm-project/vllm#37030; seen on
-castor at every window, 2026-10-12/13). If the env is not enough, move
-`vllm_image` to the CUDA 13 track (`cu130-nightly` pinned by digest, or the
-NGC image). `vllm_max_model_len` defaults to 16384 (the Slice 0 setting);
+castor at every window, 2026-10-12/13). The env alone did NOT fix v0.20.1
+(2026-10-13); the working stack is the `sglang` role
+(`playbooks/49a-sglang.yml`, verified sound 2026-10-14). Keep this role for
+the day a fixed vLLM image (`cu130-nightly` or the NGC track) is pullable. `vllm_max_model_len` defaults to 16384 (the Slice 0 setting);
 `scripts/claude-local` needs more (a Claude Code first request exceeds 16k),
 see `docs/backlog/claude-code-on-local-serving.md`.
 

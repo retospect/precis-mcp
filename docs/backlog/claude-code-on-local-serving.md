@@ -219,3 +219,28 @@ notations) deferred to a weak local model: `uv run python -m
 precis.llm_eval.notation --model openai/gpt-oss-120b --repeats 3` against
 the castor endpoint; reopen gr336349 only if one notation concentrates
 10x/1000x slips. (Moved here from pose-vector-units.md, deleted 2026-10-13.)
+
+**SGLang launch-5 landed and is SOUND, 2026-10-14 ~10:20Z.** The cached
+`lmsysorg/sglang:latest-cu130` serves gpt-oss-120b with `--load-format
+runai_streamer` + `--model-loader-extra-config '{"distributed": false,
+"concurrency": 4, "memory_limit": 4294967296}'` +
+`--weight-loader-drop-cache-after-load`: the streaming loader caps the host
+staging buffer at 4 GiB, so earlyoom never fired (the four prior deaths
+were the loader's ~41 GiB staging peak, not the static fraction). Weights
+loaded in ~34 s; scheduler init ~112 s; CUDA graphs ~45 s. Two sizing
+notes measured on the way: `--mem-fraction-static 0.6` fails outright
+(weights alone need ≥0.80 of the box — ~86 GiB at this stack), and bf16 KV
+leaves only ~37k pool tokens; `--kv-cache-dtype fp8_e4m3` at 0.86 gives
+211,691 full + 169,352 SWA tokens (a 131k-context call fits) with ~18-21
+GiB left for the OS, above earlyoom's line. Soundness probes (temp 0, 3x
+identical, needle at ~60% depth): 1,009 / 16,369 / 66,481 prompt tokens
+all byte-identical with the needle found; raw `/v1/completions` has no
+token-0 `!` and normal logprobs; tool calls parse via
+`--tool-call-parser gpt-oss`; native `/v1/messages` accepts a
+Claude-shaped request (thinking + text blocks), so `anthropic-shim.py` is
+unnecessary against this stack. An autocatpath job ran on castor through
+the whole test without disturbing it. The fix is committed as
+`deploy/roles/sglang` + `playbooks/49a-sglang.yml` (Reto deploys; the role
+stops the vllm unit). Left: `max_tokens` 20 replies still spend the whole
+budget on reasoning (the reasoning channel eats `max_tokens` — test with
+≥500), and the notation eval rerun below is unblocked.

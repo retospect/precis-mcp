@@ -1497,12 +1497,23 @@ class Rung:
     billed per token) instead of the Max subscription's OAuth token. Only
     the two claude transports honor it. Default ``False`` everywhere —
     moving spend onto the key is always an explicit per-rung decision.
+
+    ``max_tokens`` overrides the request's completion cap for this rung only
+    (a caller-pinned ``req.max_tokens`` still wins — the caller's cap is a
+    correctness constraint the rung must not shrink). Why it exists: the
+    ``local`` wire's default cap is the summarizer's 220
+    (:class:`~precis.workers.llm_summarize.LlmConfig`), which a reasoning
+    model like gpt-oss-120b spends entirely on its thinking channel — the
+    measured result is ``finish_reason=length`` and empty content, every
+    call (2026-10-14, chase:verify eval). A local rung for such a model
+    carries ``"max_tokens"`` in its chain dict to give the answer room.
     """
 
     transport: Transport
     model: str | None = None
     label: str = ""
     bare: bool = False
+    max_tokens: int | None = None
 
 
 #: A quality gate on an error-free result: return ``True`` to accept, ``False``
@@ -1541,9 +1552,16 @@ class FailoverProvider:
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         last: LlmResult | None = None
         for i, rung in enumerate(self._rungs):
+            # A rung's `max_tokens` applies only when the caller left the cap
+            # unset — a pinned request cap is a correctness constraint.
+            call_req = (
+                _replace(req, max_tokens=rung.max_tokens)
+                if rung.max_tokens is not None and req.max_tokens is None
+                else req
+            )
             last = _classified(
                 provider_for(rung.transport, bare=rung.bare).run(
-                    req, model=rung.model or model
+                    call_req, model=rung.model or model
                 )
             )
             # Stamp the rung that actually ran. Done per-iteration (not once at
@@ -1650,8 +1668,9 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     A configured override
     (:func:`~precis.utils.llm.live_config.chain_override`) is a list of rung
     dicts (``{"placement": "cloud"|"local", "model": <str>, "transport":
-    <str>, "bare": <bool>}``, ``bare`` optional default ``False`` — see
-    :class:`Rung`) mapped onto :class:`Rung` in order, ``placement`` carried
+    <str>, "bare": <bool>, "max_tokens": <int>}``, ``bare`` optional default
+    ``False``, ``max_tokens`` optional positive int — see :class:`Rung`)
+    mapped onto :class:`Rung` in order, ``placement`` carried
     through as the label. Any malformed rung degrades the *whole* chain back
     to :func:`_default_chain` — never partial — logged once.
 
@@ -1741,12 +1760,18 @@ def parse_chain_rungs(
         bare_raw = raw.get("bare", False)
         if not isinstance(bare_raw, bool):
             return [], ("has a non-boolean bare", i, bare_raw)
+        mt_raw = raw.get("max_tokens")
+        if mt_raw is not None and (
+            not isinstance(mt_raw, int) or isinstance(mt_raw, bool) or mt_raw <= 0
+        ):
+            return [], ("has a non-positive-integer max_tokens", i, mt_raw)
         rungs.append(
             Rung(
                 transport,
                 model=model,
                 label=placement if placement else "chain",
                 bare=bare_raw,
+                max_tokens=mt_raw,
             )
         )
     return rungs, None

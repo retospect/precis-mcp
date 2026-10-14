@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** local-compute
-- **Next:** Run the 40-task `chase:verify` compare, local `gpt-oss-120b` vs Haiku 4.5, each arm twice (`scripts/llm_eval/build_chase_verify_gold.py`, then `precis llm eval gpt-oss-120b --compare claude-haiku-4-5 --placement-a local --placement-b cloud --tier medium --gold <set>`), and bring Reto the numbers before touching `llm.chain.medium`. `chase:verify` is ~96% of medium-tier calls (7,191 / $70 in the 7 days to 2026-10-11). It is a claim-support judgment, and the 2026-10-03 tuned-models plan keeps judgment ops on Claude, so Reto decides with the numbers in hand.
-- **Blocked by:** Nothing for the LLM work. Reto, 2026-10-12 (chat): "the compute is llm, we should be able to do that" — explicit OK to run the eval from melchior and to offload to the twins; "validate local compute on one of the twins, and more of that soon". Castor already serves gpt-oss 120B (vLLM, 32 slots) and nothing routes to it: point the summarise chain's rung 0 at castor (melchior's capacity-4 slot overflowed 16,416 of 19,937 calls to cloud in its first 24 h) and run the chase:verify compare against castor. NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
+- **Next:** Reto deploys `49a-sglang.yml` on castor (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize`, `llm.chain.small`, and (Reto's call, eval below) `llm.chain.medium` — and read `/placement` after 24 h.
+- **Blocked by:** Reto's deploy + settings writes (above). NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
 - **Worktree:** `local-compute`
@@ -22,6 +22,44 @@ Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); d
 **Rule, Reto 2026-10-12 (chat):** "cold machine is useless machine." castor never idles: coding helpers (`scripts/claude-local`, item 0 above) and librarian lanes share it. Librarian lanes already specified and waiting on castor, in order: taxonomy-bootstrap agreement test (knowledge-mesh Do next 2, $0 on castor), local-mesh-upkeep slice 0 categorise set (its eval doubles as the quality gate for every lane below), then op overrides to castor for `taproot:classify` (claim_type), `conflict_search:negate`, `taproot:reground-judge` ($64/30 d on Haiku), and `chase:verify` after the 40-task compare. The 30-day spend read (2026-10-12): dream $429 (Sonnet, 29k chars/call), chase:verify $205, review:structural $66, quest_tick $66, doctor_tick $66, reground-judge $65, summarise $56 (now local). Nine BIG sources average 45k–90k request chars, above castor's 16k context until the restart raises it.
 
 **Still open:** the `llm_summarize` placement read (summarise chain live since 2026-10-11 11:53Z; first 24 h 3,521 local / 16,416 overflowed to cloud at melchior's capacity-4 slot). Revert: delete `llm.op.llm_summarize`.
+
+**Castor sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off melchior and put it on one of the sparks"):**
+
+- **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.82` (weights need >0.801), `--context-length 131072` (fp8 KV → 211k-token pool), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
+- **Placement (c7be07641):** small tier moves off the big Mac onto castor — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `castor | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). pollux stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on melchior) — noted for Reto in `llm-capacity-plan.md`.
+- **Routing fix (this branch):** `local_serving.acquire` now (a) waits up to `PRECIS_LOCAL_SLOT_WAIT_S` (default 10 s, `0` restores old behavior) for a slot to free, and (b) spills to every other LAN-routable `served_by` host for the model — before the router ever sees `paused` and overflows to cloud. This is the cap-4 cause of the ~78% routed-local→cloud fall-through.
+- **A real blocker the eval exposed:** the `local` wire's default `max_tokens` is the summarizer's 220; gpt-oss spends it all on reasoning and returns empty content, every call. Rungs now carry an optional `max_tokens` (parsed into `Rung`, applied when the request doesn't pin one). **The staged writes below carry `"max_tokens":1600`; under the pre-branch code that key is silently ignored — apply only after this branch is deployed.**
+- **chase:verify eval (40-task gold `chase_verify_v1`, each arm twice, scratch DB — no prod writes):**
+
+  | arm | agreement vs incumbent verdicts | per stratum (yes/no_other/no_contra/partial) | unparseable | p50 | cost/80 calls |
+  |-----|------|------|-----|------|------|
+  | gpt-oss-120b local (cap 1600) | **0.812** (65/80) | 24/24 · 20/20 · 10/12 · 11/24 | 1 | 27.5 s | $0 |
+  | claude-haiku-4-5 cloud rerun | 0.875 (70/80) | 24/24 · 20/20 · 10/12 · 16/24 | 0 | 22.1 s | $2.57 |
+  | gpt-oss-120b local (cap 220 — the artifact run) | 0.000 | — | 40 | 8.3 s | $0 |
+
+  gpt-oss is 6 points under the incumbent's own rerun self-agreement, with the whole gap in the fuzzy `partial` stratum (haiku self-agrees only 16/24 there). Reads: fine for summarize/small, a judgment call for medium — Reto decides, per the 2026-10-03 keep-judgment-on-Claude plan.
+
+- **Staged settings writes (prod-psql; DO NOT apply until the sglang deploy AND this branch are live — see the max_tokens note above):**
+
+  ```sql
+  -- llm.op.llm_summarize: rung 0 castor gpt-oss, rung 1 glm standby, rung 2 cloud
+  UPDATE app_settings SET value = '{"chain":[{"transport":"local","model":"openai/gpt-oss-120b","placement":"local","max_tokens":1600},{"transport":"local","model":"glm-4.7-flash","placement":"local"},{"transport":"openai_compat","model":"z-ai/glm-4.7-flash","placement":"cloud"}]}' WHERE key='llm.op.llm_summarize';
+  -- revert:
+  UPDATE app_settings SET value = '{"chain":[{"transport":"local","model":"glm-4.7-flash","placement":"local"},{"transport":"openai_compat","model":"z-ai/glm-4.7-flash","placement":"cloud"}]}' WHERE key='llm.op.llm_summarize';
+
+  -- llm.chain.small: rung 0 castor gpt-oss, rung 1 the hosted glm
+  UPDATE app_settings SET value = '[{"transport":"local","model":"openai/gpt-oss-120b","placement":"local","max_tokens":1600},{"placement":"cloud","model":"z-ai/glm-4.7-flash","transport":"openai_compat"}]' WHERE key='llm.chain.small';
+  -- revert:
+  UPDATE app_settings SET value = '[{"placement":"cloud","model":"z-ai/glm-4.7-flash","transport":"openai_compat"}]' WHERE key='llm.chain.small';
+
+  -- llm.chain.medium: optional (eval above; agentic calls skip the local rung
+  -- automatically — it can't carry tools — and keep haiku)
+  UPDATE app_settings SET value = '[{"transport":"local","model":"openai/gpt-oss-120b","placement":"local","max_tokens":1600},{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_p"},{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_agent"}]' WHERE key='llm.chain.medium';
+  -- revert:
+  UPDATE app_settings SET value = '[{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_p"},{"placement":"cloud","model":"claude-haiku-4-5-20251001","transport":"claude_agent"}]' WHERE key='llm.chain.medium';
+  ```
+
+  Note the melchior `glm-4.7-flash` rung stays as a local standby in the op chain: after the wait/spill fix it serves only when castor's 32 slots are saturated, keeping ~all traffic off the big Mac while preserving a local escape before cloud spend.
 
 **Status:** ends when the local box continuously improves the graph
 (summarise, insert, mesh, link, categorise) on local rungs, with frontier

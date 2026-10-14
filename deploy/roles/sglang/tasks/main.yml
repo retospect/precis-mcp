@@ -1,0 +1,93 @@
+---
+# sglang — run SGLang as a permanent systemd-managed container on one GB10
+# host. See README.md. Linux only; requires docker + the nvidia container
+# runtime (no ansible role establishes the runtime; the check below catches
+# its absence).
+
+- name: sglang targets Linux GPU hosts only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: "The sglang role runs a CUDA container; Linux GPU host only."
+
+- name: Ensure the container runtime is present
+  ansible.builtin.command: "{{ sglang_container_cmd }} --version"
+  changed_when: false
+
+- name: Ensure the nvidia container runtime is configured in docker
+  # Fix by hand: nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
+  ansible.builtin.command: "{{ sglang_container_cmd }} info --format '{% raw %}{{json .Runtimes}}{% endraw %}'"
+  become: true
+  register: sglang_runtimes
+  changed_when: false
+  failed_when: "'nvidia' not in sglang_runtimes.stdout"
+
+- name: Check the model dir exists on the host
+  ansible.builtin.stat:
+    path: "{{ sglang_model_dir }}"
+  register: sglang_model_stat
+  failed_when: not sglang_model_stat.stat.exists
+
+- name: Check the tiktoken dir exists on the host (gpt-oss harmony vocab)
+  when: sglang_tiktoken_dir | length > 0
+  ansible.builtin.stat:
+    path: "{{ sglang_tiktoken_dir }}"
+  register: sglang_tiktoken_stat
+  failed_when: not sglang_tiktoken_stat.stat.exists
+
+- name: Ensure the SGLang image is present (pull only if missing; bounded)
+  # A pre-pulled / docker-load'ed image satisfies this with no registry call.
+  # `timeout` bounds each attempt so a stalled TLS handshake cannot hang the run.
+  ansible.builtin.shell: >-
+    {{ sglang_container_cmd }} image inspect {{ sglang_image }} >/dev/null 2>&1
+    || timeout {{ sglang_pull_timeout }} {{ sglang_container_cmd }} pull {{ sglang_image }}
+  become: true
+  register: sglang_pull
+  retries: "{{ sglang_pull_retries }}"
+  delay: "{{ sglang_pull_delay }}"
+  until: sglang_pull.rc == 0
+  changed_when: "'Pull complete' in sglang_pull.stdout"
+
+- name: Stop + disable the superseded serving unit (same port)
+  # One host runs one serving stack: the vllm unit would collide on
+  # {{ sglang_port }} and hold the GPU memory this server sizes against.
+  when: sglang_supersedes_service | length > 0
+  ansible.builtin.systemd:
+    name: "{{ sglang_supersedes_service }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  become: true
+  failed_when: false
+
+- name: Deploy sglang systemd unit
+  ansible.builtin.template:
+    src: sglang.service.j2
+    dest: "/etc/systemd/system/{{ sglang_service_name }}.service"
+    mode: "0644"
+  become: true
+  notify:
+    - reload systemd (sglang)
+    - restart sglang
+
+- name: Apply unit changes before starting
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable + start sglang
+  ansible.builtin.systemd:
+    name: "{{ sglang_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Wait for SGLang /health (load + graph capture take a few minutes)
+  vars:
+    _sglang_health_addr: "{{ '127.0.0.1' if sglang_bind_addr == '0.0.0.0' else ('::1' if sglang_bind_addr == '::' else sglang_bind_addr) }}"
+  ansible.builtin.uri:
+    url: "http://{{ '[' ~ _sglang_health_addr ~ ']' if ':' in _sglang_health_addr else _sglang_health_addr }}:{{ sglang_port }}/health"
+    method: GET
+    status_code: 200
+  register: sglang_health
+  until: sglang_health.status == 200
+  retries: "{{ sglang_health_retries }}"
+  delay: "{{ sglang_health_delay }}"

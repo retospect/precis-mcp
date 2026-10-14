@@ -1,0 +1,15 @@
+---
+# 49a-sglang.yml — SGLang as a permanent managed service on the
+# sglang_serving host(s). See roles/sglang/README.md and
+# docs/backlog/claude-code-on-local-serving.md. The group normally holds ONE
+# GB10 host, exclusive to this service (the role stops the vllm unit if
+# present — same port, same memory budget). Not part of site.yml.
+#
+#   ansible-playbook playbooks/49a-sglang.yml
+
+- name: Run SGLang on the dedicated serving host
+  hosts: sglang_serving
+  become: false
+  roles:
+    - sglang
+  tags: [sglang]
