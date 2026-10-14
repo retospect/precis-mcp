@@ -2314,12 +2314,21 @@ def _seed_job(
     status: str,
     age_min: float = 0.0,
     started_min_ago: float | None = None,
+    queued_min_ago: float | None = None,
+    extra_meta: dict | None = None,
 ) -> int:
     ref_id = seed_ref(store, title=f"job {executor} {status}", kind="job")
     now = datetime.now(UTC)
-    meta: dict[str, str] = {"executor": executor}
+    meta: dict = {"executor": executor}
     if started_min_ago is not None:
         meta["started_at"] = (now - timedelta(minutes=started_min_ago)).isoformat()
+    if extra_meta:
+        meta.update(extra_meta)
+    # ``queued_min_ago`` backdates the STATUS tag row separately from the
+    # ref — a parked/re-queued job keeps an old refs.created_at but a
+    # fresh "queued since" (gr483799). Defaults to the ref's age: a
+    # minted row enters its current STATUS once, at creation.
+    tag_age = age_min if queued_min_ago is None else queued_min_ago
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET meta = %s, created_at = %s WHERE ref_id = %s",
@@ -2332,8 +2341,9 @@ def _seed_job(
             (status,),
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO ref_tags (ref_id, tag_id, set_by) VALUES (%s, %s, 'system')",
-            (ref_id, tid),
+            "INSERT INTO ref_tags (ref_id, tag_id, set_by, created_at) "
+            "VALUES (%s, %s, 'system', %s)",
+            (ref_id, tid, now - timedelta(minutes=tag_age)),
         )
         conn.commit()
     return ref_id
@@ -2379,6 +2389,50 @@ def test_lanes_idle_ignores_young_queue_and_claude_inproc(store) -> None:
     res = _lanes_check(store)
     assert "ssh_node_t4" not in res.detail
     assert "claude_inproc" not in res.detail
+
+
+def test_lanes_idle_ok_when_parked_job_was_just_requeued(store) -> None:
+    """gr483799: a quota-parked quest_tick cycle reads young, not mint-old.
+
+    jo463449's shape in prod: ``refs.created_at`` ~11 days old but the
+    ``STATUS:queued`` tag re-stamped by ``wake_runner._requeue`` minutes
+    ago (status replace is DELETE+INSERT), with the ``meta.wake_when``
+    park residue still on the row. Continuously claimable for minutes,
+    not days — a parked job is not a stalled lane.
+    """
+    _seed_job(
+        store,
+        executor="coordinator_t5",
+        status="queued",
+        age_min=11 * 24 * 60,
+        queued_min_ago=5,
+        extra_meta={
+            "job_type": "quest_tick",
+            "wake_when": {"kind": "at_time", "payload": {"ts": 1}},
+        },
+    )
+    res = _lanes_check(store)
+    assert "coordinator_t5" not in res.detail
+
+
+def test_lanes_idle_stale_when_requeued_job_sits_unclaimed(store) -> None:
+    """The marker can't hide a real stall: a wake-carrying job whose
+    wake fired and which then sat claimable past the threshold still
+    trips — the wake delivered it and nobody drained the lane."""
+    _seed_job(
+        store,
+        executor="coordinator_t6",
+        status="queued",
+        age_min=11 * 24 * 60,
+        queued_min_ago=45,
+        extra_meta={
+            "job_type": "quest_tick",
+            "wake_when": {"kind": "at_time", "payload": {"ts": 1}},
+        },
+    )
+    res = _lanes_check(store)
+    assert res.status == "stale"
+    assert "coordinator_t6: 1 queued, oldest 4" in res.detail
 
 
 def test_lanes_idle_unknown_when_the_probe_fails(store, monkeypatch) -> None:

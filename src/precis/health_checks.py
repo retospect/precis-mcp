@@ -557,6 +557,19 @@ def idle_lanes(
     """Job executors with queued work older than ``queued_min_minutes`` but
     no job started in ``window_s`` and none currently running.
 
+    Queue age is measured from the current ``STATUS:queued`` tag's
+    ``ref_tags.created_at`` — the same "queued since" the claim ordering
+    (``executors/_common.py::claim_executor_jobs``) sorts by — NOT the
+    ref's ``created_at``. A status replace is DELETE+INSERT, so a parked
+    job (coordinator ``Yield``, or ``ctx.defer``'s ``waiting_time`` +
+    ``meta.wake_when`` under gr482938) that the ``wake_runner`` re-queues
+    when its wake fires starts that clock fresh every cycle: its mint
+    date can be weeks old while it has been *claimable and unclaimed*
+    for only the minutes between wake and next claim (gr483799 —
+    quest_tick jo463449 read as 10.8-day-old queued work while cycling
+    through the quota taper roughly every half hour). A woken job nobody
+    claims still ages past ``queued_min_minutes`` and trips the check.
+
     ``claude_inproc`` is excluded: ``workers/nursery.py``'s
     ``_detect_dispatch_stalls`` already owns that lane. Only live
     (``retired_at IS NULL``) job refs count.
@@ -571,7 +584,7 @@ def idle_lanes(
         WITH q AS (
           SELECT r.meta->>'executor' AS executor,
                  count(*)::int        AS queued,
-                 min(r.created_at)    AS oldest
+                 min(rt.created_at)   AS oldest
             FROM refs r
             JOIN ref_tags rt ON rt.ref_id = r.ref_id
             JOIN tags t ON t.tag_id = rt.tag_id
@@ -580,7 +593,7 @@ def idle_lanes(
              AND r.meta->>'executor' IS NOT NULL
              AND r.meta->>'executor' <> ALL(%(exempt)s)
            GROUP BY 1
-          HAVING min(r.created_at) < now() - make_interval(mins => %(mins)s)
+          HAVING min(rt.created_at) < now() - make_interval(mins => %(mins)s)
         )
         SELECT q.executor, q.queued,
                floor(extract(epoch FROM now() - q.oldest) / 60)::int
