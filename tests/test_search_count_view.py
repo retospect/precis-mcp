@@ -13,6 +13,7 @@ listing's own page header.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -22,6 +23,7 @@ from precis.handlers.gripe import GripeHandler
 from precis.handlers.job import JobHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
+from precis.store.types import ChunkInsert
 
 pytestmark = pytest.mark.db
 
@@ -36,11 +38,22 @@ def gripes(hub: Hub) -> GripeHandler:
     return GripeHandler(hub=hub)
 
 
-def _job(store: Store, *, job_type: str | None, status: str | None) -> None:
+def _job(store: Store, *, job_type: str | None, status: str | None) -> int:
     meta = {"job_type": job_type} if job_type is not None else {}
     ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
     if status is not None:
         store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return ref.id
+
+
+def _failed_job(store: Store, *, job_type: str | None, event: str | None) -> int:
+    ref_id = _job(store, job_type=job_type, status="failed")
+    if event is not None:
+        store.chunks.insert_chunks(
+            ref_id,
+            [ChunkInsert(ord=1, text=event, meta={"chunk_kind": "job_event"})],
+        )
+    return ref_id
 
 
 def _gripe(store: Store, text: str, *, tags: tuple[str, ...] = ()) -> int:
@@ -54,6 +67,14 @@ def _gripe(store: Store, text: str, *, tags: tuple[str, ...] = ()) -> int:
     for t in tags:
         store.add_tag(ref_id, Tag.open(t), set_by="agent")
     return ref_id
+
+
+def _backdate(store: Store, ref_id: int, when: datetime) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s WHERE ref_id = %s", (when, ref_id)
+        )
+        conn.commit()
 
 
 def _sql_job_cell(store: Store, job_type: str | None, status: str | None) -> int:
@@ -202,6 +223,110 @@ class TestGripeTagAxisFacet:
         assert "group_by" in resp.body
 
 
+class TestCountTimeWindow:
+    """``since=``/``until=`` bound ``refs.created_at`` on ``view='count'``
+    (mcp-introspection gap closures 2026-10-14)."""
+
+    def test_since_until_bound_the_count(self, jobs: JobHandler, store: Store) -> None:
+        old = _job(store, job_type="sweep", status="succeeded")
+        new = _job(store, job_type="sweep", status="succeeded")
+        now = datetime.now(UTC)
+        _backdate(store, old, now - timedelta(days=10))
+        _backdate(store, new, now - timedelta(hours=1))
+
+        resp = jobs.search(
+            view="count", status="*", since=(now - timedelta(days=1)).isoformat()
+        )
+        assert resp.body.startswith("# 1 job entry"), resp.body
+
+        resp = jobs.search(
+            view="count", status="*", until=(now - timedelta(days=1)).isoformat()
+        )
+        assert resp.body.startswith("# 1 job entry"), resp.body
+
+        resp = jobs.search(
+            view="count",
+            status="*",
+            since=(now - timedelta(days=30)).isoformat(),
+            until=(now - timedelta(minutes=30)).isoformat(),
+        )
+        assert resp.body.startswith("# 2 job entries"), resp.body
+        assert "created [" in resp.body
+
+    def test_since_renders_in_filters(self, jobs: JobHandler, store: Store) -> None:
+        _job(store, job_type="sweep", status="succeeded")
+        resp = jobs.search(view="count", status="*", since="2020-01-01")
+        assert "created [2020-01-01" in resp.body
+        assert resp.body.startswith("# 1 job entry")
+
+    def test_bad_since_raises(self, jobs: JobHandler) -> None:
+        with pytest.raises(BadInput, match="ISO date"):
+            jobs.search(view="count", since="yesterday-ish")
+
+    def test_since_off_count_view_raises(self, jobs: JobHandler) -> None:
+        # Reached only on a direct handler call (dispatch routes dated
+        # non-count searches to the source-search primitive).
+        with pytest.raises(BadInput, match="view='count'"):
+            jobs.search(since="2024-01-01", status="*")
+
+    def test_since_via_dispatch(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        ref_id = _job(store, job_type="sweep", status="succeeded")
+        _backdate(store, ref_id, datetime.now(UTC) - timedelta(days=10))
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "job",
+                "view": "count",
+                "status": "*",
+                "since": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            },
+        )
+        assert body.startswith("# 0 job entries"), body
+
+
+class TestJobErrorHeads:
+    """The count view's failed-job trailer (top error heads per failing
+    job_type) — the "which failure family" drill that used to need raw
+    refs+chunks SQL."""
+
+    def test_heads_grouped_per_job_type(self, jobs: JobHandler, store: Store) -> None:
+        _failed_job(store, job_type="fix_gripe", event="gripe 12345 has no parent")
+        _failed_job(store, job_type="fix_gripe", event="gripe 67890 has no parent")
+        _failed_job(store, job_type="sweep", event="disk full")
+        _failed_job(store, job_type="sweep", event=None)
+        _job(store, job_type="sweep", status="succeeded")
+
+        resp = jobs.search(view="count", group_by="state", status="*")
+
+        assert "## error heads — 4 failed job(s) in this set" in resp.body
+        assert "fix_gripe (2):" in resp.body
+        # digits fold: two different gripe ids are one family
+        assert "2x gripe # has no parent" in resp.body
+        assert "sweep (2):" in resp.body
+        assert "1x disk full" in resp.body
+        assert "1x (no job_event recorded)" in resp.body
+
+    def test_heads_scoped_by_since(self, jobs: JobHandler, store: Store) -> None:
+        old = _failed_job(store, job_type="sweep", event="old failure")
+        _backdate(store, old, datetime.now(UTC) - timedelta(days=10))
+        _failed_job(store, job_type="sweep", event="new failure")
+
+        resp = jobs.search(
+            view="count",
+            status="*",
+            since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+        )
+        assert "1x new failure" in resp.body
+        assert "old failure" not in resp.body
+
+    def test_no_failed_jobs_no_trailer(self, jobs: JobHandler, store: Store) -> None:
+        _job(store, job_type="sweep", status="succeeded")
+        resp = jobs.search(view="count", status="*")
+        assert "error heads" not in resp.body
+
+
 class TestPassthroughKinds:
     """todo and memory own a ``view=`` dispatch ahead of the base
     ``search()`` — pin that ``'count'`` still reaches the shared path."""
@@ -269,8 +394,10 @@ class TestCountValidation:
         assert "area:token-waste: 1" in body
 
     def test_rejected_arg_combos(self, runtime_with_store: PrecisRuntime) -> None:
+        # since=/until= are ACCEPTED on view='count' (mcp-introspection
+        # gap closures 2026-10-14) — they bound refs.created_at. What
+        # still has no meaning on a count is rejected.
         for extra in (
-            {"since": "2024-01-01"},
             {"sort": "recency"},
             {"angle": 1.0},
         ):

@@ -122,6 +122,29 @@ _COUNT_MAX_FACETS = 3
 _COUNT_GROUP_LIMIT = 200
 
 
+def _parse_window_bound(value: Any, field: str) -> datetime | None:
+    """Parse a ``since=``/``until=`` bound into a tz-aware datetime.
+
+    Same contract as the source-search primitive's parser
+    (:meth:`precis.runtime.search.SearchMixin._parse_search_date`): an ISO
+    date or full ISO timestamp; a naive value is assumed UTC; ``until`` is
+    exclusive. Raises :class:`BadInput` on an unparseable string.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).strip())
+        except ValueError as exc:
+            raise BadInput(
+                f"{field}= must be an ISO date/timestamp, got {value!r}",
+                next=f"{field}='2026-10-01' or '2026-10-01T00:00:00Z'",
+            ) from exc
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
 def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
     """Parse ``group_by=`` into store facet specs ``(kind, key)``.
 
@@ -576,8 +599,13 @@ class NumericRefHandler(Handler):
         # ``view='count'`` (gr472990): the filtered total + facet counts
         # instead of a hit page — ``group_by=`` picks the facets
         # ('state', 'meta.<key>', 'tag:<axis>'; comma-separated or list).
+        # ``since=``/``until=`` bound refs.created_at on that view only
+        # (mcp-introspection gap closures 2026-10-14); on any other shape
+        # they route to the cross-kind source-search primitive upstream.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
         # dispatch-injected (runtime.dispatch._resolve_uncited_exclude /
         # ._resolve_cited_include — ``search(uncited=<draft>)`` /
         # ``search(cited=<draft>)``), pre-resolved. Declared explicitly
@@ -643,10 +671,11 @@ class NumericRefHandler(Handler):
             if view != "count":
                 raise BadInput(
                     f"unknown view {view!r} for search(kind={self.kind!r})",
-                    options=["count"],
+                    options=["count", "meta", "tags"],
                     next=(
                         f"search(kind={self.kind!r}, view='count', "
-                        "args={'group_by': 'state'})"
+                        "args={'group_by': 'state'}) · view='meta' "
+                        "(meta-key inventory) · view='tags' (tag counts)"
                     ),
                 )
             return self._count_view(
@@ -659,6 +688,21 @@ class NumericRefHandler(Handler):
                 sort=sort,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                since=since,
+                until=until,
+            )
+        if since is not None or until is not None:
+            # Reached only on a direct handler call — dispatch routes
+            # date-bound searches to the source-search primitive before
+            # this. Fail loudly rather than drop the bound.
+            raise BadInput(
+                f"since=/until= apply only to search(kind={self.kind!r}, "
+                "view='count') on this kind",
+                next=(
+                    f"search(kind={self.kind!r}, view='count', since='<ISO>', "
+                    "until='<ISO>') — or a dated cross-kind search: "
+                    "search(q='…', since='…')"
+                ),
             )
 
         # ``q=`` is optional when ``tags=`` is supplied — broad
@@ -934,6 +978,8 @@ class NumericRefHandler(Handler):
         sort: str | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
+        since: str | None = None,
+        until: str | None = None,
     ) -> Response:
         """``search(kind=K, view='count')`` — filtered total + facet counts.
 
@@ -953,6 +999,8 @@ class NumericRefHandler(Handler):
                 next=f"search(kind={self.kind!r}, view='count', args={{'group_by': 'state'}})",
             )
         facets = _parse_count_facets(group_by)
+        since_dt = _parse_window_bound(since, "since")
+        until_dt = _parse_window_bound(until, "until")
         link_ref_id: int | None = None
         link_label = ""
         if link is not None and str(link).strip():
@@ -976,6 +1024,8 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
             group_limit=_COUNT_GROUP_LIMIT,
+            since=since_dt,
+            until=until_dt,
         )
 
         filters: list[str] = []
@@ -985,6 +1035,10 @@ class NumericRefHandler(Handler):
             filters.append(f"tags={tags!r}")
         if link_label:
             filters.append(f"linked to {link_label}")
+        if since_dt is not None or until_dt is not None:
+            lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
+            hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
+            filters.append(f"created [{lo}, {hi})")
         head = f"# {total} {self._sense()} entr{'y' if total == 1 else 'ies'}"
         if filters:
             head += f" ({', '.join(filters)})"
@@ -1026,10 +1080,49 @@ class NumericRefHandler(Handler):
                             "args={'group_by': 'meta.<key>'} or 'tag:<axis>'",
                             "facet by a meta field or a tag axis",
                         ),
+                        (
+                            "since='<ISO-date>' / until='<ISO-date>'",
+                            "bound the counted set to a created_at window",
+                        ),
                     ]
                 ).lstrip("\n")
             )
+        extra = self._count_view_extra(
+            q=q,
+            tags=tags,
+            exclude_tags=exclude_tags,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            since=since_dt,
+            until=until_dt,
+            total=total,
+        )
+        if extra:
+            parts.append("")
+            parts.append(extra)
         return Response(body="\n".join(parts))
+
+    def _count_view_extra(
+        self,
+        *,
+        q: str | None,
+        tags: list[str] | None,
+        exclude_tags: list[str] | None,
+        link_ref_id: int | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        since: datetime | None,
+        until: datetime | None,
+        total: int,
+    ) -> str:
+        """Optional per-kind trailer on ``view='count'`` (default: none).
+
+        Called with the same resolved filter set the count ran under, so a
+        kind can append a bounded drill into that set — the job handler's
+        top-error-heads-per-failing-type block. Returns "" for no trailer.
+        """
+        return ""
 
     def _list_by_tags(
         self,

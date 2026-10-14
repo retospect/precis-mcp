@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,12 +22,14 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qsl
 
 from precis.errors import BadInput
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.handlers._numeric_ref import NumericRefHandler, _parse_window_bound
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._refs_ops import filtered_ref_clauses
 from precis.store.types import Ref
 from precis.todo import guards as todo_guards
+from precis.utils import handle_registry
 from precis.utils.link_tag_ops import (
     guard_taxon_hierarchy,
     validate_relation,
@@ -68,6 +71,65 @@ _ANCESTRY_GIT_TIMEOUT_S = 5
 #: Host-local clone the fix lane reads (``deploy/roles/precis_worker_agent``
 #: keeps it on ``main``); a third place the commit graph can be read from.
 _FIX_REPO_ENV = "PRECIS_FIX_REPO_DIR"
+
+# ── view='count' error-heads trailer (mcp-introspection gap closures
+# 2026-10-14): the "which failure family?" drill into a failed-job count ──
+#: Failed jobs scanned for the trailer. The heads are advisory ("what are
+#: the recurring failures"), so a bounded scan is honest; the render says
+#: when the cap bit.
+_COUNT_HEAD_SCAN_CAP = 5000
+#: Head lines shown per failing job_type; types shown at all.
+_COUNT_HEADS_PER_TYPE = 3
+_COUNT_HEAD_MAX_TYPES = 12
+#: Head render length — one line, digits collapsed to ``#`` so retries of
+#: the same family count together instead of one row per id.
+_COUNT_HEAD_CHARS = 140
+
+_COUNT_HEAD_WS = re.compile(r"\s+")
+_COUNT_HEAD_DIGITS = re.compile(r"\d+")
+
+#: ``STATUS:failed`` membership, same shape as the tag filter in
+#: ``_tag_filter.build_tag_filter`` (closed axis ⇒ namespace='STATUS',
+#: value='failed'; expired rows excluded).
+_COUNT_FAILED_CLAUSE = (
+    "EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+    "WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+    "AND t.value = 'failed' "
+    "AND (rt.expires_at IS NULL OR rt.expires_at > now()))"
+)
+
+# ── under=: hierarchical job scope (mcp-introspection gap closures
+# 2026-10-14, ruling: jobs for a quest/board/structure include sub-jobs
+# and jobs under its todo tree) ──────────────────────────────────────
+#: Default tree depth. A quest's shape is quest → todo(s) → job(s) →
+#: coordinator's children; 8 covers that plus two more coordinator
+#: generations without an unbounded walk.
+_UNDER_DEFAULT_DEPTH = 8
+_UNDER_MAX_DEPTH = 16
+#: Members the ``parent_id`` walk may return. Beyond this the root is a
+#: forest, not a project — refuse silently truncating (the caller narrows
+#: with depth= or picks a deeper root).
+_UNDER_MEMBER_CAP = 5000
+#: Job rows resolved for the count/listing; over this the include-set
+#: would be a dump, not a filter.
+_UNDER_JOB_CAP = 25000
+#: Lines the ``view='tree'`` render may emit.
+_UNDER_TREE_CAP = 300
+
+
+def _norm_error_head(text: str | None) -> str:
+    """The comparable head of a ``job_event`` line: first line only,
+    whitespace collapsed, digit-runs folded to ``#`` (``job 12345`` and
+    ``job 67890`` are the same failure family), bounded. ``None``/blank
+    event text — a failed job whose closer never wrote one — is its own
+    bucket so it still counts."""
+    if not text:
+        return "(no job_event recorded)"
+    line = _COUNT_HEAD_WS.sub(" ", text.split("\n", 1)[0]).strip()
+    line = _COUNT_HEAD_DIGITS.sub("#", line)
+    if len(line) > _COUNT_HEAD_CHARS:
+        line = line[: _COUNT_HEAD_CHARS - 1] + "…"
+    return line or "(no job_event recorded)"
 
 
 def _ancestry_repos() -> list[Path]:
@@ -226,6 +288,11 @@ class JobHandler(NumericRefHandler):
     sense: ClassVar[str] = "job"
     # No default tag: the queued state is set after validation in put.
     default_tags_on_create: ClassVar[tuple[str, ...]] = ()
+    # ``under=`` on job search is this handler's own: the hierarchical
+    # "jobs for this quest/todo/board/structure" scope (``_search_under``)
+    # — the generic part-of under= does not fit because jobs attach via
+    # ``refs.parent_id`` and subject links, not part-of.
+    owns_under: ClassVar[bool] = True
 
     def _plugin_owner_kinds(self) -> frozenset[str]:
         """Kinds that opted into owning compute-lane jobs via
@@ -1323,6 +1390,552 @@ class JobHandler(NumericRefHandler):
                 lines.append(f"## event {block.ord}")
                 lines.append(block.text)
         return "\n".join(lines)
+
+    # ── view='count' trailer: top error heads per failing job_type ──
+
+    def _count_view_extra(
+        self,
+        *,
+        q: str | None,
+        tags: list[str] | None,
+        exclude_tags: list[str] | None,
+        link_ref_id: int | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        since: datetime | None,
+        until: datetime | None,
+        total: int,
+    ) -> str:
+        """Top-N error heads per failing job_type over the *same* filtered
+        set the count just described (mcp-introspection gap closures
+        2026-10-14). The "how many failed" number alone always sent agents
+        to raw ``refs``+``chunks`` SQL to find the recurring failure;
+        this trailer answers it in the same call. Heads are the first
+        line of each failed job's latest ``job_event``, normalised so
+        per-id noise folds into one family count.
+        """
+        clauses, params = filtered_ref_clauses(
+            kind="job",
+            tags=tags,
+            exclude_tags=exclude_tags,
+            q=q,
+            q_in_chunks=self.search_body_chunks,
+            q_card_kinds=self.search_card_kinds,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            since=since,
+            until=until,
+        )
+        clauses.append(_COUNT_FAILED_CLAUSE)
+        params.append(_COUNT_HEAD_SCAN_CAP)
+        sql = f"""
+            SELECT r.meta->>'job_type' AS job_type, ev.text AS head_text
+              FROM refs r
+              LEFT JOIN LATERAL (
+                  SELECT c.text
+                    FROM chunks c
+                   WHERE c.ref_id = r.ref_id
+                     AND c.chunk_kind = '{_JOB_EVENT_KIND}'
+                   ORDER BY c.ord DESC
+                   LIMIT 1
+              ) ev ON true
+             WHERE {" AND ".join(clauses)}
+             ORDER BY r.ref_id DESC
+             LIMIT %s
+        """
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        if not rows:
+            return ""
+
+        # job_type -> head -> count, plus per-type failed total.
+        per_type: dict[str | None, dict[str, int]] = {}
+        for job_type, head_text in rows:
+            bucket = per_type.setdefault(
+                job_type if isinstance(job_type, str) and job_type else None, {}
+            )
+            head = _norm_error_head(head_text)
+            bucket[head] = bucket.get(head, 0) + 1
+        ranked = sorted(per_type.items(), key=lambda kv: -sum(kv[1].values()))
+        total_failed = sum(sum(h.values()) for _, h in ranked)
+        lines = [f"## error heads — {total_failed} failed job(s) in this set"]
+        for job_type, heads in ranked[:_COUNT_HEAD_MAX_TYPES]:
+            failed_n = sum(heads.values())
+            label = job_type or "(no job_type)"
+            lines.append(f"{label} ({failed_n}):")
+            for head, n in sorted(heads.items(), key=lambda kv: -kv[1])[
+                :_COUNT_HEADS_PER_TYPE
+            ]:
+                lines.append(f"  {n}x {head}")
+            if len(heads) > _COUNT_HEADS_PER_TYPE:
+                lines.append(f"  … +{len(heads) - _COUNT_HEADS_PER_TYPE} more heads")
+        tail: list[str] = []
+        if len(ranked) > _COUNT_HEAD_MAX_TYPES:
+            tail.append(f"+{len(ranked) - _COUNT_HEAD_MAX_TYPES} more failing types")
+        if len(rows) >= _COUNT_HEAD_SCAN_CAP:
+            tail.append(f"most recent {_COUNT_HEAD_SCAN_CAP} failed jobs scanned")
+        if tail:
+            lines.append(f"  ({'; '.join(tail)})")
+        return "\n".join(lines)
+
+    # ── search: under= is the hierarchical job scope ──────────────
+
+    def search(
+        self,
+        *,
+        under: str | int | None = None,
+        depth: int | str | None = None,
+        axis: str | None = None,
+        view: str | None = None,
+        status: str | None = None,
+        page_size: int = 10,
+        page: int = 1,
+        group_by: str | list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        **kw: Any,
+    ) -> Response:
+        if under is not None or depth is not None or axis is not None:
+            for bad in ("q", "tags", "link", "mode", "sort"):
+                v = kw.get(bad)
+                if v is not None and (not isinstance(v, str) or v.strip()):
+                    raise BadInput(
+                        f"{bad}= is not supported with under= on job search",
+                        next="under= scopes by structure — narrow the "
+                        "result with status=/since=/until= instead",
+                    )
+            return self._search_under(
+                under=under,
+                depth=depth,
+                axis=axis,
+                view=view,
+                status=status,
+                page_size=page_size,
+                page=page,
+                group_by=group_by,
+                since=since,
+                until=until,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+            )
+        return super().search(
+            view=view,
+            status=status,
+            page_size=page_size,
+            page=page,
+            group_by=group_by,
+            since=since,
+            until=until,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+            **kw,
+        )
+
+    def _search_under(
+        self,
+        *,
+        under: str | int | None,
+        depth: int | str | None,
+        axis: str | None,
+        view: str | None,
+        status: str | None,
+        page_size: int,
+        page: int,
+        group_by: str | list[str] | None,
+        since: str | None,
+        until: str | None,
+        exclude_ref_ids: list[int] | None,
+        include_ref_ids: list[int] | None,
+    ) -> Response:
+        """``search(kind='job', under=<ref>)`` — jobs *for* a root ref.
+
+        Hierarchical by ruling (2026-10-14): the member set is the root
+        plus its ``refs.parent_id`` descendants (bounded ``depth=``), and
+        the job set is every live job parented under a member OR linked
+        to one (subject links, either direction). That covers the three
+        real shapes: a coordinator job's children (parent chain), a
+        quest's todo tree's jobs (todo → job parent edge), and a
+        gripe/quest/structure's ``fix_gripe``/build jobs (subject link).
+
+        ``view='count'`` composes by feeding the resolved job-id set into
+        the shared count path; ``view='tree'`` renders the member
+        skeleton with its jobs indented.
+        """
+        if axis is not None:
+            raise BadInput(
+                "axis= applies only when under= names a taxon",
+                next="drop axis=, or search(kind='finding', under='tn42')",
+            )
+        if under is None:
+            raise BadInput(
+                "depth= needs under=",
+                next="search(kind='job', under='qu164903', depth=3)",
+            )
+        n_depth = _UNDER_DEFAULT_DEPTH
+        if depth is not None:
+            try:
+                n_depth = int(depth)
+            except (TypeError, ValueError):
+                n_depth = 0
+            if n_depth < 1 or n_depth > _UNDER_MAX_DEPTH:
+                raise BadInput(
+                    f"depth= must be 1..{_UNDER_MAX_DEPTH}, got {depth!r}",
+                    next=f"depth=1 is direct children only; max {_UNDER_MAX_DEPTH}",
+                )
+        if view not in (None, "count", "tree"):
+            raise BadInput(
+                f"unknown view {view!r} for search(kind='job', under=…)",
+                options=["count", "tree"],
+                next="search(kind='job', under='<ref>', view='tree')",
+            )
+        if group_by is not None and view != "count":
+            raise BadInput(
+                "group_by= applies only to view='count'",
+                next="search(kind='job', under='<ref>', view='count', "
+                "args={'group_by': 'meta.job_type,state'})",
+            )
+
+        root = self._resolve_under_root(under)
+        members, member_capped = self._under_members(root.id, n_depth)
+        jobs = self._under_jobs(
+            [m[0] for m in members], status=status, since=since, until=until
+        )
+        if include_ref_ids is not None:
+            allowed = set(include_ref_ids)
+            jobs = [j for j in jobs if j[0] in allowed]
+        if exclude_ref_ids:
+            banned = set(exclude_ref_ids)
+            jobs = [j for j in jobs if j[0] not in banned]
+
+        root_label = handle_registry.try_format(root.kind, root.id) or (
+            f"{root.kind}:{root.id}"
+        )
+        if view == "count":
+            resp = self._count_view(
+                q=None,
+                tags=None,
+                exclude_tags=None,
+                status_note="",
+                link=None,
+                group_by=group_by,
+                sort=None,
+                exclude_ref_ids=None,
+                include_ref_ids=[int(j[0]) for j in jobs],
+                since=since,
+                until=until,
+            )
+            from dataclasses import replace as _dc_replace
+
+            scope = (
+                f"jobs under {root_label} "
+                f"({len(members)} member refs, depth≤{n_depth})"
+                + ("; subtree member cap hit" if member_capped else "")
+            )
+            return _dc_replace(resp, body=f"{scope}\n\n{resp.body}")
+        if view == "tree":
+            return self._render_under_tree(
+                root, root_label, members, jobs, n_depth, member_capped
+            )
+        return self._render_under_listing(
+            root, root_label, members, jobs, n_depth, member_capped, page, page_size
+        )
+
+    def _resolve_under_root(self, under: str | int) -> Ref:
+        """Resolve the ``under=`` target to a live ref of ANY kind.
+
+        A bare int is a ``refs.ref_id`` (ids are global across kinds);
+        a string goes through the universal handle / ``kind:id``
+        grammar — :func:`parse_link_target` carries the BadInput/NotFound
+        and the superseded-by redirect.
+        """
+        if isinstance(under, int) or (isinstance(under, str) and under.isdigit()):
+            ref_id = int(under)
+            with self.store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT kind, ref_id FROM refs "
+                    "WHERE ref_id = %s AND retired_at IS NULL",
+                    (ref_id,),
+                ).fetchone()
+            if row is None:
+                raise BadInput(
+                    f"under= ref {ref_id} does not exist or is retired",
+                    next="under='qu164903' or under='kind:id'",
+                )
+            ref = self.store.get_ref(kind=str(row[0]), id=ref_id)
+            assert ref is not None  # live row just seen
+            return ref
+        target = parse_link_target(str(under), store=self.store)
+        ref = self.store.get_ref(kind=target.kind, id=target.ref_id)
+        if ref is None:  # deleted between resolve and fetch
+            raise BadInput(
+                f"under= target {under!r} is no longer live",
+                next="under='<handle>' or under='kind:id'",
+            )
+        return ref
+
+    def _under_members(
+        self, root_id: int, depth: int
+    ) -> tuple[list[tuple[int, str, str, int | None, int]], bool]:
+        """The bounded ``parent_id`` subtree: ``(ref_id, kind, title,
+        parent_id, depth)`` rows, breadth-first, capped at
+        ``_UNDER_MEMBER_CAP``. The walk is deliberately NOT
+        ``retired_at``-filtered — a done/retired todo still has live
+        jobs, and pruning the chain mid-tree would orphan them (the job
+        side filters its own liveness)."""
+        sql = """
+            WITH RECURSIVE sub AS (
+                SELECT r.ref_id, r.kind, r.title, r.parent_id, 0 AS depth
+                  FROM refs r
+                 WHERE r.ref_id = %s
+                UNION ALL
+                SELECT r.ref_id, r.kind, r.title, r.parent_id, s.depth + 1
+                  FROM refs r
+                  JOIN sub s ON r.parent_id = s.ref_id
+                 WHERE s.depth < %s
+            )
+            SELECT ref_id, kind, title, parent_id, depth FROM sub
+             ORDER BY depth, ref_id
+        """
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(sql, (root_id, depth)).fetchall()
+        capped = len(rows) > _UNDER_MEMBER_CAP
+        return (
+            [(int(r[0]), str(r[1]), str(r[2] or ""), r[3], int(r[4])) for r in rows][
+                :_UNDER_MEMBER_CAP
+            ],
+            capped,
+        )
+
+    def _under_jobs(
+        self,
+        member_ids: list[int],
+        *,
+        status: str | None,
+        since: str | None,
+        until: str | None,
+    ) -> list[tuple[int, int | None, int | None, str, str, str | None, str]]:
+        """Live jobs attached to the member set: ``(ref_id, parent_id,
+        link_member_id, title, job_type, status, created_iso)``.
+
+        Attachment = ``parent_id`` in members (the parent_id tree is the
+        primary edge) OR a ``links`` row either direction to a member
+        (subject links — a ``fix_gripe`` job links its gripe, a build job
+        its pcb). ``status=`` is a STATUS-tag value filter; the job's own
+        ``created_at`` honours the same since=/until= window the count
+        view uses. Bounded at ``_UNDER_JOB_CAP`` newest-first.
+        """
+        clauses = [
+            "j.kind = 'job'",
+            "j.retired_at IS NULL",
+            "(j.parent_id = ANY(%s) OR lm.member_id IS NOT NULL)",
+        ]
+        # Params bind in SQL text order: the two ``ANY(%s)`` inside the
+        # ``lm`` JOIN come before the WHERE clause's parent ``ANY(%s)``.
+        params: list[Any] = [member_ids, member_ids, member_ids]
+        if status is not None and status.strip() and status != "*":
+            clauses.append("st.value = %s")
+            params.append(status.strip())
+        for bound, op in ((since, ">="), (until, "<")):
+            if bound is not None:
+                clauses.append(f"j.created_at {op} %s")
+                params.append(
+                    _parse_window_bound(bound, "since" if op == ">=" else "until")
+                )
+        sql = f"""
+            SELECT j.ref_id, j.parent_id, lm.member_id, j.title,
+                   j.meta->>'job_type' AS job_type, st.value AS status,
+                   to_char(j.created_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS created
+              FROM refs j
+              LEFT JOIN (
+                  SELECT rt.ref_id, t.value
+                    FROM ref_tags rt
+                    JOIN tags t ON t.tag_id = rt.tag_id
+                   WHERE t.namespace = 'STATUS'
+                     AND (rt.expires_at IS NULL OR rt.expires_at > now())
+              ) st ON st.ref_id = j.ref_id
+              LEFT JOIN (
+                  SELECT l.src_ref_id AS job_id, l.dst_ref_id AS member_id
+                    FROM links l
+                   WHERE l.dst_ref_id = ANY(%s)
+                  UNION ALL
+                  SELECT l.dst_ref_id AS job_id, l.src_ref_id AS member_id
+                    FROM links l
+                   WHERE l.src_ref_id = ANY(%s)
+              ) lm ON lm.job_id = j.ref_id
+             WHERE {" AND ".join(clauses)}
+             ORDER BY j.ref_id DESC
+             LIMIT %s
+        """
+        params.append(_UNDER_JOB_CAP)
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out: dict[
+            int, tuple[int, int | None, int | None, str, str, str | None, str]
+        ] = {}
+        for r in rows:
+            # A job linked to several members yields one row each; keep
+            # the first (parent attachment preferred via dict order).
+            if int(r[0]) in out:
+                continue
+            out[int(r[0])] = (
+                int(r[0]),
+                r[1] if r[1] is None else int(r[1]),
+                r[2] if r[2] is None else int(r[2]),
+                str(r[3] or ""),
+                str(r[4] or ""),
+                str(r[5]) if r[5] is not None else None,
+                str(r[6]),
+            )
+        return list(out.values())
+
+    def _render_under_listing(
+        self,
+        root: Ref,
+        root_label: str,
+        members: list[tuple[int, str, str, int | None, int]],
+        jobs: list[tuple[int, int | None, int | None, str, str, str | None, str]],
+        depth: int,
+        member_capped: bool,
+        page: int,
+        page_size: int,
+    ) -> Response:
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 100))
+        total = len(jobs)
+        rows = jobs[(page - 1) * page_size : page * page_size]
+        member_kinds = {m[0]: m[1] for m in members}
+
+        def _member_label(ref_id: int | None) -> str:
+            if ref_id is None:
+                return "?"
+            kind = member_kinds.get(ref_id)
+            if kind:
+                return handle_registry.try_format(kind, ref_id) or f"{kind}:{ref_id}"
+            return str(ref_id)
+
+        lines = [
+            f"# {total} job(s) under {root_label} "
+            f"({len(members)} member refs, depth≤{depth})"
+        ]
+        if member_capped:
+            lines.append(
+                f"note: subtree capped at {_UNDER_MEMBER_CAP} members — "
+                "narrow with depth= or a deeper root"
+            )
+        for ref_id, parent_id, link_member_id, title, jt, status, created in rows:
+            via = (
+                f" parent {_member_label(parent_id)}"
+                if parent_id is not None
+                else f" ~link {_member_label(link_member_id)}"
+            )
+            lines.append(
+                f"  job:{ref_id} {jt or '-'} [{status or '-'}] "
+                f"{created} {title[:60]}{via}"
+            )
+        if total > len(rows):
+            lines.append(
+                f"… page {page} of {-(-total // page_size)} — page={page + 1} for next"
+            )
+        lines.append("")
+        lines.append(
+            render_next_section(
+                [
+                    (
+                        f"search(kind='job', under='{root_label}', view='tree')",
+                        "the hierarchy this count came from",
+                    ),
+                    (
+                        f"search(kind='job', under='{root_label}', "
+                        "view='count', args={'group_by': 'meta.job_type,state'})",
+                        "counts by job_type × STATUS",
+                    ),
+                ]
+            ).lstrip("\n")
+        )
+        return Response(body="\n".join(lines))
+
+    def _render_under_tree(
+        self,
+        root: Ref,
+        root_label: str,
+        members: list[tuple[int, str, str, int | None, int]],
+        jobs: list[tuple[int, int | None, int | None, str, str, str | None, str]],
+        depth: int,
+        member_capped: bool,
+    ) -> Response:
+        """Compact hierarchy: the member skeleton indented by depth, jobs
+        attached under their parent member (or ``~link`` under their
+        linked member when parented elsewhere)."""
+        member_kinds = {m[0]: m[1] for m in members}
+        children: dict[int | None, list[tuple[int, str, str, int | None, int]]] = {}
+        for m in members:
+            children.setdefault(m[3], []).append(m)
+        job_by_id = {j[0]: j for j in jobs}
+        # Jobs whose parent sits inside the member set render under it;
+        # a job linked to a member but parented elsewhere shows under the
+        # link with a '~' marker so the two attachment kinds stay
+        # distinguishable.
+        linked_only: dict[int, list[tuple[Any, ...]]] = {}
+        for j in jobs:
+            ref_id, parent_id, link_member_id = j[0], j[1], j[2]
+            if parent_id in member_kinds:
+                continue
+            if link_member_id is not None:
+                linked_only.setdefault(link_member_id, []).append(j)
+            elif ref_id in member_kinds:
+                continue
+            else:
+                linked_only.setdefault(-1, []).append(j)  # orphaned link
+
+        lines = [f"# tree under {root_label} (depth≤{depth})"]
+        if member_capped:
+            lines.append(f"note: subtree capped at {_UNDER_MEMBER_CAP} members")
+        emitted = 0
+        truncated = False
+
+        def emit(ref_id: int, kind: str, title: str, depth_: int) -> None:
+            nonlocal emitted, truncated
+            if emitted >= _UNDER_TREE_CAP:
+                truncated = True
+                return
+            handle = handle_registry.try_format(kind, ref_id) or f"{kind}:{ref_id}"
+            job = job_by_id.get(ref_id)
+            bits = handle
+            if job is not None:
+                bits += f" {job[4] or '-'} [{job[5] or '-'}]"
+            lines.append(f"{'  ' * min(depth_, 12)}{bits} {title[:70]}")
+            emitted += 1
+
+        def walk(ref_id: int) -> None:
+            nonlocal emitted, truncated
+            for m in children.get(ref_id, []):
+                emit(m[0], m[1], m[2], m[4])
+                for j in linked_only.get(m[0], []):
+                    if emitted >= _UNDER_TREE_CAP:
+                        truncated = True
+                        break
+                    lines.append(
+                        f"{'  ' * min(m[4] + 1, 12)}~ job:{j[0]} "
+                        f"{j[4] or '-'} [{j[5] or '-'}] {j[3][:60]}"
+                    )
+                    emitted += 1
+                walk(m[0])
+
+        emit(root.id, root.kind, str(root.title or ""), 0)
+        walk(root.id)
+        # The root's own linked jobs (its parent_id is elsewhere/None).
+        for j in linked_only.get(root.id, []):
+            if emitted >= _UNDER_TREE_CAP:
+                truncated = True
+                break
+            lines.append(f"  ~ job:{j[0]} {j[4] or '-'} [{j[5] or '-'}] {j[3][:60]}")
+            emitted += 1
+        if truncated:
+            lines.append(f"… (+more, capped at {_UNDER_TREE_CAP} lines)")
+        return Response(body="\n".join(lines))
 
     # ── helpers ────────────────────────────────────────────────────
 

@@ -98,17 +98,19 @@ _ARG_VALUE_RE_CACHE: dict[str, re.Pattern[str]] = {}
 def _arg_value(ev: Event, name: str) -> str | None:
     """Lift one argument's VALUE out of ``arg_digest``, or ``None``.
 
-    Only payload-bearing corpora have a digest at all — the ledger records
-    argument names and never values — so a ``None`` here means "not
-    knowable", not "not passed". Callers comparing two events must treat
-    ``None`` as a non-match rather than as equality, or every ledger pair
-    looks identical.
+    Pre-0209 only payload-bearing corpora had a digest at all — the
+    ledger recorded argument names and never values — so a ``None``
+    here means "not knowable", not "not passed". Callers comparing two
+    events must treat ``None`` as a non-match rather than as equality,
+    or every ledger pair looks identical.
 
     Two digest dialects exist: the local extractor's JSON dump
     (``{"id": 366639, "kind": "gripe"}``) and the ``id=5`` rendering (jobs
-    transcripts, hand-built cards). Read both — the JSON form is the whole
-    local corpus, so a single-dialect reader is silently blind there (it
-    is why ``skill_taught_wrong`` reported ``skill:?`` for an id that was
+    transcripts, hand-built cards) — the ledger's 0209 ``arg_sample``
+    JSONB serializes to the same JSON shape, so the dialect reader
+    covers it for free. Read both — the JSON form is the whole local
+    corpus, so a single-dialect reader is silently blind there (it is
+    why ``skill_taught_wrong`` reported ``skill:?`` for an id that was
     right in front of it).
     """
     if name not in ev.arg_keys or not ev.arg_digest:
@@ -126,18 +128,39 @@ def _arg_value(ev: Event, name: str) -> str | None:
     return m.group(1) if m.group(1) is not None else m.group(2)
 
 
+def has_real_session(ev: Event) -> bool:
+    """Whether ``ev.session`` names a real conversational thread rather
+    than a synthesized bucket.
+
+    Post-0209 the ledger *does* carry one: ``tool_calls.session_id``
+    (minted per MCP session) or the ``agentlog:`` fallback for inproc
+    ticks — ``extract._ledger_session`` resolves both into ``session``.
+    What remains synthetic is the ``<prefix>:YYYY-MM-DD`` day bucket
+    (and ``:unknown``) used for pre-0209 rows and for llmlog, whose rows
+    still have no thread identity at all.
+    """
+    s = ev.session or ""
+    return bool(s) and not s.startswith(("ledger:", "llmlog:"))
+
+
 def by_session(events: Sequence[Event]) -> dict[str, list[Event]]:
     """Group events by session, each list sorted by ``seq`` — **only for
     corpora whose ``session`` is a real conversational thread.**
 
-    The ledger and llmlog have no thread: ``extract._day_bucket`` assigns
-    them a synthetic ``ledger:YYYY-MM-DD`` key, so one "session" is the
-    entire fleet's calls for a calendar day, interleaved across dozens of
-    unrelated concurrent jobs. Every adjacency rule ("within 3 turns", "3+
-    consecutive calls") is meaningless there and fires constantly: on the
-    first real pass this reported ``get|quest`` reformulating 26 times
-    inside a **19-second** range — 26 different jobs each making one call,
+    Synthetic ``ledger:YYYY-MM-DD`` / ``llmlog:YYYY-MM-DD`` buckets are
+    not threads: one "session" would be the entire fleet's calls for a
+    calendar day, interleaved across dozens of unrelated concurrent
+    jobs. Every adjacency rule ("within 3 turns", "3+ consecutive
+    calls") is meaningless there and fires constantly: on the first
+    real pass this reported ``get|quest`` reformulating 26 times inside
+    a **19-second** range — 26 different jobs each making one call,
     read as one agent hunting for an argument shape.
+
+    Admission = ``has_payload`` (local/codex/jobs) **or**
+    ``has_real_session`` — post-0209 ledger rows earn admission via
+    their real ``session_id``/``agentlog:`` key even though they carry
+    no result payload (migration 0209 added ``session_id``/``seq``/
+    ``arg_sample``/``error_head`` for exactly this).
 
     The filter lives here rather than in each detector because every
     adjacency detector reaches for this function, and a future one would
@@ -147,7 +170,7 @@ def by_session(events: Sequence[Event]) -> dict[str, list[Event]]:
     """
     out: dict[str, list[Event]] = defaultdict(list)
     for ev in events:
-        if not has_payload(ev):
+        if not (has_payload(ev) or has_real_session(ev)):
             continue
         out[ev.session].append(ev)
     for sess in out:

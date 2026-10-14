@@ -3352,6 +3352,8 @@ class RefsMixin:
         exclude_ref_ids: list[int] | None = None,
         facets: list[tuple[str, str]] | None = None,
         group_limit: int = 200,
+        since: Any = None,
+        until: Any = None,
     ) -> tuple[int, list[tuple[tuple[str | None, ...], int]]]:
         """Filtered ``COUNT(*)`` + optional ``GROUP BY`` over one kind.
 
@@ -3367,6 +3369,12 @@ class RefsMixin:
         ``include_ref_ids``/``exclude_ref_ids`` channels (``under=``,
         ``folder=``, ``uncited=``/``cited=``/``hubbed=`` all arrive as
         these).
+
+        ``since``/``until`` bound ``r.created_at`` — the same date axis
+        the cross-kind source-search primitive uses (mcp-introspection
+        gap closures 2026-10-14): "jobs in the last 24h" means minted in
+        that window. Both are tz-aware datetimes (parsed at the handler
+        boundary); ``until`` is exclusive.
 
         ``facets`` is a list of ``(facet_kind, key)`` pairs from the
         handler's ``group_by=`` parse:
@@ -3386,48 +3394,19 @@ class RefsMixin:
         capped at ``group_limit`` (``COUNT(DISTINCT ref_id)`` per group:
         a ref carrying several tags in one open axis lands in each).
         """
-        clauses = ["r.retired_at IS NULL", "r.kind = %s"]
-        params: list[Any] = [kind]
-        if q is not None and q.strip():
-            if q_in_chunks:
-                from precis.store._chunks_ops import _ord_card_clause
-
-                clauses.append(
-                    "EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id "
-                    "AND c.retired_at IS NULL "
-                    f"AND {_ord_card_clause(q_card_kinds)} "
-                    "AND c.tsv @@ websearch_to_tsquery('english', %s) AND "
-                    + " AND ".join(_chunk_noise_clauses(text_alias="c.text"))
-                    + ")"
-                )
-            else:
-                clauses.append(
-                    "to_tsvector('english', r.title) @@ "
-                    "websearch_to_tsquery('english', %s)"
-                )
-            params.append(q)
-        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        if tag_frag:
-            clauses.append(tag_frag)
-            params.extend(tag_params)
-        for tag in exclude_tags or []:
-            excluded_frag, excluded_params = build_tag_filter([tag], ref_alias="r")
-            clauses.append(f"NOT ({excluded_frag})")
-            params.extend(excluded_params)
-        if link_ref_id is not None:
-            # Mirrors _links_ops._linked_refs_where(direction='both').
-            clauses.append(
-                "EXISTS (SELECT 1 FROM links l WHERE "
-                "(l.src_ref_id = %s AND l.dst_ref_id = r.ref_id) "
-                "OR (l.dst_ref_id = %s AND l.src_ref_id = r.ref_id))"
-            )
-            params.extend([link_ref_id, link_ref_id])
-        if include_ref_ids is not None:
-            clauses.append("r.ref_id = ANY(%s)")
-            params.append(list(include_ref_ids))
-        if exclude_ref_ids:
-            clauses.append("NOT (r.ref_id = ANY(%s))")
-            params.append(list(exclude_ref_ids))
+        clauses, params = filtered_ref_clauses(
+            kind=kind,
+            tags=tags,
+            exclude_tags=exclude_tags,
+            q=q,
+            q_in_chunks=q_in_chunks,
+            q_card_kinds=q_card_kinds,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            since=since,
+            until=until,
+        )
         where = " AND ".join(clauses)
 
         select_exprs: list[str] = []
@@ -3485,6 +3464,77 @@ class RefsMixin:
                 ).fetchall()
                 groups = [(tuple(r[:n]), int(r[n])) for r in rows]
         return total, groups
+
+
+def filtered_ref_clauses(
+    *,
+    kind: str,
+    tags: list[str] | None = None,
+    exclude_tags: list[str] | None = None,
+    q: str | None = None,
+    q_in_chunks: bool = False,
+    q_card_kinds: tuple[str, ...] | None = None,
+    link_ref_id: int | None = None,
+    include_ref_ids: list[int] | None = None,
+    exclude_ref_ids: list[int] | None = None,
+    since: Any = None,
+    until: Any = None,
+) -> tuple[list[str], list[Any]]:
+    """The ``WHERE`` clause list (+ ordered params) shared by the
+    ``view='count'`` SQL and any per-kind drill into the *same* filtered
+    set — extracted when the job handler's count-view error-heads trailer
+    needed to intersect exactly the set the count described
+    (mcp-introspection gap closures 2026-10-14). Aliases table ``r`` =
+    ``refs``; callers append their own clauses after these.
+    """
+    clauses = ["r.retired_at IS NULL", "r.kind = %s"]
+    params: list[Any] = [kind]
+    if q is not None and q.strip():
+        if q_in_chunks:
+            from precis.store._chunks_ops import _ord_card_clause
+
+            clauses.append(
+                "EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id "
+                "AND c.retired_at IS NULL "
+                f"AND {_ord_card_clause(q_card_kinds)} "
+                "AND c.tsv @@ websearch_to_tsquery('english', %s) AND "
+                + " AND ".join(_chunk_noise_clauses(text_alias="c.text"))
+                + ")"
+            )
+        else:
+            clauses.append(
+                "to_tsvector('english', r.title) @@ websearch_to_tsquery('english', %s)"
+            )
+        params.append(q)
+    tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+    if tag_frag:
+        clauses.append(tag_frag)
+        params.extend(tag_params)
+    for tag in exclude_tags or []:
+        excluded_frag, excluded_params = build_tag_filter([tag], ref_alias="r")
+        clauses.append(f"NOT ({excluded_frag})")
+        params.extend(excluded_params)
+    if link_ref_id is not None:
+        # Mirrors _links_ops._linked_refs_where(direction='both').
+        clauses.append(
+            "EXISTS (SELECT 1 FROM links l WHERE "
+            "(l.src_ref_id = %s AND l.dst_ref_id = r.ref_id) "
+            "OR (l.dst_ref_id = %s AND l.src_ref_id = r.ref_id))"
+        )
+        params.extend([link_ref_id, link_ref_id])
+    if include_ref_ids is not None:
+        clauses.append("r.ref_id = ANY(%s)")
+        params.append(list(include_ref_ids))
+    if exclude_ref_ids:
+        clauses.append("NOT (r.ref_id = ANY(%s))")
+        params.append(list(exclude_ref_ids))
+    if since is not None:
+        clauses.append("r.created_at >= %s")
+        params.append(since)
+    if until is not None:
+        clauses.append("r.created_at < %s")
+        params.append(until)
+    return clauses, params
 
 
 def _like_escape(s: str) -> str:

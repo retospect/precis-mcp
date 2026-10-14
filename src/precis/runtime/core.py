@@ -24,6 +24,8 @@ by concern (each file's own module docstring explains its slice):
   region.
 - :class:`precis.runtime.hints.HintsMixin` — tag-shaped-``q=`` tip +
   skill-help breadcrumb.
+- :class:`precis.runtime.introspect.IntrospectionMixin` — per-kind
+  ``view='meta'``/``view='tags'`` inventories.
 - :class:`precis.runtime.error.ErrorMixin` — error-envelope rendering.
 
 They compose via ordinary multiple inheritance: every method call is
@@ -42,6 +44,7 @@ from precis.runtime.angle import AngleMixin
 from precis.runtime.dispatch import DispatchMixin
 from precis.runtime.error import ErrorMixin
 from precis.runtime.hints import HintsMixin
+from precis.runtime.introspect import IntrospectionMixin
 from precis.runtime.search import SearchMixin
 
 if TYPE_CHECKING:
@@ -81,7 +84,14 @@ def _shipped_migration_head() -> str | None:
 
 
 @dataclass
-class PrecisRuntime(DispatchMixin, SearchMixin, AngleMixin, HintsMixin, ErrorMixin):
+class PrecisRuntime(
+    DispatchMixin,
+    SearchMixin,
+    AngleMixin,
+    HintsMixin,
+    IntrospectionMixin,
+    ErrorMixin,
+):
     """Server-wide singleton: config + hub + dispatch logic.
 
     The :class:`~precis.dispatch.Hub` carries the dispatch table, the

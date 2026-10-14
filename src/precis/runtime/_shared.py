@@ -155,3 +155,9 @@ class RuntimeShape:
     # ── dispatch.py (DispatchMixin) ──────────────────────────────────────
     def _expand_kind_code(self, kind: str) -> str:
         raise NotImplementedError
+
+    # ── introspect.py (IntrospectionMixin) ───────────────────────────────
+    def _dispatch_introspect_view(
+        self, view: str, kind: str | None, args: dict[str, Any]
+    ) -> Response:
+        raise NotImplementedError

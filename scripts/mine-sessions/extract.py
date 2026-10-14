@@ -487,6 +487,15 @@ _LEDGER_COLUMNS = (
     "outcome",
     "error_type",
     "latency_ms",
+    # 0209: real session correlation + bounded outcome/arg signal.
+    # NULL on pre-0209 rows and on CLI/inproc calls — the mapping below
+    # falls back to agentlog_id, then the day bucket.
+    "session_id",
+    "seq",
+    "result_bytes",
+    "error_head",
+    "arg_sample",
+    "agentlog_id",
 )
 
 _LLMLOG_COLUMNS = (
@@ -582,14 +591,33 @@ def fetch_ledger_rows(since: datetime | None) -> list[dict[str, Any]]:
                 "outcome": r["outcome"] or None,
                 "error_type": r["error_type"] or None,
                 "latency_ms": _to_int(r["latency_ms"]),
+                "session_id": r["session_id"] or None,
+                "seq": _to_int(r["seq"]),
+                "result_bytes": _to_int(r["result_bytes"]),
+                "error_head": r["error_head"] or None,
+                "arg_sample": r["arg_sample"] or None,
+                "agentlog_id": _to_int(r["agentlog_id"]),
             }
         )
     return rows
 
 
-def ledger_row_to_event(row: dict[str, Any], *, seq: int) -> Event:
-    """No payload fields — ``tool_calls`` carries none, by design (migration
-    0133)."""
+def _ledger_session(row: dict[str, Any]) -> str:
+    """The row's real correlation key — migration-0209 ``session_id``
+    first, ``agentlog:`` for inproc calls (an agentlog ref IS one
+    tick's session), the synthetic day bucket as the last resort."""
+    if row.get("session_id"):
+        return str(row["session_id"])
+    if row.get("agentlog_id"):
+        return f"agentlog:{row['agentlog_id']}"
+    ts = row.get("ts")
+    return _day_bucket(ts if isinstance(ts, str) else None, "ledger")
+
+
+def ledger_row_to_event(row: dict[str, Any], *, session: str, seq: int) -> Event:
+    """0209 carries bounded payload signal — ``error_head`` + the
+    masked/truncated ``arg_sample``; both still get the writer-side
+    scrub re-applied on read (cards.py scrubs again on render)."""
     ts = row.get("ts")
     input_keys = row.get("input_keys") or []
     if isinstance(input_keys, str):
@@ -598,16 +626,25 @@ def ledger_row_to_event(row: dict[str, Any], *, seq: int) -> Event:
         except json.JSONDecodeError:
             input_keys = []
     arg_keys = tuple(sorted(input_keys)) if isinstance(input_keys, list) else ()
+    arg_sample = row.get("arg_sample") or ""
+    if arg_sample:
+        arg_sample = redact.scrub(arg_sample)
+    err_head = row.get("error_head") or ""
+    if err_head:
+        err_head = redact.scrub(err_head)[: schema.HEAD_CHARS]
     return Event(
         corpus="ledger",
-        session=_day_bucket(ts if isinstance(ts, str) else None, "ledger"),
+        session=session,
         seq=seq,
         ts=ts,
         verb=row.get("verb"),
         kind=row.get("kind"),
         arg_keys=arg_keys,
+        arg_digest=arg_sample,
         is_error=row.get("outcome") == "error",
         err_type=row.get("error_type"),
+        err_head=err_head,
+        result_bytes=row.get("result_bytes") or 0,
         latency_ms=_to_int(row.get("latency_ms")),
         source=row.get("source"),
         profile=row.get("profile"),
@@ -618,10 +655,13 @@ def _emit_ledger_events(rows: list[dict[str, Any]]) -> list[Event]:
     counters: dict[str, int] = {}
     events: list[Event] = []
     for row in rows:
-        ts = row.get("ts")
-        session = _day_bucket(ts if isinstance(ts, str) else None, "ledger")
+        session = _ledger_session(row)
         counters[session] = counters.get(session, 0) + 1
-        events.append(ledger_row_to_event(row, seq=counters[session]))
+        events.append(
+            ledger_row_to_event(
+                row, session=session, seq=row.get("seq") or counters[session]
+            )
+        )
     return events
 
 

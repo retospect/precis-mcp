@@ -300,6 +300,24 @@ search(kind="job", link="gripe:42")  # most recent first
 
 Same shape: `search(kind='job', link='<kind>:<id>')`.
 
+## Which jobs belong to this quest / todo / board / structure?
+
+`under=` scopes by the parent_id tree AND subject links — jobs under a
+quest's todo tree, a coordinator's children, a board's build jobs.
+`view='tree'` renders the hierarchy, `depth=`/`status=`/`since=` narrow:
+
+```python
+search(kind="job", under="qu459585")                # jobs beneath it
+search(kind="job", under="qu459585", view="tree")   # the skeleton
+search(kind="job", under="qu459585", view="count",
+       args={"group_by": "meta.job_type,state"})
+search(kind="job", under="qu459585", status="failed", depth=3)
+```
+
+The answer for "is the queue healthy *here*?" — never raw `refs`/`links`
+SQL. `link=` stays right for jobs pointing AT a ref; `under=` is the
+hierarchy question.
+
 ## Cancel a running job
 ## Stop a job that's taking too long
 

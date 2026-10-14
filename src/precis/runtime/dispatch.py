@@ -763,16 +763,23 @@ class DispatchMixin(RuntimeShape):
         ``args`` is read, never mutated — by the time this runs,
         ``_dispatch_inner`` has already consumed its own private copy
         (``dict(args)``), so the caller's original top-level kwarg
-        names are still exactly what came in. Only names are
-        recorded, never values (:mod:`precis.tool_ledger`'s no-
-        payload-content contract).
+        names are still exactly what came in. Values reach the ledger
+        only through :func:`~precis.tool_ledger.arg_sample`'s bounded,
+        masked, credential-key-dropping render (migration 0209) — never
+        raw.
         """
         store = self.store
         if store is None:
             return
         try:
             from precis.agentlog import current_from_env
-            from precis.tool_ledger import ToolCallRecord, record_call
+            from precis.tool_ledger import (
+                ToolCallRecord,
+                arg_sample,
+                current_session_key,
+                error_head,
+                record_call,
+            )
             from precis.utils.workspace import current_model_from_env
 
             error_type: str | None = None
@@ -780,6 +787,7 @@ class DispatchMixin(RuntimeShape):
                 m = _ERROR_TYPE_RE.match(body)
                 error_type = m.group(1) if m else "Unknown"
             kind = args.get("kind")
+            session_id, seq = current_session_key()
             record_call(
                 store,
                 ToolCallRecord(
@@ -797,6 +805,11 @@ class DispatchMixin(RuntimeShape):
                     agentlog_id=current_from_env(),
                     source=current_model_from_env(),
                     profile=os.environ.get("PRECIS_MCP_PROFILE", "typed"),
+                    session_id=session_id,
+                    seq=seq,
+                    result_bytes=len(body.encode("utf-8", errors="replace")),
+                    error_head=error_head(body) if is_error else None,
+                    arg_sample=arg_sample(args),
                 ),
             )
         except Exception:
@@ -1573,13 +1586,17 @@ class DispatchMixin(RuntimeShape):
         # (gr472990). Intercepted here — before the angle/folder/
         # source-search branches — so args this shape can't honour fail
         # loudly instead of falling through to a hits-shaped response
-        # that silently dropped ``view``.
+        # that silently dropped ``view``. ``since=``/``until=`` are
+        # *admitted* here (mcp-introspection gap closures 2026-10-14):
+        # the shared count path bounds refs.created_at with them, so
+        # they must not fall through to the source-search primitive,
+        # which would answer a different question on a different table.
         if verb == "search" and str(args.get("view") or "").strip() == "count":
             _count_extras = args.get(_EXTRAS_KEY)
             bad_combo = next(
                 (
                     a
-                    for a in ("angle", "like", "since", "until", "sort")
+                    for a in ("angle", "like", "sort")
                     if args.get(a) is not None
                     or (
                         isinstance(_count_extras, dict)
@@ -1593,8 +1610,8 @@ class DispatchMixin(RuntimeShape):
                     f"{bad_combo}= is not supported with view='count'",
                     next=(
                         "view='count' filters with q=/tags=/status=/link=/"
-                        "folder= and facets with args={'group_by': 'state' | "
-                        "'meta.<key>' | 'tag:<axis>'}"
+                        "folder=/since=/until= and facets with "
+                        "args={'group_by': 'state' | 'meta.<key>' | 'tag:<axis>'}"
                     ),
                 )
             if kind is None or self._is_cross_kind_request(str(kind)):
@@ -1619,6 +1636,18 @@ class DispatchMixin(RuntimeShape):
             if args.get("folder") is not None:
                 folder_scope, _ = self._resolve_folder_scope(args.pop("folder"))
                 self._intersect_include_ref_ids(args, folder_scope)
+
+        # Introspection views (mcp-introspection gap closures 2026-10-14):
+        # ``view='meta'`` = per-kind meta-key inventory, ``view='tags'`` =
+        # per-kind tag axis/value counts — the reads agents used to make
+        # through raw refs/ref_tags SQL.
+        if verb == "search" and str(args.get("view") or "").strip() in (
+            "meta",
+            "tags",
+        ):
+            return self._dispatch_introspect_view(
+                str(args.get("view") or "").strip(), kind, dict(args)
+            )
 
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
         # diverse-cone semantic sampler (docs/backlog/dreaming.md), not
@@ -1664,10 +1693,28 @@ class DispatchMixin(RuntimeShape):
         # with a single kind, a comma-list, a wildcard, or an omitted kind.
         from precis.utils.browse_sort import numeric_browse
 
+        # ``under=`` left in args means the kind OWNS its own under=
+        # semantics (``owns_under`` — todo/taxon trees, job's
+        # hierarchical scope); routing it to source search would
+        # silently drop the scope. Its handler sees it instead.
+        _under_owned = (
+            args.get("under") is not None
+            and kind is not None
+            and not self._is_cross_kind_request(str(kind))
+            and bool(
+                (_h := self.hub.handler_for(self._expand_kind_code(str(kind))))
+                and _h.owns_under
+            )
+        )
         if (
             verb == "search"
             and self._is_source_search_request(args)
             and not numeric_browse(kind, args)
+            # ``view='count'`` keeps since=/until= for its own
+            # created_at filter — the interception above already
+            # validated the shape (mcp-introspection gap closures).
+            and str(args.get("view") or "").strip() != "count"
+            and not _under_owned
         ):
             return self._dispatch_source_search(kind, dict(args))
 

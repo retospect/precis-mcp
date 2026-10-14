@@ -100,6 +100,7 @@ get(kind='alert', id='/open')          # currently-open alerts
 get(kind='alert', id='/recent')        # recent (open + resolved)
 get(kind='alert', id=42)               # one alert + tags
 get(kind='alert', id=42, view='detail')  # triage shape (below); 'full' is an alias
+get(kind='alert', id=42, view='context') # detail + worker_logs window (below)
 get(kind='alert', id=42, view='links')   # link graph to/from this alert
 get(kind='alert', id=42, view='raw')     # verbatim record — every meta key
 get(kind='alert', id=[42, 43, 44])       # several at once: one summary block per id (≤50)
@@ -114,6 +115,22 @@ search(kind='alert', tags=['severity:critical'])
 `subject_ref_id`, `created_at`/`updated_at`/`resolved_at`, and the link
 graph — everything a doctor/health-digest tick needs without stitching
 together a bare `get` + `view='raw'` + `view='links'`.
+
+`view='context'` adds the **worker_logs window** a triage used to need
+raw SQL for: bounded log lines (80 max, secrets masked) around the
+alert's first/last seen, scoped to the owning pass. The scope resolves
+itself — the registered rule's service names the `pass`, `host`/
+`process` come from the fingerprint's `{host}`/`{process}` subject vars
+when the rule encodes them — and overrides ride `args=`:
+
+```
+get(kind='alert', id=42, view='context')                          # ±10m, owning pass
+get(kind='alert', id=42, view='context',
+    args={'host': 'node1', 'log_pass': 'dispatch', 'minutes': 60}) # widen/steer
+```
+
+Empty means the guess missed the producer's pass — widen `minutes` or
+name `log_pass`/`process` explicitly rather than reaching for psql.
 
 Or browse the **Alerts** tab in `precis web` (`/alerts`) — open by
 default, grouped by source, severity-sorted; `?state=resolved` shows

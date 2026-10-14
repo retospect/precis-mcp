@@ -55,6 +55,7 @@ by semantic search. See :mod:`precis.alerts` for the lifecycle.
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar
 
 from precis import alert_ids
@@ -79,6 +80,66 @@ from precis.utils.next_block import render_next_section
 #: context). The alias lives here (AlertHandler), not on the shared
 #: base — other numeric-ref kinds keep their existing view set.
 _DETAIL_VIEWS: tuple[str, ...] = ("detail", "full")
+
+#: ``view='context'`` (mcp-introspection gap closures 2026-10-14,
+#: gr484235): the detail view + a bounded ``worker_logs`` window around
+#: the alert's first/last seen — the read alert triage used to need
+#: raw SQL for. ``worker_logs`` rows are masked line-by-line; secrets
+#: never echo (same rule alerts themselves follow in raise_alert).
+_CONTEXT_LINES = 80
+_CONTEXT_MARGIN_MIN = 10
+_CONTEXT_LINE_CHARS = 220
+
+
+def _fingerprint_vars(subject_pattern: str, fingerprint: str) -> dict[str, str]:
+    """Extract ``{var}`` values from a concrete fingerprint.
+
+    The rule's ``subject`` pattern (``dead-worker:{host}:{process}``)
+    tells us WHICH fingerprint segments carry the worker's host/process
+    — the alert stores no host column, so this is how a
+    ``dead-worker:caspar:precis-worker-agent`` id recovers its process
+    scope. Non-last vars match ``[^:/]+``; the last var takes the rest
+    (fingerprints may carry '/' — ``pass-dead:caspar/precis-worker/x``).
+    """
+    if not subject_pattern or not fingerprint or "{" not in subject_pattern:
+        return {}
+    parts: list[str] = []
+    names: list[str] = []
+    pos = 0
+    for m in re.finditer(r"\{([^{}]+)\}", subject_pattern):
+        parts.append(re.escape(subject_pattern[pos : m.start()]))
+        parts.append("%s")  # group placeholder, filled below
+        names.append(m.group(1))
+        pos = m.end()
+    parts.append(re.escape(subject_pattern[pos:]))
+    if not names:
+        return {}
+    # Placeholders sit at odd indices 1, 3, 5, … (one per var).
+    last_var_part = len(parts) - 2
+    for i in range(1, len(parts), 2):
+        parts[i] = "(.*)" if i == last_var_part else "([^:/]+)"
+    match = re.match("".join(parts) + "$", fingerprint)
+    if match is None:
+        return {}
+    return {name: g for name, g in zip(names, match.groups()) if g}
+
+
+def _worker_logs(
+    store: Any, clauses: list[str], params: list[Any]
+) -> list[tuple[Any, str, str | None, str | None, str]]:
+    """Bounded ``worker_logs`` read for ``view='context'`` — newest
+    first, capped by the caller's LIMIT param. Columns returned are
+    ``(ts, level, pass, process, message)``."""
+    sql = (
+        "SELECT ts, level, pass, process, message FROM worker_logs WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY ts DESC LIMIT %s"
+    )
+    with store.pool.connection() as conn:
+        return [
+            (r[0], str(r[1]), r[2], r[3], str(r[4] or ""))
+            for r in conn.execute(sql, params).fetchall()
+        ]
 
 
 class AlertHandler(NumericRefHandler):
@@ -314,6 +375,10 @@ class AlertHandler(NumericRefHandler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        host: str | None = None,
+        process: str | None = None,
+        log_pass: str | None = None,
+        minutes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # gr259632: recurring health-digest/nursery ticks repeatedly
@@ -334,17 +399,121 @@ class AlertHandler(NumericRefHandler):
         if concrete and view in _DETAIL_VIEWS:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_detail_view(ref)
+        if concrete and view == "context":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return self._render_context_view(
+                ref,
+                host=host,
+                process=process,
+                log_pass=log_pass,
+                minutes=minutes,
+            )
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='alert'",
-                options=[*_DETAIL_VIEWS, *_BASE_VIEWS],
+                options=[*_DETAIL_VIEWS, "context", *_BASE_VIEWS],
                 next=(
                     "view='detail' (triage shape: body + severity/source/"
                     "state + fingerprint/seen_count + timestamps + links; "
-                    "'full' is an alias) · links, log, raw (generic)"
+                    "'full' is an alias) · view='context' (detail + "
+                    "worker_logs window) · links, log, raw (generic)"
                 ),
             )
         return super().get(id=id, view=view, q=q, **_kw)
+
+    # ── get view='context' — alert + worker_logs window ─────────
+
+    def _render_context_view(
+        self,
+        ref: Ref,
+        *,
+        host: str | None,
+        process: str | None,
+        log_pass: str | None,
+        minutes: int | str | None,
+    ) -> Response:
+        """``view='context'``: the detail view + a bounded
+        ``worker_logs`` slice around the alert's first/last seen.
+
+        The log scope resolves in layers: the registered rule's
+        ``service`` → ``log_handler`` gives the ``pass`` to read (the
+        source's first segment is the fallback for unregistered ids);
+        ``host``/``process`` come from ``args=`` overrides first, then
+        ``meta``, then the fingerprint's ``{host}``/``{process}``
+        subject vars. Every emitted line is ``mask_secrets``-filtered —
+        alert context must never echo a secret.
+        """
+        from datetime import timedelta
+
+        from precis.utils.secret_scan import mask_secrets
+        from precis.workers.registry import SERVICES_BY_NAME
+
+        meta = ref.meta or {}
+        source = ref.alert_source or meta.get("alert_source") or ""
+        fingerprint = ref.fingerprint or meta.get("fingerprint") or ""
+        rule = alert_ids.resolve(source, fingerprint) if source else None
+
+        passes: list[str] = []
+        if log_pass:
+            passes = [log_pass]
+        else:
+            if rule is not None and rule.service:
+                spec = SERVICES_BY_NAME.get(rule.service)
+                if spec is not None:
+                    passes.append(spec.log_handler)
+            guess = source.split(":")[0].strip()
+            if guess and guess not in passes:
+                passes.append(guess)
+
+        fvars = _fingerprint_vars(rule.subject if rule else "", fingerprint)
+        sel_host = host or meta.get("host") or fvars.get("host")
+        sel_process = process or meta.get("process") or fvars.get("process")
+
+        try:
+            margin = int(minutes) if minutes is not None else _CONTEXT_MARGIN_MIN
+        except (TypeError, ValueError):
+            margin = _CONTEXT_MARGIN_MIN
+        margin = max(1, min(margin, 1440))
+        lo = ref.created_at - timedelta(minutes=margin)
+        hi = (ref.resolved_at or ref.updated_at) + timedelta(minutes=margin)
+
+        clauses = ["ts BETWEEN %s AND %s"]
+        params: list[Any] = [lo, hi]
+        if passes:
+            clauses.append("pass = ANY(%s)")
+            params.append(passes)
+        if sel_host:
+            clauses.append("host = %s")
+            params.append(str(sel_host))
+        if sel_process:
+            clauses.append("process = %s")
+            params.append(str(sel_process))
+        rows = _worker_logs(self.store, clauses, [*params, _CONTEXT_LINES])
+
+        base = self._render_detail_view(ref)
+        out = [base.body, ""]
+        scope = " · ".join(
+            f"{k} {v!r}"
+            for k, v in (
+                ("pass", "+".join(passes) if passes else "any"),
+                ("host", sel_host or "any"),
+                ("process", sel_process or "any"),
+            )
+        )
+        out.append(
+            f"## worker_logs ({scope}; {lo:%Y-%m-%dT%H:%MZ} → {hi:%H:%MZ}, ±{margin}m)"
+        )
+        if not rows:
+            out.append(
+                "(no rows in window — override with "
+                "args={'host':…,'process':…,'log_pass':…,'minutes':…})"
+            )
+        for ts, level, wpass, wproc, wmsg in rows:
+            msg = mask_secrets(wmsg, warn=False)
+            if len(msg) > _CONTEXT_LINE_CHARS:
+                msg = msg[: _CONTEXT_LINE_CHARS - 1] + "…"
+            out.append(f"  {ts:%H:%M:%S} {level} {wproc or wpass or '-'}: {msg}")
+        return Response(body="\n".join(out))
 
     def _render_detail_view(self, ref: Ref) -> Response:
         """``view='detail'``/``'full'``: the one-call triage shape.

@@ -22,8 +22,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-#: Corpus labels. ``local``, ``codex`` and ``devin`` carry full payloads; the
-#: ledger deliberately has none (migration 0133's "no payload content, ever").
+#: Corpus labels. ``local``, ``codex`` and ``devin`` carry full payloads;
+#: the ledger carries the 0209 bounded signal (masked ``arg_sample`` /
+#: ``error_head`` / ``result_bytes`` / real ``session_id``) — still no
+#: raw payloads.
 CORPORA = ("local", "codex", "devin", "ledger", "llmlog", "jobs")
 
 #: The precis MCP tool names as they appear in a local transcript. Both the

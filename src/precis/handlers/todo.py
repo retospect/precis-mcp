@@ -388,15 +388,20 @@ class TodoHandler(NumericRefHandler):
                     "under= is not supported with view='count' on todo search",
                     next="search(kind='todo', view='count', tags=['<tag>'])",
                 )
-            unknown = sorted(set(rest) - {"group_by"})
+            unknown = sorted(set(rest) - {"group_by", "since", "until"})
             if unknown:
                 raise BadInput(
                     f"args= keys {unknown!r} not supported with view='count' "
                     f"on kind={self.kind!r}",
-                    options=["group_by"],
+                    options=["group_by", "since", "until"],
                 )
             merged = dict(_kw)
             group_by = merged.pop("group_by", rest.get("group_by"))
+            # args={'since'/'until'} spell the same created_at window the
+            # top-level kwargs do (mcp-introspection gap closures
+            # 2026-10-14) — forwarded only when the kwarg wasn't set.
+            for bound in ("since", "until"):
+                merged.setdefault(bound, rest.get(bound))
             return super().search(
                 q=q,
                 tags=tags,

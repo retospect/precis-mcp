@@ -138,6 +138,49 @@ def test_dispatch_ledger_records_error_outcome(
     assert row[1] is not None  # a PrecisError subclass name, e.g. NotFound/BadInput
 
 
+def test_dispatch_ledger_0209_session_seq_sample(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """0209: session-bound dispatches record session_id + a per-session
+    seq, the rendered body's byte length, a masked error head, and a
+    bounded arg_sample (masked scalars, payload keys by length)."""
+    from precis import serve_ledger
+
+    class _FakeSession:  # weakrefable stand-in for ctx.session
+        pass
+
+    session = _FakeSession()
+    with serve_ledger.session_scope(session):
+        body1, _ = runtime_with_store.dispatch_with_status(
+            "get", {"kind": "skill", "id": "toc"}
+        )
+        body2, is_error = runtime_with_store.dispatch_with_status(
+            "get", {"kind": "no-such-kind-xyz", "id": "1"}
+        )
+    assert is_error is True
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT session_id, seq, result_bytes, error_head, arg_sample, kind "
+            "FROM tool_calls "
+            "WHERE ts > now() - interval '1 minute' AND session_id IS NOT NULL "
+            "ORDER BY call_id DESC LIMIT 2"
+        ).fetchall()
+    assert len(rows) == 2
+    # Both bound calls share the one minted session_id, seq ordered 1,2.
+    assert rows[0][0] == rows[1][0]
+    assert sorted(r[1] for r in rows) == [1, 2]
+    # The error call carries a first-line head; both carry result bytes
+    # and a bounded arg_sample.
+    err_row = next(r for r in rows if r[5] == "no-such-kind-xyz")
+    ok_row = next(r for r in rows if r[5] == "skill")
+    assert err_row[3] is not None and "error" in err_row[3]
+    assert all(r[2] and r[2] > 0 for r in rows)
+    assert ok_row[4] is not None and "skill" in str(ok_row[4])
+
+
 def test_dispatch_survives_ledger_write_failure(
     runtime_with_store: PrecisRuntime, monkeypatch: Any
 ) -> None:

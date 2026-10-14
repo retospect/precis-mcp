@@ -401,8 +401,15 @@ def test_ledger_row_to_event_mapping() -> None:
         "outcome": "error",
         "error_type": "BadInput",
         "latency_ms": 42,
+        # 0209 columns — NULL on pre-migration rows.
+        "session_id": None,
+        "seq": None,
+        "result_bytes": None,
+        "error_head": None,
+        "arg_sample": None,
+        "agentlog_id": None,
     }
-    ev = extract.ledger_row_to_event(row, seq=1)
+    ev = extract.ledger_row_to_event(row, session="ledger:2026-09-20", seq=1)
     assert ev.corpus == "ledger"
     assert ev.seq == 1
     assert ev.verb == "search"
@@ -413,7 +420,6 @@ def test_ledger_row_to_event_mapping() -> None:
     assert ev.latency_ms == 42
     assert ev.source == "sonnet"
     assert ev.profile == "typed"
-    # No payload fields — tool_calls carries none, by design.
     assert ev.tool is None
     assert ev.arg_digest == ""
     assert ev.result_head == ""
@@ -633,3 +639,46 @@ def test_devin_source_missing_db_reports_and_returns_empty(tmp_path) -> None:
     events, coverage = devin_source.extract(tmp_path / "absent.db")
     assert events == []
     assert coverage["db_missing"] == 1
+
+
+def test_ledger_row_to_event_0209_fields() -> None:
+    """Post-0209 rows carry a real session + bounded arg/error signal —
+    session_digest/call_chain can now order by actual session+seq."""
+    row = {
+        "ts": "2026-10-14T09:00:00+00:00",
+        "source": "sonnet",
+        "profile": "typed",
+        "verb": "search",
+        "kind": "job",
+        "input_keys": ["kind", "under", "view"],
+        "outcome": "ok",
+        "error_type": None,
+        "latency_ms": 12,
+        "session_id": "host-1-abc123",
+        "seq": 7,
+        "result_bytes": 512,
+        "error_head": None,
+        "arg_sample": '{"kind":"job","under":"qu459585","view":"tree"}',
+        "agentlog_id": 99,
+    }
+    ev = extract.ledger_row_to_event(row, session="host-1-abc123", seq=7)
+    assert ev.session == "host-1-abc123"
+    assert ev.seq == 7
+    assert ev.result_bytes == 512
+    assert ev.arg_digest == '{"kind":"job","under":"qu459585","view":"tree"}'
+
+
+def test_ledger_session_fallbacks() -> None:
+    assert extract._ledger_session({"session_id": "s-1"}) == "s-1"
+    assert (
+        extract._ledger_session(
+            {"session_id": None, "agentlog_id": 42, "ts": "2026-10-14T01:00:00Z"}
+        )
+        == "agentlog:42"
+    )
+    assert (
+        extract._ledger_session(
+            {"session_id": None, "agentlog_id": None, "ts": "2026-10-14T01:00:00Z"}
+        )
+        == "ledger:2026-10-14"
+    )

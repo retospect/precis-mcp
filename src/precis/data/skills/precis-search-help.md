@@ -379,8 +379,29 @@ when uppercase — `tag:STATUS` — else the open `prefix:*` tag family).
 Comma-separate up to 3 for a cross facet (`a | b` rows). Refs missing
 the facet land in `(none)`. The totals are exact `COUNT`s over the same
 WHERE as the listing, so they match the "N of K" page headers; `folder=`
-and `under=` fold in as ref-set filters. One kind per call — no
-cross-kind or `sort=`/`since=`/`until=` on this shape.
+and `under=` fold in as ref-set filters, and `since=`/`until=` bound on
+`refs.created_at` (`until=` exclusive). `kind='job'` counts also tail a
+bounded "error heads" section — the top normalized first-line errors per
+failing job_type — so "what's failing, and how" is one call. One kind
+per call — no cross-kind or `sort=` on this shape.
+
+## What keys/tags does a kind actually carry? (view='meta' / 'tags')
+## Inventory a kind's meta fields or tag values — no raw SQL
+
+Before writing `meta.foo = X` filters or guessing a tag axis, ask what
+is really in use — this is what agents used to read `refs`/`ref_tags`
+for directly:
+
+```python
+search(kind="job", view="meta")                    # meta keys, types, counts, examples
+search(kind="job", view="meta", args={"key": "params"})   # drill one object level
+search(kind="gripe", view="tags")                  # per axis/value ref counts
+search(kind="gripe", view="tags", status="open")   # counts over open only
+```
+
+`view='meta'` is read-only and cached ~15min (shape changes slowly);
+`view='tags'` groups live ref_tags by namespace (STATUS / OPEN / FLAG
+sections), expired rows excluded. Both are single-kind, like count.
 
 ## Search inside a specific paper or ref
 ## Where does this paper mention X?
