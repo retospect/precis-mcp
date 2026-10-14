@@ -372,11 +372,11 @@ def board_pads(
 
     ``local_footprints`` (pcb-ewod-multitile Slice 1, optional) is the
     SAME shape as ``footprints`` but keyed by name instead of C-number —
-    :meth:`~precis.store.Store.pcb_local_footprints_for`'s cache for an
-    instance authored with no LCSC part at all
-    (``pcb_components.footprint`` names it). Checked only when the
-    instance has no ``part_lcsc`` match, never as a second source for a
-    catalog part — a component picks exactly one footprint origin."""
+    :meth:`~precis.store.Store.pcb_local_footprints_for`'s cache —
+    and it is checked FIRST (2026-10-14): an imported .epro2 instance
+    carries BOTH ``part_lcsc`` (the catalog C-number for datasheets and
+    ordering) and its own board-authored footprint by name, and the
+    board's own geometry wins where it exists."""
     pin_to_net = pin_to_net or {}
     local_footprints = local_footprints or {}
     all_pads: list[dict[str, Any]] = []
@@ -384,11 +384,11 @@ def board_pads(
     for inst in instances:
         if inst.get("x") is None or inst.get("y") is None:
             continue
-        lcsc = str(inst.get("part_lcsc") or "")
-        fp = footprints.get(lcsc) if lcsc else None
+        name = str(inst.get("footprint") or "")
+        fp = local_footprints.get(name) if name else None
         if fp is None:
-            name = str(inst.get("footprint") or "")
-            fp = local_footprints.get(name) if name else None
+            lcsc = str(inst.get("part_lcsc") or "")
+            fp = footprints.get(lcsc) if lcsc else None
         if not fp or not fp.get("pads"):
             continue
         refdes = str(inst.get("refdes") or "")

@@ -36,14 +36,20 @@ the outline — is reported and left alone (:class:`UpdatePlan` says why).
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from precis.pcb import copper_report, drc, epro, ir, padplace
+from precis.pcb import copper_report, datasheets, drc, epro, ir, padplace
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
+from precis.store._pcb_ops import (
+    _LOCAL_FP_MATCH_TOL_MM,
+    footprint_differ,
+)
 from precis.store._pcb_ops import (
     _normalize_local_footprint as normalize_local_footprint,
 )
@@ -53,6 +59,8 @@ from precis.store._pcb_ops import (
 #: board's actual count, beats letting it surface as a confusing refusal
 #: at the user's first route — which is the step the import exists for.
 _SUPPORTED_LAYER_COUNTS = (4,)
+
+log = logging.getLogger(__name__)
 
 
 class EproImportError(ValueError):
@@ -695,6 +703,26 @@ def import_epro(
         result.warnings.extend(copper_warnings)
         return result
 
+    # Part lookup (the item's order — mfr+MPN, C-number, parametric) runs
+    # before the footprint dedup, which reads the resolved part_lcsc.
+    result.warnings.extend(_resolve_catalog_lcscs(store, design.components))
+    # The local-footprint dedup runs on the WRITE paths only: a dry run
+    # reports the source's pads (they exist either way), and the kept-vs-
+    # dropped verdict is a store decision (it needs the catalog cache).
+    dropped_fp = _dedupe_local_footprints(store, design.components, design.footprints)
+    if dropped_fp:
+        design.footprints = [
+            f for f in design.footprints if f.get("name") not in dropped_fp
+        ]
+        result.stats["footprints"] = len(design.footprints)
+        result.warnings.append(
+            f"{len(dropped_fp)} local footprint(s) matched the catalog's "
+            f"cached pads for their LCSC part (pad count, centres within "
+            f"{_LOCAL_FP_MATCH_TOL_MM}mm) — not stored; those instances use "
+            f"the catalog footprint: {', '.join(sorted(dropped_fp)[:8])}"
+            + ("…" if len(dropped_fp) > 8 else "")
+        )
+
     meta = {
         "epro": {
             **_provenance(data, project, board, source_name),
@@ -759,11 +787,199 @@ def import_epro(
             f"plane {layer} -> {planes[layer]}: the net did not survive the "
             f"import, so the layer is stacked as a plane with no net"
         )
+    # Each imported C-number gets its datasheet-of link where the store
+    # already holds the sheet (family sharing: one ref, one link per
+    # C-number). What still lacks one is the caller's pull queue — the
+    # CLI runs datasheets.enqueue_pulls after this returns. Best-effort:
+    # the import committed above, a link hiccup must not re-raise it.
+    try:
+        linked = datasheets.link_known(store, result.ref_id)
+    except Exception:
+        log.warning("epro import: datasheet linking failed", exc_info=True)
+    else:
+        if linked:
+            result.stats["datasheets_linked"] = linked
     # Read back from the DB rather than reusing `design`: the report must
     # see the pads exactly as every later reader (DRC, route) will.
     result.copper = report_copper(store, data, slug=slug, board_uuid=board_uuid)
     result.warnings.extend(epro.measured_copper(board, frame)[1])
     return result
+
+
+def _dedupe_local_footprints(
+    store: Any,
+    components: list[dict[str, Any]],
+    footprints: list[dict[str, Any]],
+) -> set[str]:
+    """The local-vs-catalog dedup (Reto 2026-10-14: "import the numbers,
+    then keep the board's own footprint where it really differs — no
+    deferred sweep").
+
+    A footprint NAME is dropped from the write batch when EVERY component
+    that names it has a ``part_lcsc`` AND the catalog's cached
+    ``part_footprints`` row holds the same pads (same count, centres
+    within ``_LOCAL_FP_MATCH_TOL_MM``). The component keeps the name as
+    its ``footprint`` label — it is the source file's authored name and a
+    fair BOM comment — but no ``pcb_local_footprints`` row is written, so
+    the local-first join finds nothing and the C-number resolves the
+    catalog footprint. A name is KEPT when any user differs (the
+    ``local_fp_lcsc``/``local_fp_diff`` meta the apply stamps records
+    why) or has no catalog row to compare ("uncached" — the verdict waits
+    for the cache to land). Returns the dropped names."""
+    local = {str(f.get("name")): f for f in footprints}
+    want = {
+        str(c.get("part_lcsc")).strip().upper()
+        for c in components
+        if c.get("part_lcsc") and str(c.get("footprint") or "") in local
+    }
+    catalog = store.part_footprints_many(want)
+    matched: set[str] = set()
+    differs: set[str] = set()
+    for c in components:
+        name = str(c.get("footprint") or "")
+        lcsc = str(c.get("part_lcsc") or "").strip().upper()
+        if not name or name not in local or not lcsc:
+            continue
+        f = local[name]
+        if f.get("holes"):
+            # The local row OWNS footprint drills (NPTH mounting holes
+            # ride the footprint doc); the compare says nothing about
+            # them, so such a footprint is always special.
+            differs.add(name)
+            continue
+        row = catalog.get(lcsc)
+        if row is None:
+            differs.add(name)  # nothing to compare -> keep
+        elif footprint_differ(f, row) is None:
+            matched.add(name)
+        else:
+            differs.add(name)
+    return matched - differs
+
+
+# ── part lookup (pcb-datasheet-review.md slice 1) ────────────────────────
+# A footprint name's size token: "R0603"/"C0805" -> "0603"/"0805" — the
+# package the JLC catalog calls the part by.
+_PACKAGE_FROM_FP = re.compile(r"(\d{4})")
+
+#: A value attr: "100n", "100nF", "0.1uF", "4.7K", "10kΩ", "1R0" —
+#: magnitude + multiplier + optional unit letter.
+_VALUE_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([pnuμmkKM]?)\s*([FfΩohmRr]*)")
+
+_VALUE_SCALE = {
+    "p": 1e-12,
+    "n": 1e-9,
+    "u": 1e-6,
+    "μ": 1e-6,
+    "m": 1e-3,
+    "k": 1e3,
+    "K": 1e3,
+    "M": 1e6,
+    "": 1.0,
+}
+
+
+def _canon_value(text: str) -> tuple[float, str] | None:
+    """``(magnitude, unit)`` from a value string — "100nF" -> (1e-7, "F"),
+    "10kΩ" -> (1e4, "R"). A missing unit letter stays ``""`` (a wildcard:
+    "10k" still matches a catalog param printed as "10KΩ")."""
+    m = _VALUE_RE.match(str(text))
+    if not m:
+        return None
+    unit = m.group(3).lower()
+    unit = (
+        "F"
+        if unit.startswith("f")
+        else ("R" if unit[:1] in ("ω", "o") or "ohm" in unit or unit == "r" else "")
+    )
+    try:
+        return (float(m.group(1)) * _VALUE_SCALE[m.group(2)], unit)
+    except ValueError:
+        return None
+
+
+def _mfr_matches(catalog_mfr: str, claimed: str) -> bool:
+    """The two spellings of one manufacturer ("YAGEO(国巨)" vs "YAGEO",
+    "TI(德州仪器)" vs "TI") agree when either's base name contains the
+    other's."""
+    a = re.split(r"[(（]", claimed)[0].strip().lower()
+    b = re.split(r"[(（]", catalog_mfr)[0].strip().lower()
+    return bool(a and b) and (a in b or b in a)
+
+
+def _parametric_lcsc(store: Any, comp: dict[str, Any]) -> str:
+    """The parametric fallback (generic passives with no C-number and no
+    catalog MPN): value + the footprint's package token -> a UNIQUE
+    ``parts`` row, else nothing. A guess that could pick a wrong part is
+    worse than no match — the C-number drives datasheet pulls, and a
+    wrong sheet is wrong part facts."""
+    meta = comp.get("part_meta") or {}
+    value = meta.get("value") or meta.get("name") or ""
+    pkg_m = _PACKAGE_FROM_FP.search(str(comp.get("footprint") or ""))
+    canon = _canon_value(value)
+    if not canon or not pkg_m:
+        return ""
+    hits = [
+        lcsc
+        for lcsc, params in store.parts_in_package(pkg_m.group(1))
+        if any(
+            (cand := _canon_value(str(v))) is not None
+            and cand[0] == canon[0]
+            and (not canon[1] or not cand[1] or cand[1] == canon[1])
+            for v in params.values()
+            if isinstance(v, str)
+        )
+    ]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def _resolve_catalog_lcscs(store: Any, components: list[dict[str, Any]]) -> list[str]:
+    """Part lookup on import (the item's order): manufacturer + MPN first,
+    then the source's claimed C-number, then a unique parametric match.
+
+    Rewrites ``c["part_lcsc"]`` to the RESOLVED number — the physical part
+    IS what its MPN says; the ``Supplier Part`` string is only the source's
+    own catalog pointer (kept verbatim in ``part_meta.supplier_part``). A
+    claim and an MPN match that disagree get a warning; ``lcsc_source`` in
+    ``part_meta`` records which path won."""
+    warnings: list[str] = []
+    mpns = {
+        str((c.get("part_meta") or {}).get("mpn") or "")
+        for c in components
+        if (c.get("part_meta") or {}).get("mpn")
+    }
+    by_mpn = store.parts_by_mpns(mpns)
+    for c in components:
+        meta = c.get("part_meta") or {}
+        claimed = str(c.get("part_lcsc") or "").strip().upper()
+        resolved, source = claimed, "supplier-part"
+        mpn = str(meta.get("mpn") or "")
+        mfr = str(meta.get("mfr") or "")
+        if mpn and mpn.lower() in by_mpn:
+            hits = by_mpn[mpn.lower()]
+            if len(hits) > 1 and mfr:
+                narrowed = [h for h in hits if _mfr_matches(h[1], mfr)]
+                if narrowed:
+                    hits = narrowed
+            if len(hits) == 1:
+                resolved, source = hits[0][0], "mfr"
+        if not resolved:
+            p = _parametric_lcsc(store, c)
+            if p:
+                resolved, source = p, "parametric"
+        if not resolved:
+            continue
+        c["part_lcsc"] = resolved
+        if source != "supplier-part":
+            meta["lcsc_source"] = source
+            c["part_meta"] = meta
+        if claimed and resolved != claimed:
+            warnings.append(
+                f"{c['refdes']}: Supplier Part {claimed} but its "
+                f"Manufacturer Part {mpn} is catalog {resolved}; the MPN "
+                "match wins (the C-number is only the source's listing)"
+            )
+    return warnings
 
 
 def _provenance(
@@ -951,8 +1167,17 @@ def _update(
     if not dry_run:
         added = set(plan.added)
         components = [c for c in design.components if c["refdes"] in added]
-        used = {c.get("footprint") for c in components}
-        used |= set(plan.footprints_refreshed)
+        warnings.extend(_resolve_catalog_lcscs(store, components))
+        dropped_fp = _dedupe_local_footprints(store, components, design.footprints)
+        used = {c.get("footprint") for c in components} - dropped_fp
+        used |= set(plan.footprints_refreshed) - dropped_fp
+        if dropped_fp:
+            warnings.append(
+                f"{len(dropped_fp)} local footprint(s) matched the catalog's "
+                f"cached pads — not stored; those instances use the catalog "
+                f"footprint: {', '.join(sorted(dropped_fp)[:8])}"
+                + ("…" if len(dropped_fp) > 8 else "")
+            )
         connections = [k for k in design.connections if k["refdes"] in added]
         wired = {k["net"] for k in connections}
         meta = {
@@ -984,6 +1209,42 @@ def _update(
             )
             if design.net_classes:
                 store.pcb_upsert_net_classes(ref_id, design.net_classes, conn=conn)
+            if dropped_fp:
+                # Truly drop the copy: a row a PRE-this-slice import wrote
+                # would otherwise keep winning the local-first join. A row
+                # is deleted only when EVERY live instance still naming it
+                # resolves to a matching catalog footprint — a partless
+                # namer, or one whose C-number's cache row is absent or
+                # differs, keeps it (deleting would orphan its pads). A
+                # name with no live namer at all is dead weight: it goes.
+                live = conn.execute(
+                    "SELECT c.footprint, upper(btrim(c.part_lcsc)) "
+                    "FROM pcb_instances i "
+                    "JOIN pcb_components c ON c.component_id = i.component_id "
+                    "WHERE i.ref_id = %s AND i.retired_at IS NULL "
+                    "  AND c.footprint = ANY(%s)",
+                    (ref_id, sorted(dropped_fp)),
+                ).fetchall()
+                catalog = store.part_footprints_many({str(lc) for _n, lc in live if lc})
+                rows = store.pcb_local_footprints_for(ref_id)
+                deletable = [
+                    name
+                    for name in dropped_fp
+                    if name in rows
+                    and all(
+                        lc
+                        and lc in catalog
+                        and footprint_differ(rows[name], catalog[str(lc)]) is None
+                        for n, lc in live
+                        if n == name
+                    )
+                ]
+                if deletable:
+                    conn.execute(
+                        "DELETE FROM pcb_local_footprints "
+                        "WHERE ref_id = %s AND name = ANY(%s)",
+                        (ref_id, deletable),
+                    )
             store.pcb_features_retire(ref_id, plan.legacy_hole_features, conn=conn)
             for refdes, _old, new, _fixed in plan.moved:
                 store.pcb_move_instance(
@@ -996,6 +1257,13 @@ def _update(
                     conn=conn,
                 )
         result.counts = dict(counts)
+        try:
+            linked = datasheets.link_known(store, ref_id)
+        except Exception:
+            log.warning("epro update: datasheet linking failed", exc_info=True)
+        else:
+            if linked:
+                result.stats["datasheets_linked"] = linked
     # Against the board as it now stands (pre-update on a dry run).
     result.copper = report_copper(store, data, slug=slug, board_uuid=board.uuid)
     result.warnings.extend(epro.measured_copper(board, frame)[1])

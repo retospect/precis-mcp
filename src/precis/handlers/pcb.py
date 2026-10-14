@@ -89,6 +89,7 @@ from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import (
+    PIN_ETYPES,
     argue,
     eyes,
     format_route_summary,
@@ -3309,16 +3310,14 @@ class PcbHandler(Handler):
             for i in design["instances"]
             if i.get("x") is not None and i.get("y") is not None
         ]
+        # Local-first, same precedence as footprints_by_refdes / board_pads:
+        # an imported .epro2 part carries BOTH its C-number and the board's
+        # own footprint — the local row is what its pads come from.
         has_pads = {
             i["refdes"]
             for i in placed
-            if (footprints.get(str(i.get("part_lcsc") or "")) or {}).get("pads")
-            or (
-                not i.get("part_lcsc")
-                and (local_footprints.get(str(i.get("footprint") or "")) or {}).get(
-                    "pads"
-                )
-            )
+            if (local_footprints.get(str(i.get("footprint") or "")) or {}).get("pads")
+            or (footprints.get(str(i.get("part_lcsc") or "")) or {}).get("pads")
         }
         missing = sorted({i["refdes"] for i in placed} - has_pads)
         if missing:
@@ -3424,6 +3423,36 @@ class PcbHandler(Handler):
             if c.kind == "refdes" and c.x_mm is not None and c.y_mm is not None
         ]
 
+        # Pin electrical semantics for the .epro2 writer's "Pin Types"
+        # write-back — the §1i etype/nc tags pins imported or were edited
+        # to. Keyed by pin NAME: the writer stamps each footprint pad's
+        # ``num`` with the resolved pin name, and that num is what the
+        # re-imported pin's ``pad`` reads — the join key that survives.
+        # Gerber ignores it.
+        pin_sem: dict[str, dict[str, dict[str, Any]]] = {}
+        with self.store.pool.connection() as conn:
+            for refdes, name, pad, tags, meta in conn.execute(
+                "SELECT i.refdes, p.name, p.pad, p.tags, p.meta "
+                "FROM pcb_instances i "
+                "JOIN pcb_pins p ON p.component_id = i.component_id "
+                "WHERE i.ref_id = %s AND i.retired_at IS NULL "
+                "  AND p.retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                tag_list = list(tags or [])
+                pin_meta = dict(meta or {})
+                etype = next((t for t in tag_list if t in PIN_ETYPES), None)
+                ent: dict[str, Any] = {}
+                # "nc" is etype AND the marker word — emitting it as etype
+                # would flip a mark-only pin into etype on re-import; the
+                # nc marker is the meaning that must survive.
+                if etype and etype != "nc":
+                    ent["etype"] = etype
+                if pin_meta.get("nc") or "nc" in tag_list:
+                    ent["nc"] = True
+                if ent:
+                    pin_sem.setdefault(str(refdes), {})[str(name)] = ent
+
         model: dict[str, Any] = {
             "layers": layer_names,
             "outline": outline,
@@ -3441,7 +3470,14 @@ class PcbHandler(Handler):
             # into parts. :mod:`precis.pcb.gerber` ignores keys it does not
             # know (its model docstring is the contract), so this is
             # additive for the fab path.
-            "instances": design["instances"],
+            "instances": [
+                (
+                    {**i, "pin_sem": pin_sem[str(i["refdes"])]}
+                    if str(i["refdes"]) in pin_sem
+                    else i
+                )
+                for i in design["instances"]
+            ],
             "silk_labels": silk_labels,
             # Every net name on the board, including the empty ones (a
             # schematic net with no board members — EasyEDA keeps those
@@ -3613,10 +3649,12 @@ class PcbHandler(Handler):
         local_footprints = self.store.pcb_local_footprints_for(ref_id)
         holes_by_refdes: dict[str, list[dict[str, Any]]] = {}
         for i in model["instances"]:
-            lcsc = str(i.get("part_lcsc") or "")
-            fp = footprints.get(lcsc) if lcsc else None
+            # local-first: the same precedence board_pads applies — an
+            # imported part keeps its own footprint even with a C-number.
+            fp = local_footprints.get(str(i.get("footprint") or ""))
             if fp is None:
-                fp = local_footprints.get(str(i.get("footprint") or ""))
+                lcsc = str(i.get("part_lcsc") or "")
+                fp = footprints.get(lcsc) if lcsc else None
             if fp and fp.get("holes"):
                 holes_by_refdes[str(i["refdes"])] = list(fp["holes"])
         if holes_by_refdes:
@@ -3647,7 +3685,8 @@ class PcbHandler(Handler):
             copper_line = (
                 f"copper: {st['lines']} line(s), {st['arcs']} arc(s), "
                 f"{st['vias']} via(s) on {st['tracks']} track(s), "
-                f"{st['pours']} pour zone(s) (Pro re-pours them on open)."
+                f"{st['pours']} pour zone(s) with cached fill where the "
+                "source had it (rebuild copper in Pro after edits)."
             )
         else:
             copper_line = (
@@ -3659,15 +3698,16 @@ class PcbHandler(Handler):
             f"({len(blob):,} bytes zipped)\n"
             f"components: {st['components']}  pads: {st['pads']}  "
             f"nets: {st['nets']}\n"
-            "No schematic is included, on purpose: do NOT run 'Update PCB from "
+            "No schematic is included, on purpose: Pro will report the import "
+            "succeeded but show NO schematic pages — that is expected, this "
+            "file carries the board only. Do NOT run 'Update PCB from "
             "schematic' in Pro — it would rewrite the netlist and destroy the "
             "board.\n"
             f"{copper_line}\n"
-            # Remove in the commit that records a human opening one in Pro
-            # (docs/backlog/pcb-epro-export.md, 2b acceptance).
-            "UNVERIFIED: no file from this writer has been opened in EasyEDA "
-            "Pro yet; check part positions (bottom side especially) before "
-            "relying on it."
+            "Verified: Reto opened a file from this writer in EasyEDA Pro "
+            "on 2026-10-14 — import clean, parts and board content all "
+            "present. Pour zones carry the source's cached fill; run "
+            "rebuild copper after any edits."
         )
         # `_fab_model` speaks for the gerber bundle: its silk-placement notes
         # (one per relocated label, ~170 on a 140-part board — they pushed
@@ -5707,6 +5747,10 @@ class PcbHandler(Handler):
                 "lcsc": i["part_lcsc"] or "—",
                 "layer": i["layer"],
                 "pose": self._pose(i),
+                # A locked source component is "do not move this" — the
+                # fact must be readable where the parts are listed
+                # (pcb-datasheet-review.md slice 1).
+                "fixed": i.get("fixed") or "—",
                 "roles": ",".join(i["roles"]) or "—",
             }
             for i in design["instances"]
@@ -5714,7 +5758,8 @@ class PcbHandler(Handler):
         parts.append(
             "## parts\n"
             + render_agent_table(
-                irows, schema=["refdes", "part", "lcsc", "layer", "pose", "roles"]
+                irows,
+                schema=["refdes", "part", "lcsc", "layer", "pose", "fixed", "roles"],
             )
         )
         nrows = [

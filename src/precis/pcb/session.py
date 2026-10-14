@@ -326,19 +326,21 @@ def footprint_holes(
 
 
 def local_footprint_names_by_refdes(graph: dict[str, Any]) -> dict[str, str]:
-    """``{refdes: footprint name}`` for every instance in ``graph`` with NO
-    linked catalog part (``part_lcsc`` falsy) but a ``footprint`` name —
-    pcb-ewod-multitile Slice 1's authored-copper join key
-    (``pcb_components.footprint``, selected by :meth:`Store.pcb_graph`).
-    Restricted to partless instances so a catalog part's own footprint
-    LABEL (e.g. ``"SOT-23"``) is never mistaken for a
-    ``pcb_local_footprints`` name — a component picks exactly one
-    footprint origin, same rule :func:`precis.pcb.padplace.board_pads`
-    documents."""
+    """``{refdes: footprint name}`` for every instance in ``graph`` whose
+    ``footprint`` field is set — pcb-ewod-multitile Slice 1's
+    authored-copper join key (``pcb_components.footprint``, selected by
+    :meth:`Store.pcb_graph`).
+
+    No longer restricted to partless instances (2026-10-14): an .epro2
+    import carries BOTH ``part_lcsc`` (the catalog C-number, which queues
+    datasheet pulls) AND the board's own footprint as a
+    ``pcb_local_footprints`` row, and the local row wins when it exists —
+    "keep the board's own footprint where it really differs". The lookup
+    itself is the guard: a catalog part's footprint LABEL (e.g.
+    ``"SOT-23"``) resolves only when the design genuinely authored a
+    local row by that name, which IS the instance having one."""
     out: dict[str, str] = {}
     for inst in graph.get("instances") or []:
-        if inst.get("part_lcsc"):
-            continue
         name = inst.get("footprint")
         if name:
             out[str(inst["refdes"])] = str(name)
@@ -376,9 +378,11 @@ def footprints_by_refdes(
     ``local_footprints_by_name``/``local_names_by_refdes`` (pcb-ewod-
     multitile Slice 1, both optional) are the design-local counterpart:
     :meth:`~precis.store.Store.pcb_local_footprints_for`'s cache and
-    :func:`local_footprint_names_by_refdes`'s join, checked only for an
-    instance with no catalog-part match above — a component never has
-    both.
+    :func:`local_footprint_names_by_refdes`'s join, checked FIRST — an
+    instance that names a ``pcb_local_footprints`` row uses the board's
+    own authored geometry even when it also has a catalog part
+    (Reto 2026-10-14: the .epro2 import keeps its footprint; the C-number
+    is for datasheets and ordering, not pads).
     """
     out: dict[str, dict[str, Any]] = {}
     local_footprints_by_name = local_footprints_by_name or {}
@@ -386,11 +390,12 @@ def footprints_by_refdes(
     for inst_id in range(ir.n_instances):
         refdes = str(ir.instance_refdes[inst_id])
         lcsc = ir.instance_part_lcsc[inst_id]
-        fp = footprints_by_lcsc.get(str(lcsc)) if lcsc else None
-        if fp is None:
-            name = local_names_by_refdes.get(refdes)
-            if name:
-                fp = local_footprints_by_name.get(name)
+        fp = None
+        name = local_names_by_refdes.get(refdes)
+        if name:
+            fp = local_footprints_by_name.get(name)
+        if fp is None and lcsc:
+            fp = footprints_by_lcsc.get(str(lcsc))
         if fp:
             out[refdes] = fp
     return out

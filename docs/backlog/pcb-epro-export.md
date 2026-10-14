@@ -159,8 +159,15 @@ Per slice; the real one is a human opening the file.
    `mask_open_regions` (no EasyEDA record shape ever observed — a
    guessed shape is the spike's `unk` risk), teardrops (derived fill —
    Pro regenerates on repour). The taz15 round trip holds at 0.3 µm
-   worst pad / 0.000 elsewhere; still UNVERIFIED until a human opens
-   `epro.local/taz15-roundtrip.epro2`.
+   worst pad / 0.000 elsewhere. **VERIFIED 2026-10-14:** Reto opened the
+   regenerated file in EasyEDA Pro — import clean, parts and board
+   content all present (the earlier LAYER/ATTR parse crashes were fixed
+   first). One gap he flagged: pours opened unfilled — Pro caches the
+   computed fill in a `POURED` record per `POUR` (pourFill regions in
+   10-mil units), which we now carry through `meta.epro_pours` and
+   re-emit verbatim, so a re-imported board opens already filled; a
+   precis-authored pour has no fill to cache and opens unfilled until
+   rebuild copper, as before.
 
 Automated (structural, `test_pcb_export.py` house style, not byte-golden): zip
 integrity; every `.e*` line a JSON array with a known type and declared arity;

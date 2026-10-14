@@ -19,7 +19,7 @@ from precis.pcb import catalog
 from precis.pcb import drc as pcb_drc
 
 # A tiny but real board: an MCU + a bypass cap + a pull-up, on an I2C net.
-_DESIGN = {
+_DESIGN: dict[str, Any] = {
     "components": [
         {
             "refdes": "U1",
@@ -240,6 +240,25 @@ def test_toc_shows_placement_and_fanout(pcb):
     assert "noisy" in toc.body  # role tag rendered
     # GND + VCC each have fanout 2; the nets section lists them
     assert "GND" in toc.body and "VCC3V3" in toc.body
+
+
+def test_toc_lists_the_fixed_state(pcb):
+    """A source-locked (or hand-locked) part must be visible where the
+    parts are listed — pcb-datasheet-review.md in-scope 1 ("the TOC has
+    no column for it yet — add one")."""
+    pcb.put(
+        id="sensor-node",
+        args={
+            **_DESIGN,
+            "components": [
+                {**c, "fixed": "both"} if c["refdes"] == "U1" else c
+                for c in _DESIGN["components"]
+            ],
+        },
+    )
+    toc = pcb.get(id="sensor-node")
+    parts = toc.body.split("## parts")[1].split("## nets")[0]
+    assert "fixed" in parts and "both" in parts
 
 
 def test_instance_neighbourhood_hop(pcb):

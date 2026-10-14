@@ -151,6 +151,72 @@ def pending_lcscs(store: Store, pcb_ref_id: int, *, force: bool = False) -> list
     return [c for c in lcscs if _needs_pull(states[c], force)]
 
 
+def link_known(store: Store, pcb_ref_id: int) -> int:
+    """Add a ``datasheet-of`` link for every C-number on the board whose
+    part has none but for which the store already HOLDS the datasheet —
+    nothing is fetched or minted. Two ways a ref counts as "known": its
+    ``meta.part_lcsc`` names this C-number (the pull job stamps it on
+    ingest), or its ``meta.source_url`` equals the part's recorded
+    ``parts.datasheet_url`` — the family case (one PDF serving a whole
+    series): one datasheet ref, one link per C-number, no duplicates.
+    Returns how many parts were newly linked."""
+    lcscs = live_lcscs(store, pcb_ref_id)
+    if not lcscs:
+        return 0
+    with store.pool.connection() as conn:
+        parts = {
+            str(r[0]): int(r[1])
+            for r in conn.execute(
+                "SELECT ri.id_value, p.ref_id FROM ref_identifiers ri "
+                "JOIN refs p ON p.ref_id = ri.ref_id "
+                "WHERE ri.id_kind = 'lcsc' AND ri.id_value = ANY(%s) "
+                "  AND p.kind = 'part' AND p.retired_at IS NULL",
+                (lcscs,),
+            ).fetchall()
+        }
+        if not parts:
+            return 0
+        linked_parts = {
+            int(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT l.dst_ref_id FROM links l "
+                "JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL "
+                "WHERE l.relation = 'datasheet-of' AND l.dst_ref_id = ANY(%s)",
+                (list(parts.values()),),
+            ).fetchall()
+        }
+        candidates = conn.execute(
+            "SELECT ri.id_value, d.ref_id FROM ref_identifiers ri "
+            "JOIN refs d ON d.kind = 'datasheet' AND d.retired_at IS NULL "
+            "  AND (d.meta->>'part_lcsc' = ri.id_value "
+            "       OR (d.meta->>'source_url' IS NOT NULL "
+            "           AND d.meta->>'source_url' <> '' "
+            "           AND d.meta->>'source_url' = ("
+            "             SELECT datasheet_url FROM parts "
+            "             WHERE parts.lcsc = ri.id_value))) "
+            "WHERE ri.id_kind = 'lcsc' AND ri.id_value = ANY(%s) "
+            "ORDER BY ri.id_value, d.ref_id",
+            (lcscs,),
+        ).fetchall()
+    by_lcsc: dict[str, int] = {}
+    for lcsc, ds_id in candidates:
+        by_lcsc.setdefault(str(lcsc), int(ds_id))
+    linked = 0
+    for lcsc in lcscs:
+        part_id = parts.get(lcsc)
+        ds_id = by_lcsc.get(lcsc)
+        if part_id is None or ds_id is None or part_id in linked_parts:
+            continue
+        store.add_link(
+            src_ref_id=ds_id,
+            dst_ref_id=part_id,
+            relation="datasheet-of",
+            set_by="system",
+        )
+        linked += 1
+    return linked
+
+
 def enqueue_pulls(
     store: Store, job: Any, pcb_ref_id: int, *, force: bool = False
 ) -> int:
@@ -186,6 +252,7 @@ __all__ = [
     "enqueue_pulls",
     "idem_key",
     "is_transient",
+    "link_known",
     "live_lcscs",
     "pending_lcscs",
     "status_line",

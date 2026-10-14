@@ -58,8 +58,18 @@ def export_model(
     """
     instances = [dict(i) for i in load["instances"]]
     by_refdes = {i["refdes"]: i for i in instances}
+    # The catalog-identity/verdict keys `pcb_graph` hoists from component
+    # and instance meta — `pcb_load`'s rows carry neither, and the epro
+    # writer needs `part` to emit the ATTRs back.
+    gi = {i["refdes"]: i for i in graph.get("instances") or []}
     for i in instances:
         i["pins"] = []
+        g = gi.get(i["refdes"])
+        if g is None:
+            continue
+        for k in ("part", "local_fp_lcsc", "local_fp_diff"):
+            if k in g:
+                i[k] = g[k]
     # pins: from net membership + the unconnected list (the union = real pads).
     seen: dict[str, set[str]] = {i["refdes"]: set() for i in instances}
     for net in graph["nets"]:

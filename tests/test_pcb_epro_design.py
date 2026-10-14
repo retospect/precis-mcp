@@ -171,10 +171,151 @@ def test_a_locked_component_imports_frozen() -> None:
 
 
 def test_no_component_claims_an_lcsc_part(design) -> None:
-    """``pcb_components.footprint`` only joins ``pcb_local_footprints``
-    when ``part_lcsc IS NULL``, so setting a part number would orphan
-    every pad the reader just recovered."""
+    """The fixture's components carry no catalog ATTRs, so nothing is
+    fabricated: no ``part_lcsc``, no ``part_meta``, labels stay the
+    refdes the store fills. (The C-number IS now imported when present —
+    the local footprint join resolves the design-local row first, so it
+    can no longer orphan pads.)"""
     assert not any("part_lcsc" in c or "part" in c for c in design.components)
+    assert not any("part_meta" in c for c in design.components)
+    assert all("label" not in c for c in design.components)
+
+
+def _cat_attrs(*records: tuple[int, str, str, str]) -> bytes:
+    """The fixture + ``(ticket, parentId, key, value)`` ATTR records
+    spliced in — the catalog identity the real board carries."""
+    stream = "".join(
+        f'{{"type":"ATTR","ticket":{t},"id":"{p}a{t}"}}||'
+        f'{{"parentId":"{p}","layerId":3,"x":null,"y":null,'
+        f'"key":"{k}","value":{json.dumps(v)},"valueVisible":false}}|\n'
+        for t, p, k, v in records
+    )
+    return _rules_zip(stream)
+
+
+def test_components_carry_catalog_identity() -> None:
+    """Slice 3 (Reto 2026-10-14): the component's ATTRs carry the part's
+    LCSC C-number (``Supplier Part``), value, manufacturer part and
+    manufacturer onto the imported component — ``part_lcsc`` for the
+    catalog join (datasheet pulls, board→part edges, the BOM), the rest
+    as ``part_meta`` (value/mpn/mfr/supplier/supplier_part) and the value
+    as ``label``."""
+    design = epro.build_design(
+        epro.read_archive(
+            _cat_attrs(
+                (400, "c1", "Supplier", "LCSC"),
+                (401, "c1", "Supplier Part", "C1525"),
+                (402, "c1", "Manufacturer", "UNI-ROYAL"),
+                (403, "c1", "Manufacturer Part", "0402WGF1002TCE"),
+                (404, "c1", "Resistance (Ohms)", "10K"),
+                (405, "c2", "Supplier Part", "not-a-c-number"),
+                (406, "c2", "Manufacturer Part", "NE555N"),
+            )
+        )
+    )[0]
+    r1 = _by_refdes(design, "R1")
+    assert r1["part_lcsc"] == "C1525"
+    assert r1["label"] == "10K"
+    assert r1["part_meta"] == {
+        "value": "10K",
+        "mpn": "0402WGF1002TCE",
+        "mfr": "UNI-ROYAL",
+        "supplier": "LCSC",
+        "supplier_part": "C1525",
+    }
+    u1 = _by_refdes(design, "U1")
+    # A free-text supplier code is not a C-number — it rides part_meta,
+    # never the join column. The MPN still becomes the label.
+    assert "part_lcsc" not in u1
+    assert u1["label"] == "NE555N"
+    assert u1["part_meta"]["supplier_part"] == "not-a-c-number"
+    assert u1["part_meta"]["mpn"] == "NE555N"
+
+
+def _inside_doc_zip(anchor: str, *records: str) -> bytes:
+    """Records spliced before a marker line — how an attr lands INSIDE a
+    symbol doc (``Pin Type`` belongs to the symbol's pin records)."""
+    return _reread_zip(**{anchor: "".join(records) + anchor})
+
+
+def _extra_docs_zip(*docs: str) -> bytes:
+    """The fixture + whole appended documents — the ``.epru`` stream is
+    DOCHEAD-delimited, so a schematic page simply tails on."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8") + "".join(docs)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("project2.json", (_FIXTURE / "project2.json").read_bytes())
+        zf.writestr("board.epru", stream.encode("utf-8"))
+    return buf.getvalue()
+
+
+_SCH_PAGE_U1 = (
+    '{"type":"DOCHEAD","ticket":300,"id":"d300"}||'
+    '{"docType":"SCH_PAGE","uuid":"tinysch000000001","editVersion":"3.2.149"}|\n'
+    '{"type":"COMPONENT","ticket":301,"id":"sc9"}||'
+    '{"partId":"U.1","x":100,"y":100,"rotation":0}|\n'
+    '{"type":"ATTR","ticket":302,"id":"sc9a"}||'
+    '{"parentId":"sc9","key":"Designator","value":"U1","partId":"U.1"}|\n'
+    '{"type":"ATTR","ticket":303,"id":"sc9b"}||'
+    '{"parentId":"sc9","key":"Symbol","value":"tiny00000000sym2","partId":"U.1"}|\n'
+    '{"type":"ATTR","ticket":304,"id":"sc9c"}||'
+    '{"parentId":"sc9","key":"link","value":"https://x.test/u1.pdf",'
+    '"partId":"U.1"}|\n'
+    '{"type":"ATTR","ticket":305,"id":"sc9d"}||'
+    '{"parentId":"sc9-s2p3","key":"NO_CONNECT","value":"yes"}|\n'
+)
+
+
+def test_symbol_pin_type_lands_as_pin_etype() -> None:
+    """In-scope 1 of pcb-datasheet-review.md: the symbol's ``Pin Type``
+    is the pin's ``etype`` (enough for ERC; a datasheet fact refines it
+    later). ``Undefined`` maps to unset, not a guess."""
+    design = epro.build_design(
+        epro.read_archive(
+            _inside_doc_zip(
+                '{"type":"PIN","ticket":147,"id":"s2p3"}',
+                '{"type":"ATTR","ticket":210,"id":"s2p1t"}||'
+                '{"parentId":"s2p1","key":"Pin Type","value":"IN",'
+                '"partId":"U.1"}|\n'
+                '{"type":"ATTR","ticket":211,"id":"s2p2t"}||'
+                '{"parentId":"s2p2","key":"Pin Type","value":"Undefined",'
+                '"partId":"U.1"}|\n',
+            )
+        )
+    )[0]
+    pins = {p["pad"]: p for p in _by_refdes(design, "U1")["pins"]}
+    assert pins["1"]["etype"] == "input"  # VDD — typed IN on the symbol
+    assert "etype" not in pins["2"] and "etype" not in pins["3"]
+
+
+def test_schematic_link_and_no_connect_reach_the_board() -> None:
+    """The schematic page carries what the PCB doc lacks: ``link`` (the
+    part's datasheet URL) onto ``part_meta``, and ``NO_CONNECT`` —
+    ``parentId '<schComp>-<symbolPin>'`` — onto the pin as ``nc``."""
+    design = epro.build_design(epro.read_archive(_extra_docs_zip(_SCH_PAGE_U1)))[0]
+    u1 = _by_refdes(design, "U1")
+    assert u1["part_meta"]["link"] == "https://x.test/u1.pdf"
+    pins = {p["pad"]: p for p in u1["pins"]}
+    assert pins["3"]["nc"] is True  # s2p3 = pad 3, the second GND
+    assert "nc" not in pins["1"] and "nc" not in pins["2"]
+    # The board-only component the schematic never names is untouched.
+    assert "link" not in (_by_refdes(design, "R1").get("part_meta") or {})
+
+
+def test_pin_types_attr_carries_semantics_without_a_symbol() -> None:
+    """Files we write hold no SYMBOL/SCH docs — the writer emits pin
+    semantics as a ``Pin Types`` JSON attr keyed by pin name, and the
+    reader joins it back (the write-back half of the round trip)."""
+    design = epro.build_design(
+        epro.read_archive(
+            _cat_attrs(
+                (500, "c1", "Pin Types", '{"1":{"etype":"power_in"},"2":{"nc":true}}'),
+            )
+        )
+    )[0]
+    pins = {p["name"]: p for p in _by_refdes(design, "R1")["pins"]}
+    assert pins["1"]["etype"] == "power_in"
+    assert pins["2"]["nc"] is True
 
 
 # ── footprints + pin names ───────────────────────────────────────────────

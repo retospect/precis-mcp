@@ -17,6 +17,7 @@ rows arrive, and does the rest of the engine accept them.
 from __future__ import annotations
 
 import io
+import json
 import math
 import os
 import pathlib
@@ -305,6 +306,369 @@ def test_the_rule_table_lands_in_net_classes_and_meta(store) -> None:
     pours = (ref.meta or {})["epro_pours"]
     assert len(pours) == 1 and pours[0]["net"] == "GND"
     assert pours[0]["layer"] == "B.Cu" and len(pours[0]["polygon"]) >= 3
+
+
+# ── catalog identity + local-vs-catalog footprints (slice 3, Reto 2026-10-14)
+_CATALOG_ATTRS = (
+    (400, "c1", "Supplier", "LCSC"),
+    (401, "c1", "Supplier Part", "C1525"),
+    (402, "c1", "Manufacturer", "UNI-ROYAL"),
+    (403, "c1", "Manufacturer Part", "0402WGF1002TCE"),
+    (404, "c1", "Resistance (Ohms)", "10K"),
+    (405, "c2", "Supplier", "LCSC"),
+    (406, "c2", "Supplier Part", "C2892"),
+    (407, "c2", "Manufacturer Part", "NE555N"),
+    (408, "c2", "Manufacturer", "TI"),
+)
+
+
+def _attr_stream(*records: tuple[int, str, str, str]) -> bytes:
+    """The tiny fixture + ``(ticket, parentId, key, value)`` ATTR records
+    spliced into the board doc."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    attrs = "".join(
+        f'{{"type":"ATTR","ticket":{t},"id":"{p}k{t}"}}||'
+        f'{{"parentId":"{p}","layerId":3,"x":null,"y":null,'
+        f'"key":"{k}","value":{json.dumps(v)},"valueVisible":false}}|\n'
+        for t, p, k, v in records
+    )
+    stream = stream.replace(
+        '{"type":"COMPONENT","ticket":60,"id":"c1"}',
+        attrs + '{"type":"COMPONENT","ticket":60,"id":"c1"}',
+    )
+    return _zip(stream.encode("utf-8"))
+
+
+def _catalog_stream() -> bytes:
+    """The tiny fixture + the component ATTRs a real board carries."""
+    return _attr_stream(*_CATALOG_ATTRS)
+
+
+def test_import_keeps_each_components_catalog_identity(store) -> None:
+    """``Supplier Part`` lands on ``part_lcsc`` (the catalog join, the
+    datasheet queue); value, MPN, manufacturer and the raw supplier code
+    ride component meta onto the instance as ``part``."""
+    result = pcb_epro.import_epro(store, _catalog_stream(), slug="epro-cat-1")
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    r1, u1 = insts["R1"], insts["U1"]
+    assert r1["part_lcsc"] == "C1525"
+    assert r1["label"] == "10K"
+    assert r1["part"] == {
+        "value": "10K",
+        "mpn": "0402WGF1002TCE",
+        "mfr": "UNI-ROYAL",
+        "supplier": "LCSC",
+        "supplier_part": "C1525",
+    }
+    assert u1["part_lcsc"] == "C2892"
+    assert u1["label"] == "NE555N"
+    # No catalog rows cached on this DB: both local footprints are KEPT,
+    # each instance recording the "uncached" verdict.
+    assert r1["local_fp_lcsc"] == "uncached"
+    assert u1["local_fp_lcsc"] == "uncached"
+    assert set(store.pcb_local_footprints_for(result.ref_id)) == {
+        "R0603",
+        "SOT-23-3_L2.9-W1.3-P0.95",
+    }
+
+
+def test_datasheet_pull_fires_for_imported_c_numbers(store) -> None:
+    """The ``datasheet_pull`` trigger (``datasheets.enqueue_pulls``) sees
+    the imported C-numbers — the proof for slice 3's trigger clause.
+    Dev DB only."""
+    from precis.pcb import datasheets
+
+    result = pcb_epro.import_epro(store, _catalog_stream(), slug="epro-ds-1")
+    assert datasheets.live_lcscs(store, result.ref_id) == ["C1525", "C2892"]
+    job = Hub(store=store).sibling("job")
+    assert datasheets.enqueue_pulls(store, job, result.ref_id) == 2
+    with store.pool.connection() as conn:
+        keys = [
+            r[0]
+            for r in conn.execute(
+                "SELECT meta->>'idem_key' FROM refs WHERE kind = 'job' "
+                "AND meta->>'job_type' = 'datasheet_pull' ORDER BY 1"
+            ).fetchall()
+        ]
+    assert keys == ["datasheet_pull:C1525", "datasheet_pull:C2892"]
+    assert datasheets.enqueue_pulls(store, job, result.ref_id) == 0
+
+
+def test_import_links_datasheets_the_store_already_has(store) -> None:
+    """``datasheets.link_known`` runs inside the import: a datasheet ref
+    already in the store — by ``meta.part_lcsc``, or by sharing the
+    part's datasheet_url (the family case) — gets a ``datasheet-of``
+    link per C-number, never a second copy."""
+    from precis.pcb import catalog, datasheets
+
+    url = "https://datasheet.test/family.pdf"
+    store.parts_import(
+        [
+            catalog.normalize_jlcparts_row(
+                {
+                    "lcsc": 1525,
+                    "manufacturer": "UNI-ROYAL",
+                    "mfr_part": "0402WGF1002TCE",
+                    "description": "10k 0402 resistor",
+                    "basic": 1,
+                    "stock": 100,
+                    "package": "0402",
+                    "datasheet": url,
+                }
+            ),
+            catalog.normalize_jlcparts_row(
+                {
+                    "lcsc": 2892,
+                    "manufacturer": "TI",
+                    "mfr_part": "NE555N",
+                    "description": "timer",
+                    "basic": 0,
+                    "stock": 5,
+                    "package": "DIP-8",
+                    "datasheet": url,  # one sheet for the family
+                }
+            ),
+        ]
+    )
+    # A pull that already ran for C1525 — the ref it minted carries
+    # part_lcsc + source_url; C2892's part names the SAME url (the
+    # family-shared sheet), so it links rather than pulling a copy.
+    ds = store.insert_ref(kind="datasheet", slug="ds-family", title="family")
+    store.update_ref(ds.id, meta_patch={"source_url": url, "part_lcsc": "C1525"})
+
+    result = pcb_epro.import_epro(store, _catalog_stream(), slug="epro-ds-2")
+    assert result.stats.get("datasheets_linked") == 2
+    for lcsc in ("C1525", "C2892"):
+        state = datasheets.datasheet_state(store, lcsc)
+        assert state["datasheet"] == (ds.id, "ds-family"), lcsc
+    assert datasheets.pending_lcscs(store, result.ref_id) == []
+
+
+# ── part lookup (in-scope 1's last clause): mfr+MPN → C-number → parametric
+def test_mpn_lookup_resolves_a_c_number_the_source_omitted(store) -> None:
+    """The component claims no ``Supplier Part`` but its Manufacturer Part
+    names a catalog row — the resolved C-number joins the catalog (and the
+    datasheet queue) exactly as if the source had printed it."""
+    from precis.pcb import catalog, datasheets
+
+    store.parts_import(
+        [
+            catalog.normalize_jlcparts_row(
+                {
+                    "lcsc": 777001,
+                    "manufacturer": "TI",
+                    "mfr_part": "NE555P",
+                    "description": "timer",
+                    "package": "DIP-8",
+                }
+            )
+        ]
+    )
+    result = pcb_epro.import_epro(
+        store,
+        _attr_stream(
+            (500, "c2", "Manufacturer", "TI"),
+            (501, "c2", "Manufacturer Part", "NE555P"),
+        ),
+        slug="epro-mpn-1",
+    )
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    assert insts["U1"]["part_lcsc"] == "C777001"
+    assert insts["U1"]["part"]["lcsc_source"] == "mfr"
+    # The resolved number reaches the datasheet-pull trigger like a claimed one.
+    job = Hub(store=store).sibling("job")
+    assert datasheets.enqueue_pulls(store, job, result.ref_id) == 1
+
+
+def test_mpn_match_wins_over_a_stale_supplier_part(store) -> None:
+    """Manufacturer + MPN outrank the source's own C-number: the physical
+    part IS its MPN; ``Supplier Part`` is only the listing it printed.
+    A disagreement is a warning, not silence."""
+    store.parts_import(
+        [
+            {"lcsc": "C888888", "mfr": "TI", "mfr_part": "REAL-MPN"},
+        ]
+    )
+    result = pcb_epro.import_epro(
+        store,
+        _attr_stream(
+            (500, "c2", "Supplier Part", "C000001"),
+            (501, "c2", "Manufacturer", "TI"),
+            (502, "c2", "Manufacturer Part", "REAL-MPN"),
+        ),
+        slug="epro-mpn-2",
+    )
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    assert insts["U1"]["part_lcsc"] == "C888888"
+    assert insts["U1"]["part"]["supplier_part"] == "C000001"  # source kept
+    assert any("U1" in w and "C000001" in w and "C888888" in w for w in result.warnings)
+
+
+def test_parametric_lookup_needs_a_unique_candidate(store) -> None:
+    """The generic-passive fallback: value + the footprint's package token
+    -> a UNIQUE catalog row. Two candidates resolve nothing — a guessed
+    C-number pulls the wrong datasheet."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C888001",
+                "mfr": "UNI-ROYAL",
+                "mfr_part": "0402-10k",
+                "package": "0603",
+                "params": {"Resistance": "10kΩ"},
+            },
+            {
+                "lcsc": "C888002",
+                "mfr": "UNI-ROYAL",
+                "mfr_part": "0402-4k7",
+                "package": "0603",
+                "params": {"Resistance": "4.7kΩ"},
+            },
+        ]
+    )
+    stream = _attr_stream((500, "c1", "Resistance (Ohms)", "10k"))
+    result = pcb_epro.import_epro(store, stream, slug="epro-par-1")
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    # R1's footprint is R0603 -> package 0603; "10k" canons to 10e3 and
+    # matches the 10kΩ row uniquely.
+    assert insts["R1"]["part_lcsc"] == "C888001"
+    assert insts["R1"]["part"]["lcsc_source"] == "parametric"
+
+    # A second candidate at the same value makes it undecidable.
+    store.parts_import(
+        [
+            {
+                "lcsc": "C888009",
+                "mfr": "YAGEO",
+                "mfr_part": "0603-10k-b",
+                "package": "0603",
+                "params": {"Resistance": "10K±1%"},
+            },
+        ]
+    )
+    result = pcb_epro.import_epro(store, stream, slug="epro-par-2")
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    assert insts["R1"]["part_lcsc"] is None
+
+
+def test_a_local_footprint_matching_the_catalog_is_dropped(store) -> None:
+    """The DRY ruling: a local copy that is just the catalog footprint —
+    same pad count, centres within tolerance, same pin map — is never
+    stored; the instance resolves the cached C-number footprint. A
+    genuinely different one is kept, with the diff recorded on the
+    instance."""
+    mil = 0.0254
+    # The fixture's SOT-23-3 footprint verbatim, pin map included — a pure
+    # re-capture. (Pads are at (-40,-20)/(40,-20)/(0,35) mil; import
+    # mirrors y.)
+    store.part_footprint_put(
+        "C2892",
+        {
+            "pads": [
+                {
+                    "number": "1",
+                    "x": -40 * mil,
+                    "y": 20 * mil,
+                    "shape": "rect",
+                    "w": 40 * mil,
+                    "h": 60 * mil,
+                },
+                {
+                    "number": "2",
+                    "x": 40 * mil,
+                    "y": 20 * mil,
+                    "shape": "circle",
+                    "w": 50 * mil,
+                    "h": 50 * mil,
+                    "drill": 25 * mil,
+                },
+                {
+                    "number": "3",
+                    "x": 0.0,
+                    "y": -35 * mil,
+                    "shape": "obround",
+                    "w": 60 * mil,
+                    "h": 30 * mil,
+                },
+            ],
+            "pin_map": {
+                "1": {"name": "VDD", "tags": []},
+                "2": {"name": "GND", "tags": []},
+                "3": {"name": "GND_3", "tags": []},
+            },
+        },
+    )
+    # C1525's cached footprint has a different pad count -> kept + why.
+    store.part_footprint_put("C1525", {"pads": [{"number": "1", "x": 0.0, "y": 0.0}]})
+    result = pcb_epro.import_epro(store, _catalog_stream(), slug="epro-dd-1")
+    locals_ = store.pcb_local_footprints_for(result.ref_id)
+    assert "SOT-23-3_L2.9-W1.3-P0.95" not in locals_, (
+        "the catalog-identical copy is not stored"
+    )
+    assert "R0603" in locals_
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    # U1 carries no verdict — it is simply a catalog part now.
+    assert "local_fp_lcsc" not in insts["U1"]
+    assert insts["U1"]["part_lcsc"] == "C2892"
+    # ...and its pads resolve the CATALOG row's pin map (VDD joins).
+    pads, _drills = padplace.board_pads(
+        store.pcb_graph(result.ref_id)["instances"],
+        store.pcb_footprints_for(result.ref_id),
+        layers=[s["name"] for s in result.stackup],
+        local_footprints=locals_,
+    )
+    assert {p["pin"] for p in pads if p["refdes"] == "U1"} == {
+        "VDD",
+        "GND",
+        "GND_3",
+    }
+    # R1's footprint keeps its local copy: the pad count differs (AND it
+    # owns a hole, which always keeps a row) — the verdict records why.
+    assert insts["R1"]["local_fp_lcsc"] == "differ"
+    assert "pad count" in insts["R1"]["local_fp_diff"]
+
+
+def test_a_local_footprint_near_miss_still_differs(store) -> None:
+    """A pad beyond the 0.05mm tolerance is 'differ', not 'match' —
+    the dedup must not eat a genuinely edited land pattern."""
+    mil = 0.0254
+    pin_map = {
+        "1": {"name": "VDD", "tags": []},
+        "2": {"name": "GND", "tags": []},
+        "3": {"name": "GND_3", "tags": []},
+    }
+    store.part_footprint_put(
+        "C2892",
+        {
+            "pads": [
+                {"number": "1", "x": -40 * mil, "y": 20 * mil},
+                {"number": "2", "x": 40 * mil, "y": 20 * mil},
+                {"number": "3", "x": 0.0, "y": -35 * mil + 0.2},  # 0.2mm off
+            ],
+            "pin_map": pin_map,
+        },
+    )
+    result = pcb_epro.import_epro(store, _catalog_stream(), slug="epro-dd-2")
+    assert "SOT-23-3_L2.9-W1.3-P0.95" in store.pcb_local_footprints_for(result.ref_id)
+    insts = {i["refdes"]: i for i in store.pcb_graph(result.ref_id)["instances"]}
+    assert insts["U1"]["local_fp_lcsc"] == "differ"
+    assert "off by" in insts["U1"]["local_fp_diff"]
+    # and a within-tolerance move still matches
+    store.part_footprint_put(
+        "C2892",
+        {
+            "pads": [
+                {"number": "1", "x": -40 * mil, "y": 20 * mil},
+                {"number": "2", "x": 40 * mil, "y": 20 * mil},
+                {"number": "3", "x": 0.0, "y": -35 * mil + 0.04},  # 0.04mm
+            ],
+            "pin_map": pin_map,
+        },
+    )
+    result = pcb_epro.import_epro(store, _catalog_stream(), slug="epro-dd-3")
+    assert "SOT-23-3_L2.9-W1.3-P0.95" not in store.pcb_local_footprints_for(
+        result.ref_id
+    )
 
 
 def test_a_single_net_inner_pour_becomes_a_plane(store) -> None:

@@ -264,8 +264,26 @@ recency); a stored sibling order is YAGNI until a reader needs it.
 
 ## Slices (independently shippable, in order)
 
-1. Import completeness (in-scope 1) — no dependencies; unblocks datasheet
-   pulls for taz15 immediately.
+1. ~~Import completeness (in-scope 1)~~ — **SHIPPED 2026-10-14** (branch
+   `worktree-p1-epro`, tip `9a786251d`, on the pcb-easyeda-round-trip
+   thread). What it landed: `Supplier Part`/`LCSC` → `part_lcsc`,
+   value/`Resistance`/`Capacitance`/… → `label`, `Manufacturer Part`/
+   `Manufacturer`/`Supplier`/`link`/`JLCPCB Part Class` → `meta.part`;
+   symbol `Pin Type` → pin `etype` (Undefined → unset), schematic
+   `NO_CONNECT` → pin `nc`; the local footprint join is local-FIRST so
+   the C-number can no longer orphan pads (identical local footprints are
+   dropped at import, the verdict recorded per instance); datasheet pulls
+   fire for imported C-numbers and `link_known` attaches already-held
+   sheets one link each; part lookup is mfr+MPN → claimed C-number →
+   unique parametric (package+value); the TOC gained a `fixed` column.
+   Verified: the `+3V3`/`3V3` split IS the source's topology (a real
+   two-member `+3V3` net: C17.2 + U9.VCC — not an importer bug). The
+   AC's "re-importing taz15" proof is `test_taz15_import_export_
+   reimport_structural` (85 C-numbers, all attrs + pin semantics
+   verbatim). NOT shipped: pin `max_voltage_v`/`vih`/`vil`/`rail`
+   (belongs to slices 2+/facts), `Device`/`Symbol` uuid retention,
+   schematic wire/netlist import proper (the +3V3 check confirmed the
+   *board's* pads, not sch-sheet fidelity).
 2. `op='pins'` + `max_current_a` + `over_current` (2) — makes the existing
    ERC usable on imported boards by hand.
 3. Passive rating/dielectric from catalog description + margin policy (4

@@ -196,6 +196,44 @@ def test_recorded_attempt_or_linked_datasheet_is_not_pending(
     assert pcb_datasheets.pending_lcscs(store, ref.id, force=True) == ["C25900"]
 
 
+def test_link_known_links_a_sheet_the_store_already_has(pcb, store):
+    """``link_known`` (the import-time half of family sharing — the epro
+    importer calls it): an existing datasheet ref — matched by
+    ``meta.part_lcsc`` or by the catalog part's own ``datasheet_url`` —
+    gains a ``datasheet-of`` link per C-number with NO fetch and NO
+    ingest, so an imported board whose sheet was already pulled once is
+    covered without a second copy."""
+    store.parts_import([_catalog_row(25900, "https://x.test/fam.pdf")])
+    pcb.put(id="b5", args=_design("C25900"))
+    ref = store.get_ref(kind="pcb", id="b5")
+    assert ref is not None
+    # the family sheet exists only as the pulled ref — no second fetch
+    ds = store.insert_ref(kind="datasheet", slug="ds-fam", title="fam")
+    store.update_ref(ds.id, meta_patch={"source_url": "https://x.test/fam.pdf"})
+    assert pcb_datasheets.link_known(store, ref.id) == 1
+    assert pcb_datasheets.datasheet_state(store, "C25900")["datasheet"] == (
+        ds.id,
+        "ds-fam",
+    )
+    assert pcb_datasheets.pending_lcscs(store, ref.id) == []
+    # idempotent — a second link_known adds nothing
+    assert pcb_datasheets.link_known(store, ref.id) == 0
+    # … and the meta.part_lcsc path covers a sheet pulled under this C-no
+    ds2 = store.insert_ref(kind="datasheet", slug="ds-own", title="own")
+    store.update_ref(ds2.id, meta_patch={"part_lcsc": "C25900"})
+    assert pcb_datasheets.link_known(store, ref.id) == 0  # already linked
+    # a NEW part on the board with only meta.part_lcsc coverage
+    store.parts_import([_catalog_row(1525, None)])
+    pcb.put(id="b5", args=_design("C25900", "C1525"))
+    ds3 = store.insert_ref(kind="datasheet", slug="ds-1525", title="1525")
+    store.update_ref(ds3.id, meta_patch={"part_lcsc": "C1525"})
+    assert pcb_datasheets.link_known(store, ref.id) == 1
+    assert pcb_datasheets.datasheet_state(store, "C1525")["datasheet"] == (
+        ds3.id,
+        "ds-1525",
+    )
+
+
 def test_op_datasheets_force_requeues_failed_pull(pcb, store, no_jlc):
     pcb.put(id="b4", args=_design("C25900"))
     dp.pull(store, "C25900")

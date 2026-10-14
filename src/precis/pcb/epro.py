@@ -45,10 +45,10 @@ vocabulary and almost nothing else. Everything below is spike-verified
   ONE exception, and it is a trap: ``POURED.pourFill`` paths are in
   **10-mil units** (the EasyEDA *Standard* unit, cf.
   :data:`precis.pcb.easyeda._MM_PER_UNIT`) — a silent factor of ten
-  against every other coordinate in the same document. We discard
-  ``POURED`` (it is derived fill, recomputed on the far side), so this
-  costs nothing today; it would be a plausible-looking disaster in a
-  reader that kept it.
+  against every other coordinate in the same document.
+  :func:`extract_pours` keeps the fill as a display cache for the
+  export; it scales by ten into mils before :class:`Frame`, and it
+  would be a plausible-looking disaster in a reader that fed it raw.
 * ``LINE`` and ``VIA`` carry ``netName`` **directly**. No net-index
   indirection, so copper extraction needs neither ``NET`` nor
   ``PAD_NET``.
@@ -81,9 +81,12 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Any
+
+from precis.pcb import PIN_ETYPES
 
 #: 1 mil = 0.0254 mm. The ``.epru`` document body's unit, everywhere
 #: except ``POURED.pourFill`` (see the module docstring).
@@ -1033,7 +1036,9 @@ def extract_pours(
     otherwise dropped. These items exist so the design keeps the
     authored polygon in ``meta.epro_pours`` — the export writes it back
     verbatim and Pro re-pours inside it on open, which beats rebuilding
-    the zone from the stackup.
+    the zone from the stackup. The source's computed fill
+    (``POURED.pourFill``) rides along verbatim too, as a display cache
+    so the reopened file shows poured copper immediately.
 
     A ``"R"`` rectangle op becomes its four corners; the vertex-list
     ``"L"`` path Pro 3.2.206 writes for a free-form zone (TAZ V1.15's
@@ -1041,9 +1046,20 @@ def extract_pours(
     and its first path wins — the writer emits one path the same way.
     """
     layers = copper_layers(pcb)
+    poured_by_pour: dict[str, dict[str, Any]] = {}
+    for rec in pcb.of_type("POURED"):
+        try:
+            ref = json.loads(rec.id or "")
+        except ValueError:
+            continue
+        if isinstance(ref, list) and len(ref) == 2 and ref[0] == "POURED" and rec.body:
+            poured_by_pour[str(ref[1])] = rec.body
     pours: list[dict[str, Any]] = []
     warnings: list[str] = []
-    for body in pcb.bodies("POUR"):
+    for rec in pcb.of_type("POUR"):
+        body = rec.body
+        if body is None:
+            continue
         lid = body.get("layerId")
         layer = layers.get(int(lid)) if lid is not None else None
         if layer is None:
@@ -1082,15 +1098,43 @@ def extract_pours(
                 )
                 continue
             poly = [frame.xy(px, py) for px, py in pts]
-        pours.append(
-            {
-                "layer": layer,
-                "net": str(body.get("netName") or ""),
-                "polygon": [[x, y] for x, y in poly],
-                "keep_island": bool(body.get("keepIsland")),
-                "name": str(body.get("name") or ""),
-            }
-        )
+        item: dict[str, Any] = {
+            "layer": layer,
+            "net": str(body.get("netName") or ""),
+            "polygon": [[x, y] for x, y in poly],
+            "keep_island": bool(body.get("keepIsland")),
+            "name": str(body.get("name") or ""),
+        }
+        poured = poured_by_pour.get(rec.id or "")
+        if poured:
+            regions = []
+            for region in poured.get("pourFill") or []:
+                rings = []
+                for p in region.get("path") or []:
+                    pts = _poly_points(p)
+                    if len(pts) >= 3:
+                        # 10-mil Standard units -> mils -> mm (the trap
+                        # from the module docstring; never raw frame.xy).
+                        rings.append(
+                            [
+                                [x, y]
+                                for x, y in (
+                                    frame.xy(px * 10.0, py * 10.0) for px, py in pts
+                                )
+                            ]
+                        )
+                if rings:
+                    regions.append(
+                        {
+                            "id": str(region.get("id") or ""),
+                            "fill": bool(region.get("fill", True)),
+                            "stroke_width": float(region.get("strokeWidth") or 0.0),
+                            "paths": rings,
+                        }
+                    )
+            if regions:
+                item["fill"] = regions
+        pours.append(item)
     return pours, warnings
 
 
@@ -1220,6 +1264,74 @@ _COMP_TOP, _COMP_BOTTOM = 1, 2
 _PAD_SHAPES = {"RECT": "rect", "ELLIPSE": "circle", "OVAL": "obround"}
 
 
+#: Component ``ATTR`` keys that carry the part's value, in precedence
+#: order. ``Value``/``Comment`` are the generic ones; EasyEDA's own
+#: symbol library puts the value on typed attrs instead (TAZ V1.15 has
+#: ``Resistance (Ohms)`` ×16, ``Resistance``, ``Capacitance``, no plain
+#: ``Value`` at all).
+_PART_VALUE_KEYS = (
+    "Value",
+    "Comment",
+    "Resistance (Ohms)",
+    "Resistance",
+    "Capacitance",
+    "Inductance",
+)
+
+
+def _component_identity(a: dict[str, str]) -> dict[str, str]:
+    """The catalog identity a component's ATTRs carry:
+    ``{"lcsc", "value", "mpn", "mfr", "supplier", "supplier_part"}``, each
+    only when present.
+
+    ``Supplier Part`` is the LCSC C-number on a JLC-sourced part (Supplier
+    "LCSC"); it lands on the lcsc key only in ``C<digits>`` shape, so a
+    free-text supplier code never ends up in the ``part_lcsc`` join
+    column. ``lcsc`` is upper-cased to match ``parts.lcsc``.
+    """
+    out: dict[str, str] = {}
+    for key in ("Supplier Part", "LCSC"):
+        cand = (a.get(key) or "").strip().upper()
+        if re.fullmatch(r"C\d+", cand):
+            out["lcsc"] = cand
+            break
+    value = next(
+        (
+            (a.get(k) or "").strip()
+            for k in _PART_VALUE_KEYS
+            if (a.get(k) or "").strip()
+        ),
+        "",
+    )
+    if value:
+        out["value"] = value
+    for key, name in (
+        ("Manufacturer Part", "mpn"),
+        ("Manufacturer", "mfr"),
+        ("Supplier", "supplier"),
+        ("Supplier Part", "supplier_part"),
+        # The device/symbol's display name — for a passive it IS the
+        # value ("100n", "243Ω"), for an IC the MPN-ish symbol name;
+        # carried either way as part_meta["name"].
+        ("Name", "name"),
+        # The schematic's `link` attr is the part's datasheet URL (an
+        # lcsc.com/eda_search link or the real datasheet PDF).
+        ("link", "link"),
+        # JLC's own assembly tier ("Basic Part"/"Extended Part") —
+        # availability reasoning, not identity, but cheap to keep.
+        ("JLCPCB Part Class", "part_class"),
+    ):
+        v = (a.get(key) or "").strip()
+        if v:
+            out[name] = v
+    # "Add into BOM" is the author's own keep-out — only the negative is
+    # worth recording (the default is yes).
+    bom = (a.get("Add into BOM") or "").strip().lower()
+    if bom in ("no", "false", "0"):
+        out["bom"] = "no"
+    return out
+
+
 def _footprint_ref(attrs: dict[str, str]) -> str | None:
     """The footprint uuid a component's attributes point at. The 2025
     heater-base export keyed it ``Footprint``; Reto's TAZ V1.15 export
@@ -1247,31 +1359,110 @@ def component_attrs(pcb: EproDocument) -> dict[str, dict[str, str]]:
     return out
 
 
-def symbol_pin_names(symbol: EproDocument) -> dict[str, str]:
-    """``pad number -> pin name`` from one ``SYMBOL`` document.
+def symbol_pin_info(symbol: EproDocument) -> dict[str, dict[str, str]]:
+    """``pin record id -> {"num", "name", "type"}`` from one ``SYMBOL``
+    document — the fuller read of what ``symbol_pin_names`` discards.
 
     A ``PIN`` record carries geometry only — no name, no number. Both are
     ``ATTR`` records hanging off the pin by ``parentId``, keyed ``Pin
-    Number`` and ``Pin Name`` (``Pin Type`` is the third and is unused
-    here). Pairing them by ``parentId`` is what turns the schematic's
-    names into something a netlist can address.
-
-    A pin with a number and no name keeps the number as its name, which
-    is the identity case most passives are: on the spike board 100 of 140
-    components resolve to an identity map and 40 to real signal names.
+    Number`` and ``Pin Name``; ``Pin Type`` (``IN``/``OUT``/``IO``/…, the
+    symbol's own electrical-type word) is the third, and is what feeds a
+    pin's ``etype`` for ERC (pcb-datasheet-review.md slice 1).
     """
-    numbers: dict[str, str] = {}
-    names: dict[str, str] = {}
+    out: dict[str, dict[str, str]] = {}
     for r in symbol.of_type("ATTR"):
         b = r.body or {}
         parent, key, val = b.get("parentId"), b.get("key"), b.get("value")
         if not parent or val in (None, ""):
             continue
+        ent = out.setdefault(str(parent), {})
         if key == "Pin Number":
-            numbers[str(parent)] = str(val)
+            ent["num"] = str(val)
         elif key == "Pin Name":
-            names[str(parent)] = str(val)
-    return {num: names.get(pin, num) for pin, num in numbers.items()}
+            ent["name"] = str(val)
+        elif key == "Pin Type":
+            ent["type"] = str(val)
+    return out
+
+
+def symbol_pin_names(symbol: EproDocument) -> dict[str, str]:
+    """``pad number -> pin name`` — derived from :func:`symbol_pin_info`.
+
+    A pin with a number and no name keeps the number as its name, which
+    is the identity case most passives are: on the spike board 100 of 140
+    components resolve to an identity map and 40 to real signal names.
+    """
+    return {
+        info["num"]: info.get("name") or info["num"]
+        for info in symbol_pin_info(symbol).values()
+        if info.get("num")
+    }
+
+
+#: EasyEDA's symbol ``Pin Type`` vocabulary -> precis ``PIN_ETYPES``.
+#: ``Undefined`` (the common case — 295 of 372 on taz15) and anything
+#: unrecognized map to *unset*: a missing etype is honest, a guessed one
+#: is wrong data ERC would trust.
+_EASYEDA_ETYPE = {
+    "IN": "input",
+    "OUT": "output",
+    "IO": "bidi",
+    "OC": "open_drain",
+    "HIZ": "tristate",
+    "PASSIVE": "passive",
+    "POWER": "power_in",
+    "NC": "nc",
+}
+
+
+def sch_component_attrs(project: EproProject) -> dict[str, dict[str, str]]:
+    """``{refdes: {attr key: value}}`` across every ``SCH_PAGE`` document.
+
+    The schematic carries component attrs the board doc does not —
+    ``link`` (the part's datasheet URL), ``NO_CONNECT`` markers and,
+    secondhand, the same Supplier Part/Manufacturer/Name triple the PCB
+    side already shows. On taz15 the two sides' shared keys agree
+    exactly; the merge in ``extract_components`` lets the board's copy
+    win any conflict anyway."""
+    out: dict[str, dict[str, str]] = {}
+    for doc in project.by_type("SCH_PAGE"):
+        for a in component_attrs(doc).values():
+            refdes = (a.get("Designator") or "").strip()
+            if refdes:
+                out[refdes] = a
+    return out
+
+
+def sch_no_connects(project: EproProject) -> dict[str, set[str]]:
+    """``{refdes: {pad numbers}}`` — the schematic's ``NO_CONNECT``
+    markers. Each is an ``ATTR`` whose ``parentId`` is
+    ``<schematic-component-id>-<symbol-pin-record-id>``: the schematic
+    component gives the refdes and (via its ``Symbol`` attr) the symbol
+    document whose pin record resolves the pad number."""
+    symbols = {d.uuid: d for d in project.by_type("SYMBOL") if d.uuid}
+    out: dict[str, set[str]] = {}
+    for doc in project.by_type("SCH_PAGE"):
+        attrs = component_attrs(doc)
+        for r in doc.of_type("ATTR"):
+            b = r.body or {}
+            if b.get("key") != "NO_CONNECT":
+                continue
+            if str(b.get("value") or "").lower() not in ("yes", "true", "1"):
+                continue
+            comp_id, _, pin_id = str(b.get("parentId") or "").partition("-")
+            comp = attrs.get(comp_id)
+            if comp is None or not pin_id:
+                continue
+            sym = symbols.get(str(comp.get("Symbol") or ""))
+            refdes = (comp.get("Designator") or "").strip()
+            num = (
+                (symbol_pin_info(sym).get(pin_id) or {}).get("num")
+                if sym is not None
+                else None
+            )
+            if refdes and num:
+                out.setdefault(refdes, set()).add(num)
+    return out
 
 
 def device_pin_names(project: EproProject) -> dict[str, dict[str, str]]:
@@ -1701,12 +1892,31 @@ def extract_components(
     diametrically opposite its true position — a board that renders
     plausibly and cannot be built.
 
-    ``part_lcsc`` is deliberately absent: ``pcb_components.footprint``
-    only joins ``pcb_local_footprints`` when ``part_lcsc IS NULL``, so
-    setting it would orphan every pad this reader just recovered.
+    The catalog identity attrs — ``Supplier Part`` (the LCSC C-number),
+    ``Value``/``Comment``/typed value keys, ``Manufacturer Part``,
+    ``Manufacturer``, ``Supplier``, plus the schematic-side ``Name``,
+    ``link`` (datasheet URL) and ``JLCPCB Part Class`` — land on the
+    component as ``part_lcsc``, ``label`` (value, then MPN, then Name,
+    else the refdes the store already fills) and a ``part_meta`` blob
+    (:func:`_component_identity`). ``part_lcsc`` used to be dropped on
+    purpose: the footprint join consulted ``pcb_local_footprints`` only
+    when ``part_lcsc IS NULL``, so importing the C-number orphaned every
+    pad this reader had recovered. The join now resolves the design-local
+    footprint FIRST whenever the instance names one (Reto 2026-10-14:
+    "import the numbers, then keep the board's own footprint where it
+    really differs"), so carrying the C-number is safe — and it is what
+    queues datasheet pulls, mints board→part edges and fills the BOM.
+
+    Pins carry the symbol's electrical type (``Pin Type`` -> ``etype``)
+    and the schematic's ``NO_CONNECT`` markers (``nc``) — the ERC half
+    of pcb-datasheet-review.md slice 1.
     """
     warnings: list[str] = []
     attrs = component_attrs(pcb)
+    sch_attrs = sch_component_attrs(project)
+    nc_by_refdes = sch_no_connects(project)
+    symbols = {d.uuid: d for d in project.by_type("SYMBOL") if d.uuid}
+    devices = {d.uuid: d for d in project.by_type("DEVICE") if d.uuid}
     pin_maps = device_pin_names(project)
     fp_docs = {d.uuid: d for d in project.by_type("FOOTPRINT") if d.uuid}
 
@@ -1756,6 +1966,19 @@ def extract_components(
         if fp_name:
             comp["footprint"] = fp_name
 
+        # The schematic's copy of the same component fills gaps the board
+        # doc leaves (link, and any identity attr the layout pass never
+        # copied); the board's own ATTRs win where both speak.
+        sa = sch_attrs.get(refdes, {})
+        ident = _component_identity({**sa, **a})
+        if ident.get("lcsc"):
+            comp["part_lcsc"] = ident["lcsc"]
+        label = ident.get("value") or ident.get("mpn") or ident.get("name")
+        if label:
+            comp["label"] = label
+        if ident:
+            comp["part_meta"] = {k: v for k, v in ident.items() if k != "lcsc"}
+
         doc = fp_docs.get(fp_uuid)
         # Distinct pad numbers: several pads may share one (a split thermal
         # pad), and they are one pin. Emitting one row per PAD would give
@@ -1775,6 +1998,69 @@ def extract_components(
                 f"{refdes}: no pads resolved, so it carries no pins; its "
                 f"connections cannot be imported"
             )
+
+        # Pin semantics from the symbol (the chain: the schematic's
+        # `Symbol` attr, else the component's `Device` -> the DEVICE
+        # meta's Symbol). `Pin Type` -> `etype`, `NO_CONNECT` -> `nc`.
+        sym_uuid = sa.get("Symbol")
+        if not sym_uuid:
+            dev = devices.get(str(a.get("Device") or sa.get("Device") or ""))
+            metas = dev.bodies("META") if dev else []
+            sym_uuid = (
+                str((metas[0].get("attributes") or {}).get("Symbol") or "")
+                if metas
+                else ""
+            )
+        sym = symbols.get(str(sym_uuid))
+        if sym is not None and comp.get("pins"):
+            pinfo = symbol_pin_info(sym)
+            by_pad = {v["num"]: v for v in pinfo.values() if v.get("num")}
+            nc_pads = nc_by_refdes.get(refdes) or set()
+            for pin in comp["pins"]:
+                pad = str(pin.get("pad") or "")
+                etype = _EASYEDA_ETYPE.get(
+                    str((by_pad.get(pad) or {}).get("type") or "").upper()
+                )
+                if etype:
+                    pin["etype"] = etype
+                if pad in nc_pads:
+                    pin["nc"] = True
+
+        # Files we wrote carry the same semantics as a "Pin Types" JSON
+        # ATTR keyed by PAD number (the symbol docs do not round-trip, so
+        # a written file's pins are named by pad — a name key would miss
+        # them). Pin name is the fallback for a hand-authored file.
+        # Symbol-derived values win where both speak — the authored
+        # symbol is the source, the JSON the transport.
+        raw_pt = a.get("Pin Types") or sa.get("Pin Types")
+        if raw_pt and comp.get("pins"):
+            pin_types: dict[str, Any] | None = None
+            try:
+                decoded = json.loads(str(raw_pt))
+                if isinstance(decoded, dict):
+                    pin_types = decoded
+            except json.JSONDecodeError:
+                pass
+            if pin_types is None:
+                warnings.append(
+                    f"{refdes}: a 'Pin Types' attribute is present but not "
+                    f"JSON ({str(raw_pt)[:60]!r}); pin semantics unread"
+                )
+            else:
+                for pin in comp["pins"]:
+                    ent = (
+                        pin_types.get(str(pin.get("pad")))
+                        or pin_types.get(str(pin.get("name")))
+                        or {}
+                    )
+                    etype = _EASYEDA_ETYPE.get(str(ent.get("etype") or "").upper())
+                    etype = etype or (
+                        str(ent["etype"]) if ent.get("etype") in PIN_ETYPES else None
+                    )
+                    if etype and "etype" not in pin:
+                        pin["etype"] = etype
+                    if ent.get("nc"):
+                        pin["nc"] = True
         if b.get("locked"):
             comp["fixed"] = "both"
         out.append(comp)

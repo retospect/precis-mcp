@@ -10,15 +10,28 @@ record, and the test suite reads every file back through that reader.
 **What it emits** — ``project2.json`` plus ONE ``.epru`` stream of
 documents:
 
-* a ``PCB`` document: ``DOCHEAD``, ``LAYER`` records (copper, outline,
-  silk/mask/paste, multi, document), ``NET`` (declared before use), the
-  outline ``POLY`` on the ``OUTLINE`` layer, then per placed part
-  ``COMPONENT`` + ``ATTR`` ``Designator`` + ``ATTR`` ``Footprint`` +
-  ``PAD_NET`` per netted pad;
+* a ``PCB`` document: ``DOCHEAD``, the full ``LAYER`` palette Pro
+  itself writes (93 records — every layer's colors and transparency,
+  not just the copper ones; a missing ``activeColor`` is a
+  ``startsWith`` crash in Pro's ``parseLayer``, TAZ V1.15's open
+  attempt 2026-10-14), the board-state block
+  (``CANVAS``/``META``/``PREFERENCE``/``ACTIVE_LAYER``/``SILK_OPTS``/
+  ``PRIMITIVE``/``LAYER_PHYS`` — verbatim passthrough on a re-export,
+  Pro's own defaults on a fresh one), the outline ``POLY`` on the
+  ``OUTLINE`` layer, then per placed part ``COMPONENT`` + ``ATTR``
+  ``Designator`` + ``ATTR`` ``Footprint``/catalog keys with NUMERIC
+  x/y/size (a hidden attr's null position is ``addText``'s
+  ``NaN is not permitted``) + ``PAD_NET`` per netted pad — and one
+  STALE ``PAD_NET`` per declared net that has no members, the same
+  mechanism the source file itself uses for a schematic-only net
+  (there is no ``NET`` record in Pro's own files);
 * one ``FOOTPRINT`` document per DISTINCT footprint (slice 2f): the
   placed instances that un-place to the same authored pad set share one
   document, as Pro's own libraries do — ``COMPONENT.angle`` carries the
-  real rotation so the footprint stores authored (unrotated) pads;
+  real rotation so the footprint stores authored (unrotated) pads.
+  Each doc carries the same LAYER/LAYER_PHYS/CANVAS/PREFERENCE block,
+  ``META``, and the ``Name``/``Designator`` attrs Pro's library docs
+  carry;
 * copper (slice 2c): every ``ctype='track'`` segment as a ``LINE`` or
   ``ARC`` on its copper layer, every ``ctype='via'`` as a through-hole
   ``VIA``. The records are the ones the reader decodes
@@ -127,7 +140,7 @@ _EDITOR_VERSION = "3.2.149"
 #: ``DOCHEAD.updateTime``. Constant on purpose: a wall-clock stamp would
 #: make two exports of the same model differ.
 _UPDATE_TIME_MS = 1_790_000_000_000
-_USER = "precis"
+_USER_OBJ = {"uuid": "0" * 32, "username": "precis", "nickname": "precis"}
 
 _NS = uuid.uuid5(uuid.NAMESPACE_DNS, "precis-mcp.epro2")
 
@@ -288,7 +301,10 @@ def _rid(slug: str, role: str) -> str:
 
 
 def _dumps(obj: Any) -> str:
-    return json.dumps(obj, separators=(",", ":"))
+    # allow_nan=False: a non-finite float would serialize as the bare token
+    # NaN/Infinity, which is invalid JSON and crashes Pro's parser the way a
+    # null coordinate did ("NaN is not permitted" in addText, 2026-10-14).
+    return json.dumps(obj, separators=(",", ":"), allow_nan=False)
 
 
 class _Stream:
@@ -298,6 +314,11 @@ class _Stream:
     def __init__(self) -> None:
         self._lines: list[str] = []
         self._ticket = 0
+
+    def z(self) -> int:
+        """The ticket the NEXT record gets — for a body's own ``zIndex``
+        slot, which Pro orders records by."""
+        return self._ticket + 1
 
     def record(
         self, type_: str, body: dict[str, Any] | None, rid: str | None = None
@@ -317,16 +338,21 @@ class _Stream:
         payload = '""' if body is None else _dumps(body)
         self._lines.append(f"{head}||{payload}|")
 
-    def dochead(self, doc_type: str, doc_uuid: str) -> None:
+    def dochead(self, doc_type: str, doc_uuid: str, client: str) -> None:
+        # The shape Pro writes: ``client``/``version`` are the exporter's
+        # own hex tag and the updateTime AS A STRING, ``user`` an object —
+        # a bare-string user is one of the field shapes its parser chokes
+        # on (the 2026-10-14 load loop).
         self.record(
             "DOCHEAD",
             {
                 "docType": doc_type,
+                "client": client,
                 "uuid": doc_uuid,
-                "editVersion": _EDITOR_VERSION,
                 "updateTime": _UPDATE_TIME_MS,
-                "user": _USER,
-                "version": "1",
+                "version": str(_UPDATE_TIME_MS),
+                "editVersion": _EDITOR_VERSION,
+                "user": _USER_OBJ,
             },
         )
 
@@ -335,28 +361,601 @@ class _Stream:
 
 
 # ── layers ──────────────────────────────────────────────────────────────
-def _layer_records(n_inner: int) -> list[dict[str, Any]]:
-    """The LAYER set. Copper, outline and the silk ids are spike-observed;
-    the ``layerType`` words for silk/mask/paste/multi/document are best
-    guesses (the reader reads only TOP/BOTTOM/SIGNAL/OUTLINE)."""
-    rows: list[tuple[int, str, str]] = [
-        (_L_TOP, "TOP", "Top Layer"),
-        (_L_BOTTOM, "BOTTOM", "Bottom Layer"),
-        (_L_SILK_TOP, "TOP_SILK", "Top Silkscreen Layer"),
-        (_L_SILK_BOTTOM, "BOT_SILK", "Bottom Silkscreen Layer"),
-        (5, "TOP_SOLDER_MASK", "Top Solder Mask Layer"),
-        (6, "BOT_SOLDER_MASK", "Bottom Solder Mask Layer"),
-        (7, "TOP_PASTE_MASK", "Top Paste Mask Layer"),
-        (8, "BOT_PASTE_MASK", "Bottom Paste Mask Layer"),
-        (_L_OUTLINE, "OUTLINE", "Board Outline Layer"),
-        (_L_MULTI, "MULTI", "Multi-Layer"),
-        (_L_DOCUMENT, "DOCUMENT", "Document Layer"),
-    ]
-    rows += [(_L_INNER0 + i, "SIGNAL", f"Inner{i + 1}") for i in range(max(0, n_inner))]
-    return [
-        {"layerId": lid, "layerType": lt, "layerName": ln, "use": True, "show": True}
-        for lid, lt, ln in sorted(rows)
-    ]
+#: The complete LAYER palette Pro writes on EVERY document of an exported
+#: project (93 records on TAZ V1.15's PCB doc, identically on each of its
+#: 145 FOOTPRINT docs), verbatim from Pro 3.2.206's own file.
+#: ``(layerId, layerType, layerName, use, show, activeColor,
+#: inactiveColor, activateTransparency, inactiveTransparency)`` — the
+#: color/transparency fields are what Pro's ``parseLayer`` reads with
+#: ``startsWith``; an absent ``activeColor`` was the 13x TypeError in the
+#: 2026-10-14 load loop.
+_LAYER_TABLE: tuple[tuple[int, str, str, bool, bool, str, str, float, float], ...] = (
+    (1, "TOP", "Top Layer", True, True, "#ff0000", "#ff0000", 1, 1),
+    (2, "BOTTOM", "Bottom Layer", True, True, "#0000ff", "#0000ff", 1, 1),
+    (3, "TOP_SILK", "Top Silkscreen Layer", True, True, "#ffcc00", "#ffcc00", 1, 1),
+    (4, "BOT_SILK", "Bottom Silkscreen Layer", True, True, "#66cc33", "#66cc33", 1, 1),
+    (
+        7,
+        "TOP_PASTE_MASK",
+        "Top Paste Mask Layer",
+        True,
+        True,
+        "#808080",
+        "#808080",
+        1,
+        1,
+    ),
+    (
+        8,
+        "BOT_PASTE_MASK",
+        "Bottom Paste Mask Layer",
+        True,
+        True,
+        "#800000",
+        "#800000",
+        1,
+        1,
+    ),
+    (
+        5,
+        "TOP_SOLDER_MASK",
+        "Top Solder Mask Layer",
+        True,
+        True,
+        "#800080",
+        "#800080",
+        0.7,
+        0.7,
+    ),
+    (
+        6,
+        "BOT_SOLDER_MASK",
+        "Bottom Solder Mask Layer",
+        True,
+        True,
+        "#aa00ff",
+        "#aa00ff",
+        0.7,
+        0.7,
+    ),
+    (57, "OTHER", "Ratline Layer", True, True, "#6464ff", "#6464ff", 1, 1),
+    (11, "OUTLINE", "Board Outline Layer", True, True, "#ff00ff", "#ff00ff", 1, 1),
+    (12, "MULTI", "Multi-Layer", True, True, "#c0c0c0", "#c0c0c0", 1, 1),
+    (13, "DOCUMENT", "Document Layer", True, True, "#ffffff", "#ffffff", 1, 1),
+    (9, "TOP_ASSEMBLY", "Top Assembly Layer", False, False, "#33cc99", "#33cc99", 1, 1),
+    (
+        10,
+        "BOT_ASSEMBLY",
+        "Bottom Assembly Layer",
+        False,
+        False,
+        "#5555ff",
+        "#5555ff",
+        1,
+        1,
+    ),
+    (14, "MECHANICAL", "Mechanical Layer", False, False, "#f022f0", "#f022f0", 1, 1),
+    (
+        52,
+        "COMPONENT_MODEL",
+        "Component Model Layer",
+        False,
+        False,
+        "#66ccff",
+        "#66ccff",
+        1,
+        1,
+    ),
+    (15, "SIGNAL", "Inner1", True, True, "#ff3399", "#ff3399", 1, 1),
+    (16, "SIGNAL", "Inner2", True, True, "#008000", "#008000", 1, 1),
+    (17, "SIGNAL", "Inner3", False, False, "#00ff00", "#00ff00", 1, 1),
+    (18, "SIGNAL", "Inner4", False, False, "#bc8e00", "#bc8e00", 1, 1),
+    (19, "SIGNAL", "Inner5", False, False, "#70dbfa", "#70dbfa", 1, 1),
+    (20, "SIGNAL", "Inner6", False, False, "#00cc66", "#00cc66", 1, 1),
+    (21, "SIGNAL", "Inner7", False, False, "#9966ff", "#9966ff", 1, 1),
+    (22, "SIGNAL", "Inner8", False, False, "#800080", "#800080", 1, 1),
+    (23, "SIGNAL", "Inner9", False, False, "#008080", "#008080", 1, 1),
+    (24, "SIGNAL", "Inner10", False, False, "#15935f", "#15935f", 1, 1),
+    (25, "SIGNAL", "Inner11", False, False, "#000080", "#000080", 1, 1),
+    (26, "SIGNAL", "Inner12", False, False, "#00b400", "#00b400", 1, 1),
+    (27, "SIGNAL", "Inner13", False, False, "#2e4756", "#2e4756", 1, 1),
+    (28, "SIGNAL", "Inner14", False, False, "#99842f", "#99842f", 1, 1),
+    (29, "SIGNAL", "Inner15", False, False, "#ffffaa", "#ffffaa", 1, 1),
+    (30, "SIGNAL", "Inner16", False, False, "#99842f", "#99842f", 1, 1),
+    (31, "SIGNAL", "Inner17", False, False, "#2e4756", "#2e4756", 1, 1),
+    (32, "SIGNAL", "Inner18", False, False, "#3535ff", "#3535ff", 1, 1),
+    (33, "SIGNAL", "Inner19", False, False, "#8000bc", "#8000bc", 1, 1),
+    (34, "SIGNAL", "Inner20", False, False, "#43ae5f", "#43ae5f", 1, 1),
+    (35, "SIGNAL", "Inner21", False, False, "#c3ecce", "#c3ecce", 1, 1),
+    (36, "SIGNAL", "Inner22", False, False, "#728978", "#728978", 1, 1),
+    (37, "SIGNAL", "Inner23", False, False, "#39503f", "#39503f", 1, 1),
+    (38, "SIGNAL", "Inner24", False, False, "#0c715d", "#0c715d", 1, 1),
+    (39, "SIGNAL", "Inner25", False, False, "#5a8a80", "#5a8a80", 1, 1),
+    (40, "SIGNAL", "Inner26", False, False, "#2b937e", "#2b937e", 1, 1),
+    (41, "SIGNAL", "Inner27", False, False, "#23999d", "#23999d", 1, 1),
+    (42, "SIGNAL", "Inner28", False, False, "#45b4e3", "#45b4e3", 1, 1),
+    (43, "SIGNAL", "Inner29", False, False, "#215da1", "#215da1", 1, 1),
+    (44, "SIGNAL", "Inner30", False, False, "#4564d7", "#4564d7", 1, 1),
+    (45, "SIGNAL", "Inner31", False, False, "#6969e9", "#6969e9", 1, 1),
+    (46, "SIGNAL", "Inner32", False, False, "#9069e9", "#9069e9", 1, 1),
+    (
+        48,
+        "COMPONENT_SHAPE",
+        "Component Shape Layer",
+        False,
+        False,
+        "#00cccc",
+        "#00cccc",
+        1,
+        1,
+    ),
+    (
+        51,
+        "PIN_FLOATING",
+        "Pin Floating Layer",
+        False,
+        False,
+        "#cc9999",
+        "#cc9999",
+        1,
+        1,
+    ),
+    (
+        49,
+        "COMPONENT_MARKING",
+        "Component Marking Layer",
+        False,
+        False,
+        "#66ffcc",
+        "#66ffcc",
+        1,
+        1,
+    ),
+    (47, "HOLE", "Hole Layer", True, True, "#222222", "#111111", 1, 0.5),
+    (
+        50,
+        "PIN_SOLDERING",
+        "Pin Soldering Layer",
+        True,
+        False,
+        "#cc9999",
+        "#664c4c",
+        1,
+        0.5,
+    ),
+    (
+        53,
+        "3D_SHELL_OUTLINE",
+        "3D Shell Outline Layer",
+        True,
+        True,
+        "#66ff99",
+        "#337f4c",
+        1,
+        0.5,
+    ),
+    (
+        54,
+        "3D_SHELL_TOP",
+        "3D Shell Top Layer",
+        True,
+        True,
+        "#ffccff",
+        "#7f667f",
+        1,
+        0.5,
+    ),
+    (
+        55,
+        "3D_SHELL_BOTTOM",
+        "3D Shell Bottom Layer",
+        True,
+        True,
+        "#0066cc",
+        "#003366",
+        1,
+        0.5,
+    ),
+    (
+        56,
+        "DRILL_DRAWING",
+        "Drill Drawing Layer",
+        True,
+        True,
+        "#008080",
+        "#004040",
+        1,
+        0.5,
+    ),
+    (
+        58,
+        "TOP_STIFFENER",
+        "Top Stiffener Layer",
+        False,
+        False,
+        "#eee666",
+        "#777333",
+        1,
+        0.5,
+    ),
+    (
+        59,
+        "BOTTOM_STIFFENER",
+        "Bottom Stiffener Layer",
+        False,
+        False,
+        "#ccff00",
+        "#667f00",
+        1,
+        0.5,
+    ),
+    (71, "CUSTOM", "Custom1", False, False, "#9069e9", "#483474", 1, 0.5),
+    (72, "CUSTOM", "Custom2", False, False, "#6969e9", "#343474", 1, 0.5),
+    (73, "CUSTOM", "Custom3", False, False, "#4564d7", "#22326b", 1, 0.5),
+    (74, "CUSTOM", "Custom4", False, False, "#215da1", "#102e50", 1, 0.5),
+    (75, "CUSTOM", "Custom5", False, False, "#45b4e3", "#225a71", 1, 0.5),
+    (76, "CUSTOM", "Custom6", False, False, "#23999d", "#114c4e", 1, 0.5),
+    (77, "CUSTOM", "Custom7", False, False, "#2b937e", "#15493f", 1, 0.5),
+    (78, "CUSTOM", "Custom8", False, False, "#5a8a80", "#2d4540", 1, 0.5),
+    (79, "CUSTOM", "Custom9", False, False, "#0c715d", "#06382e", 1, 0.5),
+    (80, "CUSTOM", "Custom10", False, False, "#39503f", "#1c281f", 1, 0.5),
+    (81, "CUSTOM", "Custom11", False, False, "#728978", "#39443c", 1, 0.5),
+    (82, "CUSTOM", "Custom12", False, False, "#c3ecce", "#617667", 1, 0.5),
+    (83, "CUSTOM", "Custom13", False, False, "#43ae5f", "#21572f", 1, 0.5),
+    (84, "CUSTOM", "Custom14", False, False, "#8000bc", "#40005e", 1, 0.5),
+    (85, "CUSTOM", "Custom15", False, False, "#3535ff", "#1a1a7f", 1, 0.5),
+    (86, "CUSTOM", "Custom16", False, False, "#2e4756", "#17232b", 1, 0.5),
+    (87, "CUSTOM", "Custom17", False, False, "#99842f", "#4c4217", 1, 0.5),
+    (88, "CUSTOM", "Custom18", False, False, "#ffffaa", "#7f7f55", 1, 0.5),
+    (89, "CUSTOM", "Custom19", False, False, "#99842f", "#4c4217", 1, 0.5),
+    (90, "CUSTOM", "Custom20", False, False, "#2e4756", "#17232b", 1, 0.5),
+    (91, "CUSTOM", "Custom21", False, False, "#00b400", "#005a00", 1, 0.5),
+    (92, "CUSTOM", "Custom22", False, False, "#000080", "#000040", 1, 0.5),
+    (93, "CUSTOM", "Custom23", False, False, "#15935f", "#00000a", 1, 0.5),
+    (94, "CUSTOM", "Custom24", False, False, "#008080", "#004040", 1, 0.5),
+    (95, "CUSTOM", "Custom25", False, False, "#800080", "#400040", 1, 0.5),
+    (96, "CUSTOM", "Custom26", False, False, "#9966ff", "#4c337f", 1, 0.5),
+    (97, "CUSTOM", "Custom27", False, False, "#00cc66", "#006633", 1, 0.5),
+    (98, "CUSTOM", "Custom28", False, False, "#70dbfa", "#386d7d", 1, 0.5),
+    (99, "CUSTOM", "Custom29", False, False, "#bc8e00", "#5e4700", 1, 0.5),
+    (100, "CUSTOM", "Custom30", False, False, "#00ff00", "#007f00", 1, 0.5),
+    (361, "SUBSTRATE", "Dielectric1", False, False, "#000000", "#000000", 1, 0.5),
+    (362, "SUBSTRATE", "Dielectric2", False, False, "#000000", "#000000", 1, 0.5),
+    (363, "SUBSTRATE", "Dielectric3", False, False, "#000000", "#000000", 1, 0.5),
+    (364, "SUBSTRATE", "Dielectric4", False, False, "#000000", "#000000", 1, 0.5),
+)
+
+#: The 13 ``LAYER_PHYS`` stackup rows Pro writes on every document
+#: ``(["LAYER_PHYS", n], body)``, verbatim.
+_LAYER_PHYS_TABLE: tuple[tuple[int, dict[str, Any]], ...] = (
+    (
+        1,
+        {
+            "material": "",
+            "thickness": 1.379,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": True,
+            "zIndex": 4,
+        },
+    ),
+    (
+        3,
+        {
+            "material": "",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": True,
+            "zIndex": 1,
+        },
+    ),
+    (
+        5,
+        {
+            "material": "",
+            "thickness": 0.394,
+            "permittivity": 3.3,
+            "lossTangent": 0.02,
+            "isKeepIsland": True,
+            "zIndex": 3,
+        },
+    ),
+    (
+        7,
+        {
+            "material": "",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": True,
+            "zIndex": 2,
+        },
+    ),
+    (
+        2,
+        {
+            "material": "",
+            "thickness": 1.378,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": True,
+            "zIndex": 10,
+        },
+    ),
+    (
+        4,
+        {
+            "material": "",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": True,
+            "zIndex": 13,
+        },
+    ),
+    (
+        6,
+        {
+            "material": "",
+            "thickness": 0.394,
+            "permittivity": 3.3,
+            "lossTangent": 0.02,
+            "isKeepIsland": True,
+            "zIndex": 11,
+        },
+    ),
+    (
+        8,
+        {
+            "material": "",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": True,
+            "zIndex": 12,
+        },
+    ),
+    (
+        15,
+        {
+            "material": "",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": False,
+            "zIndex": 6,
+        },
+    ),
+    (
+        16,
+        {
+            "material": "",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": False,
+            "zIndex": 8,
+        },
+    ),
+    (
+        362,
+        {
+            "material": "FR4",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": False,
+            "zIndex": 5,
+        },
+    ),
+    (
+        363,
+        {
+            "material": "FR4",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": False,
+            "zIndex": 7,
+        },
+    ),
+    (
+        364,
+        {
+            "material": "FR4",
+            "thickness": 0,
+            "permittivity": 0,
+            "lossTangent": 0,
+            "isKeepIsland": False,
+            "zIndex": 9,
+        },
+    ),
+)
+
+#: Pro's default ``PREFERENCE`` body, verbatim.
+_PREFERENCE_BODY: dict[str, Any] = {
+    "startTrackWidthFollowLast": False,
+    "lastTrackWidth": 10,
+    "startViaSizeFollowLast": False,
+    "lastViaInnerDiameter": 24,
+    "lastViaDiameter": 12,
+    "snap": True,
+    "routingMode": "NONE",
+    "routingCorner": "L45",
+    "removeLoop": True,
+    "rotatingObject": True,
+    "trackFollow": None,
+    "stretchTrackMinCorner": 1,
+    "preferenceConfig": "",
+    "realTimeUpdateUnusedLayers": False,
+    "unusedPadRange": "ALL",
+    "pushVia": "OPTIMIZA_NONE",
+    "pathOptimization4BePushed": "NONE",
+    "currentPathOptimization4BePushed": "OPTIMIZA_NONE",
+    "removeCircuitsContainingVias": True,
+    "removeAntenna": True,
+}
+
+#: The 45 ``PRIMITIVE`` display/pick toggles, verbatim (name -> display,
+#: pick).
+_PRIMITIVE_TABLE: tuple[tuple[str, bool, bool], ...] = (
+    ("ALL", True, False),
+    ("COMPONENT", True, True),
+    ("COMPONENTSILK", True, False),
+    ("PROPERTY", True, True),
+    ("DESIGNATOR", True, True),
+    ("TRACK", True, True),
+    ("PAD", True, True),
+    ("TESTPOINT", True, True),
+    ("PADSPAIR", True, False),
+    ("VIA", True, True),
+    ("SUTUREHOLE", True, True),
+    ("TEXT", True, True),
+    ("IMAGE", True, True),
+    ("PICTURE", True, True),
+    ("DIMENSION", True, True),
+    ("FPC_STIFFENER", True, True),
+    ("BOARDOUTLINE", True, True),
+    ("BOARDSHAPE", True, True),
+    ("SLOTREGION", True, True),
+    ("PADMETALLICDRILLING", True, True),
+    ("PADNONMETALLICDRILLING", True, True),
+    ("VIADRILLING", True, True),
+    ("COPPEROUTLINE", True, True),
+    ("COPPERFILLED", True, True),
+    ("PLANE", True, True),
+    ("FILLREGIEN", True, True),
+    ("PROHIBITEDREGION", True, True),
+    ("LINE", True, True),
+    ("CONSTRAINT", True, True),
+    ("SHELL", True, True),
+    ("BOSS", True, True),
+    ("CREASE", True, True),
+    ("TOPSHELLCUT", True, True),
+    ("SIDESHELLCUT", True, True),
+    ("TOPBOTTOMENTITY", True, True),
+    ("SIDEENTITY", True, True),
+    ("D3BODY", True, True),
+    ("NETWORK", True, False),
+    ("DRC", True, True),
+    ("TEARDROP", True, True),
+    ("RATLINE", True, True),
+    ("GROUP", True, False),
+    ("PARTITION", True, True),
+    ("LOCKED", True, True),
+    ("UNLOCKED", True, True),
+)
+
+#: ``CANVAS`` on a FOOTPRINT doc is the mil/grid block; on the PCB doc the
+#: same fields with the board's mm origin/grid.
+_CANVAS_FP: dict[str, Any] = {
+    "originX": 0,
+    "originY": 0,
+    "unit": "mil",
+    "gridXSize": 5,
+    "gridYSize": 5,
+    "snapXSize": 5,
+    "snapYSize": 5,
+    "altSnapXSize": 5,
+    "altSnapYSize": 5,
+    "gridType": "NONE",
+    "multiGridType": "NONE",
+    "multiGridRatio": 5,
+    "highlightValue": 0.5,
+    "layerBrightness": "NORMAL",
+}
+_CANVAS_PCB: dict[str, Any] = {
+    **_CANVAS_FP,
+    "unit": "mm",
+    "gridXSize": 78.74016,
+    "gridYSize": 78.74016,
+    "snapXSize": 0.03937,
+    "snapYSize": 0.03937,
+    "altSnapXSize": 0.03937,
+    "altSnapYSize": 0.03937,
+}
+_SILK_OPTS_BODY: dict[str, Any] = {"defaultColor": "#000000", "baseColor": "#ffffff"}
+
+
+def _layer_records(n_inner: int) -> list[tuple[dict[str, Any], str]]:
+    """The full LAYER palette as ``(body, record-id)`` pairs — one per row
+    of :data:`_LAYER_TABLE`, with the board's own inner signal layers
+    marked ``use``/``show`` the way Pro marks a live layer. The body
+    carries NO ``layerId`` (the number lives only in the record id) —
+    that is the field shape Pro writes."""
+    used_inner = {_L_INNER0 + i for i in range(max(0, n_inner))}
+    out = []
+    for lid, ltype, lname, use, show, ac, ic, at, it in _LAYER_TABLE:
+        if lid in used_inner or lid in (1, 2):
+            use = show = True
+        body: dict[str, Any] = {
+            "layerType": ltype,
+            "layerName": lname,
+            "use": use,
+            "show": show,
+            "locked": False,
+            "activeColor": ac,
+            "inactiveColor": ic,
+            "activateTransparency": at,
+            "inactiveTransparency": it,
+        }
+        out.append((body, _dumps(["LAYER", lid])))
+    return out
+
+
+def _board_state(
+    s: _Stream, slug: str, *, present: set[str], pcb_meta_title: str
+) -> None:
+    """The geometry-free board records a fresh export needs and a
+    round-trip gets from ``meta.epro_board`` instead — emitted only for
+    the record types the passthrough did NOT already write, so a re-export
+    never doubles a record Pro stores verbatim."""
+    if "CANVAS" not in present:
+        s.record("CANVAS", dict(_CANVAS_PCB), "CANVAS")
+    if "META" not in present:
+        s.record(
+            "META",
+            {
+                "title": pcb_meta_title,
+                "parent": "",
+                "source": "",
+                "board": _uuid_hex(slug, "board")[:16],
+                "zIndex": None,
+            },
+            "META",
+        )
+    if "ACTIVE_LAYER" not in present:
+        s.record("ACTIVE_LAYER", {"layerId": 1}, "ACTIVE_LAYER")
+    if "PREFERENCE" not in present:
+        s.record("PREFERENCE", dict(_PREFERENCE_BODY), "PREFERENCE")
+    if "SILK_OPTS" not in present:
+        for lid in (3, 4):
+            s.record("SILK_OPTS", dict(_SILK_OPTS_BODY), _dumps(["SILK_OPTS", lid]))
+    if "PRIMITIVE" not in present:
+        for name, display, pick in _PRIMITIVE_TABLE:
+            s.record(
+                "PRIMITIVE",
+                {"display": display, "pick": pick},
+                _dumps(["PRIMITIVE", name]),
+            )
+    if "LAYER_PHYS" not in present:
+        for lid, body in _LAYER_PHYS_TABLE:
+            s.record("LAYER_PHYS", dict(body), _dumps(["LAYER_PHYS", lid]))
+
+
+def _footprint_state(s: _Stream, name: str, n_inner: int) -> None:
+    """A FOOTPRINT doc's own copy of the board-state block — every one of
+    Pro's library docs carries the same 93-layer palette, stackup table,
+    canvas and preferences."""
+    s.record("CANVAS", dict(_CANVAS_FP), "CANVAS")
+    s.record("META", {"title": name, "tags": [], "source": ""}, "META")
+    for body, rid in _layer_records(n_inner):
+        s.record("LAYER", body, rid)
+    for lid, body in _LAYER_PHYS_TABLE:
+        s.record("LAYER_PHYS", dict(body), _dumps(["LAYER_PHYS", lid]))
+    s.record("ACTIVE_LAYER", {"layerId": 1}, "ACTIVE_LAYER")
+    s.record("PREFERENCE", dict(_PREFERENCE_BODY), "PREFERENCE")
 
 
 # ── pads ────────────────────────────────────────────────────────────────
@@ -602,9 +1201,57 @@ def _local_pad(pad: dict[str, Any], inst: dict[str, Any]) -> _LocalPad:
     return local
 
 
-def _pad_body(local: _LocalPad) -> dict[str, Any]:
+def _attr_body(
+    *,
+    layer: int,
+    parent: str,
+    key: str,
+    value: str,
+    visible: bool,
+    x: float,
+    y: float,
+    angle: float,
+    font_size: float,
+    z_index: int,
+    stroke_width: float = 6,
+) -> dict[str, Any]:
+    """An ``ATTR`` record in exactly the field shape Pro writes for a
+    component/footprint attribute (TAZ V1.15, Pro 3.2.206): every slot a
+    text renderer can read — ``x``/``y``/``angle``/``fontSize``/
+    ``strokeWidth`` — is a NUMBER even when the attr is invisible,
+    because Pro's ``addText`` runs on hidden attrs too (a null ``x`` was
+    the ``NaN is not permitted`` crash of 2026-10-14)."""
+    return {
+        "layerId": layer,
+        "groupId": "",
+        "locked": False,
+        "zIndex": z_index,
+        "partitionId": None,
+        "parentId": parent,
+        "key": key,
+        "value": value,
+        "keyVisible": False,
+        "valueVisible": visible,
+        "x": x,
+        "y": y,
+        "angle": angle,
+        "origin": "LEFT_BOTTOM",
+        "fontFamily": "default",
+        "fontSize": font_size,
+        "strokeWidth": stroke_width,
+        "expansion": 0,
+        "reverse": False,
+        "mirror": False,
+        "specialColor": None,
+    }
+
+
+def _pad_body(local: _LocalPad, z_index: int) -> dict[str, Any]:
     """One footprint ``PAD`` body in the authored frame — ``(x, -y)`` in
-    mils, the exact inverse of the reader's ``_pad_to_precis``."""
+    mils, the exact inverse of the reader's ``_pad_to_precis``. The field
+    set is Pro's own (TAZ V1.15): ``relativeAngle`` is descriptive, not a
+    second rotation — 90 iff the stored rect is portrait (``h > w``);
+    a pad with no drill still carries an empty ``hole``."""
     default: dict[str, Any] = {"padType": _PAD_TYPES.get(local.shape, "RECT")}
     if local.shape == "polygon" and local.poly:
         default["path"] = _poly_path(
@@ -613,16 +1260,38 @@ def _pad_body(local: _LocalPad) -> dict[str, Any]:
     else:
         default["width"] = to_mils(local.w)
         default["height"] = to_mils(local.w if local.shape == "circle" else local.h)
+        if local.shape == "rect":
+            default["radius"] = 0
+    portrait = local.shape in ("rect", "obround") and local.h > local.w
     body: dict[str, Any] = {
-        "netName": "",
         "layerId": _L_MULTI if local.drill else _L_TOP,
+        "groupId": "",
+        "locked": False,
+        "zIndex": z_index,
+        "partitionId": None,
+        "netName": "",
         "num": local.num,
         "centerX": to_mils(local.x),
         "centerY": to_mils(-local.y),
         "padAngle": _clean(round(local.rot, 4)),
+        "hole": {"holeType": "ROUND", "width": 0, "height": 0},
         "defaultPad": default,
+        "specialPad": [],
+        "padOffsetX": 0,
+        "padOffsetY": 0,
+        "relativeAngle": 90 if portrait else 0,
         "plated": True,
         "padType": "NORMAL",
+        "topSolderExpansion": 2,
+        "bottomSolderExpansion": 2,
+        "topPasteExpansion": 0,
+        "bottomPasteExpansion": 0,
+        "connectMode": None,
+        "spokeSpace": None,
+        "spokeWidth": None,
+        "spokeAngle": None,
+        "unusedInnerLayers": [],
+        "refs": [],
     }
     if local.drill:
         d = to_mils(local.drill)
@@ -637,7 +1306,7 @@ def _pad_body(local: _LocalPad) -> dict[str, Any]:
     return body
 
 
-def _fp_hole_fill(hole: dict[str, Any]) -> dict[str, Any]:
+def _fp_hole_fill(hole: dict[str, Any], z_index: int) -> dict[str, Any]:
     """A footprint-owned non-plated hole as the ``FILL`` ``CIRCLE`` on
     ``MULTI`` the reader's ``_footprint_holes`` parses back
     (:func:`precis.pcb.epro._footprint_holes` — the shape Pro itself
@@ -645,6 +1314,10 @@ def _fp_hole_fill(hole: dict[str, Any]) -> dict[str, Any]:
     ``{"x","y","dia_mm"}`` in mm."""
     return {
         "layerId": _L_MULTI,
+        "groupId": "",
+        "locked": False,
+        "zIndex": z_index,
+        "partitionId": None,
         "netName": "",
         "width": 0.2,
         "fillStyle": "SOLID",
@@ -657,6 +1330,7 @@ def _fp_hole_fill(hole: dict[str, Any]) -> dict[str, Any]:
             ]
         ],
         "isBridgingCopper": False,
+        "specialColor": None,
     }
 
 
@@ -703,7 +1377,9 @@ def loose_drills(
     ]
 
 
-def _free_pad_body(drill: dict[str, Any], num: str, frame: EproFrame) -> dict[str, Any]:
+def _free_pad_body(
+    drill: dict[str, Any], num: str, frame: EproFrame, z_index: int
+) -> dict[str, Any]:
     """A board-level drill as a free ``PAD`` — the shape the reader's
     ``extract_mounting_holes`` parses (``plated`` + ``hole.width``). A
     non-plated hole gets a hole-sized pad: there is no copper ring to
@@ -713,16 +1389,34 @@ def _free_pad_body(drill: dict[str, Any], num: str, frame: EproFrame) -> dict[st
     x, y = to_epro_xy(float(drill["x"]), float(drill["y"]), frame)
     plated = bool(drill.get("plated"))
     return {
-        "netName": "",
         "layerId": _L_TOP if plated else _L_MULTI,
+        "groupId": "",
+        "locked": False,
+        "zIndex": z_index,
+        "partitionId": None,
+        "netName": "",
         "num": num,
         "centerX": x,
         "centerY": y,
         "padAngle": 0,
-        "defaultPad": {"padType": "ELLIPSE", "width": dia, "height": dia},
         "hole": {"holeType": "ROUND", "width": dia, "height": dia},
+        "defaultPad": {"padType": "ELLIPSE", "width": dia, "height": dia},
+        "specialPad": [],
+        "padOffsetX": 0,
+        "padOffsetY": 0,
+        "relativeAngle": 0,
         "plated": plated,
         "padType": "NORMAL",
+        "topSolderExpansion": 2,
+        "bottomSolderExpansion": 2,
+        "topPasteExpansion": 0,
+        "bottomPasteExpansion": 0,
+        "connectMode": None,
+        "spokeSpace": None,
+        "spokeWidth": None,
+        "spokeAngle": None,
+        "unusedInnerLayers": [],
+        "refs": [],
     }
 
 
@@ -830,20 +1524,58 @@ def _write_copper(
                 if ring[0] != ring[-1]:
                     ring.append(ring[0])
                 path = [_poly_path([to_epro_xy(px, py, frame) for px, py in ring])]
+            pour_rid = _rid(slug, f"pour:{n}")
             s.record(
                 "POUR",
                 {
-                    "netName": net,
                     "layerId": lid,
+                    "groupId": "",
+                    "locked": False,
+                    "zIndex": s.z(),
+                    "partitionId": None,
+                    "netName": net,
                     "width": _POUR_WIDTH,
-                    "name": f"POUR{out.pours}",
+                    "name": str(item.get("name") or f"POUR{out.pours}"),
                     "order": 0,
                     "path": path,
                     "pourType": {"pourType": "SOLID", "fineness": _POUR_FINENESS},
-                    "keepIsland": False,
+                    "keepIsland": bool(item.get("keep_island")),
                 },
-                _rid(slug, f"pour:{n}"),
+                pour_rid,
             )
+            # Pro caches the computed pour fill in a POURed record id'd
+            # ["POURED", <pour element id>]; a file without one opens with
+            # the zone unfilled until a manual "rebuild copper". The
+            # source's regions ride through meta.epro_pours as "fill" and
+            # are re-emitted verbatim — they are display cache only (Pro
+            # recomputes on rebuild, gerber regenerates), and pourFill is
+            # in 10-MIL units, not mils (the reader's documented trap).
+            regions: list[dict[str, Any]] = []
+            for region in item.get("fill") or []:
+                rings = [
+                    _poly_path(
+                        [
+                            (fx / 10.0, fy / 10.0)
+                            for fx, fy in (to_epro_xy(px, py, frame) for px, py in ring)
+                        ]
+                    )
+                    for ring in region.get("paths") or []
+                ]
+                if rings:
+                    regions.append(
+                        {
+                            "id": str(region.get("id") or f"copper{len(regions)}"),
+                            "fill": bool(region.get("fill", True)),
+                            "strokeWidth": float(region.get("stroke_width") or 0.0),
+                            "path": rings,
+                        }
+                    )
+            if regions:
+                s.record(
+                    "POURED",
+                    {"pourFill": regions},
+                    _dumps(["POURED", pour_rid]),
+                )
             continue
         if ctype == "via":
             if item.get("x") is None or item.get("y") is None:
@@ -859,12 +1591,19 @@ def _write_copper(
             s.record(
                 "VIA",
                 {
+                    "layerId": _L_MULTI,
+                    "groupId": "",
+                    "locked": False,
+                    "zIndex": s.z(),
+                    "partitionId": None,
                     "netName": net,
                     "centerX": cx,
                     "centerY": cy,
                     "holeDiameter": to_mils(float(item.get("drill_mm") or 0.0)),
                     "viaDiameter": to_mils(float(item.get("dia_mm") or 0.0)),
                     "viaType": "NORMAL",
+                    "topSolderExpansion": None,
+                    "bottomSolderExpansion": None,
                     "unusedInnerLayers": [],
                 },
                 _rid(slug, f"via:{n}"),
@@ -898,8 +1637,12 @@ def _write_copper(
             ax, ay = to_epro_xy(a[0], a[1], frame)
             bx, by = to_epro_xy(b[0], b[1], frame)
             body: dict[str, Any] = {
-                "netName": net,
                 "layerId": lid,
+                "groupId": "",
+                "locked": False,
+                "zIndex": s.z(),
+                "partitionId": None,
+                "netName": net,
                 "startX": ax,
                 "startY": ay,
                 "endX": bx,
@@ -933,10 +1676,11 @@ def _copper_warnings(cu: _CopperOut) -> list[str]:
     out: list[str] = []
     if cu.pours:
         out.append(
-            f"{cu.pours} pour(s)/plane(s) written as POUR zones — Pro "
-            "re-pours them on open with ITS clearance rules, so the fill "
-            "differs from precis' (antipads, islands, interior holes, "
-            "thermals)"
+            f"{cu.pours} pour(s)/plane(s) written as POUR zones with the "
+            "source's cached POURed fill where it existed — the cache is "
+            "stale if copper moved since import; run rebuild copper in "
+            "Pro after edits (antipads, islands, interior holes, "
+            "thermals are Pro's own then)"
         )
     if cu.pours_dropped:
         out.append(
@@ -1018,11 +1762,16 @@ def _write_silk(
             s.record(
                 "POLY",
                 {
-                    "netName": "",
                     "layerId": lid,
+                    "groupId": "",
+                    "locked": False,
+                    "zIndex": s.z(),
+                    "partitionId": None,
+                    "netName": "",
                     "width": to_mils(float(draw.get("width_mm") or 0.0)),
                     "path": _poly_path(pts),
                     "polyType": "NORMAL",
+                    "specialColor": None,
                 },
                 _rid(slug, f"silk:{side}:{k}"),
             )
@@ -1136,24 +1885,30 @@ def epro_files(
     }
 
     s = _Stream()
-    s.dochead("PCB", pcb_uuid)
+    client = _uuid_hex(slug, "client")[:16]
+    s.dochead("PCB", pcb_uuid, client)
     layers = [str(n) for n in model.get("layers") or []]
     n_inner = max(0, len(layers) - 2)
-    for lay in _layer_records(n_inner):
-        s.record("LAYER", lay, _dumps(["LAYER", lay["layerId"]]))
+    for lay_body, lay_rid in _layer_records(n_inner):
+        s.record("LAYER", lay_body, lay_rid)
 
     # Verbatim passthrough: the design-rule table and the board-state
     # records the reader preserved (meta.epro_rules / meta.epro_board).
     # Written before first use, in the order they came — these are the
     # records precis has no constraint model for, kept lossless so the
-    # file opens with the board's own rules and physical stackup.
+    # file opens with the board's own rules and physical stackup. A fresh
+    # export has no passthrough; the missing board-state records are then
+    # filled from Pro's own defaults so every document still carries them.
+    present = {"LAYER"}
     for key in ("epro_board", "epro_rules"):
         for rec in model.get(key) or []:
+            present.add(str(rec.get("type")))
             s.record(
                 str(rec.get("type")),
                 rec.get("body"),
                 str(rec["id"]) if rec.get("id") is not None else None,
             )
+    _board_state(s, slug, present=present, pcb_meta_title=slug)
 
     copper_items = sorted_copper(model)
     # A stackup plane whose authored zone did not survive (meta.epro_pours
@@ -1175,15 +1930,23 @@ def epro_files(
             }
         )
     # model["nets"] carries the board's full net list (a schematic net
-    # with no board members still needs its NET record, else the net is
-    # gone); the pure-model path falls back to used nets.
+    # with no board members still needs its declaration, else the net is
+    # gone); the pure-model path falls back to used nets. Pro declares a
+    # net with no members the way TAZ V1.15's own S$151 survives: a stale
+    # PAD_NET row on a live component naming a pad that is not there.
+    # There is no NET record in Pro's own files, so none is written.
     nets = sorted(
         {str(n) for n in model.get("nets") or [] if n}
         | {str(p["net"]) for part in parts.values() for p in part.pads if p.get("net")}
         | {str(i["net"]) for i in copper_items if i.get("net")}
     )
-    for net in nets:
-        s.record("NET", {"netType": None}, _dumps(["NET", net]))
+    declared_nets = {str(i["net"]) for i in copper_items if i.get("net")}
+    bad_nets = [n for n in nets if "||" in n]
+    if bad_nets:
+        raise ValueError(
+            f"net name(s) {bad_nets[:3]} contain '||', the .epru record "
+            "separator — Pro cannot store that name"
+        )
 
     outline = [(float(x), float(y)) for x, y in model.get("outline") or []]
     if len(outline) >= 3:
@@ -1192,11 +1955,16 @@ def epro_files(
         s.record(
             "POLY",
             {
-                "netName": "",
                 "layerId": _L_OUTLINE,
+                "groupId": "",
+                "locked": False,
+                "zIndex": s.z(),
+                "partitionId": None,
+                "netName": "",
                 "width": 10,
                 "path": path,
                 "polyType": "NORMAL",
+                "specialColor": None,
             },
             _rid(slug, "outline"),
         )
@@ -1216,6 +1984,7 @@ def epro_files(
         x, y = to_epro_xy(float(part.inst["x"]), float(part.inst["y"]), frame)
         side = _COMP_BOTTOM if part.bottom else _COMP_TOP
         silk = _L_SILK_BOTTOM if part.bottom else _L_SILK_TOP
+        comp_angle = _clean(epro_angle(part.inst))
         label = labels.get(refdes)
         if label is not None:
             # The silk pass's own anchor (bottom-left of the text box,
@@ -1223,64 +1992,149 @@ def epro_files(
             # once Y is flipped, so the editable text lands where the
             # stroked label would have printed (slice 2e).
             lx, ly = to_epro_xy(float(label["x"]), float(label["y"]), frame)
-            text_attrs: dict[str, Any] = {
-                "x": lx,
-                "y": ly,
-                "fontSize": to_mils(float(label.get("height_mm") or 0.0)),
-                "strokeWidth": to_mils(float(label.get("stroke_width_mm") or 0.0)),
-                "origin": "LEFT_BOTTOM",
-                "angle": _clean(float(label.get("angle") or 0.0)),
-                "mirror": False,
-            }
+            des_x, des_y = lx, ly
+            des_angle = _clean(float(label.get("angle") or 0.0))
+            des_font = to_mils(float(label.get("height_mm") or 0.0)) or 45.0
+            des_stroke = to_mils(float(label.get("stroke_width_mm") or 0.0)) or 6.0
         else:
-            text_attrs = {"x": x, "y": y, "angle": 0, "origin": "LEFT_BOTTOM"}
+            des_x, des_y = x, y
+            des_angle = comp_angle
+            des_font = 45.0
+            des_stroke = 6.0
         s.record(
             "COMPONENT",
             {
                 "layerId": side,
+                "groupId": "",
+                "locked": bool(part.inst.get("fixed")),
+                "zIndex": s.z(),
+                "partitionId": None,
                 "x": x,
                 "y": y,
-                "angle": _clean(epro_angle(part.inst)),
+                "angle": comp_angle,
                 "attrs": {"Unique ID": "gge" + _uuid_hex(slug, f"uid:{refdes}")[:12]},
-                "locked": bool(part.inst.get("fixed")),
+                "specialColor": None,
+                "footprintPrimitives": False,
+                "pinSwap": False,
             },
             cid,
         )
         s.record(
             "ATTR",
-            {
-                "parentId": cid,
-                "layerId": silk,
-                **text_attrs,
-                "key": "Designator",
-                "value": refdes,
-                "valueVisible": True,
-            },
+            _attr_body(
+                layer=silk,
+                parent=cid,
+                key="Designator",
+                value=refdes,
+                visible=True,
+                x=des_x,
+                y=des_y,
+                angle=des_angle,
+                font_size=des_font,
+                z_index=s.z(),
+                stroke_width=des_stroke,
+            ),
             cid + "e0",
         )
         s.record(
             "ATTR",
-            {
-                "parentId": cid,
-                "layerId": silk,
-                "x": None,
-                "y": None,
-                "key": "Footprint",
-                "value": member_of[refdes].uuid,
-                "valueVisible": False,
-            },
+            _attr_body(
+                layer=silk,
+                parent=cid,
+                key="Footprint",
+                value=member_of[refdes].uuid,
+                visible=False,
+                x=x,
+                y=y,
+                angle=comp_angle,
+                font_size=67.5,
+                z_index=s.z(),
+            ),
             cid + "e1",
         )
+        # The catalog identity the import recovered — written back as the
+        # same ATTR keys Pro itself emits, so a re-import (or a colleague's
+        # EasyEDA open) still carries the C-number and the part it names.
+        # Hidden attrs sit on the component's own position: Pro's addText
+        # runs on them too, so a null x/y is a NaN crash (2026-10-14).
+        part_meta = part.inst.get("part") or {}
+        for k, (key, value) in enumerate(
+            (
+                (
+                    "Supplier Part",
+                    str(
+                        part.inst.get("part_lcsc")
+                        or part_meta.get("supplier_part")
+                        or ""
+                    ),
+                ),
+                ("Manufacturer Part", str(part_meta.get("mpn") or "")),
+                ("Manufacturer", str(part_meta.get("mfr") or "")),
+                ("Supplier", str(part_meta.get("supplier") or "")),
+                ("Value", str(part_meta.get("value") or "")),
+                ("Name", str(part_meta.get("name") or "")),
+                ("link", str(part_meta.get("link") or "")),
+                ("JLCPCB Part Class", str(part_meta.get("part_class") or "")),
+                ("Add into BOM", "no" if part_meta.get("bom") == "no" else ""),
+                # A file we write has no schematic/symbol docs, so the
+                # pin's etype/nc markers ride a JSON blob the reader joins
+                # back (by pin name) — a lossless private key; Pro ignores
+                # it.
+                (
+                    "Pin Types",
+                    json.dumps(pin_sem, sort_keys=True)
+                    if (pin_sem := part.inst.get("pin_sem") or {})
+                    else "",
+                ),
+            )
+        ):
+            if not value:
+                continue
+            s.record(
+                "ATTR",
+                _attr_body(
+                    layer=silk,
+                    parent=cid,
+                    key=key,
+                    value=value,
+                    visible=False,
+                    x=x,
+                    y=y,
+                    angle=comp_angle,
+                    font_size=67.5,
+                    z_index=s.z(),
+                ),
+                cid + f"e{k + 2}",
+            )
         group = member_of[refdes]
         for local in part.local_pads:
             num = local.num or str(group.index[local.canon()] + 1)
             pad_id = pad_ids[group.name][group.index[local.canon()]]
             if local.net:
+                declared_nets.add(str(local.net))
                 s.record(
                     "PAD_NET",
-                    {"padNet": local.net, "padLen": None, "attrsMap": {}},
+                    {"padNet": local.net, "padLen": None, "propagationDelay": None},
                     _dumps(["PAD_NET", cid, num, pad_id]),
                 )
+    # A declared net with no exported pad and no copper still needs its
+    # row or the net vanishes: the same stale-PAD_NET mechanism the source
+    # file itself uses (a live component id + an empty pad slot) — our
+    # reader and Pro both keep the net name off that row.
+    if parts:
+        anchor = next(iter(comp_id.values()))
+        for net in nets:
+            if net not in declared_nets:
+                s.record(
+                    "PAD_NET",
+                    {"padNet": net, "padLen": None, "propagationDelay": None},
+                    _dumps(["PAD_NET", anchor, "", _rid(slug, f"netdecl:{net}")]),
+                )
+    elif nets:
+        warnings.append(
+            f"{len(nets)} net(s) have no component to declare against and "
+            "are not in the file: " + ", ".join(nets[:8])
+        )
 
     cu = _write_copper(s, copper_items, slug=slug, frame=frame, layers=layers)
     silk_out = _write_silk(s, model, slug=slug, frame=frame)
@@ -1293,6 +2147,10 @@ def epro_files(
             "STRING",
             {
                 "layerId": _L_DOCUMENT,
+                "groupId": "",
+                "locked": False,
+                "zIndex": s.z(),
+                "partitionId": None,
                 "x": nx,
                 "y": ny,
                 "text": (
@@ -1301,7 +2159,15 @@ def epro_files(
                     + ", ".join(synthesized)
                     + " - do not fabricate"
                 ),
+                "origin": "LEFT_BOTTOM",
+                "fontFamily": "default",
+                "fontSize": 60,
+                "strokeWidth": 8,
+                "expansion": 0,
                 "angle": 0,
+                "reverse": False,
+                "mirror": False,
+                "specialColor": None,
             },
             _rid(slug, "note:synthesized"),
         )
@@ -1328,21 +2194,60 @@ def epro_files(
             npth += 1
         s.record(
             "PAD",
-            _free_pad_body(d, str(npth + plated_free), frame),
+            _free_pad_body(d, str(npth + plated_free), frame, s.z()),
             _rid(slug, f"freepad:{npth + plated_free}"),
         )
 
     for group in groups:
-        s.dochead("FOOTPRINT", group.uuid)
-        s.record("META", {"title": group.name, "tags": ["Footprints"]}, "META")
-        s.record("CANVAS", {"originX": 0, "originY": 0, "unit": "mm"}, "CANVAS")
+        s.dochead("FOOTPRINT", group.uuid, client)
+        _footprint_state(s, group.name, n_inner)
+        # The library attrs Pro writes on its own docs: the footprint's
+        # name and a visible Designator placeholder ("R?", "U?", …).
+        prefix = "".join(c for c in group.members[0] if not c.isdigit()) or "U"
+        des_y = min(to_mils(-p.y) for p in group.pads) - 45.0 if group.pads else 0.0
+        s.record(
+            "ATTR",
+            _attr_body(
+                layer=_L_SILK_TOP,
+                parent="",
+                key="Name",
+                value=group.name,
+                visible=False,
+                x=0,
+                y=0,
+                angle=0,
+                font_size=45,
+                z_index=s.z(),
+            ),
+            _rid(slug, f"fpattr:{group.name}:name"),
+        )
+        s.record(
+            "ATTR",
+            _attr_body(
+                layer=_L_SILK_TOP,
+                parent="",
+                key="Designator",
+                value=f"{prefix}?",
+                visible=True,
+                x=0,
+                y=des_y,
+                angle=0,
+                font_size=45,
+                z_index=s.z(),
+            ),
+            _rid(slug, f"fpattr:{group.name}:des"),
+        )
         for k, local in enumerate(group.pads):
             num = local.num or str(k + 1)
-            body = _pad_body(local)
+            body = _pad_body(local, s.z())
             body["num"] = num
             s.record("PAD", body, pad_ids[group.name][k])
         for k, hole in enumerate(group.holes):
-            s.record("FILL", _fp_hole_fill(hole), _rid(slug, f"fph:{group.name}:{k}"))
+            s.record(
+                "FILL",
+                _fp_hole_fill(hole, s.z()),
+                _rid(slug, f"fph:{group.name}:{k}"),
+            )
 
     # ── what the model held that this slice drops ────────────────────
     if unplaced:

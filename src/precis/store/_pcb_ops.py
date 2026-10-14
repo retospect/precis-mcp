@@ -396,6 +396,74 @@ def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 #: distinct from omitting the kwarg (leave the lock alone).
 _UNSET: Any = object()
 
+#: Pad-centre agreement for the local-vs-catalog footprint verdict
+#: (:meth:`PcbMixin._pcb_footprint_refs_by_components`'s ``flag`` and the
+#: .epro2 import's local-footprint dedup). The two sides were authored in
+#: different tools (EasyEDA's footprint vs JLC's catalog cache), so a real
+#: "same footprint" can sit a few hundredths of a mm apart; a mismatch
+#: that actually matters (a different land pattern) is an order bigger.
+_LOCAL_FP_MATCH_TOL_MM = 0.05
+
+
+def pads_differ(local_pads: Any, catalog_pads: Any) -> str | None:
+    """``None`` when two footprint pad lists place the same pads — same
+    count and, sorted, every centre within ``_LOCAL_FP_MATCH_TOL_MM`` —
+    else a short reason (``"pad count 3 vs 2"`` / ``"pad (1.20,0.30) off
+    by 0.41mm"``) fit for a meta record. Position and count only: pad
+    *names* legitimately differ (the catalog names pads after the part's
+    pin map; an imported footprint keeps the source file's numbers), so
+    this is deliberately not an equality check."""
+    try:
+        lp = sorted((float(p["x"]), float(p["y"])) for p in local_pads or [])
+        cp = sorted((float(p["x"]), float(p["y"])) for p in catalog_pads or [])
+    except (KeyError, TypeError, ValueError) as exc:
+        return f"unreadable pads ({type(exc).__name__})"
+    if len(lp) != len(cp):
+        return f"pad count {len(lp)} vs catalog {len(cp)}"
+    worst = 0.0
+    for (ax, ay), (cx, cy) in zip(lp, cp):
+        off = max(abs(ax - cx), abs(ay - cy))
+        if off >= _LOCAL_FP_MATCH_TOL_MM:
+            return (
+                f"pad ({ax:.3f},{ay:.3f}) off by {off:.3f}mm "
+                f"(catalog ({cx:.3f},{cy:.3f}), tol {_LOCAL_FP_MATCH_TOL_MM})"
+            )
+        worst = max(worst, off)
+    return None if worst < _LOCAL_FP_MATCH_TOL_MM else "positions differ"
+
+
+def footprint_differ(local: dict[str, Any], catalog: dict[str, Any]) -> str | None:
+    """``None`` when a design-local footprint row is interchangeable with
+    the catalog's cached one — the dedup verdict. Pads compare by count
+    and position (:func:`pads_differ`); pin names compare per pad NUMBER,
+    identity-filled — because dropping the local copy switches pin joins
+    to the catalog's ``pin_map``, and a pad set that matches but names
+    its pins differently would orphan the imported pins just the same."""
+    why = pads_differ(local.get("pads"), catalog.get("pads"))
+    if why is not None:
+        return why
+
+    def _names(pm: Any) -> dict[str, str]:
+        out = {}
+        for k, v in (pm or {}).items():
+            if isinstance(v, dict):
+                out[str(k)] = str(v.get("name") or k)
+            else:
+                out[str(k)] = str(v or k)
+        return out
+
+    nums = {str(p.get("number") or p.get("pin")) for p in local.get("pads") or []}
+    cnums = {str(p.get("number") or p.get("pin")) for p in catalog.get("pads") or []}
+    if nums != cnums:
+        return f"pad numbers differ ({sorted(nums)} vs catalog {sorted(cnums)})"
+    ln, cn = _names(local.get("pin_map")), _names(catalog.get("pin_map"))
+    for num in sorted(nums):
+        a, b = ln.get(num, num), cn.get(num, num)
+        if a != b:
+            return f"pin map: pad {num} is {a!r} locally, {b!r} in catalog"
+    return None
+
+
 #: pcb-pre-place-route-blocks Slice 1 — the fab process
 #: :meth:`PcbMixin._pcb_fixed_copper_board_envelope`'s rule-envelope gate
 #: compares a fixed-copper row against — pinned to ``4layer`` for the same
@@ -927,7 +995,7 @@ class PcbMixin:
             names_by_comp = self._pcb_pin_names_by_components(
                 conn, [comp_id for _c, comp_id, _r in pending_completions]
             )
-            fps_by_comp = self._pcb_footprint_refs_by_components(
+            fps_by_comp, fp_flags, fp_diffs = self._pcb_footprint_refs_by_components(
                 conn, ref.id, pending_completions
             )
             for _c, comp_id, refdes in pending_completions:
@@ -937,6 +1005,30 @@ class PcbMixin:
                     refdes,
                     fp=fps_by_comp.get(comp_id),
                     names=names_by_comp.get(comp_id, (set(), set())),
+                )
+                inst = inst_by_refdes.get(refdes)
+                if inst is None:
+                    continue
+                # The local-vs-catalog footprint verdict — the record of
+                # WHY a kept local footprint is special (the .epro2 import
+                # drops matching copies outright). Rewritten on every
+                # apply so a late-landing catalog row turns "uncached"
+                # into "match"/"differ", and a component that lost its
+                # local footprint drops the flag.
+                flag = fp_flags.get(comp_id)
+                patch = (
+                    {"local_fp_lcsc": flag, "local_fp_diff": fp_diffs[comp_id]}
+                    if flag == "differ"
+                    else {"local_fp_lcsc": flag}
+                    if flag is not None
+                    else None
+                )
+                conn.execute(
+                    "UPDATE pcb_instances "
+                    "SET meta = meta - 'local_fp_lcsc' - 'local_fp_diff' "
+                    + ("|| %s " if patch is not None else "")
+                    + "WHERE instance_id = %s",
+                    (((Jsonb(patch), inst[0])) if patch is not None else (inst[0],)),
                 )
 
         for n in nets:
@@ -1184,7 +1276,15 @@ class PcbMixin:
         # This module never interprets the admissible-set judgment itself
         # (same "never inferred" contract as `precis.pcb.pinswap`) — it
         # only stores and returns exactly what was authored.
+        # `part_meta` is the import's catalog-identity blob — ``{value,
+        # mpn, mfr, supplier, supplier_part}`` the .epro2 reader recovered
+        # from the component's ATTRs (``epro._component_identity``). It is
+        # *meta*, not columns: it documents what the source SAID, while
+        # ``part_lcsc`` (its own column, joined into the catalog) is what
+        # precis resolves on.
         component_meta = {k: c[k] for k in ("pin_swap_groups",) if c.get(k) is not None}
+        if c.get("part_meta"):
+            component_meta["part"] = dict(c["part_meta"])
         row = conn.execute(
             """
             INSERT INTO pcb_components
@@ -1217,11 +1317,16 @@ class PcbMixin:
     ) -> dict[str, Any] | None:
         """``{"pin_map", "pads"}`` of the footprint a component resolves
         to, by the same precedence readers use
-        (``session.footprints_by_refdes``): the catalog part's cached
-        footprint first, else the design-local footprint named by
-        ``footprint``. An already-stored component contributes its stored
-        part/footprint when the put omits them. ``None`` when no cached
-        footprint exists — the ``undeclared_pad`` check's not-checked case."""
+        (``session.footprints_by_refdes``): the design-local footprint
+        named by ``footprint`` FIRST when a ``pcb_local_footprints`` row
+        carries it — the board's own authored geometry is ground truth;
+        an imported .epro2 keeps its pads even though the component also
+        has a ``part_lcsc`` (Reto 2026-10-14: "keep the board's own
+        footprint where it really differs"). Only when no local row
+        matches does the catalog part's cached footprint apply. An
+        already-stored component contributes its stored part/footprint
+        when the put omits them. ``None`` when no cached footprint exists
+        — the ``undeclared_pad`` check's not-checked case."""
         part = c.get("part_lcsc") or c.get("part")
         name = c.get("footprint")
         if component_id is not None and not (part and name):
@@ -1233,18 +1338,18 @@ class PcbMixin:
             if row is not None:
                 part = part or row[0]
                 name = name or row[1]
-        if part:
-            row = conn.execute(
-                "SELECT pin_map, pads FROM part_footprints WHERE lcsc = %s",
-                (str(part).strip().upper(),),
-            ).fetchone()
-            if row is not None:
-                return {"pin_map": row[0] or {}, "pads": row[1] or []}
         if name:
             row = conn.execute(
                 "SELECT pin_map, pads FROM pcb_local_footprints "
                 "WHERE ref_id = %s AND name = %s",
                 (ref_id, str(name)),
+            ).fetchone()
+            if row is not None:
+                return {"pin_map": row[0] or {}, "pads": row[1] or []}
+        if part:
+            row = conn.execute(
+                "SELECT pin_map, pads FROM part_footprints WHERE lcsc = %s",
+                (str(part).strip().upper(),),
             ).fetchone()
             if row is not None:
                 return {"pin_map": row[0] or {}, "pads": row[1] or []}
@@ -1298,16 +1403,28 @@ class PcbMixin:
         conn: Connection,
         ref_id: int,
         pending: list[tuple[dict[str, Any], int, str]],
-    ) -> dict[int, dict[str, Any]]:
-        """``{component_id: {"pin_map", "pads"}}`` for a whole apply batch
+    ) -> tuple[dict[int, dict[str, Any]], dict[int, str], dict[int, str]]:
+        """``({component_id: {"pin_map", "pads"}}, {component_id:
+        verdict}, {component_id: diff reason})`` for a whole apply batch
         in ≤3 queries — the footprint half of declare-all completion's
         reads, so a 50-component put does not pay three point-lookups per
         instance. Same resolution precedence as :meth:`_pcb_footprint_ref`:
-        the catalog part's cached footprint first, else the design-local
-        footprint named by ``footprint``; the component's stored
-        part/footprint fill in when the put entry omits them."""
+        the design-local footprint named by ``footprint`` first, else the
+        catalog part's cached footprint; the component's stored
+        part/footprint fill in when the put entry omits them.
+
+        ``verdict`` records, per component that HAS both a ``part_lcsc``
+        and a resolved local footprint, whether the local row matches the
+        catalog's cached pads — ``"match"`` (same pad count, every pad
+        centre within :data:`_LOCAL_FP_MATCH_TOL_MM`), ``"differ"`` (the
+        reason lands in the third dict), or ``"uncached"`` (the C-number
+        has no ``part_footprints`` row to compare against). ``pcb_apply``
+        stamps them on the instance (``meta.local_fp_lcsc`` /
+        ``meta.local_fp_diff``): the .epro2 import drops the local row
+        outright on a match, so a *stored* local footprint with a
+        ``"differ"`` verdict is the record of why it was kept."""
         if not pending:
-            return {}
+            return {}, {}, {}
         comp_ids = [comp_id for _c, comp_id, _r in pending]
         stored: dict[int, tuple[Any, Any]] = {
             int(cid): (part, name)
@@ -1354,13 +1471,27 @@ class PcbMixin:
                     "pads": pads or [],
                 }
         out: dict[int, dict[str, Any]] = {}
+        flags: dict[int, str] = {}
+        diffs: dict[int, str] = {}
         for _c, comp_id, _r in pending:
             part, name = effective[comp_id]
-            if part is not None and str(part).strip().upper() in by_lcsc:
-                out[comp_id] = by_lcsc[str(part).strip().upper()]
-            elif name is not None and str(name) in by_name:
-                out[comp_id] = by_name[str(name)]
-        return out
+            local = by_name.get(str(name)) if name is not None else None
+            cat = by_lcsc.get(str(part).strip().upper()) if part is not None else None
+            if local is not None:
+                # Local wins whenever the instance has one — the ruling
+                # behind part_lcsc finally being importable.
+                out[comp_id] = local
+                if part:
+                    if cat is None:
+                        flags[comp_id] = "uncached"
+                    else:
+                        why = footprint_differ(local, cat)
+                        flags[comp_id] = "differ" if why else "match"
+                        if why:
+                            diffs[comp_id] = why
+            elif cat is not None:
+                out[comp_id] = cat
+        return out, flags, diffs
 
     def _pcb_complete_footprint_pins(
         self,
@@ -2004,11 +2135,25 @@ class PcbMixin:
                     "roles": list(r[10] or []),
                     "note": r[11],
                     "height_mm": r[12],
+                    # The import's catalog identity (`epro._component_
+                    # identity` -> `c.meta["part"]`) and the local-vs-
+                    # catalog footprint verdict (i.meta) hoisted — the
+                    # epro writer emits the ATTRs back from `part`.
+                    **(
+                        {"part": (r[14] or {})["part"]}
+                        if "part" in (r[14] or {})
+                        else {}
+                    ),
+                    **{
+                        k: (r[13] or {})[k]
+                        for k in ("local_fp_lcsc", "local_fp_diff")
+                        if k in (r[13] or {})
+                    },
                 }
                 for r in conn.execute(
                     "SELECT i.instance_id, i.refdes, c.label, c.part_lcsc, "
                     "       c.footprint, i.layer, i.x, i.y, i.rot, i.fixed, "
-                    "       i.roles, i.note, c.height_mm "
+                    "       i.roles, i.note, c.height_mm, i.meta, c.meta "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "WHERE i.ref_id = %s AND i.retired_at IS NULL "
@@ -2209,6 +2354,12 @@ class PcbMixin:
                             "pattern_instance",
                             "edge_mate",
                             "max_travel_mm",
+                            # "match"/"differ"/"uncached" — the local-vs-
+                            # catalog footprint verdict `pcb_apply` stamps
+                            # (see `_pcb_footprint_refs_by_components`),
+                            # plus the WHY string on a "differ".
+                            "local_fp_lcsc",
+                            "local_fp_diff",
                         )
                         if k in (r[12] or {})
                     },
@@ -2220,6 +2371,16 @@ class PcbMixin:
                     **(
                         {"pin_swap_groups": (r[14] or {})["pin_swap_groups"]}
                         if "pin_swap_groups" in (r[14] or {})
+                        else {}
+                    ),
+                    # The catalog-identity blob the .epro2 reader recovered
+                    # (`epro._component_identity` -> `part_meta` ->
+                    # `c.meta["part"]`): {value, mpn, mfr, supplier,
+                    # supplier_part}. Surfaced so the .epro2 writer can
+                    # emit the ATTRs back.
+                    **(
+                        {"part": (r[14] or {})["part"]}
+                        if "part" in (r[14] or {})
                         else {}
                     ),
                 }
@@ -4638,6 +4799,67 @@ class PcbMixin:
             "escape": r[7],
             "holes": r[8] or [],
         }
+
+    def part_footprints_many(
+        self, lcscs: list[str] | set[str]
+    ) -> dict[str, dict[str, Any]]:
+        """``{lcsc: {"pads", "pin_map", "package"}}`` for a set of
+        C-numbers in ONE query — the import's local-footprint dedup
+        (``precis.ingest.pcb_epro``) compares every imported local
+        footprint against the catalog's cached pads for its C-number.
+        ``package`` joins ``parts.package`` so a deduped component's
+        ``footprint`` can carry the catalog's footprint name."""
+        if not lcscs:
+            return {}
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT f.lcsc, f.pads, f.pin_map, p.package "
+                "FROM part_footprints f "
+                "LEFT JOIN parts p ON p.lcsc = f.lcsc "
+                "WHERE f.lcsc = ANY(%s)",
+                ([str(c) for c in lcscs],),
+            ).fetchall()
+        return {
+            str(r[0]): {
+                "pads": r[1] or [],
+                "pin_map": r[2] or {},
+                "package": r[3],
+            }
+            for r in rows
+        }
+
+    def parts_by_mpns(
+        self, mpns: list[str] | set[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """``{lowercase mfr_part: [(lcsc, mfr)]}`` — the manufacturer+MPN
+        half of the import's part lookup (pcb-datasheet-review.md slice
+        1: "manufacturer + MPN first, then the C-number"). ``mfr_part``
+        comparisons are case-insensitive; callers disambiguate a multi-
+        hit with the manufacturer string."""
+        if not mpns:
+            return {}
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT lower(mfr_part), lcsc, coalesce(mfr, '') FROM parts "
+                "WHERE lower(mfr_part) = ANY(%s)",
+                ([str(m).lower() for m in mpns],),
+            ).fetchall()
+        out: dict[str, list[tuple[str, str]]] = {}
+        for mpn, lcsc, mfr in rows:
+            out.setdefault(str(mpn), []).append((str(lcsc), str(mfr)))
+        return out
+
+    def parts_in_package(self, package: str) -> list[tuple[str, dict[str, Any]]]:
+        """``[(lcsc, params)]`` for one JLC package name — the parametric
+        fallback of the import's part lookup. ``params`` (the jlcparts
+        attribute blob) is where a value like ``"100nF"`` lives."""
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT lcsc, coalesce(params, '{}'::jsonb) FROM parts "
+                "WHERE package = %s",
+                (package,),
+            ).fetchall()
+        return [(str(r[0]), dict(r[1])) for r in rows]
 
     def part_footprint_put(self, lcsc: str, data: dict[str, Any]) -> None:
         """Cache a fetched footprint (Flow B). Upsert by C-number. ``raw``

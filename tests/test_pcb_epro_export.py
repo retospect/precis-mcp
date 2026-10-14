@@ -307,20 +307,25 @@ def test_tickets_are_unique_and_monotonic():
 def test_referential_integrity():
     project = _read(_export())
     pcb = project.pcb()
-    layer_ids = {b["layerId"] for b in pcb.bodies("LAYER")}
+    # Pro keeps the layer number in the LAYER record's id, not its body
+    layer_ids = {json.loads(str(r.id))[1] for r in pcb.of_type("LAYER")}
     comp_ids = {r.id for r in pcb.of_type("COMPONENT")}
     assert len(comp_ids) == len(_INSTANCES)
     fp_docs = {d.uuid: d for d in project.by_type("FOOTPRINT")}
     assert len(fp_docs) == 2  # ASYM3 + POLY1, not one per instance
 
-    # NET declared before use: walk the records in stream order
-    declared: set[str] = set()
-    for r in pcb.records:
-        if r.type == "NET":
-            declared.add(json.loads(str(r.id))[1])
-        elif r.type == "PAD_NET":
-            assert r.body is not None
-            assert r.body["padNet"] in declared, r.id
+    # There is no NET record in Pro's own files: a net is declared by the
+    # PAD_NET rows and the copper that name it. A declared net with no
+    # members survives as a PAD_NET row whose pad slot is empty — the
+    # stale-declaration mechanism the source file itself uses (S$151).
+    declared = {b["padNet"] for b in pcb.bodies("PAD_NET")} | {
+        str(b["netName"])
+        for t in ("LINE", "ARC", "VIA", "POUR")
+        for b in pcb.bodies(t)
+        if b.get("netName")
+    }
+    model_nets = {f"N_{i['refdes']}" for i in _INSTANCES} | {"GND", "SHARED"}
+    assert model_nets <= declared
 
     # every layerId declared
     for t in ("POLY", "COMPONENT", "ATTR", "STRING"):
@@ -343,16 +348,31 @@ def test_referential_integrity():
     # every component points at one of the shared footprint documents
     assert set(fp_of.values()) == set(fp_docs)
 
-    # PAD_NET -> a real component, a real pad number and a real pad element
+    # PAD_NET -> a real component, a real pad number and a real pad
+    # element — except the stale declaration rows, whose pad slot is "".
     n_pad_nets = 0
     for r in pcb.of_type("PAD_NET"):
         _, cid, num, pad_el = json.loads(str(r.id))
         assert cid in comp_ids
+        if num == "":
+            continue  # a net declaration row: no pad to resolve
         pads = fp_docs[fp_of[cid]].of_type("PAD")
         assert pad_el in {p.id for p in pads}
         assert num in {(p.body or {}).get("num") for p in pads if p.id == pad_el}
         n_pad_nets += 1
     assert n_pad_nets > 0
+
+    # and the same mechanism declares a net no member references
+    ghost = _read(_export(_model(nets=["GHOST_NET"]))).pcb()
+    ghost_rows = [
+        r
+        for r in ghost.of_type("PAD_NET")
+        if r.body and r.body.get("padNet") == "GHOST_NET"
+    ]
+    assert len(ghost_rows) == 1
+    ghost_key = json.loads(str(ghost_rows[0].id))
+    assert ghost_key[1] in {r.id for r in ghost.of_type("COMPONENT")}
+    assert ghost_key[2] == ""  # pad slot empty — the stale declaration
 
 
 def test_footprint_attr_uuid_and_component_ids_are_stable_per_refdes():
@@ -401,7 +421,9 @@ def test_allow_synthesized_writes_a_string_naming_the_refdes():
     strings = pcb.bodies("STRING")
     assert len(strings) == 1
     assert "R2" in strings[0]["text"] and "SYNTHESIZED" in strings[0]["text"]
-    assert strings[0]["layerId"] in {b["layerId"] for b in pcb.bodies("LAYER")}
+    assert strings[0]["layerId"] in {
+        json.loads(str(r.id))[1] for r in pcb.of_type("LAYER")
+    }
     assert any("allow_synthesized" in w and "R2" in w for w in ex.warnings)
     # and a clean model writes none
     assert _read(_export()).pcb().bodies("STRING") == []
@@ -793,7 +815,7 @@ def test_a_rectangular_pour_is_written_as_an_r_zone_pro_re_pours():
     assert fy - epro_write.to_mils(16.0) == pytest.approx(top_y, abs=1e-3)
     assert fx + epro_write.to_mils(26.0) == pytest.approx(top_x, abs=1e-3)
     assert ex.stats["pours"] == 1 and ex.stats["pours_dropped"] == 0
-    assert any("re-pours" in w for w in ex.warnings)
+    assert any("pour(s)/plane(s) written as POUR zones" in w for w in ex.warnings)
     # the reader's net census counts the pour's net as used
     assert "GND" in epro.live_nets(pcb)[0]
 
@@ -819,9 +841,76 @@ def test_a_free_polygon_pour_is_written_as_a_vertex_list_zone():
     ]
     assert rec["path"] == [epro_write._poly_path(pts)]
     assert ex.stats["pours"] == 1 and ex.stats["pours_dropped"] == 0
-    assert any("re-pours" in w for w in ex.warnings)
+    assert any("pour(s)/plane(s) written as POUR zones" in w for w in ex.warnings)
     # and the reader's net census counts the pour's net as used
     assert "GND" in epro.live_nets(model_pcb)[0]
+
+
+def test_a_pour_with_cached_fill_emits_a_poured_record():
+    """Pro stores its computed pour fill in a ``POURED`` record id'd
+    ``["POURED", <pour element id>]``; without one a zone opens unfilled
+    and needs a manual rebuild copper. The source's fill rides through
+    ``meta.epro_pours`` as ``fill`` and is re-emitted verbatim — in
+    10-MIL units (the reader's documented trap), i.e. file-mils / 10."""
+    pour = {
+        "ctype": "pour",
+        "layer": "B.Cu",
+        "net": "GND",
+        "polygon": [[2.0, 2.0], [28.0, 2.0], [28.0, 18.0], [2.0, 18.0], [2.0, 2.0]],
+        "fill": [
+            {
+                "id": "copper0",
+                "fill": True,
+                "stroke_width": 0.0,
+                "paths": [[[5.0, 5.0], [20.0, 5.0], [20.0, 15.0], [5.0, 15.0]]],
+            }
+        ],
+    }
+    ex = _export(_model(copper=[pour]))
+    model_pcb = _read(ex).pcb()
+    (prec,) = model_pcb.of_type("POUR")
+    (drec,) = model_pcb.of_type("POURED")
+    assert drec.id is not None and drec.body is not None
+    assert json.loads(drec.id) == ["POURED", prec.id]
+    (region,) = drec.body["pourFill"]
+    assert region["fill"] is True and region["strokeWidth"] == 0.0
+    assert region["id"] == "copper0"
+    frame = epro_write.frame_for({"outline": _OUTLINE, "copper": [pour]})
+    want = [
+        (fx / 10.0, fy / 10.0)
+        for fx, fy in (
+            epro_write.to_epro_xy(x, y, frame)
+            for x, y in [[5.0, 5.0], [20.0, 5.0], [20.0, 15.0], [5.0, 15.0]]
+        )
+    ]
+    (ring,) = region["path"]
+    got = [v for v in ring if not isinstance(v, str)]
+    assert len(got) == 8
+    for i, (wx, wy) in enumerate(want):
+        assert got[2 * i] == pytest.approx(wx, abs=1e-3)
+        assert got[2 * i + 1] == pytest.approx(wy, abs=1e-3)
+    # and the fill survives a re-import as the pour's "fill" again
+    design, _ = epro.build_design(_read(ex))
+    (rt_pour,) = design.epro_pours
+    assert len(rt_pour["fill"]) == 1
+    rt_ring = rt_pour["fill"][0]["paths"][0]
+    assert [xy for pt in rt_ring for xy in pt] == pytest.approx(
+        [5.0, 5.0, 20.0, 5.0, 20.0, 15.0, 5.0, 15.0]
+    )
+
+
+def test_a_pour_without_fill_emits_no_poured():
+    """A precis-authored pour has no computed fill to cache — the zone
+    still opens unfilled and Pro rebuilds it on demand."""
+    pour = {
+        "ctype": "pour",
+        "layer": "B.Cu",
+        "net": "GND",
+        "polygon": [[2.0, 2.0], [28.0, 2.0], [28.0, 18.0], [2.0, 18.0], [2.0, 2.0]],
+    }
+    ex = _export(_model(copper=[pour]))
+    model_pcb = _read(ex).pcb()
+    assert model_pcb.bodies("POUR") and model_pcb.of_type("POURED") == []
 
 
 def test_a_pour_on_an_undeclared_layer_is_still_dropped():
@@ -936,12 +1025,13 @@ def test_handler_epro_view_writes_a_readable_file(pcb, tmp_path):
     resp = pcb.get(id=slug, view="epro", args={"dir": str(tmp_path)})
     path = tmp_path / "eprotest.epro2"
     assert path.exists() and str(path) in resp.body
-    assert "No schematic is included" in resp.body
+    assert "show NO schematic pages" in resp.body
     assert "Update PCB from schematic" in resp.body
     # the seeded board has no routed copper, but its stackup declares an
     # In1.Cu GND plane — which now writes an outline-covering POUR zone
     assert "pour zone(s)" in resp.body
-    assert "UNVERIFIED: no file from this writer has been opened" in resp.body
+    assert "Verified: Reto opened" in resp.body
+    assert "UNVERIFIED" not in resp.body
 
     project = epro.read_archive(path.read_bytes())
     design, _ = epro.build_design(project)
@@ -1234,20 +1324,21 @@ def test_copper_nets_are_declared_before_use_including_copper_only_nets():
         },
     ]
     pcb = _read(_export(_model(copper=cu))).pcb()
-    layer_ids = {b["layerId"] for b in pcb.bodies("LAYER")}
-    declared: set[str] = set()
+    layer_ids = {json.loads(str(r.id))[1] for r in pcb.of_type("LAYER")}
+    # A net on copper is declared by the copper that names it (and by any
+    # PAD_NET row) — there is no NET record in Pro's own files.
+    declared = {b["padNet"] for b in pcb.bodies("PAD_NET")}
     seen = {"LINE": 0, "ARC": 0, "VIA": 0}
     for r in pcb.records:
-        if r.type == "NET":
-            declared.add(json.loads(str(r.id))[1])
-        elif r.type in seen:
+        if r.type in seen:
             assert r.body is not None
             seen[r.type] += 1
-            assert "CU_ONLY" in declared, r.type  # NET came first
-            assert r.body["netName"] in declared
+            assert r.body["netName"] == "CU_ONLY"
+            declared.add(str(r.body["netName"]))
             if "layerId" in r.body:
                 assert r.body["layerId"] in layer_ids
     assert seen == {"LINE": 1, "ARC": 1, "VIA": 1}
+    assert "CU_ONLY" in declared
 
 
 def test_copper_drops_and_flattenings_are_warned():
@@ -1416,7 +1507,7 @@ def test_slot_hole_is_written_back_as_a_slot_that_the_reader_reads_again():
         "slot": [[4.5, 5.0], [5.5, 5.0]],
     }
     inst = {"x": 5.0, "y": 5.0, "rot": 0.0, "layer": "top"}
-    body = epro_write._pad_body(epro_write._local_pad(pad, inst))
+    body = epro_write._pad_body(epro_write._local_pad(pad, inst), 0)
     hole = body["hole"]
     assert hole["holeType"] == "SLOT"
     back, warns = epro._pad_to_precis(body, "fp")
@@ -1518,7 +1609,29 @@ def _design_model(design, pcb, frame) -> dict[str, Any]:
         "drills": drills,
         "silkscreen": {"top": [], "bottom": []},
         "mask_open_regions": [],
-        "instances": design.components,
+        # the writer's model shape takes the graph's key names: the
+        # reader's comp["part_meta"] is what pcb_apply stores under
+        # component meta["part"], and the graph hoists back as
+        # instance["part"]; pin etype/nc ride "pin_sem" the way the
+        # handler's model assembles it from pcb_pins tags/meta.
+        "instances": [
+            {
+                **c,
+                "part": c.get("part_meta") or {},
+                "pin_sem": {
+                    str(p["name"]): {
+                        k: v
+                        for k, v in (
+                            ("etype", p.get("etype")),
+                            ("nc", True if p.get("nc") else None),
+                        )
+                        if v
+                    }
+                    for p in c.get("pins", [])
+                },
+            }
+            for c in design.components
+        ],
         "footprint_holes": footprint_holes,
         "nets": [n["name"] for n in design.nets],
         "epro_rules": design.epro_rules,
@@ -1651,6 +1764,53 @@ def _structural_diff(src_design, src_pcb, src_frame, out_bytes):
             )
     check(worst < _TOL_MM, f"part positions worst {worst * 1000:.3f} um")
 
+    # part identity: the LCSC C-number and the catalog attrs (value, MPN,
+    # manufacturer, supplier) ride ATTR records out and back
+    lc_w = {r: c.get("part_lcsc") for r, c in want_c.items()}
+    lc_g = {r: c.get("part_lcsc") for r, c in got_c.items()}
+    check(
+        lc_w == lc_g,
+        f"part_lcsc {sum(v is not None for v in lc_w.values())} -> "
+        f"{sum(v is not None for v in lc_g.values())} "
+        f"(missing {sorted(r for r in want_c if lc_g.get(r) != lc_w[r])[:6]})",
+    )
+    pm_w = {
+        r: {k: v for k, v in (c.get("part_meta") or {}).items() if k != "lcsc_source"}
+        for r, c in want_c.items()
+    }
+    pm_g = {
+        r: {k: v for k, v in (c.get("part_meta") or {}).items() if k != "lcsc_source"}
+        for r, c in got_c.items()
+    }
+    check(
+        {r: v for r, v in pm_w.items() if v} == {r: v for r, v in pm_g.items() if v},
+        "part attrs (value/mpn/mfr/supplier) verbatim per part",
+    )
+    # pin semantics: `Pin Type`/`NO_CONNECT` on the way in ride the
+    # "Pin Types" ATTR on the way out — keyed by the pin NAME the
+    # footprint's num carries, which is what the re-imported pin's own
+    # pad/name reads back.
+    sem_w = {
+        r: {
+            str(p["name"]): (p.get("etype"), bool(p.get("nc")))
+            for p in c.get("pins", [])
+            if p.get("etype") or p.get("nc")
+        }
+        for r, c in want_c.items()
+    }
+    sem_g = {
+        r: {
+            str(p["name"]): (p.get("etype"), bool(p.get("nc")))
+            for p in c.get("pins", [])
+            if p.get("etype") or p.get("nc")
+        }
+        for r, c in got_c.items()
+    }
+    check(
+        {r: v for r, v in sem_w.items() if v} == {r: v for r, v in sem_g.items() if v},
+        "pin etype/nc per part verbatim",
+    )
+
     # pads incl. drills and slots — paired by (refdes, nearest position)
     layers = list(epro.copper_layers(src_pcb).values())
     layers2 = list(epro.copper_layers(pcb2).values())
@@ -1703,11 +1863,19 @@ def _structural_diff(src_design, src_pcb, src_frame, out_bytes):
         f"connection rows {len(src_design.connections)} -> {len(d2.connections)}",
     )
     names_w = {n["name"] for n in src_design.nets}
-    # the FILE's NET declarations are the netlist's survival, not the
+    # the FILE's net declarations are the netlist's survival, not the
     # re-imported design's live census — a net kept alive in the source
     # only by stale PAD_NET rows (taz15's S$151) has its declaration but
     # no member, and precis' reader correctly does not count it live.
-    declared_g = {
+    # Pro declares nets through PAD_NET rows and copper netNames (there
+    # is no NET record in its own files); both count here.
+    declared_g = {str(b["padNet"]) for b in pcb2.bodies("PAD_NET")} | {
+        str(b["netName"])
+        for t in ("LINE", "ARC", "VIA", "POUR")
+        for b in pcb2.bodies(t)
+        if b.get("netName")
+    }
+    declared_g |= {
         json.loads(str(r.id))[1]
         for r in pcb2.of_type("NET")
         if r.id and str(r.id).startswith("[")
@@ -1760,6 +1928,36 @@ def _structural_diff(src_design, src_pcb, src_frame, out_bytes):
         for (ax, ay), (bx, by) in zip(ring, gp):
             worst_pour = max(worst_pour, abs(ax - bx), abs(ay - by))
     check(worst_pour < _TOL_MM, f"pour vertices worst {worst_pour * 1000:.3f} um")
+
+    # pour fill: the source's computed POURed regions ride through
+    # verbatim (the cache that makes Pro open the board already filled)
+    want_fill = {
+        key(p): sorted(len(r.get("paths") or []) for r in p.get("fill") or [])
+        for p in src_design.epro_pours
+    }
+    got_fill = {
+        key(p): sorted(len(r.get("paths") or []) for r in p.get("fill") or [])
+        for p in d2.epro_pours
+    }
+    check(want_fill == got_fill, f"pour fill region counts {want_fill} -> {got_fill}")
+    worst_fill = 0.0
+    fill_pts = 0
+    for k, sp in ((key(p), p) for p in src_design.epro_pours):
+        gpour = next((g for g in d2.epro_pours if key(g) == k), None)
+        if gpour is None:
+            continue
+        for rs, rg in zip(
+            sorted(sp.get("fill") or [], key=lambda r: str(r.get("id"))),
+            sorted(gpour.get("fill") or [], key=lambda r: str(r.get("id"))),
+        ):
+            for ring_s, ring_g in zip(rs["paths"], rg["paths"]):
+                fill_pts += len(ring_s)
+                for (ax, ay), (bx, by) in zip(ring_s, ring_g):
+                    worst_fill = max(worst_fill, abs(ax - bx), abs(ay - by))
+    check(
+        worst_fill < _TOL_MM,
+        f"pour fill vertices worst {worst_fill * 1000:.3f} um over {fill_pts} pts",
+    )
 
     # rules: every record verbatim
     want_r = sorted((r["type"], str(r["id"])) for r in src_design.epro_rules)
@@ -1857,6 +2055,30 @@ def test_taz15_import_export_reimport_structural(store, pcb, tmp_path) -> None:
         board_uuid="858a5f81603d1987",
     )
     assert first.created
+    # The LCSC census (slice 3): every Supplier Part C-number the source
+    # carries survives on the component. The board's exceptions are the
+    # exact 11 the source simply lacks — JP1/JP2 are bare headers, the
+    # C13-…C24 cluster are unpopulated/manual parts.
+    src_lcsc = {str(c["refdes"]): c.get("part_lcsc") for c in src_design.components}
+    assert sum(v is not None for v in src_lcsc.values()) == 85
+    assert {r for r, v in src_lcsc.items() if v is None} == {
+        "JP1",
+        "JP2",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C19",
+        "C20",
+        "C21",
+        "C24",
+    }
+    got_lcsc = {
+        str(i["refdes"]): i.get("part_lcsc")
+        for i in store.pcb_graph(first.ref_id)["instances"]
+    }
+    assert got_lcsc == src_lcsc
     resp = pcb.get(id="taz15-rt", view="epro", args={"dir": str(tmp_path)})
     out = tmp_path / "taz15-rt.epro2"
     assert out.exists(), resp.body
@@ -1870,6 +2092,13 @@ def test_taz15_import_export_reimport_structural(store, pcb, tmp_path) -> None:
     print("\n".join(lines))
     for line in fails:
         print(line)
+    # Record-level shape parity with the source: every (docType, record
+    # type) the file emits carries every field Pro always writes for it,
+    # with a compatible value kind — the parse-crash class Pro hit on
+    # 2026-10-14 (LAYER colors, ATTR positions).
+    shape_fails = _shape_failures_vs_source(data, out_bytes)
+    for line in shape_fails[:20]:
+        print(line)
     # and the exported file re-imports through the store as well — the
     # product path, not only the reader.
     second = pcb_epro.import_epro(
@@ -1877,6 +2106,10 @@ def test_taz15_import_export_reimport_structural(store, pcb, tmp_path) -> None:
     )
     assert second.created and second.stats["components"] == len(src_design.components)
     assert not fails, f"{len(fails)} structural differences:\n" + "\n".join(fails[:30])
+    assert not shape_fails, (
+        f"{len(shape_fails)} record-shape differences vs the source:\n"
+        + "\n".join(shape_fails[:30])
+    )
 
 
 def test_the_committed_fixture_round_trips_structurally(store, pcb, tmp_path) -> None:
@@ -1925,3 +2158,540 @@ def test_the_committed_fixture_round_trips_through_the_pure_model() -> None:
     lines, fails, _d2, _pcb2 = _structural_diff(src_design, src_pcb, src_frame, out)
     print("\n".join(lines))
     assert not fails, f"{len(fails)} structural differences:\n" + "\n".join(fails[:30])
+
+
+# ── record field shapes vs Pro's own writes ─────────────────────────
+#: Field shapes Pro itself writes per record type, transcribed from the
+#: real TAZ V1.15 project (Pro 3.2.206) — every document type it carries.
+#: ``req`` fields must be present on every emitted record of the type
+#: with one of the listed value kinds (``num`` = int|float, ``none`` =
+#: JSON null, ``str``, ``bool``, ``list``, ``dict``); ``opt`` fields may
+#: appear. An emitted field the row does not list, an emitted record
+#: type the table does not list, a ``req`` slot left null, or a null in
+#: a ``num`` slot is a shape mismatch — the 2026-10-14 Pro open attempt
+#: died on exactly those (x13 ``startsWith`` on a missing LAYER color,
+#: then ``NaN is not permitted`` on a null ATTR x).
+_PRO_SHAPE: dict[str, tuple[dict[str, set[str]], set[str]]] = {
+    "DOCHEAD": (
+        {
+            "docType": {"str"},
+            "client": {"str"},
+            "uuid": {"str"},
+            "updateTime": {"num"},
+            "version": {"str"},
+            "editVersion": {"str"},
+            "user": {"dict"},
+        },
+        set(),
+    ),
+    "LAYER": (
+        {
+            "layerType": {"str"},
+            "layerName": {"str"},
+            "use": {"bool"},
+            "show": {"bool"},
+            "locked": {"bool"},
+            "activeColor": {"str"},
+            "inactiveColor": {"str"},
+            "activateTransparency": {"num"},
+            "inactiveTransparency": {"num"},
+        },
+        set(),
+    ),
+    "LAYER_PHYS": (
+        {
+            "material": {"str"},
+            "thickness": {"num"},
+            "permittivity": {"num"},
+            "lossTangent": {"num"},
+            "isKeepIsland": {"bool"},
+            "zIndex": {"num"},
+        },
+        set(),
+    ),
+    "CANVAS": (
+        {
+            "originX": {"num"},
+            "originY": {"num"},
+            "unit": {"str"},
+            "gridXSize": {"num"},
+            "gridYSize": {"num"},
+            "snapXSize": {"num"},
+            "snapYSize": {"num"},
+            "altSnapXSize": {"num"},
+            "altSnapYSize": {"num"},
+            "gridType": {"str"},
+            "multiGridType": {"str"},
+            "multiGridRatio": {"num"},
+            "highlightValue": {"num"},
+            "layerBrightness": {"str"},
+        },
+        set(),
+    ),
+    "META": (
+        {"title": {"str"}, "source": {"str"}},
+        {"tags", "parent", "board", "zIndex", "attributes", "images"},
+    ),
+    "PREFERENCE": (
+        {
+            "startTrackWidthFollowLast": {"bool"},
+            "lastTrackWidth": {"num"},
+            "startViaSizeFollowLast": {"bool"},
+            "lastViaInnerDiameter": {"num"},
+            "lastViaDiameter": {"num"},
+            "snap": {"bool"},
+            "routingMode": {"str"},
+            "routingCorner": {"str"},
+            "removeLoop": {"bool"},
+            "rotatingObject": {"bool"},
+            "trackFollow": {"none"},
+            "stretchTrackMinCorner": {"num"},
+            "preferenceConfig": {"str"},
+            "realTimeUpdateUnusedLayers": {"bool"},
+            "unusedPadRange": {"str"},
+            "pushVia": {"str"},
+            "pathOptimization4BePushed": {"str"},
+            "currentPathOptimization4BePushed": {"str"},
+            "removeCircuitsContainingVias": {"bool"},
+            "removeAntenna": {"bool"},
+        },
+        set(),
+    ),
+    "ACTIVE_LAYER": ({"layerId": {"num"}}, set()),
+    "SILK_OPTS": ({"defaultColor": {"str"}, "baseColor": {"str"}}, set()),
+    "PRIMITIVE": ({"display": {"bool"}, "pick": {"bool"}}, set()),
+    "RULE": ({"ruleState": {"str"}, "ruleContext": {"dict"}}, set()),
+    "COMPONENT": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "x": {"num"},
+            "y": {"num"},
+            "angle": {"num"},
+            "attrs": {"dict"},
+            "specialColor": {"none"},
+            "footprintPrimitives": {"bool"},
+            "pinSwap": {"bool"},
+        },
+        set(),
+    ),
+    "ATTR": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "parentId": {"str"},
+            "key": {"str"},
+            "value": {"str", "none"},
+            "keyVisible": {"bool"},
+            "valueVisible": {"bool"},
+            "x": {"num"},
+            "y": {"num"},
+            "angle": {"num"},
+            "origin": {"str"},
+            "fontFamily": {"str"},
+            "fontSize": {"num"},
+            "strokeWidth": {"num"},
+            "expansion": {"num"},
+            "reverse": {"bool"},
+            "mirror": {"bool"},
+            "specialColor": {"none", "str"},
+        },
+        {"bold", "italic"},
+    ),
+    "PAD": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "netName": {"str"},
+            "num": {"str"},
+            "centerX": {"num"},
+            "centerY": {"num"},
+            "padAngle": {"num"},
+            "hole": {"dict"},
+            "defaultPad": {"dict"},
+            "specialPad": {"list"},
+            "padOffsetX": {"num"},
+            "padOffsetY": {"num"},
+            "relativeAngle": {"num"},
+            "plated": {"bool"},
+            "padType": {"str"},
+            "topSolderExpansion": {"num"},
+            "bottomSolderExpansion": {"num"},
+            "topPasteExpansion": {"num"},
+            "bottomPasteExpansion": {"num"},
+            "connectMode": {"none"},
+            "spokeSpace": {"none"},
+            "spokeWidth": {"none"},
+            "spokeAngle": {"none"},
+            "unusedInnerLayers": {"list"},
+            "refs": {"list"},
+        },
+        set(),
+    ),
+    "PAD_NET": (
+        {"padNet": {"str"}, "padLen": {"none"}, "propagationDelay": {"none"}},
+        set(),
+    ),
+    "LINE": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "netName": {"str"},
+            "startX": {"num"},
+            "startY": {"num"},
+            "endX": {"num"},
+            "endY": {"num"},
+            "width": {"num"},
+        },
+        {
+            "angle",
+            "arcType",
+            "fillColor",
+            "fillStyle",
+            "lineGroup",
+            "strokeColor",
+            "strokeStyle",
+            "strokeWidth",
+        },
+    ),
+    "VIA": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "netName": {"str"},
+            "centerX": {"num"},
+            "centerY": {"num"},
+            "holeDiameter": {"num"},
+            "viaDiameter": {"num"},
+            "viaType": {"str"},
+            "topSolderExpansion": {"none", "num"},
+            "bottomSolderExpansion": {"none", "num"},
+            "unusedInnerLayers": {"list"},
+        },
+        set(),
+    ),
+    "POLY": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "netName": {"str"},
+            "width": {"num"},
+            "path": {"list"},
+            "polyType": {"str"},
+            "specialColor": {"none"},
+        },
+        {
+            "closed",
+            "points",
+            "fillColor",
+            "fillStyle",
+            "strokeColor",
+            "strokeStyle",
+            "strokeWidth",
+            "partId",
+        },
+    ),
+    "POUR": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "netName": {"str"},
+            "width": {"num"},
+            "name": {"str"},
+            "order": {"num"},
+            "path": {"list"},
+            "pourType": {"dict"},
+            "keepIsland": {"bool"},
+        },
+        set(),
+    ),
+    # The computed-fill cache that pairs with each POUR
+    # (["POURED", <pour id>]): Pro shows the zone filled on open when it
+    # is present. Its path coordinates are 10-mil Standard units, not
+    # mils — checked against the source by _shape_failures_vs_source.
+    "POURED": (
+        {
+            "pourFill": {"list"},
+        },
+        set(),
+    ),
+    "FILL": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "netName": {"str"},
+            "width": {"num"},
+            "fillStyle": {"str"},
+            "path": {"list"},
+            "isBridgingCopper": {"bool"},
+            "specialColor": {"none"},
+        },
+        {"refs", "networkList"},
+    ),
+    "STRING": (
+        {
+            "layerId": {"num"},
+            "groupId": {"str"},
+            "locked": {"bool"},
+            "zIndex": {"num"},
+            "partitionId": {"none"},
+            "x": {"num"},
+            "y": {"num"},
+            "text": {"str"},
+            "origin": {"str"},
+            "fontFamily": {"str"},
+            "fontSize": {"num"},
+            "strokeWidth": {"num"},
+            "expansion": {"num"},
+            "angle": {"num"},
+            "reverse": {"bool"},
+            "mirror": {"bool"},
+            "specialColor": {"none"},
+        },
+        set(),
+    ),
+}
+
+#: Records a document MUST carry (the LAYER palette, the board-state
+#: block) — Pro writes them on every document of a real export.
+_DOC_REQUIRED: dict[str, set[str]] = {
+    "PCB": {
+        "LAYER",
+        "LAYER_PHYS",
+        "CANVAS",
+        "META",
+        "PREFERENCE",
+        "ACTIVE_LAYER",
+        "SILK_OPTS",
+        "PRIMITIVE",
+    },
+    "FOOTPRINT": {
+        "LAYER",
+        "LAYER_PHYS",
+        "CANVAS",
+        "META",
+        "PREFERENCE",
+        "ACTIVE_LAYER",
+    },
+}
+
+#: Numeric slots on text-family records that must never be null/NaN —
+#: Pro's addText reads them even on invisible attrs.
+_TEXT_NUM_SLOTS = ("x", "y", "angle", "fontSize", "strokeWidth")
+
+#: String slots on the layer records parseLayer reads with startsWith.
+_LAYER_STR_SLOTS = ("layerType", "layerName", "activeColor", "inactiveColor")
+
+
+def _kind_of(v: Any) -> str:
+    if v is None:
+        return "none"
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, (int, float)):
+        return "num"
+    if isinstance(v, str):
+        return "str"
+    if isinstance(v, list):
+        return "list"
+    return "dict"
+
+
+def _epro_docs(raw: str) -> list[tuple[str, list[tuple[dict, dict]]]]:
+    """``[(docType, [(meta, body), ...])]`` for an ``.epru`` stream."""
+    docs: list[tuple[str, list[tuple[dict, dict]]]] = []
+    cur: list[tuple[dict, dict]] | None = None
+    cur_type = ""
+    for line in raw.splitlines():
+        if "||" not in line:
+            continue
+        head, rest = line.split("||", 1)
+        meta = json.loads(head)
+        body = json.loads(rest.rstrip("|"))
+        if meta.get("type") == "DOCHEAD":
+            cur_type = str(body.get("docType"))
+            cur = []
+            docs.append((cur_type, cur))
+        assert cur is not None
+        cur.append((meta, body))
+    return docs
+
+
+def _shape_failures(raw: str) -> list[str]:
+    """Every record-shape difference between ``raw`` and :data:`_PRO_SHAPE`."""
+    fails: list[str] = []
+    for doc_type, records in _epro_docs(raw):
+        seen = {str(m.get("type")) for m, _b in records}
+        for needed in sorted(_DOC_REQUIRED.get(doc_type, set()) - seen):
+            fails.append(f"{doc_type}: required record type {needed} absent")
+        for meta, body in records:
+            t = str(meta.get("type"))
+            if t not in _PRO_SHAPE:
+                fails.append(f"{doc_type}/{t}: Pro never writes this record type")
+                continue
+            req, opt = _PRO_SHAPE[t]
+            for k in sorted(set(body) - set(req) - opt):
+                fails.append(f"{doc_type}/{t}: field {k!r} is not a Pro field")
+            for k, kinds in sorted(req.items()):
+                if k not in body:
+                    fails.append(f"{doc_type}/{t}: required field {k!r} absent")
+                    continue
+                got = _kind_of(body[k])
+                if got not in kinds:
+                    fails.append(
+                        f"{doc_type}/{t}: field {k!r} is {got}, "
+                        f"Pro writes {'/'.join(sorted(kinds))}"
+                    )
+                if isinstance(body[k], float) and not math.isfinite(body[k]):
+                    fails.append(f"{doc_type}/{t}: field {k!r} is not finite")
+            if t in ("ATTR", "STRING"):
+                for k in _TEXT_NUM_SLOTS:
+                    v = body.get(k)
+                    if not isinstance(v, (int, float)) or not math.isfinite(v):
+                        fails.append(
+                            f"{doc_type}/{t}: {k} is {v!r} — addText() reads "
+                            "every attr, hidden or not (NaN is not permitted)"
+                        )
+            if t == "LAYER":
+                for k in _LAYER_STR_SLOTS:
+                    if not isinstance(body.get(k), str) or not body[k]:
+                        fails.append(
+                            f"{doc_type}/LAYER: string field {k!r} missing — "
+                            "parseLayer reads it with startsWith"
+                        )
+    return fails
+
+
+def test_emitted_records_match_pro_field_shapes() -> None:
+    """The writer's own model export: every record carries exactly the
+    field set Pro writes for its type, every required record type is on
+    every doc, and no text/layer record has a hole in a slot Pro reads
+    unconditionally (the 2026-10-14 parse crash class)."""
+    raw = _export().files["epro-test.epru"]
+    fails = _shape_failures(raw)
+    assert not fails, f"{len(fails)} shape mismatches:\n" + "\n".join(fails[:40])
+
+
+def _epru_texts(blob: bytes) -> list[str]:
+    zf = zipfile.ZipFile(io.BytesIO(blob))
+    return [zf.read(n).decode("utf-8") for n in zf.namelist() if n.endswith(".epru")]
+
+
+def _shape_failures_vs_source(src_blob: bytes, out_blob: bytes) -> list[str]:
+    """Field-shape parity of an emitted file against a real Pro export,
+    per ``(docType, recordType)``: every field the source always writes
+    for that pair must be on our record with a compatible kind (a number
+    where the source left null is fine — strictly more data); our extra
+    fields and our ``(docType, recordType)`` pairs the source never uses
+    are reported too."""
+    src_shapes: dict[tuple[str, str], tuple[set[str], dict[str, set[str]]]] = {}
+    src_counts: dict[tuple[str, str], int] = {}
+    seen: dict[tuple[str, str], dict[str, int]] = {}
+    for raw in _epru_texts(src_blob):
+        for doc_type, records in _epro_docs(raw):
+            for meta, body in records:
+                key = (doc_type, str(meta.get("type")))
+                src_counts[key] = src_counts.get(key, 0) + 1
+                fmap = src_shapes.setdefault(key, (set(), {}))
+                pres = seen.setdefault(key, {})
+                for k, v in body.items():
+                    fmap[1].setdefault(k, set()).add(_kind_of(v))
+                    pres[k] = pres.get(k, 0) + 1
+    for key, (always, _t) in src_shapes.items():
+        for k, n in seen[key].items():
+            if n == src_counts[key]:
+                always.add(k)
+
+    fails: list[str] = []
+    for raw in _epru_texts(out_blob):
+        for doc_type, records in _epro_docs(raw):
+            for meta, body in records:
+                t = str(meta.get("type"))
+                key = (doc_type, t)
+                if key not in src_shapes:
+                    # fall back to the type's global shape across the
+                    # source's other docs (e.g. STRING on the PCB doc):
+                    # a field "always present" globally is one present on
+                    # EVERY variant's own always-set.
+                    variants = [
+                        (alw, tmap)
+                        for k2, (alw, tmap) in src_shapes.items()
+                        if k2[1] == t
+                    ]
+                    if not variants:
+                        fails.append(
+                            f"{doc_type}/{t}: Pro never writes this record type"
+                        )
+                        continue
+                    always = set.intersection(*(alw for alw, _ in variants))
+                    tmap_all = {
+                        f: set().union(*(tmap.get(f, set()) for _, tmap in variants))
+                        for f in set().union(*(set(tmap) for _, tmap in variants))
+                    }
+                else:
+                    always, tmap_all = src_shapes[key]
+                missing = sorted(always - set(body))
+                if missing:
+                    fails.append(
+                        f"{doc_type}/{t}: field(s) Pro always writes absent: "
+                        f"{', '.join(missing[:6])}"
+                    )
+                for k, v in body.items():
+                    kinds = tmap_all.get(k)
+                    if kinds is None:
+                        fails.append(f"{doc_type}/{t}: field {k!r} is not a Pro field")
+                        continue
+                    got = _kind_of(v)
+                    ok = got in kinds or (
+                        got == "num" and "none" in kinds
+                    )  # a value where Pro left null is strictly more data
+                    if not ok:
+                        fails.append(
+                            f"{doc_type}/{t}: field {k!r} is {got}, "
+                            f"Pro writes {'/'.join(sorted(kinds))}"
+                        )
+                if t in ("ATTR", "STRING"):
+                    for k in _TEXT_NUM_SLOTS:
+                        v = body.get(k)
+                        if not isinstance(v, (int, float)) or not math.isfinite(v):
+                            fails.append(
+                                f"{doc_type}/{t}: {k} is {v!r} — Pro's "
+                                "addText reads every attr (NaN crash)"
+                            )
+                if t == "LAYER":
+                    for k in _LAYER_STR_SLOTS:
+                        if not isinstance(body.get(k), str) or not body[k]:
+                            fails.append(
+                                f"{doc_type}/LAYER: string field {k!r} "
+                                "missing — parseLayer's startsWith crash"
+                            )
+    # de-duplicate the per-record noise: same failure line may repeat
+    # across records; collapse to unique messages with counts
+    uniq: dict[str, int] = {}
+    for f in fails:
+        uniq[f] = uniq.get(f, 0) + 1
+    return sorted(f if n == 1 else f"{f}  (x{n})" for f, n in uniq.items())
