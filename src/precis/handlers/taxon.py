@@ -65,7 +65,7 @@ from precis.taxonomy.nodes import (
 )
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
-from precis.utils.text import lexical_overlap
+from precis.utils.lexical import lexical_overlap
 
 log = logging.getLogger(__name__)
 
