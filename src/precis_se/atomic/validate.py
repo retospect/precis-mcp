@@ -72,6 +72,7 @@ from precis.cad.vec import euler_rad_from_matrix
 from precis.cad.vec import pose as cad_pose
 from precis.cad.vec import rotation as cad_rotation
 from precis.structure import Scene as StructScene
+from precis.structure.validate import findings_cached as struct_findings_cached
 from precis.utils.units import format_quantity
 from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 from precis_se.atomic.vocab import bond_capability_offences, connect_role
@@ -1504,6 +1505,117 @@ def generated_report_findings(
     return out
 
 
+def validator_tally(scene: StructScene | None) -> dict[str, Any] | None:
+    """Tally the bound structure's own validator run → ``{"errors", "warns",
+    "error_rules", "warn_rules"}`` (the rule dicts map rule → count), or
+    ``None`` when there is no scene to check. Runs
+    :func:`precis.structure.validate.findings_cached`, so repeat reads of an
+    unchanged structure are memoised on its content hash."""
+    if scene is None:
+        return None
+    tally: dict[str, dict[str, int]] = {"error": {}, "warn": {}}
+    for f in struct_findings_cached(scene):
+        bucket = tally["error" if f.severity == "error" else "warn"]
+        bucket[f.rule] = bucket.get(f.rule, 0) + 1
+    return {
+        "errors": sum(tally["error"].values()),
+        "warns": sum(tally["warn"].values()),
+        "error_rules": tally["error"],
+        "warn_rules": tally["warn"],
+    }
+
+
+def validator_summary_text(tally: dict[str, Any] | None) -> str:
+    """``validator: 6 error(s), 1 warning(s) (over_valence x4, atom_overlap
+    x2)`` — the bound structure's CURRENT validator read; ``None`` (the
+    structure did not resolve) renders ``unavailable`` rather than nothing,
+    so a missing check never reads as a clean one."""
+    if tally is None:
+        return "validator: unavailable"
+    text = f"validator: {tally['errors']} error(s), {tally['warns']} warning(s)"
+    rules = tally["error_rules"] or tally["warn_rules"]
+    if rules:
+        top = ", ".join(
+            f"{rule} x{n}"
+            for rule, n in sorted(rules.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        )
+        text += f" ({top})"
+    return text
+
+
+def build_report_text(stored: list[dict[str, Any]]) -> str:
+    """``build report: 0 error(s), 3 warning(s)`` — the stored build-report
+    rows' tally; labelled so it never reads as the live validator's result
+    (gr486404)."""
+    errors = sum(str(row.get("severity")).lower() == "error" for row in stored)
+    warns = sum(str(row.get("severity")).lower() == "warn" for row in stored)
+    return f"build report: {errors} error(s), {warns} warning(s)"
+
+
+def _bound_structure_findings(
+    tree: SeTree, bound_full_scenes: Mapping[str, StructScene]
+) -> list[ValidationIssue]:
+    """Roll up each bound structure's CURRENT validator result — the same
+    ``validate`` + ``vsepr.advisories`` list ``get(kind='structure',
+    view='validate')`` serves — into design-level rows (gr486404). The
+    stored build report only reflects build-time checks: hexfold can mint
+    a structure whose ``terminate.clash`` is a WARN while the validator
+    still reports over-valence/overlap errors, and before this check the
+    design read clean off the stored "0 error(s)" alone.
+
+    One ``structure_validator_error`` row per (block, rule) with the count
+    and the worst-listed atoms; ONE ``structure_validator_warn`` row per
+    block summarising warn rules (the advisory tier would bury the errors).
+    Findings are memoised on the structure's content hash, so the
+    ``view='tree'``/web-panel summary and this check never re-run the
+    validator over the same geometry."""
+    out: list[ValidationIssue] = []
+    for node in tree.blocks.values():
+        if node.bound_kind != "structure" or not node.bound:
+            continue
+        scene = bound_full_scenes.get(node.bound)
+        if scene is None:
+            continue
+        issues = struct_findings_cached(scene)
+        errors: dict[str, list[Any]] = {}
+        warns: dict[str, int] = {}
+        for f in issues:
+            if f.severity == "error":
+                errors.setdefault(f.rule, []).append(f)
+            else:
+                warns[f.rule] = warns.get(f.rule, 0) + 1
+        pointer = f"see get(kind='structure', id='{node.bound}', view='validate')"
+        for rule, rows in errors.items():
+            first = rows[0]
+            out.append(
+                ValidationIssue(
+                    rule="structure_validator_error",
+                    subject=node.name,
+                    detail=(
+                        f"bound structure {node.bound!r} fails the structure "
+                        f"validator: {rule} x{len(rows)} (first: "
+                        f"{'/'.join(first.atoms)}: {first.measured} vs "
+                        f"{first.expected}); {pointer}"
+                    ),
+                    severity="error",
+                )
+            )
+        if warns:
+            summary = ", ".join(f"{c} x{n}" for c, n in sorted(warns.items()))
+            out.append(
+                ValidationIssue(
+                    rule="structure_validator_warn",
+                    subject=node.name,
+                    detail=(
+                        f"bound structure {node.bound!r} validator warnings: "
+                        f"{summary}; {pointer}"
+                    ),
+                    severity="warn",
+                )
+            )
+    return out
+
+
 def validate_atomic(
     tree: SeTree,
     *,
@@ -1533,7 +1645,13 @@ def validate_atomic(
 
     A design with no chemistry in it at all (no bond/interaction connect,
     no ``structure`` binding) produces nothing here — every check below is
-    keyed off an atomic fact the design would have to have stated."""
+    keyed off an atomic fact the design would have to have stated.
+
+    ``_bound_structure_findings`` re-runs each bound structure's own
+    validator (:func:`precis.structure.validate.findings_cached`,
+    content-hash memoised) — the current-geometry counterpart to the stored
+    build report, so a minted-but-dirty structure never reads clean
+    (gr486404)."""
     findings: list[ValidationIssue] = []
     findings.extend(_port_capability_findings(tree))
     findings.extend(_binding_findings(tree, bound_scenes or {}))
@@ -1549,5 +1667,6 @@ def validate_atomic(
     findings.extend(_bond_vector_findings(tree))
     findings.extend(_composite_parts_findings(tree, generated_records or {}))
     findings.extend(generated_report_findings(tree, generated_records or {}))
+    findings.extend(_bound_structure_findings(tree, bound_full_scenes or {}))
     findings.extend(_atom_clash_findings(tree, bound_full_scenes or {}))
     return findings

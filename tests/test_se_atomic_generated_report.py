@@ -149,7 +149,10 @@ def test_stored_hexfold_report_reaches_design_views(
             block_line = next(
                 line for line in digest.splitlines() if line.startswith(f"- {name} ")
             )
-            assert "stored report: 4 error(s)" in block_line
+            # build report labelled as the stored, build-time source; the
+            # bound structure's CURRENT validator read sits beside it.
+            assert "build report: 4 error(s), 1 warning(s)" in block_line
+            assert "validator: 0 error(s), 0 warning(s)" in block_line
 
 
 @pytest.mark.parametrize(
@@ -162,16 +165,150 @@ def test_stored_hexfold_report_reaches_design_views(
         ({"report": {"findings": "junk"}}, None),
     ],
 )
-def test_tree_stored_report_count_distinguishes_clean_from_missing(
+def test_tree_build_report_count_distinguishes_clean_from_missing(
     record: dict[str, Any], expected_count: int | None
 ) -> None:
     digest = _render_tree(
-        _tree(), "Stored report", "", generated_records={"d-foot": record}
+        _tree(),
+        "Stored report",
+        "",
+        bound_summaries={
+            "d-foot": {
+                "build": se_atomic_validate.generated_report_rows(record),
+                "validator": None,
+            }
+        },
     )
     if expected_count is None:
-        assert "stored report:" not in digest
+        assert "build report:" not in digest
     else:
-        assert f"stored report: {expected_count} error(s)" in digest
+        assert f"build report: {expected_count} error(s), " in digest
+    # An unresolvable bound structure reads "unavailable", never clean.
+    assert "validator: unavailable" in digest
+
+
+def test_tree_line_shows_bound_structure_validator_result() -> None:
+    """gr486404 — the bound structure's validator tally rides the block
+    line, labelled apart from the stored build report."""
+    digest = _render_tree(
+        _tree(),
+        "Validator line",
+        "",
+        bound_summaries={
+            "d-foot": {
+                "build": se_atomic_validate.generated_report_rows(_record(0, 1)),
+                "validator": {
+                    "errors": 6,
+                    "warns": 0,
+                    "error_rules": {"over_valence": 4, "atom_overlap": 2},
+                    "warn_rules": {},
+                },
+            }
+        },
+    )
+    block_line = next(
+        line for line in digest.splitlines() if line.startswith("- pillar_foot ")
+    )
+    assert "build report: 0 error(s), 1 warning(s)" in block_line
+    assert (
+        "validator: 6 error(s), 0 warning(s) (over_valence x4, atom_overlap x2)"
+        in block_line
+    )
+
+
+def _overlap_scene() -> Scene:
+    """Two H atoms 0.3 Å apart — inside the 0.6×(rH+rH) overlap floor."""
+    cell = Cell.from_lengths_angles(10.0, 10.0, 10.0, pbc=(False, False, False))
+    scene = Scene(cell=cell)
+    scene.atoms["h1"] = Atom("h1", "H", np.zeros(3))
+    scene.atoms["h2"] = Atom("h2", "H", np.array([0.03, 0.0, 0.0]))
+    return scene
+
+
+def test_bound_structure_validator_errors_reach_tree_and_validate(
+    store: Store,
+) -> None:
+    """gr486404 — a bound structure that fails the structure validator must
+    not read clean off its stored build report alone."""
+    store.structure_save(
+        slug="overlap-foot",
+        title="Overlapping H pair",
+        scene=_overlap_scene(),
+        version=1,
+        card_text="Validator-overlap regression fixture.",
+        meta_extra={"generated": _record(0, 1)},
+    )
+    handler = SeHandler(hub=Hub(store=store))
+    handler.put(
+        id="validator-dirty-design",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "foot", "envelope": "sphere:r2e-10"},
+                    {
+                        "op": "bind_structure",
+                        "block": "foot",
+                        "design": "overlap-foot",
+                        "ports": {},
+                    },
+                ]
+            }
+        ),
+    )
+    tree_body = handler.get(id="validator-dirty-design", view="tree").body
+    block_line = next(
+        line for line in tree_body.splitlines() if line.startswith("- foot ")
+    )
+    assert "build report: 0 error(s), 1 warning(s)" in block_line
+    assert "validator: 1 error(s), 0 warning(s) (atom_overlap x1)" in block_line
+
+    validation = handler.get(id="validator-dirty-design", view="validate").body
+    error_line = next(
+        line for line in validation.splitlines() if "structure_validator_error" in line
+    )
+    assert "atom_overlap x1" in error_line and "overlap-foot" in error_line
+    digest = handler.get(id="validator-dirty-design", view="drc").body
+    assert "validate: 1 error(s)" in digest
+
+
+def test_bound_structure_clean_validator_reads_zero(store: Store) -> None:
+    """A clean bound structure still shows an explicit 0, not silence."""
+    scene = Scene(
+        cell=Cell.from_lengths_angles(20, 20, 20, pbc=(False, False, False)),
+        atoms={"aC1": Atom("aC1", "C", np.zeros(3))},
+    )
+    store.structure_save(
+        slug="clean-foot",
+        title="Clean foot",
+        scene=scene,
+        version=1,
+        card_text="Clean validator regression fixture.",
+    )
+    handler = SeHandler(hub=Hub(store=store))
+    handler.put(
+        id="validator-clean-design",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "foot", "envelope": "sphere:r2e-10"},
+                    {
+                        "op": "bind_structure",
+                        "block": "foot",
+                        "design": "clean-foot",
+                        "ports": {},
+                    },
+                ]
+            }
+        ),
+    )
+    tree_body = handler.get(id="validator-clean-design", view="tree").body
+    block_line = next(
+        line for line in tree_body.splitlines() if line.startswith("- foot ")
+    )
+    assert "validator: 0 error(s), 0 warning(s)" in block_line
+    assert "build report:" not in block_line
+    validation = handler.get(id="validator-clean-design", view="validate").body
+    assert "structure_validator" not in validation
 
 
 def test_malformed_rows_do_not_hide_valid_stored_findings() -> None:
@@ -187,6 +324,20 @@ def test_malformed_rows_do_not_hide_valid_stored_findings() -> None:
     warnings = [f for f in findings if f.rule == "generated_report_warn"]
     assert len(warnings) == 1 and "angle.dev x1" in warnings[0].detail
     digest = _render_tree(
-        _tree(), "Stored report", "", generated_records={"d-foot": record}
+        _tree(),
+        "Stored report",
+        "",
+        bound_summaries={
+            "d-foot": {
+                "build": se_atomic_validate.generated_report_rows(record),
+                "validator": {
+                    "errors": 0,
+                    "warns": 0,
+                    "error_rules": {},
+                    "warn_rules": {},
+                },
+            }
+        },
     )
-    assert "stored report: 4 error(s)" in digest
+    assert "build report: 4 error(s), 1 warning(s)" in digest
+    assert "validator: 0 error(s), 0 warning(s)" in digest

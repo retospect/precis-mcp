@@ -1284,7 +1284,7 @@ class SeHandler(Handler):
                     tree,
                     ref.title or str(ref.slug),
                     description,
-                    generated_records=se_atomic_render.bound_generated_records(
+                    bound_summaries=se_atomic_render.bound_structure_summaries(
                         self.store, tree
                     ),
                     relax_states=se_atomic_render.bound_relax_states(self.store, tree),
@@ -3199,7 +3199,7 @@ def _render_tree(
     title: str,
     description: str,
     *,
-    generated_records: Mapping[str, dict[str, Any]] | None = None,
+    bound_summaries: Mapping[str, dict[str, Any]] | None = None,
     relax_states: Mapping[str, dict[str, Any] | None] | None = None,
 ) -> str:
     lines = [f"# se design '{title}'"]
@@ -3233,18 +3233,21 @@ def _render_tree(
         node = tree.blocks[name]
         block_line = _block_line(tree, node, relax_states)
         if (
-            generated_records is not None
+            bound_summaries is not None
             and node.bound_kind == "structure"
             and node.bound
         ):
-            stored = se_atomic_validate.generated_report_rows(
-                generated_records.get(node.bound)
-            )
-            if stored is not None:
-                errors = sum(
-                    str(row.get("severity")).lower() == "error" for row in stored
+            bound = bound_summaries.get(node.bound)
+            if bound is not None:
+                segments = []
+                if bound.get("build") is not None:
+                    segments.append(
+                        se_atomic_validate.build_report_text(bound["build"])
+                    )
+                segments.append(
+                    se_atomic_validate.validator_summary_text(bound.get("validator"))
                 )
-                block_line += f" · stored report: {errors} error(s)"
+                block_line += " · " + " · ".join(segments)
         lines.append(f"{'  ' * depth}- {block_line}")
         # An instance's (or array's) subtree is the template's, resolved
         # here at read time — never copied onto the instance row. ``path``
@@ -3296,6 +3299,15 @@ def _render_report(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str
             continue
         lines.append(f"structure: {node.bound}")
         ref = store.get_ref(kind="structure", id=node.bound)
+        # The bound structure's CURRENT validator read next to the stored
+        # build report (gr486404): the rows below are build-time evidence,
+        # this line is what the geometry checks out as now.
+        lines.append(
+            se_atomic_validate.validator_summary_text(
+                se_atomic_render.cached_validator_summary(store, ref)
+            )
+            + " — current geometry"
+        )
         rec = (getattr(ref, "meta", None) or {}).get("generated") if ref else None
         if not isinstance(rec, dict) or not isinstance(rec.get("report"), dict):
             lines.append(
@@ -3728,6 +3740,21 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     if generated:
         lines.append("")
         lines.extend(generated)
+    # The bound structure's CURRENT validator read, beside the stored build
+    # report above — a clean stored report does not mean the geometry
+    # validates (gr486404). Degrades to nothing like ``_generated_section``.
+    if node.bound_kind == "structure" and node.bound:
+        try:
+            bound_ref = store.get_ref(kind="structure", id=node.bound)
+        except Exception:
+            bound_ref = None
+        if bound_ref is not None:
+            lines.append(
+                se_atomic_validate.validator_summary_text(
+                    se_atomic_render.cached_validator_summary(store, bound_ref)
+                )
+                + " — current geometry"
+            )
 
     # Blocktree slice 2 — declared states + transitions
     # (docs/backlog/blocktree-library-build-plan.md §Slice 2). A LOCAL

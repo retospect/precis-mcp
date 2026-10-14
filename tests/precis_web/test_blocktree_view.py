@@ -1245,6 +1245,56 @@ def test_se_view3d_page_shows_the_validate_digest(
     assert frag.headers["X-Validation-Identity"]
 
 
+def test_se_validate_panel_shows_bound_structure_validator(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    """gr486404 — the panel labels build report vs validator per bound
+    structure; a bound structure with validator errors must not read clean."""
+    import numpy as np
+
+    from precis.structure.cell import Cell
+    from precis.structure.scene import Atom, Scene
+
+    cell = Cell.from_lengths_angles(10.0, 10.0, 10.0, pbc=(False, False, False))
+    scene = Scene(cell=cell)
+    scene.atoms["h1"] = Atom("h1", "H", np.zeros(3))
+    scene.atoms["h2"] = Atom("h2", "H", np.array([0.03, 0.0, 0.0]))  # 0.3 Å overlap
+    store.structure_save(
+        slug="overlap_frag",
+        title="Overlapping H pair",
+        scene=scene,
+        version=1,
+        card_text="Validator-overlap regression fixture.",
+    )
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="dirty_se",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "foot", "envelope": "sphere:r2e-10"},
+                    {
+                        "op": "bind_structure",
+                        "block": "foot",
+                        "design": "overlap_frag",
+                        "ports": {},
+                    },
+                ]
+            }
+        ),
+    )
+    frag = blocktree_client.get("/se/dirty_se/validate-panel")
+    assert frag.status_code == 200
+    assert "structure_validator_error" in frag.text
+    assert "atom_overlap" in frag.text
+    # The per-structure line labels validator vs build report (the template
+    # HTML-escapes the quotes in block/slug names, so match the counts).
+    assert "validator: 1 error(s), 0 warning(s) (atom_overlap x1)" in frag.text
+    assert "overlap_frag" in frag.text
+    # The digest counts the structure's errors — the page cannot read clean.
+    assert "validate: 1 error(s)" in frag.text
+    assert 'class="cursor-pointer text-red-700' in frag.text
+
+
 def test_se_view3d_page_does_not_compute_heavy_payloads(
     blocktree_client, runtime_with_store, monkeypatch
 ) -> None:

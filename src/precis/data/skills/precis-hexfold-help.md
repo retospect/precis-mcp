@@ -97,7 +97,10 @@ file a gripe with the spec.
 
 After minting, the build report (`extent.snap`, `fit.propagated`,
 `seam.rings`, …) is under `get(kind='se', id=..., view='block',
-args={'name': '<block>'})` → "## generated". Before minting, run the
+args={'name': '<block>'})` → "## generated". The report is build-time
+evidence — the bound structure's CURRENT validator read shows beside it
+(`validator:` in the se tree, `view='block'`, and the `/se/<slug>` page),
+and a clean report does not certify the geometry. Before minting, run the
 same spec with `fidelity="check"`.
 
 ## Nanobud menus (attachments)

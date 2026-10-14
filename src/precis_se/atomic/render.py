@@ -18,12 +18,15 @@ validate_atomic` uses.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import NotFound
 from precis.format import render_agent_table
 from precis.response import Response
 from precis.structure import Scene as StructScene
 from precis_se.atomic import mechanics as se_mechanics
+from precis_se.atomic import validate as se_atomic_validate
 from precis_se.ops import SeTree, effective_envelope, effective_ports
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -165,6 +168,101 @@ def bound_chain_records(store: Store, tree: SeTree) -> dict[str, dict[str, Any]]
         if isinstance(record, dict):
             out[n.bound] = record
     return out
+
+
+#: ``cached_validator_summary`` LRU bound — keyed on (structure ref id,
+#: meta ``version``, ``updated_at``): ``structure_save`` bumps the version
+#: on every write and touches the row, so a stale tally is impossible by
+#: construction and repeat page/tree renders skip the scene load entirely.
+#: ``updated_at`` rides along because a fresh row can share an id+version
+#: pair with a deleted one (the test DB's TRUNCATE-into-reseed does exactly
+#: that). Version-less refs bypass the key and fall back on the findings'
+#: own content-hash cache.
+_VALIDATOR_SUMMARY_CACHE_MAX = 256
+_validator_summary_cache: OrderedDict[tuple[int, int, str], dict[str, Any] | None] = (
+    OrderedDict()
+)
+
+
+def cached_validator_summary(store: Store, ref: Any) -> dict[str, Any] | None:
+    """The structure validator's tally (:func:`precis_se.atomic.validate.
+    validator_tally`) for one resolved structure ref — ``None`` when the ref
+    is missing or the scene no longer loads. The summary (not the scene) is
+    what ``view='tree'`` and the web validate panel need, so caching it by
+    ``(ref.id, meta['version'], updated_at)`` keeps those reads cheap; a
+    miss pays one ``structure_load`` and the findings themselves are
+    memoised on content hash
+    (:func:`precis.structure.validate.findings_cached`), so the
+    ``view='validate'`` rollup never re-runs the kernel either."""
+    if ref is None:
+        return None
+    load = getattr(store, "structure_load", None)
+    if load is None:
+        return None  # a read surface without geometry access (view='report'
+        # is contractually geometry-free) — report "unavailable", not clean.
+    version = (ref.meta or {}).get("version")
+    key = (
+        (int(ref.id), int(version), str(getattr(ref, "updated_at", "")))
+        if version is not None
+        else None
+    )
+    if key is not None and key in _validator_summary_cache:
+        _validator_summary_cache.move_to_end(key)
+        return _validator_summary_cache[key]
+    try:
+        scene, _handles = load(ref.id)
+    except NotFound:
+        summary = None
+    else:
+        summary = se_atomic_validate.validator_tally(scene)
+    if key is not None:
+        _validator_summary_cache[key] = summary
+        _validator_summary_cache.move_to_end(key)
+        while len(_validator_summary_cache) > _VALIDATOR_SUMMARY_CACHE_MAX:
+            _validator_summary_cache.popitem(last=False)
+    return summary
+
+
+def bound_structure_summaries(store: Store, tree: SeTree) -> dict[str, dict[str, Any]]:
+    """Per block-bound structure slug: ``{"build": stored rows or None,
+    "validator": tally or None}`` — the two labelled sources the tree line
+    and the web panel show side by side (gr486404). One ``get_ref`` per
+    slug serves both halves; the validator half rides the version-keyed
+    cache so this stays a meta-only read on repeats."""
+    out: dict[str, dict[str, Any]] = {}
+    for n in tree.blocks.values():
+        if n.bound_kind != "structure" or not n.bound or n.bound in out:
+            continue
+        ref = store.get_ref(kind="structure", id=n.bound)
+        generated = (ref.meta or {}).get("generated") if ref is not None else None
+        out[n.bound] = {
+            "build": se_atomic_validate.generated_report_rows(
+                generated if isinstance(generated, dict) else None
+            ),
+            "validator": cached_validator_summary(store, ref),
+        }
+    return out
+
+
+def bound_structure_summary_lines(store: Store, tree: SeTree) -> list[str]:
+    """One labelled line per block-bound structure — ``block 'x' (structure
+    'y'): build report … · validator: …`` — the ``/se/<slug>`` validate
+    panel's per-structure readout next to the findings table."""
+    summaries = bound_structure_summaries(store, tree)
+    lines: list[str] = []
+    for name in sorted(tree.blocks):
+        n = tree.blocks[name]
+        if n.bound_kind != "structure" or not n.bound:
+            continue
+        bound = summaries.get(n.bound)
+        if bound is None:
+            continue
+        segments = []
+        if bound["build"] is not None:
+            segments.append(se_atomic_validate.build_report_text(bound["build"]))
+        segments.append(se_atomic_validate.validator_summary_text(bound["validator"]))
+        lines.append(f"block {name!r} (structure {n.bound!r}): " + " · ".join(segments))
+    return lines
 
 
 def bound_pick_inputs(

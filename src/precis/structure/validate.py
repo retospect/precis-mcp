@@ -17,6 +17,9 @@ here are Å (derived from :mod:`elements`'s covalent radii), never SI.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from . import elements, probe
@@ -232,3 +235,86 @@ def validate(scene: Scene) -> list[ValidationIssue]:
             )
         )
     return findings
+
+
+#: Bump when ``validate``'s rules or :mod:`vsepr`'s advisory tier change
+#: such that a memoised result could differ from a fresh run — the same
+#: roll-forward contract as ``cache.RELAX_CODE_VERSION``.
+VALIDATE_CODE_VERSION = "1"
+
+#: ``findings_cached`` LRU bound — far beyond any realistic working set of
+#: distinct structures one process re-renders.
+_FINDINGS_CACHE_MAX = 512
+
+_findings_cache: OrderedDict[str, tuple[ValidationIssue, ...]] = OrderedDict()
+
+#: Float rounding for the content hash — same tolerance as
+#: ``cache.structure_sha`` (below any physical displacement, absorbs float
+#: jitter).
+_HASH_NDIGITS = 6
+
+
+def scene_content_hash(scene: Scene) -> str:
+    """Full-content hash of ``scene`` for :func:`findings_cached`.
+
+    Unlike ``cache.structure_sha`` (a relax-input address that deliberately
+    excludes labels and bonds), this covers everything the validator reads:
+    atom labels, elements, fractional positions and the declared-intent
+    fields (fixed mask, charge, hybridization), every bond's endpoints and
+    order/kind/image/provenance, and the cell. Two scenes that differ only
+    in ways the validator ignores hash alike; any findings-relevant change
+    re-keys.
+    """
+    payload = {
+        "lattice": [
+            [round(float(x), _HASH_NDIGITS) for x in row] for row in scene.cell.lattice
+        ],
+        "pbc": [bool(p) for p in scene.cell.pbc],
+        "atoms": [
+            [
+                atom.label,
+                atom.element,
+                [round(float(x), _HASH_NDIGITS) for x in atom.frac],
+                int(atom.fixed),
+                atom.magmom,
+                atom.oxidation,
+                atom.charge,
+                atom.hybridization,
+            ]
+            for atom in scene.atoms.values()
+        ],
+        "bonds": sorted(
+            [
+                bond.i,
+                bond.j,
+                round(float(bond.order), _HASH_NDIGITS),
+                bond.kind,
+                list(bond.image),
+                bond.provenance,
+            ]
+            for bond in scene.bonds
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def findings_cached(scene: Scene) -> list[ValidationIssue]:
+    """``validate(scene) + vsepr.advisories(scene)`` — the same list
+    ``view='validate'`` renders — memoised on :func:`scene_content_hash` so
+    a repeat reader (an se design view, the web validate panel) does not
+    re-run the pair kernel over an unchanged structure."""
+    key = f"{VALIDATE_CODE_VERSION}:{scene_content_hash(scene)}"
+    hit = _findings_cache.get(key)
+    if hit is not None:
+        _findings_cache.move_to_end(key)
+        return list(hit)
+    from . import vsepr  # lazy: vsepr imports this module for ValidationIssue
+
+    findings = tuple(validate(scene) + vsepr.advisories(scene))
+    _findings_cache[key] = findings
+    _findings_cache.move_to_end(key)
+    while len(_findings_cache) > _FINDINGS_CACHE_MAX:
+        _findings_cache.popitem(last=False)
+    return list(findings)

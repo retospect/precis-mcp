@@ -132,6 +132,7 @@ from precis_se import fasten as se_fasten
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
+from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic.validate import bound_port_origin
 from precis_se.handler import validate_digest as se_validate_digest
 from precis_se.handler import validate_findings as se_validate_findings
@@ -490,7 +491,13 @@ def _se_validate_panel(store: Store, tree: Any, ref_id: int) -> dict[str, Any]:
         for f in findings
         if f.severity in ("error", "warn")
     ]
-    return {"digest": digest, "rows": rows}
+    # Per-bound-structure lines label the two sources side by side —
+    # ``build report`` (stored, build-time) vs ``validator`` (current
+    # geometry) — so a clean build report never reads as a clean structure
+    # (gr486404). Version-keyed memoisation keeps this a meta-only read on
+    # repeats; the findings rows above already carry the detail.
+    structures = se_atomic_render.bound_structure_summary_lines(store, tree)
+    return {"digest": digest, "rows": rows, "structures": structures}
 
 
 def _se_block_findings(tree: Any) -> dict[str, list[dict[str, Any]]]:

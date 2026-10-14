@@ -310,9 +310,13 @@ ops=[{'op':'restore_revision','rev':N}])` puts the design back to
 revision N (a sole op in its call); the restore is itself recorded as a
 new revision, so nothing is rewound. An unknown N names the available range.
 
-The default tree shows each available stored build report's error count beside
-its block. `view='validate'` includes stored ERROR/WARN findings by block, grouped
-by error code and summarised for warnings; these are build-time evidence.
+The default tree shows, beside each structure-bound block, both halves labelled
+by source: the stored build report's error/warning counts (`build report:`) AND
+the bound structure's current validator tally (`validator:`) — a clean build
+report does not mean the geometry validates. `view='validate'` includes stored
+ERROR/WARN findings by block (grouped by error code, warnings summarised) plus
+`structure_validator_*` findings re-run on the bound geometry; the build rows
+are build-time evidence, the validator rows are the current read.
 
 `view='report'` reads stored generate/join build findings (severity, code,
 where, message, span) without recomputation. Omit args for every direct block,

@@ -1,6 +1,11 @@
 {# The validate digest + findings, fetched after first paint
    (routes/blocktree_view.py se_validate_panel). #}
 <summary class="cursor-pointer {{ 'text-red-700' if validate_panel.rows else 'text-slate-600' }}">{{ validate_panel.digest }}</summary>
+  {% if validate_panel.structures %}
+  <div class="mt-1 text-xs text-slate-600">
+    {% for line in validate_panel.structures %}<div>{{ line }}</div>{% endfor %}
+  </div>
+  {% endif %}
   {% if validate_panel.rows %}
   <table class="mt-2 text-xs border border-slate-200">
     <thead><tr class="bg-slate-50 text-left"><th class="px-2 py-1">severity</th><th class="px-2 py-1">rule</th><th class="px-2 py-1">subject</th><th class="px-2 py-1">detail</th></tr></thead>
