@@ -96,10 +96,28 @@ def detect_identifier_scheme(value: str) -> str | None:
         return "mag"
     if v.startswith(("DBLP:", "dblp:")):
         return "dblp"
-    if v.startswith(
-        ("DOI:", "doi:", "https://doi.org/", "http://doi.org/", "https://dx.doi.org/")
+    low = v.lower()
+    if low.startswith(
+        (
+            "doi:",
+            "https://doi.org/",
+            "http://doi.org/",
+            "https://dx.doi.org/",
+            "http://dx.doi.org/",
+            "doi.org/",
+        )
     ):
         return "doi"
+    if low.startswith(
+        (
+            "arxiv:",
+            "arxiv.org/abs/",
+            "arxiv.org/pdf/",
+            "https://arxiv.org/",
+            "http://arxiv.org/",
+        )
+    ):
+        return "arxiv"
     # Shape-based detection.
     if _DOI_RE.match(v):
         return "doi"
@@ -127,7 +145,8 @@ def _normalise_identifier(scheme: str, value: str) -> str:
     if scheme == "doi":
         # Strip URL form
         v = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/)", "", v, flags=re.IGNORECASE)
-        # Strip explicit DOI: prefix
+        # Strip bare-host form and explicit DOI: prefix
+        v = re.sub(r"^doi\.org/", "", v, flags=re.IGNORECASE)
         v = re.sub(r"^doi:\s*", "", v, flags=re.IGNORECASE)
     elif scheme == "arxiv":
         # arXiv DOI form (10.48550/arXiv.X) -> bare arxiv id
@@ -136,6 +155,12 @@ def _normalise_identifier(scheme: str, value: str) -> str:
         )
         if m:
             v = m.group(1)
+        # Strip arxiv: prefix and abs/pdf URL forms
+        v = re.sub(r"^arxiv:\s*", "", v, flags=re.IGNORECASE)
+        v = re.sub(
+            r"^(?:https?://)?arxiv\.org/(?:abs|pdf)/", "", v, flags=re.IGNORECASE
+        )
+        v = re.sub(r"\.pdf$", "", v, flags=re.IGNORECASE)
         # Strip versions (v1, v2, ...) — bare id is canonical
         v = re.sub(r"v\d+$", "", v)
     elif scheme == "s2":

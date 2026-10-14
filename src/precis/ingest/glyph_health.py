@@ -26,9 +26,13 @@ routed to a (separate, non-OCR) recovery pass and so a grounding audit can
 tell "the source was corrupted at ingest" apart from "the claim is wrong".
 
 Every text-level detector tried in the backlog was a base-rate failure
-(absence of Greek is normal). The signals here are deterministic
-**font-level** tests plus cheap supporting counts — not heuristics over
-the stored text.
+(absence of Greek is normal). The strong signals here are deterministic
+**font-level** tests; weak evidence (an Adv* font, C0 residue, the
+kept-symbols-with-zero-Greek precondition) flags only alongside a
+positive corruption tell in the text — a bare ``m`` where ``μm`` is
+meant plus a spelled micro-unit word, or a stray-space ``V/ mm`` —
+because the 2026-10-14 read-only sample found the weak signals alone
+were 30/30 false positives (gr228594 comment 8).
 
 Recovery: :mod:`precis.ingest.glyph_outline` fingerprints each flagged
 glyph's embedded outline against a table of known outlines and records the
@@ -93,6 +97,30 @@ _MICRON_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Non-Greek scientific symbols worth counting as the "carries symbols"
+#: precondition. En/em dashes are deliberately *absent* — they appear in
+#: nearly every paper (page and date ranges) and drove every flag in the
+#: 2026-10-14 read-only sample of the 10-12 dry run (30 of 30 false
+#: positives, gr228594 comment 8). ``±``, ``°``, ``×`` and ``Å`` stay: a
+#: paper carrying those but no Greek codepoint still matches the
+#: zero-Greek-with-symbols shape of a scarred document.
+_SYMBOL_CHAR_RE = re.compile(r"[±°×Å]")
+
+#: A bare ``m`` quantity — a number followed by ``m`` *not* continued into
+#: a milli-unit (``10 mA``, ``100 mm``, ``1 m²``) and not the micro sign.
+#: "6 m diameter", "35 m", "7.3 m/s", "30 m s−1" (pa47024) are all
+#: stripped-``μm`` scars. It is only a *positive tell* in combination with
+#: a spelled-out micro-unit word — real bare metres exist.
+_BARE_METRE_RE = re.compile(r"[0-9](?:[.,][0-9]+)*\s+m(?![a-zA-Zµμ²³0-9<])")
+
+#: The stray-space unit — pa494's ``V/ mm`` for ``V/µm``: a letter, a
+#: slash, then a *space* and ``mm``. The doubled ``m`` is the signature —
+#: the fake ``m`` (the lying font's rendering of ``µ``) sits apart from
+#: the real ``m``. A wider ``m``-leading match misfires on legitimate
+#: spaced units (``kJ/ mol``, ``ml/ min``, ``kg/ m²``), so only ``mm``
+#: counts.
+_STRAY_SPACE_UNIT_RE = re.compile(r"[A-Za-z]\s?/\s+mm\b")
+
 #: The Advent-3B2 ``Adv*`` font family named in the bug report. A subset
 #: prefix (six caps + ``+``) is optional. Presence of any such font is the
 #: publisher-property screen: the corruption "tracks the share of the
@@ -153,6 +181,39 @@ def count_micron_words_without_micro_sign(text: str) -> int:
     if count_greek_chars(text) > 0:
         return 0
     return len(_MICRON_WORD_RE.findall(text))
+
+
+def count_symbol_chars(text: str) -> int:
+    """Count kept non-Greek symbols (``± ° × Å``) — dashes excluded."""
+    return len(_SYMBOL_CHAR_RE.findall(text))
+
+
+def count_bare_unit_numbers(text: str) -> int:
+    """Count bare-``m`` quantities — a stripped ``μm`` reads as plain metres."""
+    return len(_BARE_METRE_RE.findall(text))
+
+
+def count_stray_space_units(text: str) -> int:
+    """Count stray-space units — ``V/ mm`` for ``V/µm`` (pa494's tell)."""
+    return len(_STRAY_SPACE_UNIT_RE.findall(text))
+
+
+def has_positive_tell(text: str) -> bool:
+    """A positive corruption signature in ``text``, not an absence.
+
+    Either a spelled-out micro-unit word *and* a bare-``m`` quantity in
+    the same document (pa47024: "microrobots"/"micrometre" prose against
+    "6 m diameter"), or a stray-space unit (pa494: ``V/ mm``). Weak
+    evidence (an Adv* font, C0 residue, the symbol precondition) only
+    flags alongside one of these — a paper whose sole evidence is weak
+    stays unflagged, which is the 30/30-false-positive fix.
+    """
+    if count_greek_chars(text) > 0:
+        return False
+    return (
+        _MICRON_WORD_RE.search(text) is not None
+        and _BARE_METRE_RE.search(text) is not None
+    ) or _STRAY_SPACE_UNIT_RE.search(text) is not None
 
 
 def is_adv_family(basefont: str | None) -> bool:
@@ -310,13 +371,30 @@ def summarize(
     greek_chars: int,
     micron_without_sign: int,
     orphan_spans: int,
+    symbol_chars: int = 0,
+    bare_unit_numbers: int = 0,
+    stray_space_units: int = 0,
     font_error: str | None = None,
 ) -> dict[str, Any]:
     """Combine the individual signals into the stored ``glyph_health`` record.
 
-    ``suspected`` is set when any deterministic font-level signature fires
-    (mode a/b or an Adv* font present) or when mode-(b) residue survives in
-    the text. The corroborating text/geometry counts are recorded either
+    ``suspected`` is set when either
+
+    * a deterministic font-level signature fires (mode ``a``/``b`` — the
+      lying ``/ToUnicode`` or the positional no-encoding font; the
+      anti-masking guarantee: a mode-(a) document flags even with zero
+      text residue and no prose tell), or
+    * *weak* evidence — an Adv* font present, surviving C0 residue, or
+      the kept-symbols-with-zero-Greek precondition — coincides with a
+      **positive tell** (a spelled micro-unit word against a bare-``m``
+      quantity, or a stray-space unit).
+
+    The weak-evidence-and-tell gate is the 2026-10-14 tightening
+    (gr228594 comment 8): the 10-12 backfill dry run flagged 51% of the
+    oldest 900 refs and a read-only sample found 30 of 30 false
+    positives, driven by benign dash-emitting symbol fonts and C0
+    residue alone. Weak evidence without a positive tell no longer
+    flags. The corroborating text/geometry counts are recorded either
     way so a review pass can rank flagged documents.
     """
     modes: set[str] = set()
@@ -332,8 +410,14 @@ def summarize(
 
     strong_font_signal = bool(modes & {"a", "b"})
     adv_present = "adv_family" in modes
+    weak_evidence = (
+        adv_present or c0_controls > 0 or (symbol_chars > 0 and greek_chars == 0)
+    )
+    positive_tell = greek_chars == 0 and (
+        (micron_without_sign > 0 and bare_unit_numbers > 0) or stray_space_units > 0
+    )
 
-    suspected = bool(strong_font_signal or adv_present or c0_controls > 0)
+    suspected = bool(strong_font_signal or (weak_evidence and positive_tell))
 
     record: dict[str, Any] = {
         "suspected": suspected,
@@ -341,7 +425,11 @@ def summarize(
         "adv_family_present": adv_present,
         "c0_controls_before_strip": c0_controls,
         "greek_char_count": greek_chars,
+        "symbol_char_count": symbol_chars,
         "micron_words_without_micro_sign": micron_without_sign,
+        "bare_unit_numbers": bare_unit_numbers,
+        "stray_space_units": stray_space_units,
+        "positive_tell": positive_tell,
         "orphan_single_char_spans": orphan_spans,
         "suspect_fonts": suspect_fonts,
     }
@@ -407,6 +495,9 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
         greek_chars=count_greek_chars(extracted_text),
         micron_without_sign=count_micron_words_without_micro_sign(extracted_text),
         orphan_spans=orphan_spans,
+        symbol_chars=count_symbol_chars(extracted_text),
+        bare_unit_numbers=count_bare_unit_numbers(extracted_text),
+        stray_space_units=count_stray_space_units(extracted_text),
         font_error=font_error,
     )
     if record["suspected"] and (recovery.get("resolved") or recovery.get("misses")):

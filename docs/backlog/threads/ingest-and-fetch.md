@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Round 6 is deployed (prod R16): perform the recorded ref-202942/anon cleanup (anon 465241 still unmerged on 2026-10-07); then item 3’s still-bodiless policy pass and close td461154. Glyph precision run starts no earlier than 2026-10-04 14:00Z.
+- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 8 — mint outpaces fetch ~7:1, queue 8,085). Fixes for gr483930 (S2 acquire), gr484234 (DOI addressing) and the embed_batch lock-contention head are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
 - **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate. Item 1 retires only after walker and web SI triggers are seen on prod.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
-- **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): read back the cleanup, account for the bodiless remainder, and observe both SI trigger paths before retiring the item.
-- **Worktree:** `ingest-and-fetch`
+- **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): account for the bodiless remainder, verify the 10-14 gripe fixes on prod, and observe both SI trigger paths before retiring the item.
+- **Worktree:** `ingest-fix`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
@@ -21,56 +21,51 @@ state where the acquisition backlog's own count is wrong. Triage td458898 ran
 2026-10-02 (counts and verdicts are comments on each gripe), so the list
 below is ranked on measured rows, not age: silent corruption first, then the
 states that count a paper as usable when it is not, then metadata.
-**Last reviewed:** 2026-10-04
-**Worktree:** `ingest-and-fetch`
+**Last reviewed:** 2026-10-14
+**Worktree:** `ingest-fix`
 **Allocation decision (historical):** yes — Reto 2026-10-01: "ingest must work".
 
-**Resume (2026-10-04, ship-all; refreshed at persist-now):** all work is
-on main (round 6: c83c46973, 5d95cb2fc, 714ef6049, a20d35169), nothing
-unshipped on any branch, no agent or job running. Waiting on the round-6
-deploy, then the after-deploy steps below.
-- Landed: SI builds 1 and 2 with re-arm fixes (item 1), the arXiv
-  e-print magic-byte and plain-TeX staging, and a
-  connect-failure retry on Crossref and bib_parse (c83c46973, round 6).
+**Resume (2026-10-14, ingest-fix round):** three fix commits await the
+release owner in `worktree-ingest-fix`; the round-6 after-deploy cleanup
+is verified done on prod.
+- Diagnosed (prod, read-only): of 2,564 papers minted in 7d, 1,276 have
+  no body — 1,199 (94%) are `stub_rank`/citation-expansion stubs never
+  fetch-attempted (mint ~366/d vs fetch ~52 ok/d; queue 8,085), 77
+  tried→no_oa. embed_batch all-time: 2,332 jobs / 705 failed — 480
+  "embedder unreachable", 196 stale-FK (guarded 2026-09-26), and the
+  current recurring head LockNotAvailable on the chunk_embeddings write
+  (5 of the last 8 failures).
+- Landed in branch: (a) `get_paper_by_id(propagate=True)` splits a
+  genuine 404 from a resolver fault (`S2ResolverError`, never cached —
+  an outage no longer poisons the miss cache for the TTL); `acquire`
+  mints `acquire:unverified` + `meta.acquire_unverified` on a resolver
+  fault instead of a "hallucinated id" BadInput (gr483930). (b)
+  `verify=`/`citation=`/`context_ref_id=` declared on `put()`; dispatch
+  promotes an args= key naming a real handler kwarg; DOI/arXiv
+  canonicalisation via `precis.identity`; `get` resolves doi:/URL-form
+  DOIs, arxiv ids, s2, pubmed through `ref_identifiers` (gr484234).
+  (c) `retry_locked` wraps the embed write tx in `embed_batch` and
+  `run_handler_once`.
+- Confirmed done on prod (was never verified after round 6): ref 202942
+  re-ingested (111 chunks); anon 465241 merged+retired; anons
+  464753/464754/464755/465135 bodied; the bodiless re-fetch batches
+  drained (120 gained bodies, 18 tried-none, 45 held Elsevier previews).
+  Only 464821 remains a no-pdf stub.
+- Landed earlier this thread (historical): SI builds 1 and 2 with re-arm
+  fixes (item 1), the arXiv e-print magic-byte and plain-TeX staging,
+  a connect-failure retry on Crossref and bib_parse (round 6, c83c46973),
+  the gr465474 no-body fold fix, and the FOR NO KEY UPDATE fold
+  serialisation.
 - At the orchestrator's gate, not landed by this thread: the safe_fetch
   next-address fallback, branch `worktree-agent-a3b62578f305e3772` tip
-  3e1e8cb5c (reviews §3, verdict LAND; gr465931). Two follow-ups for the
-  next safe_fetch branch: guard a finite timeout <= 0 with 2+ addresses
-  (today it raises before any dial), and a test that fails when
-  `httpcore.NetworkStream` gains a public method `_FallbackStream` lacks.
-  Ruled (Reto 2026-10-12, design-fold; gr465931): the built packet capture
-  stays off. Reopen trigger: si_fetch ConnectTimeouts still occur after
-  the fallback is deployed; then enable the capture on one host for two
-  weeks, not on all fetchers.
-- Fixed in this ship: gr465474. The bodiless re-fetch minted a duplicate
-  anon ref when the fetched file differed from the stored one, because
-  `add.py::_valid_fold_stub` required `pdf_sha256 IS NULL`; it now also
-  accepts a live ref with no body chunks. A ref with a sha and a body
-  still refuses a different file (unchanged). Round-6 review follow-up,
-  same round: (a) the fold is refused when the fetched file's journal
-  DOI differs from the target's (preprint-server DOIs exempt;
-  `add.py::_doi_conflicts`). With no DOI on the fetched file there is
-  still no identity check, the same trust a `pdf_sha256 IS NULL` stub
-  fold always had. A refused fold into a sha-NULL stub can still be
-  folded back by the filename reconcile (`_reconcile_orphan_stub`,
-  unchanged). (b) Two folds into one ref are serialised by a
-  `FOR NO KEY UPDATE` row lock in `register_aliases_and_maybe_upgrade`.
-  Before it, chunk inserts under `ON CONFLICT (ref_id, ord) DO NOTHING`
-  could interleave two files. Worst-case hold per item on connect
-  failures, counting 2T per connect attempt (the TCP plus TLS budget,
-  the same before and after the safe_fetch fallback):
-  - bib_parse: 123 s, 3 attempts × 40 s + 3 s backoff. It no longer
-    nests `retry_transient`, which would have made it 252 s.
-  - DOI validity: 63 s, 2 × 30 s + 3 s (not nested).
-  - SI Crossref relation leg: 43 s, 2 × 20 s + 3 s, inside the 120 s SI
-    pass budget.
-  - Habanero sites: 2 × the requests timeout + 3 s.
-  After deploy: re-ingest the 8dc037e4 PDF into ref 202942, merge anon 465241
-  into it, and triage anons 464753, 464754, 464755, 464821 and 465135.
-  As of 06:48Z, 47 queued re-fetches had not run.
-- Next: item 3 policy pass on the still-bodiless remainder, then close
-  td461154; glyph precision run (item 2) from 2026-10-04 14:00Z; delete
-  item 1 once walker and web SI triggers are seen on prod.
+  3e1e8cb5c (reviews §3, verdict LAND; gr465931). Ruled (Reto 2026-10-12,
+  design-fold; gr465931): the built packet capture stays off. Reopen
+  trigger: si_fetch ConnectTimeouts still occur after the fallback is
+  deployed; then enable the capture on one host for two weeks, not on
+  all fetchers.
+- Historical (round-6, kept for context): timeout budgets on connect
+  failures — bib_parse 123 s (3 × 40 s + 3 s, no nested retry_transient),
+  DOI validity 63 s, SI Crossref leg 43 s, habanero 2× timeout + 3 s.
 
 ## Do next
 
@@ -123,6 +118,15 @@ deploy, then the after-deploy steps below.
      (`ingest/glyph_outline.py`; writes `glyph_health['recovery']`). The
      outline table is still empty. Next: seed it from pa494/pa47024, then
      the step-3 repair backfill (see the file's §Recovery).
+   - Detector tightened 2026-10-14 (gr228594 comment 8): the 10-12
+     backfill dry run flagged 456/900 and a read-only sample found 30/30
+     false positives. `suspected` now needs a positive tell for weak
+     evidence (micron-word + bare-`m`, or stray-space `V/ mm`); mode-a/b
+     fonts still flag unconditionally; en/em dashes are out of the
+     symbol set. Reproduction over the same cohort: 2 tell refs (494,
+     933). Verify on a corpus node once deployed: `precis
+     backfill-glyph-health --after 0 --limit 900` should land near the
+     tell count, then the --apply batches resume.
    - The result goes to Reto as a release look-at item either way. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
 3. **gr453860** / td461154 — 947 papers have a PDF and no body. Measured
@@ -231,6 +235,45 @@ deploy, then the after-deploy steps below.
    lane re-enriches. Both need the Crossref fallback
    (`backlog/crossref-enrichment.md`); the held papers could also take a
    held-paper S2 pass.
+8. **Stub-queue depth (policy, not a defect)** — measured 2026-10-14:
+   8,085 no-PDF stubs queued; citation-expansion/stub_rank mints ~366/day
+   while the fetch lane gains ~52 bodies/day (~370 attempts/day, mostly
+   no-OA). The backlog therefore grows ~300/day and a fresh unranked stub
+   waits weeks. This is why 94% of last week's bodiless papers were never
+   attempted — the queue is doing what it was told. Options for Reto:
+   (a) tighten `stub_rank` minting (a higher bar before a citation earns
+   a stub); (b) widen fetch capacity (more fetcher workers / larger
+   claim limit); (c) accept it as backlog and keep prios honest — the
+   explore-fraction slice already surfaces unranked stubs. A mass
+   re-queue is NOT recommended: an `oa_requeued` stamp gives each stub
+   one front-of-queue bypass, and stamping 8k refs only reorders them
+   against the same drain rate.
+9. **Post-deploy verification of the 10-14 fixes (do not run now)** —
+   once `worktree-ingest-fix` lands:
+   - `put|paper` / `get|paper` error rates in `tool_calls` should drop
+     to ~0 (`status='error'` count by tool name, 24 h before vs after).
+   - The 95 OPEN `acquire:unverified` stubs predate the outage (minted
+     via title= or verify=False over weeks); the outage puts minted
+     nothing — they were rejected outright. To re-verify each stub's
+     identifier now that S2 is up, re-acquire it (idempotent — re-pins
+     prio=1, re-runs the S2 lookup):
+     ```sql
+     SELECT r.ref_id, i.id_kind, i.id_value
+     FROM refs r
+     JOIN ref_tags rt ON rt.ref_id = r.ref_id
+     JOIN tags t ON t.tag_id = rt.tag_id
+     JOIN ref_identifiers i ON i.ref_id = r.ref_id
+     WHERE t.namespace = 'OPEN' AND t.value = 'acquire:unverified'
+       AND r.kind = 'paper' AND r.retired_at IS NULL
+       AND i.id_kind IN ('doi', 'arxiv', 's2');
+     ```
+     then per row: `put(kind='paper', identifier='<id_kind>:<id_value>')`.
+     Clearing the OPEN tag after a verified mint is a manual step —
+     `put(kind='paper', id='<slug>', untags=['acquire:unverified'])`.
+   - embed_batch: failures should no longer carry LockNotAvailable;
+     remaining failures should be embedder-unreachable/infra only.
+   - Ref 464821 (last bodiless anon) is a no-pdf stub — it will drain
+     through the fetch queue like the rest; no special action.
 
 ## Horizon
 

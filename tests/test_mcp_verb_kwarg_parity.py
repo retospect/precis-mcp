@@ -167,6 +167,8 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # -- put: paper acquire() conveniences -----------------------------
         # citation= (f7301ad67): free-text citation resolved to a DOI;
         # reachable through args={...}, rare enough to stay off the verb.
+        # (Reaching them via args= became *actually* true 2026-10-14 —
+        # cc1b88ffc widened paper.put's ARGS_KEYS to the acquire knobs.)
         ("paper", "put", "citation"),
         ("paper", "put", "context_ref_id"),
         ("paper", "put", "verify"),

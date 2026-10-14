@@ -172,6 +172,20 @@ nothing applied): **456 of 900 refs flagged (51%)**, 0 missing PDFs, 0 errors.
 `pa494` and `pa47024` are flagged as expected. Two of eight sampled papers
 cited by dr42995 are flagged too. Hand check:
 
+**Tightened 2026-10-14** (a read-only sample found 30 of 30 of the 456
+false positives — ~95% driven by dash-emitting symbol fonts alone,
+gr228594 comment 8): the detector now requires a *positive tell* for the
+weak signals. `suspected` fires on the deterministic font signatures
+(mode a/b) unconditionally, or on weak evidence — an Adv* font, C0
+residue, kept-symbols (`± ° × Å`; en/em dashes dropped) with zero Greek —
+only alongside (a) a spelled micro-unit word **and** a bare-`m` quantity
+(`6 m diameter`, `7.3 m/s`), or (b) a stray-space `V/ mm`. Read-only
+reproduction over the same 900-ref cohort on stored chunks: **2 tell
+refs** — pa494 (real scar) and ref 933 (borderline: a scaling-laws paper
+with real bare metres); pa47024 carries the tell too but sits outside
+the cohort. The dry-run count on a corpus node should now be ≈ the
+tell count plus any genuine mode-a/b fonts. Hand check (pre-tightening):
+
 - **ref 422 — real scar:** "1.24 ± 0.19 m-thickness", and 6 Greek chunks
   elsewhere in the paper.
 - **ref 398 — probably a false positive or mild.**

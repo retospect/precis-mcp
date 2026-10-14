@@ -148,6 +148,39 @@ class TestResolveDoi:
         with pytest.raises(NotFound, match="DOI .* not ingested"):
             _maybe_resolve_doi(store, "10.9999/nope")
 
+    def test_doi_wrappers_and_case_resolve(self, store: Store) -> None:
+        """gr484234: every DOI spelling resolves — doi:/DOI: prefixes,
+        doi.org URLs, mixed case — not only the bare ``10.`` form."""
+        _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
+        for raw in (
+            "doi:10.1111/jnc.13915",
+            "DOI:10.1111/JNC.13915",
+            "https://doi.org/10.1111/jnc.13915",
+            "http://dx.doi.org/10.1111/JNC.13915",
+            "doi.org/10.1111/jnc.13915",
+            "10.1111/JNC.13915",
+        ):
+            assert _maybe_resolve_doi(store, raw) == "wang2020state", raw
+
+    def test_arxiv_form_resolves(self, store: Store) -> None:
+        rid = _seed_paper(store, slug="smith2019foo", doi=None)
+        store.insert_ref_identifiers(rid, [("arxiv", "2401.00001", "manual")])
+        for raw in ("2401.00001", "arxiv:2401.00001v2", "2401.00001~3"):
+            got = _maybe_resolve_doi(store, raw)
+            assert got.startswith("smith2019foo"), raw
+
+    def test_unknown_arxiv_raises_notfound_with_mint_hint(self, store: Store) -> None:
+        with pytest.raises(NotFound) as exc_info:
+            _maybe_resolve_doi(store, "2401.99999")
+        hint = exc_info.value.next or ""
+        assert isinstance(hint, str)
+        assert "put(kind='paper', arxiv='2401.99999')" in hint
+
+    def test_bare_digits_passthrough_to_slug_path(self, store: Store) -> None:
+        """Digits look PubMed-shaped but are also the slug resolver's
+        ref_id fallback — a miss must not intercept them."""
+        assert _maybe_resolve_doi(store, "9999999") == "9999999"
+
     def test_unknown_doi_hint_routes_to_working_recovery(self, store: Store) -> None:
         """The NotFound-DOI hint must not suggest the broken
         ``cited_in='doi:...'`` recipe (gr311341) — the link parser
@@ -205,7 +238,7 @@ def _seed_paper(
     authors: list[dict[str, Any]] | None = None,
     year: int | None = 2020,
     journal: str = "Nature",
-    doi: str = "10.1/x",
+    doi: str | None = "10.1/x",
     abstract: str = "An abstract.",
     blocks: list[str] | None = None,
     embedder: MockEmbedder | None = None,

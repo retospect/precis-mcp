@@ -141,6 +141,34 @@ def test_se_get_keys_are_union_of_view_args() -> None:
     assert SeHandler.ARGS_KEYS["get"] == union
 
 
+def test_acquire_kwargs_in_args_reach_paper_put(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr484234: ``args={'doi': …, 'verify': False}`` reaches
+    ``paper.put`` — the acquire knobs are declared ``ARGS_KEYS`` and the
+    handler maps them out of ``args=`` itself (cc1b88ffc). Genuinely
+    unknown keys are still rejected."""
+    from precis.handlers import paper as paper_mod
+    from precis.ingest.semantic_scholar import S2ResolverError
+
+    def _down(*_a: object) -> None:
+        raise S2ResolverError("offline in test")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _down)
+
+    out = _call(
+        runtime_with_store, "paper", "put", {"doi": "10.5555/acq-x", "verify": False}
+    )
+    assert "[error:BadInput]" not in out, out
+    assert "minted stub" in out, out
+
+    bad = _call(
+        runtime_with_store, "paper", "put", {"doi": "10.5555/acq-y", "zz_nope": 1}
+    )
+    assert "not accepted by paper.put" in bad, bad
+    assert "zz_nope" in bad
+
+
 @pytest.mark.parametrize("kind", ["gripe", "todo"])
 def test_unknown_put_args_key_points_at_comment_idiom(
     runtime_with_store: PrecisRuntime, kind: str

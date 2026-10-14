@@ -1341,7 +1341,22 @@ class RefsMixin:
         OpenAlex, pdf_hash), use
         :meth:`IdentifiersMixin.find_paper_ref_by_identifier` directly.
         ``None`` when no live paper carries this DOI."""
-        ref_id = self.find_paper_ref_by_identifier(doi)  # type: ignore[attr-defined]
+        return self.find_paper_slug_by_identifier(doi)
+
+    def find_paper_slug_by_identifier(self, value: str) -> str | None:
+        """Look up a paper's slug (cite_key) by ANY identifier form —
+        DOI (bare, ``doi:``-prefixed or doi.org URL), arXiv id
+        (``2401.00001``, ``cs.LG/0501001``, ``arxiv:``-prefixed),
+        S2 paperId, PubMed, OpenAlex, MAG, DBLP, pdf_hash — scheme
+        auto-detected per :func:`detect_identifier_scheme` and resolved
+        through the ``ref_identifiers`` index. Lets the paper ``get``
+        entry point address a paper by any of the identifier spellings
+        callers actually paste (gr484234), not only the minted slug.
+
+        Returns ``None`` when no live paper carries this identifier
+        (also when the matched ref has no cite_key registered — rare;
+        the caller can fall back to its ``pa<ref_id>`` handle)."""
+        ref_id = self.find_paper_ref_by_identifier(value)  # type: ignore[attr-defined]
         if ref_id is None:
             return None
         # Reverse-lookup the cite_key for this ref_id.

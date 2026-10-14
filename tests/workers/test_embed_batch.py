@@ -195,6 +195,69 @@ def test_embedder_unavailable_fails_infra_and_releases_claims(
 # ── concurrent-with-standing-pass safety ─────────────────────────────────
 
 
+def test_lock_contention_on_write_retries_and_drains(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recurring prod embed_batch failure head: the chunk_embeddings
+    insert takes FOR KEY SHARE on the claimed chunks row, which under
+    ``lock_timeout=5s`` loses to any sibling holding the row briefly —
+    ``LockNotAvailable`` used to kill the whole job mid-batch. The write
+    is retriable: it must replay in a fresh transaction and the job must
+    finish, not fail."""
+    from psycopg.errors import LockNotAvailable
+
+    _patch_embedder(monkeypatch, make_mock_bge_m3())
+    seed_chunks(store, [f"chunk {i}" for i in range(3)])
+
+    calls = {"n": 0}
+    real_write_ok = EmbedHandler.write_ok
+
+    def _flaky(self: EmbedHandler, conn: Any, chunk_id: int, payload: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LockNotAvailable("lock not available")
+        real_write_ok(self, conn, chunk_id, payload)
+
+    monkeypatch.setattr(EmbedHandler, "write_ok", _flaky)
+
+    ctx = _mk_ctx(store, params={"limit": 100})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert ctx.failures == []
+    assert _embedding_count(store) == 3
+    assert _claim_count(store) == 0
+
+
+def test_lock_contention_exhausted_fails_infra(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When contention outlives the retry budget the job still fails
+    ``infra`` with a self-describing reason — the retry budget never
+    turns a real wedge into a hang."""
+    from psycopg.errors import LockNotAvailable
+
+    _patch_embedder(monkeypatch, make_mock_bge_m3())
+    seed_chunks(store, ["a"])
+
+    monkeypatch.setattr(
+        EmbedHandler,
+        "write_ok",
+        lambda *a, **k: (_ for _ in ()).throw(LockNotAvailable("dead row")),
+    )
+    # Skip the backoff loop — the contract under test is "exhaustion →
+    # infra failure", and LockNotAvailable is what retry_locked reraises.
+    monkeypatch.setattr(embed_batch, "retry_locked", lambda fn, **kw: fn())
+
+    ctx = _mk_ctx(store, params={"limit": 100})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert len(ctx.failures) == 1
+    reason, failure_class = ctx.failures[0]
+    assert failure_class == "infra"
+    assert "lock contention" in reason
+    assert _embedding_count(store) == 0
+
+
 def test_concurrent_with_standing_pass_never_double_claims(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

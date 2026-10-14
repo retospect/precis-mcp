@@ -46,13 +46,21 @@ _CLEAN = {
 }
 
 
-def _record(*, fonts: list[dict[str, Any]], c0: int = 0) -> dict[str, Any]:
+def _record(
+    *,
+    fonts: list[dict[str, Any]],
+    c0: int = 0,
+    bare_unit_numbers: int = 0,
+    stray_space_units: int = 0,
+) -> dict[str, Any]:
     return summarize(
         fonts=fonts,
         c0_controls=c0,
         greek_chars=0,
-        micron_without_sign=0,
+        micron_without_sign=1,
         orphan_spans=0,
+        bare_unit_numbers=bare_unit_numbers,
+        stray_space_units=stray_space_units,
     )
 
 
@@ -63,11 +71,11 @@ def _pdf(tmp_path: Path, name: str) -> str:
 
 
 def test_flags_scars_only_and_writes_on_apply(tmp_path: Path) -> None:
-    scar_c0 = _pdf(tmp_path, "pa47024.pdf")  # mode (b) residue: C0 survived
+    scar_c0 = _pdf(tmp_path, "pa47024.pdf")  # residue + a positive tell
     clean = _pdf(tmp_path, "clean.pdf")
     store = _FakeStore([_ref(1, scar_c0), _ref(2, clean), _ref(3, "/nowhere.pdf")])
     records = {
-        scar_c0: _record(fonts=[], c0=6),
+        scar_c0: _record(fonts=[], c0=6, bare_unit_numbers=2),
         clean: _record(fonts=[_CLEAN]),
     }
 

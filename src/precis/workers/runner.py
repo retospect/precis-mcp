@@ -16,7 +16,11 @@ proceeds normally.
 
 Database errors during ``write_ok`` / ``write_failed`` *do*
 propagate — they indicate something deeper (connection lost, schema
-drift, disk full) where blind retry is more harm than good.
+drift, disk full) where blind retry is more harm than good. The one
+exception is lock contention (``LockNotAvailable`` /
+``DeadlockDetected`` under prod's ``lock_timeout=5s``): the phase-3
+write goes through :func:`precis.utils.db_retry.retry_locked`, the
+helper that exists for exactly this fleet-contention class.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from dataclasses import dataclass
 
 from precis.embedder import EmbedderUnavailable
 from precis.store import Store
+from precis.utils.db_retry import retry_locked
 from precis.workers import activity
 from precis.workers.base import WorkerHandler
 
@@ -146,23 +151,34 @@ def run_handler_once(
         )
         return BatchResult(handler=handler.name, claimed=0, ok=0, failed=0)
 
-    # Phase 3 — write results + release claims, in a fresh short transaction.
-    with store.pool.connection() as conn:
-        for row, payload in zip(rows, results, strict=True):
-            if isinstance(payload, Exception):
-                log.warning(
-                    "worker: %s process failed for chunk %d: %s",
-                    handler.name,
-                    row.chunk_id,
-                    payload,
-                )
-                handler.write_failed(conn, row.chunk_id, repr(payload))
-                n_failed += 1
-            else:
-                handler.write_ok(conn, row.chunk_id, payload)
-                n_ok += 1
-        handler.release_claims(conn, [r.chunk_id for r in rows])
-        conn.commit()
+    # Phase 3 — write results + release claims, in a fresh short
+    # transaction, retried on lock contention: writes like the
+    # chunk_embeddings insert take FOR KEY SHARE on the claimed chunks
+    # row, which under prod's lock_timeout=5s collides with any sibling
+    # holding the row briefly (LockNotAvailable / DeadlockDetected — the
+    # recurring embed_batch job failure head). retry_locked re-runs the
+    # write in a fresh transaction each attempt; write_ok is an upsert so
+    # a partially-written previous attempt replays safely. Genuine DB
+    # faults (connection drop, schema drift) still propagate.
+    def _write() -> None:
+        with store.pool.connection() as conn:
+            for row, payload in zip(rows, results, strict=True):
+                if isinstance(payload, Exception):
+                    log.warning(
+                        "worker: %s process failed for chunk %d: %s",
+                        handler.name,
+                        row.chunk_id,
+                        payload,
+                    )
+                    handler.write_failed(conn, row.chunk_id, repr(payload))
+                else:
+                    handler.write_ok(conn, row.chunk_id, payload)
+            handler.release_claims(conn, [r.chunk_id for r in rows])
+            conn.commit()
+
+    retry_locked(_write, label=f"{handler.name} write")
+    n_ok = sum(1 for p in results if not isinstance(p, Exception))
+    n_failed = len(results) - n_ok
 
     return BatchResult(
         handler=handler.name,

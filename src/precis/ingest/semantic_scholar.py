@@ -224,17 +224,56 @@ def _id_keys_for_paper(paper: Any) -> set[str]:
     return keys
 
 
-def get_paper_by_id(paper_id: str, api_key: str = "") -> dict[str, Any] | None:
-    """Fetch a single paper by S2 paper ID, DOI, or arxiv ID."""
+class S2ResolverError(RuntimeError):
+    """The S2 lookup failed for a reason OTHER than "no such record" —
+    transport fault, rate limit, auth rejection, 5xx, or a broken client
+    install. Distinct from a genuine not-found (``ObjectNotFoundException``)
+    so a caller gating on resolution (``PaperHandler.acquire``'s
+    hallucinated-identifier check) can tell "S2 is down right now" apart
+    from "this DOI doesn't exist" instead of laundering both into the same
+    None (gr483930 — an S2-side outage reported every real DOI as a
+    hallucinated id).
+    """
+
+
+def get_paper_by_id(
+    paper_id: str, api_key: str = "", *, propagate: bool = False
+) -> dict[str, Any] | None:
+    """Fetch a single paper by S2 paper ID, DOI, or arxiv ID.
+
+    Returns the normalised dict, or ``None`` when S2 has no record for the
+    id (HTTP 404) — or, with the default ``propagate=False``, on ANY
+    failure (the graceful-degrade contract the ingest/enrich call sites
+    rely on). ``propagate=True`` narrows the None to its true meaning —
+    "S2 answered: no such paper" — and raises :class:`S2ResolverError`
+    for every other failure (outage, 429 storm, bad key, missing fields).
+
+    The TTL cache stores hits and genuine not-founds, never resolver
+    faults — caching an outage as a miss would keep the id "unresolvable"
+    for an hour after recovery (gr483930). A ``Paper`` record with no
+    ``paperId`` (S2's odd ``{}`` body on some misses) counts as not-found.
+    """
+    from semanticscholar.SemanticScholarException import ObjectNotFoundException
+
     key = ("id", paper_id.strip().lower())
     hit, cached = _cache_get(key)
     if hit:
         return dict(cached) if cached is not None else None
-    sch = _client(api_key)
     try:
+        sch = _client(api_key)
         paper = _get_with_retry(sch, paper_id)
-    except Exception:
+    except ObjectNotFoundException:
+        _cache_put(key, None)
         return None
+    except Exception as exc:
+        if propagate:
+            raise S2ResolverError(
+                f"Semantic Scholar lookup for {paper_id!r} failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        return None
+    if paper is not None and not getattr(paper, "paperId", None):
+        paper = None
     out = _normalize(paper) if paper else None
     _cache_put(key, out)
     return dict(out) if out is not None else None

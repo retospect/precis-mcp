@@ -63,11 +63,22 @@ def _tags(store: Store, ref_id: int) -> set[str]:
         ("s2:abc123", ("s2", "abc123")),
         ("pubmed:99", ("pubmed", "99")),
         ("10.1038/nature10352", ("doi", "10.1038/nature10352")),
+        # Canonicalisation (gr484234): DOI wrappers/case and arXiv
+        # version suffixes collapse to the ref_identifiers form.
+        ("DOI:10.1/X", ("doi", "10.1/x")),
+        ("https://doi.org/10.1/X", ("doi", "10.1/x")),
+        ("http://dx.doi.org/10.1/x", ("doi", "10.1/x")),
+        ("doi.org/10.1/x", ("doi", "10.1/x")),
+        ("doi:https://doi.org/10.1/X", ("doi", "10.1/x")),
         ("2401.00001", ("arxiv", "2401.00001")),
-        ("2401.00001v2", ("arxiv", "2401.00001v2")),
+        ("2401.00001v2", ("arxiv", "2401.00001")),
+        ("arxiv:2401.00001v3", ("arxiv", "2401.00001")),
+        ("https://arxiv.org/abs/2401.00001", ("arxiv", "2401.00001")),
+        ("cs.LG/0501001", ("arxiv", "cs.LG/0501001")),
         ("not an id", None),
         ("", None),
         ("doi:", None),
+        ("doi:not.a.doi", ("doi", "not.a.doi")),
     ],
 )
 def test_parse_acquire_identifier(raw: str, expected: tuple[str, str] | None) -> None:
@@ -354,6 +365,71 @@ def test_acquire_title_hint_with_unresolved_id_marks_unverified(
     assert "minted stub" in r.body
     rid = _ref_id(r.body)
     assert "acquire:unverified" in _tags(store, rid)
+
+
+# ── resolver outage: mint unverified, don't reject (gr483930) ───────
+
+
+def _meta(store: Store, ref_id: int) -> dict:
+    import json
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    assert row is not None
+    return json.loads(row[0]) if isinstance(row[0], str) else dict(row[0])
+
+
+def test_acquire_resolver_fault_mints_unverified(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr483930: an S2 outage is NOT 'did not resolve'. When the lookup
+    itself faults, acquire mints the stub marked unverified (tag + meta)
+    instead of rejecting a real identifier as hallucinated."""
+    from precis.ingest.semantic_scholar import S2ResolverError
+
+    def _down(*_a: object) -> None:
+        raise S2ResolverError("Semantic Scholar lookup failed: 429")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _down)
+    r = handler.acquire(identifier="doi:10.1038/nature10352")
+    assert "minted stub" in r.body
+    assert "resolver unreachable" in r.body
+    rid = _ref_id(r.body)
+    assert "acquire:unverified" in _tags(store, rid)
+    meta = _meta(store, rid)
+    assert meta.get("acquire_unverified") is True
+    assert "Semantic Scholar" in str(meta.get("acquire_unverified_reason", ""))
+    assert ("doi", "10.1038/nature10352") in _identifiers(store, rid)
+
+
+def test_acquire_resolver_fault_without_s2_lib_mints_unverified(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken/absent client lib (ModuleNotFoundError) is also a
+    resolver fault — mint unverified rather than reject or crash."""
+
+    def _nobib(*_a: object) -> None:
+        raise ModuleNotFoundError("No module named 'semanticscholar'")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _nobib)
+    r = handler.acquire(identifier="arxiv:2401.00001")
+    assert "minted stub" in r.body
+    rid = _ref_id(r.body)
+    assert "acquire:unverified" in _tags(store, rid)
+    assert _meta(store, rid).get("acquire_unverified") is True
+
+
+def test_acquire_not_found_still_rejects_under_verify(
+    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard is unchanged for a genuine not-found: resolver
+    ANSWERED 'no such paper' → BadInput. (The fault case above mints
+    unverified; the outage classification is the whole point.)"""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    with pytest.raises(BadInput, match="did not resolve"):
+        handler.acquire(identifier="doi:10.fake/hallucination")
 
 
 # ── enrichment ──────────────────────────────────────────────────────

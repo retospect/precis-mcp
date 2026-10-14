@@ -61,6 +61,7 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store._identifiers_ops import detect_identifier_scheme
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE
 from precis.utils import handle_registry
 from precis.utils.authors import (
@@ -197,22 +198,28 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
 
 
 # Identifier prefixes the gated ``acquire`` tool accepts in its
-# ``identifier=`` slot. Bare DOIs (``10....``) and arXiv ids
-# (``NNNN.NNNNN``) are inferred without a prefix.
+# ``identifier=`` slot. Bare DOIs (``10....``, including doi.org URL
+# forms) and arXiv ids are inferred without a prefix.
 _ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed")
-_ARXIV_BARE_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
 
 def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
     """Parse an ``acquire`` identifier into an ``(id_kind, id_value)`` pair.
 
     Accepts prefixed forms (``doi:10.1/x``, ``arxiv:2401.00001``,
-    ``s2:<id>``, ``pubmed:<id>``) and infers bare DOIs (``10.``-prefixed)
-    and bare arXiv ids. Returns ``None`` when nothing recognisable is
-    found — the caller turns that into a ``BadInput`` with a usage hint.
-    DOIs are lower-cased to match the chase worker's normalisation so
-    identifier-collapse stays case-insensitive.
+    ``s2:<id>``, ``pubmed:<id>``) and infers bare DOIs, URL-form DOIs
+    (``https://doi.org/10.…``, ``doi.org/10.…``), and bare arXiv ids.
+    DOI and arXiv values are canonicalised through
+    :func:`precis.identity.normalize_doi` / ``normalize_arxiv`` so the
+    spellings callers actually paste — ``DOI:10.1/X``, another ``doi:``
+    inside the value, a doi.org URL, arXiv URLs and version suffixes —
+    collapse to the same ``(kind, canonical)`` pair the
+    ``ref_identifiers`` collapse probe and the S2 lookup expect
+    (gr484234). Returns ``None`` when nothing recognisable is found —
+    the caller turns that into a ``BadInput`` with a usage hint.
     """
+    from precis.identity import normalize_arxiv, normalize_doi
+
     s = raw.strip()
     if not s:
         return None
@@ -220,13 +227,19 @@ def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
     for pfx in _ACQUIRE_ID_PREFIXES:
         if low.startswith(pfx + ":"):
             val = s[len(pfx) + 1 :].strip()
+            if pfx == "doi":
+                val = normalize_doi(val) or ""
+            elif pfx == "arxiv":
+                val = normalize_arxiv(val) or ""
             if not val:
                 return None
-            return (pfx, val.lower() if pfx == "doi" else val)
-    if low.startswith("10."):
-        return ("doi", low)
-    if _ARXIV_BARE_RE.match(s):
-        return ("arxiv", s)
+            return (pfx, val)
+    doi = normalize_doi(s)
+    if doi is not None and doi.startswith("10."):
+        return ("doi", doi)
+    arxiv = normalize_arxiv(s)
+    if arxiv is not None:
+        return ("arxiv", arxiv)
     return None
 
 
@@ -234,22 +247,24 @@ def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | No
     """Best-effort Semantic Scholar enrichment for a fresh stub.
 
     Returns the normalised S2 metadata dict (``title`` / ``year`` /
-    ``doi`` / ``arxiv_id`` / ``s2_id`` / ...) or ``None`` on any failure
-    (offline, rate-limited, not found, unsupported id kind). **Never
-    raises** — enrichment is a nicety; the stub mints with or without
-    it. Patched out in tests to keep them offline.
+    ``doi`` / ``arxiv_id`` / ``s2_id`` / ...) or ``None`` when S2 has no
+    record for the identifier (a genuine not-found). Propagates a
+    resolver-side failure — ``S2ResolverError`` from the strict lookup,
+    or a plain ``Exception`` when the resolver can't even run (the
+    ``semanticscholar`` lib absent/broken in this venv) — so the caller
+    can tell "S2 says no such paper" apart from "S2 can't answer right
+    now" (gr483930: under the old catch-all-None contract an S2 outage
+    reported every real DOI as a hallucinated id). Patched out in tests
+    to keep them offline.
     """
-    try:
-        from precis.ingest.semantic_scholar import get_paper_by_id
+    from precis.ingest.semantic_scholar import get_paper_by_id
 
-        if id_kind == "doi":
-            return get_paper_by_id(f"doi:{id_value}")
-        if id_kind == "arxiv":
-            return get_paper_by_id(f"arxiv:{id_value}")
-        if id_kind == "s2":
-            return get_paper_by_id(id_value)
-    except Exception:
-        return None
+    if id_kind == "doi":
+        return get_paper_by_id(f"doi:{id_value}", propagate=True)
+    if id_kind == "arxiv":
+        return get_paper_by_id(f"arxiv:{id_value}", propagate=True)
+    if id_kind == "s2":
+        return get_paper_by_id(id_value, propagate=True)
     return None
 
 
@@ -674,9 +689,18 @@ class PaperHandler(Handler):
         stub_title = title.strip() if title and title.strip() else None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
+        resolver_err: Exception | None = None
         s2_meta: dict[str, Any] | None = None
         if id_pair is not None:
-            meta = _lookup_acquire_metadata(*id_pair)
+            try:
+                meta = _lookup_acquire_metadata(*id_pair)
+            except Exception as exc:
+                # A resolver fault (S2 unreachable, rate-limited, broken
+                # client) is NOT evidence the identifier is wrong —
+                # mint the stub marked unverified instead of rejecting a
+                # real DOI as "hallucinated" (gr483930).
+                meta = None
+                resolver_err = exc
             if meta:
                 # Lazy import mirrors ``_lookup_acquire_metadata`` above —
                 # ``semanticscholar`` is gated behind the ``[paper]``
@@ -701,10 +725,19 @@ class PaperHandler(Handler):
                         )
                         if pair not in identifiers:
                             identifiers.append(pair)
+            elif resolver_err is not None:
+                # The resolver could not answer at all (S2 outage, 429
+                # storm, broken client) — mint anyway, marked unverified.
+                # Rejecting here reports real identifiers as
+                # "hallucinated" and loses the request entirely; the stub
+                # is the "fetch NOW" the caller asked for and the fetch
+                # cascade's non-S2 legs don't need this lookup
+                # (gr483930).
+                unverified = True
             elif verify and not has_title:
                 # Strict path: caller gave us only an identifier and the
-                # resolver returned nothing. We cannot distinguish
-                # "DOI doesn't exist" from "S2 is down right now" — the
+                # resolver returned nothing — a *genuine* not-found, not
+                # an outage (resolver faults mint unverified above). The
                 # safe default is to reject hallucinated identifiers, and
                 # let the caller pass ``verify=False`` for known-real
                 # niche / brand-new papers, or add a ``title=`` hint
@@ -763,6 +796,18 @@ class PaperHandler(Handler):
                         set_by="agent",
                         conn=conn,
                     )
+                    # meta marker for the later re-check pass; carries
+                    # the resolver failure's reason when the unverified
+                    # mint was an outage, not an unresolvable id.
+                    from psycopg.types.json import Jsonb
+
+                    patch: dict[str, Any] = {"acquire_unverified": True}
+                    if resolver_err is not None:
+                        patch["acquire_unverified_reason"] = str(resolver_err)[:300]
+                    conn.execute(
+                        "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                        (Jsonb(patch), ref_id),
+                    )
             if ctx_id is not None:
                 self.store.add_link(
                     src_ref_id=ctx_id,
@@ -782,6 +827,11 @@ class PaperHandler(Handler):
 
         state = "minted stub" if created else "already tracked"
         parts = [f"acquire: {state} paper id={ref_id}"]
+        if resolver_err is not None:
+            parts.append(
+                "(identifier resolver unreachable — minted unverified; "
+                "fetch proceeds regardless)"
+            )
         if pinned:
             parts.append("(pinned to front of fetch queue)")
         if identifiers:
@@ -3325,39 +3375,64 @@ def _render_citation_candidates(citation: str, cands: list[dict[str, Any]]) -> s
 
 
 def _maybe_resolve_doi(store: Store, raw: str) -> str:
-    """Translate a DOI-form paper id to its slug form.
+    """Translate an identifier-form paper id to its slug form.
 
-    When an agent hands us a DOI (e.g. ``10.1111/jnc.13915``) as the
-    paper id, route it through ``meta->>'doi'`` and substitute the
-    slug so the rest of the pipeline (``_parse_paper_id``,
+    When an agent hands us a paper identifier — a DOI
+    (``10.1111/jnc.13915``, or the ``doi:``/``doi.org`` URL spellings
+    callers actually paste), an arXiv id (``2401.00001``,
+    ``cs.LG/0501001``, ``arxiv:``-prefixed), or any other scheme
+    :func:`detect_identifier_scheme` recognises (S2 sha1, PubMed,
+    OpenAlex…) — route it through ``ref_identifiers`` and substitute
+    the slug so the rest of the pipeline (``_parse_paper_id``,
     :func:`resolve_live_slug_ref`, rendering) stays slug-addressed
-    and unchanged.
+    and unchanged (gr484234: only the bare ``10.`` shape used to
+    resolve; every other accepted spelling fell through to "illegal
+    character" or a misleading slug NotFound).
 
     Chunk selectors ride along: ``10.1111/jnc.13915~38`` →
     ``wang2020dopamine~38``. View paths are *not* supported on
-    DOI-form ids — DOI suffixes can legally contain ``/``, so we
+    identifier-form ids — DOI suffixes can legally contain ``/``, so we
     can't disambiguate ``10.1000/foo/abstract`` between "DOI
     literal" and "DOI + view=abstract". The caller must use the
-    ``view=`` kwarg alongside a DOI.
+    ``view=`` kwarg alongside an identifier-form id.
 
-    Non-DOI inputs (starting with anything other than ``10.``) are
-    returned unchanged — this function is a no-op on slug-form ids.
+    Non-identifier inputs are returned unchanged — this function is a
+    no-op on slug-form ids. Bare digits (``_PUBMED_RE``-shaped) that
+    resolve to nothing also pass through, so the slug resolver's
+    digits→ref_id fallback keeps working.
 
-    Raises :class:`NotFound` when the DOI is well-formed but no live
-    paper carries it; the error carries a ``search(kind='paper',
-    q='...')`` hint rather than falling through to the generic
-    ``"illegal character"`` message the slug regex would emit.
+    Raises :class:`NotFound` when the identifier is well-formed but no
+    live paper carries it; the error carries an acquire hint rather
+    than falling through to the generic ``"illegal character"``
+    message the slug regex would emit.
     """
-    if not raw.startswith("10."):
+    base, sep, sel = raw.partition("~")
+    if not base:
         return raw
-    m = _DOI_RE.match(raw)
-    if m is None:
-        # Looks like a DOI prefix but doesn't match the full shape —
-        # let the slug parser emit its usual error.
+    scheme = detect_identifier_scheme(base)
+    if scheme is None:
         return raw
-    doi, selector = m.group(1), (m.group(2) or "")
-    slug = store.find_paper_slug_by_doi(doi)
+    slug = store.find_paper_slug_by_identifier(base)
+    if slug is None and base.isdigit():
+        # Pure digits are also the digits→ref_id fallback the slug
+        # resolver admonishes (resolve_live_slug_ref's A1 branch) —
+        # leave them there rather than report an unheld PubMed id.
+        return raw
     if slug is None:
+        ident = base
+        if scheme == "doi":
+            from precis.identity import normalize_doi
+
+            ident = normalize_doi(base) or base
+        mint = {
+            "doi": f"put(kind='paper', doi='{ident}')",
+            "arxiv": f"put(kind='paper', arxiv='{ident}')",
+            "s2": f"put(kind='paper', identifier='s2:{ident}')",
+            "pubmed": f"put(kind='paper', identifier='pubmed:{ident}')",
+        }.get(
+            scheme,
+            "put(kind='paper', title='<title>')",
+        )
         # The old headline recovery here was
         # ``put(kind='finding', cited_in='doi:{doi}', ...)`` —
         # ``FindingHandler._resolve_cited_in`` (via the shared link
@@ -3368,24 +3443,24 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         # precis-finding-help's acquisition mode) register the claim
         # now with ``wants=``/``provenance=`` instead of ``cited_in=``.
         raise NotFound(
-            f"paper with DOI {doi!r} not ingested",
+            f"paper with {scheme.upper()} {base!r} not ingested",
             next=(
-                f"put(kind='paper', doi='{doi}')  "
-                "to mint a stub for this DOI — the fetcher "
+                f"{mint}  "
+                "to mint a stub — the fetcher "
                 "(Unpaywall/arXiv/S2) tries an OA pull next pass; once "
                 "it lands, cite its chunk directly "
                 "(cited_in='<slug-once-fetched>~0'). To register the "
                 "claim right now instead of waiting: "
                 "put(kind='finding', title='<short claim>', "
                 "body='<claim + setup>', "
-                f"wants=[{{'doi': '{doi}'}}], "
+                f"wants=[{{{scheme!r}: '{ident}'}}], "
                 "provenance='<chunk you read the claim in>')  "
                 "— acquisition mode; a bare 'doi:' cited_in is rejected, "
                 "the link parser has no 'doi' kind. Alternatively: "
                 "search(kind='paper', q='<title>') for an existing slug."
             ),
         )
-    return slug + selector
+    return slug + ("~" + sel if sel else "")
 
 
 def _parse_paper_id(

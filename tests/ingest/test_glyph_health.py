@@ -14,11 +14,15 @@ from precis.ingest.glyph_health import (
     _parse_differences,
     _parse_tounicode,
     classify_font,
+    count_bare_unit_numbers,
     count_c0_controls,
     count_c0_in_spans,
     count_greek_chars,
     count_micron_words_without_micro_sign,
     count_orphan_single_char_spans,
+    count_stray_space_units,
+    count_symbol_chars,
+    has_positive_tell,
     is_adv_family,
     summarize,
 )
@@ -88,6 +92,66 @@ class TestMicronProse:
 
     def test_zero_when_no_micron_word(self) -> None:
         assert count_micron_words_without_micro_sign("100 mm thick membrane") == 0
+
+
+class TestSymbolCount:
+    def test_counts_kept_symbols(self) -> None:
+        assert count_symbol_chars("1.4 ± 0.1 Å at 20 °C × 2") == 4
+
+    def test_drops_en_and_em_dashes(self) -> None:
+        # Dashes alone drove 30/30 false positives in the 10-14 sample —
+        # they are ordinary range typography, not the symbol precondition.
+        assert count_symbol_chars("pp. 12–20 — and 2020–2025") == 0
+
+
+class TestBareUnitNumbers:
+    def test_counts_stripped_micro_metres(self) -> None:
+        # pa47024: "6 m diameter", "7.3 m/s", "35 m for a cavity radius
+        # of 75 m", "30 m s−1" — a lost μm reads as plain metres.
+        assert count_bare_unit_numbers("6 m diameter, 7.3 m/s, 35 m and 75 m") == 4
+
+    def test_ignores_milli_units_and_square_metres(self) -> None:
+        assert (
+            count_bare_unit_numbers(
+                "10 mA, 100 mm, 5 ms, 3 m², 20 mV, 3500 m<sup>2</sup>/g"
+            )
+            == 0
+        )
+
+    def test_ignores_micro_sign(self) -> None:
+        assert count_bare_unit_numbers("6 μm and 6 µm") == 0
+
+
+class TestStraySpaceUnits:
+    def test_counts_stray_space_unit(self) -> None:
+        # pa494: "1–2 V/ mm" for "V/µm" — the space stands where the
+        # broken glyph sat.
+        assert count_stray_space_units("threshold fields 1–2 V/ mm") == 1
+
+    def test_ignores_compact_unit(self) -> None:
+        assert count_stray_space_units("1 V/mm is correct") == 0
+
+
+class TestPositiveTell:
+    def test_pa494_shape(self) -> None:
+        assert has_positive_tell(
+            "threshold field values of few Volts per micron "
+            "are in the range of 1–2 V/ mm"
+        )
+
+    def test_pa47024_shape(self) -> None:
+        assert has_positive_tell(
+            "untethered mobile milli/microrobots, micrometre scale, "
+            "microparticles with 6 m diameter"
+        )
+
+    def test_dash_only_text_no_tell(self) -> None:
+        assert not has_positive_tell(
+            "published 2010–2020 — pages 12–20, see refs [3]–[7]"
+        )
+
+    def test_micron_word_without_bare_number_no_tell(self) -> None:
+        assert not has_positive_tell("the membrane thickness was several microns")
 
 
 # ── Font family / glyph name recognition ─────────────────────────────
@@ -334,9 +398,10 @@ class TestSummarize:
         assert rec["modes"] == []
         assert rec["suspect_fonts"] == []
 
-    def test_c0_residue_alone_suspected(self) -> None:
-        # Even with no font data (e.g. fitz unavailable), surviving residue
-        # is enough to flag.
+    def test_c0_residue_alone_not_suspected(self) -> None:
+        # Tightened 2026-10-14 (gr228594): surviving residue WITHOUT a
+        # positive tell no longer flags — benign dash-emitting fonts left
+        # exactly this signature in the 30/30 false-positive sample.
         rec = summarize(
             fonts=[],
             c0_controls=3,
@@ -345,5 +410,84 @@ class TestSummarize:
             orphan_spans=0,
             font_error="pymupdf (fitz) unavailable",
         )
-        assert rec["suspected"] is True
+        assert rec["suspected"] is False
         assert rec["font_analysis_error"] == "pymupdf (fitz) unavailable"
+
+    def test_c0_residue_with_tell_suspected(self) -> None:
+        # The same residue plus a spelled micro-unit word AND a bare-m
+        # quantity is the pa47024-shaped scar, and it flags.
+        rec = summarize(
+            fonts=[],
+            c0_controls=3,
+            greek_chars=0,
+            micron_without_sign=2,
+            orphan_spans=0,
+            bare_unit_numbers=5,
+            font_error="pymupdf (fitz) unavailable",
+        )
+        assert rec["suspected"] is True
+
+    def test_dash_only_paper_not_suspected(self) -> None:
+        # The 30/30 FP shape: an honestly-encoded Adv* font present (its
+        # dashes/ranges set in the publisher's symbol font), no tell.
+        rec = summarize(
+            fonts=[
+                {
+                    "basefont": "KKLGAD+AdvPSTOT",
+                    "has_tounicode": True,
+                    "has_encoding": True,
+                }
+            ],
+            c0_controls=2,
+            greek_chars=0,
+            micron_without_sign=0,
+            orphan_spans=0,
+            symbol_chars=0,
+        )
+        assert rec["suspected"] is False
+        assert rec["adv_family_present"] is True
+
+    def test_symbol_precondition_with_tell_suspected(self) -> None:
+        # Kept symbols (± ° × Å) + zero Greek + a positive tell flags
+        # even with no font evidence — the cheap-version precondition.
+        rec = summarize(
+            fonts=[],
+            c0_controls=0,
+            greek_chars=0,
+            micron_without_sign=1,
+            orphan_spans=0,
+            symbol_chars=4,
+            bare_unit_numbers=1,
+        )
+        assert rec["suspected"] is True
+
+    def test_stray_space_tell_suspected(self) -> None:
+        # pa494's "V/ mm" alone is a positive tell with weak evidence.
+        rec = summarize(
+            fonts=[],
+            c0_controls=1,
+            greek_chars=0,
+            micron_without_sign=1,
+            orphan_spans=0,
+            stray_space_units=2,
+        )
+        assert rec["suspected"] is True
+
+    def test_micron_word_without_bare_unit_not_suspected(self) -> None:
+        # A spelled "micron" alone is not a tell — the bare-m quantity is
+        # the positive half; a paper talking about microns in correct
+        # units stays clean.
+        rec = summarize(
+            fonts=[
+                {
+                    "basefont": "KKLGAD+AdvPSTOT",
+                    "has_tounicode": True,
+                    "has_encoding": True,
+                }
+            ],
+            c0_controls=0,
+            greek_chars=0,
+            micron_without_sign=3,
+            orphan_spans=0,
+        )
+        assert rec["suspected"] is False

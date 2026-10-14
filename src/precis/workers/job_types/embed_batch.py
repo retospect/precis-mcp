@@ -30,7 +30,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from psycopg.errors import DeadlockDetected, LockNotAvailable
+
 from precis.embedder import EmbedderUnavailable
+from precis.utils.db_retry import retry_locked
 from precis.workers.embed import EmbedHandler, resolve_embedder, unembedded_chunk_count
 from precis.workers.executors.job_inproc import renew_own_lease
 from precis.workers.job_types import JobTypeSpec
@@ -178,16 +181,34 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
             )
             return None
 
-        with ctx.store.pool.connection() as conn:
-            for row, payload in zip(rows, results, strict=True):
-                if isinstance(payload, Exception):
-                    handler.write_failed(conn, row.chunk_id, repr(payload))
-                    failed_total += 1
-                else:
-                    handler.write_ok(conn, row.chunk_id, payload)
-                    ok_total += 1
-            handler.release_claims(conn, [r.chunk_id for r in rows])
-            conn.commit()
+        def _write_batch(rows: Any = rows, results: Any = results) -> None:
+            with ctx.store.pool.connection() as conn:
+                for row, payload in zip(rows, results, strict=True):
+                    if isinstance(payload, Exception):
+                        handler.write_failed(conn, row.chunk_id, repr(payload))
+                    else:
+                        handler.write_ok(conn, row.chunk_id, payload)
+                handler.release_claims(conn, [r.chunk_id for r in rows])
+                conn.commit()
+
+        # The chunk_embeddings insert takes FOR KEY SHARE on the claimed
+        # chunks row — under prod's lock_timeout=5s that collides with a
+        # sibling write holding the row briefly and used to kill the whole
+        # job mid-batch (LockNotAvailable, the recurring embed_batch
+        # failure head). Retriable, so retry rather than fail: retry_locked
+        # re-runs _write_batch in a fresh transaction each attempt and only
+        # reraises once the budget is spent.
+        try:
+            retry_locked(_write_batch, label="embed_batch write")
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            ctx.record_failure(
+                f"embed_batch: write blocked by lock contention after "
+                f"{processed} chunk(s) embedded: {exc}",
+                failure_class="infra",
+            )
+            return None
+        ok_total += sum(1 for p in results if not isinstance(p, Exception))
+        failed_total += sum(1 for p in results if isinstance(p, Exception))
         processed += len(rows)
 
     with ctx.store.pool.connection() as conn:
