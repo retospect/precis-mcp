@@ -17,6 +17,8 @@ runtime — no direct SQL, no surface drift.
 
 * ``GET  /drive``                        — the merged list + sidebar.
 * ``GET  /drive/tags/suggest``            — tag-filter autocomplete.
+* ``GET  /drive/complete``                — slash-command completions
+  for the query box (gr486407).
 * ``POST /drive/new``                     — create a cad/structure/figure
   artifact (draft creation stays on ``/drafts/new``).
 * ``POST /drive/create``                  — new folder (optionally nested).
@@ -37,13 +39,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
 from precis.handlers._query_identifier import resolve_query_identifier
@@ -93,6 +96,41 @@ _MANUAL_LIST_SIZE = 50
 #: Same autocomplete backend as the legacy ``/items/tags/suggest`` — one
 #: function, two mounted paths (no logic fork).
 router.add_api_route("/tags/suggest", _tags_suggest, methods=["GET"])
+
+#: A ``/word`` still being typed at the end of the query head (gr486407).
+#: Token chars exclude "/" so a pasted ``/c/<handle>`` site path or URL is
+#: never mistaken for a slash command.
+_SLASH_TOKEN_RE = re.compile(r"(?:^|\s)/([A-Za-z0-9_-]*)$")
+
+
+@router.get("/complete")
+async def complete(request: Request, text: str = "", pos: int = -1) -> JSONResponse:
+    """Slash-command completions for the drive query box (gr486407).
+
+    ``text`` is the whole input value, ``pos`` the caret. Completions
+    answer only when the head ends in a ``/token`` still being typed —
+    one row per known kind, the same roster ``_split_kind_tokens``
+    resolves against (bucket kinds + the ``items_kinds`` cookie's saved
+    set, mirroring ``index``'s ``all_kind_defs``), with ``_kind_help``
+    one-liners, so the popdown can't drift from the parser. Anything else
+    (plain text, a pasted path) is ``[]`` — the client then treats it as
+    an ordinary search. Returns ``[{name, insert, desc}]``.
+    """
+    head = text[:pos] if 0 <= pos <= len(text) else text
+    m = _SLASH_TOKEN_RE.search(head)
+    if m is None:
+        return JSONResponse([])
+    prefix = m.group(1).lower()
+    saved = [x for x in (request.cookies.get("items_kinds") or "").split(",") if x]
+    hub = getattr(get_runtime(request), "hub", None)
+    kinds = {kk for bucket in _kind_buckets(hub).values() for kk in bucket} | set(saved)
+    items = [
+        {"name": k, "insert": f"/{k}", "desc": _kind_help(k)}
+        for k in sorted(kinds)
+        if k.startswith(prefix) or (prefix.endswith("s") and k.startswith(prefix[:-1]))
+    ]
+    return JSONResponse(items)
+
 
 _KIND_ICON = {
     "folder": "📁",

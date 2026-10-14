@@ -113,13 +113,31 @@
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
   <input type="hidden" name="scope" value="{{ scope }}" x-ref="scope" />
   <div class="flex flex-wrap items-end gap-2">
-    <div class="flex-1 min-w-[16rem]" data-tour="drive-search">
+    <div class="relative flex-1 min-w-[16rem]" data-tour="drive-search"
+         @click.outside="slashOpen = false">
       <label for="drive-query" class="block text-xs text-slate-500 mb-0.5">Search</label>
       <input id="drive-query" type="search" name="q" value="{{ q }}" autofocus
-             placeholder="Search work, a handle or a DOI" @input="submitForm(1000)"
+             placeholder="Search work, a handle or a DOI" @input="onQueryInput()"
+             x-ref="q" @keydown="onQueryKey($event)"
              x-init="$el.setSelectionRange($el.value.length, $el.value.length)"
              class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
-      <p class="mt-0.5 text-[11px] text-slate-400">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest; a handle or DOI jumps straight to the item.</p>
+      {# Slash-command popdown (gr486407): while the query ends in a
+         "/token" the debounced submit stays off and this lists the kind
+         commands /drive/complete serves — the same roster
+         _split_kind_tokens resolves. mousedown.prevent on a row picks
+         before the input's blur can swallow the click. #}
+      <div x-show="slashOpen" x-cloak
+           class="absolute left-0 right-0 z-30 mt-0.5 max-h-72 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
+        <template x-for="(s, i) in slashItems" :key="s.insert">
+          <button type="button" @mousedown.prevent="pickSlash(s)" @mousemove="slashSel = i"
+                  :class="{ 'bg-sky-50': i === slashSel }"
+                  class="block w-full px-3 py-1.5 text-left text-sm hover:bg-sky-50">
+            <code class="font-medium" x-text="s.insert"></code>
+            <span class="ml-2 text-xs text-slate-500" x-text="s.desc"></span>
+          </button>
+        </template>
+      </div>
+      <p class="mt-0.5 text-[11px] text-slate-400">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest — type <code>/</code> for the command list; a handle or DOI jumps straight to the item.</p>
     </div>
     <div>
       <label for="drive-sort" class="block text-xs text-slate-500 mb-0.5">Sort</label>
@@ -241,6 +259,7 @@
       allKindDefs, kinds: selectedKinds, tags: selectedTags, discoverKinds,
       sourceKinds, artifactKinds, designKinds, workKinds, machineKinds, derivedKinds,
       kindQuery: '', tagQuery: '', suggestions: [], _t: null,
+      slashItems: [], slashSel: 0, slashOpen: false, _slashAll: null,
       // Every filter change is a full GET navigation, which re-renders the
       // <details> closed; carry its open state across in sessionStorage.
       init() {
@@ -283,6 +302,66 @@
           const r = await fetch('/drive/tags/suggest?q=' + encodeURIComponent(term));
           this.suggestions = await r.json();
         } catch (e) { this.suggestions = []; }
+      },
+      // gr486407 — a trailing "/token" is an incomplete slash command: the
+      // debounced search must not fire (it reads as a page reload) and the
+      // command popdown opens instead. Token chars exclude "/", so a pasted
+      // /c/<handle> site path still falls through to the URL jump.
+      slashToken() {
+        const el = this.$refs.q;
+        const head = el.value.slice(0, el.selectionStart ?? el.value.length);
+        return head.match(/(?:^|\s)\/([A-Za-z0-9_-]*)$/);
+      },
+      // Every token a complete "/word" (/draft , /draft /paper ) — still
+      // mid-expression, no free text yet: keep the debounced search off.
+      slashComposing(v) {
+        const toks = v.trim().split(/\s+/).filter(t => t);
+        return toks.length > 0 && toks.every(t => /^\/[A-Za-z0-9_-]+$/.test(t));
+      },
+      onQueryInput() {
+        const v = this.$refs.q.value;
+        const m = this.slashToken();
+        if (m) {
+          clearTimeout(this._t);
+          this.showSlash(m[1]);
+          return;
+        }
+        this.slashOpen = false;
+        this.slashItems = [];
+        if (this.slashComposing(v)) { clearTimeout(this._t); return; }
+        this.submitForm(1000);
+      },
+      async showSlash(prefix) {
+        if (this._slashAll === null) {
+          try {
+            const r = await fetch('/drive/complete?text=%2F');
+            this._slashAll = r.ok ? await r.json() : [];
+          } catch (e) { this._slashAll = []; }
+        }
+        const p = prefix.toLowerCase();
+        this.slashItems = this._slashAll.filter(
+          s => s.name.startsWith(p) || (p.endsWith('s') && s.name.startsWith(p.slice(0, -1))));
+        this.slashSel = 0;
+        this.slashOpen = this.slashItems.length > 0;
+      },
+      pickSlash(s) {
+        const el = this.$refs.q;
+        const m = this.slashToken();
+        if (!m) return;
+        const pos = el.selectionStart ?? el.value.length;
+        const start = pos - m[1].length - 1;
+        el.value = el.value.slice(0, start) + s.insert + ' ' + el.value.slice(pos);
+        el.setSelectionRange(start + s.insert.length + 1, start + s.insert.length + 1);
+        this.slashOpen = false;
+        this.slashItems = [];
+        el.focus();
+      },
+      onQueryKey(e) {
+        if (!this.slashOpen || !this.slashItems.length) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.slashSel = (this.slashSel + 1) % this.slashItems.length; }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); this.slashSel = (this.slashSel + this.slashItems.length - 1) % this.slashItems.length; }
+        else if (e.key === 'Enter') { e.preventDefault(); this.pickSlash(this.slashItems[this.slashSel]); }
+        else if (e.key === 'Escape') { e.preventDefault(); this.slashOpen = false; }
       },
     }));
   });
