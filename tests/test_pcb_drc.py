@@ -328,6 +328,68 @@ def test_check_annular_ring_none_field_never_crashes():
     assert drc.check_annular_ring(model, aluminum) == []
 
 
+def test_check_annular_ring_slotted_pad_measures_the_lateral_ring():
+    """gr484771, taz15-blank's four USB2 shell GND slots: a plated slot
+    that pierces its pad's edge along the long axis is an authored OPEN
+    slot — no end ring exists to measure, and none is required. The floor
+    the check must hold is the LATERAL ring across the slot's minor axis
+    (``drill`` is the cutter width). The old check read the slot's long
+    axis against the pad's width (directly for axis-aligned pads, as a
+    conservative round for polygon/oblique ones) and reported a 0.000mm
+    ring on all four."""
+    jlc_min = _CAP4.jlc_min["annular_ring_mm"]
+    assert jlc_min is not None
+    # The taz15-blank shape: pad 1.6x1.1, a 0.6mm cutter swept 0.5mm
+    # end-centre to end-centre along the pad's SHORT axis — the slot
+    # stadium reaches both pad ends (end ring 0.000mm by design) while
+    # the lateral ring is a generous (1.6-0.6)/2 = 0.5mm. Quiet.
+    open_slot = {
+        "net": "GND",
+        "shape": "obround",
+        "layer": "B.Cu",
+        "x": 0.0,
+        "y": 0.0,
+        "w": 1.6,
+        "h": 1.1,
+        "drill": 0.599999,
+        "slot": [[0.0, -0.25], [0.0, 0.25]],
+    }
+    # A polygon land measured on its own outline (the old conservative
+    # branch flagged this too): 2.0x1.0 ring, a 0.9mm-span/0.5mm cutter
+    # slot inside it — lateral ring (1.0-0.5)/2 = 0.25mm. Quiet.
+    poly_pad = {
+        "net": "GND",
+        "shape": "polygon",
+        "layer": "F.Cu",
+        "x": 0.0,
+        "y": 10.0,
+        "w": 2.0,
+        "h": 1.0,
+        "poly": [[-1.0, 9.5], [1.0, 9.5], [1.0, 10.5], [-1.0, 10.5]],
+        "drill": 0.5,
+        "slot": [[-0.45, 10.0], [0.45, 10.0]],
+    }
+    # Same obround shape as the first, but the cutter is too wide for
+    # the copper beside it: (1.6-1.4)/2 = 0.1mm < jlc_min.
+    too_wide = {
+        "net": "GND",
+        "shape": "obround",
+        "layer": "B.Cu",
+        "x": 10.0,
+        "y": 0.0,
+        "w": 1.6,
+        "h": 1.1,
+        "drill": 1.4,
+        "slot": [[10.0, -0.2], [10.0, 0.2]],
+    }
+    model = {"layers": ["F.Cu", "B.Cu"], "pads": [open_slot, poly_pad, too_wide]}
+    findings = drc.check_annular_ring(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert findings[0].objects[0]["x"] == 10.0
+    assert findings[0].margin_mm == pytest.approx(0.1 - jlc_min, abs=1e-4)
+
+
 def test_check_annular_ring_fires_on_a_drilled_pad_hole():
     """pcb-ewod-multitile Slice 2 round 3: a plaza via is, BY DESIGN, a
     drilled THT footprint pad, never a ``model["copper"]`` via row (see
@@ -2403,13 +2465,29 @@ def test_annular_ring_slot_ok_when_pad_wraps_the_capsule(rot):
 
 
 @pytest.mark.parametrize("rot", [0.0, 90.0])
-def test_annular_ring_slot_too_narrow_along_the_slot_errors(rot):
-    # 1.6 along vs 1.5 slot: 0.05 mm ring on the end caps.
-    findings = _slot_ring_findings(1.6, 1.4, rot)
+def test_annular_ring_slot_end_ring_is_not_a_floor(rot):
+    # 1.6 along vs 1.5 slot: the stadium reaches the pad's ends. Since
+    # gr484771 that is an authored OPEN slot, not a violation — what the
+    # floor still sees is the lateral ring, (1.4-0.5)/2 = 0.45mm here.
+    assert _slot_ring_findings(1.6, 1.4, rot) == []
+
+
+@pytest.mark.parametrize("rot", [0.0, 90.0])
+def test_annular_ring_slot_too_narrow_across_the_slot_errors(rot):
+    # 0.6 across vs 0.5 cutter: 0.05mm of copper beside the slot's long
+    # edges, below the 0.15mm JLC floor.
+    findings = _slot_ring_findings(2.4, 0.6, rot)
     assert len(findings) == 1 and findings[0].severity == "error"
 
 
-def test_annular_ring_oblique_slot_is_conservative_and_says_so():
+def test_annular_ring_oblique_slot_measured_on_the_rotated_outline():
+    # pad_rot=45 makes the pad oblique; the ring is now measured exactly
+    # against the rotated land (lateral 0.45mm), not rounded conservatively
+    # off the slot's long axis.
     pads = _slot_pads(2.4, 1.4, pad_rot=45.0)
+    assert (
+        drc.check_annular_ring({"layers": ["F.Cu", "B.Cu"], "pads": pads}, _CAP4) == []
+    )
+    pads = _slot_pads(2.4, 0.6, pad_rot=45.0)
     findings = drc.check_annular_ring({"layers": ["F.Cu", "B.Cu"], "pads": pads}, _CAP4)
-    assert findings and "conservatively" in findings[0].detail
+    assert len(findings) == 1 and findings[0].severity == "error"

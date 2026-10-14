@@ -2285,10 +2285,10 @@ def test_news_unparseable_cron_keeps_the_floor(store) -> None:
 def test_news_budget_lookup_failure_keeps_the_floor_and_the_conn(
     store, monkeypatch
 ) -> None:
-    def boom(conn, floor):
+    def boom(conn, _job_types, floor):
         conn.execute("SELECT 1/0")
 
-    monkeypatch.setattr(health_digest, "_news_budget", boom)
+    monkeypatch.setattr(health_digest, "_recurring_budget", boom)
     _seed_news_ref(store, hours_ago=9.0)
     with store.pool.connection() as conn:
         out = health_digest._freshness_layer1(conn)
@@ -2472,3 +2472,67 @@ def test_router_files_no_gripe_for_an_acked_alert(store) -> None:
     _ack(store, ref_id)
     assert _route_findings(store) == frozenset()
     assert store.list_refs(kind="gripe", tags=["STATUS:open"]) == []
+
+
+# ── recurring-schedule freshness budgets (al481399 / al481520) ─────────
+
+
+def _seed_recurring(store, job_type: str, cron: str, *, paused: bool = False) -> int:
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=f"watch {job_type}",
+        meta={
+            "schedule": {"cron": cron, "backfill_missed": False},
+            "executor": "claude_inproc",
+            "job_type": job_type,
+            "params": {},
+        },
+    )
+    store.add_tag(
+        ref.id,
+        Tag.closed("STATUS", "paused" if paused else "open"),
+        set_by="system",
+    )
+    return int(ref.id)
+
+
+def test_recurring_budget_daily_lane_stays_near_the_floor(store) -> None:
+    _seed_recurring(store, "news_poll", "0 5 * * *")
+    with store.pool.connection() as conn:
+        budget, note = health_digest._recurring_budget(conn, ("news_poll",), 8.0)
+    assert budget == pytest.approx(26.0, abs=2.0)
+    assert "'0 5 * * *'" in note
+
+
+def test_recurring_budget_weekly_lane_gets_a_weekly_budget(store) -> None:
+    # al481399: card_forge's watch moved to '30 1 * * 1' (Monday 01:30
+    # UTC) when install_cast_watches reconciled the crons on 2026-10-12 —
+    # the fixed 26h budget then read a healthy weekly lane as stale.
+    _seed_recurring(store, "card_forge", "30 1 * * 1")
+    with store.pool.connection() as conn:
+        budget, _note = health_digest._recurring_budget(conn, ("card_forge",), 26.0)
+    assert budget > 6 * 24.0
+
+
+def test_recurring_budget_unions_two_weekly_producers(store) -> None:
+    # al481520: cast_audio narrates BOTH the Sunday meditation and the
+    # Monday reading brief. The union's biggest gap is the ~6.7-day
+    # Monday→Sunday stretch — NOT the ~7.5h between the two fires, which
+    # is what a window-internal-only measure would see (a ~9h budget
+    # reading the lane stale days before Sunday).
+    _seed_recurring(store, "meditation", "0 19 * * 0")
+    _seed_recurring(store, "reading_brief", "30 2 * * 1")
+    with store.pool.connection() as conn:
+        budget, _note = health_digest._recurring_budget(
+            conn, ("reading_brief", "meditation"), 26.0
+        )
+    assert budget > 4 * 24.0
+
+
+def test_recurring_budget_no_live_schedule_keeps_the_floor(store) -> None:
+    _seed_recurring(store, "card_forge", "0 5 * * *", paused=True)
+    with store.pool.connection() as conn:
+        budget, note = health_digest._recurring_budget(conn, ("card_forge",), 26.0)
+    assert budget == 26.0
+    assert "no live" in note

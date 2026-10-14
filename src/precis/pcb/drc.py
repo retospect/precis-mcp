@@ -1311,6 +1311,110 @@ def check_trace_width(
 # ── annular ring (vias) ────────────────────────────────────────────────
 
 
+def _pad_boundary_edges(
+    pad: dict[str, Any],
+) -> list[tuple[float, float, float, float]]:
+    """The pad's land outline, board frame, as boundary segments — its
+    ``poly`` ring when it carries one (a polygon pad, or the true rotated
+    outline :func:`precis.pcb.realize.pads_for_ir` emits for an oblique
+    land), else the w×h rect rotated by ``oblique_rot`` when the pad
+    recorded one (``oblique_rot`` is instance+pad rotation, so for a
+    mirrored bottom pad whose pad-local ``rot`` was nonzero the rect here
+    is the nearest available outline, not the exact one — the poly path
+    above is what the DRC model actually feeds for those). An obround pad
+    is read on its bbox: the stadium's side walls ARE the bbox edges, so
+    a lateral measurement is exact everywhere but right at the end arcs,
+    where it errs a hair generous."""
+    poly = pad.get("poly")
+    if poly:
+        pts = [(float(p[0]), float(p[1])) for p in poly]
+    else:
+        w = float(pad.get("w", 0.0))
+        h = float(pad.get("h", w))
+        hw, hh = w / 2.0, h / 2.0
+        rot = math.radians(float(pad.get("oblique_rot") or 0.0))
+        c, s = math.cos(rot), math.sin(rot)
+        cx, cy = float(pad["x"]), float(pad["y"])
+        pts = [
+            (cx + px * c - py * s, cy + px * s + py * c)
+            for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+        ]
+    return [
+        (
+            pts[i][0],
+            pts[i][1],
+            pts[(i + 1) % len(pts)][0],
+            pts[(i + 1) % len(pts)][1],
+        )
+        for i in range(len(pts))
+    ]
+
+
+def _slot_lateral_ring_mm(pad: dict[str, Any], slot: Any, drill: float) -> float:
+    """The copper left BESIDE a plated slot — the annular ring a fab floor
+    can actually hold a slotted pad to. Measured across the slot's minor
+    axis: the pad boundary's nearest approach to the slot's end-centre
+    line within the slot's own span, minus the cutter radius (``drill``
+    is already the slot's minor dimension, the round cutter width — the
+    same convention :func:`precis.pcb.padplace._slot_centre_line`
+    authors).
+
+    The ring at the slot's ENDS is deliberately not part of this figure.
+    A slot that pierces its pad's edge along the long axis is an authored
+    open slot — taz15-blank's four USB-C shell GND slots are exactly one
+    (pad 1.1×1.6mm, the 0.6mm slot spanning the pad's full short axis, so
+    the ring the old per-axis ``min`` read at the ends was 0.000mm on
+    every one — gr484771) — and the fab plates it as drawn. What must
+    still meet the floor is the LATERAL ring, the copper wrapping the
+    slot's long edges."""
+    (sx1, sy1), (sx2, sy2) = slot
+    dx, dy = sx2 - sx1, sy2 - sy1
+    span = math.hypot(dx, dy)
+    if span < 1e-9:
+        # A degenerate slot line carries no axis; judge it as the round
+        # hole it degenerates to, against the pad's narrow side.
+        w = float(pad.get("w", 0.0))
+        h = float(pad.get("h", w))
+        dia = float(pad.get("land_min_mm") or min(w, h))
+        return (dia - drill) / 2.0
+    ux, uy = dx / span, dy / span
+    mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
+    half = span / 2.0
+    nearest = math.inf
+    for ex1, ey1, ex2, ey2 in _pad_boundary_edges(pad):
+        # In slot coordinates (u along the slot, v across it, origin the
+        # span midpoint) keep only the boundary facing the slot's SIDES:
+        # the strip |a| <= half. Edges past the slot's ends never enter
+        # it, so an open end contributes nothing by construction.
+        a1 = (ex1 - mx) * ux + (ey1 - my) * uy
+        t1 = -(ex1 - mx) * uy + (ey1 - my) * ux
+        a2 = (ex2 - mx) * ux + (ey2 - my) * uy
+        t2 = -(ex2 - mx) * uy + (ey2 - my) * ux
+        da = a2 - a1
+        if da == 0.0:
+            if not -half <= a1 <= half:
+                continue
+            ta, tb = t1, t2
+        else:
+            s0, s1 = (-half - a1) / da, (half - a1) / da
+            if s0 > s1:
+                s0, s1 = s1, s0
+            s0, s1 = max(s0, 0.0), min(s1, 1.0)
+            if s0 > s1:
+                continue
+            ta = t1 + (t2 - t1) * s0
+            tb = t1 + (t2 - t1) * s1
+        # t is linear over the clipped interval, so its |.| bottoms out
+        # at whichever end sits nearer the slot line — or exactly 0 where
+        # the edge crosses it (the slot's side is outside the pad).
+        nearest = min(nearest, 0.0 if ta * tb <= 0 else min(abs(ta), abs(tb)))
+    if nearest is math.inf:
+        # No pad boundary beside the slot at all: nothing wraps its
+        # sides, so there is no ring — a certain violation.
+        return -drill / 2.0
+    return nearest - drill / 2.0
+
+
 def _drilled_pad_ring_items(model: dict[str, Any]) -> list[dict[str, Any]]:
     """Every drilled THT footprint pad's own physical hole, deduplicated to
     ONE entry per hole. :func:`precis.pcb.padplace.place_footprint_pads`
@@ -1394,32 +1498,14 @@ def check_annular_ring(
         # land's real narrow side (realize.pads_for_ir).
         dia = float(pad.get("land_min_mm") or min(w, h))
         drill = float(pad["drill"])
-        ring = (dia - drill) / 2.0
-        note = ""
         slot = pad.get("slot")
         if slot:
-            # A slotted hole: the ring is the copper left around the slot
-            # capsule (end-centre line + round cutter of width ``drill``).
-            (sx1, sy1), (sx2, sy2) = slot
-            length = math.hypot(sx2 - sx1, sy2 - sy1) + drill
-            ang = math.atan2(abs(sy2 - sy1), abs(sx2 - sx1))  # 0..pi/2
-            plain = not pad.get("oblique_rot") and not pad.get("land_min_mm")
-            if (
-                plain
-                and pad.get("shape") != "polygon"
-                and (ang < 1e-6 or abs(ang - math.pi / 2) < 1e-6)
-            ):
-                horizontal = ang < 1e-6
-                along, across = (w, h) if horizontal else (h, w)
-                ring = min((along - length) / 2.0, (across - drill) / 2.0)
-            else:
-                # Oblique slot vs pad: keep the conservative round of the
-                # slot's long axis.
-                ring = (dia - length) / 2.0
-                note = (
-                    " (slot not axis-aligned with the pad: conservatively "
-                    "checked as a round hole of the slot's long axis)"
-                )
+            # A plated slot's floor is the LATERAL ring — the copper
+            # beside its long edges — not an end ring the pad never
+            # promised (:func:`_slot_lateral_ring_mm`; gr484771).
+            ring = _slot_lateral_ring_mm(pad, slot, drill)
+        else:
+            ring = (dia - drill) / 2.0
         result = _two_tier(ring, jlc_min, house)
         if result is None:
             continue
@@ -1433,8 +1519,7 @@ def check_annular_ring(
                 where=where,
                 detail=_margin_detail(
                     "THT pad annular ring", ring, capability, field, severity, margin
-                )
-                + note,
+                ),
                 objects=({"net": net, "x": pad.get("x"), "y": pad.get("y")},),
                 margin_mm=margin,
             )
