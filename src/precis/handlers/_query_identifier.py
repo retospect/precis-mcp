@@ -18,6 +18,7 @@ ref ids, so a caller can fall through to the ordinary search.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,10 @@ if TYPE_CHECKING:
 
 #: Candidate cap for an ambiguous prefix — only none/one/several matters.
 _PREFIX_LIMIT = 5
+
+#: A pasted doi.org URL unwraps to its DOI (gr484947 — the paste path for
+#: papers is a URL, not the bare ``10.…`` form).
+_DOI_URL_RE = re.compile(r"^https?://(?:dx\.)?doi\.org/(.+)$", re.IGNORECASE)
 
 
 @dataclass
@@ -48,6 +53,9 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
     text = (q or "").strip()
     if not text:
         return QueryIdentifierMatch()
+    doi_url = _DOI_URL_RE.match(text)
+    if doi_url is not None:
+        text = doi_url.group(1)
 
     parsed = handle_registry.parse(text)
     if parsed is not None:

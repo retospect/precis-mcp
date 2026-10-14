@@ -40,7 +40,7 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -210,6 +210,57 @@ _DERIVED_KINDS: tuple[str, ...] = ("anki", "citation")
 #: whole-kind pivot (the Status page's "Refs by kind" chips) needs the
 #: complete set or its count contradicts the chip that linked here.
 _FOLDER_ANY = "*"
+
+
+def _site_url_target(request: Request, q: str) -> str | None:
+    """A pasted UI URL (or bare site path) → its path+query, when the app
+    actually serves it; ``None`` otherwise (gr484947).
+
+    Single-token guard: only a lone word can be a URL, so prose that
+    merely *contains* "/" stays a plain search. For absolute
+    ``http(s)://`` URLs the pasted host is ignored — only the path (plus
+    query/fragment) is checked against the route table, and only a GET
+    route that fully matches wins (a POST-only endpoint or a path the app
+    never served can never hijack a search).
+    """
+    if not q or any(c.isspace() for c in q):
+        return None
+    if q.startswith("/"):
+        target = q
+    else:
+        u = urlparse(q)
+        if u.scheme not in ("http", "https") or not u.netloc:
+            return None
+        target = u.path or "/"
+        if u.query:
+            target += f"?{u.query}"
+        if u.fragment:
+            target += f"#{u.fragment}"
+    path = target.split("?", 1)[0].split("#", 1)[0]
+    if path == "/":
+        return None
+    from starlette.routing import Match
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "root_path": request.scope.get("root_path", ""),
+        "scheme": request.url.scheme,
+        "query_string": b"",
+        "headers": [],
+        "client": request.scope.get("client"),
+        "server": request.scope.get("server"),
+        "app": request.app,
+    }
+    for route in request.app.routes:
+        matches = getattr(route, "matches", None)
+        if matches is None:
+            continue
+        match, _child = matches(scope)
+        if match == Match.FULL:
+            return target
+    return None
 
 
 def _split_kind_tokens(q: str, known_kinds: Iterable[str]) -> tuple[list[str], str]:
@@ -547,6 +598,13 @@ async def index(
     # facets (k/state/folder/…) never affect resolution.
     ambiguous_ids: list[int] = []
     if q:
+        # A pasted URL/site path that this UI actually serves goes
+        # straight there (gr484947) — e.g. a ``/c/<handle>`` or
+        # ``/r/<kind>/<id>`` deep link — instead of being fed to the
+        # chunk search as free text.
+        target = _site_url_target(request, q)
+        if target is not None:
+            return RedirectResponse(url=target, status_code=302)
         hit = await asyncio.to_thread(resolve_query_identifier, store, q)
         ambiguous_ids = hit.ambiguous_ref_ids
         if hit.ref is not None:

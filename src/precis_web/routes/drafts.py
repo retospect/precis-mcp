@@ -33,10 +33,10 @@ from here:
   search-result name can't drift from the document's.
 * ``POST /drafts/{ident}/delete`` — soft-delete, gated on typing the
   name; atomic (ref ``retired_at`` + chunks retired), recoverable.
-* ``GET /c/{handle}`` — chunk handle → redirect: draft chunk
+* ``GET /c/{handle}`` — universal handle → redirect: draft chunk
   (``dc``/``¶``) into smartdraft focused there; paper/other chunk
-  (``pc``/``mc``/…) through the ``/r`` resolver. Click target of every
-  ``¶``/``§`` anchor.
+  (``pc``/``mc``/…) and record handles (``qu``/``me``/…) through the
+  ``/r`` resolver. Click target of every ``¶``/``§`` anchor.
 * ``GET /preview/chunk/{handle}`` — hover-popover quote for any chunk
   handle (draft or paper/other); backs ``§`` citation hovers.
 * Direct-edit/structural routes (``/text``, ``/table``, ``/block…``,
@@ -3385,11 +3385,14 @@ async def refresh_figure_data_package(
 
 @router.get("/c/{handle}")
 async def goto_chunk(request: Request, handle: str) -> Response:
-    """Resolve a chunk handle → redirect to where it lives. A draft chunk
+    """Resolve a handle → redirect to where it lives. A draft chunk
     (``dc<id>`` / ``¶<base58>``) lands in the draft reader anchored at the
     chunk; any **other** chunk handle (``pc<id>`` paper, ``mc``/``lc``/…)
     redirects through the ``/r/<kind>/<id>`` resolver at that chunk (e.g. a
-    paper → its PDF page). The click target of every ``¶``/``§`` anchor.
+    paper → its PDF page); and a **record** handle (``qu459585``,
+    ``me5``, ``td12`` …) redirects through ``/r`` too, so ``/c/<handle>``
+    is the one short-link shape every universal handle resolves through
+    (gr484947). The click target of every ``¶``/``§`` anchor.
 
     Nothing is threaded onto the redirect target — a workbench pane asks
     for chrome-less HTML with an ``HX-Request`` header that survives this
@@ -3419,6 +3422,16 @@ async def goto_chunk(request: Request, handle: str) -> Response:
             url=f"/r/{uc['kind']}/{uc['ref_id']}{query}",
             status_code=303,
         )
+    # Not a chunk handle — try a record handle (``qu459585``, ``me5`` …):
+    # ``/c/<handle>`` is the one short link shape every universal handle
+    # resolves through (gr484947 — quest and other record handles 404'd
+    # here). The ``/r`` resolver does the kind-specific landing.
+    resolved = store.resolve_handle(handle)
+    if resolved is not None:
+        url = f"/r/{resolved.kind}/{resolved.ref_id}"
+        if resolved.chunk_ord is not None:
+            url += f"?chunk={resolved.chunk_ord}"
+        return RedirectResponse(url=url, status_code=303)
     return templates.TemplateResponse(
         request,
         "error.html.j2",

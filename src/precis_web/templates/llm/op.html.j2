@@ -1,0 +1,62 @@
+{% extends "base.html.j2" %}
+{% block title %}LLM operations{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">LLM operations</h1>
+<p class="text-sm text-slate-500 mb-4">
+  One row per LLM call site (<code>source=</code>) — the operation
+  registry ∪ observed <code>llm_call_log</code> sources — with its
+  registry default and the model actually dispatched
+  (<strong>effective</strong>). Read-only; steering
+  (<code>llm.op.&lt;source&gt;</code> overrides) is edited on the
+  <a href="/status?tab=services" class="text-emerald-700 hover:underline">Services</a>
+  tab. Per-tier placement chains live at
+  <a href="/llm/chain" class="text-emerald-700 hover:underline">/llm/chain</a>.
+</p>
+
+<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+  <table class="min-w-full text-xs">
+    <thead class="bg-slate-50 text-slate-500">
+      <tr>
+        <th class="text-left font-medium px-3 py-2">operation</th>
+        <th class="text-left font-medium px-3 py-2">default</th>
+        <th class="text-left font-medium px-3 py-2">effective</th>
+        <th class="text-left font-medium px-3 py-2">steerable</th>
+        <th class="text-left font-medium px-3 py-2">last-seen model</th>
+        <th class="text-left font-medium px-3 py-2">last run</th>
+        <th class="text-left font-medium px-3 py-2">7d calls</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for op in llm_ops.rows %}
+      <tr class="align-top">
+        <td class="px-3 py-2">
+          <div class="font-medium"
+               {% if op.description or op.note %}
+               title="{{ op.description }}{% if op.note %}&#10;&#10;{{ op.note }}{% endif %}"
+               {% endif %}>
+            {{ op.label }}
+          </div>
+          <div class="text-[11px] text-slate-400 font-mono">{{ op.source }}</div>
+        </td>
+        <td class="px-3 py-2 font-mono text-[11px] text-slate-500">
+          {% if op.default_tier %}{{ op.default_tier }} / {{ op.default_model or '—' }}{% else %}—{% endif %}
+        </td>
+        <td class="px-3 py-2 font-mono text-[11px]">{{ op.effective }}</td>
+        <td class="px-3 py-2 text-[11px]">
+          {% if op.steerable %}
+          <span class="text-emerald-700">yes</span>
+          {% else %}
+          <span class="text-amber-700"{% if op.excluded_reason %} title="{{ op.excluded_reason }}"{% endif %}>no</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 font-mono text-[11px] text-slate-500">{{ op.last_seen_model or '—' }}</td>
+        <td class="px-3 py-2 text-[11px] text-slate-500">{{ op.last_run or 'never' }}</td>
+        <td class="px-3 py-2 text-[11px] tabular-nums">{{ op.calls_7d }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="px-3 py-4 text-slate-400">No operations recorded.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

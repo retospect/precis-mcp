@@ -1,0 +1,76 @@
+{% extends "base.html.j2" %}
+{% block title %}LLM chains{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">LLM chains</h1>
+<p class="text-sm text-slate-500 mb-4">
+  What each capability tier dispatches to <em>right now</em> — the rungs
+  the router walks, in order (slot 1 is tried first, later slots are the
+  failover ladder). Resolved through the same
+  <code>resolve_chain</code>/<code>resolve_model</code> dispatch uses, so
+  this can't drift from real routing. Overrides are edited on the
+  <a href="/status?tab=services" class="text-emerald-700 hover:underline">Services</a>
+  tab; the catalog of models on
+  <a href="/status?tab=models" class="text-emerald-700 hover:underline">Models</a>.
+  Per-operation routing lives at <a href="/llm/op" class="text-emerald-700 hover:underline">/llm/op</a>.
+</p>
+
+{% if llm_chains %}
+<div class="mb-4 flex items-center gap-2">
+  {% if llm_chains.cloud_enabled %}
+  <span class="rounded px-1.5 py-0.5 text-[11px] bg-emerald-50 text-emerald-700">cloud ON</span>
+  {% else %}
+  <span class="rounded px-1.5 py-0.5 text-[11px] bg-amber-50 text-amber-700">cloud OFF (local only)</span>
+  {% endif %}
+  <span class="text-xs text-slate-400">cloud backend <span class="font-mono">{{ active_backend }}</span></span>
+</div>
+{% endif %}
+
+<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+  {% for r in active_routing %}
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="flex items-center justify-between gap-2">
+      <span class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide
+        {% if r.tier == 'frontier' %}bg-violet-50 text-violet-700
+        {% elif r.tier == 'big' %}bg-sky-50 text-sky-700
+        {% elif r.tier == 'medium' %}bg-teal-50 text-teal-700
+        {% else %}bg-slate-100 text-slate-600{% endif %}">{{ r.tier }}</span>
+      <span class="text-[10px] rounded px-1.5 py-0.5
+        {% if r.source == 'operator chain' %}bg-amber-50 text-amber-700{% else %}bg-slate-50 text-slate-400{% endif %}"
+        title="{% if r.source == 'operator chain' %}an operator llm.chain.{{ r.tier }} override is set{% else %}the compiled default chain (no operator override){% endif %}">{{ r.source }}</span>
+    </div>
+    <table class="mt-2 w-full text-[11px]">
+      <thead class="text-[10px] uppercase tracking-wide text-slate-400">
+        <tr>
+          <th class="text-left font-medium">slot</th>
+          <th class="text-left font-medium">model</th>
+          <th class="text-left font-medium">placement</th>
+          <th class="text-left font-medium">transport</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for rung in r.rungs %}
+        <tr>
+          <td class="pr-2 tabular-nums text-slate-400">{{ loop.index }}</td>
+          <td class="pr-2 font-mono truncate" title="{{ rung.model }}">{{ rung.model }}</td>
+          <td class="pr-2 {% if rung.placement == 'cloud' %}text-amber-600{% else %}text-emerald-600{% endif %}">{{ rung.placement }}</td>
+          <td class="font-mono text-slate-500">{{ rung.transport }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-slate-400">—</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% set ov = (llm_chains.tiers | selectattr('tier', 'equalto', r.tier) | first) if llm_chains else none %}
+    {% if ov and ov.chain_json %}
+    <details class="mt-2 pt-2 border-t border-slate-100">
+      <summary class="text-[10px] uppercase tracking-wide text-slate-400 cursor-pointer">operator override</summary>
+      <pre class="mt-1 text-[10px] font-mono text-slate-500 whitespace-pre-wrap">{{ ov.chain_json }}</pre>
+    </details>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% if not active_routing %}
+<p class="text-sm text-slate-400">No routing information available.</p>
+{% endif %}
+{% endblock %}
