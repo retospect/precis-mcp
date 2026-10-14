@@ -100,8 +100,13 @@ graph-health-metrics, five parked gripes, and the seam with
    threads. Reto accepted the design (knowledge-mesh-10), adding version
    history. That is a `revisions` log off a stable head, written by a
    trigger: chosen over snapshot refs (§2b), and confirmed on
-   knowledge-mesh-11. Slice 0 waits on local-compute's castor serving
-   window. Slice 1a (0185) is live. Slice 1b is next after the measures
+   knowledge-mesh-11. **Slice 0 built 2026-10-14** (`mesh-evalsets`):
+   five frozen sets + the `precis mesh eval` runner (any OpenAI-compat
+   endpoint) + `accept_batch` sampled sign-off + the usefulness baseline
+   + the 80-item holdout awaiting Reto's labels; `mesh retest`
+   reproduces the packed pair's 0.794. Still waits on a serving window
+   to score a candidate — the runner needs only an endpoint URL.
+   Slice 1a (0185) is live. Slice 1b is next after the measures
    pilot gaps: the hub_refine due rule on the ledger, the `chunk_review`
    readers, `view='history'`/`'diff'` and the `(unrecorded)` count. The
    as-built choices are in the item's decisions log.

@@ -285,6 +285,45 @@ The log keeps every property and adds no node.
 - **Human sampling.** Reto sees a fixed sample of approved items per
   week as `waiting-for:reto`, not every proposal.
 
+### 4. USEFULNESS — is the mesh getting more navigable
+
+Reto 2026-10-14 added a mesh-usefulness metric to slice 0. Built as
+`precis mesh usefulness` (`mesh_eval.usefulness`, read-only, works on
+`agent_ro`). The five quantities, each a number a gardener pass or an
+upkeep lane should move:
+
+- **orphan rate** — per kind, live refs with no edge either direction.
+- **duplicate candidates** — per kind, groups of live refs sharing a
+  casefolded normalized title.
+- **stale nodes** — per kind, live refs untouched >90d, plus the
+  stale-and-orphaned subset.
+- **next-hop follow-through** — `tool_calls` verb→next-verb transitions
+  inside one `agentlog_id` session: how often a read (get/search/more)
+  leads to a deeper read or a write. Derivable only at verb granularity —
+  the ledger stores kwarg names, never values.
+- **review currency** — share of `reviews` rows whose `content_sha` still
+  equals the target's live `precis_target_sha`.
+
+**Prod baseline, 2026-10-14** (337,116 live refs):
+
+- orphans: 155,637 overall (46%), almost all machine kinds by design
+  (job 99.8%, news/alert/message/semanticscholar ~100%). On the knowledge
+  kinds: finding 13/4246 (0.3%), taxon 2/110, memory 1245/12160 (10.2%),
+  **skill 50/51 — near-total orphanage, a real upkeep finding**.
+- duplicate candidates (normalized title): paper 145 groups / 510 refs,
+  memory 45/147, citation 19/38, agentlog 45/962; the big counts are
+  system kinds (job 1,129 groups / 103,811 refs — title-keyed jobs, not
+  mesh problems).
+- stale >90d: memory 54.1% (but only 1.7% stale+orphan — memories get
+  updated, just not re-read via edges), citation 63.6%, finding 7.1%.
+- next-hop: **thinness, not signal** — only 25 `tool_calls` rows carry an
+  `agentlog_id` in 90d (the env-scoped `PRECIS_CURRENT_AGENTLOG` cascade
+  is dormant); the metric is live but the telemetry needs the
+  `links.meta.agentlog_id`-style stamp work from `graph-gardener.md`
+  in-scope item 6 before it reads as anything.
+- review currency: link 0.7% stale of 3,807, chunk 66.5% stale of 272
+  (chunk reviews predate the sha registry — expected), ref 0%.
+
 ## Explicitly NOT in scope
 
 - Choosing the serving model or server (local-compute Slice 0) or
@@ -352,6 +391,12 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
    `llm_eval` cannot reach it. local-compute opens a serving window (a LAN
    bind plus a temporary slot row, or the harness run on castor) after its
    above-64-stream load test, and pings when it is open.
+   **BUILT 2026-10-14** (`mesh-evalsets` worktree): `src/precis/mesh_eval/`
+   + `scripts/llm_eval/build_mesh_*.py` + `precis mesh
+   eval|usefulness|retest`. What remains open on this slice is the *run*:
+   no candidate has been scored yet — castor's serving window is still not
+   open (the runner accepts any OpenAI-compatible endpoint by config, so
+   any bench URL works when one exists). Details in the decisions log.
 1. **Ledger and history** (1a in migration 0185, 1b after it deploys;
    see the decisions log). One migration for `reviews`, `revisions` and
    its trigger, plus the sha registry, the backfill, hub_refine on the
@@ -449,3 +494,51 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
     Memories are small, and paper ingest exits before that step.
 - **[open]** Whether `reviews` should also replace `refs.human_verified_*`
   (27 rows). Leaning yes, as `target_kind='ref'`, `model` NULL.
+- **[decided 2026-10-14, Reto — sampled sign-off]** The production review
+  shape is: Sparks draft (categorise, link-add, merge/split proposals,
+  summarise, numeric extraction) → cheap deterministic checks → a frontier
+  model judges a **stratified sample per batch plus every merge/split**;
+  the batch is accepted when the sampled error rate is under the bar;
+  categorise and link-add auto-apply only once their bar holds. Plus a
+  mesh-usefulness metric. Built in slice 0: `mesh_eval.accept.accept_batch`
+  (seeded stratified sample, judge callable, one-sided Wilson bound →
+  accept/reject/escalate; judge failure or an empty sample escalates).
+- **[built 2026-10-14] Slice 0 as built** (`mesh-evalsets`, commits
+  aead24907/4875996f8/801dc6edb):
+  - `src/precis/mesh_eval/` — `sets` (JSONL fixture model: `_meta` header
+    + items; holdout items carry `gold: null` and `meta.reference_answer`),
+    `scorers` (deterministic per lane), `runner` (any OpenAI-compatible
+    endpoint via `llm_summarize.LlmClient`; per-lane accuracy + Wilson CI,
+    judged acceptance, reviewer cost/accepted, the two bars),
+    `retest` (ported `compare_runs.py`), `accept`, `usefulness`. CLI:
+    `precis mesh eval|usefulness|retest`. Tests: `tests/test_mesh_eval*.py`
+    (23 tests, fake judge/call_fn).
+  - Five frozen sets under `gold_set/local/` (gitignored, prod-derived,
+    agent_ro reads only): **categorise** 120 items / 373 gold mentions from
+    `taxonomy-packed300-v2` replaying `discovery.build_prompt` verbatim
+    (runner `--pack N` rebuilds the packed call shape), gold = folded keys;
+    **link-add** 120 items, 147 verified-edge positives + 376 judged
+    negatives — the judged negatives came from `meta.taproot_rejected`
+    memos (the deployed verifier's recorded no's), a better negative than
+    the spec's planned frontier-judge pass; 926 absence negatives remain
+    unjudged and flagged `absence`; **finding** 120 items, gold = verified
+    `corroborates` hubs per chunk, anchored/published hubs weighted 2x;
+    **merge** 59 graded items: 14 recorded merges (retired `refines`/
+    `superseded-by` → winner; 19 recorded in prod now, not 11) + 45
+    unmerged near-neighbours in the 0.14–0.45 bge-m3 band (below the
+    observed 0.102 twin distance are likely real twins — excluded);
+    **summarise** 60 items reusing `build_summarize_gold`'s sampling +
+    `score_summary`.
+  - **Holdout: 80 items** (20/lane over categorise/link-add/finding/merge)
+    stored unlabelled in `mesh_*_holdout_v1.jsonl` — Reto labels.
+  - **AC2 done**: `precis mesh retest` on taxonomy-packed100 ×
+    taxonomy-packed300-v2 reproduces folded 0.793 (hub-bootstrap p50
+    0.794) — matches the scratch `compare_runs.py` number.
+  - Runner usage: `precis mesh eval --set <jsonl>... --endpoint-url
+    http://<host>:<port>/v1 --model <id> [--judge-endpoint-url ... 
+    --judge-model ...] [--pack 4]`. The `--judge-*` arm is the frontier
+    review (generic correctness judge against gold; per-lane judge prompts
+    are a refinement).
+  - Not done on this slice: no candidate has been scored (no serving
+    window); the reviewed-bar's frontier-generation-cost input needs a
+    real run to price.

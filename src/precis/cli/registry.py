@@ -214,6 +214,11 @@ COMMANDS: tuple[Command, ...] = (
     ),
     _c("llm", "llm", "LLM catalog — model choice as a queryable resource."),
     _c(
+        "mesh",
+        "mesh",
+        "Mesh upkeep evals + usefulness metrics (local-mesh-upkeep).",
+    ),
+    _c(
         "heartbeat",
         "heartbeat",
         "Report this host's load + CPU temp to host_heartbeat.",
