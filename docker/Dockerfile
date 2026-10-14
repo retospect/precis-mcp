@@ -96,9 +96,18 @@ COPY pyproject.toml uv.lock /build/precis-mcp/
 
 # Install every locked dep into /opt/venv, but NOT precis-mcp itself
 # (--no-install-project). Stage `builder` does that on top.
-# uv.lock sources autocatpath from the PRIVATE catpath repo ([tool.uv.sources]),
-# so this sync needs the same gh_token secret as the dev-venv autocatpath layer
-# below — same credential-helper exposure, never embedded in a layer.
+#
+# PRECIS_DEPS_EXTRAS selects which extras sync. The default is every extra
+# MINUS `catalyst`/`catalyst-gpu`: their `autocatpath` resolves from the
+# PRIVATE retospect/catpath repo ([tool.uv.sources]), so a credential-less
+# build — publish.yml's public GHCR image — must not request it at all
+# (publish.yml run 38545276118 died at this layer on "could not read
+# Username for 'https://github.com'"). Same subtraction check.yml makes.
+# The private dev image build (docker/dev/compose.yaml args, driven by
+# scripts/build-image) overrides the arg back to `--all-extras`; it keeps
+# the gh_token secret below — same credential-helper exposure, never
+# embedded in a layer — because that sync does fetch catpath.
+ARG PRECIS_DEPS_EXTRAS="--all-extras --no-extra catalyst --no-extra catalyst-gpu"
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     --mount=type=secret,id=gh_token,required=false \
     if [ -s /run/secrets/gh_token ]; then \
@@ -107,7 +116,7 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
             GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/gh_token)"; }; f'; \
     fi; \
     uv venv /opt/venv && \
-    uv sync --frozen --no-install-project --all-extras
+    uv sync --frozen --no-install-project ${PRECIS_DEPS_EXTRAS}
 
 # Marker writes GoNotoCurrent into site-packages/static/fonts/ on first
 # converter construction (see marker/util.py:download_font). Pre-populate
@@ -376,7 +385,8 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # autocatpath — the pure reaction-pathway ENGINE the in-tree `precis_pathway`
 # plugin imports (the `pathway` kind, catalyst-discovery quest; ADR 0069). Its
 # third-party deps (ase/networkx/rdkit/numpy/scipy/matplotlib/pyyaml) already
-# arrive via `--all-extras` in the `deps` stage, and precis-mcp (which now owns
+# arrive in the `deps` stage — the private dev build restores `--all-extras`
+# there via PRECIS_DEPS_EXTRAS (compose.yaml args) — and precis-mcp (which now owns
 # `precis_pathway`) is editable-installed in the `dev` stage below, so we install
 # **--no-deps** here: the layer is source-independent (cached) and never
 # re-resolves precis. At runtime precis discovers the bundled plugin via its own

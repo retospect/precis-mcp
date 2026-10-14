@@ -21,6 +21,12 @@
 #                         `premodels` build context so a rebuild skips
 #                         the multi-GB HF / datalab download.
 #   PRECIS_PLATFORM       --platform value (e.g. linux/amd64) if cross-building
+#   PRECIS_DEPS_EXTRAS    uv extras flags for the `deps` stage. Default (set in
+#                         the Dockerfile) subtracts the private catalyst pair;
+#                         pass `--all-extras` to restore them for a private
+#                         build (needs a GitHub token the catpath fetch can
+#                         reach — docker/dev/compose.yaml already wires this
+#                         for the precis-dev build).
 #
 # macOS note: the embedder image is CPU-torch and exists for Linux/Spark.
 # On a Mac you run the embedder NATIVELY (launchd + MPS), not via this
@@ -70,6 +76,9 @@ if [[ -n "${PRECIS_PREMODELS:-}" ]]; then
 fi
 if [[ -n "${PRECIS_PLATFORM:-}" ]]; then
     EXTRA_ARGS+=(--platform "${PRECIS_PLATFORM}")
+fi
+if [[ -n "${PRECIS_DEPS_EXTRAS:-}" ]]; then
+    EXTRA_ARGS+=(--build-arg "PRECIS_DEPS_EXTRAS=${PRECIS_DEPS_EXTRAS}")
 fi
 
 echo "==> building ${#TARGETS[@]} image(s) [tag=${TAG}, prefix=${PREFIX}]"
