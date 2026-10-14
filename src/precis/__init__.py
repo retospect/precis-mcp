@@ -74,4 +74,4 @@ from importlib.metadata import version as _dist_version
 try:
     __version__ = _dist_version("precis-mcp")
 except PackageNotFoundError:  # pragma: no cover — uninstalled source tree
-    __version__ = "8.35.11"
+    __version__ = "8.36.0"
