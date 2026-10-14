@@ -7,28 +7,40 @@ Routes:
   graph focus page and agent tooling all read. Query params: ``depth``
   (``1``|``2``), ``rels`` / ``kinds`` (comma lists; ``rels`` speaks the
   presented slug, so an inbound ``cites`` is ``cited-by``), ``since`` /
-  ``until`` (parsed as Drive does, ``routes/items.py::_parse_date``) and
-  ``cap`` (hop-1 node cap, default :data:`DEFAULT_CAP`, at most
-  :data:`MAX_CAP`).
+  ``until`` (parsed as Drive does, ``routes/items.py::_parse_date``),
+  ``trust`` (the finding tier vocabulary,
+  :data:`precis.store.types.FINDING_TRUST_TIERS`) and ``cap`` (hop-1 node
+  cap, default :data:`DEFAULT_CAP`, at most :data:`MAX_CAP`).
 * ``GET /graph/{kind}/{ref_id}/panel`` — the HTMX fragment behind the
   Neighbourhood panel on the shared ref detail page
   (``templates/refs/detail.html.j2``): the hop-1 ring grouped by
   ``ring_group`` heading → rel → kind, with per-group "expand"
   (``?group=<heading>`` returns that one group uncapped) and the
   "Show memories" radio (``?memories=0|1``; absent → the spec default,
-  :func:`_default_show_memories`).
-* ``GET /graph/{kind}/{ref_id}`` — the focus page: the depth-2
-  neighbourhood as a server-rendered radial SVG
-  (``precis_web.graph_svg.focus_graph_svg``), node click re-focusing on
-  that node's own ``/graph/...`` page.
+  :func:`_default_show_memories`). The panel is hop-1 by contract —
+  ``depth`` is the focus page's axis and is not taken here.
+* ``GET /graph/{kind}/{ref_id}`` — the focus page: the neighbourhood as a
+  server-rendered radial SVG (``precis_web.graph_svg.focus_graph_svg``),
+  node click re-focusing on that node's own ``/graph/...`` page; ``depth``
+  defaults to 2. ``?view=outline`` (gr486410) renders the same filtered
+  neighbourhood as a copyable bullet list — hop-1 rows under the panel's
+  ring-group headings, hop-2 nested under its anchor, retired endpoints
+  as tombstones (``include_retired``).
+
+Slice 4 (``docs/backlog/web-graph-navigation.md``): the filter axes —
+``rels``, ``kinds``, ``since``/``until``, ``trust`` and ``depth`` — are
+one parsed :class:`_Filters` applied to the same
+:meth:`Store.neighbourhood` call on all three surfaces, so a filter set
+narrows the JSON, the panel and the page identically. The URL is the
+state; the chips rendered above the panel and the SVG reflect it (each
+chip is the same URL minus one value). ``trust`` reaches the browser now
+that the tier predicate is single-sourced
+(``precis.nanopub.overview.passes_trust``).
 
 On top of the store shape the JSON route adds ``groups``: the hop-1
 relations bucketed under the fisheye ring headings
 (``utils/refeye.py::ring_group``), ``"Other"`` for a relation no ring
-follows — the heading order a browser panel renders in. ``trust`` is
-deliberately not exposed yet: the store's tier predicate duplicates the
-finding handler's and is to be single-sourced before it reaches the
-browser (backlog ``web-graph-navigation.md``).
+follows — the heading order a browser panel renders in.
 
 Errors are JSON too (``{"error": ...}``) on ``.json`` — 404 for a missing
 ref, 400 for a bad argument — not the HTML error page the ``PrecisError``
@@ -38,20 +50,28 @@ render the shared error template / a small fragment instead.
 
 from __future__ import annotations
 
+import html
 import re
-from typing import Any
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from precis.errors import BadInput, NotFound
+from precis.store.types import FINDING_TRUST_TIERS
 from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUPS, ring_group
 from precis_web.deps import get_store, templates
-from precis_web.graph_filters import csv_list
+from precis_web.graph_filters import csv_list, parse_kind_filter
 from precis_web.graph_svg import KIND_SHAPES, focus_graph_svg
 from precis_web.ref_urls import ref_url
 from precis_web.routes.items import _parse_date
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
@@ -65,6 +85,10 @@ MAX_CAP = 200
 PANEL_GROUP_ROWS = 25
 
 OTHER_GROUP = "Other"
+
+#: The focus page's presentations (``?view=``): the radial SVG and the
+#: hierarchical outline list (gr486410). Empty = radial.
+_VIEWS = ("radial", "outline")
 
 
 def ring_groups(counts: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
@@ -90,6 +114,191 @@ def ring_groups(counts: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
     ]
 
 
+@dataclass(frozen=True)
+class _Filters:
+    """The ``/graph`` filter axes shared by the JSON, the panel and the
+    focus page (slice 4): one parse and one query-string writer so the
+    three surfaces cannot drift.
+
+    ``rels``/``kinds`` are the presented comma lists; ``since``/``until``
+    keep the raw box text (``_parse_date`` degrades a half-typed date to
+    no-filter, as Drive); ``trust`` is a
+    :data:`precis.store.types.FINDING_TRUST_TIERS` tier, validated by the
+    store; ``depth``/``cap`` are the focus page's own axes (the panel is
+    hop-1 by contract and the JSON defaults itself). ``view`` is the
+    page's presentation axis (``outline``, gr486410): carried through
+    :meth:`qs`/chips like a filter but never sent to the store.
+    """
+
+    rels: tuple[str, ...] = ()
+    kinds: tuple[str, ...] = ()
+    since: str = ""
+    until: str = ""
+    trust: str = ""
+    depth: int | None = None
+    cap: int | None = None
+    view: str = ""
+
+    def qs(self, *, remove: Iterable[tuple[str, str]] = ()) -> str:
+        """This filter set as a query string (no leading ``?``), minus the
+        ``(axis, value)`` pairs in ``remove`` — a chip's "×" is the same
+        URL one value narrower."""
+        gone = set(remove)
+        parts: list[str] = []
+        for axis, vals in (("rels", self.rels), ("kinds", self.kinds)):
+            kept = [v for v in vals if (axis, v) not in gone]
+            if kept:
+                parts.append(f"{axis}={quote(','.join(kept), safe=',')}")
+        for axis in ("since", "until", "trust", "view"):
+            v: str = getattr(self, axis)
+            if v and (axis, v) not in gone:
+                parts.append(f"{axis}={quote(v)}")
+        if self.depth is not None and ("depth", str(self.depth)) not in gone:
+            parts.append(f"depth={self.depth}")
+        if (
+            self.cap not in (None, DEFAULT_CAP)
+            and (
+                "cap",
+                str(self.cap),
+            )
+            not in gone
+        ):
+            parts.append(f"cap={self.cap}")
+        return "&".join(parts)
+
+    @property
+    def filters_on(self) -> bool:
+        """True when a narrowing axis is set — drives the filtered empty
+        state ("no links match the filters", not "no typed links").
+        ``view`` is presentation, not narrowing; ``depth``/``cap`` count
+        only when non-default."""
+        return bool(
+            self.rels
+            or self.kinds
+            or self.since
+            or self.until
+            or self.trust
+            or (self.depth is not None and self.depth != 2)
+            or (self.cap is not None and self.cap != DEFAULT_CAP)
+        )
+
+    def _narrow_drops(self) -> list[tuple[str, str]]:
+        """Every active narrowing pair — ``qs(remove=…)`` with this clears
+        the filters and keeps presentation state (``view``)."""
+        drops = [("rels", v) for v in self.rels] + [("kinds", v) for v in self.kinds]
+        for axis in ("since", "until", "trust"):
+            v: str = getattr(self, axis)
+            if v:
+                drops.append((axis, v))
+        if self.depth is not None:
+            drops.append(("depth", str(self.depth)))
+        if self.cap is not None and self.cap != DEFAULT_CAP:
+            drops.append(("cap", str(self.cap)))
+        return drops
+
+    def clear_href(self, base: str) -> str:
+        """``base`` with every narrowing axis dropped (``view`` kept)."""
+        q = self.qs(remove=self._narrow_drops())
+        return f"{base}?{q}" if q else base
+
+    def chips(
+        self, base: str, *, hx_base: str = "", hx_extra: str = ""
+    ) -> list[dict[str, str]]:
+        """One chip per active filter value — ``href`` is ``base`` minus
+        that value (the URL is the state, the chips reflect it), ``hx``
+        the same narrowing against the panel fragment when the chips live
+        inside it — plus ``clear`` when more than one is on."""
+
+        def _chip(label: str, drop: list[tuple[str, str]]) -> dict[str, str]:
+            q = self.qs(remove=drop)
+            hx = ""
+            if hx_base:
+                rest = [p for p in (q, hx_extra) if p]
+                hx = f"{hx_base}?{'&'.join(rest)}" if rest else hx_base
+            return {
+                "label": label,
+                "href": f"{base}?{q}" if q else base,
+                "hx": hx,
+            }
+
+        out = [_chip(f"rel:{v}", [("rels", v)]) for v in self.rels]
+        out += [_chip(f"kind:{v}", [("kinds", v)]) for v in self.kinds]
+        for axis, v in (
+            ("since", self.since),
+            ("until", self.until),
+            ("trust", self.trust),
+        ):
+            if v:
+                out.append(_chip(f"{axis}:{v}", [(axis, v)]))
+        if self.depth is not None and self.depth != 2:
+            out.append(_chip(f"depth:{self.depth}", [("depth", str(self.depth))]))
+        if len(out) > 1:
+            out.append(_chip("clear", self._narrow_drops()))
+        return out
+
+
+def _parse_filters(
+    *,
+    rels: str,
+    kinds: str,
+    since: str,
+    until: str,
+    trust: str,
+    depth: int | None = None,
+    cap: int | None = None,
+    view: str = "",
+) -> _Filters:
+    """Query params → :class:`_Filters`. ``kinds`` is registry-validated
+    (``/eye``'s :func:`parse_kind_filter`) so an unknown kind is a 400 on
+    every surface, not a silent empty page; ``trust`` stays raw — the
+    store owns tier validation; ``view`` is the focus page's presentation
+    axis (``outline``, ``gr486410``)."""
+    try:
+        kind_set = parse_kind_filter(kinds)
+    except ValueError as exc:
+        raise BadInput(str(exc)) from exc
+    view_v = view.strip().lower()
+    if view_v and view_v not in _VIEWS:
+        raise BadInput(f"unknown view={view!r}", options=list(_VIEWS))
+    return _Filters(
+        rels=tuple(csv_list(rels) or ()),
+        kinds=tuple(sorted(kind_set)) if kind_set else (),
+        since=since.strip(),
+        until=until.strip(),
+        trust=trust.strip().lower(),
+        depth=depth,
+        cap=cap,
+        view="" if view_v == "radial" else view_v,
+    )
+
+
+def _neighbourhood(
+    store: Store,
+    kind: str,
+    ref_id: int,
+    f: _Filters,
+    *,
+    depth: int,
+    cap: int,
+    include_retired: bool = False,
+) -> dict[str, Any]:
+    """The one read all three surfaces share — same filters in, same
+    nodes/edges out. ``include_retired`` (the outline view) keeps retired
+    endpoints as tombstones."""
+    return store.neighbourhood(
+        kind,
+        ref_id,
+        depth=depth,
+        rels=list(f.rels) or None,
+        kinds=list(f.kinds) or None,
+        since=_parse_date(f.since),
+        until=_parse_date(f.until),
+        trust=f.trust or None,
+        cap=cap,
+        include_retired=include_retired,
+    )
+
+
 @router.get("/{kind}/{ref_id}.json", response_model=None)
 async def neighbourhood_json(
     request: Request,
@@ -100,6 +309,7 @@ async def neighbourhood_json(
     kinds: str = "",
     since: str = "",
     until: str = "",
+    trust: str = "",
     cap: int = DEFAULT_CAP,
 ) -> JSONResponse:
     """The ref's link neighbourhood, see the module docstring for the shape."""
@@ -107,16 +317,10 @@ async def neighbourhood_json(
     try:
         if not 1 <= cap <= MAX_CAP:
             raise BadInput(f"cap must be between 1 and {MAX_CAP}, got {cap!r}")
-        data = store.neighbourhood(
-            kind,
-            ref_id,
-            depth=depth,
-            rels=csv_list(rels),
-            kinds=csv_list(kinds),
-            since=_parse_date(since),
-            until=_parse_date(until),
-            cap=cap,
+        f = _parse_filters(
+            rels=rels, kinds=kinds, since=since, until=until, trust=trust
         )
+        data = _neighbourhood(store, kind, ref_id, f, depth=depth, cap=cap)
     except NotFound as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except BadInput as exc:
@@ -161,31 +365,46 @@ def _without_memories(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _row(n: dict[str, Any], e: dict[str, Any]) -> dict[str, Any]:
+    """One renderable row for neighbourhood node ``n`` reached by edge
+    ``e`` — shared by the panel and the outline (which also reads
+    ``rel``/``retired``/``kids``; the panel template ignores the extras)."""
+    return {
+        "dir": e["dir"],
+        "rel": e["rel"],
+        "kind": n["kind"],
+        "handle": _handle(n["kind"], n["id"]),
+        "label": n["label"],
+        "url": ref_url(n["kind"], n["id"]),
+        "graph_url": f"/graph/{n['kind']}/{n['id']}",
+        "state": n.get("state") or "live",
+        "retired": bool(n.get("retired")),
+        "kids": [],
+    }
+
+
 def _panel_groups(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Heading → rel → kind → rows, the panel's render shape.
 
     Kind counts come from ``data['counts']`` (every matching edge, the
-    honest totals); rows come from ``data['edges']`` (the capped window).
-    ``rows_total`` counts the returned rows — when ``n`` exceeds it the
-    neighbourhood was truncated and the group still expands (to its
-    "beyond the cap" per-kind line). ``slug`` is a DOM-id-safe heading.
+    honest totals); rows come from ``data['edges']`` (the capped window,
+    hop-1 only — a depth-2 neighbourhood's second-hop edges are the
+    outline's ``kids``, not top-level rows). ``rows_total`` counts the
+    returned rows — when ``n`` exceeds it the neighbourhood was
+    truncated and the group still expands (to its "beyond the cap"
+    per-kind line). ``slug`` is a DOM-id-safe heading.
     """
     nodes = {_handle(n["kind"], n["id"]): n for n in data["nodes"]}
     rows_by_rel: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for e in data["edges"]:
+        if e.get("hop"):
+            continue
         far = nodes.get(e["dst"] if e["dir"] == "out" else e["src"])
         if far is None:
             continue
-        row = {
-            "dir": e["dir"],
-            "kind": far["kind"],
-            "handle": _handle(far["kind"], far["id"]),
-            "label": far["label"],
-            "url": ref_url(far["kind"], far["id"]),
-            "graph_url": f"/graph/{far['kind']}/{far['id']}",
-            "state": far.get("state") or "live",
-        }
-        rows_by_rel.setdefault(e["rel"], {}).setdefault(far["kind"], []).append(row)
+        rows_by_rel.setdefault(e["rel"], {}).setdefault(far["kind"], []).append(
+            _row(far, e)
+        )
 
     groups: list[dict[str, Any]] = []
     for g in ring_groups(data["counts"]):
@@ -232,24 +451,81 @@ def _cap_group_rows(g: dict[str, Any]) -> None:
     )
 
 
+def _outline_groups(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The outline view's rows (gr486410): the panel's heading → rel →
+    kind → rows shape, each hop-1 row carrying its hop-2 children under
+    ``kids`` — nested under the first anchor the edge names (the SVG's
+    own rule), never back at the focus. A hop-2 node reached via several
+    anchors nests once, under the first."""
+    nodes = {_handle(n["kind"], n["id"]): n for n in data["nodes"]}
+    kids: dict[str, list[dict[str, Any]]] = {}
+    claimed: set[str] = set()
+    for e in data["edges"]:
+        if e.get("hop") != 2:
+            continue
+        anchor = e["src"] if e["dir"] == "out" else e["dst"]
+        far_h = e["dst"] if e["dir"] == "out" else e["src"]
+        if far_h in claimed or far_h not in nodes:
+            continue
+        claimed.add(far_h)
+        kids.setdefault(anchor, []).append(_row(nodes[far_h], e))
+    groups = _panel_groups(data)
+    for g in groups:
+        for r in g["rels"]:
+            for k in r["kinds"]:
+                for row in k["rows"]:
+                    row["kids"] = kids.get(row["handle"], [])
+    return groups
+
+
 @router.get("/{kind}/{ref_id}", response_class=HTMLResponse)
 async def graph_focus(
     request: Request,
     kind: str,
     ref_id: int,
+    depth: int | None = None,
+    rels: str = "",
+    kinds: str = "",
+    since: str = "",
+    until: str = "",
+    trust: str = "",
     cap: int = DEFAULT_CAP,
+    view: str = "",
 ) -> HTMLResponse:
-    """The focus page (slice 3): the depth-2 neighbourhood as one
-    server-rendered radial SVG — focus centre, hop 1 and hop 2 rings,
-    kinds as node shapes, rels as edge labels, every node a link to its
-    own ``/graph/...`` page. Nodes past the cap collapse to count chips
-    on the ring they would have filled. ``cap`` bounds hop-1 nodes,
-    :data:`DEFAULT_CAP` default / :data:`MAX_CAP` max, as the JSON's."""
+    """The focus page (slices 3–4, gr486410): the neighbourhood as one
+    server-rendered radial SVG — focus centre, hop 1 and (``depth=2``,
+    the default) hop 2 rings, kinds as node shapes, rels as edge labels,
+    every node a link to its own ``/graph/...`` page — or, at
+    ``?view=outline``, as a hierarchical bullet list: hop-1 rows under
+    the panel's ring-group headings, hop-2 nested under its anchor,
+    retired endpoints as tombstones (``include_retired``). Nodes past
+    the cap collapse to count chips on the ring they would have filled.
+    ``cap`` bounds hop-1 nodes, :data:`DEFAULT_CAP` default /
+    :data:`MAX_CAP` max, as the JSON's. The filter form is a plain GET;
+    the chips are the same URL one value narrower."""
     store = get_store(request)
     try:
         if not 1 <= cap <= MAX_CAP:
             raise BadInput(f"cap must be between 1 and {MAX_CAP}, got {cap!r}")
-        data = store.neighbourhood(kind, ref_id, depth=2, cap=cap)
+        f = _parse_filters(
+            rels=rels,
+            kinds=kinds,
+            since=since,
+            until=until,
+            trust=trust,
+            depth=depth,
+            cap=cap,
+            view=view,
+        )
+        data = _neighbourhood(
+            store,
+            kind,
+            ref_id,
+            f,
+            depth=depth if depth is not None else 2,
+            cap=cap,
+            include_retired=f.view == "outline",
+        )
     except NotFound as exc:
         return templates.TemplateResponse(
             request,
@@ -265,6 +541,12 @@ async def graph_focus(
             status_code=400,
         )
     focus_h = _handle(kind, ref_id)
+    page = f"/graph/{kind}/{ref_id}"
+    qs = f.qs()
+    json_qs = f.qs(remove=[("view", f.view)]) if f.view else qs
+    other = "radial" if f.view == "outline" else "outline"
+    q_less = f.qs(remove=[("view", f.view)] if f.view else [])
+    view_href = f"{page}?{q_less + '&' if q_less else ''}view={other}"
     n_hop1 = sum(1 for n in data["nodes"] if not n.get("hop"))
     legend = sorted(
         {n["kind"] for n in data["nodes"]} | {kind},
@@ -278,16 +560,29 @@ async def graph_focus(
             "ref_id": ref_id,
             "handle": focus_h,
             "focus_label": data["focus"]["label"],
+            "focus_state": data["focus"].get("state", "live"),
+            "focus_retired": bool(data["focus"].get("retired")),
             "reader_url": ref_url(kind, ref_id),
-            "json_url": f"/graph/{kind}/{ref_id}.json",
+            "json_url": f"{page}.json" + (f"?{json_qs}" if json_qs else ""),
             "eye_url": f"/eye/{focus_h}",
-            "svg": focus_graph_svg(data),
+            "svg": "" if f.view else focus_graph_svg(data),
+            "outline": _outline_groups(data) if f.view == "outline" else None,
+            "view": f.view or "radial",
+            "view_href": view_href,
+            "view_other": other,
             "n_hop1": n_hop1,
             "n_hop2": len(data["nodes"]) - n_hop1,
             "n_edges": len(data["edges"]),
+            "counts2": data.get("counts2") or {},
             "truncated": data["truncated"],
             "cap": cap,
             "legend": legend,
+            "f": f,
+            "qs": qs,
+            "chips": f.chips(page),
+            "trust_tiers": FINDING_TRUST_TIERS,
+            "filters_on": f.filters_on,
+            "clear_url": f.clear_href(page),
         },
     )
 
@@ -299,23 +594,38 @@ async def neighbourhood_panel(
     ref_id: int,
     group: str = "",
     memories: int | None = None,
+    rels: str = "",
+    kinds: str = "",
+    since: str = "",
+    until: str = "",
+    trust: str = "",
 ) -> HTMLResponse:
-    """The Neighbourhood panel's HTMX fragment (slice 2).
+    """The Neighbourhood panel's HTMX fragment (slices 2 + 4).
 
     Default response: every ring group, rows capped at
     :data:`PANEL_GROUP_ROWS`. ``group=<heading>`` answers one group's
     expand — that group alone, every returned row. ``memories`` carries
     the toggle's explicit state (the radio posts 0|1); absent →
-    :func:`_default_show_memories`. A 404 is a small fragment, not the
-    error page: the swap target is a panel div.
+    :func:`_default_show_memories`. ``rels``/``kinds``/``since``/
+    ``until``/``trust`` are the shared filter axes (the panel is hop-1 by
+    contract, so there is no ``depth`` here). A 404/400 is a small
+    fragment, not the error page: the swap target is a panel div.
     """
     store = get_store(request)
     try:
-        data = store.neighbourhood(kind, ref_id, depth=1, cap=MAX_CAP)
+        f = _parse_filters(
+            rels=rels, kinds=kinds, since=since, until=until, trust=trust
+        )
+        data = _neighbourhood(store, kind, ref_id, f, depth=1, cap=MAX_CAP)
     except NotFound:
         return HTMLResponse(
             '<p class="text-xs text-slate-400">ref not found.</p>',
             status_code=404,
+        )
+    except BadInput as exc:
+        return HTMLResponse(
+            f'<p class="text-xs text-rose-600">{html.escape(str(exc))}</p>',
+            status_code=400,
         )
     show = _default_show_memories(data) if memories is None else bool(memories)
     if not show:
@@ -327,6 +637,8 @@ async def neighbourhood_panel(
     else:
         for g in groups:
             _cap_group_rows(g)
+    qs = f.qs()
+    page = f"/graph/{kind}/{ref_id}"
     return templates.TemplateResponse(
         request,
         "graph/_panel.html.j2",
@@ -337,5 +649,14 @@ async def neighbourhood_panel(
             "groups": groups,
             "group_only": group_only,
             "truncated": data["truncated"],
+            "f": f,
+            "qs": qs,
+            "chips": f.chips(
+                page,
+                hx_base=f"{page}/panel",
+                hx_extra=f"memories={1 if show else 0}",
+            ),
+            "trust_tiers": FINDING_TRUST_TIERS,
+            "filters_on": bool(qs),
         },
     )

@@ -130,7 +130,7 @@ def _row(store: Any, ref_id: int) -> Any:
 
 
 def test_composite_rolls_up_supported_atoms_and_passes_verified(store: Any) -> None:
-    from precis.handlers.finding import _passes_trust
+    from precis.nanopub.overview import passes_trust
 
     composite, atoms = _composite(store)
     for a in atoms:
@@ -142,11 +142,11 @@ def test_composite_rolls_up_supported_atoms_and_passes_verified(store: Any) -> N
     assert (row.conjunct_count, row.conjuncts_supported) == (3, 3)
     assert row.conjuncts_contradicted == 0
     assert row.atoms_all_supported
-    assert _passes_trust(row, "verified")
+    assert passes_trust(row, "verified")
 
 
 def test_composite_with_an_unsupported_atom_fails_verified(store: Any) -> None:
-    from precis.handlers.finding import _passes_trust
+    from precis.nanopub.overview import passes_trust
 
     composite, atoms = _composite(store)
     _support(store, atoms[0])
@@ -157,11 +157,11 @@ def test_composite_with_an_unsupported_atom_fails_verified(store: Any) -> None:
 
     assert (row.conjunct_count, row.conjuncts_supported) == (3, 2)
     assert not row.atoms_all_supported
-    assert not _passes_trust(row, "verified")
+    assert not passes_trust(row, "verified")
 
 
 def test_composite_with_a_contradicted_atom_fails_verified(store: Any) -> None:
-    from precis.handlers.finding import _passes_trust
+    from precis.nanopub.overview import passes_trust
 
     composite, atoms = _composite(store)
     for a in atoms:
@@ -174,7 +174,7 @@ def test_composite_with_a_contradicted_atom_fails_verified(store: Any) -> None:
     assert row.conjuncts_supported == 3
     assert row.conjuncts_contradicted == 1
     assert not row.atoms_all_supported
-    assert not _passes_trust(row, "verified")
+    assert not passes_trust(row, "verified")
 
 
 def test_composite_roll_up_ignores_retired_atoms(store: Any) -> None:
@@ -190,19 +190,19 @@ def test_composite_roll_up_ignores_retired_atoms(store: Any) -> None:
 
 
 def test_atomic_hub_has_no_roll_up_and_keeps_its_own_trust(store: Any) -> None:
-    from precis.handlers.finding import _passes_trust
+    from precis.nanopub.overview import passes_trust
 
     atom = mint_hub(store, CanonicalClaim(sentence="a lone atomic claim", scope={}))
     bare = _row(store, atom)
     assert (bare.conjunct_count, bare.conjuncts_supported) == (0, 0)
     assert not bare.atoms_all_supported
-    assert not _passes_trust(bare, "verified")
+    assert not passes_trust(bare, "verified")
 
     _support(store, atom)
     row = _row(store, atom)
     assert row.supported_count == 1
     assert row.conjunct_count == 0
-    assert _passes_trust(row, "verified")
+    assert passes_trust(row, "verified")
 
 
 def test_composite_posture_cells_show_the_atom_roll_up(store: Any) -> None:

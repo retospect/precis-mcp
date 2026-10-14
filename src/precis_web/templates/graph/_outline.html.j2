@@ -1,0 +1,59 @@
+{# The outline view (gr486410): the neighbourhood as a hierarchical,
+   copyable bullet list beside the radial SVG — the focus ref on top
+   (kind · handle · title · status), hop-1 rows under the panel's
+   ring-group headings (``_outline_groups``), each row = direction glyph
+   + reader link + label + status + a ◦ re-focus link, with its hop-2
+   neighbours nested beneath (the edge's own rel shown, since kids are
+   not rel-grouped). Retired endpoints render as tombstones — the outline
+   asks the store for them (``include_retired``); the radial view's node
+   set is the outline's non-tombstone rows under the same filters. #}
+{% macro out_row(row, show_rel=false) %}
+<li class="py-px" data-node="{{ row.handle }}"{% if row.retired %} data-retired{% endif %}>
+  <span class="text-slate-400" title="{{ 'outbound' if row.dir == 'out' else 'inbound' }}">{{ '→' if row.dir == 'out' else '←' }}</span>
+  <a href="{{ row.url }}" class="font-mono text-sky-700 hover:underline">{{ row.handle }}</a>
+  <span class="{% if row.retired %}italic text-slate-400 line-through{% elif row.state != 'live' %}italic text-slate-400{% else %}text-slate-700{% endif %}">{{ row.label }}</span>
+  <span class="text-[10px] font-mono text-slate-400">{{ row.kind }}{% if show_rel %} · {{ row.rel }}{% endif %}{% if row.retired %} · retired{% elif row.state != 'live' %} · {{ row.state }}{% endif %}</span>
+  <a href="{{ row.graph_url }}" class="text-[10px] text-slate-400 hover:text-sky-700" title="focus the graph on it">◦</a>
+  {% if row.kids %}
+  <ul class="ml-7 mt-px space-y-px border-l border-slate-100 pl-3">
+    {% for kid in row.kids %}
+      {{ out_row(kid, true) }}
+    {% endfor %}
+  </ul>
+  {% endif %}
+</li>
+{% endmacro %}
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
+  <div class="mb-2 flex items-baseline gap-2">
+    <a href="{{ reader_url }}" class="font-mono font-semibold text-sky-700 hover:underline">{{ handle }}</a>
+    <span class="{% if focus_retired %}italic text-slate-400 line-through{% else %}font-medium text-slate-800{% endif %}">{{ focus_label }}</span>
+    <span class="text-[10px] font-mono text-slate-400">{{ kind }}{% if focus_retired %} · retired{% elif focus_state != 'live' %} · {{ focus_state }}{% endif %}</span>
+  </div>
+  {% for g in outline %}
+  <div class="mt-2">
+    <h3 class="text-xs font-semibold text-slate-600">{{ g.heading }} <span class="font-normal text-slate-400">({{ g.n }})</span></h3>
+    {% for r in g.rels %}
+    <div class="ml-3 mt-1">
+      <div class="font-mono text-[11px] text-slate-500">{{ r.rel }} ×{{ r.n }}</div>
+      {% for k in r.kinds %}
+        {% if k.rows %}
+        <ul class="ml-2">
+          {% for row in k.rows %}
+            {{ out_row(row) }}
+          {% endfor %}
+        </ul>
+        {% elif k.n %}
+        <p class="ml-2 text-[11px] italic text-slate-400">{{ k.n }} {{ k.kind }} link{{ 's' if k.n != 1 }} — beyond the node cap; see the JSON</p>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  {% if truncated %}
+  <p class="mt-2 text-[10px] text-slate-400">counts are complete; rows past the node cap are not listed — the JSON has the window.</p>
+  {% endif %}
+  {% if counts2 and not n_hop2 %}
+  <p class="mt-1 text-[10px] text-slate-400">hop 2 came back over the cap — per-rel counts only, see the JSON.</p>
+  {% endif %}
+</div>

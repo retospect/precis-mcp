@@ -108,7 +108,12 @@ from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import SIGNED_FINDING_STATES, ChunkInsert, Ref, Tag
+from precis.store.types import (
+    FINDING_TRUST_TIERS,
+    ChunkInsert,
+    Ref,
+    Tag,
+)
 from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
@@ -151,17 +156,11 @@ _STATUS_CANONICAL_TAG = "STATUS:canonical"
 # claim. ``trust=`` is the epistemic axis: how far up the publish ladder
 # a claim hub has actually climbed (state machine: ``nanopub/__init__.py``,
 # ``nanopub/state.py``).
-_TRUST_SIGNED = "signed"
-_TRUST_VERIFIED = "verified"
-_TRUST_DISPUTED = "disputed"
 _TRUST_ANY = "any"
-_TRUST_VALUES = (_TRUST_SIGNED, _TRUST_VERIFIED, _TRUST_DISPUTED, _TRUST_ANY)
 #: Default-cohort over-fetch: the relevance query runs over the caller's
 #: tags alone and is then filtered to established rows + claim hubs, so it
 #: fetches this many pages to keep a full page after the filter (gr458942).
 _COHORT_OVERFETCH = 4
-#: Publish states that mean "a human key attested this claim".
-_SIGNED_STATES = SIGNED_FINDING_STATES
 #: ``trust=`` filters *after* retrieval (the posture lives in publish rows
 #: and links, not in the search index), so the retrieval leg has to over-
 #: fetch or the filter would just thin an already-truncated page. Factor,
@@ -1023,7 +1022,7 @@ class FindingHandler(NumericRefHandler):
         genuinely differ. For the **columns** it is signage: a posture we
         couldn't read renders blank, which is degraded but honest, and a
         transient DB blip must never break a search. For the **filter**
-        the same empty dict would be a lie — ``_passes_trust(None, …)`` is
+        the same empty dict would be a lie — ``passes_trust(None, …)`` is
         ``False`` for every tier, so a swallowed error would empty the
         page and render as "nothing is settled", which is exactly the
         answer someone deciding what to cite must not be handed. So the
@@ -1074,10 +1073,12 @@ class FindingHandler(NumericRefHandler):
         """
         if not trust or trust == _TRUST_ANY:
             return refs[:page_size]
+        from precis.nanopub.overview import passes_trust
+
         # strict=True: an unreadable posture must not masquerade as "not
         # settled" — see :meth:`_postures`.
         postures = self._postures([int(r.id) for r in refs], strict=True)
-        kept = [r for r in refs if _passes_trust(postures.get(int(r.id)), trust)]
+        kept = [r for r in refs if passes_trust(postures.get(int(r.id)), trust)]
         return kept[:page_size]
 
     # ──────────────────────────────────────────────────────────────────
@@ -1229,10 +1230,10 @@ class FindingHandler(NumericRefHandler):
         """
         base_tags: list[str] = list(tags) if tags else []
         resolved_trust = (trust or "").strip().lower() or None
-        if resolved_trust is not None and resolved_trust not in _TRUST_VALUES:
+        if resolved_trust is not None and resolved_trust not in FINDING_TRUST_TIERS:
             raise BadInput(
                 f"unknown trust={trust!r}",
-                options=list(_TRUST_VALUES),
+                options=list(FINDING_TRUST_TIERS),
                 next=(
                     "search(kind='finding', q='…', trust='signed') for claims "
                     "a human key stands behind"
@@ -1884,41 +1885,6 @@ def is_refuted(row: HubOverviewRow) -> bool:
     return row.supported_count == 0 and row.verified_count > 0
 
 
-def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
-    """Does this hit clear the ``trust=`` tier?
-
-    A hit with **no** posture row — a plain ``STATUS:established`` chase
-    finding, which has no publish row and no evidence edges — fails every
-    tier except ``'any'``. That is the point of the facet: asking for
-    settled claims must not hand back rows that were never in the ladder.
-    """
-    if trust in ("", _TRUST_ANY):
-        return True
-    if row is None:
-        return False
-    if trust == _TRUST_SIGNED:
-        return row.state in _SIGNED_STATES
-    if trust == _TRUST_VERIFIED:
-        # ``supported_count``, NOT ``verified_count``: a ``corroborates``
-        # edge can carry a *negative* verdict (``support: "no"`` — see
-        # ``taproot/authoring.py``), which is verified and supports
-        # nothing. Counting it would let a hub whose only evidence refutes
-        # it answer "verified", the exact inversion of the question.
-        # Verified *and* unopposed: a hub with a live contradicts edge is
-        # exactly what the ratchet hides, so it never answers "settled".
-        # A composite hub carries no evidence edges of its own (they hang
-        # off its ``conjunct-of`` atoms), so ``supported_count`` is 0 by
-        # construction — it answers "verified" when every live atom is
-        # supported and none is contradicted (``atoms_all_supported``).
-        # Posture only: ``gates.check_mint_order`` stays stricter (a signed
-        # artifact per atom), so corroborated-but-unsigned atoms read as
-        # verified here yet still block the composite's mint.
-        return (row.supported_count > 0 or row.atoms_all_supported) and not row.disputed
-    if trust == _TRUST_DISPUTED:
-        return row.disputed
-    return True
-
-
 def _hub_eye_header(store: Store, ref: Ref) -> str:
     """The leading posture line an eye on a claim hub carries.
 
@@ -2008,7 +1974,8 @@ def _search_hit_posture(row: HubOverviewRow) -> str:
     negative signal — every judged edge came back negative), then
     disputed (a live ``contradicts`` edge — contested, never demoted, the
     RRF lever leaves it at its unpenalised rank), then verified-and-
-    unopposed (the dense positive signal — reuses :func:`_passes_trust`'s
+    unopposed (the dense positive signal — reuses
+    :func:`precis.nanopub.overview.passes_trust`'s
     own ``trust='verified'`` definition: ``supported_count > 0`` — or, for
     a composite, every conjunct atom supported — and not disputed), else
     unverified (unminted-with-nothing or withheld-only —

@@ -52,7 +52,7 @@ from precis.store._mappers import (
     _row_to_s2_neighbor,
 )
 from precis.store.types import (
-    SIGNED_FINDING_STATES,
+    FINDING_TRUST_TIERS,
     ActorSlug,
     BibEntry,
     Link,
@@ -218,15 +218,13 @@ def _linked_refs_where(
     return clauses, [kind, *dir_params]
 
 
-_NBH_TRUST_VALUES = ("verified", "signed", "disputed", "any")
-
 # One statement serves both hops. ``x`` = every link touching an anchor, once
-# per side; ``e`` = the live far end joined in with the presented relation
+# per side; ``e`` = the far end joined in with the presented relation
 # (stored rel for ``out``; the relation's inverse slug for ``in`` — the same
-# rewrite ``links_for`` applies) and the request's filters. Output: one 'c'
-# row per (rel, far kind) with the full edge count, then up to ``lim`` edge
-# rows ('r'), newest first. Layout: (tag, anchor, far, dir, rel, kind, title,
-# state, n).
+# rewrite ``links_for`` applies) and the request's filters; ``ret_ok`` admits
+# retired far ends as tombstone rows. Output: one 'c' row per (rel, far kind)
+# with the full edge count, then up to ``lim`` edge rows ('r'), newest first.
+# Layout: (tag, anchor, far, dir, rel, kind, title, state, n, retired).
 _NBH_SQL = """
 WITH inv(slug, inv) AS (
   SELECT * FROM unnest(%(slugs)s::text[], %(invs)s::text[])
@@ -246,9 +244,10 @@ e AS (
          COALESCE((SELECT t.value FROM ref_tags rt
                      JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                    ORDER BY t.value LIMIT 1), 'live') AS fstate
+                    ORDER BY t.value LIMIT 1), 'live') AS fstate,
+         (r.retired_at IS NOT NULL) AS fret
     FROM x JOIN refs r ON r.ref_id = x.far
-   WHERE r.retired_at IS NULL
+   WHERE (%(ret_ok)s::bool OR r.retired_at IS NULL)
      AND NOT (x.far = ANY(%(excl)s::bigint[]))
      AND (%(rels)s::text[] IS NULL OR x.rel = ANY(%(rels)s::text[]))
      AND (%(kinds)s::text[] IS NULL OR r.kind = ANY(%(kinds)s::text[]))
@@ -256,11 +255,12 @@ e AS (
      AND (%(until)s::timestamptz IS NULL OR r.created_at < %(until)s::timestamptz)
 )
 SELECT 'c'::text, NULL::bigint, NULL::bigint, NULL::text, rel, fkind,
-       NULL::text, NULL::text, count(*)::bigint
+       NULL::text, NULL::text, count(*)::bigint, NULL::bool
   FROM e GROUP BY rel, fkind
 UNION ALL
 SELECT * FROM (
-  SELECT 'r'::text, anchor, far, dir, rel, fkind, ftitle, fstate, 0::bigint
+  SELECT 'r'::text, anchor, far, dir, rel, fkind, ftitle, fstate, 0::bigint,
+         fret
     FROM e ORDER BY lat DESC, link_id DESC
    LIMIT %(lim)s::int
 ) rr
@@ -756,6 +756,7 @@ class LinksMixin:
         until: datetime | None = None,
         trust: str | None = None,
         cap: int = 200,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         """The ref-level link neighbourhood of one ref, as plain data.
 
@@ -789,11 +790,18 @@ class LinksMixin:
           (inclusive / exclusive); ``kinds`` filters the linked ref's kind.
         - ``trust`` (``verified|signed|disputed|any``) applies to
           ``finding`` neighbours at hop 1 only, via the claim-hub posture
-          read (``nanopub.overview.hub_rows``). The predicate mirrors
-          ``handlers.finding._passes_trust`` — duplicated because the store
-          layer may not import handlers. A finding with no publish posture
-          fails every tier but ``any``. Costs one extra round trip; hop 2
-          (counts) ignores it.
+          read (``nanopub.overview.hub_rows``). The tier predicate is
+          ``nanopub.overview.passes_trust`` — the one definition, shared
+          with finding search (``handlers.finding``); it lives in nanopub
+          because the store layer may not import handlers. A finding with
+          no publish posture fails every tier but ``any``. Costs one extra
+          round trip; hop 2 (counts) ignores it.
+        - ``include_retired`` keeps retired far ends as tombstone rows
+          (``retired: True`` on the node; they still count in ``counts``
+          — a retired endpoint is still an edge's answer to "what touches
+          this") and reports the focus's own ``state``/``retired``. The
+          web outline view (``?view=outline``, gr486410) is the consumer;
+          the default path is byte-identical to before.
         - ``cap`` bounds hop-1 nodes: when more exist the first ``cap``
           (newest links first) come back with ``truncated: True`` and
           ``counts`` still covering every matching edge.
@@ -808,8 +816,10 @@ class LinksMixin:
         if depth not in (1, 2):
             raise BadInput(f"depth must be 1 or 2, got {depth!r}")
         trust_v = (trust or "").strip().lower() or None
-        if trust_v is not None and trust_v not in _NBH_TRUST_VALUES:
-            raise BadInput(f"unknown trust={trust!r}", options=list(_NBH_TRUST_VALUES))
+        if trust_v is not None and trust_v not in FINDING_TRUST_TIERS:
+            raise BadInput(
+                f"unknown trust={trust!r}", options=list(FINDING_TRUST_TIERS)
+            )
         if cap < 1:
             raise BadInput("cap must be >= 1")
 
@@ -839,10 +849,12 @@ class LinksMixin:
                 "since": since,
                 "until": until,
                 "lim": limit,
+                "ret_ok": include_retired,
             }
             data: list[tuple[Any, ...]] = []
             counts: dict[str, dict[str, int]] = {}
-            # Row layout: (tag, anchor, far, dir, rel, kind, title, state, n)
+            # Row layout: (tag, anchor, far, dir, rel, kind, title, state,
+            # n, retired)
             for r in conn.execute(_NBH_SQL, params).fetchall():
                 if r[0] == "c":
                     counts.setdefault(r[4], {})[r[5]] = int(r[8])
@@ -852,7 +864,12 @@ class LinksMixin:
 
         with self.pool.connection() as conn:
             frow = conn.execute(
-                "SELECT title FROM refs WHERE ref_id = %s AND kind = %s",
+                "SELECT title, retired_at IS NOT NULL,"
+                " COALESCE((SELECT t.value FROM ref_tags rt"
+                "   JOIN tags t ON t.tag_id = rt.tag_id"
+                "   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'"
+                "   ORDER BY t.value LIMIT 1), 'live')"
+                " FROM refs r WHERE ref_id = %s AND kind = %s",
                 (ref_id, kind),
             ).fetchone()
             if frow is None:
@@ -880,21 +897,27 @@ class LinksMixin:
                     if len(seen) >= cap:
                         continue
                     seen[far] = r[5]
-                    nodes.append(
-                        {
-                            "kind": r[5],
-                            "id": far,
-                            "label": r[6] or _h(r[5], far),
-                            "state": r[7],
-                        }
-                    )
+                    n = {
+                        "kind": r[5],
+                        "id": far,
+                        "label": r[6] or _h(r[5], far),
+                        "state": r[7],
+                    }
+                    if r[9]:
+                        n["retired"] = True
+                    nodes.append(n)
                 edges.append(_nbh_edge(ref_id, kind, r, _h))
+            focus: dict[str, Any] = {
+                "kind": kind,
+                "id": ref_id,
+                "label": frow[0] or _h(kind, ref_id),
+            }
+            if include_retired:
+                focus["state"] = frow[2]
+                if frow[1]:
+                    focus["retired"] = True
             result: dict[str, Any] = {
-                "focus": {
-                    "kind": kind,
-                    "id": ref_id,
-                    "label": frow[0] or _h(kind, ref_id),
-                },
+                "focus": focus,
                 "nodes": nodes,
                 "edges": edges,
                 "counts": counts1,
@@ -911,15 +934,16 @@ class LinksMixin:
                         far = int(r[2])
                         if far not in seen2:
                             seen2.add(far)
-                            nodes.append(
-                                {
-                                    "kind": r[5],
-                                    "id": far,
-                                    "label": r[6] or _h(r[5], far),
-                                    "state": r[7],
-                                    "hop": 2,
-                                }
-                            )
+                            n = {
+                                "kind": r[5],
+                                "id": far,
+                                "label": r[6] or _h(r[5], far),
+                                "state": r[7],
+                                "hop": 2,
+                            }
+                            if r[9]:
+                                n["retired"] = True
+                            nodes.append(n)
                         e = _nbh_edge(int(r[1]), seen[int(r[1])], r, _h)
                         e["hop"] = 2
                         edges.append(e)
@@ -932,7 +956,7 @@ class LinksMixin:
     ) -> list[tuple[Any, ...]]:
         """Drop ``finding`` neighbours failing the ``trust`` tier (see
         :meth:`neighbourhood`); other kinds pass untouched."""
-        from precis.nanopub.overview import hub_rows
+        from precis.nanopub.overview import hub_rows, passes_trust
 
         fids = sorted({int(r[2]) for r in rows if r[5] == "finding"})
         postures = (
@@ -940,23 +964,11 @@ class LinksMixin:
             if fids
             else {}
         )
-        out: list[tuple[Any, ...]] = []
-        for r in rows:
-            if r[5] != "finding":
-                out.append(r)
-                continue
-            p = postures.get(int(r[2]))
-            if p is None:
-                continue
-            if trust == "signed":
-                ok = p.state in SIGNED_FINDING_STATES
-            elif trust == "verified":
-                ok = (p.supported_count > 0 or p.atoms_all_supported) and not p.disputed
-            else:  # disputed
-                ok = bool(p.disputed)
-            if ok:
-                out.append(r)
-        return out
+        return [
+            r
+            for r in rows
+            if r[5] != "finding" or passes_trust(postures.get(int(r[2])), trust)
+        ]
 
     def linked_refs_page(
         self,

@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from precis.store._nanopub_ops import TERMINAL_STATES
+from precis.store.types import SIGNED_FINDING_STATES
 from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
 
 if TYPE_CHECKING:
@@ -144,6 +145,48 @@ class HubOverviewRow:
         from precis.nanopub.state import frozen_rung
 
         return frozen_rung(self.state)
+
+
+def passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
+    """Does this posture row clear the ``trust=`` tier?
+
+    The one definition of the tier predicate — finding search
+    (``handlers.finding``) and the link neighbourhood
+    (``store._links_ops.neighbourhood``) both read it; the store layer
+    may not import handlers, so it lives here beside the row type
+    (web-graph-navigation.md slice 4). The tier vocabulary is
+    :data:`precis.store.types.FINDING_TRUST_TIERS`.
+
+    A hit with **no** posture row — a plain ``STATUS:established`` chase
+    finding, which has no publish row and no evidence edges — fails every
+    tier except ``'any'``. That is the point of the facet: asking for
+    settled claims must not hand back rows that were never in the ladder.
+    """
+    if trust in ("", "any"):
+        return True
+    if row is None:
+        return False
+    if trust == "signed":
+        return row.state in SIGNED_FINDING_STATES
+    if trust == "verified":
+        # ``supported_count``, NOT ``verified_count``: a ``corroborates``
+        # edge can carry a *negative* verdict (``support: "no"`` — see
+        # ``taproot/authoring.py``), which is verified and supports
+        # nothing. Counting it would let a hub whose only evidence refutes
+        # it answer "verified", the exact inversion of the question.
+        # Verified *and* unopposed: a hub with a live contradicts edge is
+        # exactly what the ratchet hides, so it never answers "settled".
+        # A composite hub carries no evidence edges of its own (they hang
+        # off its ``conjunct-of`` atoms), so ``supported_count`` is 0 by
+        # construction — it answers "verified" when every live atom is
+        # supported and none is contradicted (``atoms_all_supported``).
+        # Posture only: ``gates.check_mint_order`` stays stricter (a signed
+        # artifact per atom), so corroborated-but-unsigned atoms read as
+        # verified here yet still block the composite's mint.
+        return (row.supported_count > 0 or row.atoms_all_supported) and not row.disputed
+    if trust == "disputed":
+        return row.disputed
+    return True
 
 
 @dataclass(frozen=True, slots=True)

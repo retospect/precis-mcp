@@ -9,14 +9,14 @@
    counts come from the store's ``counts`` (the true totals over every
    matching edge), rows from ``edges`` (the capped window), so a group can
    honestly show "×N" with fewer rows. #}
-{% macro group_inner(g, expanded, kind, ref_id, show_memories) %}
+{% macro group_inner(g, expanded, kind, ref_id, show_memories, qs) %}
   <div class="flex items-baseline gap-2 border-b border-slate-100 bg-slate-50/60 px-3 py-1.5">
     <h3 class="text-xs font-semibold text-slate-600">{{ g.heading }}</h3>
     <span class="text-[10px] text-slate-400">{{ g.n }} link{{ '' if g.n == 1 else 's' }}</span>
     {% if not expanded and (g.hidden_rows or g.n > g.rows_total) %}
     <button type="button"
             class="ml-auto text-[10px] text-sky-700 hover:underline"
-            hx-get="/graph/{{ kind }}/{{ ref_id }}/panel?group={{ g.heading | urlencode }}&memories={{ 1 if show_memories else 0 }}"
+            hx-get="/graph/{{ kind }}/{{ ref_id }}/panel?group={{ g.heading | urlencode }}&memories={{ 1 if show_memories else 0 }}{% if qs %}&{{ qs }}{% endif %}"
             hx-target="#nb-{{ g.slug }}" hx-swap="innerHTML">
       show all {{ g.n }} ▸
     </button>
@@ -52,14 +52,15 @@
 
 {% if group_only %}
   {% for g in groups %}
-    {{ group_inner(g, true, kind, ref_id, show_memories) }}
+    {{ group_inner(g, true, kind, ref_id, show_memories, qs) }}
   {% else %}
     <p class="px-3 py-2 text-xs italic text-slate-400">no group named {{ group_only }}.</p>
   {% endfor %}
 {% else %}
-<div class="mb-2 flex items-center gap-4">
-  <form hx-get="/graph/{{ kind }}/{{ ref_id }}/panel" hx-target="#graph-panel"
-        hx-trigger="change" hx-swap="innerHTML" class="flex items-center gap-3">
+<div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+  <form action="/graph/{{ kind }}/{{ ref_id }}" method="get"
+        hx-get="/graph/{{ kind }}/{{ ref_id }}/panel" hx-target="#graph-panel"
+        hx-trigger="change" hx-swap="innerHTML" class="flex flex-wrap items-center gap-3">
     <span class="text-[10px] uppercase tracking-wide text-slate-400">memories</span>
     <label class="inline-flex items-center gap-1 text-xs text-slate-600">
       <input type="radio" name="memories" value="1" {% if show_memories %}checked{% endif %} /> show
@@ -67,14 +68,41 @@
     <label class="inline-flex items-center gap-1 text-xs text-slate-600">
       <input type="radio" name="memories" value="0" {% if not show_memories %}checked{% endif %} /> hide
     </label>
+    <span class="text-[10px] uppercase tracking-wide text-slate-400">filter</span>
+    <input type="text" name="kinds" value="{{ f.kinds | join(',') }}" placeholder="kinds"
+           title="neighbour kinds, comma-separated"
+           class="w-20 rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+    <input type="text" name="rels" value="{{ f.rels | join(',') }}" placeholder="rels"
+           title="relations, comma-separated presented slugs"
+           class="w-24 rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+    <input type="date" name="since" value="{{ f.since }}" title="linked ref created on/after"
+           class="rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+    <input type="date" name="until" value="{{ f.until }}" title="linked ref created before"
+           class="rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+    <select name="trust" title="finding trust tier (findings only)"
+            class="rounded border border-slate-200 px-1 py-px text-[11px]">
+      <option value="">trust · off</option>
+      {% for t in trust_tiers %}
+      <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>trust · {{ t }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="rounded bg-slate-800 px-1.5 py-px text-[11px] text-white hover:bg-slate-700">apply</button>
   </form>
-  <a href="/graph/{{ kind }}/{{ ref_id }}.json" class="ml-auto text-xs text-slate-400 hover:underline">json</a>
+  <a href="/graph/{{ kind }}/{{ ref_id }}.json{% if qs %}?{{ qs }}{% endif %}" class="ml-auto text-xs text-slate-400 hover:underline">json</a>
 </div>
+{% if chips %}
+<nav class="mb-2 flex flex-wrap items-center gap-1 text-[11px]" aria-label="active filters">
+  {% for c in chips %}
+  <a href="{{ c.href }}" {% if c.hx %}hx-get="{{ c.hx }}" hx-target="#graph-panel" hx-swap="innerHTML"{% endif %}
+     class="rounded px-1.5 py-0.5 font-mono bg-amber-100 text-amber-800 hover:bg-amber-200" title="remove this filter">{{ c.label }} ×</a>
+  {% endfor %}
+</nav>
+{% endif %}
 {% if groups %}
 <div class="space-y-3">
   {% for g in groups %}
   <div id="nb-{{ g.slug }}" class="overflow-hidden rounded-lg border border-slate-200 bg-white">
-    {{ group_inner(g, false, kind, ref_id, show_memories) }}
+    {{ group_inner(g, false, kind, ref_id, show_memories, qs) }}
   </div>
   {% endfor %}
 </div>
@@ -82,6 +110,8 @@
 <p class="mt-1 text-[10px] text-slate-400">counts are complete; rows past the node cap are not rendered — the JSON has the full window.</p>
 {% endif %}
 {% else %}
-<p class="text-xs italic text-slate-400">no typed links yet{% if not show_memories %} (memories hidden){% endif %}.</p>
+<p class="text-xs italic text-slate-400">
+  {% if filters_on %}no links match the active filters — remove a chip above.{% else %}no typed links yet{% if not show_memories %} (memories hidden){% endif %}.{% endif %}
+</p>
 {% endif %}
 {% endif %}

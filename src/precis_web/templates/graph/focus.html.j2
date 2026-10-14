@@ -9,6 +9,7 @@
       <a href="{{ reader_url }}" class="underline">reader</a>
       · <a href="{{ eye_url }}" class="underline">/eye ladder</a>
       · <a href="{{ json_url }}" class="underline">json</a>
+      · <a href="{{ view_href }}" class="underline">{{ view_other }} view</a>
     </p>
   </div>
   <p class="text-xs text-slate-500">
@@ -16,16 +17,59 @@
     · cap {{ cap }}{% if truncated %} <span class="text-amber-600">(over cap — count chips)</span>{% endif %}
   </p>
 </div>
+<form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600" aria-label="graph filters">
+  <input type="text" name="kinds" value="{{ f.kinds | join(',') }}" placeholder="kinds"
+         title="neighbour kinds, comma-separated (e.g. paper,memory)"
+         class="w-28 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <input type="text" name="rels" value="{{ f.rels | join(',') }}" placeholder="rels"
+         title="relations, comma-separated presented slugs (e.g. cites,cited-by)"
+         class="w-32 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <input type="date" name="since" value="{{ f.since }}" title="linked ref created on/after"
+         class="rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <input type="date" name="until" value="{{ f.until }}" title="linked ref created before"
+         class="rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <select name="trust" title="finding trust tier (findings only)"
+          class="rounded border border-slate-200 px-1 py-0.5">
+    <option value="">trust · off</option>
+    {% for t in trust_tiers %}
+    <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>trust · {{ t }}</option>
+    {% endfor %}
+  </select>
+  <select name="depth" title="ring depth"
+          class="rounded border border-slate-200 px-1 py-0.5">
+    <option value="1" {% if f.depth == 1 %}selected{% endif %}>1 hop</option>
+    <option value="2" {% if f.depth != 1 %}selected{% endif %}>2 hops</option>
+  </select>
+  {% if 'cap=' in qs %}<input type="hidden" name="cap" value="{{ cap }}">{% endif %}
+  {% if f.view %}<input type="hidden" name="view" value="{{ f.view }}">{% endif %}
+  <button type="submit" class="rounded bg-slate-800 px-2 py-0.5 text-white hover:bg-slate-700">apply</button>
+</form>
+{% if chips %}
+<nav class="mb-2 flex flex-wrap items-center gap-1 text-xs" aria-label="active filters">
+  {% for c in chips %}
+  <a href="{{ c.href }}" class="rounded px-2 py-0.5 font-mono bg-amber-100 text-amber-800 hover:bg-amber-200" title="remove this filter">{{ c.label }} ×</a>
+  {% endfor %}
+</nav>
+{% endif %}
+{% if view == 'outline' %}
+{% include "graph/_outline.html.j2" %}
+{% else %}
 <div class="rounded-lg border border-slate-200 bg-white p-2 overflow-x-auto">
   {{ svg | safe }}
 </div>
-{% if not n_edges %}
-<p class="mt-2 text-xs italic text-slate-400">no typed links — the focus stands alone.</p>
 {% endif %}
+{% if not n_edges %}
+<p class="mt-2 text-xs italic text-slate-400">
+  {% if filters_on %}no links match the active filters — remove a chip above or
+  <a href="{{ clear_url }}" class="underline">clear them all</a>.{% else %}no typed links — the focus stands alone.{% endif %}
+</p>
+{% endif %}
+{% if view != 'outline' %}
 <p class="mt-2 text-[11px] text-slate-500">
   rings are hops from the centre; a node's shape is its kind
   ({{ legend | join(' · ') }}; unlisted kinds are circles), an edge's
   label its relation and its arrow the stored direction. Click a node to
   re-focus on it. Grey pills are count chips for neighbours past the cap.
 </p>
+{% endif %}
 {% endblock %}

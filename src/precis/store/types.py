@@ -1412,3 +1412,9 @@ FAMILY_STUB_META_KEY = "family_stub"
 
 #: Publish states that mean "a human key attested this claim".
 SIGNED_FINDING_STATES = ("signed", "anchored", "publishing", "published")
+
+#: The ``trust=`` facet's closed vocabulary — finding search
+#: (``handlers.finding``), the link neighbourhood
+#: (``_links_ops.neighbourhood``) and the ``/graph`` filter chips all
+#: speak it. The predicate is ``precis.nanopub.overview.passes_trust``.
+FINDING_TRUST_TIERS = ("verified", "signed", "disputed", "any")
