@@ -1459,10 +1459,11 @@ def content_hash(
             i.get("y"),
             i.get("rot"),
             i.get("fixed"),
-            # the soft pin is placement input like `fixed` itself — a
-            # pin change must not collapse onto a job run without it.
-            i.get("max_travel_mm"),
         )
+        # the soft pin is placement input like `fixed` itself — a pin
+        # change must not collapse onto a job run without it. Appended
+        # only when set, so unpinned designs keep their pre-pin digest.
+        + ((i["max_travel_mm"],) if i.get("max_travel_mm") is not None else ())
         for i in graph.get("instances") or []
     )
     nets = sorted(

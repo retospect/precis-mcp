@@ -8,6 +8,7 @@ case constructs the raw store-row shapes by hand.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from precis.pcb.session import content_hash
@@ -44,6 +45,12 @@ def test_session_state_none_reproduces_the_pre_gr266041_digest() -> None:
     assert content_hash(_GRAPH, _PARAMS, session_state=None) == (
         "d98b729f1115d3708c462fb1"
     )
+
+
+def test_soft_pin_changes_the_digest() -> None:
+    pinned: dict[str, Any] = copy.deepcopy(_GRAPH)
+    pinned["instances"][0]["max_travel_mm"] = 2.0
+    assert content_hash(pinned, _PARAMS) != content_hash(_GRAPH, _PARAMS)
 
 
 def test_authored_plane_assignment_changes_the_digest() -> None:

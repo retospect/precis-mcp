@@ -102,7 +102,14 @@ def test_dry_run_matches_the_views_once_minted(design: SeHandler, store: Store) 
     catalogue = design.get(id="dry", view="catalogue", args={"block": "joined"}).body
 
     # report: the block section, header through findings table
-    assert _section(dry, "## block 'joined'") == _section(report, "## block 'joined'")
+    # the minted report also carries the bound structure's current validator
+    # read (c93982299); a dry run has no stored structure to read
+    minted = _section(report, "## block 'joined'")
+    assert "validator:" in minted and "validator:" not in dry
+    minted = "\n".join(
+        ln for ln in minted.splitlines() if not ln.startswith("validator: ")
+    )
+    assert _section(dry, "## block 'joined'") == minted
     assert "seam.rings" in dry
     # catalogue: the per-join resolution section, label by label
     header = "## block 'joined' (join, rung=stick)"
