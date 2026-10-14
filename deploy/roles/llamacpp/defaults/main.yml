@@ -48,6 +48,9 @@ llamacpp_serve_defaults:
 
 # llama-swap ttl: 0 = never unload (persistent), N seconds = evict after idle.
 llamacpp_default_ttl: 0
+# Per-model ttl override, keyed by catalog name, e.g. evict idle big models
+# so they don't sit in unified memory for days: {qwen3-next-80b-a3b-q4_k_m: 1800}.
+llamacpp_model_ttl: {}
 
 # Port range for individual llama-server instances (llama-swap proxies to these).
 # llama-swap itself listens on llama_swap_port_{linux,macos}.

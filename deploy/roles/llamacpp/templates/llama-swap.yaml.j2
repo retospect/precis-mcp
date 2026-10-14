@@ -46,7 +46,7 @@ models:
 {% for arg in serve.extra_args %}      {{ arg }}
 {% endfor %}
     proxy: "http://127.0.0.1:{{ port }}"
-    ttl: {{ llamacpp_default_ttl }}
+    ttl: {{ llamacpp_model_ttl[entry.name] | default(llamacpp_default_ttl) }}
     aliases:
       - {{ entry.name }}
 {% endfor %}
