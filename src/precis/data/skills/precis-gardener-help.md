@@ -1,6 +1,6 @@
 ---
 id: precis-gardener-help
-family: maintenance
+family: memory
 title: precis — the graph gardener (proposals-only graph upkeep)
 summary: scheduled, bounded maintenance over graph nodes/edges/tags that files review-ledger proposals — never auto-applies
 answers:

@@ -423,6 +423,7 @@ def test_pre_seam_fuse_only_examples_are_one_sheet(name: str) -> None:
 def test_all_pre_seam_examples_covered_by_snapshot() -> None:
     names = {Path(p).name for p in glob.glob(str(ROOT / "examples" / "*.hx"))}
     names.discard("sheet_pill_bump.hx")
+    names.discard("tunnel_reservoirs.hx")  # post-seam: its reservoirs join by seam
     assert names == set(_PRE_SEAM_EULER_SNAPSHOT)
 
 

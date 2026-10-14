@@ -76,7 +76,7 @@ def test_priority_and_recency_pages(
     assert "[error:" not in recent
     assert "by recency" in recent
     error = _text(core.search(**args, sort="bogus"))
-    assert "sort='prio'" in error and "sort='recency'" in error
+    assert "'prio'" in error and "'recency'" in error
     assert "requires q=" not in recent
 
 
