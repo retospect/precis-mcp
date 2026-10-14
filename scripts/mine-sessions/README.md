@@ -26,6 +26,7 @@ numbers rather than by writing a parser.
 |---|---|---|
 | `--local` | `~/.claude/projects/*/*.jsonl` **and** `*/subagents/agent-*.jsonl` | The richest corpus: full tool stream, exact per-turn tokens from `message.usage`, non-precis detours, and user corrections. 91% of files are sidechains — an earlier audit's glob missed them entirely, so the sidechain shape is pinned by a test. |
 | `--codex` | `~/.codex/sessions/**/*.jsonl`, scoped by `--cwd-root` or repeatable `--thread-id` | Main/child tool streams, user turns and per-response usage; `coverage.json` names missing data and opaque nested tools. |
+| `--devin` | `~/.local/share/devin/cli/sessions.db` (SQLite, read-only) | Devin CLI sessions: ordered chat forest, tool calls joined to results by `tool_call_id`, authoritative `failed` status from `tool_call_state`, precis calls via `mcp_call_tool`. No token usage — the DB doesn't store it. |
 | `--ledger` | `tool_calls` (migration 0133) | Fleet-wide verb/kind/outcome/latency rates. **No payload, ever** — `input_keys` is argument *names* only. Targeting, not causes. |
 | `--llmlog` | `llm_call_log` | Model/tier/cost/latency per LLM call, and `data_parsed` as a prompt-quality signal. |
 | `--jobs` | `refs.meta->>'transcript'` on `kind='job'` | Server-side tool streams. Nearly empty now (`plan_tick` is down to a couple of runs a week) — kept because the window predates that, and because `doctor_tick` still writes here. |
@@ -33,9 +34,12 @@ numbers rather than by writing a parser.
 The prod three hop the cluster read-only through `scripts/prod-psql`. Without
 `--prod` the run is local-only and needs no network.
 
-`--jobs` must export with `\copy (…) TO STDOUT WITH (FORMAT csv)`. Plain
-`TO STDOUT` COPY-escapes `\n`/`\t`/`\\` and the lines will not re-parse as
-JSON.
+`--jobs` exports with `SELECT to_jsonb(t) FROM (…) t;` — one JSON object
+per line, the transcript riding inside a JSON string so its newlines never
+reach the row stream. Plain SQL only: prod reads go through
+`prod-psql --ro` (the `agent_ro` role inside `BEGIN READ ONLY`), which
+admits no psql meta-commands — the earlier `\copy … FORMAT csv` shape was
+replaced for exactly that reason.
 
 ## Redaction contract
 
@@ -67,14 +71,16 @@ marker. That is precisely the wrong lesson. Override with `MINE_OUT`.
 ## Layout
 
 ```
-outdir.py    where artefacts go (cache dir, outside the repo)
-extract.py   every corpus  → events.jsonl   (normalized Event JSONL)
-stats.py     events        → scoreboard.{md,json}
-detect.py    events        → candidates.json
-cards.py     both          → cards/**, cards/INDEX.md
-schema.py    the Event contract shared by all of them
-redact.py    the scrub, shared by every writer
-run.sh       the stages in order, for one window
+outdir.py       where artefacts go (cache dir, outside the repo)
+extract.py      every corpus  → events.jsonl   (normalized Event JSONL)
+codex_source.py the Codex rollout adapter
+devin_source.py the Devin sessions.db adapter
+stats.py        events        → scoreboard.{md,json}
+detect.py       events        → candidates.json
+cards.py        both          → cards/**, cards/INDEX.md
+schema.py       the Event contract shared by all of them
+redact.py       the scrub, shared by every writer
+run.sh          the stages in order, for one window
 ```
 
 ## Use

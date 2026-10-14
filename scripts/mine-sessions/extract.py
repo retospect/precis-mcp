@@ -29,8 +29,6 @@ continues with whatever sources it does have).
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
 import os
 import re
@@ -46,6 +44,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import codex_source
+import devin_source
 import outdir
 import redact
 import schema
@@ -506,16 +505,18 @@ _LLMLOG_COLUMNS = (
 
 
 def _run_prod_psql(sql: str) -> str | None:
-    """Run one read-only statement through ``scripts/prod-psql``. Returns
-    stdout, or ``None`` (after printing a one-line warning) if the script is
-    missing or the hop fails — a dead network must not kill a local-only
-    run."""
+    """Run one read-only statement through ``scripts/prod-psql --ro``.
+    Returns stdout, or ``None`` (after printing a one-line warning) if the
+    script is missing or the hop fails — a dead network must not kill a
+    local-only run. ``--ro`` is the fleet rule for prod reads: the
+    ``agent_ro`` role, wrapped in ``BEGIN READ ONLY``, so the miner can
+    never issue a write even if a SQL string were wrong."""
     script = _REPO_ROOT / "scripts" / "prod-psql"
     env = dict(os.environ)
     env["PRECIS_PROD_PSQL_OPTS"] = '-F "\t" -tA'
     try:
         proc = subprocess.run(
-            [str(script), sql],
+            [str(script), "--ro", sql],
             capture_output=True,
             text=True,
             env=env,
@@ -706,31 +707,35 @@ def _jobs_sql(since: datetime | None, limit: int | None) -> str:
     inner = f"{where} ORDER BY updated_at"
     if limit:
         inner += f" LIMIT {int(limit)}"
-    # Plain `TO STDOUT` COPY-escapes \n/\t/\\ inside the transcript text, so
-    # the lines would not re-parse as JSON — \copy ... FORMAT csv is the one
-    # export shape that round-trips it.
-    return f"\\copy ({inner}) TO STDOUT WITH (FORMAT csv)"
-
-
-#: A job transcript is capped at 1 MiB server-side, but csv's default field
-#: limit is 128 KiB — so a real `doctor_tick` row (~400 KiB) raises
-#: `_csv.Error: field larger than field limit` and takes the whole extraction
-#: with it. Sized well above the server cap so the reader is never the
-#: binding constraint; not `sys.maxsize`, which overflows the C long the csv
-#: module stores this in on some platforms.
-_CSV_FIELD_LIMIT = 64 * 1024 * 1024
+    # One JSON object per line via to_jsonb — the transcript rides inside a
+    # JSON string, so its newlines never reach the row stream and no COPY
+    # escaping is involved. Plain SQL: the fleet rule is prod reads go
+    # through `prod-psql --ro` with no psql meta-commands, and --ro wraps
+    # the statement in BEGIN READ ONLY … COMMIT, which a \copy cannot
+    # appear inside anyway.
+    return f"SELECT to_jsonb(t) FROM ({inner}) t;"
 
 
 def fetch_jobs_rows(since: datetime | None, limit: int | None) -> list[tuple[str, str]]:
     stdout = _run_prod_psql(_jobs_sql(since, limit))
     if stdout is None:
         return []
-    csv.field_size_limit(_CSV_FIELD_LIMIT)
     rows: list[tuple[str, str]] = []
-    for fields in csv.reader(io.StringIO(stdout)):
-        if len(fields) != 2:
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            # psql command tags from the --ro wrapper (BEGIN/COMMIT) and
+            # any psqlrc leakage are not JSON — skip them like the TSV
+            # parser skips short rows.
             continue
-        rows.append((fields[0], fields[1]))
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ref_id = obj.get("ref_id")
+        transcript = obj.get("transcript")
+        if isinstance(ref_id, str) and isinstance(transcript, str):
+            rows.append((ref_id, transcript))
     return rows
 
 
@@ -768,6 +773,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--until", help="exclusive ISO end of the Codex interval")
     parser.add_argument(
         "--codex", action="store_true", help="scoped local Codex rollouts"
+    )
+    parser.add_argument(
+        "--devin",
+        action="store_true",
+        help="local Devin CLI sessions (~/.local/share/devin/cli/sessions.db)",
+    )
+    parser.add_argument(
+        "--devin-db",
+        type=Path,
+        default=Path.home() / ".local/share/devin/cli/sessions.db",
     )
     parser.add_argument(
         "--codex-root", type=Path, default=Path.home() / ".codex/sessions"
@@ -823,11 +838,13 @@ def main(argv: list[str] | None = None) -> int:
     use_ledger = bool(args.ledger)
     use_llmlog = bool(args.llmlog)
     use_jobs = bool(args.jobs)
-    if not (use_local or use_ledger or use_llmlog or use_jobs or args.codex):
+    if not (
+        use_local or use_ledger or use_llmlog or use_jobs or args.codex or args.devin
+    ):
         use_local = True
 
     out_path = Path(args.out)
-    if args.codex:
+    if args.codex or args.devin:
         outdir.require_external(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -860,6 +877,50 @@ def main(argv: list[str] | None = None) -> int:
                             "Coverage counters describe scoped files; events_in_window describes the interval.",
                             "Missing/reset counters and forks without history boundaries are undercounts, not zero work.",
                         ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        if args.devin:
+            devin_events, devin_coverage = devin_source.extract(
+                args.devin_db, since=since, until=until, limit=args.limit
+            )
+            for ev in devin_events:
+                out_fh.write(ev.to_json() + "\n")
+            stats.bump("devin", len(devin_events))
+            coverage_path = out_path.with_name("coverage.json")
+            # Merge rather than overwrite: --codex and --devin can run in
+            # the same pass and each owns one namespaced report.
+            prior = {}
+            if coverage_path.exists():
+                try:
+                    prior = json.loads(coverage_path.read_text(encoding="utf-8"))
+                    if prior.get("corpus") == "devin":
+                        prior = {}
+                except json.JSONDecodeError:
+                    prior = {}
+            coverage_path.write_text(
+                json.dumps(
+                    {
+                        "corpora": {
+                            **(
+                                {prior["corpus"]: prior["coverage"]}
+                                if prior.get("corpus")
+                                else {}
+                            ),
+                            "devin": {
+                                "coverage": devin_coverage,
+                                "limitations": [
+                                    "Outcome flags come from tool_call_state status; rows missing it fall back to the result's error marker.",
+                                    "No per-turn token usage is stored in sessions.db — token accounting skips this corpus.",
+                                    "Devin's shell tool is 'exec', not 'Bash' — detour detectors tuned to Bash don't see it.",
+                                ],
+                            },
+                        },
+                        "since": args.since,
+                        "until": args.until,
                     },
                     indent=2,
                 )

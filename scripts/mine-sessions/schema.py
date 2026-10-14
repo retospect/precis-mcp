@@ -22,9 +22,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-#: Corpus labels. ``local`` is the only one carrying full payloads; the
+#: Corpus labels. ``local``, ``codex`` and ``devin`` carry full payloads; the
 #: ledger deliberately has none (migration 0133's "no payload content, ever").
-CORPORA = ("local", "codex", "ledger", "llmlog", "jobs")
+CORPORA = ("local", "codex", "devin", "ledger", "llmlog", "jobs")
 
 #: The precis MCP tool names as they appear in a local transcript. Both the
 #: typed profile (``mcp__precis__get``) and the command profile

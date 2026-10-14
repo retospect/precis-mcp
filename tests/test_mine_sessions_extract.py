@@ -418,3 +418,218 @@ def test_ledger_row_to_event_mapping() -> None:
     assert ev.arg_digest == ""
     assert ev.result_head == ""
     assert ev.err_head == ""
+
+
+# ---------------------------------------------------------------------------
+# 10. prod hops: --ro enforced, jobs export is plain SQL not \copy
+# ---------------------------------------------------------------------------
+
+
+def test_run_prod_psql_passes_ro_flag(monkeypatch) -> None:
+    """The fleet rule: prod reads go through ``prod-psql --ro`` (agent_ro
+    inside BEGIN READ ONLY). A regression here silently re-opens write
+    access for a script that only ever needs SELECT."""
+    captured: dict[str, list[str]] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = "row1"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        return _Proc()
+
+    monkeypatch.setattr(extract.subprocess, "run", fake_run)
+    out = extract._run_prod_psql("SELECT 1")
+    assert out == "row1"
+    argv = captured["argv"]
+    assert argv[1] == "--ro"
+
+
+def test_jobs_sql_is_plain_sql_no_meta_command() -> None:
+    """``prod-psql --ro`` wraps input in BEGIN READ ONLY … COMMIT — a psql
+    ``\\copy`` cannot appear inside that and is forbidden by the fleet
+    rule regardless. The export must be plain SQL whose rows re-parse:
+    one ``to_jsonb`` object per line keeps the transcript's newlines
+    inside a JSON string."""
+    from datetime import UTC, datetime
+
+    sql = extract._jobs_sql(datetime.now(UTC), 25)
+    assert not sql.lstrip().startswith("\\")
+    assert "\\copy" not in sql
+    assert "to_jsonb" in sql
+    assert "LIMIT 25" in sql
+
+
+def test_fetch_jobs_rows_parses_json_lines(monkeypatch) -> None:
+    """to_jsonb rows interleaved with the --ro wrapper's command tags:
+    BEGIN/COMMIT lines are skipped, transcript newlines survive inside
+    the JSON string."""
+    stdout = "\n".join(
+        [
+            "BEGIN",
+            json.dumps(
+                {
+                    "ref_id": "j123",
+                    "transcript": '{"type":"assistant"}\n{"type":"user"}',
+                }
+            ),
+            json.dumps({"ref_id": "j124", "transcript": ""}),
+            "COMMIT",
+        ]
+    )
+    monkeypatch.setattr(extract, "_run_prod_psql", lambda sql: stdout)
+    rows = extract.fetch_jobs_rows(None, None)
+    assert rows == [
+        ("j123", '{"type":"assistant"}\n{"type":"user"}'),
+        ("j124", ""),
+    ]
+
+
+def test_fetch_jobs_rows_none_on_hop_failure(monkeypatch) -> None:
+    monkeypatch.setattr(extract, "_run_prod_psql", lambda sql: None)
+    assert extract.fetch_jobs_rows(None, None) == []
+
+
+# ---------------------------------------------------------------------------
+# --devin: sessions.db chat-forest extraction
+# ---------------------------------------------------------------------------
+
+
+def _devin_db(tmp_path: Path) -> Path:
+    """A minimal sessions.db: one session whose assistant turn carries a
+    precis ``mcp_call_tool`` and an ``exec`` call, one failed tool result,
+    and a user prompt — the three shapes the adapter must map."""
+    import sqlite3
+
+    db = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, working_directory TEXT NOT NULL,
+            backend_type TEXT, model TEXT, agent_mode TEXT,
+            created_at INTEGER, last_activity_at INTEGER,
+            title TEXT, main_chain_id INTEGER,
+            shell_last_seen_index INTEGER DEFAULT 0,
+            cogs_json TEXT, workspace_dirs TEXT,
+            hidden INTEGER NOT NULL DEFAULT 0, metadata TEXT);
+        CREATE TABLE message_nodes (
+            row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL, node_id INTEGER NOT NULL,
+            parent_node_id INTEGER, chat_message TEXT NOT NULL,
+            created_at INTEGER NOT NULL, metadata TEXT);
+        CREATE TABLE tool_call_state (
+            session_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
+            tool_call_json TEXT, tool_call_update_json TEXT,
+            PRIMARY KEY (session_id, tool_call_id));
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions (id, working_directory, backend_type, model,"
+        " agent_mode, created_at, last_activity_at, hidden) VALUES"
+        " ('s1', '/work', 'devin', 'm', 'normal', 1791967400, 1791967600, 0)"
+    )
+    msgs = [
+        {
+            "role": "user",
+            "content": "check gripe 484070",
+            "created": 1791967410,
+        },
+        {
+            "role": "assistant",
+            "content": "looking",
+            "tool_calls": [
+                {
+                    "id": "mcp_call_tool:0#aa",
+                    "name": "mcp_call_tool",
+                    "arguments": {
+                        "server_name": "precis",
+                        "tool_name": "get",
+                        "arguments": {"kind": "gripe", "id": 484070},
+                    },
+                    "index": 0,
+                },
+                {
+                    "id": "exec:0#bb",
+                    "name": "exec",
+                    "arguments": {"command": "ls"},
+                    "index": 1,
+                },
+            ],
+            "created": 1791967420,
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "mcp_call_tool:0#aa",
+            "content": 'MCP tool \'get\' returned an error: [\n  {"type": "text",'
+            ' "text": "[error:BadInput] unknown view \'meta\'"}]',
+            "created": 1791967430,
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "exec:0#bb",
+            "content": "file1\nfile2",
+            "created": 1791967440,
+        },
+    ]
+    for i, m in enumerate(msgs):
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message,"
+            " created_at) VALUES ('s1', ?, ?, ?)",
+            (
+                i,
+                json.dumps({k: v for k, v in m.items() if k != "created"}),
+                m["created"],
+            ),
+        )
+    conn.execute(
+        "INSERT INTO tool_call_state (session_id, tool_call_id,"
+        " tool_call_update_json) VALUES ('s1', 'mcp_call_tool:0#aa', ?)",
+        (json.dumps({"status": "failed"}),),
+    )
+    conn.execute(
+        "INSERT INTO tool_call_state (session_id, tool_call_id,"
+        " tool_call_update_json) VALUES ('s1', 'exec:0#bb', ?)",
+        (json.dumps({"status": "completed"}),),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_devin_source_maps_precis_and_shell_calls(tmp_path) -> None:
+    import devin_source
+
+    events, coverage = devin_source.extract(_devin_db(tmp_path))
+    assert not coverage["malformed_rows"]
+    precis = [e for e in events if e.verb == "get"]
+    assert len(precis) == 1
+    call = precis[0]
+    assert call.corpus == "devin"
+    assert call.session == "devin:s1"
+    assert call.tool == "mcp_call_tool"
+    assert call.kind == "gripe"
+    assert call.arg_keys == ("id", "kind")
+    assert '"id"' in (call.arg_digest or "")
+    # The tool result joined by tool_call_id; 'failed' status + the
+    # [error:Type] marker supply the outcome the message itself lacks.
+    assert call.is_error
+    assert call.err_type == "BadInput"
+    assert "BadInput" in (call.err_head or "")
+    shell = [e for e in events if e.tool == "exec"]
+    assert len(shell) == 1 and not shell[0].is_error
+    assert shell[0].verb is None
+    users = [e for e in events if e.tool == "__user__"]
+    assert len(users) == 1 and "484070" in (users[0].result_head or "")
+    # seq is the per-session ordinal in chat order.
+    assert [e.seq for e in events] == list(range(1, len(events) + 1))
+
+
+def test_devin_source_missing_db_reports_and_returns_empty(tmp_path) -> None:
+    import devin_source
+
+    events, coverage = devin_source.extract(tmp_path / "absent.db")
+    assert events == []
+    assert coverage["db_missing"] == 1

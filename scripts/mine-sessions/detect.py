@@ -103,15 +103,27 @@ def _arg_value(ev: Event, name: str) -> str | None:
     knowable", not "not passed". Callers comparing two events must treat
     ``None`` as a non-match rather than as equality, or every ledger pair
     looks identical.
+
+    Two digest dialects exist: the local extractor's JSON dump
+    (``{"id": 366639, "kind": "gripe"}``) and the ``id=5`` rendering (jobs
+    transcripts, hand-built cards). Read both — the JSON form is the whole
+    local corpus, so a single-dialect reader is silently blind there (it
+    is why ``skill_taught_wrong`` reported ``skill:?`` for an id that was
+    right in front of it).
     """
     if name not in ev.arg_keys or not ev.arg_digest:
         return None
     pat = _ARG_VALUE_RE_CACHE.get(name)
     if pat is None:
-        pat = re.compile(rf"\b{re.escape(name)}\s*=\s*['\"]?([\w./:-]+)")
+        pat = re.compile(
+            rf"\b{re.escape(name)}\s*=\s*['\"]?([\w./:-]+)"
+            rf"|\"{re.escape(name)}\"\s*:\s*\"?([\w./:-]+)"
+        )
         _ARG_VALUE_RE_CACHE[name] = pat
     m = pat.search(ev.arg_digest)
-    return m.group(1) if m else None
+    if not m:
+        return None
+    return m.group(1) if m.group(1) is not None else m.group(2)
 
 
 def by_session(events: Sequence[Event]) -> dict[str, list[Event]]:
@@ -243,7 +255,7 @@ def _is_zero(ev: Event) -> bool:
 #: would be classified ``zero`` — an artifact that swamped the real mix
 #: 34382:3052 on the first real pass. Anything reading a payload must gate on
 #: this set, not on the event alone.
-PAYLOAD_CORPORA = frozenset({"local", "codex", "jobs"})
+PAYLOAD_CORPORA = frozenset({"local", "codex", "devin", "jobs"})
 
 
 def has_payload(ev: Event) -> bool:
@@ -667,9 +679,6 @@ def detect_read_then_unused(events: Sequence[Event]) -> list[Candidate]:
     return cands
 
 
-_SKILL_ID_RE = re.compile(r"id=['\"]?([\w./-]+)")
-
-
 @detector("skill_taught_wrong")
 def detect_skill_taught_wrong(events: Sequence[Event]) -> list[Candidate]:
     """``get(kind='skill', id=...)`` followed within 3 turns by an errored
@@ -685,8 +694,7 @@ def detect_skill_taught_wrong(events: Sequence[Event]) -> list[Candidate]:
             if is_precis(e) and e.verb == "get" and e.kind == "skill"
         ]
         for skill_ev in skill_calls:
-            m = _SKILL_ID_RE.search(skill_ev.arg_digest or "")
-            skill_id = m.group(1) if m else "?"
+            skill_id = _arg_value(skill_ev, "id") or "?"
             for cand in sess_events:
                 if cand.seq <= skill_ev.seq or cand.seq - skill_ev.seq > 3:
                     continue
@@ -800,6 +808,206 @@ def detect_spin(events: Sequence[Event]) -> list[Candidate]:
         sessions = {e.session for e in evs}
         if len(days) >= 3 or len(sessions) >= 3:
             cands.append(_candidate("spin", sig, evs))
+    return cands
+
+
+# ---------------------------------------------------------------------------
+# D12 call_chain — result-fed sequences a composite call could collapse
+# ---------------------------------------------------------------------------
+
+#: Argument names whose VALUE is a handle an earlier result could have
+#: produced — the same addressing fields ``_log_tool_call`` samples because
+#: they are "what the agent is pointing at".
+_LINK_KEYS = ("id", "name", "target", "link", "slug", "project")
+
+#: Max seq gap between linked calls — an assistant turn and its tool_use
+#: land 1–2 seq apart, so 8 covers a think-then-call without letting two
+#: unrelated phases of a session merge into a fake chain.
+_CHAIN_GAP = 8
+
+
+def _link_values(ev: Event) -> list[str]:
+    """Handle-looking argument values on *ev*, lifted from ``arg_digest``.
+    Values under 4 chars are dropped: ``id=5`` substring-matching "5" in
+    any render is the false-positive that gate exists for — the same
+    lesson as narrow-after-fat's same-id requirement."""
+    return [v for name in _LINK_KEYS if (v := _arg_value(ev, name)) and len(v) >= 4]
+
+
+def _feeds_from(curr: Event, earlier: Sequence[Event]) -> str | None:
+    """The first of *curr*'s handle values that literally appears in any
+    of *earlier*'s result heads — evidence the call consumed a previous
+    call's output. Returns the matched value, or ``None``."""
+    for v in _link_values(curr):
+        pat = re.compile(rf"(?<![\w.-]){re.escape(v)}(?![\w.-])")
+        for prev in earlier:
+            if pat.search(prev.result_head or ""):
+                return v
+    return None
+
+
+@detector("call_chain")
+def detect_call_chain(events: Sequence[Event]) -> list[Candidate]:
+    """A run of 2+ precis calls in one session where each later call's
+    ``id=``/``name=``/``target=``-style argument literally appears in an
+    earlier call's ``result_head`` — the agent fetched a handle, then fed
+    it to the next call. ``search|K -> get|K`` (search, then get the id
+    it returned) and ``get|K -> get|K`` (look up id-for-A, then get A)
+    are the canonical shapes: every link in the chain is a turn a
+    composite view or verb would delete. A call may feed from ANY earlier
+    member of the run, not only the previous one, so
+    ``search -> get -> get`` where both gets take ids from the one search
+    result counts as a single three-call chain. A non-precis tool call
+    breaks the run; assistant text and user turns do not. The signature
+    is the exact sequence shape ``verb|kind -> verb|kind``; candidates
+    rank by ``metrics['turns_saved']`` (a run of length L costs L calls
+    a composite would make 1). Payload corpora only — the check reads
+    results, so the ledger cannot produce it at all; and ``result_head``
+    is a 400-char slice, so a handle landing past the cut links nothing
+    and ``n`` is a floor, not a count. Fix class: MCP capability — a
+    composite verb/view (or a follow-affordance) that does
+    look-up-then-fetch in one call.
+    """
+    runs_by_sig: dict[str, list[list[Event]]] = defaultdict(list)
+
+    def flush(run: list[Event]) -> None:
+        if len(run) < 2:
+            return
+        sig = " -> ".join(f"{e.verb}|{e.kind or '-'}" for e in run)
+        runs_by_sig[sig].append(run)
+
+    for sess_events in by_session(events).values():
+        run: list[Event] = []
+        for ev in sess_events:
+            if is_precis(ev):
+                if run and ev.seq - run[-1].seq <= _CHAIN_GAP and _feeds_from(ev, run):
+                    run.append(ev)
+                else:
+                    flush(run)
+                    run = [ev]
+            elif ev.tool not in (None, "__user__"):
+                # Another tool (Bash, Read, ...) breaks the chain the same
+                # way it breaks a reformulation streak.
+                flush(run)
+                run = []
+        flush(run)
+    cands = []
+    for sig, runs in runs_by_sig.items():
+        evs = [e for r in runs for e in r]
+        saved = sum(len(r) - 1 for r in runs)
+        cands.append(
+            _candidate(
+                "call_chain",
+                sig,
+                evs,
+                metrics={"runs": len(runs), "turns_saved": saved, "rank": saved},
+                caveat=(
+                    "Undercount: a link only registers when the handle lands "
+                    "inside result_head's 400-char slice, and payload-free "
+                    "corpora cannot chain at all. A hit is real (the id was "
+                    "literally in the earlier result); a miss proves nothing."
+                ),
+            )
+        )
+    cands.sort(key=lambda c: c.metrics.get("rank", 0), reverse=True)
+    return cands
+
+
+# ---------------------------------------------------------------------------
+# D13 session_digest — one bounded timeline card per thread
+# ---------------------------------------------------------------------------
+
+_DIGEST_MAX_EVENTS = 60
+_DIGEST_MAX_CHARS = 4000
+
+_DIGEST_JSON_ARG_RE = re.compile(r'"(id|q)"\s*:\s*"?([^",}]{1,80})"?')
+
+
+def _sample_args(ev: Event) -> str:
+    """The one field that says *what was asked* — ``id=`` for lookups,
+    ``q=`` for searches — lifted out of ``arg_digest``; falls back to bare
+    arg names so a digest-free call still has a shape. The JSON regex goes
+    first because it keeps a multi-word ``q`` whole where ``_arg_value``'s
+    token stop would cut it at the first space."""
+    m = _DIGEST_JSON_ARG_RE.search(ev.arg_digest or "")
+    if m:
+        return f"{m.group(1)}={m.group(2)[:60]}"
+    for name in ("id", "q"):
+        v = _arg_value(ev, name)
+        if v:
+            return f"{name}={v[:60]}"
+    return " ".join(ev.arg_keys)
+
+
+def _digest_line(ev: Event) -> str:
+    if ev.tool == "__user__":
+        return f"{ev.seq} user: {(ev.result_head or '')[:80]}"
+    if ev.tool is None:
+        return f"{ev.seq} assistant: {(ev.result_head or '')[:80]}"
+    if is_precis(ev):
+        args = _sample_args(ev)
+        outcome = f"ERR:{ev.err_type or 'error'}" if ev.is_error else "ok"
+        return f"{ev.seq} {ev.verb}|{ev.kind or '-'} {args} -> {outcome}"
+    outcome = "ERR" if ev.is_error else "ok"
+    return f"{ev.seq} {ev.tool} -> {outcome}"
+
+
+@detector("session_digest")
+def detect_session_digest(events: Sequence[Event]) -> list[Candidate]:
+    """One candidate per session, signature ``session:<id>``, with the
+    whole thread compressed to a bounded timeline in
+    ``metrics['timeline']`` — one short line per event
+    (``seq verb|kind sampled-args -> outcome``; user and assistant turns
+    get a head snippet) — so a pass can read *what was asked, in order,
+    and what failed* without opening a transcript. Errored calls are
+    marked ``ERR:<type>`` inline and their refs lead ``evidence``, so the
+    rendered card jumps straight to the failures. Bounded: threads longer
+    than ``_DIGEST_MAX_EVENTS`` keep head and tail with the middle elided
+    (``caveat`` then says so), and the timeline caps at
+    ``_DIGEST_MAX_CHARS``. ``n`` is the session's precis-call count, so
+    ``--min-n`` drops threads that never touched the surface. Fix class:
+    none itself — this is the per-thread evidence the aggregate detectors'
+    signatures were abstracted out of.
+    """
+    cands = []
+    for session, sess_events in by_session(events).items():
+        precis_evs = [e for e in sess_events if is_precis(e)]
+        if not precis_evs:
+            continue
+        lines = [_digest_line(e) for e in sess_events]
+        caveat = ""
+        if len(lines) > _DIGEST_MAX_EVENTS:
+            head_n = _DIGEST_MAX_EVENTS // 3
+            tail_n = _DIGEST_MAX_EVENTS - head_n - 1
+            elided = len(lines) - head_n - tail_n
+            lines = (
+                lines[:head_n] + [f"... {elided} events elided ..."] + lines[-tail_n:]
+            )
+            caveat = f"timeline elided: {len(sess_events)} events, outer {head_n + tail_n} shown"
+        timeline = "\n".join(lines)[:_DIGEST_MAX_CHARS]
+
+        errs = [e for e in sess_events if e.is_error]
+        seen: set[int] = set()
+        evidence: list[Event] = []
+        for e in (*errs, sess_events[0]):
+            if e.seq not in seen:
+                seen.add(e.seq)
+                evidence.append(e)
+        tss = sorted(e.ts for e in sess_events if e.ts)
+        cands.append(
+            Candidate(
+                detector="session_digest",
+                signature=f"session:{session}",
+                n=len(precis_evs),
+                n_sessions=1,
+                first_ts=tss[0] if tss else None,
+                last_ts=tss[-1] if tss else None,
+                evidence=[EvidenceRef(e.session, e.seq) for e in evidence[:12]],
+                metrics={"timeline": timeline, "errors": len(errs)},
+                caveat=caveat,
+            )
+        )
+    cands.sort(key=lambda c: c.n, reverse=True)
     return cands
 
 

@@ -51,8 +51,8 @@ while [[ $# -gt 0 ]]; do
         --since=*) SINCE="${1#*=}"; shift ;;
         --prod) PROD=1; shift ;;
         --out) OUT="$2"; shift 2 ;;
-        --local|--codex) SOURCES+=("$1"); shift ;;
-        --limit|--projects-glob|--until|--codex-root|--cwd-root|--thread-id) EXTRACT_ARGS+=("$1" "$2"); shift 2 ;;
+        --local|--codex|--devin) SOURCES+=("$1"); shift ;;
+        --limit|--projects-glob|--until|--codex-root|--devin-db|--cwd-root|--thread-id) EXTRACT_ARGS+=("$1" "$2"); shift 2 ;;
         --min-n|--only) DETECT_ARGS+=("$1" "$2"); shift 2 ;;
         --top|--random|--seed) CARDS_ARGS+=("$1" "$2"); shift 2 ;;
         *) echo "mine-sessions: unknown option '$1'" >&2; exit 2 ;;

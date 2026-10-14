@@ -463,6 +463,33 @@ def test_d8_skill_taught_wrong_hit() -> None:
     assert cands[0].signature == "skill:precis-overview"
 
 
+def test_d8_skill_taught_wrong_recovers_id_from_json_digest() -> None:
+    """The local extractor renders ``arg_digest`` as JSON — ``{"id":
+    "precis-memory-help", "kind": "skill"}`` — which the old ``id=``-only
+    regex could not read, so every real signature collapsed to
+    ``skill:?``. ``_arg_value`` now reads both dialects."""
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-memory-help", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+        ),
+        mk(
+            seq=2,
+            verb="put",
+            kind="memory",
+            is_error=True,
+            err_type="BadInput",
+            err_head="kind 'memory' is numeric",
+        ),
+    ]
+    cands = detect.detect_skill_taught_wrong(events)
+    assert len(cands) == 1
+    assert cands[0].signature == "skill:precis-memory-help"
+
+
 def test_d8_skill_taught_wrong_near_miss_outside_window() -> None:
     events = [
         mk(
@@ -625,6 +652,262 @@ def test_d11_spin_near_miss_same_session_same_day() -> None:
         ),
     ]
     assert detect.detect_spin(events) == []
+
+
+# ---------------------------------------------------------------------------
+# D12 call_chain
+# ---------------------------------------------------------------------------
+
+
+def test_d12_call_chain_hit_search_then_get() -> None:
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            verb="search",
+            kind="skill",
+            arg_digest='{"kind": "skill", "q": "mining"}',
+            arg_keys=("kind", "q"),
+            result_bytes=500,
+            result_head="precis-mining-help — how to mine sessions",
+        ),
+        mk(
+            session="s1",
+            seq=2,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-mining-help", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+            result_bytes=800,
+        ),
+    ]
+    cands = detect.detect_call_chain(events)
+    assert len(cands) == 1
+    assert cands[0].signature == "search|skill -> get|skill"
+    assert cands[0].n == 2
+    assert cands[0].metrics["runs"] == 1
+    assert cands[0].metrics["turns_saved"] == 1
+
+
+def test_d12_call_chain_hit_three_call_fanout() -> None:
+    """search -> get -> get where BOTH gets take ids from the one search
+    result — the second get does not feed from the first, yet the whole
+    thing is still one chain a composite would collapse to a single call."""
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            verb="search",
+            kind="gripe",
+            arg_digest='{"kind": "gripe", "q": "mining"}',
+            arg_keys=("kind", "q"),
+            result_bytes=600,
+            result_head="gripe 484070 auto-capture ... gripe 366639 ledger",
+        ),
+        mk(
+            session="s1",
+            seq=2,
+            verb="get",
+            kind="gripe",
+            arg_digest='{"id": 484070, "kind": "gripe"}',
+            arg_keys=("id", "kind"),
+            result_bytes=900,
+        ),
+        mk(
+            session="s1",
+            seq=3,
+            verb="get",
+            kind="gripe",
+            arg_digest='{"id": 366639, "kind": "gripe"}',
+            arg_keys=("id", "kind"),
+            result_bytes=800,
+        ),
+    ]
+    cands = detect.detect_call_chain(events)
+    assert len(cands) == 1
+    assert cands[0].signature == "search|gripe -> get|gripe -> get|gripe"
+    assert cands[0].metrics["turns_saved"] == 2
+
+
+def test_d12_call_chain_hit_id_eq_dialect() -> None:
+    """The ``id=5`` arg_digest dialect (jobs transcripts, hand-built cards)
+    links the same way the JSON dialect does."""
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            verb="search",
+            kind="paper",
+            arg_digest="kind='paper', q='graphene'",
+            arg_keys=("kind", "q"),
+            result_bytes=400,
+            result_head="paper 'graph-101' on graphene",
+        ),
+        mk(
+            session="s1",
+            seq=2,
+            verb="get",
+            kind="paper",
+            arg_digest="kind='paper', id='graph-101'",
+            arg_keys=("id", "kind"),
+            result_bytes=700,
+        ),
+    ]
+    cands = detect.detect_call_chain(events)
+    assert len(cands) == 1
+    assert cands[0].signature == "search|paper -> get|paper"
+
+
+def test_d12_call_chain_near_miss_id_not_in_result() -> None:
+    """get(id=X) after a search whose result never showed X is an ordinary
+    look-up-then-fetch-the-unrelated workflow, not a chain."""
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            verb="search",
+            kind="gripe",
+            arg_digest='{"kind": "gripe", "q": "mining"}',
+            arg_keys=("kind", "q"),
+            result_bytes=600,
+            result_head="gripe 484070 auto-capture",
+        ),
+        mk(
+            session="s1",
+            seq=2,
+            verb="get",
+            kind="gripe",
+            arg_digest='{"id": 999999, "kind": "gripe"}',
+            arg_keys=("id", "kind"),
+            result_bytes=800,
+        ),
+    ]
+    assert detect.detect_call_chain(events) == []
+
+
+def test_d12_call_chain_near_miss_short_value() -> None:
+    """``id=5``-length values are dropped — '5' substring-matches inside
+    any render by accident."""
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            verb="search",
+            kind="paper",
+            result_bytes=400,
+            result_head="5 hits returned",
+        ),
+        mk(
+            session="s1",
+            seq=2,
+            verb="get",
+            kind="paper",
+            arg_digest='{"id": 5, "kind": "paper"}',
+            arg_keys=("id", "kind"),
+            result_bytes=700,
+        ),
+    ]
+    assert detect.detect_call_chain(events) == []
+
+
+def test_d12_call_chain_near_miss_bash_breaks_run() -> None:
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            verb="search",
+            kind="gripe",
+            result_bytes=600,
+            result_head="gripe 484070 auto-capture",
+        ),
+        mk(session="s1", seq=2, tool="Bash", verb=None, arg_digest="ls"),
+        mk(
+            session="s1",
+            seq=3,
+            verb="get",
+            kind="gripe",
+            arg_digest='{"id": 484070, "kind": "gripe"}',
+            arg_keys=("id", "kind"),
+            result_bytes=800,
+        ),
+    ]
+    assert detect.detect_call_chain(events) == []
+
+
+# ---------------------------------------------------------------------------
+# D13 session_digest
+# ---------------------------------------------------------------------------
+
+
+def test_d13_session_digest_hit_bounded_timeline() -> None:
+    events = [
+        mk(
+            session="s1",
+            seq=1,
+            tool="__user__",
+            verb=None,
+            result_head="find the mining skill",
+        ),
+        mk(
+            session="s1",
+            seq=2,
+            verb="search",
+            kind="skill",
+            arg_digest='{"kind": "skill", "q": "mining"}',
+            arg_keys=("kind", "q"),
+            result_bytes=300,
+        ),
+        mk(
+            session="s1",
+            seq=3,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-mining-help", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+            is_error=True,
+            err_type="NotFound",
+            err_head="no skill 'precis-mining-help'",
+        ),
+    ]
+    cands = detect.detect_session_digest(events)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.signature == "session:s1"
+    assert c.n == 2  # precis calls, not all events
+    tl = c.metrics["timeline"]
+    assert "user: find the mining skill" in tl
+    assert "search|skill q=mining -> ok" in tl
+    assert "get|skill id=precis-mining-help -> ERR:NotFound" in tl
+    # Errored call leads the evidence so the card jumps to the failure.
+    assert c.evidence[0].seq == 3
+
+
+def test_d13_session_digest_near_miss_no_precis_calls() -> None:
+    events = [
+        mk(session="s1", seq=1, tool="Bash", verb=None, arg_digest="ls"),
+        mk(session="s1", seq=2, tool="__user__", verb=None, result_head="hi"),
+    ]
+    assert detect.detect_session_digest(events) == []
+
+
+def test_d13_session_digest_elides_long_threads() -> None:
+    events = [
+        mk(
+            session="s1",
+            seq=i,
+            verb="get",
+            kind="paper",
+            arg_digest=f'{{"id": "paper-{i:04}", "kind": "paper"}}',
+            arg_keys=("id", "kind"),
+            result_bytes=100,
+        )
+        for i in range(1, detect._DIGEST_MAX_EVENTS + 20)
+    ]
+    cands = detect.detect_session_digest(events)
+    assert len(cands) == 1
+    assert "elided" in cands[0].metrics["timeline"]
+    assert cands[0].caveat
+    assert len(cands[0].metrics["timeline"]) <= detect._DIGEST_MAX_CHARS
 
 
 # ---------------------------------------------------------------------------
