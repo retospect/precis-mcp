@@ -294,7 +294,7 @@ per §8a and either fixed-in-reach or filed — never spun on.
 
 Design the surface so an LLM drives it with minimal priming:
 - **A tiny closed verb set over many kinds.** A handful of verbs
-  (`get`/`search`/`put`/`edit`/`delete`/`tag`/`link`) × N resource `kind`s,
+  (`get`/`search`/`put`/`edit`/`delete`/`tag`/`link`/`more`) × N resource `kind`s,
   discriminated by a `kind=` arg — one handler per kind, not a bespoke tool per
   resource. Fewer tools = less schema to load, less to confuse.
 - **Universal short-code handles.** Every resource gets a terse, type-prefixed,
@@ -313,5 +313,5 @@ Design the surface so an LLM drives it with minimal priming:
   raw FK columns — relations are queryable and reversible.
 - **Graceful degrade** — a read embeds the query but falls back to lexical if the
   embedder is down; never hard-fail a read.
-- **Self-describing status** — `get(kind='skill', id='status')` returns build/sha/DB
-  so the agent can orient itself.
+- **Self-describing status** — `get(kind='skill', id='precis-status')` returns
+  build/sha/DB so the agent can orient itself.

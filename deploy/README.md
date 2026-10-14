@@ -280,10 +280,10 @@ Populated so far:
 
 - [x] leak-gate (`tests/test_deploy_tree_no_secrets.py`)
 - [x] gitignore + `deploy/inventory.example/` scrubbed template
-- [x] portable roles — **48 / 49** through the gate (only `litellm` left,
-      deferred: it retires in slice 7)
-- [x] portable playbooks (48) + `redeploy-precis.yml` + `site.yml` +
-      `run-*.yml` + `bootstrap-*.yml` + `ansible.cfg`
+- [x] portable roles — all through the gate; `litellm` was never carried
+      into this tree and its `06-litellm.yml` retired 2026-07-26 (below)
+- [x] portable playbooks (56 in `playbooks/`) + `redeploy-precis.yml` +
+      `site.yml` + `run-*.yml` + `bootstrap-*.yml` + `ansible.cfg`
 - [x] `scripts/deploy` install-from-tree is the **DEFAULT** (2026-07-19); roll
       back to the legacy checkout with `PRECIS_DEPLOY_FROM_TREE= scripts/deploy`
 - [x] top-level `tasks/reload_launchd.yml` carried (the shared safe-launchd-reload

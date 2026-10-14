@@ -9,7 +9,9 @@ instead? → [`deploy/README.md`](../deploy/README.md).
 pip install 'precis-mcp[all]'
 ```
 
-Python >=3.12. `all` = embed + paper + external + patent + edgar + web. See
+Python >=3.12. `all` = `embed` + `paper` + `web`; the light API-client
+kinds (`math`, `youtube`, `patent`, `edgar`, the Perplexity trio, …) ship
+in core and gate on their credential, not an extra. See
 [`README.md` §Install](../README.md#install) for the full extras table
 (deterministic-in-core vs. extra-gated kinds, and what each extra needs).
 
@@ -32,21 +34,23 @@ tail (`src/precis/cli/migrate.py`).
 ### Upgrading
 
 ```bash
-pip install -U 'precis-mcp[all]'
-precis migrate     # then restart serve / worker / web
+pip install -U 'precis-mcp[all]'   # or: uv tool upgrade precis-mcp
+precis migrate                     # then restart serve / worker / web
 ```
 
 Every long-running entrypoint (`precis serve`, `precis web`,
 `precis worker`, `precis ingest --watch`, `precis alertmanager-receiver`)
 checks the migration ledger at startup and **exits non-zero while
-migrations are pending**, so an upgrade can never run new code on an old
-schema. A DB *ahead* of the package (rolling deploy) warns and still
-boots. Alternatives to the manual `precis migrate` step:
+migrations are pending** (the `PRECIS_SCHEMA_GATE=refuse` default), so an
+upgrade can never run new code on an old schema. A DB *ahead* of the
+package (rolling deploy) warns and still boots. Running under docker?
+Skip the manual step — the image's entrypoint defaults
+`PRECIS_AUTO_MIGRATE=1` on `precis …` commands, so a container restart
+self-migrates. Alternatives to the manual `precis migrate` step:
 
 - `PRECIS_AUTO_MIGRATE=1` — daemons apply pending migrations themselves at
   startup, serialized under a Postgres advisory lock. Also available as
-  `--migrate` on `serve` / `web` / `worker`. (The docker image defaults
-  this on for `precis …` commands.)
+  `--migrate` on `serve` / `web` / `worker`.
 - `PRECIS_SCHEMA_GATE=warn` — log one loud warning and boot anyway. For
   a read-mostly client of a DB another host migrates (e.g. a session MCP
   server): it stays up through the window between a deploy publishing new

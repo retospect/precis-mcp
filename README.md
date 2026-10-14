@@ -113,34 +113,42 @@ pip install 'precis-mcp[all]'
 **Deterministic, no-API tool kinds ship in core** — no extra needed: `calc`
 (sympy + pint), `plot` / `figure` (matplotlib), `mermaid` (`mermaidx`, no
 Node/Chromium), `docx` + `tex` export (python-docx / latex2mathml / lxml /
-resvg), `cad` STL/3MF export (manifold3d CSG kernel), and `structure` CIF
-I/O + symmetry (ASE + spglib). These are local, deterministic, torch-free
-code, so they live in core rather than behind an extra that could go missing.
+resvg), `cad` STL/3MF export (manifold3d CSG kernel), `structure` CIF
+I/O + symmetry (ASE + spglib), and `pcb` footprint resolution. So do the
+light network/API-client kinds — `math` (Wolfram), `youtube`, `web`,
+`wikipedia`, `news`, `edgar`, the Perplexity trio, and `patent` (EPO OPS):
+their real gate is an API key, which fails loudly at call time, so they
+ship with every install and appear once their credential resolves
+(env var or the DB secrets vault). Only genuinely heavy packs
+(torch-bound ML, ~200 MB binaries, daemon-shaped bridges) stay behind
+extras — each enables its kinds; omit any you don't want:
 
-Extras cover the rest — network/API tools, torch-bound ML, and heavy or
-host-specific packs (each enables its kinds; omit any you don't want):
-
-| Extra        | Enables                                            | Heavy? |
-|--------------|----------------------------------------------------|--------|
-| `embed`      | In-process bge-m3 embedder (sentence-transformers + torch) — needed for `search` unless you point at a remote embedder | yes (~2 GB model on first load) |
-| `paper`      | `paper` ingest — Marker PDF → chunks + CrossRef/S2 metadata | yes (pulls torch via Marker) |
-| `external`   | `math` (Wolfram), `youtube`, `web`, Perplexity trio, `news` | no |
-| `patent`     | `patent` kind (EPO Open Patent Services)           | no |
-| `edgar`      | `edgar` kind — SEC EDGAR filings (httpx)           | no |
-| `web`        | `precis web` browser UI (FastAPI + Jinja + HTMX)   | no |
-| `cad-step`   | `cad` exact STEP export (OpenCASCADE B-rep)        | yes (~200 MB OCCT libs) |
-| `pcb`        | `pcb` footprint resolution (LCSC → KiCad)          | no |
-| `dft-ml`     | `structure` ML-potential relax (ASE + MACE-torch)  | yes (pulls torch) |
-| `chem`       | `route` kind — retrosynthesis tool-pack (RDKit)    | yes (~150 MB) |
-| `tts`        | Audio export — local TTS for voice drafts + the morning brief (Kokoro) | yes (host-specific) |
-| `asa`        | `asa-bot` Discord bridge (discord.py)              | no |
-| `all`        | `embed` + `paper` + `external` + `patent` + `edgar` + `web`. Excludes the heavier / specialized `cad-step`, `dft-ml`, `pcb`, `chem`, `tts`, `asa` tiers — install those explicitly. | yes |
+| Extra          | Enables                                            | Heavy? |
+|----------------|----------------------------------------------------|--------|
+| `embed`        | In-process bge-m3 embedder (sentence-transformers + torch) — needed for `search` unless you point at a remote embedder | yes (~2 GB model on first load) |
+| `paper`        | `paper` ingest — Marker PDF → chunks + CrossRef/S2 metadata | yes (pulls torch via Marker) |
+| `web`          | `precis web` browser UI (FastAPI + Jinja + HTMX)   | no |
+| `all`          | `embed` + `paper` + `web` — the single-machine set. Excludes every tier below — install those explicitly. | yes |
+| `asa`          | `asa-bot` Discord bridge (discord.py)              | no |
+| `asa-slack`    | `asa-slack` Slack bridge (slack_bolt)              | no |
+| `tts`          | Audio export — local TTS for voice drafts + the morning brief (Kokoro) | yes (host-specific) |
+| `cad-step`     | `cad` exact STEP export (OpenCASCADE B-rep)        | yes (~200 MB OCCT libs) |
+| `dft-ml`       | `structure` ML-potential relax (ASE + MACE-torch)  | yes (pulls torch) |
+| `chem`         | `route` kind — retrosynthesis tool-pack (RDKit)    | yes (~150 MB) |
+| `catalyst`     | `pathway` kind surface (autocatpath engine — release-gated dep, not on PyPI; resolves via `[tool.uv.sources]` in this repo) | no |
+| `catalyst-gpu` | `pathway` compute — in-process NEB/relax (autocatpath[mace] + cuequivariance; same dep caveat) | yes (pulls torch) |
+| `struct-search`| Global structure search (AGOX GOFEE/basin-hopping) | yes (ray, dscribe, …) |
+| `estimate`     | `estimate` kind — chemistry-workup descriptors (mendeleev + pymatgen + tblite) | moderate |
+| `chain`        | `se` chain fold checks (ViennaRNA)                 | no |
+| `pourbaix`     | `pourbaix_bulk` job (pymatgen + Materials Project) | moderate |
+| `guide`        | User-guide capture/annotate pipeline (Pillow) — repo tooling, not a kind | no |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
 `memory`, `gripe`, `anki`, `conv`, `oracle`, `skill`, `random`), the
-core deterministic tool kinds listed above, and the `markdown` /
+core deterministic and network tool kinds listed above (key-gated ones
+appear when their credential resolves), and the `markdown` /
 `plaintext` / `python` / `tex` file kinds (the file kinds ride on
-`PRECIS_ROOT`).
+`PRECIS_ROOT` / `PRECIS_PYTHON_ROOTS`).
 Optional deps surface as `InitError` at boot: the kind silently drops
 off the tool surface with a WARNING, the server stays up.
 
@@ -167,22 +175,28 @@ Step-by-step single-machine runbook (worker, web UI, secrets):
 ### Upgrading
 
 ```bash
-pip install -U 'precis-mcp[all]'
-precis migrate      # then restart serve / worker / web
+pip install -U 'precis-mcp[all]'     # or: uv tool upgrade precis-mcp
+precis migrate                       # then restart serve / worker / web
 ```
 
-Daemons check the schema at startup and **refuse to boot while
-migrations are pending** — a new package can never silently run on an
-old schema. Two alternatives to running `precis migrate` by hand: set
-`PRECIS_AUTO_MIGRATE=1` (or pass `--migrate` to `precis serve` / `precis
-web` / `precis worker`) so each daemon migrates itself under a Postgres
-advisory lock, or set `PRECIS_SKIP_SCHEMA_CHECK=1` to bypass the check
-entirely (emergency escape hatch — loud warning, use for diagnosis only).
-`PRECIS_SCHEMA_GATE=warn` is the middle lane — log a loud warning and
-boot anyway; for read-mostly clients of a DB another host migrates (e.g.
-a session MCP server) that must stay up through a deploy window.
-The docker image defaults `PRECIS_AUTO_MIGRATE=1` for `precis …`
-commands, so a container restart self-migrates.
+Daemons check the migration ledger at startup and **refuse to boot while
+migrations are pending** (`PRECIS_SCHEMA_GATE=refuse`, the default) — a
+new package can never silently run on an old schema. A DB *ahead* of the
+package (a newer peer migrated it mid-deploy) warns and still boots.
+Alternatives to running `precis migrate` by hand:
+
+- `PRECIS_AUTO_MIGRATE=1` — or `--migrate` on `precis serve` /
+  `precis web` / `precis worker` — each daemon migrates itself at
+  startup, serialized under a Postgres advisory lock. The docker image
+  defaults this on for `precis …` commands, so a container restart
+  self-migrates.
+- `PRECIS_SCHEMA_GATE=warn` — log one loud warning and boot anyway; for
+  read-mostly clients of a DB another host migrates (e.g. a session MCP
+  server) that must stay up through a deploy window. `precis-status`
+  reports the pending count as `schema_state`.
+- `PRECIS_SCHEMA_GATE=off` — bypass the check entirely (same as the
+  legacy `PRECIS_SKIP_SCHEMA_CHECK=1`): loud warning, diagnosis only,
+  not for running services.
 
 ## Run
 
@@ -238,7 +252,7 @@ escape hatch) without building the multi-flag `precis tools <verb>
 | `PRECIS_ROOT`                 | Single root dir for `markdown` / `plaintext` / `tex` kinds. The trio is hidden when unset; every read/write is normalised against this path (`Path.resolve()` + `relative_to`). |
 | `PRECIS_PYTHON_ROOTS`         | `alias:/path,alias2:/path2` — exposed Python repos. |
 | `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
-| `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
+| `EPO_OPS_CLIENT_KEY` + `_SECRET` | Enables `patent` kind (env or DB vault; `PRECIS_PATENT_RAW_ROOT` is just a cache path with a config default). |
 | `ORCID_CLIENT_ID` + `_SECRET` | Enables the `orcid` researcher-identity kind.    |
 | `PRECIS_DIGIKEY_CLIENT_ID` + `_SECRET` | Live supplier stock for `component` `view='stock'` (paste on `/secrets`). |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
@@ -248,6 +262,9 @@ escape hatch) without building the multi-flag `precis tools <verb>
 | `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
 | `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
 | `PRECIS_MCP_PROFILE`          | `typed` (default, per-verb tools) or `command` (single `precis(command)` tool — see [One-tool profile](#one-tool-profile)). |
+| `PRECIS_MCP_TOKEN`            | Bearer token `precis serve --transport sse\|streamable-http` requires (stdio ignores it). |
+| `PRECIS_AUTO_MIGRATE`         | `=1` lets each daemon apply pending migrations at startup — see [Upgrading](#upgrading). |
+| `PRECIS_SCHEMA_GATE`          | `refuse` (default) / `warn` / `off` — startup migration-ledger check; `off` ≡ legacy `PRECIS_SKIP_SCHEMA_CHECK=1`. See [Upgrading](#upgrading). |
 
 This table is the getting-started subset. precis reads ~150 `PRECIS_*`
 variables in all — feature toggles, autonomy modes, budgets, model ids,
@@ -339,11 +356,12 @@ optimisation — is mapped in
   via `parent_id`, and the `minter` worker is the canonical path
   from a todo's `meta.executor` to a queued job. See
   [`precis-todo-tree-help`](src/precis/data/skills/precis-todo-tree-help.md).
-- **Two-profile worker.** Every background pass runs under one of two
-  long-running daemons: `precis worker --profile=system` (embeddings,
-  keywords, minter, sweepers — safe to run on every node) and
-  `--profile=agent` (the LLM-heavy review/planner rotation, each pass
-  self-gated by env + a load-average ceiling). Per-pass daemons are
+- **Profiled worker.** Every background pass runs under
+  `precis worker --profile=system` (embeddings, keywords, minter,
+  sweepers — safe to run on every node), `--profile=agent` (the
+  LLM-heavy review/planner rotation, each pass self-gated by env + a
+  load-average ceiling), or `--profile=all` (the union — the collapsed
+  one-worker-per-host shape the cluster runs). Per-pass daemons are
   retired.
 - **HintBus.** Any layer can emit deduplicated, novelty-decayed tips
   that are rendered after the verb's main output. Keeps slim models
@@ -403,15 +421,16 @@ precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
                                    #   every page answers 503).
 
 # Background processing
-precis worker [--profile system|agent]
+precis worker [--profile system|agent|all]
                                    # Drive the background passes. 'system'
                                    #   (default) = embeddings/keywords/minter/
                                    #   sweepers; 'agent' = the LLM-heavy review
-                                   #   + planner rotation. --only X --once for
-                                   #   ad-hoc backfills.
-precis watch [PATH]                # Watch an inbox dir and ingest dropped PDFs
+                                   #   + planner rotation; 'all' = the union.
+                                   #   --only X --once for ad-hoc backfills.
+precis ingest --watch <dir>        # Watch an inbox dir and ingest dropped PDFs
                                    #   (papers / books / presentations routing).
-precis add <pdf|url>               # Ingest one paper on the spot.
+precis add <pdf|--doi ID|--arxiv ID>
+                                   # Ingest one paper on the spot.
 
 # Web accounts (precis web logins; every account is fully authorized)
 precis users add <login> --abbrev <ab> [--name N --email E]
@@ -420,7 +439,7 @@ precis users add <login> --abbrev <ab> [--name N --email E]
 precis users list                  # The roster.
 precis users passwd <login>        # THE recovery path — Basic auth has no
                                    #   email reset flow, by design.
-precis users disable|enable|rm <login>
+precis users edit|disable|enable|rm <login>
 precis users feed-token <login>    # Mint + print the private podcast feed URL
                                    #   (?t=… , since podcast apps handle Basic
                                    #   on enclosures inconsistently).
@@ -430,8 +449,10 @@ precis users feed-token <login>    # Mint + print the private podcast feed URL
                                    #   removing accounts stays here.
 
 # Database
-precis migrate                     # Run pending forward-only SQL migrations.
-precis db ...                      # Schema utilities (dump-schema, …).
+precis migrate                     # Run pending forward-only SQL migrations
+                                   #   (--dry-run reports, --from-scratch
+                                   #   replays the chain ignoring the baseline).
+precis db dump-schema              # Regenerate migrations/baseline/schema.sql.
 precis schema-doc                  # Generate the Mermaid ER diagram
                                    #   (docs/reference/schema.md) from a DSN.
 
@@ -458,10 +479,11 @@ precis taproot reword-sweep        # LLM batch reword of lint-blocked claim hub
                                    #   (dry-run default).
 
 # One-shot jobs
-precis jobs ingest[-md|-oracles] ...   # Pre-warm files under PRECIS_ROOT.
+precis jobs ingest / ingest-oracles    # Pre-warm files under PRECIS_ROOT /
+                                       #   seed the oracle kind.
 precis jobs import-perplexity ...      # Bulk-import Perplexity web-UI answers.
-precis jobs {watch,list,run}-patent-watches / sweep-patent-fulltext
-                                       # Saved CQL patent watches (patent kind).
+precis jobs watch-patents / list-patent-watches / run-patent-watches /
+sweep-patent-fulltext                  # Saved CQL patent watches (patent kind).
 precis jobs check-provenance / sync-retraction-watch
                                        # Provenance + retraction audits.
 ```
@@ -532,8 +554,9 @@ Run the **full test suite in the dev container**, which bakes every
 optional extra and wires the test database:
 
 ```bash
-scripts/dev pytest                       # full suite, all extras
-scripts/dev bash -lc "ruff check . && ruff format --check . && mypy src tests && pytest"
+scripts/test                             # full suite, all extras
+scripts/test --typecheck                 # mypy src tests
+uv run ruff check . && uv run ruff format --check .
 ```
 
 A host `uv run pytest` only sees the torch-free base install, so the
