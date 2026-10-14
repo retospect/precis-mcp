@@ -233,7 +233,10 @@ class TestErrorHead:
 class _FakeSession:
     """Weakrefable stand-in for the FastMCP session object (a bare
     ``object()`` is NOT weakrefable — CPython gives it no ``__weakref__``
-    slot)."""
+    slot). ``client_params`` mimics ``ServerSession``'s — ``None`` until
+    the test declares an initialize handshake."""
+
+    client_params: Any = None
 
 
 class TestSessionKey:
@@ -257,6 +260,69 @@ class TestSessionKey:
         with serve_ledger.session_scope(_FakeSession()):
             sid_b, _ = tool_ledger.current_session_key()
         assert sid_a is not None and sid_b is not None and sid_a != sid_b
+
+
+class TestCurrentClient:
+    def test_unbound_is_none(self) -> None:
+        assert tool_ledger.current_client() is None
+
+    def test_session_without_params_is_none(self) -> None:
+        from precis import serve_ledger
+
+        with serve_ledger.session_scope(_FakeSession()):
+            assert tool_ledger.current_client() is None
+
+    def test_clientinfo_name_version(self) -> None:
+        from types import SimpleNamespace
+
+        from precis import serve_ledger
+
+        session = _FakeSession()
+        session.client_params = SimpleNamespace(
+            clientInfo=SimpleNamespace(name="test-client", version="9.9"),
+            meta=None,
+        )
+        with serve_ledger.session_scope(session):
+            assert tool_ledger.current_client() == "test-client/9.9"
+
+    def test_meta_model_appended(self) -> None:
+        from types import SimpleNamespace
+
+        from precis import serve_ledger
+
+        session = _FakeSession()
+        session.client_params = SimpleNamespace(
+            clientInfo=SimpleNamespace(name="devin-cli", version="1.2"),
+            meta=SimpleNamespace(model="swe-test"),
+        )
+        with serve_ledger.session_scope(session):
+            assert tool_ledger.current_client() == "devin-cli/1.2 (model:swe-test)"
+
+    def test_name_without_version(self) -> None:
+        from types import SimpleNamespace
+
+        from precis import serve_ledger
+
+        session = _FakeSession()
+        session.client_params = SimpleNamespace(
+            clientInfo=SimpleNamespace(name="bare", version=None), meta=None
+        )
+        with serve_ledger.session_scope(session):
+            assert tool_ledger.current_client() == "bare"
+
+
+def test_record_call_persists_client(store: Any) -> None:
+    tag = uuid4().hex[:8]
+    verb = f"client-{tag}"
+    tool_ledger.record_call(
+        store,
+        _rec(verb=verb, client="claude-code/9.9 (model:test-1)"),
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT client FROM tool_calls WHERE verb=%s", (verb,)
+        ).fetchone()
+    assert row == ("claude-code/9.9 (model:test-1)",)
 
 
 def test_gc_prunes_aged_rows(store: Any) -> None:

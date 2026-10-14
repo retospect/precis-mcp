@@ -28,6 +28,11 @@ masked first line — so a session-mining pass can see *why* a call
 failed and *what shape* was sent without the ledger ever holding a raw
 payload.
 
+Migration 0210 adds caller attribution (gr484070): ``client`` records
+the MCP client's self-declared ``clientInfo`` (``name/version``, plus a
+``_meta`` model id when sent) — verbatim, ``NULL`` when there is no
+bound session or no declaration.
+
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).
 
@@ -140,6 +145,14 @@ class ToolCallRecord:
     #: Bounded JSON of scalar argument values — masked, truncated,
     #: credential-shaped keys dropped (0209).
     arg_sample: str | None = None
+    #: The MCP client's own declaration — ``clientInfo`` ``name/version``
+    #: from the initialize handshake, plus `` (model:<id>)`` when the
+    #: client sent a model id in the initialize ``_meta`` (0210,
+    #: gr484070). ``None`` for CLI / inproc / direct-dispatch calls and
+    #: for clients that send no clientInfo. Stored verbatim, never
+    #: inferred — "which client keeps tripping on this call" is the
+    #: mining question this answers.
+    client: str | None = None
 
 
 def record_call(store: Store | None, rec: ToolCallRecord) -> None:
@@ -165,9 +178,10 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
             INSERT INTO tool_calls (
                 agentlog_id, source, profile, verb, kind, input_keys,
                 outcome, error_type, result_count, latency_ms,
-                session_id, seq, result_bytes, error_head, arg_sample
+                session_id, seq, result_bytes, error_head, arg_sample,
+                client
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s)
+                      %s, %s, %s, %s, %s, %s)
             """,
             (
                 rec.agentlog_id,
@@ -185,6 +199,7 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 rec.result_bytes,
                 rec.error_head,
                 rec.arg_sample,
+                rec.client,
             ),
         )
         conn.commit()
@@ -234,6 +249,64 @@ def current_session_key() -> tuple[str | None, int | None]:
         n = _SEQ_COUNTERS.get(sid, 0) + 1
         _SEQ_COUNTERS[sid] = n
         return sid, n
+
+
+# ── client attribution (migration 0210, gr484070) ────────────────────────
+#
+# The client's self-declared identity, read off the bound MCP session's
+# initialize params. ``session.client_params`` is fixed for the life of
+# the session, so this is a plain attribute read — no caching needed.
+
+#: ``_meta`` keys a client may use to declare the model it runs
+#: (``InitializeRequestParams.Meta`` is ``extra="allow"`` — anything
+#: here is client-supplied, recorded verbatim).
+_CLIENT_MODEL_KEYS = ("model", "model_id", "modelId", "llm")
+#: Bound on the rendered label — clientInfo is agent-supplied text.
+_CLIENT_CHARS = 200
+
+
+def current_client() -> str | None:
+    """``name/version`` (+ `` (model:<id>)``) for the currently-bound MCP
+    session's clientInfo, or ``None`` outside a session / when the client
+    declared none."""
+    try:
+        from precis import serve_ledger
+
+        session = serve_ledger.current_session()
+    except Exception:
+        return None
+    if session is None:
+        return None
+    try:
+        # ServerSession.client_params — InitializeRequestParams | None.
+        # ``session`` is typed ``object`` (the binding is transport-
+        # agnostic), so the attribute is reached by getattr, not annotation.
+        params = getattr(session, "client_params", None)
+    except Exception:
+        return None
+    if params is None:
+        return None
+    info = getattr(params, "clientInfo", None)
+    name = getattr(info, "name", None)
+    if not name:
+        return None
+    version = getattr(info, "version", None)
+    label = f"{name}/{version}" if version else str(name)
+    model = _client_model(getattr(params, "meta", None))
+    if model:
+        label = f"{label} (model:{model})"
+    return label[:_CLIENT_CHARS]
+
+
+def _client_model(meta: Any) -> str | None:
+    """The model id the client declared in initialize ``_meta``, if any."""
+    if meta is None:
+        return None
+    for key in _CLIENT_MODEL_KEYS:
+        v = getattr(meta, key, None)
+        if isinstance(v, str) and v:
+            return " ".join(v.split())[:80]
+    return None
 
 
 # ── arg_sample / error_head / result_bytes (migration 0209) ──────────────
@@ -390,6 +463,7 @@ __all__ = [
     "RETENTION_DAYS_ENV",
     "ToolCallRecord",
     "arg_sample",
+    "current_client",
     "current_session_key",
     "error_head",
     "gc",

@@ -215,6 +215,26 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     log.info("scheduler: minted doctor_tick job for window %s", idem_key)
 
 
+def _run_call_errors(store: Store, batch_size: int) -> None:
+    """One failed-call mining pass (gr484070): cluster the last 24h of
+    rejected-before-work ``tool_calls`` errors and file/bump one gripe
+    per cluster, fired from the daily host-agnostic ``call_errors``
+    cadence — any live worker can win it, same shape as
+    ``nanopub_stale_sweep``. ``batch_size`` is unused — the pass's own
+    per-run gripe cap is the throttle. spends=False: pure local SQL +
+    gripe writes, no LLM."""
+    del batch_size
+    from precis.workers.call_errors import run_call_errors_pass
+
+    result = run_call_errors_pass(store)
+    log.info(
+        "scheduler: call_errors inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_graph_garden_mint(store: Store, batch_size: int) -> None:
     """Mint ONE queued ``graph_garden`` job per UTC day — the proposals-
     only graph-upkeep pass (docs/backlog/graph-gardener.md). Same shape as
@@ -789,6 +809,17 @@ CADENCES: tuple[Cadence, ...] = (
         name="graph_garden",
         interval_s=24 * 3600 + 59 * 60,
         run=_run_graph_garden_mint,
+    ),
+    # gr484070: mine the tool_calls ledger for rejected-before-work call
+    # clusters and file/bump one gripe each (docs/backlog/
+    # call-error-gripes.md). Host-agnostic, daily, off the exact day
+    # boundary (+47m) like the other daily sweeps. No `eligible` check:
+    # pure local SQL + gripe writes, nothing to gate on. The pass's own
+    # per-run cap (MAX_NEW_GRIPES) is the flood control. spends=False.
+    Cadence(
+        name="call_errors",
+        interval_s=24 * 3600 + 47 * 60,
+        run=_run_call_errors,
     ),
 )
 

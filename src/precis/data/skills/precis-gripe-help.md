@@ -287,6 +287,11 @@ form` line to the *body text* itself. That's a web-only convention,
 invisible here — it doesn't populate the header either, and MCP
 `put` has no equivalent.)
 
+One automated filer exists: the daily `call_errors` pass files gripes
+for clusters of MCP calls the server rejected before real work, tagged
+`origin:call-errors` + `callerr:<mcp|skill|hint|needs-triage>`; repeats
+bump the open gripe with a count comment instead of re-filing.
+
 ## Link a gripe to a related paper or chunk
 
 ```python

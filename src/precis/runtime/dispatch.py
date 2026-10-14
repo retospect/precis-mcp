@@ -776,6 +776,7 @@ class DispatchMixin(RuntimeShape):
             from precis.tool_ledger import (
                 ToolCallRecord,
                 arg_sample,
+                current_client,
                 current_session_key,
                 error_head,
                 record_call,
@@ -810,6 +811,7 @@ class DispatchMixin(RuntimeShape):
                     result_bytes=len(body.encode("utf-8", errors="replace")),
                     error_head=error_head(body) if is_error else None,
                     arg_sample=arg_sample(args),
+                    client=current_client(),
                 ),
             )
         except Exception:
