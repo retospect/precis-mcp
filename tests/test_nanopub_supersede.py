@@ -403,11 +403,19 @@ def test_forward_migration_dry_run_and_legacy_data_preservation(
     with psycopg.connect(fresh_db, autocommit=True) as conn:
         conn.execute('DROP SCHEMA IF EXISTS "vault" CASCADE')
     Migrator(fresh_db, legacy, baseline=legacy / "baseline/schema.sql").apply_all()
-    # The current Store reads publishing_since, which 0207 adds: give the
-    # pre-0207 schema just that column so the legacy rows can be driven.
+    # A baseline cut after 0207 already carries it: unwind 0207's table and
+    # ledger row so the DB is genuinely pre-0207. The current Store reads
+    # publishing_since, which 0207 adds: keep (or give) the pre-0207 schema
+    # just that column so the legacy rows can be driven.
     with psycopg.connect(fresh_db, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS nanopub_supersessions")
         conn.execute(
-            "ALTER TABLE nanopub_publish ADD COLUMN publishing_since timestamptz"
+            "DELETE FROM _migrations WHERE version = %s",
+            (name.removesuffix(".sql"),),
+        )
+        conn.execute(
+            "ALTER TABLE nanopub_publish "
+            "ADD COLUMN IF NOT EXISTS publishing_since timestamptz"
         )
     previous_store = Store.connect(fresh_db)
     try:
