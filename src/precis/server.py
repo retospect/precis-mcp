@@ -633,6 +633,14 @@ def _init_runtime() -> PrecisRuntime:
     if _runtime is not None:
         return _runtime
     _runtime = build_runtime()
+    # Startup schema gate: refuse (or self-heal under PRECIS_AUTO_MIGRATE /
+    # `precis serve --migrate`) when the packaged migrations are ahead of
+    # this DB. Runs AFTER build_runtime so the store-connect retry loop
+    # still absorbs a post-reboot DB outage; on refusal SystemExit
+    # propagates and the atexit shutdown closes the pool.
+    from precis.store.migrate import check_schema_at_startup
+
+    check_schema_at_startup(_runtime.config.database_url)
     # This process sticks around: a pagination cursor minted now is
     # still retrievable by a later `more(cursor=...)` call against the
     # same server (gr267466). `build_runtime()` defaults `long_lived`
@@ -1530,6 +1538,7 @@ def main(
     port: int = 8765,
     token: str | None = None,
     fd: int | None = None,
+    migrate: bool = False,
 ) -> None:
     """Run the MCP server.
 
@@ -1543,12 +1552,16 @@ def main(
     consulted. ``sse``/``streamable-http`` require ``token`` (arg or
     ``PRECIS_MCP_TOKEN`` env) — raises ``ValueError`` before touching
     the network otherwise, since an unauthenticated network MCP would be
-    a live corpus-read hole.
+    a live corpus-read hole. ``migrate`` maps the ``--migrate`` flag onto
+    ``PRECIS_AUTO_MIGRATE=1`` so the startup schema gate in
+    ``_init_runtime`` self-heals instead of refusing.
     """
     from precis.config import load_config
     from precis.utils.log_scrub import install_log_scrub
     from precis.utils.utc_logging import force_utc_timestamps
 
+    if migrate:
+        os.environ["PRECIS_AUTO_MIGRATE"] = "1"
     config = load_config()
     force_utc_timestamps()
     install_log_scrub()

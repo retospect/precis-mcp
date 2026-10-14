@@ -66,6 +66,13 @@ def create_app(
             log.info("precis web: building runtime")
             app.state.runtime = build_runtime()
             owns_runtime = True
+            # Startup schema gate — same contract as `precis serve`:
+            # refuse (or self-heal under PRECIS_AUTO_MIGRATE /
+            # `precis web --migrate`) when the packaged migrations are
+            # ahead of this DB.
+            from precis.store.migrate import check_schema_at_startup
+
+            check_schema_at_startup(app.state.runtime.config.database_url)
         nas_stop = threading.Event()
         # PRECIS_MCP_READ_ONLY=1 (scripts/guide-web): the attestation
         # thread UPDATEs host_heartbeat, so it must not run (gr461387).

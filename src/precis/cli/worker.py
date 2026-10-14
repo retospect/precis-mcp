@@ -488,6 +488,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         help="Override PRECIS_DATABASE_URL.",
     )
+    p.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Apply pending DB migrations at startup instead of refusing "
+        "when the schema is behind (same as PRECIS_AUTO_MIGRATE=1).",
+    )
     # ``--status`` is the only emit-tabular-data verb on this
     # subcommand; ``--format`` is meaningless for the run loop but
     # registering it on the worker parser keeps the flag visible in
@@ -508,6 +514,12 @@ def run(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     dsn = resolve_dsn(args.database_url)
+    # Startup schema gate: refuse (or self-heal under --migrate /
+    # PRECIS_AUTO_MIGRATE) when the packaged migrations are ahead of this
+    # DB — before opening the pool.
+    from precis.store.migrate import check_schema_at_startup
+
+    check_schema_at_startup(dsn, auto_migrate=True if args.migrate else None)
     store = Store.connect(dsn)
     # Wire the secrets vault: bind the store so passes can vault.reveal(), and
     # scrub the DSN from env so the agent subprocesses this worker spawns

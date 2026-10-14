@@ -158,6 +158,18 @@ REGISTRY: dict[str, SettingSpec] = {
             "download User-Agent).",
         ),
         SettingSpec(
+            key="schema.auto_migrate",
+            type="bool",
+            env_var="PRECIS_AUTO_MIGRATE",
+            default=False,
+            doc="Apply pending DB migrations at daemon startup instead of "
+            "refusing to boot (precis.store.migrate.check_schema_at_startup). "
+            "Read before the settings store is bound, so the DB tier never "
+            "applies — effectively env/default. Docker's entrypoint defaults "
+            "it on; the cluster leaves it off (deploys run `precis migrate` "
+            "explicitly before daemons start).",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

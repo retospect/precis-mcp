@@ -29,6 +29,28 @@ precis migrate
 (`migrations/baseline/schema.sql`) then applies the post-snapshot migration
 tail (`src/precis/cli/migrate.py`).
 
+### Upgrading
+
+```bash
+pip install -U 'precis-mcp[all]'
+precis migrate     # then restart serve / worker / web
+```
+
+Every long-running entrypoint (`precis serve`, `precis web`,
+`precis worker`, `precis ingest --watch`, `precis alertmanager-receiver`)
+checks the migration ledger at startup and **exits non-zero while
+migrations are pending**, so an upgrade can never run new code on an old
+schema. A DB *ahead* of the package (rolling deploy) warns and still
+boots. Alternatives to the manual `precis migrate` step:
+
+- `PRECIS_AUTO_MIGRATE=1` — daemons apply pending migrations themselves at
+  startup, serialized under a Postgres advisory lock. Also available as
+  `--migrate` on `serve` / `web` / `worker`. (The docker image defaults
+  this on for `precis …` commands.)
+- `PRECIS_SKIP_SCHEMA_CHECK=1` — bypass the check entirely with a loud
+  warning; emergency escape hatch for read-only diagnosis, not for
+  running services.
+
 ## 3. Pick an embedder
 
 `PRECIS_EMBEDDER` ∈ `mock` | `bge-m3` | `remote`

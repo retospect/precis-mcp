@@ -164,6 +164,23 @@ Step-by-step single-machine runbook (worker, web UI, secrets):
 [`docs/setup-single-machine.md`](docs/setup-single-machine.md). Cluster
 (multi-host, ansible): [`deploy/README.md`](deploy/README.md).
 
+### Upgrading
+
+```bash
+pip install -U 'precis-mcp[all]'
+precis migrate      # then restart serve / worker / web
+```
+
+Daemons check the schema at startup and **refuse to boot while
+migrations are pending** — a new package can never silently run on an
+old schema. Two alternatives to running `precis migrate` by hand: set
+`PRECIS_AUTO_MIGRATE=1` (or pass `--migrate` to `precis serve` / `precis
+web` / `precis worker`) so each daemon migrates itself under a Postgres
+advisory lock, or set `PRECIS_SKIP_SCHEMA_CHECK=1` to bypass the check
+entirely (emergency escape hatch — loud warning, use for diagnosis only).
+The docker image defaults `PRECIS_AUTO_MIGRATE=1` for `precis …`
+commands, so a container restart self-migrates.
+
 ## Run
 
 `precis serve` speaks MCP over stdio. Wire it into your agent's MCP

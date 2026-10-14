@@ -72,3 +72,50 @@ def test_precis_invocation_with_dsn_execs() -> None:
     proc = _run("precis", "serve", env=env)
     assert "PRECIS_DATABASE_URL not set" not in proc.stderr
     assert proc.returncode == 127  # exec reached; binary absent in test env
+
+
+def _precis_stub(tmp_path: Path) -> dict[str, str]:
+    """Install a fake ``precis`` binary that echoes $PRECIS_AUTO_MIGRATE.
+
+    Returns the env for ``_run`` — PATH leads with the stub dir so exec
+    resolves ``precis`` to it, with the real PATH appended so ``bash``
+    itself (and the stub's ``/bin/sh``) still resolve, plus the DSN the
+    entrypoint demands for ``precis`` argv.
+    """
+    stub = tmp_path / "precis"
+    stub.write_text(
+        '#!/bin/sh\nprintf "%s" "${PRECIS_AUTO_MIGRATE:-unset}"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return {
+        "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "PRECIS_DATABASE_URL": "postgresql://u@h/db",
+    }
+
+
+def test_precis_argv_defaults_auto_migrate_on(tmp_path: Path) -> None:
+    """Docker is the single-machine shape: a restarted ``precis …``
+    container self-migrates after ``pip install -U`` unless the operator
+    set the var."""
+    env = _precis_stub(tmp_path)
+    proc = _run("precis", "serve", env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "1"
+
+
+def test_precis_argv_preserves_explicit_auto_migrate(tmp_path: Path) -> None:
+    env = {**_precis_stub(tmp_path), "PRECIS_AUTO_MIGRATE": "0"}
+    proc = _run("precis", "serve", env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "0"
+
+
+def test_non_precis_argv_gets_no_auto_migrate(tmp_path: Path) -> None:
+    """The agent stage shares this entrypoint for ``claude -p`` runs whose
+    spawned ``precis serve`` sidecars must NOT auto-migrate a cluster DB —
+    so the default only applies to ``precis`` argv."""
+    env = _precis_stub(tmp_path)
+    proc = _run("bash", "-c", 'printf "%s" "${PRECIS_AUTO_MIGRATE:-unset}"', env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "unset"

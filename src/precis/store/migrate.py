@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,8 @@ from typing import Any, NamedTuple
 
 import psycopg
 from psycopg.errors import UndefinedColumn, UndefinedTable
+
+from precis.utils.env import env_flag
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +85,23 @@ class MigrationSource(NamedTuple):
 
     plugin: str
     dir: Path
+
+
+class SchemaStatus(NamedTuple):
+    """``_migrations`` ledger vs the packaged files, for the startup gate.
+
+    ``pending``: ``(plugin, version)`` files not yet applied — exactly
+    what ``precis migrate --dry-run`` would print. ``ahead``: applied
+    rows for a *discovered* plugin that sort past that plugin's packaged
+    head version — the rolling-deploy signature "a newer build migrated
+    this DB". Rows a plugin legitimately lacks (archived or renumbered
+    migrations, ``migrations/archive/``) sort *below* its head and are
+    ignored, as are rows for plugins this install doesn't ship at all —
+    there is no file set to compare them against.
+    """
+
+    pending: list[tuple[str, str]]
+    ahead: list[tuple[str, str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +414,16 @@ class Migrator:
         report reflects the post-snapshot tail :meth:`apply_all` will
         actually run — not the whole chain.
         """
+        return self.schema_status().pending
+
+    def schema_status(self) -> SchemaStatus:
+        """Pending and ahead-of-package migrations in one ledger read.
+
+        ``pending`` is what :meth:`apply_all` would run (baseline-aware,
+        same as :meth:`pending`). ``ahead`` is the startup gate's
+        rolling-deploy check (:func:`check_schema_at_startup`) — see
+        :class:`SchemaStatus` for what counts.
+        """
         with psycopg.connect(self.dsn) as conn:
             applied = _applied_versions(conn)
             if self.baseline is not None and _is_fresh_db(conn):
@@ -402,12 +432,36 @@ class Migrator:
                 baked = parse_baseline_ledger(self.baseline.read_text(encoding="utf-8"))
                 for version, checksum in baked:
                     applied.setdefault((PRECIS_PLUGIN_NAME, version), checksum)
-        out: list[tuple[str, str]] = []
+        applied_keys = set(applied)
+        pending: list[tuple[str, str]] = []
+        known: set[tuple[str, str]] = set()
+        head: dict[str, str] = {}
         for source in self.sources:
-            for f in _load_migrations(source):
-                if (f.plugin, f.version) not in applied:
-                    out.append((f.plugin, f.version))
-        return out
+            try:
+                files = _load_migrations(source)
+            except FileNotFoundError as exc:
+                # Same isolation as apply_all: a plugin whose migrations
+                # dir vanished warns and skips, never bricks the caller —
+                # here that means a daemon's startup gate.
+                log.warning(
+                    "precis.migrations plugin %r dir missing: %s",
+                    source.plugin,
+                    exc,
+                )
+                continue
+            for f in files:
+                key = (f.plugin, f.version)
+                known.add(key)
+                if f.version > head.get(f.plugin, ""):
+                    head[f.plugin] = f.version
+                if key not in applied_keys:
+                    pending.append(key)
+        ahead = sorted(
+            (p, v)
+            for (p, v) in applied_keys
+            if (p, v) not in known and p in head and v > head[p]
+        )
+        return SchemaStatus(pending, ahead)
 
     def _load_baseline(self, conn: psycopg.Connection) -> None:
         """Load the baseline snapshot into a fresh DB in one transaction.
@@ -626,6 +680,155 @@ class Migrator:
                 log.info("  applied %s/%s ok", f.plugin, f.version)
 
         return newly_applied
+
+
+# ---------------------------------------------------------------------------
+# Startup schema gate (pip-upgrade safety)
+# ---------------------------------------------------------------------------
+
+#: Session-advisory-lock key serializing startup auto-migrates: ASCII
+#: ``"automigr"`` mapped into signed bigint, the codebase's key convention
+#: (e.g. ``workers/openalex_enrich.py::_LOCK_KEY``). Fixed so every
+#: auto-migrating process on this DB contends for the SAME lock.
+AUTO_MIGRATE_LOCK_KEY = 0x6175_746F_6D69_6772 - 2**63  # "automigr"
+
+#: How long a second auto-migrator waits on the advisory lock before
+#: re-checking and giving up. Generous — the holder may be mid
+#: baseline-load on a fresh DB.
+AUTO_MIGRATE_LOCK_WAIT_S = 300.0
+
+
+def packaged_migrator(dsn: str, *, use_baseline: bool = True) -> Migrator:
+    """The :class:`Migrator` ``precis migrate`` runs for this install.
+
+    Built-in ``src/precis/migrations`` plus every source advertised
+    under the ``precis.migrations`` entry-point group; baseline-aware
+    unless ``use_baseline=False`` (the CLI's ``--from-scratch``).
+    Shared by the ``migrate`` subcommand and :func:`check_schema_at_startup`
+    so "pending" never means two different things.
+    """
+    from precis.store.schema_dump import baseline_path
+
+    builtin_dir = Path(__file__).resolve().parent.parent / "migrations"
+    baseline = baseline_path(builtin_dir) if use_baseline else None
+    return Migrator(dsn, Migrator.discover_sources(builtin_dir), baseline=baseline)
+
+
+def check_schema_at_startup(
+    dsn: str | None,
+    *,
+    auto_migrate: bool | None = None,
+    migrator: Migrator | None = None,
+    lock_wait_seconds: float = AUTO_MIGRATE_LOCK_WAIT_S,
+) -> None:
+    """Refuse (or self-heal) when the DB is behind this package's migrations.
+
+    Called once at the top of every long-running entrypoint —
+    ``precis serve`` (all transports), ``precis web``, ``precis worker``,
+    the ingest watcher, the alertmanager receiver — so a
+    ``pip install -U`` can never silently run new code on an old schema.
+    One-shot subcommands and ``precis migrate`` itself never call it.
+
+    * ``PRECIS_SKIP_SCHEMA_CHECK`` truthy → loud warning, return.
+      Emergency / read-only-diagnosis escape hatch; deliberately
+      env-only — a DB-resident flag would be unreadable exactly when the
+      DB is the problem.
+    * DB *ahead* of the package (a rolling-deploy peer applied
+      migrations this build doesn't ship) → warning, continue. Older
+      workers must keep running.
+    * ``pending`` empty → return. One ledger read, no writes.
+    * auto-migrate on → serialized under advisory lock
+      :data:`AUTO_MIGRATE_LOCK_KEY`: re-check pending *under* the lock
+      (a concurrent starter may have finished), apply via the normal
+      migrate path, log what ran. Wait bounded by ``lock_wait_seconds``;
+      on timeout one last re-check decides.
+    * otherwise → one refusal line on stderr + ``SystemExit(1)``.
+
+    ``auto_migrate=None`` resolves the flag from
+    ``settings.get_bool("schema.auto_migrate")`` — the settings store is
+    never bound this early in boot, so effectively env
+    (``PRECIS_AUTO_MIGRATE``) → default off. An explicit bool (the
+    ``--migrate`` flag) wins outright. ``migrator`` is a test seam; the
+    default is :func:`packaged_migrator`, identical to ``precis migrate``.
+    """
+    if not dsn:
+        return
+    if env_flag("PRECIS_SKIP_SCHEMA_CHECK"):
+        log.warning(
+            "PRECIS_SKIP_SCHEMA_CHECK is set — skipping the startup schema "
+            "check; this process may run against an unmigrated database "
+            "(emergency escape hatch)"
+        )
+        return
+
+    m = migrator if migrator is not None else packaged_migrator(dsn)
+    status = m.schema_status()
+    if status.ahead:
+        plugin, version = status.ahead[0]
+        log.warning(
+            "database is %d migration(s) AHEAD of this package (first: "
+            "%s/%s) — a newer build migrated this DB; continuing anyway",
+            len(status.ahead),
+            plugin,
+            version,
+        )
+    if not status.pending:
+        return
+
+    if auto_migrate is None:
+        from precis import settings
+
+        auto_migrate = bool(settings.get_bool("schema.auto_migrate"))
+
+    if not auto_migrate:
+        plugin, version = status.pending[0]
+        print(
+            f"precis: database is {len(status.pending)} migration(s) behind "
+            f"this package (first pending: {plugin}/{version}); "
+            "run `precis migrate`",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    from precis.store.advisory import xact_advisory_lock
+
+    log.warning(
+        "auto-migrate: %d pending migration(s); taking advisory lock",
+        len(status.pending),
+    )
+    with xact_advisory_lock(
+        dsn, AUTO_MIGRATE_LOCK_KEY, wait_seconds=lock_wait_seconds
+    ) as acquired:
+        if not acquired:
+            log.warning(
+                "auto-migrate: advisory lock not acquired within %.0fs — "
+                "another startup is presumably mid-migration; re-checking",
+                lock_wait_seconds,
+            )
+            if not m.schema_status().pending:
+                return
+            print(
+                "precis: auto-migrate lock wait exceeded "
+                f"{lock_wait_seconds:.0f}s and migrations are still "
+                "pending — run `precis migrate` or restart to retry",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        # Re-check under the lock: a concurrently-started process may
+        # already have applied everything.
+        still_pending = m.schema_status().pending
+        if not still_pending:
+            log.info(
+                "auto-migrate: a concurrent starter already applied the "
+                "pending migrations; continuing"
+            )
+            return
+        applied = m.apply_all()
+        log.warning(
+            "auto-migrate: applied %d migration(s): %s",
+            len(applied),
+            ", ".join(f"{p}/{v}" for p, v in applied),
+        )
 
 
 def _resolve_to_dir(resolved: Any) -> Path | None:

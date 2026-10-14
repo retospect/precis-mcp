@@ -27,7 +27,13 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, Any] = {"hit": False}
 
     def fake_main(
-        *, transport: str, host: str, port: int, token: str | None, fd: int | None
+        *,
+        transport: str,
+        host: str,
+        port: int,
+        token: str | None,
+        fd: int | None,
+        migrate: bool = False,
     ) -> None:
         called["hit"] = True
         called["fd"] = fd
@@ -54,7 +60,13 @@ def test_serve_passes_through_network_transport_flags(
     captured: dict[str, Any] = {}
 
     def fake_main(
-        *, transport: str, host: str, port: int, token: str | None, fd: int | None
+        *,
+        transport: str,
+        host: str,
+        port: int,
+        token: str | None,
+        fd: int | None,
+        migrate: bool = False,
     ) -> None:
         captured.update(transport=transport, host=host, port=port, token=token, fd=fd)
 

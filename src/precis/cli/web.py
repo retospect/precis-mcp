@@ -38,6 +38,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         help="Caller identity for handler guards (default web:owner).",
     )
+    p.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Apply pending DB migrations at startup instead of refusing "
+        "when the schema is behind (same as PRECIS_AUTO_MIGRATE=1).",
+    )
     p.set_defaults(func=run)
 
 
@@ -63,6 +69,8 @@ def run(args: argparse.Namespace) -> None:
     if args.corpus_dir:
         os.environ["PRECIS_CORPUS_DIR"] = args.corpus_dir
     os.environ.setdefault("PRECIS_SOURCE", args.source or "web:owner")
+    if args.migrate:
+        os.environ["PRECIS_AUTO_MIGRATE"] = "1"
 
     cfg = WebConfig.from_env()
     host = args.host or cfg.host

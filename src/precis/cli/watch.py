@@ -267,6 +267,9 @@ def add_batch_parser(sub: argparse._SubParsersAction) -> None:
 def run_batch(args: argparse.Namespace) -> None:
     """Top-level handler for ``precis _watch_batch_ingest``."""
     dsn = resolve_dsn(args.database_url)
+    from precis.store.migrate import check_schema_at_startup
+
+    check_schema_at_startup(dsn)
     store = Store.connect(dsn)
     log.info(
         "precis _watch_batch_ingest: processing %d PDF(s) in this subprocess",
@@ -295,6 +298,11 @@ def run_batch(args: argparse.Namespace) -> None:
 def run(args: argparse.Namespace) -> None:
     """Top-level handler for ``precis ingest --watch``."""
     dsn = resolve_dsn(args.database_url)
+    # Startup schema gate — long-running watcher; refuse (or self-heal
+    # under PRECIS_AUTO_MIGRATE) when the packaged migrations are ahead.
+    from precis.store.migrate import check_schema_at_startup
+
+    check_schema_at_startup(dsn)
     corpus_dir = args.corpus_dir or (Path.home() / "work" / "corpus")
     corpus_pres_dir = args.corpus_pres_dir
     user = args.user or getpass.getuser()

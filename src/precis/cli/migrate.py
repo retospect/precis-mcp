@@ -9,7 +9,6 @@ them.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 from precis.cli._common import resolve_dsn
 
@@ -51,21 +50,16 @@ def run(args: argparse.Namespace) -> None:
     entry-point group. Plugin failures are logged, not raised —
     one broken plugin must not block ``precis migrate``.
     """
-    from precis.store import Migrator
-    from precis.store.schema_dump import baseline_path
+    from precis.store.migrate import packaged_migrator
 
     dsn = resolve_dsn(getattr(args, "database_url", None))
-    builtin_dir = Path(__file__).resolve().parent.parent / "migrations"
 
     # A fresh DB bootstraps from the per-release baseline snapshot
     # unless --from-scratch forces a full replay (used by the
-    # convergence test and by dump-schema itself).
-    baseline = (
-        None if getattr(args, "from_scratch", False) else baseline_path(builtin_dir)
-    )
-
-    sources = Migrator.discover_sources(builtin_dir)
-    m = Migrator(dsn, sources, baseline=baseline)
+    # convergence test and by dump-schema itself). ``packaged_migrator``
+    # is the same construction the startup schema gate uses, so
+    # "pending" means one thing everywhere.
+    m = packaged_migrator(dsn, use_baseline=not getattr(args, "from_scratch", False))
     pending = m.pending()
     if args.dry_run:
         if not pending:

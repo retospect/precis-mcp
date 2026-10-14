@@ -76,4 +76,42 @@ def try_xact_advisory_lock(
             conn.close()
 
 
-__all__ = ["try_xact_advisory_lock"]
+@contextmanager
+def xact_advisory_lock(dsn: str, key: int, *, wait_seconds: float) -> Iterator[bool]:
+    """Blocking acquire of a transaction-scoped advisory lock, bounded wait.
+
+    The ``pg_advisory_xact_lock`` counterpart of
+    :func:`try_xact_advisory_lock`: same dedicated-connection +
+    transaction-pinning shape (pgbouncer-safe — the lock ends with the
+    transaction whatever the pooler does), but waits up to
+    ``wait_seconds`` for the holder instead of failing immediately. Used
+    where a second starter must queue behind the first's unit of work —
+    the startup auto-migrate gate — rather than skip.
+
+    Yields ``True`` once the lock is held (released at the ``with``
+    block's exit, normally or by exception). Yields ``False`` when
+    ``wait_seconds`` elapsed first — ``lock_timeout`` fired, nothing is
+    held. ``statement_timeout`` is neutralised for this transaction so a
+    role default shorter than the lock budget can't kill the wait.
+    ``wait_seconds=0`` is one non-blocking attempt (same as the try
+    variant, minus ``text_key``).
+    """
+    conn = psycopg.connect(dsn)
+    try:
+        conn.execute("SET LOCAL statement_timeout = 0")
+        conn.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        conn.execute(f"SET LOCAL lock_timeout = {int(wait_seconds * 1000)}")
+        acquired = True
+        try:
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+        except psycopg.errors.LockNotAvailable:
+            acquired = False
+        yield acquired
+    finally:
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
+
+
+__all__ = ["try_xact_advisory_lock", "xact_advisory_lock"]

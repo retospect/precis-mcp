@@ -38,8 +38,11 @@ def run(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
     from precis.store import Store
+    from precis.store.migrate import check_schema_at_startup
     from precis.workers.alertmanager_receiver import serve
 
+    # Long-running receiver — same startup schema gate as serve/worker.
+    check_schema_at_startup(resolve_dsn(getattr(args, "database_url", None)))
     store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
     try:
         serve(store, args.host, args.port)

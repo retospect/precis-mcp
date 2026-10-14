@@ -46,6 +46,15 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    warns and proceeds; `--ignore-backup-window` overrides
    (`docs/runbooks/migration-deploy-window.md`).
 
+   The cluster deliberately leaves `PRECIS_AUTO_MIGRATE` off: the role
+   runs `precis migrate` itself before daemons restart
+   (`roles/precis_web/tasks/main.yml`), because a long migration must
+   not kick off inside N racing daemons (the 0077/0078 db-thrash
+   lesson). The startup schema gate is still armed — a daemon that finds
+   pending migrations refuses to boot until the migrate step lands, and
+   a host running an *older* build against a migrated DB warns and keeps
+   running, which is what makes mid-deploy mixed versions safe.
+
    Two refs on origin publish where a commit has got to; nobody commits to
    either, the scripts move them (`scripts/lib/env-pointers.sh`):
 

@@ -47,6 +47,11 @@ Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
 Schema evolves **forward-only** (dual-track baseline; see `store/migrate.py`): new
 `migrations/NNNN_<slug>.sql`, never edit a sealed file; a fresh DB loads the
 `migrations/baseline/schema.sql` snapshot then applies the tail.
+`store/migrate.py::check_schema_at_startup` gates every long-running
+entrypoint (serve/web/worker/ingest-watch/alertmanager) — refuse on pending
+migrations, warn-and-continue when the DB is *ahead*, self-heal under
+`PRECIS_AUTO_MIGRATE` (advisory lock `AUTO_MIGRATE_LOCK_KEY`),
+`PRECIS_SKIP_SCHEMA_CHECK` is the emergency bypass.
 
 ## The lifecycle, end to end
 

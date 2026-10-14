@@ -39,13 +39,17 @@ def test_init_runtime_wires_the_tool_path(monkeypatch):
 
     # SimpleNamespace, not object(): _init_runtime stamps
     # ``long_lived = True`` on the built runtime (gr267466).
-    built = types.SimpleNamespace()
+    built = types.SimpleNamespace(config=types.SimpleNamespace(database_url=""))
     monkeypatch.setattr(server, "_runtime", None)
     monkeypatch.setattr(core, "_runtime", None)
     # server.py binds build_runtime at import time, so patch it there.
     monkeypatch.setattr(server, "build_runtime", lambda: built)
     # Skip the heavy modality/instruction wiring — irrelevant to this test.
     monkeypatch.setattr(server, "_wire_modalities", lambda _rt: None)
+    # Startup schema gate needs a live DB; covered in test_startup_schema_check.
+    monkeypatch.setattr(
+        "precis.store.migrate.check_schema_at_startup", lambda _url: None
+    )
     monkeypatch.setattr(server, "_apply_instructions", lambda _a, _b: None)
 
     rt = server._init_runtime()

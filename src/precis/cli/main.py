@@ -51,6 +51,7 @@ def main() -> None:
             port=args.port,
             token=args.token,
             fd=args.fd,
+            migrate=args.migrate,
         )
         return
 
@@ -109,6 +110,12 @@ def _build_parser(path: tuple[str, ...] | None = None) -> argparse.ArgumentParse
         default=None,
         help="Serve a network transport on this already-listening inherited "
         "socket instead of binding --host/--port (set by precis.mcp_supervisor).",
+    )
+    serve_parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Apply pending DB migrations at startup instead of refusing "
+        "when the schema is behind (same as PRECIS_AUTO_MIGRATE=1).",
     )
     _add_commands(sub, commands(), path[0] if path else None, full=path is None)
 
