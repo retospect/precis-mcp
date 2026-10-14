@@ -11,7 +11,9 @@ Surface (see ``precis-gripe-help``):
   ``gripe_body`` chunk and ``STATUS:open`` tag.
 - ``put(kind='gripe', id=N, text=...)`` appends a ``gripe_comment``
   chunk to the existing gripe (id-present routes to append; same
-  verb, no separate ``comment=`` field).
+  verb, no separate ``comment=`` field). ``link=``/``rel=`` and
+  ``tags=``/``untags=`` ride along in the same transaction, so
+  comment-then-close is one call.
 - ``get(kind='gripe', id=N)`` composes the body + the newest 3 comments in
   full (older ones as one-liners; policy in :mod:`_comment_timeline`)
   alongside header / tags. ``view='comments'`` returns the full timeline;
@@ -85,7 +87,7 @@ class GripeHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "gripe"
     sense: ClassVar[str] = "gripe"
-    #: get/tag take ``id=[...]`` (summary get, one-transaction tag).
+    #: get/tag/link take ``id=[...]`` (summary get, one-transaction tag/fan-in link).
     batch_ids: ClassVar[bool] = True
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
@@ -172,24 +174,18 @@ class GripeHandler(NumericRefHandler):
                     f"appending a comment to {self._sense()} id={id!r} requires text=",
                     next=(f"put(kind={self.kind!r}, id={id}, text='your comment')"),
                 )
-            # Tags are not accepted on the append path — they belong on
-            # tag() against the existing ref.
-            if tags is not None or untags is not None:
-                raise BadInput(
-                    "tags=/untags= are not accepted when appending a "
-                    f"{self._sense()} comment",
-                    next=(
-                        f"use tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...])"
-                    ),
-                )
-            # link=/unlink=/rel= ride along: comment + edge in one transaction
-            # (a duplicate-close is one put, not reject + re-put + link()).
+            # link=/unlink=/rel= and tags=/untags= ride along: comment +
+            # edge/tag edit in one transaction (comment-then-close is one
+            # put, not reject + re-put + tag(); gr484232). The tag edit is
+            # this kind's own tag() — the same STATUS guards apply.
             return self._append_then_link(
                 lambda: self._append_comment(id=id, text=text),
                 id=id,
                 link=link,
                 unlink=unlink,
                 rel=rel,
+                tags=tags,
+                untags=untags,
                 what=f"{self._sense()} comment",
             )
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a

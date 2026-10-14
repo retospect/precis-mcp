@@ -273,7 +273,7 @@ class TodoHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "todo"
     sense: ClassVar[str] = "todo"
-    #: get/tag take ``id=[...]`` (summary get, one-transaction tag).
+    #: get/tag/link take ``id=[...]`` (summary get, one-transaction tag/fan-in link).
     batch_ids: ClassVar[bool] = True
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
@@ -1334,7 +1334,7 @@ class TodoHandler(NumericRefHandler):
     def link(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
@@ -1364,6 +1364,15 @@ class TodoHandler(NumericRefHandler):
         state and need a sync trigger.
         """
         if rel == _RESERVED_PARENT_REL:
+            if isinstance(id, list):
+                # Fan-in is for stored edges; a tree move carries the
+                # reparent guards (cycle/depth/owner) per id — one call
+                # each keeps the error pointed at the offending move.
+                raise BadInput(
+                    "rel='parent' moves one todo at a time — id= is not a list",
+                    next=f"link(kind={self.kind!r}, id=<one id>, target='td<N>', "
+                    "rel='parent')",
+                )
             return self._reparent(id=id, target=target, mode=mode)
         return super().link(id=id, target=target, mode=mode, rel=rel, **_kw)
 

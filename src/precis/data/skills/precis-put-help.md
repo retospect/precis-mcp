@@ -22,7 +22,13 @@ and `link`.
 
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
-shows all.
+shows all. On gripe the append takes `link=`/`rel=` and `tags=` in the same
+transaction — comment-then-close is one call.
+
+`text=` and `body=` are the same prose slot spelled two ways across
+kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
+that declares only one spelling the other is accepted as an alias;
+passing both at once is an error.
 
 ## Jot a thought into memory
 ## Capture a quick note I want to keep
@@ -181,7 +187,9 @@ put(kind="memory", text="...", tags=["pinned", "topic:sortie"])
 put(kind="todo", text="...", tags=["PRIO:high"])
 ```
 
-`tags=` runs only at creation. For retroactive tag changes use
+`tags=` runs at creation — and on a gripe comment append, where it
+lands in the same transaction (see above). Everywhere else, for
+retroactive tag changes use
 `tag(kind='...', id=<N>, add=[...], remove=[...])`. Closed-prefix
 axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated; open
 tags are universal. See `precis-tag-help`.

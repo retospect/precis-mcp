@@ -1,10 +1,13 @@
-"""``get``/``tag`` with ``id=[...]`` on gripe, alert and todo.
+"""``get``/``tag``/``link`` with ``id=[...]`` on gripe, alert, todo, memory.
 
-Batch ``get`` is summary-shaped (one block per id, order kept, missing
-ids are a one-line block); batch ``tag`` is one transaction (one bad id
-rolls every id back). Both share the ``_coerce_ids`` normaliser and its
-cap; every other verb and every other kind still refuses a list with a
-``BadInput`` naming the batch form, never an ``Internal``.
+Batch ``get`` is summary-shaped by default (one block per id, order
+kept, missing ids are a one-line block); a ``view=`` maps the kind's own
+single-id view over the batch. Batch ``tag`` is one transaction (one bad
+id rolls every id back); batch ``link`` fans one target/rel across every
+source id, also in one transaction. All share the ``_coerce_ids``
+normaliser and its cap; every other verb and every other kind still
+refuses a list with a ``BadInput`` naming the batch form, never an
+``Internal``.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import pytest
 
 from precis.alerts import STATE_OPEN, STATE_RESOLVED, raise_alert
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._numeric_ref import BATCH_ID_CAP
 from precis.handlers.alert import AlertHandler
 from precis.handlers.anki import AnkiHandler
@@ -96,8 +99,6 @@ def test_get_batch_cap_empty_view_and_foreign_handle(hub: Hub) -> None:
         handler.get(id=_batch(*range(1, BATCH_ID_CAP + 2)))
     with pytest.raises(BadInput, match="empty"):
         handler.get(id=[])
-    with pytest.raises(BadInput, match="does not combine"):
-        handler.get(id=_batch(1, 2), view="links")
     with pytest.raises(BadInput, match="todo handle, not gripe"):
         handler.get(id=_batch("td5"))
     mixed: list[Any] = [1, 2.5]
@@ -106,19 +107,13 @@ def test_get_batch_cap_empty_view_and_foreign_handle(hub: Hub) -> None:
 
 
 def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
-    gripe = GripeHandler(hub=hub)
-    two: Any = [1, 2]
-    with pytest.raises(BadInput, match="got list") as err:
-        gripe.link(id=two, target="gripe:3", rel="related-to")
-    assert "accepted only by get and tag on gripe" in str(err.value.next)
-    with pytest.raises(BadInput, match="does not combine with id="):
-        gripe.get(id=_batch(1), view="comments")
     with pytest.raises(BadInput, match="does not take id=") as refused:
         AnkiHandler(hub=hub).get(id=_batch(1, 2))
     assert "gripe" in str(refused.value.next) and "memory" in str(refused.value.next)
     assert "anki" not in str(refused.value.next)
-    with pytest.raises(BadInput, match="got list"):
-        MemoryHandler(hub=hub).link(id=two, target="memory:3", rel="related-to")
+    # A non-batch kind's link still refuses a list.
+    with pytest.raises(BadInput, match="does not take id="):
+        AnkiHandler(hub=hub).link(id=_batch(1, 2), target="anki:3")
 
 
 def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
@@ -133,8 +128,6 @@ def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
     assert "\n---\n" in body
     assert body.count("Next:") == 1
     assert f"get(kind='memory', id={second}, view='fisheye+1hop')" in body
-    with pytest.raises(BadInput, match="does not combine"):
-        handler.get(id=_batch(first, second), view="raw")
 
 
 def test_tag_batch_memory_is_one_transaction(hub: Hub) -> None:
@@ -227,6 +220,127 @@ def test_tag_batch_through_dispatch(
     )
     assert "tagged 2 gripe" in body and "[error" not in body
     assert all("STATUS:triaged" in _tags(handler.store, rid) for rid in ids)
+
+
+# ── get with view= mapped over the batch ───────────────────────────
+
+
+def test_get_batch_view_alert_detail(store: Store, hub: Hub) -> None:
+    a, _ = raise_alert(store, source="s", fingerprint="fp-da", title="alert A")
+    b, _ = raise_alert(store, source="s", fingerprint="fp-db", title="alert B")
+    body = AlertHandler(hub=hub).get(id=_batch(a, b), view="detail").body
+    assert body.startswith("# 2 alert (batch, view='detail')")
+    assert f"# alert {a} [open]" in body and f"# alert {b} [open]" in body
+    assert "fingerprint: fp-da" in body and "severity:" in body
+
+
+def test_get_batch_view_gripe_comments_and_missing(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 2)
+    handler.put(id=ids[0], text="note on first")
+    missing = max(ids) + 100_000
+    body = handler.get(id=_batch(ids[0], missing, ids[1]), view="comments").body
+    assert body.startswith("# 3 gripe (batch, view='comments')")
+    assert "note on first" in body
+    assert f"gr{missing}  not found" in body
+
+
+def test_get_batch_view_unknown_view_raises(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 1)
+    with pytest.raises(Unsupported, match="unknown view"):
+        handler.get(id=_batch(*ids), view="bogus")
+
+
+def test_get_batch_view_raw_base_view(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 1)
+    body = handler.get(id=_batch(*ids), view="raw").body
+    assert "batch, view='raw'" in body
+
+
+def test_get_batch_view_through_dispatch(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    _handler, ids = _gripes(hub, 2)
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "gripe", "id": ids, "view": "raw"}
+    )
+    assert "batch, view='raw'" in body and "[error" not in body
+
+
+# ── link fan-in (``id=[...]``) ──────────────────────────────────────
+
+
+def _memories(hub: Hub, n: int) -> tuple[MemoryHandler, list[int]]:
+    handler = MemoryHandler(hub=hub)
+    return handler, [id_of(handler.put(text=f"link batch {i}").body) for i in range(n)]
+
+
+def _out_links(store: Store, ref_id: int) -> list[tuple[int, str]]:
+    return [
+        (lk.dst_ref_id, lk.relation) for lk in store.links_for(ref_id, direction="out")
+    ]
+
+
+def test_link_batch_fans_in_one_target(hub: Hub) -> None:
+    handler, ids = _memories(hub, 3)
+    target = id_of(handler.put(text="the shared target").body)
+    body = handler.link(
+        id=_batch(*ids), target=f"memory:{target}", rel="qualifies"
+    ).body
+    assert body == (
+        f"linked 3 memory -> memory:{target} [qualifies] in one transaction"
+    )
+    for rid in ids:
+        assert _out_links(handler.store, rid) == [(target, "qualifies")]
+
+
+def test_link_batch_one_bad_id_rolls_back_all(hub: Hub) -> None:
+    handler, ids = _memories(hub, 2)
+    target = id_of(handler.put(text="target").body)
+    missing = max(*ids, target) + 100_000
+    with pytest.raises(NotFound, match="rolled back, nothing applied"):
+        handler.link(id=_batch(*ids, missing), target=f"memory:{target}")
+    for rid in ids:
+        assert not _out_links(handler.store, rid)
+
+
+def test_link_batch_remove_and_bad_mode(hub: Hub) -> None:
+    handler, ids = _memories(hub, 2)
+    target = id_of(handler.put(text="target").body)
+    handler.link(id=_batch(*ids), target=f"memory:{target}")
+    body = handler.link(id=_batch(*ids), target=f"memory:{target}", mode="remove").body
+    assert body.startswith("unlinked 2 memory")
+    assert "[" not in body  # no rel= → no relation claimed in the ack
+    for rid in ids:
+        assert not _out_links(handler.store, rid)
+    with pytest.raises(BadInput, match="'add' or 'remove'"):
+        handler.link(id=_batch(*ids), target=f"memory:{target}", mode="bogus")
+
+
+def test_link_batch_requires_target_and_caps(hub: Hub) -> None:
+    handler, ids = _memories(hub, 1)
+    with pytest.raises(BadInput, match="requires target="):
+        handler.link(id=_batch(*ids))
+    with pytest.raises(BadInput, match=f"at most {BATCH_ID_CAP}"):
+        handler.link(id=_batch(*range(BATCH_ID_CAP + 1)), target="memory:1")
+
+
+def test_link_batch_through_dispatch(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    handler, ids = _memories(hub, 2)
+    target = id_of(handler.put(text="shared target").body)
+    body = runtime_with_store.dispatch(
+        "link",
+        {
+            "kind": "memory",
+            "id": ids,
+            "target": f"memory:{target}",
+            "rel": "related-to",
+        },
+    )
+    assert "linked 2 memory" in body and "[error" not in body
+    for rid in ids:
+        assert _out_links(handler.store, rid) == [(target, "related-to")]
 
 
 # ── store.atomic ───────────────────────────────────────────────────

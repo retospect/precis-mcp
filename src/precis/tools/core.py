@@ -1879,7 +1879,10 @@ def tag(
 def link(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    id: str | int | None = None,
+    # A list is the fan-in batch form (numeric-ref kinds with batch_ids —
+    # memory/gripe/todo/alert): every id linked to the one target=/rel=
+    # in a single transaction.
+    id: str | int | list | None = None,
     target: str | None = None,
     mode: str = "add",
     rel: str | None = None,
@@ -1900,8 +1903,7 @@ def link(
 
     Full reference: get(kind='skill', id='precis-link-help'), or
     search(kind='skill', q='connecting refs') for a topical lookup.
-    `precis-relations` has the full vocabulary (cites, blocks,
-    contradicts, ...).
+    `precis-relations` lists every rel (cites, blocks, ...).
     """
     return _dispatch(
         "link",
@@ -2055,7 +2057,7 @@ _TAG_HELP: dict[str, str] = {
 
 _LINK_HELP: dict[str, str] = {
     "kind": "Kind owning the source ref.",
-    "id": "Source ref id.",
+    "id": "Source id(s).",
     "target": "Canonical link target 'kind:id[~selector]'.",
     "mode": "'add' (default) | 'remove'.",
     "rel": "Relation slug. Defaults to 'related-to' on add.",

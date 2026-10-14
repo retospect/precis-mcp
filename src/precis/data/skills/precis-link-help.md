@@ -68,12 +68,23 @@ With `rel=` set, `mode='remove'` deletes that exact pair. Omit
 `rel=` to drop every link from source to target regardless of
 relation.
 
+## Fan one target out to several sources
+## Link many refs to the same target at once
+
+```python
+link(kind="memory", id=[101, 102, 103], target="me200", rel="qualifies")
+```
+
+One call, one transaction, one summary line — the batch the repeated
+`link|memory -> link|memory` chain was doing by hand. A bad id rolls
+the whole call back. `mode='remove'` fans out the same way.
+
 ## Arguments
 
 | Arg | Type | Default | Meaning |
 |---|---|---|---|
 | `kind` | str | required | Kind of the source ref. |
-| `id` | str / int | required | Source ref id. |
+| `id` | str / int / list | required | Source ref id. A list fans one `target=`/`rel=` across every id (≤50), one transaction, one summary line — numeric-ref kinds only (`memory`, `gripe`, `todo`, `alert`). |
 | `target` | str | required | A handle, or `kind:identifier[~selector]` (required for file-backed kinds). |
 | `rel` | str | `related-to` | Relation slug (see `precis-relations`). |
 | `mode` | str | `add` | `add` or `remove`. |

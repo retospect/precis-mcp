@@ -688,6 +688,11 @@ class FindingHandler(NumericRefHandler):
         Anything else — a non-hub finding, a non-Taproot relation, or
         ``mode='remove'`` — falls through to the generic numeric-ref link.
         """
+        if isinstance(id, list):
+            # finding isn't a batch_ids kind; _coerce_ids raises the
+            # clean "does not take id=[...]" refusal before the Taproot
+            # door tries to .strip() the list.
+            self._coerce_ids(id)
         if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
             try:
                 hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)

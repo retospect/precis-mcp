@@ -354,6 +354,44 @@ def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
     return frozenset(accepted)
 
 
+#: The two spellings of the one prose slot a put/edit takes. The verbs
+#: declare both at the top level (``body=`` because finding's write shape
+#: made it canonical, ``text=`` because every numeric-ref/file kind uses
+#: it), so callers generalise the wrong spelling across kinds — the
+#: gr484230 near-miss: ``put(kind='gripe', body=…)`` learned from
+#: ``put(kind='finding', body=…)``.
+_PROSE_FIELD_SPELLINGS: tuple[str, str] = ("text", "body")
+
+
+def _alias_prose_field(
+    cls: type[Handler], verb: str, kind: str, clean: dict[str, Any]
+) -> None:
+    """Rewrite the other prose spelling onto the one a handler declares.
+
+    When ``cls.<verb>`` accepts exactly one of :data:`_PROSE_FIELD_SPELLINGS`,
+    a supplied other spelling is the same slot misnamed — alias it. A
+    handler declaring both keeps them distinct (todo put: ``text=`` the
+    title, ``body=`` the details; finding put runs its own text→body
+    alias), and both spellings supplied to a single-spelling handler is
+    a BadInput: two prose values can't collapse into one slot silently.
+    """
+    accepted = _handler_accepted_kwargs(cls, verb)
+    declared = [s for s in _PROSE_FIELD_SPELLINGS if s in accepted]
+    if len(declared) != 1:
+        return
+    canon = declared[0]
+    alias = "body" if canon == "text" else "text"
+    if alias not in clean:
+        return
+    if canon in clean:
+        raise BadInput(
+            f"{verb}(kind={kind!r}): {canon}= and {alias}= are the same "
+            "prose field on this kind — pass one, not both",
+            next=f"{verb}(kind={kind!r}, {canon}='...')",
+        )
+    clean[canon] = clean.pop(alias)
+
+
 #: Top-level parameters each slim verb advertises (30-day prod ledger).
 CORE_PARAMS: dict[str, tuple[str, ...]] = {
     "put": (
@@ -2073,6 +2111,11 @@ class DispatchMixin(RuntimeShape):
 
         # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
+
+        # ``text=``/``body=`` near-miss (gr484230): one alias rewrite for
+        # every kind, before the strictness gate below would refuse the
+        # other spelling outright.
+        _alias_prose_field(type(handler), verb, kind, clean)
 
         self._validate_mode(handler, verb, kind, clean)
 

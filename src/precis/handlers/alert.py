@@ -110,7 +110,7 @@ class AlertHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "alert"
     sense: ClassVar[str] = "alert"
-    #: get/tag take ``id=[...]`` (summary get, one-transaction tag).
+    #: get/tag/link take ``id=[...]`` (summary get, one-transaction tag/fan-in link).
     batch_ids: ClassVar[bool] = True
 
     # ── list-view filters (id='/<view>') ────────────────────────────

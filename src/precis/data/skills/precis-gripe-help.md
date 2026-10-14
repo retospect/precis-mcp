@@ -138,11 +138,13 @@ default read (it stays searchable, and `view='comments'` shows it marked
 `[hidden]`): `delete(kind='gripe', id=42, args={'comment': 3})`; undo with
 `args={'comment': 3, 'restore': True}`. This never deletes the gripe.
 
-A comment can carry an edge in the same call, in one transaction (a bad
-target or `rel=` writes nothing): closing a duplicate is
-`put(kind='gripe', id=42, text='dup of gr7', link='gripe:7', rel='superseded-by')`
-then `tag(kind='gripe', id=42, add=['STATUS:wontfix'])`. `tags=`/`prio=` are
-still refused on a comment — use `tag()`.
+A comment can carry an edge and tag edits in the same call, in one
+transaction (a bad target, `rel=` or tag writes nothing): closing a
+duplicate is one call,
+`put(kind='gripe', id=42, text='dup of gr7', link='gripe:7', rel='superseded-by', tags=['STATUS:wontfix'])`.
+Tag edits on an append run the same `tag()` validation —
+`STATUS:` is closed-prefix, so removing a `STATUS:` tag without a
+replacement is refused. `prio=` still belongs on `tag()`.
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made
@@ -212,15 +214,16 @@ search(kind="job", link="gripe:42")
 ## Decided not to fix this bug
 
 ```python
-tag(kind="gripe", id=42, add=["STATUS:wontfix"])
 put(
     kind="gripe",
     id=42,
     text="not fixing — root cause is upstream in marker; tracking there instead",
+    tags=["STATUS:wontfix"],
 )
 ```
 
-Leave a final comment with the reason. `wontfix` is a kept final
+One call — the comment and the status flip land in the same
+transaction. `wontfix` is a kept final
 state — it doesn't imply deletion. Use `delete` separately when
 you want the gripe gone from search.
 
@@ -238,11 +241,13 @@ put(kind="gripe", id=42, text="parking until after the F20 freeze")
 ## Retire a gripe that's been resolved
 
 ```python
-put(kind="gripe", id=42, text="fixed in <sha>: <one-line evidence>")
-tag(kind="gripe", id=42, add=["STATUS:done"])
+put(kind="gripe", id=42, text="fixed in <sha>: <one-line evidence>", tags=["STATUS:done"])
 ```
 
-Fixed gripes close as `STATUS:done` with a closing comment naming the
+One call — comment and close land together (two calls,
+`tag(kind='gripe', id=42, add=['STATUS:done'])` after the put, work
+too). Fixed gripes close as `STATUS:done` with a closing comment
+naming the
 sha, so the resolution stays searchable. `delete` is only for
 junk/test artifacts and empty duplicates; won't-do is `STATUS:wontfix`.
 

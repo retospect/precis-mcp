@@ -260,7 +260,7 @@ class MemoryHandler(NumericRefHandler):
     search_body_chunks: ClassVar[bool] = True
     heat_salience_on_body_search: ClassVar[bool] = True
 
-    # get/tag take id=[...]; get is overridden below to render each memory in
+    # get/tag/link take id=[...]; get is overridden below to render each memory in
     # full (memories are short — the point of batching them is to read them).
     batch_ids: ClassVar[bool] = True
 
@@ -352,12 +352,9 @@ class MemoryHandler(NumericRefHandler):
         one trailer at the end points at the fisheye neighbourhood. A missing
         or deleted id is a one-line block.
         """
-        if view is not None:
-            raise BadInput(
-                f"view={view!r} does not combine with id=[...]",
-                next=f"get(kind='memory', id=<one id>, view={view!r})",
-            )
         ref_ids = self._coerce_ids(ids)
+        if view is not None:
+            return self._get_batch_view(ref_ids, view=view)
         blocks: list[str] = []
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)

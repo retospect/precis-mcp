@@ -13,7 +13,7 @@ Subclass contract:
 
     Optional overrides
         corpus_slug: ClassVar[str]                     — default 'default'
-        batch_ids: ClassVar[bool]                      — get/tag take id=[...] (default False)
+        batch_ids: ClassVar[bool]                      — get/tag/link take id=[...] (default False)
         default_tags_on_create: ClassVar[tuple[str,…]] — applied to every put-create
         sense:                                         — singular noun for messages
 
@@ -57,6 +57,7 @@ from precis.store import SEMANTIC_DISTANCE_FLOOR, Link, Ref, Tag
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.link_tag_ops import (
+    _DEFAULT_RELATION,
     check_relation_constraints,
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
@@ -1730,7 +1731,7 @@ class NumericRefHandler(Handler):
     def link(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
@@ -1741,9 +1742,51 @@ class NumericRefHandler(Handler):
         ``mode='add'`` (default) creates the edge; ``mode='remove'``
         deletes it. With ``rel=`` on remove, removes only that
         (target, relation) pair; without ``rel=``, removes every
-        link to the target at that selector.
+        link to the target at that selector. ``id=[...]`` (kinds with
+        ``batch_ids``) fans one target/rel across every source id in
+        one transaction — see :meth:`_link_batch`.
         """
+        if isinstance(id, list):
+            return self._link_batch(id, target=target, mode=mode, rel=rel)
         return self._link(id=id, target=target, mode=mode, rel=rel)
+
+    def _link_batch(
+        self, ids: list[Any], *, target: str | None, mode: str, rel: str | None
+    ) -> Response:
+        """``link(id=[...])``: every listed source to one ``target=``/``rel=``.
+
+        The fan-in shape the call-chain miner counted (gr484233): N refs
+        linked to the same target used to take N calls. Runs the per-id
+        ``_link`` (all its validation included) inside ``store.atomic()``
+        so one bad id rolls the whole call back; replies with one
+        summary line. ``meta=`` stays single-id only — edge metadata is
+        per-edge payload, not a fan-in shape.
+        """
+        ref_ids = self._coerce_ids(ids)
+        target = require_link_target(self.kind, target)
+        validate_link_mode(mode)
+        with self.store.atomic():
+            for rid in ref_ids:
+                try:
+                    self._link(id=rid, target=target, mode=mode, rel=rel)
+                except PrecisError as exc:
+                    handle = handle_registry.try_format(self.kind, rid) or str(rid)
+                    exc.cause = (
+                        f"{handle}: {exc.cause} — batch of {len(ref_ids)} "
+                        "rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+        past = "linked" if mode == "add" else "unlinked"
+        # mode='remove' with no rel= drops every edge to the target —
+        # naming a relation in the ack would claim a narrower write.
+        rel_bit = f" [{rel or _DEFAULT_RELATION}]" if mode == "add" or rel else ""
+        return Response(
+            body=(
+                f"{past} {len(ref_ids)} {self._sense()} -> {target}"
+                f"{rel_bit} in one transaction"
+            )
+        )
 
     def _append_then_link(
         self,
@@ -1754,16 +1797,23 @@ class NumericRefHandler(Handler):
         unlink: str | None,
         rel: str | None,
         what: str,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
     ) -> Response:
-        """Run ``append`` (a comment / logbook write) and the ``link=`` /
-        ``unlink=`` edge edit in ONE transaction; the reply says both happened.
+        """Run ``append`` (a comment / logbook write) plus the ``link=`` /
+        ``unlink=`` edge edit and the ``tags=`` / ``untags=`` tag edit in
+        ONE transaction; the reply says each thing that happened.
 
-        With neither ``link=`` nor ``unlink=`` this is just ``append()``.
-        The link runs first inside the unit so a bad target / rel raises
-        before anything is committed; a failure on either side rolls back
-        both (``store.atomic``).
+        With no link or tag op this is just ``append()``. The tag edit
+        is the kind's own ``tag()`` call, so every guard that verb
+        carries (closed-axis STATUS validation, prio sync,
+        ``_after_tag_mutation``) applies unchanged — comment-then-close
+        is one ``put``, not ``put`` + ``tag`` (gr484232). The writes run
+        inside one ``store.atomic()`` unit: a failure on any side rolls
+        back the whole call.
         """
-        if link is None and unlink is None:
+        has_tag_ops = tags is not None or untags is not None
+        if link is None and unlink is None and not has_tag_ops:
             if rel is not None:
                 raise BadInput(
                     f"rel= needs link= (or unlink=) when appending a {what}",
@@ -1776,13 +1826,20 @@ class NumericRefHandler(Handler):
                 f"link= and unlink= together are not accepted when appending a {what}",
                 next=f"pass one of them, or use link(kind={self.kind!r}, id={id}, ...)",
             )
+        extras: list[str] = []
         with self.store.atomic():
             if link is not None:
-                linked = self._link(id=id, target=link, mode="add", rel=rel)
-            else:
-                linked = self._link(id=id, target=unlink, mode="remove", rel=rel)
+                extras.append(self._link(id=id, target=link, mode="add", rel=rel).body)
+            elif unlink is not None:
+                extras.append(
+                    self._link(id=id, target=unlink, mode="remove", rel=rel).body
+                )
+            if has_tag_ops:
+                # ``tag`` validates add=/remove= itself (an all-empty call
+                # raises there, never silently no-ops).
+                extras.append(self.tag(id=id, add=tags, remove=untags).body)
             appended = append()
-        return Response(body=f"{appended.body}\nAlso {linked.body}")
+        return Response(body=appended.body + "".join(f"\nAlso {b}" for b in extras))
 
     def _link(
         self,
@@ -2089,15 +2146,15 @@ class NumericRefHandler(Handler):
             return id
         if not isinstance(id, str):
             # A list lands here from every verb/view that has no batch
-            # form (link, delete, put, get with view=, …) and from the
-            # kinds that never opted in — a clean refusal naming what
+            # form (delete, put, a non-batch verb's internals) and from
+            # the kinds that never opted in — a clean refusal naming what
             # does take a list, never an AttributeError.
             raise BadInput(
                 f"{cls._sense()} id= takes one integer or handle, "
                 f"got {type(id).__name__}",
                 next=(
                     "pass one call per ref here; id=[...] is accepted only by "
-                    f"get and tag on {cls.kind}"
+                    f"get, tag and link on {cls.kind}"
                     if cls.batch_ids
                     else "pass one call per ref (id= is not a list)"
                 ),
@@ -2201,21 +2258,17 @@ class NumericRefHandler(Handler):
     def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
         """``get(id=[...])``: one summary block per id, in the order given.
 
-        Summary-shaped on purpose — a batch of full renders (a gripe's
-        comment timeline, a todo's ancestry) would be larger than the
-        loop it replaces. Each block is the handle, the lifecycle tags
-        (closed axes, ``alert-state``), ``prio``, the link count and
-        the body's first line. A missing or soft-deleted id is a
-        one-line block, not an error for the whole call: the caller
-        asked a question about N ids and gets N answers.
+        Summary-shaped by default — each block is the handle, the
+        lifecycle tags (closed axes, ``alert-state``), ``prio``, the link
+        count and the body's first line. A missing or soft-deleted id is
+        a one-line block, not an error for the whole call: the caller
+        asked a question about N ids and gets N answers. ``view=`` maps
+        the kind's own single-id view over the batch — see
+        :meth:`_get_batch_view`.
         """
-        if view is not None:
-            raise BadInput(
-                f"view={view!r} does not combine with id=[...] "
-                "(the batch form is summary-shaped)",
-                next=f"get(kind={self.kind!r}, id=<one id>, view={view!r})",
-            )
         ref_ids = self._coerce_ids(ids)
+        if view is not None:
+            return self._get_batch_view(ref_ids, view=view)
         refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)
         live = [r.id for r in refs.values() if r.kind == self.kind and not r.retired_at]
         tag_rows = self.store.ref_tags_bulk(live)
@@ -2255,6 +2308,32 @@ class NumericRefHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _get_batch_view(self, ref_ids: list[int], *, view: str) -> Response:
+        """``get(id=[...], view='…')``: the single-id view mapped per id.
+
+        Runs the kind's own ``get`` once per id, so subclass views keep
+        one code path (alert's ``detail``/``full``, gripe's ``comments``,
+        the base ``links``/``log``/``raw`` — gr484236's alert-triage
+        batch is the driver). The id count stays bounded by
+        :data:`BATCH_ID_CAP` via :meth:`_coerce_ids`; a missing or
+        soft-deleted id renders a one-line block, same as the summary
+        form. A view-level error (unknown view for the kind) raises on
+        the first live id instead of stamping one refusal per id.
+        """
+        blocks: list[str] = []
+        for rid in ref_ids:
+            handle = handle_registry.try_format(self.kind, rid) or str(rid)
+            try:
+                blocks.append(self.get(id=rid, view=view).body)
+            except NotFound:
+                blocks.append(f"{handle}  not found")
+            except Gone:
+                blocks.append(f"{handle}  deleted")
+        return Response(
+            body=f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
+            + "\n\n".join(blocks)
+        )
 
     def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
         """``tag(id=[...])``: the same edit on every id, all or nothing.
