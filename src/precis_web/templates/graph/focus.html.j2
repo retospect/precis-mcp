@@ -1,0 +1,31 @@
+{% extends "base.html.j2" %}
+{% block title %}Graph · {{ handle }}{% endblock %}
+{% block content %}
+<div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold font-mono">{{ handle }}</h1>
+    <p class="text-sm text-slate-600">{{ focus_label }}</p>
+    <p class="text-xs text-slate-500">
+      <a href="{{ reader_url }}" class="underline">reader</a>
+      · <a href="{{ eye_url }}" class="underline">/eye ladder</a>
+      · <a href="{{ json_url }}" class="underline">json</a>
+    </p>
+  </div>
+  <p class="text-xs text-slate-500">
+    {{ n_hop1 }} hop-1 · {{ n_hop2 }} hop-2 · {{ n_edges }} edge{{ '' if n_edges == 1 else 's' }}
+    · cap {{ cap }}{% if truncated %} <span class="text-amber-600">(over cap — count chips)</span>{% endif %}
+  </p>
+</div>
+<div class="rounded-lg border border-slate-200 bg-white p-2 overflow-x-auto">
+  {{ svg | safe }}
+</div>
+{% if not n_edges %}
+<p class="mt-2 text-xs italic text-slate-400">no typed links — the focus stands alone.</p>
+{% endif %}
+<p class="mt-2 text-[11px] text-slate-500">
+  rings are hops from the centre; a node's shape is its kind
+  ({{ legend | join(' · ') }}; unlisted kinds are circles), an edge's
+  label its relation and its arrow the stored direction. Click a node to
+  re-focus on it. Grey pills are count chips for neighbours past the cap.
+</p>
+{% endblock %}

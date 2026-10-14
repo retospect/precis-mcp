@@ -171,10 +171,11 @@ Seams:
   thread (context-memory-hierarchy, session-history-into-precis) is
   ranked in `knowledge-mesh.md` from 2026-09-30.
 - `backlog/memory-recall-walk-keep.md` slice 1 builds the store-level
-  neighbourhood function that `backlog/web-graph-navigation.md` slice 1
-  (drive-ux / platform) exposes as `GET /graph/<kind>/<id>.json`; one
-  query, one inverse rule, one cap — the MCP memory walk and the web
-  panel must not disagree (seam recorded 2026-10-07).
+  neighbourhood function that `backlog/web-graph-navigation.md` exposes:
+  slice 1 as `GET /graph/<kind>/<id>.json`, slices 2–3 (shipped
+  2026-10-14) as the ref-page panel fragment and the radial-SVG focus
+  page. One query, one inverse rule, one cap — the MCP memory walk and
+  the web surfaces must not disagree (seam recorded 2026-10-07).
 - substrate + memory half vs agent affordances — knowledge-mesh ranks the
   substrate (knowledge-mesh, measures-substrate, graph-gardener), the
   memory half and the surfaces; `graph-memory-consumers.md`

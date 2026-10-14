@@ -10,4 +10,11 @@
    paper-specific Meta panel (doc.meta_panel = papers/_meta_panel.html.j2),
    which still reads the paper detail context (paper, pa_handle, tags, …). #}
 {% include "_reader/reader.html.j2" %}
+{# The typed-link ring sits below the reader — the same shared mount the
+   generic ref detail uses, so a paper's cites/establishes neighbourhood
+   is one click away from its page (web-graph-navigation.md slice 2). #}
+<div class="mx-auto max-w-6xl">
+  {% from "graph/_panel_mount.html.j2" import panel_mount %}
+  {{ panel_mount('paper', paper.id) }}
+</div>
 {% endblock %}

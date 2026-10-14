@@ -2276,6 +2276,11 @@ video {
   padding-bottom: 2rem;
 }
 
+.py-px {
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
 .pb-1\.5 {
   padding-bottom: 0.375rem;
 }

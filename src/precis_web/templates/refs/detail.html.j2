@@ -129,6 +129,9 @@
 <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-700 overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes) }}</div>
 {% endif %}
 
+{% from "graph/_panel_mount.html.j2" import panel_mount %}
+{{ panel_mount(kind, ref.id) }}
+
 {# Job actions strip — a job is a thing you unstick (retry → re-mint) or
    read (transcript / parent intent), not a thought you interrogate. This
    replaces the dream-memory "Ask & think" box for kind='job' so an

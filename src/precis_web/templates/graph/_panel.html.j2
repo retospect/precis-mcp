@@ -1,0 +1,87 @@
+{# The Neighbourhood panel fragment — swapped into ``#graph-panel`` on the
+   shared ref detail page (graph/_panel_mount.html.j2), and into a single
+   ``#nb-<slug>`` group div by that group's "show all" button
+   (``?group=<heading>`` → ``group_only``).
+
+   Rows carry the direction the store's neighbourhood reports (``dir`` is
+   from the focus's side: → outbound, ← inbound); the rel label is already
+   the presented slug — an inbound ``cites`` reads ``cited-by``. Kind
+   counts come from the store's ``counts`` (the true totals over every
+   matching edge), rows from ``edges`` (the capped window), so a group can
+   honestly show "×N" with fewer rows. #}
+{% macro group_inner(g, expanded, kind, ref_id, show_memories) %}
+  <div class="flex items-baseline gap-2 border-b border-slate-100 bg-slate-50/60 px-3 py-1.5">
+    <h3 class="text-xs font-semibold text-slate-600">{{ g.heading }}</h3>
+    <span class="text-[10px] text-slate-400">{{ g.n }} link{{ '' if g.n == 1 else 's' }}</span>
+    {% if not expanded and (g.hidden_rows or g.n > g.rows_total) %}
+    <button type="button"
+            class="ml-auto text-[10px] text-sky-700 hover:underline"
+            hx-get="/graph/{{ kind }}/{{ ref_id }}/panel?group={{ g.heading | urlencode }}&memories={{ 1 if show_memories else 0 }}"
+            hx-target="#nb-{{ g.slug }}" hx-swap="innerHTML">
+      show all {{ g.n }} ▸
+    </button>
+    {% elif expanded and g.n > g.rows_total %}
+    <span class="ml-auto text-[10px] text-slate-400">{{ g.rows_total }} of {{ g.n }} shown — beyond the node cap; see the JSON</span>
+    {% endif %}
+  </div>
+  {% for r in g.rels %}
+  <div class="px-3 py-2">
+    <div class="flex flex-wrap items-baseline gap-x-2">
+      <span class="text-xs font-mono font-medium text-slate-700">{{ r.rel }}</span>
+      <span class="text-[10px] text-slate-400">{% for k in r.kinds %}{{ k.kind }}&nbsp;×{{ k.n }}{{ ', ' if not loop.last }}{% endfor %}</span>
+    </div>
+    {% for k in r.kinds %}
+      {% if k.rows %}
+      <ul class="mt-0.5">
+        {% for row in k.rows %}
+        <li class="flex items-baseline gap-2 py-px text-xs">
+          <span class="w-3 shrink-0 text-slate-400" title="{{ 'outbound' if row.dir == 'out' else 'inbound' }}">{{ '→' if row.dir == 'out' else '←' }}</span>
+          <a href="{{ row.url }}" class="shrink-0 font-mono text-sky-700 hover:underline">{{ row.handle }}</a>
+          <span class="min-w-0 truncate {% if row.state != 'live' %}italic text-slate-400{% else %}text-slate-600{% endif %}" title="{{ row.label }}">{{ row.label }}</span>
+          <a href="{{ row.graph_url }}" class="shrink-0 text-[10px] text-slate-400 hover:text-sky-700" title="focus the graph on it">◦</a>
+        </li>
+        {% endfor %}
+      </ul>
+      {% elif k.n %}
+      <p class="mt-0.5 text-[11px] italic text-slate-400">{{ k.n }} {{ k.kind }} link{{ 's' if k.n != 1 }} — beyond the node cap; see the JSON</p>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+{% endmacro %}
+
+{% if group_only %}
+  {% for g in groups %}
+    {{ group_inner(g, true, kind, ref_id, show_memories) }}
+  {% else %}
+    <p class="px-3 py-2 text-xs italic text-slate-400">no group named {{ group_only }}.</p>
+  {% endfor %}
+{% else %}
+<div class="mb-2 flex items-center gap-4">
+  <form hx-get="/graph/{{ kind }}/{{ ref_id }}/panel" hx-target="#graph-panel"
+        hx-trigger="change" hx-swap="innerHTML" class="flex items-center gap-3">
+    <span class="text-[10px] uppercase tracking-wide text-slate-400">memories</span>
+    <label class="inline-flex items-center gap-1 text-xs text-slate-600">
+      <input type="radio" name="memories" value="1" {% if show_memories %}checked{% endif %} /> show
+    </label>
+    <label class="inline-flex items-center gap-1 text-xs text-slate-600">
+      <input type="radio" name="memories" value="0" {% if not show_memories %}checked{% endif %} /> hide
+    </label>
+  </form>
+  <a href="/graph/{{ kind }}/{{ ref_id }}.json" class="ml-auto text-xs text-slate-400 hover:underline">json</a>
+</div>
+{% if groups %}
+<div class="space-y-3">
+  {% for g in groups %}
+  <div id="nb-{{ g.slug }}" class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+    {{ group_inner(g, false, kind, ref_id, show_memories) }}
+  </div>
+  {% endfor %}
+</div>
+{% if truncated %}
+<p class="mt-1 text-[10px] text-slate-400">counts are complete; rows past the node cap are not rendered — the JSON has the full window.</p>
+{% endif %}
+{% else %}
+<p class="text-xs italic text-slate-400">no typed links yet{% if not show_memories %} (memories hidden){% endif %}.</p>
+{% endif %}
+{% endif %}
