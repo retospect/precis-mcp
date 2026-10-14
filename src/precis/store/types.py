@@ -927,7 +927,9 @@ class Tag:
                             options=sorted(kind_values),
                             next=(
                                 f"kind={kind!r} STATUS must be one of "
-                                f"{sorted(kind_values)}"
+                                f"{sorted(kind_values)} — one value per "
+                                "tag; for a cross-status read use "
+                                f"search(kind={kind!r}, status='*')"
                             ),
                         )
                 if value not in allowed:

@@ -181,11 +181,21 @@ def parse_link_target(
         try:
             ref_id_or_slug = int(identifier)
         except ValueError as exc:
-            raise BadInput(
-                f"kind {kind!r} is numeric - identifier must be an integer, "
-                f"got {identifier!r}",
-                next=f"link='{kind}:42' (numeric id)",
-            ) from exc
+            # The surface mints kind-prefixed handles everywhere (``me73``
+            # for a memory) and the skills teach them as targets, so
+            # ``memory:me73`` is what agents produce. Accept the handle
+            # when it decodes to the same kind — it names the same ref.
+            parsed = handle_registry.parse(identifier)
+            if parsed is not None and parsed[0] == kind and not parsed[1]:
+                ref_id_or_slug = parsed[2]
+            else:
+                raise BadInput(
+                    f"kind {kind!r} is numeric - identifier must be an integer, "
+                    f"got {identifier!r}",
+                    next=(
+                        f"link='{kind}:42' (numeric id) or a bare handle like 'me42'"
+                    ),
+                ) from exc
     else:
         ref_id_or_slug = identifier
 

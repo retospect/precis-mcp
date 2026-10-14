@@ -485,6 +485,18 @@ def test_edit_meta_type_is_validated(handler: MemoryHandler, store: Store) -> No
         handler.edit(id=mid, meta={"type": "bogus"})
 
 
+def test_meta_type_error_names_section_tag_axis(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr484231: agents write the repo-dev section vocabulary into
+    ``meta['type']``; the error must point at the tag axis."""
+    mid = id_of(handler.put(text="x", title="m").body)
+    with pytest.raises(BadInput) as exc:
+        handler.edit(id=mid, meta={"type": "gotcha"})
+    nxt = exc.value.next
+    assert isinstance(nxt, str) and "section:" in nxt
+
+
 def test_edit_meta_with_text_rewrites_both(
     handler: MemoryHandler, store: Store
 ) -> None:
@@ -668,6 +680,36 @@ def test_insert_requires_where(handler: MemoryHandler) -> None:
     mid = _make(handler)
     with pytest.raises(BadInput, match="where="):
         handler.edit(id=mid, mode="insert", find="beta", text="x")
+
+
+def test_append_tacks_text_onto_body_end(handler: MemoryHandler, store: Store) -> None:
+    """``mode='append'`` — the word agents reach for when updating a
+    thread/resume node (gr484228) — needs no anchor."""
+    mid = _make(handler)
+    out = handler.edit(id=mid, mode="append", text="delta line")
+    assert f"appended to body of memory id={mid}" in out.body
+    assert _body(handler, store, mid) == _BODY + "\n\ndelta line"
+
+
+def test_append_requires_text(handler: MemoryHandler) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match="requires text="):
+        handler.edit(id=mid, mode="append")
+
+
+def test_append_takes_no_anchors(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match="no anchors"):
+        handler.edit(id=mid, mode="append", find="beta", text="x")
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_append_dry_run_writes_nothing(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    out = handler.edit(id=mid, mode="append", text="delta line", dry_run=True)
+    assert "DRY RUN" in out.body
+    assert "+delta line" in out.body
+    assert _body(handler, store, mid) == _BODY
 
 
 def test_empty_text_deletes_the_matched_span(

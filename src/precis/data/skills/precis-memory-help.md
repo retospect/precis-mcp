@@ -35,6 +35,8 @@ raises `[error:BadInput] memory id must be an integer, got '<slug>'`.
 If you only have a topic, not the id: `search(kind='memory',
 q='<topic>')` first, then use the integer id from the hit.
 
+## Keep a memory in its space, index and file
+
 **Space.** Every memory carries one `SPACE:` tag. `put` stamps
 `SPACE:research` unless you pass your own (`tags=['SPACE:repo-dev']`
 replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
@@ -76,6 +78,9 @@ that; the mirror export is how the file catches up. A memory with no file is cre
 with `put(kind='memory', tags=['SPACE:repo-dev','section:<slug>'], meta={'hook': '…'})`
 and gets its file at the next `mirror export`; set `meta={'type': 'user'|'feedback'|
 'project'|'reference'}` to choose the file's `metadata.type` (default `project`).
+Note `meta['type']` is that file-metadata axis only — the node *type*
+(`threads`/`runbooks`/`gotchas`/`workflow`/`reference`) is the `section:<slug>`
+tag, never a `meta['type']` value.
 
 ## Save a thought
 ## Capture a note
@@ -103,6 +108,9 @@ round-trip vs. a follow-up `tag()` / `link()`.
 Rewrite a memory in place with `edit(kind='memory', id=42, mode='replace',
 text='new body'[, title='new header'])` — same id, links stay attached,
 old body kept in `view='log'`.
+
+Tack an update onto the end with `edit(kind='memory', id=42,
+mode='append', text='…')` — no anchor needed.
 
 Fix one span of a long body without re-sending it: `edit(kind='memory',
 id=42, mode='find-replace', find='/old/path', text='/new/path')`, or

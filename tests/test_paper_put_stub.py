@@ -79,3 +79,36 @@ def test_put_requires_an_identifier_or_title() -> None:
         h.put()
     with pytest.raises(BadInput):
         h.put(doi="   ", title="   ")
+
+
+def test_put_args_carries_acquire_knobs() -> None:
+    """gr483930/gr484234: ``args={'doi': …, 'verify': False}`` is the
+    spelling the slim schema pushes — the handler must consume it, not
+    drop it (the ARGS_KEYS gate already accepts these names)."""
+    h, cap = _capturing_handler()
+    h.put(args={"doi": "10.1038/nature10352", "verify": False})
+    assert cap["identifier"] == "doi:10.1038/nature10352"
+    assert cap["verify"] is False
+
+
+def test_put_args_verify_string_false() -> None:
+    """``args=`` values can arrive JSON-stringified from non-slim
+    profiles; 'false' must not read truthy into ``verify``."""
+    h, cap = _capturing_handler()
+    h.put(args={"doi": "10.1/x", "verify": "false"})
+    assert cap["verify"] is False
+
+
+def test_put_args_identifier_passthrough() -> None:
+    h, cap = _capturing_handler()
+    h.put(args={"identifier": "arxiv:2401.00001", "title": "T"})
+    assert cap["identifier"] == "arxiv:2401.00001"
+    assert cap["title"] == "T"
+
+
+def test_put_args_keys_cover_acquire_knobs() -> None:
+    """The dispatch extras gate must accept every knob acquire's own
+    error hints name — ``verify``/``title`` being the historic miss."""
+    keys = PaperHandler.ARGS_KEYS["put"]
+    for name in ("identifier", "doi", "arxiv", "title", "verify", "citation"):
+        assert name in keys

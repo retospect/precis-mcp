@@ -19,6 +19,9 @@ Semantics (`precis-memory-help`):
                                    — anchored edit of the body, same grammar
                                      as the file kinds (before/after/match/
                                      nth/where/dry_run)
+    - edit(id=N, mode='append', text=...)
+                                   — tack text onto the end of the body
+                                     (no anchor)
     - tag(id=N, add=[...])         — add/replace tags on memory N
     - link(id=N, target='kind:id') — cross-link memory N to another ref
     - delete(id=N)                 — soft-delete memory N
@@ -191,7 +194,14 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
             raise BadInput(
                 f"meta['type'] must be one of {list(_MEMORY_TYPES)}, "
                 f"got {meta['type']!r}",
-                next="meta={'type': 'reference'}",
+                # The repo-dev section taxonomy (threads/gotchas/…) is a
+                # *tag* axis, not meta['type'] — agents conflate them
+                # (gr484231). Name both spellings so the recovery lands.
+                next=(
+                    "meta={'type': 'reference'} — for the repo-dev node "
+                    "type use the tag axis instead: "
+                    "tags=['section:threads|runbooks|gotchas|workflow|reference']"
+                ),
             )
         out["type"] = meta["type"]
     return out
@@ -220,10 +230,12 @@ class MemoryHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
-        # edit()'s accepted modes: 'replace' (whole body) plus the file-kind
-        # anchored pair. See todo.py's annotation (gr292913) for why an
+        # edit()'s accepted modes: 'replace' (whole body), the file-kind
+        # anchored pair, and 'append' (tack text= onto the end, no anchor —
+        # the word agents reach for when updating a thread/resume node;
+        # gr484228). See todo.py's annotation (gr292913) for why an
         # omitted mode= still needs this declaration.
-        edit_modes=("replace", "find-replace", "insert"),
+        edit_modes=("replace", "find-replace", "insert", "append"),
     )
 
     kind: ClassVar[str] = "memory"
@@ -699,6 +711,8 @@ class MemoryHandler(NumericRefHandler):
           and ``text=`` replaces it (``text=''`` deletes the span).
         - ``mode='insert'``: ``text=`` goes ``where='before'|'after'`` the
           ``find=`` match.
+        - ``mode='append'``: ``text=`` is tacked onto the end of the body —
+          no anchor (the "add an update" door).
 
         The anchored pair takes the file kinds' vocabulary — ``before=`` /
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
@@ -755,8 +769,9 @@ class MemoryHandler(NumericRefHandler):
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         dry_mode = normalize_dry_run(dry_run)
         # Only the MCP default with neither body argument is a metadata
-        # patch. Explicit insert and even empty text must validate anchors.
-        if mode == "insert" or (
+        # patch. Explicit insert/append and even empty text must validate
+        # anchors (append's check is its own "no anchor" rule).
+        if mode in ("insert", "append") or (
             mode == "find-replace" and (find is not None or text is not None)
         ):
             replace_only = [
@@ -794,7 +809,8 @@ class MemoryHandler(NumericRefHandler):
             )
         if dry_mode is not None:
             raise BadInput(
-                "dry_run= previews mode='find-replace' / 'insert' edits only",
+                "dry_run= previews mode='find-replace' / 'insert' / "
+                "'append' edits only",
                 next=(
                     "edit(kind='memory', id=N, mode='find-replace', "
                     "find='old', text='new', dry_run=True)"
@@ -1019,12 +1035,30 @@ class MemoryHandler(NumericRefHandler):
         meta_patch: dict[str, Any],
         reason: str | None = None,
     ) -> Response:
-        """``mode='find-replace'`` / ``'insert'`` on the body prose.
+        """``mode='find-replace'`` / ``'insert'`` / ``'append'`` on the body prose.
 
         Resolves the edit over the current body with the shared pure
         resolver (same vocabulary and error shapes as the file kinds), then
-        writes the result through :meth:`_write_body`.
+        writes the result through :meth:`_write_body`. ``'append'`` needs
+        no anchor — it tacks ``text=`` onto the end of the body (the file
+        kinds' append semantics: one blank line between old tail and new
+        text), which is the call agents reach for when appending an update
+        to a thread/resume node (gr484228).
         """
+        if mode == "append":
+            return self._edit_append(
+                ref_id=ref_id,
+                find=find,
+                text=text,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                dry_mode=dry_mode,
+                meta_patch=meta_patch,
+                reason=reason,
+            )
         if not find:
             # text= alone on the MCP-default mode: refuse rather than guess
             # a whole-body overwrite.
@@ -1113,6 +1147,99 @@ class MemoryHandler(NumericRefHandler):
             f"{verb} body of {self._sense()} id={ref.id} "
             f"({len(old_body.split())} → {len(new_body.split())} words, "
             f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+            "view='log' for the full diff."
+        )
+        lead = self._thread_lead_hint(ref.id, old_body, new_body)
+        if lead:
+            ack += f"\n\nhint: {lead}"
+        ack += render_next_section(link_hints(self, ref.id))
+        return self._with_attribution_advisory(Response(body=ack), misses)
+
+    def _edit_append(
+        self,
+        *,
+        ref_id: int,
+        find: str | None,
+        text: str | None,
+        before: str,
+        after: str,
+        where: str | None,
+        match: str,
+        nth: int | None,
+        dry_mode: str | None,
+        meta_patch: dict[str, Any],
+        reason: str | None = None,
+    ) -> Response:
+        """``mode='append'`` — tack ``text=`` onto the end of the body.
+
+        No anchor: the append point is the end of the body. The file
+        kinds' convention carries over — old tail rstripped, one blank
+        line, then the new text rstripped.
+        """
+        if not text or not text.strip():
+            raise BadInput(
+                "mode='append' requires text= (the text to tack on)",
+                next=(f"edit(kind='memory', id={ref_id}, mode='append', text='...')"),
+            )
+        anchors = [
+            name
+            for name, val in (
+                ("find", find),
+                ("before", before or None),
+                ("after", after or None),
+                ("where", where),
+                ("nth", nth),
+                ("match", match if match != "unique" else None),
+            )
+            if val is not None
+        ]
+        if anchors:
+            raise BadInput(
+                f"mode='append' takes no anchors ({'/'.join(anchors)}= given) — "
+                "it always writes at the end of the body",
+                next=(
+                    f"edit(kind='memory', id={ref_id}, mode='append', "
+                    "text='...') — or mode='insert' with find= to anchor "
+                    "inside the body"
+                ),
+            )
+        ref = self._resolve_live_ref(ref_id)
+        label = f"{self.kind} {ref.id}"
+        old_body = self._body_text(ref)
+        new_body = (
+            f"{old_body.rstrip()}\n\n{text.strip()}"
+            if old_body.strip()
+            else text.strip()
+        )
+        if dry_mode is not None:
+            start = old_body.count("\n") + 1
+            end = new_body.count("\n") + 1
+            header = render_dry_run_header(
+                region_label=label,
+                edited_spans=((start, end),),
+                match_policy="append",
+            )
+            if dry_mode == "full":
+                body = render_dry_run_full(
+                    new_body, edited_spans=((start, end),), region_label=label
+                )
+            else:
+                diff = format_unified_diff(old_body, new_body, file_label=label)
+                body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            return Response(body="\n".join([*header, "", body]))
+        misses = self._attribution_misses(new_body)
+        self._write_body(
+            ref.id,
+            new_body,
+            new_title=None,
+            meta_patch=meta_patch,
+            expected_body=old_body,
+            misses=misses,
+            reason=reason,
+        )
+        ack = (
+            f"appended to body of {self._sense()} id={ref.id} "
+            f"({len(old_body.split())} → {len(new_body.split())} words). "
             "view='log' for the full diff."
         )
         lead = self._thread_lead_hint(ref.id, old_body, new_body)

@@ -54,6 +54,7 @@ from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Link, Ref, Tag
+from precis.store.types import _KIND_STATUS_VALUES
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.link_tag_ops import (
@@ -848,7 +849,39 @@ class NumericRefHandler(Handler):
         explicit = status is not None
         resolved = (status if explicit else self.default_search_status) or ""
         resolved = resolved.strip()
+        # 'any'/'all' are the spellings agents reach for meaning "no
+        # status filter" — map them onto the '*' opt-out (gr484229).
+        if explicit and resolved.lower() in ("any", "all"):
+            resolved = "*"
+        # A comma-joined list can't be expressed — tags AND, and a ref
+        # carries exactly one STATUS value. Say so and name the opt-out.
+        if explicit and "," in resolved:
+            raise BadInput(
+                f"status= takes one value, got {status!r}",
+                next=(
+                    f"search(kind={self.kind!r}, status='*') for every "
+                    "status, or run one search per value"
+                ),
+            )
         note = ""
+        if (
+            explicit
+            and resolved
+            and resolved != "*"
+            and (kind_values := _KIND_STATUS_VALUES.get(self.kind)) is not None
+            and resolved not in kind_values
+        ):
+            # Fail here rather than in the later tag normalisation — this
+            # hint can name the '*'/'any' opt-out the generic tag error
+            # can't (STATUS:* is meaningless as a stored tag; gr484229).
+            raise BadInput(
+                f"invalid status= value for kind {self.kind!r}: {resolved!r}",
+                options=sorted(kind_values),
+                next=(
+                    f"status='*' (or 'any') covers all statuses — "
+                    f"search(kind={self.kind!r}, status='*')"
+                ),
+            )
         if resolved and resolved != "*" and (explicit or not has_status_tag):
             # Explicit status wins outright: drop any caller STATUS: tag so
             # two conflicting closed-axis values can't AND to zero rows.

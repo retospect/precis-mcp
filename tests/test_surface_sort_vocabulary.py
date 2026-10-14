@@ -49,3 +49,15 @@ def test_cfp_explicit_deadline_sort_not_rejected(
     out = core.search(kind="cfp", sort="deadline")
     text = out if isinstance(out, str) else "\n".join(c.text for c in out.content)
     assert "unknown search sort" not in text
+
+
+def test_rejected_sort_names_the_kinds_accepted_sorts(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bad-sort hint must enumerate the kind's actual vocabulary —
+    including handler-owned EXTRA_SORTS — not just the paper recipe."""
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    out = core.search(kind="cfp", sort="bogus")
+    text = out if isinstance(out, str) else "\n".join(c.text for c in out.content)
+    assert "unknown search sort" in text
+    assert "deadline" in text

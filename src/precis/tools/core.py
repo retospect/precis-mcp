@@ -840,11 +840,15 @@ def search(
     sorts = _accepted_sorts(kind, browse)
     if sort is not None and sort.strip().lower() not in sorts:
         runtime = _get_runtime()
+        # Name the kind's actual accepted set — the generic paper-only
+        # recipe was wrong advice for kinds with handler-owned sorts
+        # (cfp's 'deadline'/'opens_on'; gr484229-era mining).
         next_call = (
-            f"search(kind={kind!r}, sort='prio') or "
-            f"search(kind={kind!r}, sort='recency')"
+            f"sort= accepts {sorted(sorts)} for this call — e.g. "
+            f"search(kind={kind!r}, sort='prio')"
             if browse
-            else "search(kind='paper,patent', q='your query', sort='recency') "
+            else f"sort= accepts {sorted(sorts)} for kind={kind!r} — e.g. "
+            "search(kind='paper,patent', q='your query', sort='recency') "
             "or sort='relevance' with q="
         )
         return _validation_error(

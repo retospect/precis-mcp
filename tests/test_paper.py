@@ -724,6 +724,20 @@ class TestChunks:
         with pytest.raises(BadInput, match="cannot combine"):
             handler.get(id="wang2020state~0", view="abstract")
 
+    def test_chunk_view_combo_error_names_ref_level_call(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The rejection's ``next:`` must name the call that does what the
+        caller wanted — the ref-level view without the selector — not just
+        the range-scoped toc form (24h mining: ``pc<id>`` + view='abstract'
+        was a recurring dead end)."""
+        ref_id = _seed_paper(store)
+        with pytest.raises(BadInput, match="cannot combine") as exc:
+            handler.get(id="wang2020state~0", view="abstract")
+        nxt = exc.value.next
+        assert isinstance(nxt, str)
+        assert f"get(id='pa{ref_id}', view='abstract')" in nxt
+
 
 # ---------------------------------------------------------------------------
 # Search

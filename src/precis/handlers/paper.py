@@ -265,7 +265,25 @@ class PaperHandler(Handler):
     #: ingest of third-party papers (cfp/datasheet inherit): the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "put": frozenset({"pdf_url"}),
+        # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
+        # spelling the slim schema pushes (kind-specific fields ride
+        # args=), and acquire's own BadInput hint names verify=/title=.
+        # Rejecting them made the advertised recovery path uncallable
+        # (gr483930 / gr484234).
+        "put": frozenset(
+            {
+                "pdf_url",
+                "identifier",
+                "doi",
+                "arxiv",
+                "title",
+                "year",
+                "reason",
+                "context_ref_id",
+                "citation",
+                "verify",
+            }
+        ),
         # edit takes ``args`` only for subclass hooks (_edit_args); none here.
         "edit": frozenset(),
     }
@@ -382,7 +400,28 @@ class PaperHandler(Handler):
         ``upsert_stub_paper`` → tag/link path (idempotent: a hit on an
         already-held or already-wanted paper is a no-op).
         """
-        pdf_url = (args or {}).get("pdf_url", _kw.get("pdf_url"))
+        # ``args=`` is the declared extras channel for this handler, so
+        # the acquire knobs a caller nests there (the slim-schema spelling)
+        # fill any parameter they didn't also set top-level.
+        extras = args or {}
+        doi = doi or extras.get("doi")
+        arxiv = arxiv or extras.get("arxiv")
+        identifier = identifier or extras.get("identifier")
+        title = title or extras.get("title")
+        year = year if year is not None else extras.get("year")
+        reason = reason or extras.get("reason")
+        context_ref_id = (
+            context_ref_id
+            if context_ref_id is not None
+            else extras.get("context_ref_id")
+        )
+        citation = citation or extras.get("citation")
+        verify = extras.get("verify", verify)
+        if isinstance(verify, str):
+            # ``args=`` values can arrive JSON-stringified from non-slim
+            # profiles; "false"/"0"/"no" must not read truthy.
+            verify = verify.strip().lower() not in ("false", "0", "no")
+        pdf_url = extras.get("pdf_url", _kw.get("pdf_url"))
         if pdf_url is not None:
             return self._queue_pdf_pull(id, pdf_url)
         if mode is not None:
@@ -677,11 +716,17 @@ class PaperHandler(Handler):
                     f"acquire: identifier {identifier!r} did not resolve "
                     "via Semantic Scholar — likely a hallucinated or "
                     "mistyped ID",
+                    # Name the spelling that actually reaches the handler:
+                    # these knobs ride ``args=`` on the slim MCP schema
+                    # (gr483930 — the bare ``verify=False`` wording sent
+                    # callers into the args= key rejection).
                     next=(
                         f"verify {kind_key}:{val} on doi.org / arxiv.org, "
-                        "OR add title='<best-known title>' to mint as a "
-                        "title-only stub for manual ingest, OR pass "
-                        "verify=False if you know the paper is real"
+                        f"OR put(kind='paper', args={{'identifier': "
+                        f"{identifier!r}, 'title': '<best-known title>'}}) to "
+                        "mint a stub that resolves best-effort, OR "
+                        f"put(kind='paper', args={{'identifier': {identifier!r}, "
+                        "'verify': False}}) if you know the paper is real"
                     ),
                 )
             elif verify and has_title:
@@ -863,7 +908,16 @@ class PaperHandler(Handler):
             recovery_id = f"{_pa(ref)}~{chunk_spec[0]}..{chunk_spec[1]}/toc"
             raise BadInput(
                 f"cannot combine chunk selector (~N..M) with view={effective_view!r}",
-                next=f"get(id={recovery_id!r})",
+                # The caller almost always wants the ref-level view (a
+                # ``pc<id>`` chunk handle from search results + view=
+                # lands here — gr484234-era mining). Name that call, then
+                # the range-scoped form that does exist.
+                next=(
+                    f"the view is ref-level — drop the selector: "
+                    f"get(id='{_pa(ref)}', view={effective_view!r}); "
+                    f"or keep the range with view='toc': "
+                    f"get(id='{recovery_id}')"
+                ),
             )
 
         if chunk_spec is not None:

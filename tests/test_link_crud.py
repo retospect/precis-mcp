@@ -155,6 +155,27 @@ class TestParseLinkTarget:
         with pytest.raises(BadInput, match="numeric - identifier must be an integer"):
             parse_link_target("memory:not-an-int", store=store)
 
+    def test_numeric_kind_accepts_own_prefixed_handle(self, store: Store) -> None:
+        """``memory:me<id>`` — the handle spelling the surface itself
+        mints — resolves like the bare int (gr484227)."""
+        mem_id = _seed_memory(store)
+        target = parse_link_target(f"memory:me{mem_id}", store=store)
+        assert target.ref_id == mem_id
+        assert target.pos is None
+        assert target.kind == "memory"
+
+    def test_numeric_kind_rejects_other_kind_handle(self, store: Store) -> None:
+        """A well-formed handle of a *different* kind stays a BadInput —
+        ``memory:gr5`` is a gripe handle, not a memory id."""
+        with pytest.raises(BadInput, match="identifier must be an integer"):
+            parse_link_target("memory:gr5", store=store)
+
+    def test_numeric_kind_rejects_chunk_handle(self, store: Store) -> None:
+        """``memory:mc<id>`` — a chunk handle, not a ref handle — stays
+        a BadInput rather than silently linking the wrong thing."""
+        with pytest.raises(BadInput, match="identifier must be an integer"):
+            parse_link_target("memory:mc5", store=store)
+
     def test_missing_ref_raises_notfound(self, store: Store) -> None:
         with pytest.raises(NotFound, match="resolves to no live paper ref"):
             parse_link_target("paper:does-not-exist", store=store)
