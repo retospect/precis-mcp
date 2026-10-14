@@ -71,12 +71,29 @@ if [ "${DEPLOY_STUB_VERIFY:-}" = 1 ]; then
   common=$(git rev-parse --path-format=absolute --git-common-dir)
   printf '%s %s success\\n' "$1" "$(date +%s)" > "$common/precis-deploy-state"
   rm -f "$common/precis-deploy-attempt"
+  # The real script writes the skipped-hosts record only when it left hosts
+  # behind and deletes it on a clean rollout — mirror both.
+  if [ -n "${DEPLOY_STUB_SKIPPED:-}" ]; then
+    printf '%s\\n' "$DEPLOY_STUB_SKIPPED" > "$common/precis-deploy-skipped"
+  else
+    rm -f "$common/precis-deploy-skipped"
+  fi
   git push -q origin "$1:refs/heads/prod" || exit 1
 fi
 exit "${DEPLOY_STUB_RC:-0}"
 """
 
 _GH_STUB = """#!/usr/bin/env bash
+# `gh run list` -> canned run id in $GH_STUB_DIR/run-id; `gh run rerun` ->
+# touch $GH_STUB_DIR/reran, then run $GH_STUB_DIR/on-rerun if present (lets a
+# test flip the canned verdict the moment a rerun is triggered).
+case "$1 $2" in
+  "run list") cat "$GH_STUB_DIR/run-id" 2>/dev/null; exit 0 ;;
+  "run rerun")
+    touch "$GH_STUB_DIR/reran"
+    [ -f "$GH_STUB_DIR/on-rerun" ] && bash "$GH_STUB_DIR/on-rerun"
+    exit "${GH_STUB_RERUN_RC:-0}" ;;
+esac
 for a in "$@"; do
   case "$a" in
     */commits/*/check-runs)

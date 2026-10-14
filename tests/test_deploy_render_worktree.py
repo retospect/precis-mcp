@@ -84,11 +84,28 @@ def _lib_call(fn: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+# FAKE_CRITICAL (whitespace list) answers the `ansible data:gateway
+# --list-hosts` critical-set probe; FAKE_PING_DOWN (whitespace list) marks
+# hosts | UNREACHABLE! in the -m ping output and exits non-zero, the shape a
+# dropped Tailscale host produces.
 _FAKE_ANSIBLE = """#!/usr/bin/env bash
-for h in gateway scheduler data inference serving; do
-    printf '%s | SUCCESS => {\n    "changed": false,\n    "ping": "pong"\n}\n' "$h"
+for a in "$@"; do
+    if [ "$a" = "--list-hosts" ]; then
+        set -- ${FAKE_CRITICAL:-}
+        printf '  hosts (%d):\\n' "$#"
+        for h in "$@"; do printf '    %s\\n' "$h"; done
+        exit 0
+    fi
 done
-exit 0
+down=" ${FAKE_PING_DOWN:-} "
+rc=0
+for h in gateway scheduler data inference serving; do
+    case "$down" in
+        *" $h "*) printf '%s | UNREACHABLE! => {\n    "unreachable": true\n}\n' "$h"; rc=1 ;;
+        *) printf '%s | SUCCESS => {\n    "changed": false,\n    "ping": "pong"\n}\n' "$h" ;;
+    esac
+done
+exit "$rc"
 """
 
 # Records the tree ansible was actually pointed at: its cwd, and the STAMP

@@ -191,6 +191,41 @@ canary name itself. Unset (the default), `scripts/deploy` is byte-identical
 to the single-pass behavior above; no inventory group, no playbook change —
 the host comes from the env var.
 
+## Deploy fault tolerance and scoping
+
+The reachability ping partitions its failures instead of aborting on any
+one host: hosts outside the serving-critical set — the `data` (DB/pgbouncer)
+and `gateway` (web/MCP) inventory groups — that are down are skipped
+automatically with a loud WARNING and recorded in the shared
+`precis-deploy-skipped` file with the sha they still run. `scripts/round
+status` shows the laggards; the next deploy or `scripts/round deploy
+--catch-up` installs them. A non-critical host that drops *during* the
+playbook is marked skipped the same way and the deploy completes; a
+critical host down, before or mid-run, still aborts. `PRECIS_DEPLOY_SKIP_HOSTS`
+keeps working and lands in the same record.
+
+The controller also scopes work: it diffs the deploy-state marker sha
+against the target and passes `--skip-tags` for the optional imports in
+`redeploy-precis.yml` whose inputs the change did not touch (`pythonorg`,
+`agentimg`, `tts`, `asa`, `codetask`, `sandbox`). A precis-code-only change
+runs install+bounce plus the sha-baked artifacts — not the interpreter or
+Dockerfile-hash-keyed plays. Unknown/unmapped paths, a missing marker, an
+overlay change, or lagging hosts all fail safe to a full run;
+`PRECIS_DEPLOY_ROLE_SCOPE=0` forces one.
+
+`redeploy-precis.yml` is the only playbook the controller runs, so a merged
+fix to a role none of its imports renders (`backups`, `monitoring`,
+`pgbouncer`, …) reaches `origin/prod` without reaching a host. After every
+deploy the controller diffs the marker→target range for
+`deploy/roles/<role>/` and `deploy/playbooks/<pb>` changes and prints an
+ADVISORY line naming the numbered playbook to run by hand for each one the
+rollout did not render (a role no playbook names is reported as `no
+playbook`, never dropped; a role rendered only through another role's meta
+`dependencies` — e.g. `asa_common` via `asa_bot` — maps to the parent's
+playbook). Advisory only: it never fails a deploy. Running the other
+playbooks automatically is deliberately not done — see
+`docs/backlog/deploy-renders-only-precis-roles.md`.
+
 ## The secret boundary (read before you commit)
 
 precis-mcp is a **public** repository. A commit that leaks the real cluster's

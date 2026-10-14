@@ -92,6 +92,23 @@ deploy_attempt_path() {
     printf '%s\n' "${common}/precis-deploy-attempt"
 }
 
+# Echo the shared skipped-hosts record path (same location rules). Written by
+# scripts/deploy after a successful rollout that left hosts behind (down at
+# ping time, dropped mid-run, or PRECIS_DEPLOY_SKIP_HOSTS): JSON
+# {"sha": <deployed>, "at": <isoZ>, "hosts": {<host>: <sha it still runs>}}.
+# scripts/round reads it into the release deployment journal as
+# `skipped_hosts`; absent or a sha mismatch means "nothing lagging".
+deploy_skipped_path() {
+    local root="${1:-$PWD}" common
+    common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -z "$common" ]]; then
+        printf '%s\n' "${root}/.deploy-skipped"
+        return 0
+    fi
+    case "$common" in /*) ;; *) common="${root}/${common}" ;; esac
+    printf '%s\n' "${common}/precis-deploy-skipped"
+}
+
 # Echo the success-marker path iff it exists. No legacy fallback (gr332009):
 # a missing shared marker means "no successful deploy on record", not "go
 # find an older file to count from".

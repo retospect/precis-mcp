@@ -1174,3 +1174,101 @@ def test_open_refuses_when_origin_unreadable(rig: Rig) -> None:
     assert out.returncode == 1
     assert "ls-remote failed" in out.stderr
     assert not (rig.root / ".git/precis-round/round.json").exists()
+
+
+# ── skipped hosts (auto-skip; scripts/deploy writes precis-deploy-skipped) ──
+
+
+def _skipped_json(sha: str, hosts: dict[str, str]) -> str:
+    return json.dumps({"sha": sha, "at": "t", "hosts": hosts})
+
+
+def test_skipped_hosts_are_journaled_and_shown_in_status(rig: Rig) -> None:
+    head = _cut(rig)
+    hosts = {"serving": rig.shas["c0"], "scheduler": rig.shas["c0"]}
+    out = rig.round(
+        "deploy",
+        DEPLOY_STUB_VERIFY="1",
+        DEPLOY_STUB_SKIPPED=_skipped_json(head, hosts),
+        **_verdict(head),
+    )
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "WARNING: skipped hosts" in out.stdout
+    journal = _round_json(rig)["release"]["deployment"]
+    assert journal["skipped_hosts"] == hosts
+    status = rig.round("status").stdout
+    assert "lagging hosts" in status and "serving" in status
+    assert "deploy --catch-up" in status
+
+
+def test_a_stale_or_absent_skipped_record_journals_nothing(rig: Rig) -> None:
+    head = _cut(rig)
+    out = rig.round(
+        "deploy",
+        DEPLOY_STUB_VERIFY="1",
+        DEPLOY_STUB_SKIPPED=_skipped_json(rig.shas["c0"], {"serving": "old"}),
+        **_verdict(head),
+    )
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "skipped_hosts" not in _round_json(rig)["release"]["deployment"]
+
+
+def test_catch_up_redeploys_the_pinned_sha_and_clears_the_journal(rig: Rig) -> None:
+    head = _cut(rig)
+    hosts = {"serving": rig.shas["c0"]}
+    assert (
+        rig.round(
+            "deploy",
+            DEPLOY_STUB_VERIFY="1",
+            DEPLOY_STUB_SKIPPED=_skipped_json(head, hosts),
+            **_verdict(head),
+        ).returncode
+        == 3
+    )
+    # The host is back: the re-run records no skips and the journal clears.
+    out = rig.round("deploy", "--catch-up", DEPLOY_STUB_VERIFY="1")
+    assert out.returncode == 3, out.stdout + out.stderr  # runtime still pending
+    assert "every skipped host" in out.stdout
+    assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
+    assert "skipped_hosts" not in _round_json(rig)["release"]["deployment"]
+
+
+def test_catch_up_keeps_hosts_still_down_in_the_journal(rig: Rig) -> None:
+    head = _cut(rig)
+    hosts = {"serving": rig.shas["c0"]}
+    assert (
+        rig.round(
+            "deploy",
+            DEPLOY_STUB_VERIFY="1",
+            DEPLOY_STUB_SKIPPED=_skipped_json(head, hosts),
+            **_verdict(head),
+        ).returncode
+        == 3
+    )
+    out = rig.round(
+        "deploy",
+        "--catch-up",
+        DEPLOY_STUB_VERIFY="1",
+        DEPLOY_STUB_SKIPPED=_skipped_json(head, hosts),
+    )
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "still lagging" in out.stdout
+    journal = _round_json(rig)["release"]["deployment"]
+    assert journal["skipped_hosts"] == hosts
+
+
+def test_catch_up_refuses_when_nothing_is_lagging(rig: Rig) -> None:
+    head = _cut(rig)
+    assert rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head)).returncode == 3
+    out = rig.round("deploy", "--catch-up")
+    assert out.returncode == 1
+    assert "no skipped hosts" in out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+def test_catch_up_refuses_before_any_rollout(rig: Rig) -> None:
+    head = _cut(rig)
+    out = rig.round("deploy", "--catch-up", **_verdict(head))
+    assert out.returncode == 1
+    assert "requires a recorded rollout" in out.stderr
+    assert rig.deploy_log() == []

@@ -390,3 +390,68 @@ def test_stale_round_number_cut_refusal_exits_one_and_clears_marker(rig: Rig) ->
     assert not _marker(rig).exists()
     assert rig.origin_ref("release/r1") == ""
     assert "release" not in _round_json(rig)
+
+
+# ── stale-verdict re-gate (release re-runs CI instead of refusing) ──────────
+
+
+def _verdict_file(
+    rig: Rig, name: str, sha: str, age: float, state: str = "found"
+) -> Path:
+    data = json.loads(_verdict(sha, age, state)["LGM_EXACT"])
+    p = rig.gh_dir / name
+    p.write_text(json.dumps(data), encoding="utf-8")
+    return p
+
+
+_FLIP_HOOK = '[ -f "$GH_STUB_DIR/reran" ] && cat "$GH_STUB_DIR/v-fresh" || cat "$GH_STUB_DIR/v-stale"'
+
+
+def test_stale_verdict_reruns_ci_on_the_same_sha_and_deploys(rig: Rig) -> None:
+    s = rig.shas["c3"]
+    _verdict_file(rig, "v-stale", s, 9.0)
+    _verdict_file(rig, "v-fresh", s, 0.1)
+    (rig.gh_dir / "run-id").write_text("4242\n", encoding="utf-8")
+    out = _release(
+        rig, "--sha", s, *FAST, LGM_EXACT_HOOK=_FLIP_HOOK, DEPLOY_STUB_VERIFY="1"
+    )
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "re-running CI on the same sha" in out.stdout
+    assert "re-ran check.yml run 4242" in out.stdout
+    assert (rig.gh_dir / "reran").exists()
+    assert rig.deploy_log() == [f"{s} --pinned"]
+
+
+def test_stale_verdict_rerun_going_red_still_refuses(rig: Rig) -> None:
+    s = rig.shas["c3"]
+    _verdict_file(rig, "v-stale", s, 9.0)
+    _verdict_file(rig, "v-fresh", s, 0.1, state="release_not_green")
+    (rig.gh_dir / "run-id").write_text("4242\n", encoding="utf-8")
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / "on-rerun").write_text(
+        f"cat > \"$GH_STUB_DIR/{s}\" <<'ROWS'\n"
+        f"lint\tcompleted\tsuccess\t{url}\t{url}\t4242\n"
+        f"test-linux (2)\tcompleted\tfailure\t{url}\t{url}\t4242\n"
+        "ROWS\n",
+        encoding="utf-8",
+    )
+    out = _release(
+        rig, "--sha", s, *FAST, LGM_EXACT_HOOK=_FLIP_HOOK, DEPLOY_STUB_VERIFY="1"
+    )
+    assert out.returncode == 2, out.stdout + out.stderr
+    assert "went red" in out.stderr
+    assert "test-linux (2)" in out.stderr
+    assert rig.deploy_log() == []
+
+
+def test_stale_verdict_without_a_runnable_workflow_keeps_the_refusal(
+    rig: Rig,
+) -> None:
+    s = rig.shas["c3"]
+    _verdict_file(rig, "v-stale", s, 9.0)  # no run-id file -> no run to rerun
+    out = _release(rig, "--sha", s, *FAST, LGM_EXACT_HOOK=_FLIP_HOOK)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "deploy failed" in out.stderr
+    assert "old" in out.stderr  # the round deploy age refusal survives verbatim
+    assert not (rig.gh_dir / "reran").exists()
+    assert rig.deploy_log() == []

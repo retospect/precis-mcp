@@ -108,6 +108,7 @@
     # the 2026-08-26 rollout while every stat-guarded host skipped it.
     argv:
       - "/Applications/Python {{ item.series }}/Install Certificates.command"
+  register: pythonorg_ca_populate
   changed_when: true
 
 # Assert with a live handshake, not just the symlink's existence: a cert.pem
@@ -117,12 +118,19 @@
 # else. Endpoint is python.org itself — reachable from every host that just
 # downloaded the installer from it.
 - name: "Assert python.org {{ item.series }} can verify TLS"
+  # Only when something about TLS could actually have changed: an install
+  # (series version moved) or a just-populated CA store. On a converged host
+  # nothing fetched a cert and nothing re-linked cert.pem — the assert can
+  # only flake, and its serialized 30s-timeout retries were a top contributor
+  # to r34's ~25-30 min deploy. The Developer-ID signature assert above still
+  # runs every time.
   # Serialize + retry: a cert failure is instant and deterministic, but the
   # handshake rides live egress — every host firing this at the same wall-
   # clock second stalls the shared uplink (2026-08-26: one host, then
   # two more in lockstep, all timing out at exactly 30s while a
   # lone by-hand handshake passed instantly). One host at a time, with
   # retries, keeps a transient stall from failing the whole deploy.
+  when: not pythonorg_up_to_date or (pythonorg_ca_populate is changed)
   throttle: 1
   retries: 3
   delay: 5

@@ -426,6 +426,9 @@
 # (skips the download+install once a host is on the target full version);
 # cheap on a converged host. See roles/pythonorg/tasks/main.yml.
 - name: "Ensure python.org interpreters (Developer-ID signed) before any venv build"
+  # The play in 06-pythonorg.yml carries tags [pythonorg, python]; `pythonorg`
+  # is also the component tag scripts/deploy's role scoping skips unless the
+  # interpreter inputs (pyproject.toml, the role, this playbook) moved.
   ansible.builtin.import_playbook: playbooks/06-pythonorg.yml
 
 # ── 1. Reinstall from GitHub HEAD ──
@@ -548,7 +551,10 @@
 # install, so a rebuild at a new sha re-runs one pip install and a same-sha
 # redeploy is a full cache hit.
 - name: "Rebuild precis-tts render image  (sha-pinned; layer-cached)"
+  # Tag `tts`: deploy role scoping runs it when the sha moved or its inputs
+  # (45-tts.yml, roles/tts, docker/tts) changed.
   ansible.builtin.import_playbook: playbooks/45-tts.yml
+  tags: [tts]
   vars:
     tts_precis_ref: "{{ precis_target_sha | default('main') }}"
 
@@ -991,7 +997,10 @@
 # com.asa.* — no grimoire-sourced config, so it runs on any deploy controller.
 # No-op on a cluster without asa installed. See the playbook header for detail.
 - name: "Refresh asa bridges (code + daemon bounce)"
+  # Tag `asa` lets deploy role scoping skip it on web-only / no-code diffs
+  # (the asa daemons import none of precis_web).
   ansible.builtin.import_playbook: playbooks/32-asa-code-refresh.yml
+  tags: [asa]
 
 # ── 2c. Rebuild the precis-agent container image (sha-pinned; layer-cached) ──
 # The §13 container executor (dream/doctor ticks, plan_tick fix lane) runs
@@ -1004,21 +1013,30 @@
 # same way 45-tts.yml's render image is — see the playbook header for the
 # OCI-label probe and the gateway/inference host-scope rationale.
 - name: "Rebuild the precis-agent container image (sha-pinned; layer-cached)"
+  # Tag `agentimg` lets deploy role scoping skip it on web-only / no-code
+  # diffs (the agent image bakes worker code, never the web surface).
   ansible.builtin.import_playbook: playbooks/33-precis-agent-image.yml
+  tags: [agentimg]
 
 # ── 2d. Rebuild the code-task sandbox image (agent_sandbox_hosts only) ──
 # The sandbox_run coding-agent image (agent-workspace-containers slice 1) —
 # Dockerfile-only context, podman as deploy, sha-label staleness probe.
 # No-op while agent_sandbox_hosts is empty.
 - name: "Rebuild the code-task sandbox image (sha-labelled; podman)"
+  # Tag `codetask`: role scoping runs it only when docker/ or this playbook
+  # changed — its staleness key is the Dockerfile hash, not the deploy sha.
   ansible.builtin.import_playbook: playbooks/34-code-task-image.yml
+  tags: [codetask]
 
 # ── 2e. Sandbox worker lane (agent_sandbox_hosts only) ──
 # The job_claude_docker claimant on hosts whose system worker doesn't run
 # the collapsed profile (castor is serving/heartbeat-only) — see the
 # playbook header. No-op while agent_sandbox_hosts is empty.
 - name: "Deploy the sandbox_run worker lane (agent_sandbox_hosts)"
+  # Tag `sandbox` lets deploy role scoping skip it on web-only / no-code
+  # diffs.
   ansible.builtin.import_playbook: playbooks/35-precis-worker-sandbox.yml
+  tags: [sandbox]
 
 # ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
 # `precis_web` — the only role that installs the gateway's /opt/mcps/venv —

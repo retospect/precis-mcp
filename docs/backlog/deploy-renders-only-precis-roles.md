@@ -6,6 +6,12 @@ title: scripts/deploy runs only redeploy-precis.yml, so a fix to any other role 
 
 # `scripts/deploy` leaves non-precis roles unrendered
 
+> 2026-10-15: option (i) implemented — `scripts/deploy` prints an ADVISORY
+> per changed-but-unrendered role/playbook after each deploy (tested in
+> `tests/test_deploy_unrendered_advisory.py`). Remaining pick: (ii)
+> auto-run vs (iii) drift cron.
+
+
 ## What
 
 `scripts/deploy` runs exactly one playbook, `deploy/redeploy-precis.yml`.

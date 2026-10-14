@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -288,6 +289,128 @@ def gate_facts() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _max_candidate_hours() -> float:
+    """Mirror scripts/round's PRECIS_ROUND_MAX_CANDIDATE_HOURS (default 6h).
+
+    Round deploy owns the refusal; this is only the staleness pre-check that
+    decides whether a CI re-run is worth triggering first. An unreadable or
+    non-positive setting defers to the default, same as the guard.
+    """
+    try:
+        v = float(os.environ.get("PRECIS_ROUND_MAX_CANDIDATE_HOURS", "") or 6.0)
+    except ValueError:
+        return 6.0
+    return v if math.isfinite(v) and v > 0 else 6.0
+
+
+def _regate_run_id(sha: str) -> str:
+    """Newest check.yml run id on `sha`; '' when gh or the run is unreadable."""
+    try:
+        cp = subprocess.run(
+            [
+                "gh",
+                "run",
+                "list",
+                "--commit",
+                sha,
+                "--workflow",
+                "check.yml",
+                "--limit",
+                "1",
+                "--json",
+                "databaseId",
+                "--jq",
+                ".[0].databaseId",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return cp.stdout.strip() if cp.returncode == 0 else ""
+
+
+def _wait_fresh_verdict(head: str, args: argparse.Namespace) -> int:
+    """Wait for a re-run verdict on `head` that is green AND inside the age
+    limit. 2 on red; 0 on green or on timeout (the deploy then re-checks and
+    keeps its own refusal path, same as before this existed)."""
+    deadline = time.monotonic() + args.ci_timeout * 60
+    limit = _max_candidate_hours()
+    say(f"waiting for the re-run verdict on {head[:9]}")
+    while True:
+        facts = gate_facts()
+        cand = str(facts.get("candidate") or "")
+        age = facts.get("age_hours")
+        if (
+            cand == head
+            and isinstance(age, (int, float))
+            and math.isfinite(age)
+            and 0 <= age <= limit
+        ):
+            say(f"verdict fresh on {head[:9]} ({age:.1f}h)")
+            return 0
+        red = ci_red(head)
+        if isinstance(red, dict):
+            print(
+                f"re-run CI on {head[:9]} went red — failing: {', '.join(red['jobs'])}",
+                file=sys.stderr,
+            )
+            for u in red["urls"]:
+                print(f"  {u}", file=sys.stderr)
+            return 2
+        if time.monotonic() >= deadline:
+            say(
+                f"re-run verdict not green within {args.ci_timeout:g} min — "
+                "deploy will apply its own verdict-age refusal if still stale"
+            )
+            return 0
+        time.sleep(args.poll)
+
+
+def _regate_if_stale(args: argparse.Namespace) -> int:
+    """When the release head's CI verdict is older than the deploy guard's
+    limit, re-run CI on the same sha and wait for a fresh verdict instead of
+    letting `round deploy` refuse (the r33 resume that died on age alone).
+    0 = proceed to deploy; 2 = the re-run went red."""
+    facts = gate_facts()
+    cand = str(facts.get("candidate") or "")
+    head = str(facts.get("release_head") or "")
+    if not cand or not head or cand != head:
+        return 0  # not an exact-green release head; deploy's own guards decide
+    age = facts.get("age_hours")
+    if not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0:
+        return 0  # unknown age keeps the existing refusal path
+    limit = _max_candidate_hours()
+    if age <= limit:
+        return 0
+    say(
+        f"verdict for {cand[:9]} is {age:.1f}h old (limit {limit:g}h) — "
+        "re-running CI on the same sha instead of refusing"
+    )
+    run_id = _regate_run_id(cand)
+    if not run_id:
+        say("no check.yml run found on that sha to re-run — deploy proceeds to its own verdict check")
+        return 0
+    cp = subprocess.run(
+        ["gh", "run", "rerun", run_id],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    if cp.returncode != 0:
+        say(f"gh run rerun {run_id} failed ({cp.stderr.strip() or cp.returncode}) — deploy proceeds to its own verdict check")
+        return 0
+    say(f"re-ran check.yml run {run_id} on {cand[:9]}")
+    return _wait_fresh_verdict(head, args)
+
+
 def next_line(sha: str) -> str:
     return (
         f"next: verify runtime, then scripts/round deploy --confirm-runtime {sha} "
@@ -351,7 +474,10 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
         time.sleep(args.poll)
 
 
-def deploy_and_close(sha: str) -> int:
+def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
+    stale_rc = _regate_if_stale(args)
+    if stale_rc:
+        return stale_rc
     rc = rnd("deploy", stream=True).returncode
     if rc == 3:
         cur = round_state() or {}
@@ -574,7 +700,7 @@ def finish(args: argparse.Namespace, s: str) -> int:
     rc = wait_ci(branch, args)
     if rc:
         return rc
-    return deploy_and_close(s)
+    return deploy_and_close(args, s)
 
 
 def resume(
@@ -613,7 +739,7 @@ def resume(
         rc = wait_ci(branch, args)
         if rc:
             return rc
-    return deploy_and_close(s)
+    return deploy_and_close(args, s)
 
 
 def main(argv: list[str] | None = None) -> int:

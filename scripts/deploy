@@ -11,11 +11,19 @@
 # per-worktree secret copies. Chained after a green ship by the /go command.
 #
 # Steps:
-#   1. reachability — `ansible all -m ping`; abort (non-zero) if any host is
-#      down (a partial redeploy leaves nodes on mixed code — never do that).
+#   1. reachability — `ansible ping` per host. A host that is down is skipped
+#      automatically when it is NOT serving-critical (the `data` + `gateway`
+#      inventory groups — DB/pgbouncer and the web/MCP host — never skip);
+#      a down critical host still aborts. Skipped hosts are recorded in the
+#      shared skipped-hosts file (see scripts/lib/deploy-state.sh) with the
+#      sha they still run, and the next deploy — or `scripts/round deploy
+#      --catch-up` — installs them. A non-critical host that drops DURING
+#      the playbook gets the same treatment: marked skipped, the deploy
+#      completes once every critical host is clean.
 #   2. deploy       — run the redeploy playbook for the ref.
 #   3. report       — the play's final debug task prints installed sha +
-#                     bounced daemons; a `failed=` on any host exits non-zero.
+#                     bounced daemons; a `failed=`/`unreachable=` on a
+#                     critical host exits non-zero.
 #
 # Usage:  scripts/deploy            # deploy main (default)
 #         scripts/deploy some-branch
@@ -60,7 +68,17 @@
 #
 # PRECIS_DEPLOY_SKIP_HOSTS — comma-separated hosts left out of the ping and
 # the rollout (a wedged host); they keep their old sha. Loud, deliberate only.
+# Non-critical hosts that fail the reachability ping are skipped the same
+# way automatically (data+gateway, the serving-critical set, never are);
+# every skipped host is recorded in the shared skipped-hosts file for
+# `scripts/round`'s journal/status/`deploy --catch-up`.
 #
+# PRECIS_DEPLOY_ROLE_SCOPE=0 — disable role scoping and run the full playbook.
+# Default on: the marker→target diff picks --skip-tags for the optional plays
+# (pythonorg, agentimg, tts, asa, codetask, sandbox) whose inputs did not
+# move; unknown paths, a missing marker, an overlay change or lagging hosts
+# all fall back to a full run.
+
 # PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
 # the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
@@ -277,6 +295,37 @@ _consume_ship_pin() {
 # already means "the WHOLE fleet is on this sha", and writing it after only
 # the canary phase converges would be actively wrong, so that path's existing
 # all-or-nothing `|| die` behavior is left untouched.
+#
+# Persist the skipped-hosts record next to the deploy-state marker. Called
+# from both success writers (the convergence graft and step 3). A deploy
+# that leaves nobody behind DELETES the file — it must never report a lag
+# that a clean run already fixed. The "sha it still runs" per host is the
+# marker's pre-deploy sha (_PREV_DEPLOYED): the only honest answer for a
+# host we cannot ask. Hostnames come from inventory names
+# ([A-Za-z0-9_.-]), so plain printf is safe JSON.
+_sync_skipped_hosts() {
+    local sha path first h
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+    path="$(deploy_skipped_path "$REPO_ROOT")"
+    if [[ -z "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[*]}"}" ]]; then
+        rm -f "$path" 2>/dev/null || true
+        return 0
+    fi
+    sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
+    [[ -n "$sha" ]] || return 0
+    first=1
+    {
+        printf '{"sha": "%s", "at": "%s", "hosts": {' "$sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        for h in "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[@]}"}"; do
+            [[ "$first" == 0 ]] && printf ', '
+            first=0
+            printf '"%s": "%s"' "$h" "${_PREV_DEPLOYED:-unknown}"
+        done
+        printf '}}\n'
+    } > "${path}.tmp" && mv "${path}.tmp" "$path"
+    return 0
+}
+
 _write_deploy_state_marker() {
     local sha
     sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
@@ -284,8 +333,13 @@ _write_deploy_state_marker() {
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
     printf '%s %s %s%s\n' "$sha" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
+    _sync_skipped_hosts
     _consume_ship_pin "$sha"
     _move_prod_pointer "$sha"
+    # The marker just moved: print the unrendered-role advisory now too —
+    # this graft path dies right after, and the next deploy's range starts
+    # at this sha, so the warning would otherwise never fire for this range.
+    _advise_unrendered "${_PREV_DEPLOYED}" "$sha" "${CLUSTER_DIR:-$REPO_ROOT/deploy}" || true
 }
 
 # Publish "what the cluster runs" as origin's `prod` ref, from both success
@@ -345,6 +399,39 @@ _rollout_converged() {
         [[ "${failed:-1}" == 0 && "${unreachable:-1}" == 0 ]] || return 1
     done
     return 0
+}
+
+# The inverse view: every rollout host whose recap line is NOT clean
+# (failed>0, unreachable>0, or missing from the recap entirely) — the set a
+# red run left behind. These are the mid-run-drop / mid-run-failure
+# candidates for auto-skip; a host absent from the recap never ran, so it
+# counts as skipped too (it provably holds no new code).
+_recap_bad_hosts() {
+    local play_out="$1" host line failed unreachable recap
+    [[ -n "${ROLLOUT_HOSTS:-}" ]] || return 0
+    recap="$(awk '/^PLAY RECAP/{f=1; next} f' "$play_out")"
+    [[ -n "$recap" ]] || return 0
+    for host in $ROLLOUT_HOSTS; do
+        line="$(awk -v h="$host" '$1==h' <<< "$recap")"
+        if [[ -z "$line" ]]; then
+            printf '%s\n' "$host"
+            continue
+        fi
+        failed="$(grep -oE 'failed=[0-9]+' <<< "$line" | cut -d= -f2)"
+        unreachable="$(grep -oE 'unreachable=[0-9]+' <<< "$line" | cut -d= -f2)"
+        [[ "${failed:-1}" == 0 && "${unreachable:-1}" == 0 ]] || printf '%s\n' "$host"
+    done
+}
+
+# Is $1 in the critical set ($2, whitespace-separated)? The critical set is
+# resolved from the inventory (data + gateway groups) before the ping; when
+# it could not be resolved it is EMPTY and every host answers critical here
+# — the pre-auto-skip behaviour, never the dangerous direction.
+_is_critical() {
+    [[ -n "$2" ]] || return 0
+    local h
+    for h in $2; do [[ "$h" == "$1" ]] && return 0; done
+    return 1
 }
 
 # A render worktree deleted under a running ansible surfaces only as a bare
@@ -434,9 +521,273 @@ _run_rollout_playbook() {
     if [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
         say "redeploy-precis.yml exited non-zero, but every rollout host (${ROLLOUT_HOSTS}) converged clean in its own PLAY RECAP line — recording the deploy-state marker before reporting the failure (gr332009)"
         _write_deploy_state_marker
+    elif [[ "$rc" -ne 0 ]]; then
+        # A host that dropped (or failed) DURING the run gets the same
+        # treatment as one that was down at ping time: skipped iff it is
+        # non-critical, and the deploy still records success over the hosts
+        # that did converge. A bad critical host keeps the old refusal —
+        # never leave the DB or web/MCP node on mixed versions.
+        local _bad _h _crit_hit=""
+        _bad="$(_recap_bad_hosts "$play_out")"
+        for _h in $_bad; do
+            if _is_critical "$_h" "$CRITICAL_HOSTS"; then
+                _crit_hit+="$_h "
+            else
+                SKIPPED_HOSTS+=("$_h")
+            fi
+        done
+        if [[ -n "$_bad" && -z "$_crit_hit" ]]; then
+            say "WARNING: non-critical host(s) failed or dropped mid-run: ${_bad//$'\n'/ } — marked skipped (they keep their previous sha); every critical host converged. Catch them up with a later deploy or scripts/round deploy --catch-up."
+            _write_deploy_state_marker
+            rc=0
+        fi
     fi
     rm -f "$play_out"
     return "$rc"
+}
+
+# ── role scoping: only run the plays the diff touches ────────────────────
+# redeploy-precis.yml's optional imports (pythonorg, the sha-baking
+# agent/tts image plays, the asa venv refresh, the code-task/sandbox image
+# plays) each carry a tag. Diffing the marker's sha against the target tells
+# us which inputs moved; a change that touches none of them gets those plays
+# skipped via --skip-tags, so a precis-code deploy is install+bounce only —
+# r34's 25-30 min spent most of it re-converging roles whose inputs had not
+# moved. Everything uncertain fails safe to a full run: an unmapped path, a
+# missing marker, an unresolvable diff, an overlay change, or lagging hosts
+# (a skipped host missed whatever landed while it was down, so catch-up runs
+# the whole playbook). PRECIS_DEPLOY_ROLE_SCOPE=0 forces a full run.
+#
+# _component_skip_tags reads changed paths on stdin and prints the
+# comma-separated tags whose inputs the change does NOT touch. `--sha-moved`
+# (first arg) treats the deploy as a runtime-code change even when the diff
+# is empty — different commits with identical trees still re-bake the
+# sha-labelled artifacts.
+_component_skip_tags() {
+    local _sha_moved=""
+    [[ "${1:-}" == "--sha-moved" ]] && _sha_moved=1
+    local p _code="" _all="" _cm=""
+    local w_pyorg="" w_codetask="" w_sandbox="" w_agentimg="" w_tts="" w_asa=""
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        _cm=""  # path maps to a known component's inputs (deploy/* may only)
+        case "$p" in
+            deploy/roles/pythonorg/*|deploy/playbooks/06-pythonorg.yml)
+                w_pyorg=1; _cm=1 ;;
+            deploy/playbooks/34-code-task-image.yml)
+                w_codetask=1; _cm=1 ;;
+            deploy/playbooks/35-precis-worker-sandbox.yml|deploy/roles/service_unit/*)
+                w_sandbox=1; _cm=1 ;;
+            deploy/playbooks/33-precis-agent-image.yml)
+                w_agentimg=1; _cm=1 ;;
+            deploy/playbooks/45-tts.yml|deploy/roles/tts/*)
+                w_tts=1; _cm=1 ;;
+            deploy/playbooks/32-asa-code-refresh.yml|deploy/roles/asa_bot/*|deploy/roles/asa_common/*|deploy/roles/asa_slack/*)
+                w_asa=1; _cm=1 ;;
+            docker/*)  # shared context dir: agent image, code-task image, tts
+                w_agentimg=1; w_codetask=1; w_tts=1; _cm=1 ;;
+            pyproject.toml|uv.lock)
+                w_pyorg=1 ;;  # wheel metadata; still runtime code below
+        esac
+        case "$p" in
+            docs/*|tests/*|scripts/*|.claude/*) ;;
+            *.md) [[ "$p" == */* ]] && _all=1 ;;
+            deploy/*) [[ -n "$_cm" ]] || _all=1 ;;
+            src/precis_web/*) ;;          # web-only: never baked into images/asa
+            *) _code=1 ;;
+        esac
+    done
+    # runtime code moves the sha baked into the asa venv and the agent/tts
+    # images and refreshes the sandbox lane; it says nothing about pythonorg
+    # or the Dockerfile-hash-keyed code-task image.
+    [[ -n "${_code}${_sha_moved}" ]] && { w_agentimg=1; w_tts=1; w_asa=1; w_sandbox=1; }
+    # unknown input => run everything; same posture as the playbook's
+    # own scope=full default when its diff fails.
+    [[ -n "$_all" ]] && { w_pyorg=1; w_codetask=1; w_sandbox=1; w_agentimg=1; w_tts=1; w_asa=1; }
+    local out="" t v
+    for t in pythonorg codetask sandbox agentimg tts asa; do
+        case "$t" in
+            pythonorg) v="$w_pyorg" ;;
+            codetask) v="$w_codetask" ;;
+            sandbox) v="$w_sandbox" ;;
+            agentimg) v="$w_agentimg" ;;
+            tts) v="$w_tts" ;;
+            asa) v="$w_asa" ;;
+        esac
+        [[ -n "$v" ]] || out="${out:+$out,}$t"
+    done
+    printf '%s\n' "$out"
+}
+
+# ── unrendered-role advisory (deploy-renders-only-precis-roles option i) ──
+# This controller runs ONLY redeploy-precis.yml: a merged fix to a role no
+# imported playbook names (backups, monitoring, pgbouncer, ...) ships to
+# origin/prod without ever reaching a host — the b2_sync template fix sat
+# dark for seven weeks behind green deploys. After a deploy, diff the
+# marker→target range for deploy/roles/<role>/ and deploy/playbooks/<pb>
+# changes and name the numbered playbook to run by hand for each the
+# rollout does not render. Advisory only: a failed diff or missing tree
+# prints at most a NOTE and never fails the deploy.
+#
+# _roles_referenced <playbook.yml>... — the roles a playbook runs, one per
+# line, from both spellings in use here: top-level `roles:` items (`- foo`
+# or `- role: foo`) and task-level import_role/include_role blocks whose
+# `name:` key is the role (20b/20c/20e/35/43 use the task form — a
+# `roles:`-only scan would call precis_worker unrendered on every deploy).
+_roles_referenced() {
+    awk '
+        {
+            if (inimp) {
+                if ($0 ~ /^[[:space:]]*$/) next
+                match($0, /^[[:space:]]*/); ind = RLENGTH
+                if (ind <= impindent) inimp = 0            # dedented out; re-examine below
+                else if ($0 ~ /^[[:space:]]*name:[[:space:]]*/) {
+                    line = $0
+                    sub(/^[[:space:]]*name:[[:space:]]*/, "", line)
+                    sub(/[[:space:]#].*$/, "", line)
+                    if (line != "") print line
+                    inimp = 0
+                    next
+                } else next                                # other key at deeper indent
+            }
+            if (inroles) {
+                if ($0 ~ /^[[:space:]]*-[[:space:]]/) {
+                    line = $0
+                    sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+                    sub(/^role:[[:space:]]*/, "", line)
+                    sub(/[[:space:]#].*$/, "", line)
+                    if (line != "") print line
+                    next
+                }
+                if ($0 ~ /^[[:space:]]*$/) next
+                inroles = 0
+            }
+            if ($0 ~ /^[[:space:]]*roles:[[:space:]]*(#.*)?$/) { inroles = 1; next }
+            if ($0 ~ /^[[:space:]]*(ansible\.builtin\.)?(import_role|include_role):[[:space:]]*$/) {
+                inimp = 1
+                match($0, /^[[:space:]]*/); impindent = RLENGTH
+                next
+            }
+        }
+    ' "$@"
+}
+
+# _role_parents <roles-dir> — "child<TAB>parent" pairs: parent's
+# meta/main.yml `dependencies:` names child, so parent's playbooks render
+# child too (asa_common rides on asa_bot/asa_slack).
+_role_parents() {
+    local meta parent
+    for meta in "$1"/*/meta/main.yml; do
+        [[ -f "$meta" ]] || continue
+        parent="$(basename "$(dirname "$(dirname "$meta")")")"
+        awk -v p="$parent" '
+            /^dependencies:[[:space:]]*$/ { indep = 1; next }
+            indep && /^[[:space:]]*-[[:space:]]/ {
+                line = $0
+                sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+                sub(/^role:[[:space:]]*/, "", line)
+                sub(/[[:space:]#].*$/, "", line)
+                if (line != "") print line "\t" p
+                next
+            }
+            indep && !/^[[:space:]]/ { indep = 0 }
+        ' "$meta"
+    done
+}
+
+# _advise_unrendered <prev-sha> <tgt-sha> <cluster-dir> — print one ADVISORY
+# line per changed role/playbook that the target sha's redeploy-precis.yml
+# does not render. Runs once per deploy (the convergence graft can reach a
+# success-marker write and then die before the end-of-script call).
+_UNRENDERED_ADVISED=""
+_advise_unrendered() {
+    [[ -z "$_UNRENDERED_ADVISED" ]] || return 0
+    _UNRENDERED_ADVISED=1
+    local prev="$1" tgt="$2" cluster="$3"
+    [[ -n "$prev" && -n "$tgt" && "$prev" != "$tgt" ]] || return 0
+    [[ -f "${cluster}/redeploy-precis.yml" && -d "${cluster}/playbooks" ]] || return 0
+
+    local changed
+    if ! changed="$(git -C "$REPO_ROOT" diff --name-only "$prev" "$tgt" -- deploy/roles deploy/playbooks 2>/dev/null)"; then
+        echo "NOTE: unrendered-role advisory skipped — could not diff ${prev:0:9}→${tgt:0:9}"
+        return 0
+    fi
+    [[ -n "$changed" ]] || return 0
+
+    # What the target's redeploy-precis.yml renders: the roles referenced by
+    # each imported playbook.
+    local -a imported=()
+    local p
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && imported+=("$(basename "$p")")
+    done < <(awk '/import_playbook:[[:space:]]*/{print $NF}' "${cluster}/redeploy-precis.yml")
+    local covered_roles=""
+    for p in "${imported[@]+"${imported[@]}"}"; do
+        [[ -f "${cluster}/playbooks/$p" ]] || continue
+        covered_roles+="$(_roles_referenced "${cluster}/playbooks/$p")"$'\n'
+    done
+    covered_roles="$(printf '%s' "$covered_roles" | sort -u)"
+    local covered_pb
+    covered_pb="$(printf '%s\n' "${imported[@]+"${imported[@]}"}" | sed '/^$/d' | sort -u)"
+
+    # role → playbook map over every playbook, widened one meta-dependency
+    # hop so a vars-only shared role (asa_common) maps to the playbook that
+    # renders its parent.
+    local role_map=""
+    for p in "${cluster}/playbooks"/*.yml; do
+        [[ -f "$p" ]] || continue
+        role_map+="$(_roles_referenced "$p" | awk -v pb="$(basename "$p")" 'NF {print $1 "\t" pb}')"$'\n'
+    done
+    local dc dp mr mp
+    while IFS=$'\t' read -r dc dp; do
+        [[ -n "$dc" && -n "$dp" ]] || continue
+        while IFS=$'\t' read -r mr mp; do
+            [[ "$mr" == "$dp" && -n "$mp" ]] && role_map+="${dc}"$'\t'"${mp}"$'\n'
+        done <<< "$role_map"
+    done < <(_role_parents "${cluster}/roles")
+
+    local -a ch_roles=() ch_pb=()
+    local ch_gvars="" f r
+    while IFS= read -r f; do
+        case "$f" in
+            deploy/roles/*/*)
+                r="${f#deploy/roles/}"
+                ch_roles+=("${r%%/*}") ;;
+            deploy/playbooks/group_vars/*|deploy/playbooks/files/*)
+                ch_gvars=1 ;;
+            deploy/playbooks/*.yml)
+                ch_pb+=("$(basename "$f")") ;;
+        esac
+    done <<< "$changed"
+
+    local printed="" pbl
+    while IFS= read -r r; do
+        [[ -n "$r" ]] || continue
+        printf '%s\n' "$covered_roles" | grep -qxF "$r" && continue
+        pbl="$(awk -F'\t' -v r="$r" '$1 == r {print $2}' <<< "$role_map" | sort -u)"
+        if [[ -n "$pbl" ]]; then
+            while IFS= read -r p; do
+                [[ -n "$p" ]] || continue
+                echo "ADVISORY: deploy/roles/${r} changed since ${prev:0:9} and is not rendered by this deploy — run by hand: ansible-playbook deploy/playbooks/${p}"
+                printed=1
+            done <<< "$pbl"
+        else
+            echo "ADVISORY: deploy/roles/${r} changed since ${prev:0:9} and no playbook under deploy/playbooks/ names it — render it by hand or wire it into one."
+            printed=1
+        fi
+    done < <(printf '%s\n' "${ch_roles[@]+"${ch_roles[@]}"}" | sed '/^$/d' | sort -u)
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        printf '%s\n' "$covered_pb" | grep -qxF "$p" && continue
+        echo "ADVISORY: deploy/playbooks/${p} changed since ${prev:0:9} and is not imported by redeploy-precis.yml — run by hand: ansible-playbook deploy/playbooks/${p}"
+        printed=1
+    done < <(printf '%s\n' "${ch_pb[@]+"${ch_pb[@]}"}" | sed '/^$/d' | sort -u)
+    if [[ -n "$ch_gvars" ]]; then
+        echo "ADVISORY: deploy/playbooks group_vars/files changed since ${prev:0:9} — they feed every playbook, including numbered ones this deploy does not render; check the affected ones by hand."
+        printed=1
+    fi
+    [[ -z "$printed" ]] || say "advisory only — the deploy itself is green; render the named playbooks by hand."
+    return 0
 }
 
 # ── mutual exclusion: one deploy at a time, machine-wide (gr203786) ──────
@@ -783,19 +1134,40 @@ fi
 
 cd "$CLUSTER_DIR"
 
+# Every host left out of this deploy (manual PRECIS_DEPLOY_SKIP_HOSTS +
+# auto-skip below + mid-run drops) lands here once, so both the --limit and
+# the skipped-hosts record read a single list.
+SKIPPED_HOSTS=()
+
 # PRECIS_DEPLOY_SKIP_HOSTS=h1,h2 — deliberately leave named hosts out of the
 # ping and the rollout (Reto 2026-10-09: castor wedged out of memory, the rest
 # of the cluster still gets the fix). The skipped hosts stay on their old sha
-# — mixed versions until the next full deploy — so it is loud, never a default.
+# — mixed versions until the next deploy — so it is loud, never a default.
 if [[ -n "${PRECIS_DEPLOY_SKIP_HOSTS:-}" ]]; then
     [[ -z "${PRECIS_DEPLOY_CANARY:-}" ]] || die "PRECIS_DEPLOY_SKIP_HOSTS and PRECIS_DEPLOY_CANARY both set — the canary path owns --limit; use one."
     _skip_limit="all"
     IFS=',' read -r -a _skip_hosts <<< "${PRECIS_DEPLOY_SKIP_HOSTS}"
     for _h in "${_skip_hosts[@]}"; do
-        if [[ -n "$_h" ]]; then _skip_limit+=":!${_h}"; fi
+        if [[ -n "$_h" ]]; then _skip_limit+=":!${_h}"; SKIPPED_HOSTS+=("$_h"); fi
     done
     INV_ARGS+=(--limit "$_skip_limit")
     say "WARNING: skipping ${PRECIS_DEPLOY_SKIP_HOSTS} (PRECIS_DEPLOY_SKIP_HOSTS) — those hosts keep their old sha until the next full deploy"
+fi
+
+# ── 0z. critical set: the hosts a deploy may never auto-skip ───────────
+# `data` (the DB/pgbouncer node) and `gateway` (the web/MCP host): a
+# lagging or half-updated critical host is a prod outage, not a lagging
+# worker. Resolved from the inventory itself so a renamed node needs no
+# code change. Unresolvable -> EMPTY -> _is_critical treats every host as
+# critical and nothing is ever auto-skipped (the pre-2026-10-14 abort-all
+# behaviour — the fail-safe direction).
+say "resolving the serving-critical host set (inventory groups data+gateway)"
+_crit_out="$(ansible 'data:gateway' --list-hosts ${INV_ARGS[@]+"${INV_ARGS[@]}"} 2>/dev/null)" || true
+CRITICAL_HOSTS="$(awk '/^  hosts \(/ {f=1; next} f && NF {print $1}' <<< "$_crit_out")"
+if [[ -n "$CRITICAL_HOSTS" ]]; then
+    echo "serving-critical (never auto-skipped): $(tr '\n' ' ' <<< "$CRITICAL_HOSTS" | sed 's/ $//')"
+else
+    echo "WARNING: could not resolve the data+gateway inventory groups — auto-skip is disabled this run (every host counts as critical)"
 fi
 
 # ── 1. reachability ─────────────────────────────────────────────────────
@@ -803,22 +1175,55 @@ fi
 # inventory can carry bootstrap-only hosts with no `deploy` SSH user that would
 # abort a deploy they play no part in (gripe 196641). `serving` (castor/pollux)
 # IS a redeploy target now — 20c provisions the heartbeat-only unit there — so
-# it must be pinged too: a twin down mid-deploy should abort, not half-
-# provision. Keep this in sync with the plays' `hosts:` in redeploy-precis.yml.
+# it must be pinged too. Manually skipped hosts are excluded by the
+# --limit already in INV_ARGS (ansible intersects repeated --limit with the
+# pattern; the auto-skip below adds another after the ping).
+#
+# A host that fails the ping is skipped automatically when it is NOT
+# critical — the rest of the cluster still gets the fix and the skipped
+# host is recorded for catch-up (the r33/r34 lesson: one Tailscale drop
+# used to abort the whole deploy and then the verdict-age guard refused
+# the resume hours later). Critical hosts down still abort the run.
 PING_TARGETS="gateway:scheduler:data:inference:serving"
 say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
 _PING_OUT="/tmp/precis-deploy-ping.$$"
-ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >"$_PING_OUT" 2>&1 || {
-    cat "$_PING_OUT" >&2
-    rm -f "$_PING_OUT"
-    _say_if_render_tree_gone
-    die "a host is unreachable — aborting (a partial redeploy mixes code versions)."
-}
+_ping_rc=0
+ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >"$_PING_OUT" 2>&1 || _ping_rc=$?
 # gr332009: the rollout-host set _run_rollout_playbook checks convergence
 # against below — every host that just answered the ping, read straight back
 # out of ansible's own SUCCESS lines rather than re-querying the inventory.
-ROLLOUT_HOSTS="$(grep -oE '^[^[:space:]]+ \| SUCCESS' "$_PING_OUT" | awk '{print $1}')"
+ROLLOUT_HOSTS="$(awk '/^[^[:space:]]+ \| SUCCESS/ {print $1}' "$_PING_OUT")"
+_PING_BAD="$(awk '/^[^[:space:]]+ \| (UNREACHABLE|FAILED)/ {print $1}' "$_PING_OUT")"
+_crit_down=""
+if [[ -n "$_PING_BAD" ]]; then
+    for _h in $_PING_BAD; do
+        if _is_critical "$_h" "$CRITICAL_HOSTS"; then
+            _crit_down+="${_h} "
+        else
+            SKIPPED_HOSTS+=("$_h")
+        fi
+    done
+fi
+if [[ -n "$_crit_down" || ( "$_ping_rc" -ne 0 && -z "$_PING_BAD" ) ]]; then
+    cat "$_PING_OUT" >&2
+    rm -f "$_PING_OUT"
+    _say_if_render_tree_gone
+    die "serving-critical host(s) unreachable (${_crit_down:-unparseable ping failure}) — aborting; a partial redeploy on a critical host mixes code versions."
+fi
 rm -f "$_PING_OUT"
+if [[ -n "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[*]}"}" ]]; then
+    _skip_limit="all"
+    for _h in "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[@]}"}"; do
+        _skip_limit+=":!${_h}"
+    done
+    INV_ARGS+=(--limit "$_skip_limit")
+    say "WARNING: skipping ${SKIPPED_HOSTS[*]} — they keep their previous sha and will be caught up by the next deploy (or scripts/round deploy --catch-up)"
+    if [[ -n "${PRECIS_DEPLOY_CANARY:-}" ]]; then
+        for _h in "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[@]}"}"; do
+            [[ "$_h" == "${PRECIS_DEPLOY_CANARY}" ]] && die "canary ${PRECIS_DEPLOY_CANARY} is unreachable — cannot canary-verify; pick another canary or retry when it is back."
+        done
+    fi
+fi
 
 # ── 1a. autocatpath wheel (gr263082) ────────────────────────────────────
 # Same reason the ping above aborts: a partial redeploy mixes code versions.
@@ -989,6 +1394,57 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_WHEEL_SMOKE:-}" ]]; then
 fi
 
 # ── 2. deploy ───────────────────────────────────────────────────────────
+# What skipped hosts "still run" = the sha the marker held BEFORE this
+# deploy — read it now, before the success write replaces it.
+_PREV_DEPLOYED=""
+{
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+    _prev_marker="$(deploy_state_read_path "$REPO_ROOT")"
+    [[ -n "$_prev_marker" ]] && _PREV_DEPLOYED="$(awk '{print $1}' "$_prev_marker" 2>/dev/null || true)"
+} 2>/dev/null || true
+
+# Role scoping: run only the optional plays the marker→target diff touches.
+# Any doubt (no marker, unresolvable shas, overlay move, lagging hosts,
+# PRECIS_DEPLOY_ROLE_SCOPE=0) means no --skip-tags: the full playbook runs,
+# exactly as before this existed.
+ROLE_SKIP_TAGS=""
+if [[ "${PRECIS_DEPLOY_ROLE_SCOPE:-1}" != 0 && -n "$_PREV_DEPLOYED" ]]; then
+    . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
+    _tgt_sha="$(git -C "$REPO_ROOT" rev-parse --verify "${REF}^{commit}" 2>/dev/null || true)"
+    _sk_path="$(deploy_skipped_path "$REPO_ROOT")"
+    _overlay_moved=""
+    for _e in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+        [[ "$_e" == *precis_overlay_changed=true* ]] && _overlay_moved=1
+    done
+    if [[ -z "$_tgt_sha" ]]; then
+        say "role scoping: target ${REF} does not resolve — full deploy"
+    elif [[ -n "$_overlay_moved" ]]; then
+        say "role scoping: overlay changed — full deploy"
+    elif [[ -s "$_sk_path" ]]; then
+        say "role scoping: lagging hosts on record — full deploy (catch-up runs everything)"
+    else
+        _scope_diff="$(git -C "$REPO_ROOT" diff --name-only "$_PREV_DEPLOYED" "$_tgt_sha" 2>/dev/null)"
+        _scope_rc=$?
+        if [[ $_scope_rc -ne 0 ]]; then
+            say "role scoping: marker→target diff unreadable — full deploy"
+        elif [[ "$_PREV_DEPLOYED" == "$_tgt_sha" ]]; then
+            ROLE_SKIP_TAGS="$(_component_skip_tags)"
+            say "role scoping: identical sha — skipped plays: ${ROLE_SKIP_TAGS:-none}"
+        elif [[ -z "$_scope_diff" ]]; then
+            # different commits, identical trees: the sha label on the
+            # baked artifacts still moves — treat as a code deploy.
+            ROLE_SKIP_TAGS="$(_component_skip_tags --sha-moved <<< "")"
+            say "role scoping: ${_PREV_DEPLOYED:0:9} → ${_tgt_sha:0:9} (same tree); skipped plays: ${ROLE_SKIP_TAGS:-none}"
+        else
+            ROLE_SKIP_TAGS="$(_component_skip_tags <<< "$_scope_diff")"
+            say "role scoping: ${_PREV_DEPLOYED:0:9} → ${_tgt_sha:0:9}; skipped plays: ${ROLE_SKIP_TAGS:-none}"
+        fi
+    fi
+fi
+if [[ -n "$ROLE_SKIP_TAGS" ]]; then
+    EXTRA_ARGS+=(--skip-tags "$ROLE_SKIP_TAGS")
+fi
+
 # Attempt stamp (gr332009): past this point hosts get touched. Record the
 # attempt now; the success marker at step 3 replaces it and removes this. If
 # any play dies red, the stamp survives with no newer marker and scripts/ship
@@ -1120,7 +1576,12 @@ fi
     # Success: clear the attempt stamp so ship stops reporting "uncertain"
     # (gr332009). Unconditional — a deploy that got here ran green.
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
+    _sync_skipped_hosts
     # The pin has done its job: this sha is what the fleet runs now.
     _consume_ship_pin "$DEPLOYED_SHA"
     _move_prod_pointer "$DEPLOYED_SHA"
 } || true
+
+# ── 4. advisory: what the marker→target diff changed but this playbook
+# never renders (deploy-renders-only-precis-roles option i) ───────────────
+_advise_unrendered "$_PREV_DEPLOYED" "$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)" "${CLUSTER_DIR:-$REPO_ROOT/deploy}" || true
