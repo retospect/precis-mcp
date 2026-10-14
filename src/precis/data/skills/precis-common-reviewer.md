@@ -123,6 +123,16 @@ pass aggregation:
 (`cited_in=` mandatory, "your own synthesis with no single source →
 not a finding"; see `precis-finding-help`).
 
+## If the pass itself produced nothing
+
+Two watchdog alerts cover a broken reviewer run (raised by the review
+pass, not by you): `review:empty:<reviewer>/<reviewer>:empty-pass` when
+a pass writes no output and no tool calls ($0 — usually a config or
+credential failure, not an empty report), and
+`review:tool-starved:<reviewer>/<reviewer>:tool-starved` when it writes
+prose but never calls a precis tool. Both auto-resolve on the next real
+pass.
+
 ## Cleanup
 
 Before exiting, reap your throwaways:

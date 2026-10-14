@@ -63,6 +63,11 @@ oldest-request-first. Use `view='stubs'` for the full backlog (every id
 kind); use `view='chase-queue'` when you want the next thing worth
 chasing down manually.
 
+`fetch_oa` also watches its own fuel: when the OpenAlex content-credit
+balance drops below the low-water mark it raises
+`fetch_oa:openalex_balance/openalex-content-credits-low` (warn) — the
+cascade stalls on credits, not on backlog shape.
+
 ## See just the papers a dream decided to chase
 
 ```python

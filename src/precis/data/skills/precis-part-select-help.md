@@ -185,6 +185,12 @@ priority. Fit is a gate; family keeps the BOM consolidated; turnover makes it
 unlikely you picked a part about to vanish; the JLCPCB order is the final
 availability gate.
 
+The catalog itself is refreshed by the `parts_refresh` pass, which walks
+the JLCPCB Open API `lastKey` cursor daily. A failed walk raises
+`parts_refresh/jlcpcb-api` (warn — the parts table just stays stale);
+triage starts at the alert detail (auth/permission vs transport), and
+`precis pcb refresh-parts --from-sqlite` is the fallback.
+
 ## Selecting per function (typical board)
 
 | Function | Search | Prefer |

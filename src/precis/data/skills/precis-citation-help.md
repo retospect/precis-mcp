@@ -217,11 +217,12 @@ a new record; the old one stays as the audit trail.
 ## A paper's own inline [N] markers (automatic)
 
 The numbered `[N]` markers inside an ingested paper's body resolve by
-machinery, not by you: each maps to the paper's parsed bibliography
-entry, and hub-refine follows a claim's own citation to verify the
-claim against the paper it cites. A miss shows on the claim page as a
-red *"cited source does not support this claim"* line — a surfaced
-fact, not a trust change.
+machinery, not by you: the `bib_mark` pass extracts them into
+`chunk_citations` (`taproot.resolve_citation`), each maps to the paper's
+parsed bibliography entry, and hub-refine follows a claim's own citation
+to verify the claim against the paper it cites. A miss shows on the
+claim page as a red *"cited source does not support this claim"* line —
+a surfaced fact, not a trust change.
 
 ## See also
 

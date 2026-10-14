@@ -37,6 +37,12 @@ gripes are relinked to a thread by `/pillar-review`. The
 automatic `diagnose_gripe` pass is off too; a hand-`put`
 `diagnose_gripe` job still runs and comments a `DIAGNOSIS`.
 
+The machinery underneath, for triage: `backlog_groom` is the pass that
+promotes open gripes into dispatchable `fix_gripe` todos, and
+`job_claude_inproc` is the executor drain that runs `claude_inproc`
+jobs (`fix_gripe`, `plan_tick`, the cast producers) — a stuck fix job
+means checking that drain, not the gripe row.
+
 ## How do I hand-submit a fix_gripe job (reference only)?
 
 **Slice-5 canonical pattern — write the intent as a todo; the

@@ -109,6 +109,22 @@ next section.
 | `conflict_sweep`    | `claude_inproc` | One claim hub hunts its opposition: negated-paraphrase ANN over the corpus, `paper_rank`-budgeted LLM verify, `disputes` edge on a confirmed contradicts, `meta.conflict_search` coverage ledger stamped. Minted for you at claim mint and by the approve page's freshness check (dark unless the `conflict_search` service is lit); by hand: params `hub_id` (the `fi<id>` ref_id), optional `refresh` (sweep even if already current — covered passages are still skipped). See `precis-taproot-help`. |
 | `deferred_llm_call` | `coordinator`   | A synchronous surface's LLM call run later, after a Claude quota or budget window (internal — the web follow-up mints it when the model is paused; it sleeps until `retry_at`, then appends the real answer to the conv) |
 
+## More registered job_types — the rest of the internal lanes
+
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
+| `doctor_tick`       | `claude_inproc` | One LLM "doctor" pass over the fleet's own published health surfaces — the self-healing spine's Layer-3 judgment: gathers, classifies by ratio, diagnoses, authors the daily report, files/annotates gripes (internal; see `precis-health-digest-help`) |
+| `quest_tick`        | `coordinator`   | One slice of a quest's perpetual catalyst loop (harvest → propose → dispatch → wait) — internal, minted by `quest_loop_reconcile` (see `precis-quest-help`) |
+| `reground_claim`    | `claude_inproc` | Reground a taproot claim hub — audit/prune proxy evidence, re-discover deeper primaries, add-first apply (checkpointed); `mode='verify'` diffs intent vs committed (see `precis-taproot-help`) |
+| `draft_refresh`     | `claude_inproc` | Bounded, section-scoped refresh of a living draft — critique + rewrite against corpus + research-arm evidence, growth-gated apply |
+| `cad_discuss`       | `claude_inproc` | Discuss a cad design (tool-less claude, threaded, read-only) — answers questions, proposes nothing (see `precis-cad-help`) |
+| `diagram_propose`   | `claude_inproc` | One figure/mermaid draw-with-me turn — builds/verifies the diagram from seed chunks, reconciles node→chunk bindings (see `precis-mermaid-help`) |
+| `structure_propose` | `claude_inproc` | Turn an instruction into proposed structure ops (tool-less claude, propose-only — a human applies them) |
+| `reading_brief`     | `claude_inproc` | Compose the morning reading-brief cast as a dated draft (see `precis-audio-help`) |
+| `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
+| `embed_batch`       | `job_inproc`    | Bounded work order draining the derived embed queue — minted by the `materialize` cadence above the backlog high-water mark |
+| `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
+
 ## Which job types run compute or code?
 ## Run a relax, a Pourbaix verdict or a sandbox build
 
@@ -118,6 +134,16 @@ next section.
 | `pourbaix_bulk`     | `claude_inproc` | Bulk Pourbaix verdict (`dissolved` / `leached` / `transformed` / `oxidised` / `unmatched` / `stable`) for a candidate structure's host phase at a U/pH point and over a window, from Materials Project entries; written to the job's `meta.verdict`. Params: `candidate_ref`, `point` (`{U_RHE, pH}`), optional `window` (`{U_RHE: [lo, hi], pH: [lo, hi]}`), `ion_conc_M` (1e-6), `stability_tol` (0.1 eV/atom), `grid` (5). Fails `config` without `PRECIS_MP_API_KEY`. A bulk verdict is necessary, not sufficient: the surface can still restructure under bias. |
 | `surface_coverage_scan` | `ssh_node`  | Surface-Pourbaix anchors + inner CHE sweep (slice 1): one MLIP model's ab-initio-thermodynamics coverage scan of a clean slab (catpath `coverage`: γ(θ) per adsorbate, default H/O/OH at 0.25–1 ML, (111) only), stamped with its footing (`meta.anchor_key`, `model`, `engine_version`, `corrections`), then pooled with every succeeded scan on the same `anchor_key` (one per model) into `meta.che_sweep`: the resting termination along U (V vs RHE), every boundary with `band_propagated` (anchor bars through the CHE; "add an anchor here") and `band_model_form` (spread across models; needs ≥2 scans) kept apart, `needs_anchor` ranked by the first. Params: `config` (a catpath config, same shape as the pathway lane; `coverage` block defaults filled), optional `model_index` (0), `force_backend`, `target_node` (the GPU node), `point_U_RHE`, `window_U_RHE` ([-1, 0.5]), `grid` (151), `pH` (7, labels the SHE view only), `sigma_e_eV` (default = `config.search.energy_thresh`), `slab_extxyz` (injected slab, scanned since autocatpath 0.25.0; digest folds into `anchor_key`), `structure_ref` (provenance). Refuses any facet other than (111). The stored sweep is read as a resting-state validity map by `view='pourbaix'` on `kind='structure'`/`'quest'` and the `/pourbaix/<handle>` page (slice 2). |
 | `sandbox_run`       | `claude_docker` | Run an open-ended coding task (`mode:build`) or re-run a prior build's harvested tarball (`mode:run`, no claude/OAuth) in a throwaway, cgroup-capped container on an `agent_sandbox_host`. **Dark** — the `job_claude_docker` pass runs only where its `service_config` row (seeded from `agent_sandbox_hosts` group membership at deploy) has `prio>=1`; `precis service prio <host> job_claude_docker <n>` flips it live. A put on a host without it queues a job nothing claims. Params: `mode` (`build` default \| `run`), `prompt` (`mode:build`, required), `artifact` (`mode:run` — a prior build's harvested `folder` ref id, required), `precis_access` (`none` default \| `read` — `mode:build` only, a per-run token'd read-only MCP callback, needs `PRECIS_SANDBOX_READ_MCP=1`), `target_node` (a sandbox host, never melchior), `resources.wall_seconds`. `validate_submit` rejects an unsupported `mode`, `precis_access:read` without `PRECIS_SANDBOX_READ_MCP`, `secrets`, a non-sandbox target, `mode:build` with no `prompt`, `mode:run` with no `artifact`, and (`mode:build` only) a missing `CLAUDE_CODE_OAUTH_TOKEN`. Recurring `mode:run` (e.g. a dated pipeline) just wraps the same params in a `meta.schedule` todo — no special-casing, see `precis-recurring-help`. `image` (`code-task:<git-sha>`, default `code-task:latest` — the ansible play's movable tag; per-job override via `params.image`) is pinned in the launch argv and recorded as provenance in three places: the job's `meta.image`, the terminal `job_summary` text, and the harvest folder's `meta.image`. |
+
+## Compute lane + plugin job types
+
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
+| `pcb_place` / `pcb_route` | `job_inproc` | The enqueued halves of `put(kind='pcb', args={'op':'place'|'route'})` — placement-only anneal, resp. joint place+sketch anneal + realize checkpoint (see `precis-pcb-route-help`) |
+| `retrosynth`      | `ssh_node`      | Plan a retrosynthesis route to a target molecule on the compute lane (see `precis-rxn-help`) |
+| `autocatpath_seed` | `ssh_node`     | One `(model, seed)` unit of an autocatpath pathway exploration; stashes the JSON partial for the sibling aggregate (see `precis-pathway-help`) |
+| `autocatpath_aggregate` | `ssh_node` | Fold the seed fan-out's partials into the pathway's graph + pooled-uncertainty result on the pathway ref |
+| `autocatpath_explore` | `ssh_node`   | Legacy single-shot autocatpath run — still registered so pre-existing queued rows don't error-loop; nothing new mints it (superseded by the seed/aggregate fan-out) |
 
 (More land as new modules under `precis/workers/job_types/`. See
 the per-type recipe skills for invocation details.)
@@ -180,9 +206,25 @@ parent todo's existence at submit time. If something's wrong, the
 
 Executors: `claude_inproc` (offline `claude -p` on the agent host —
 the default, you usually don't set `executor=`), `ssh_node` (remote
-GPU-node compute, e.g. `struct_relax`), and `coordinator`
+GPU-node compute, e.g. `struct_relax`), `job_inproc` (deterministic
+in-proc work orders — `embed_batch`, `derived_drain`, `pcb_*`,
+`datasheet_pull`, `paper_pull`), and `coordinator`
 (yield/resume phase machines that fan out child jobs, e.g.
-`good_search`).
+`good_search`). Each executor has a drain pass in the worker rotation
+named after it — `job_claude_inproc`, `job_ssh_node`, `job_inproc`,
+`job_coordinator` (one coordinator slice per pass) — plus `minter`
+(mints `kind='job'` children under executor-bearing todos), `sweeper`
+(fails claim-orphaned `STATUS:running` jobs), `diagnose_scan` (mints
+`diagnose_gripe` jobs), and `materialize` (mints `embed_batch` /
+`derived_drain` work orders above the backlog bands). Those service
+names are what `--only`, `service_config` rows and `worker_logs`
+handler fields show.
+
+The `sweeper` also guards executability: a `STATUS:queued` job whose
+capability requirements no live host advertises in `resource_slots`
+(and no `params.target_node` pin falls back on) can never be placed —
+it raises `scheduler/unschedulable:<job ref>` at warn, auto-resolved
+when the job leaves the queue or the capability is advertised again.
 
 Parenting is polymorphic (ADR 0044): a job parents on a **todo**
 (intent lane — rotation, `child-failed` bubble, `child_job_succeeded`),

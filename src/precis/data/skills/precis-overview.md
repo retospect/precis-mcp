@@ -268,6 +268,32 @@ shows up in output and is ambiguous:
   vocabulary (`precis-job-help`, `precis-minter-help`); any other, ad-hoc
   sense of "lane" isn't part of the API.
 
+## Worker fleet — pass names an alert or log line shows
+
+Corpus-pipeline services documenting against this skill:
+
+| name | what it does |
+|---|---|
+| `summarize` | RAKE keyword summary per chunk (`summarize:rake-lemma` in logs) |
+| `bib_parse` | paper bibliographies → `paper_bib_entries` (`bib_mark` extracts `[N]` markers — `precis-citation-help`) |
+| `bib_retag` | retypes mis-typed biblio chunks + drops embeddings (manual) |
+| `tag_embeddings` | embeds tags for `kind='tag'` discovery |
+| `gp_fetch` | fall-back patent fetch (`fetch_google_patents` in logs) |
+| `openalex_enrich` | backfills abstracts + OpenAlex metadata |
+| `paper_meta_enrich` | re-resolves authors/journal/idents/retraction from Crossref |
+| `paper_reconcile` | folds duplicate paper refs + hygiene heals |
+| `corpus_reconcile` | per-host `pdf_locations` ledger |
+| `clusterize` | SOM cluster maps for `/clusters` (daily) |
+| `llm_summarize` | model-authored 2-part chunk summaries |
+| `paper_glossary` | per-paper glossary → `card_glossary` chunk |
+| `context_sentence` | one method/evidence sentence per grounding paper |
+| `classify_topics` | paper→topic-dossier cascade (`topic:` tags) |
+| `watch_poll` | S2 citing-paper poll → stubs |
+| `mail_poll` / `inject_scan` | email poll + depth-0 scan, then model-scores flagged mail |
+| `dream_agent` | reflective memory pass (scheduler cadence) |
+| `watch` (daemon) | PDF-inbox ingestor — alerts `watch:elsevier_truncation/elsevier-truncation:<ref>` (truncated PDF) and `ingest:marker-fallback` (extractor fallback) |
+| `embed` / `embedder` | embed backlog lane (logs as `embed:bge-m3`; `materialize`→`embed_batch` drains it — `precis-job-help`) / the idle-unloading bge-m3 server |
+
 ## See also
 
 - [[precis-search-help]] — search mechanics

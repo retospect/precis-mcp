@@ -39,6 +39,10 @@ put(kind="pcb", id="sensor-node", args={"op": "place", "iters": 2000, "seed": 0}
 put(kind="pcb", id="sensor-node", args={"op": "route", "iters": 3000, "seed": 0})
 ```
 
+Each `put` mints a `kind='job'` under the parent — `pcb_place` for
+`op='place'`, `pcb_route` for `op='route'` — drained by the `job_inproc`
+executor lane (see `precis-job-help`).
+
 - `op='place'` — placement-only anneal (translate/rotate/swap). Never
   touches the sketch (side choices, layer assignment, plane role).
 - `op='route'` — the JOINT engine: placement **and** sketch move together,

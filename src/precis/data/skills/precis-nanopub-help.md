@@ -53,7 +53,11 @@ exists. Details: [[precis-taproot-help]].
   anchored → publishing → published → superseded/retracted` (`rejected` off
   `reviewed`). A hub with a live `contradicts` edge renders an
   UNMINTABLE warning — disputed claims are visible internally,
-  unpublishable externally, until adjudicated by artifacts.
+  unpublishable externally, until adjudicated by artifacts. A
+  **frozen** (signed/published) hub that newly acquires a live
+  `contradicts` edge also raises `nanopub-demote/contradicted-frozen:<hub>`
+  (warn) — the freeze stands, but the claim needs a successor or a
+  dispute adjudication before it can be read as settled.
 - **Signing is the correction boundary.** Candidate/reviewed claims are
   internal: edit in place, returning unsigned approvals to candidate and
   flagging their consumers for re-review. Once signed, correct through a

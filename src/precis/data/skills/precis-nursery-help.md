@@ -38,15 +38,12 @@ the push merges dark and everything else stays pull-only.
 | `long-wait` | leaf carries `waiting-for:*` older than threshold | 7 d |
 | `stuck-doable` | dispatch-candidate open leaf (`meta.executor` / `meta.llm_tier` / `OPEN:executor:*`), no claim, no doable-exclusion tag (`halt`, `waiting-for:`, `ask-user`, `child-failed:` — the shared registry), no blocker, >threshold old | 24 h |
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
+| `child-failed-parked` | a todo parked on an open `child-failed:<job>` tag past budget | 6 h |
+| `child-failed-final` | final-failed children, aggregated into one alert — fingerprint `child-failed-final:aggregate` | warn |
+| `orphaned-coordinator` | an active coordinator whose newest loop failed >threshold ago and nothing re-minted — close or re-dispatch the parent todo | 6 h · **critical** |
 | `spin-loop` | one `(ref_id, source)` emits >threshold `ref_events` in 24 h | 200 / 24 h |
 | `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |
 | `quest-loop-failing` | a quest's `quest_tick` loop rests `STATUS:failed` >threshold times in 24 h (RC1 backoff throttles but can't fix a persistent break) | 3 / 24 h |
-| `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
-| `dead-worker` | the continuous per-host daemon silent >threshold while its host is alive | 10 min · **critical** |
-| `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
-| `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
-| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
-| `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
 | `lane-skipping` | a job_type's runs are mostly `STATUS:cancelled` — the handler's deliberate-skip path became the lane's normal outcome, invisible to err/warn counts and `child-failed` | ≥10 cancelled and ≥5× succeeded in 24 h · warn |
 
 `orphan` enforces the strategic invariant: every open todo must trace to
@@ -67,6 +64,17 @@ loops are also surfaced on the web Status page's "Background health"
 panel for pull-style monitoring.
 
 ## Detector catalogue — worker-health detail
+
+| Category | Triggers when | Threshold |
+|---|---|---|
+| `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
+| `dead-worker` | the continuous per-host daemon silent >threshold while its host is alive | 10 min · **critical** |
+| `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
+| `embed-lane-stalled` | `embed_batch` jobs queued but none completed in the window — the in-proc embed lane is dark while looking clean | 60 min · **critical** |
+| `unattributed-claimant` | a `claimed-by:` identity (e.g. a container id) with no `host_heartbeat` row claimed work in the window — a non-fleet worker is running | 25 d lookback · warn |
+| `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
+| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
+| `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
 
 The three **worker-health** detectors watch daemon liveness / work
 flow, not the todo graph; together with `orphaned-coordinator`,
@@ -181,6 +189,17 @@ alert rows). An operator preamble can read the open set via
   That's the weekly deep tier.
 * Not a worker dispatcher — the nursery describes; asa-bot
   decides whether to act on a finding when next chatting.
+
+## Sibling per-host passes pointing here
+
+Two small page-now passes document against this skill:
+
+- `quota_check` refreshes each host's Claude OAuth utilisation snapshot
+  and raises `quota_check:auth/<host>:claude-oauth` (critical) when a
+  host's `claude-oauth` credential is expired or unreadable — re-login
+  on the host (`claude login`); agent ticks there fail until then.
+- `disk_check` raises `disk_check/<host>:<path>` when free disk on a
+  watched path drops under threshold (`df -h <path>` on the host first).
 
 ## See also
 

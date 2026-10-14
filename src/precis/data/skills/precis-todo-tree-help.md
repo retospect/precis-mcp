@@ -310,6 +310,11 @@ The flat list surface (`/recent`, `/open`, `/done`, …) keeps
 working — see `precis-todo-help`. This skill adds the tree
 discipline on top.
 
+Three review tiers read this tree: `nursery` (per-minute SQL detectors —
+`precis-nursery-help`), `structural` (the 6h leaf-pattern review), and
+`deep_review` — the weekly Opus archive / prune / rebalance review,
+minted by the `deep_review` scheduler cadence.
+
 ## See also
 
 - [[precis-todo-help]] — flat todo surface

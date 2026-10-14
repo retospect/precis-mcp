@@ -229,6 +229,15 @@ all live today. See [[precis-taproot-mint-help]] for the write
 contracts and [[precis-taproot-backfill-help]] for bulk `[pc]`/`[pa]`
 conversion.
 
+Two maintenance passes keep hubs groomed: `chase_trigger` marks a hub
+`TAPROOT_DUE` when a freshly-embedded near-paper chunk lands (so
+`hub_refine` re-grounds it), and `hub_tagline` backfills a pithy 3-6
+word tagline on hubs missing one (`refs.meta['tagline']`). A live hub
+missing its `finding_body` embedding — the index claim dedup retrieves
+over — is the watchdog `claim_hub_dedup_index` check; outstanding chase
+findings with no new evidence edge are `taproot_edges`
+(`precis-health-digest-help`).
+
 ## See also
 
 - [[precis-taproot-mint-help]] — author, mint, sharpen, merge a hub

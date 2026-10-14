@@ -73,11 +73,15 @@ quest — completing it would delete the "% done" axis as the wrong
 measure. Progress is a **ledger of deeds**, not a percentage.
 
 Tagging a quest `active` is also the affordance that **starts its
-autonomous loop**: a reconciler pass ensures every active quest has one
-live `quest_tick` coordinator loop and re-arms it if it rests (gated on
-`PRECIS_QUEST_LOOP_ENABLED`, dark by default). Moving to `dormant` /
-`abandoned` just stops new loops from being minted — the current one
-winds down on its own.
+autonomous loop**: the `quest_loop_reconcile` pass ensures every active
+quest has one live `quest_tick` coordinator loop and re-arms it if it
+rests (gated on `PRECIS_QUEST_LOOP_ENABLED`, dark by default). Moving to
+`dormant` / `abandoned` just stops new loops from being minted — the
+current one winds down on its own. A tick resting with nothing runnable
+raises `quest_tick/quest:dry-rest/<quest_id>` (warn, auto-resolves when
+work appears); a live loop that sits queued or past its `at_time` wake
+beyond the stall budget surfaces as `quest-tick-stalled:<quest_id>`
+(watchdog `condition` group — see `precis-health-digest-help`).
 
 ## Priority — how hard it steers
 

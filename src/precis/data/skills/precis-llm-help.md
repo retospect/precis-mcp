@@ -164,6 +164,22 @@ request and appends the real answer to the thread. A repeat `quota` or
 bound, appends a `system` turn naming the failure and fails the job. A
 failure is never stored as the assistant's answer.
 
+**The breaker's alerts.** Two critical alerts surface the pause to the
+alert surface: `budget/cap-<window>` (`cap-hourly`, `cap-daily`) when a
+dollar spend-cap window trips, and `budget:quota/quota-<window>`
+(`quota-five_hour`, `quota-seven_day`) when a Claude subscription
+rate-limit window is exhausted. `get(kind='llm', id='/budget')` is the
+live view; nothing LLM-backed runs until the window rolls, the cap is
+raised, or an operator resumes on `/budget`. A related per-host check:
+`quota_check:auth/<host>:claude-oauth` fires when a host's Claude OAuth
+credential is expired or unreadable (re-login there).
+
+**`llm_reconcile` and `llama_swap`.** `llm_reconcile` diffs the
+catalogue against the proxy's served list — a catalogued model the proxy
+no longer serves raises `llm_reconcile:drift/proxy-missing:<model_id>`
+(warn). `llama_swap` is the per-node VRAM model-swapper serving local
+inference — the daemon behind the local rungs.
+
 ## See also
 
 - [[precis-minter-help]] — meta.llm_tier → minter worker → model

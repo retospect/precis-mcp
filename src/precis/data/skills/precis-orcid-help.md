@@ -132,7 +132,9 @@ work shows up as freshly-countable missing DOIs you can then enqueue.
 The ORCID Public API needs a read-public bearer obtained via the
 client-credentials flow. Set **`ORCID_CLIENT_ID`** and
 **`ORCID_CLIENT_SECRET`**; without them the kind is disabled (it never
-blocks the rest of the surface).
+blocks the rest of the surface), and the `orcid_enrich` pass raises
+`orcid_enrich/orcid_enrich:missing_credentials` (warn) — enrichment is
+dark until credentials exist.
 
 ## See also
 

@@ -58,6 +58,55 @@ heartbeat stays fresh but the pass's `since` goes stale — it has been
 running for hours), `rescue-pass-cadence`, `llm-degraded`,
 `dead-generation-claims`, `settings-env-shadowed`.
 
+## Check names — what `get(kind='alert', id='/health')` shows
+
+Each row is one named check; the check `name` is what the health panel,
+the `/status` Health sub-tab and (on a finding) the alert's
+`meta.rule_id` / fingerprint lead with. Curated Layer-1 outcome checks
+plus the bespoke checks that share the `CheckResult` shape:
+
+| check | group | what it watches |
+|---|---|---|
+| `papers_ingested` | `ingest` | newest paper ref landed within 6h |
+| `news` | `ingest` | newest news ref within the live `news_poll` cron gap + slack (≥8h floor) |
+| `chunks_extracted` | `ingest` | no live paper newer than the newest chunk, unextracted >6h |
+| `chunks_classified` | `discovery` | a ROLE3 classification within 12h while the classify pass is enabled and has eligible chunks |
+| `embed` | `discovery` | embed backlog empty or draining within 2h (idle-aware); a stale detail names the first stuck stage — materializer → `embed_batch` → `job_inproc` |
+| `chunk_keywords` | `discovery` | chunk_keywords backlog empty or draining within 6h |
+| `morning_brief_cast` | `reading` | the briefing pass ran within 26h |
+| `cast_audio` | `reading` | cast_audio narrated a cast within 26h |
+| `card_forge` | `reading` | a card_forge job completed within 26h while cards were due |
+| `taproot_edges` | `knowledge` | eligible chase findings never sit >6h with no new taproot evidence edge |
+| `claim_hub_dedup_index` | `taproot` | no live claim hub missing the `finding_body` embedding claim dedup retrieves over |
+| `staged_candidates_fresh` | `nanopub` | staged nanopub candidates still pass the current mint gates |
+| `agent_jobs_completing` | `autonomy` | jobs claimed in 6h did not all stall short of `STATUS:succeeded` |
+| `lanes_idle_beside_queue` | `autonomy` | no executor has queued work while claiming nothing for an hour |
+| `doctor_report_fresh` | `autonomy` | the `doctor_tick` pass wrote a report within twice its fresh window |
+| `hosts_alive` | `infra` | every recently-active host's `host_heartbeat` row is <15 min old |
+| `alert_backlog_rot` | `meta` | no `alert-state:open` row is >7d old — the response loop itself rotting (info) |
+
+Derived groups name their check after the thing they watch:
+
+- `cadence` — the `scheduler_leases` check: each lease row overdue past
+  `interval + margin` (≥15 min floor); fingerprint `watchdog:cadence/{cadence}`.
+  Its never-seeded half flags a registered cadence with **no** lease row
+  on any host — fingerprint `<cadence>/never-seeded` — the eligibility
+  gate may be false fleet-wide.
+- `coherence` — `<service>`: a registered PASS that resolves enabled
+  somewhere but logged nothing in 24h — intended-on but silent.
+- `condition` — the `conditions.py` probe registry, each row a named
+  condition whose finding keys the alert fingerprint:
+  `pass-dead-on-host` → `pass-dead:<host>/<process>/<handler>`;
+  `rescue-pass-cadence` → `rescue-gap:<handler>` (a rescue handler has not
+  run within budget while a live host has demand); `quest-tick-stalled` →
+  `quest-tick-stalled:<quest_id>` (a quest's live quest_tick loop is
+  queued or past its `at_time` wake beyond the stall budget with no slice
+  run); `pass-wedged`; `llm-degraded`; `agent-ticks-toolless` (agent
+  ticks are spending without calling a single precis tool);
+  `dead-generation-claims` → `dead-gen-claims:<host>/<process>` (claims
+  held by a worker generation that is no longer alive);
+  `settings-env-shadowed`; `analysis-stale`.
+
 ## See also
 
 - [[precis-nursery-help]] — the `critical`, page-now sibling reviewer.

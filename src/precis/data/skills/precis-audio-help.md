@@ -94,3 +94,12 @@ cross-draft base exists alongside the per-draft one.
 Subscribe **on-device** over Tailscale — Apple Podcasts *Add a Show by URL*
 or Downcast → the feed URL. Server-mediated apps (Overcast / Pocket Casts)
 can't reach the feed.
+
+## The narration fleet
+
+Two worker passes produce the feed: `cast_audio` narrates the daily
+reading-brief + nidra casts (its inputs are the `reading_brief` and
+`meditation` jobs — see `precis-job-help`), and `briefing_audio` narrates
+the morning news briefing (the `briefing` job's output). The
+`watchdog:reading` checks (`morning_brief_cast`, `cast_audio`) watch
+their cadence — see `precis-health-digest-help`.
