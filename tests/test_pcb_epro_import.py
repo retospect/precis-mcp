@@ -17,6 +17,7 @@ rows arrive, and does the rest of the engine accept them.
 from __future__ import annotations
 
 import io
+import math
 import os
 import pathlib
 import zipfile
@@ -1163,3 +1164,76 @@ def test_update_warns_about_measures_on_retired_hole_features(store, imported) -
     assert len(real.update.legacy_hole_measures) == 1
     assert "redundant" in "\n".join(real.update.lines())
     assert store.pcb_measures_list(ref_id) == before
+
+
+# ── through-hole drills end to end (taz15-blank, 2026-10-13) ────────────
+_THT_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tht"
+
+
+def _tht_zip() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("project2.json", (_FIXTURE / "project2.json").read_bytes())
+        zf.writestr("board.epru", (_THT_FIXTURE / "board.epru").read_bytes())
+    return buf.getvalue()
+
+
+def test_tht_drills_survive_import_into_the_fab_render(store, pcb) -> None:
+    """Reto on taz15-blank (2026-10-13): SW3, the headers, every drilled
+    pad rendered as solid copper — the holes were stored
+    (``pcb_local_footprints`` kept each pad's ``drill``) but never reached
+    ``model['drills']`` on the ``level='fab'`` path, whose PTH file then
+    carried vias alone. This pins the whole chain — parse, store,
+    viewer — on a board with a THT switch (top, rotated 90°, one slotted
+    pin), a 2x2 header (bottom, rotated), a footprint-level NPTH and a
+    board-level NPTH pad."""
+    # -- parse: drills, the slot and both kinds of bare hole are read
+    project = epro.read_archive(_tht_zip())
+    board = project.by_type("PCB")[0]
+    design, _frame = epro.build_design(project, board)
+    fps = {f["name"]: f for f in design.footprints}
+    sw = fps["SW-TH_TEST"]
+    assert sorted(p["drill"] for p in sw["pads"]) == pytest.approx(
+        [0.6096, 0.6096, 0.762]
+    )
+    assert next(p for p in sw["pads"] if p.get("slot"))["slot"] == pytest.approx(
+        {"w": 0.6096, "h": 1.524}
+    )
+    assert [h["dia_mm"] for h in sw["holes"]] == pytest.approx([1.016])
+    assert len(fps["HDR-TH_2x2"]["pads"]) == 4
+    assert all(p.get("drill") for p in fps["HDR-TH_2x2"]["pads"])
+    assert len(design.features) == 2  # outline + the one board-level NPTH
+
+    # -- store: drill AND slot come back off pcb_local_footprints
+    result = pcb_epro.import_epro(store, _tht_zip(), slug="epro-tht")
+    stored = store.pcb_local_footprints_for(result.ref_id)
+    sw_stored = {p["number"]: p for p in stored["SW-TH_TEST"]["pads"]}
+    assert all(p.get("drill") for p in sw_stored.values())
+    assert sw_stored["2"]["slot"] == pytest.approx({"w": 0.6096, "h": 1.524})
+    assert len(stored["SW-TH_TEST"]["holes"]) == 1
+    assert all(p.get("drill") for p in stored["HDR-TH_2x2"]["pads"])
+
+    # -- the fab model: every drilled pad drills the PTH file, both NPTH
+    #    holes drill the NPTH one
+    model, _warnings = pcb._fab_svg_model(result.ref_id, "epro-tht")
+    drills = model["drills"]
+    plated = [d for d in drills if d.get("plated", True)]
+    unplated = [d for d in drills if not d.get("plated", True)]
+    assert len(plated) == 7  # SW1's three pins + J1's four
+    assert len(unplated) == 2  # npth1 + SW1's footprint hole
+    slots = [d for d in plated if d.get("slot")]
+    assert len(slots) == 1
+    (x1, y1), (x2, y2) = slots[0]["slot"]
+    assert math.hypot(x2 - x1, y2 - y1) == pytest.approx(1.524 - 0.6096)
+    # DRC sees the same drills off the pad rows, not off this list:
+    # annular-ring / via-pad-keepout read pad["drill"].
+    from precis.pcb import drc
+
+    assert len(drc._drilled_pad_ring_items(model)) == 7
+
+    # -- the viewer payload itself: the gerber round-trip, not the model
+    svg = pcb.get(id="epro-tht", view="svg", args={"level": "fab"}).body
+    # Anchored at the title start: "NPTH ·" contains "PTH ·" as a substring.
+    assert svg.count("<title>PTH · ") == 6  # round plated drills
+    assert svg.count("<title>NPTH · ") == 2
+    assert svg.count('class="drill-slot"') == 1

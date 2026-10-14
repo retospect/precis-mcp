@@ -2703,17 +2703,61 @@ class PcbHandler(Handler):
         **A through-hole component pad's own drill is NOT included here**:
         DRC's pad source (:func:`precis.pcb.realize.pads_for_ir`, the IR
         path this view deliberately uses so pads and connectivity share
-        ONE source — see :meth:`_render_drc`'s own comment) carries no
-        drill/through-hole concept at all yet. Reaching into
-        :mod:`precis.pcb.padplace`'s cached-footprint pad source instead
-        would reintroduce exactly the "one rule, two call sites, drifted"
-        pad-source split that comment already warns against — a distinct,
-        deferred gap that belongs in ``realize.py``, not patched around
-        here."""
+        ONE source — see :meth:`_render_drc`'s own comment) carries each
+        pad's ``drill``/``slot`` on the pad itself, where the drilled-pad
+        rules already read it (:func:`precis.pcb.drc.check_annular_ring`'s
+        ``_drilled_pad_ring_items``, ``clearance_pairs_indexed``'s
+        "spans every layer" signal). ``check_npth_clearance`` — this
+        list's consumer — only wants the unplated holes anyway. The
+        plated-hole side for the FAB model is :meth:`_pad_drills`."""
         return [
             {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
             for h in ir.mounting_holes
         ]
+
+    @staticmethod
+    def _pad_drills(pads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """``model['drills']`` entries for every drilled component pad —
+        the plated through-holes ``model['drills']`` otherwise lacks on
+        the IR-sourced pad path (:meth:`_drc_pads` /
+        :func:`precis.pcb.realize.pads_for_ir`), whose pads carry
+        ``drill``/``slot`` on themselves instead of emitting a second
+        drill list the way
+        :func:`precis.pcb.padplace.place_footprint_pads` does.
+
+        Re-shapes what is already on the pad, so it cannot disagree with
+        the drawn land. Deduped on the hole's physical identity
+        ``(x, y, dia)`` — the same :func:`precis.pcb.drc.
+        _drilled_pad_ring_items` uses — so a pad list that ever carries a
+        hole twice (``place_footprint_pads`` flashes one per copper layer)
+        still writes one Excellon coordinate."""
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[float, float, float]] = set()
+        for pad in pads:
+            drill = pad.get("drill")
+            if not drill:
+                continue
+            key = (
+                round(float(pad["x"]), 4),
+                round(float(pad["y"]), 4),
+                round(float(drill), 4),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            hole: dict[str, Any] = {
+                "x": float(pad["x"]),
+                "y": float(pad["y"]),
+                "dia_mm": float(drill),
+                "plated": True,
+            }
+            # ``slot`` on a placed pad is already the board-frame
+            # end-centre pair ``_excellon_file``'s G85 row and
+            # ``gerber_view``'s slot render both consume.
+            if pad.get("slot"):
+                hole["slot"] = pad["slot"]
+            out.append(hole)
+        return out
 
     def _mask_open_regions(self, ref_id: int) -> list[dict[str, Any]]:
         """``ftype='mask_open'`` features -> :mod:`precis.pcb.gerber`'s
@@ -4765,16 +4809,28 @@ class PcbHandler(Handler):
             "outline": outline,
             "copper": copper,
             "pads": pads,
-            # Mounting-hole drills — without them this preview showed a
-            # solder-nut ring with no hole through it while the real
-            # bundle (`_render_gerber`, same IR source) drills one; the
-            # two views disagreeing about the artefact is exactly what
-            # this level='fab' view exists to prevent. Via drills ride in
-            # from `copper` (excellon_files' own via pass), so this key
-            # carries only the board-config holes.
+            # Two hole populations, both required or the preview lies
+            # about the artefact:
+            # - mounting/footprint holes off the IR — without them this
+            #   preview showed a solder-nut ring with no hole through it
+            #   while the real bundle (`_render_gerber`, same IR source)
+            #   drills one (measured on the round-3 nano render).
+            # - component pad drills off the pads themselves — the IR pad
+            #   source carries `drill`/`slot` ON each pad but emits no
+            #   drill list, so without this half the PTH file held vias
+            #   alone and every THT part (a switch, every pin header)
+            #   rendered as a solid pad with no hole — the defect that
+            #   surfaced on taz15-blank (2026-10-13). `_fab_model` gets
+            #   the same holes from `board_pads`' own drill return; the
+            #   two stay consistent because both read `pad["drill"]`.
+            # Via drills ride in from `copper` (excellon_files' own via
+            # pass), so this key carries no via rows.
             "drills": [
-                {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
-                for h in ir.mounting_holes
+                *self._pad_drills(pads),
+                *(
+                    {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
+                    for h in ir.mounting_holes
+                ),
             ],
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),

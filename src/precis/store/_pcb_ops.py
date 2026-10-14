@@ -205,6 +205,24 @@ def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
     }
     if p.get("drill") is not None:
         pad["drill"] = float(p["drill"])
+        # A slotted hole (EasyEDA holeType SLOT, a USB-C shield tab) is a
+        # footprint-local ``{w, h}`` extent beside the round cutter
+        # diameter in ``drill`` — the shape
+        # :func:`precis.pcb.padplace._slot_centre_line` reads. Dropping it
+        # here stored the slot as a plain round hole of its short axis.
+        slot = p.get("slot")
+        if slot is not None:
+            if not isinstance(slot, dict) or not all(
+                isinstance(slot.get(k), (int, float))
+                and math.isfinite(float(slot[k]))
+                and float(slot[k]) > 0
+                for k in ("w", "h")
+            ):
+                raise ValueError(
+                    f"pcb footprint pad {pin_name!r}: slot must be "
+                    "{w, h} with positive finite values"
+                )
+            pad["slot"] = {"w": float(slot["w"]), "h": float(slot["h"])}
     if shape == "polygon":
         poly = p.get("poly") or []
         if len(poly) < 3:
