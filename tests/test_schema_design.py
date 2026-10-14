@@ -281,6 +281,7 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "struct_runs.method",
         "struct_runs.params",
         "summarizers.config",
+        "tool_calls.arg_sample",
         "tool_calls.input_keys",
         "worker_logs.payload",
     }

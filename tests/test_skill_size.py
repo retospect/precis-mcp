@@ -38,7 +38,12 @@ WARN_BYTES = 16 * 1024
 #: slug (filename stem, no ``.md``) -> justification. Every entry here is
 #: exempt from ``FAIL_BYTES`` but still counted toward the ``WARN_BYTES``
 #: drift warning, so its shrink-back is visible too.
-_ALLOWLIST: dict[str, str] = {}
+_ALLOWLIST: dict[str, str] = {
+    "precis-pcb-help": (
+        "62f4634c8 added the JLCPCB order section, 811 bytes over; split "
+        "fab/order into its own skill (tracked as a gripe)"
+    ),
+}
 
 
 def _skill_files() -> list[Path]:

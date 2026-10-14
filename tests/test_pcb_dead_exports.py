@@ -137,6 +137,19 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/globalplan.py::corridor_route": (
         "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
     ),
+    "src/precis/pcb/jlc_library.py::reset_live_cache": (
+        "own docstring: 'Clear the live-lookup negative cache (tests; an "
+        "operator retry)' -- same ops-tool shape as _http.reset_circuit"
+    ),
+    "src/precis/pcb/jlc_order.py::JlcOrderClient.order_detail": (
+        "62f4634c8 (p3-order): read-back of a created order; the order op "
+        "stops at an unpaid order and no view reads it back yet"
+    ),
+    "src/precis/pcb/jlc_order.py::JlcOrderClient.audit": (
+        "62f4634c8 (p3-order): JLC's DFM read on an uploaded file, the "
+        "gerber-preflight oracle docs/backlog/pcb-guided-place-route.md "
+        "plans around; no preflight caller yet"
+    ),
     "src/precis/pcb/_http.py::reset_circuit": (
         "own docstring: 'for tests, and for an operator retrying by hand' "
         "-- an ops tool, never code-called"

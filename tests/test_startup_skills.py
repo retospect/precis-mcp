@@ -248,7 +248,9 @@ def test_build_instructions_includes_pinned_skills_when_configured() -> None:
     from precis import server
 
     runtime = _runtime_with_startup_skills(
-        startup_skills_value="precis-search-help,precis-overview"
+        startup_skills_value="precis-search-help,precis-overview",
+        # the banner, not the cap, is under test (drop-tail is above)
+        cap_kb=200,
     )
     out = server._build_instructions(runtime)
     assert "Pinned skills: precis-search-help, precis-overview." in out

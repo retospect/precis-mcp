@@ -210,7 +210,10 @@ The catalog itself is refreshed by the `parts_refresh` pass, which walks
 the JLCPCB Open API `lastKey` cursor daily. A failed walk raises
 `parts_refresh/jlcpcb-api` (warn — the parts table just stays stale);
 triage starts at the alert detail (auth/permission vs transport), and
-`precis pcb refresh-parts --from-sqlite` is the fallback. Day-to-day you
+`precis pcb refresh-parts --from-sqlite` is the fallback. Two siblings
+cover the same pass: `parts_refresh/jlcpcb-listing` (the jlcpcb.com listing
+walk failed) and `parts_refresh/jlcpcb-library` (the Basic/Preferred
+top-up failed; retry with `precis pcb refresh-parts --library`). Day-to-day you
 shouldn't need either: the live lookup above covers individual parts on
 demand — refresh-parts is for keeping the *bulk* catalog fresh, not for
 answering "does C<n> exist?"
