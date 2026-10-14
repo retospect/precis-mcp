@@ -4,7 +4,7 @@
 
 - **Pillar:** 3d-design
 - **Next:** T1 entry slice: `/rxn` web ledger and kept reaction records (nanoreactor owner).
-- **Blocked by:** Station-path-finder waits on this viewing/storage slice. T2 waits on hexfold's k = 3 seams.
+- **Blocked by:** Station-path-finder waits on this viewing/storage slice. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14); H2/H3 remain.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
 - **Worktree:** `nanoreactor`
@@ -75,8 +75,11 @@ here. Candidate review is independent and precedes integration.
 
 ## Horizon
 
-1. **backlog/hexfold-nanoreactor-tube.md** — T2; waits on k = 3 seams
-   (hexfold-toolkit owns the build).
+1. **backlog/hexfold-nanoreactor-tube.md** — T2; reservoir sheets +
+   armchair opening solver landed 2026-10-14 (`tunnel-reservoirs`,
+   `hexfold/examples/tunnel_reservoirs.hx`); next ranked H2 (several
+   radii along the tube + optional outer Y-junction) then H3 (MLIP
+   relax with per-seam strain).
 2. **backlog/nanoreactor-no-nh3.md §T3** — track designer; spec once
    T1's station record exists.
 3. **backlog/nanoreactor-no-nh3.md §T4** — ring/pendant designer; spec

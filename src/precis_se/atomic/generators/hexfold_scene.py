@@ -47,6 +47,15 @@ the axis, each seam's third sheet an inward strip (``rows``), with optional
 ``pores`` (``{"arc": k, "at": [u, v]}`` hexagon vacancies) and a stored
 ``sites`` list of the attachment carbons; ``tube: [rows, periods]`` as for
 the seam tube but with even row pairs per arc.
+
+**Reservoir-tunnel feature contract.** A feature with ``"type":
+"tunnel-reservoirs"`` routes the whole call to
+:func:`~precis_se.atomic.generators.tunnel.build_tunnel_reservoirs`: sheet |
+tube | sheet -- each tube end stitched into a hole the armchair opening
+solver cuts in its own flat reservoir sheet (``sheet: [x_periods,
+row_pairs]`` on the feature).  ``tube`` is ``[n, periods]`` for an armchair
+``tube(n,n)`` or ``{"rail": [rows, periods], "rails", "rows", "pores"}`` for
+a rail tube.  It must be the only feature.
 **sp3 seam feature contract.** A feature with ``"type": "k4-sp3-90-a"``
 routes the whole call to
 :func:`~precis_se.atomic.generators.sp3_seam.build_sp3_seam`: four
@@ -654,6 +663,12 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
             from precis_se.atomic.generators.rail120 import build_rail120
 
             return build_rail120(params)
+        if typed == ["tunnel-reservoirs"]:
+            from precis_se.atomic.generators.tunnel import (
+                build_tunnel_reservoirs,
+            )
+
+            return build_tunnel_reservoirs(params)
         if typed == ["k4-sp3-90-a"] or typed == ["k3-sp3-z"]:
             from precis_se.atomic.generators.sp3_seam import build_sp3_seam
 

@@ -1,13 +1,14 @@
 ---
 id: precis-hexfold-seams-help
 family: se
-title: precis — hexfold seams: the straight Y, seam tube, rail tube, fin
-summary: the equal-120 sp2 k3 seam entries of generator='hexfold_scene' — the straight three-sheet Y (k3-sp2-120-z), one seam along a tube axis (fin-k3-120-z), a closed tube of N arcs on N seams each carrying an inward rib (rail-k3-120-z), and the sp3 graft fin (fin-sp3-z)
+title: precis — hexfold seams: the straight Y, seam tube, rail tube, fin, reservoir tunnel
+summary: the equal-120 sp2 k3 seam entries of generator='hexfold_scene' — the straight three-sheet Y (k3-sp2-120-z), one seam along a tube axis (fin-k3-120-z), a closed tube of N arcs on N seams each carrying an inward rib (rail-k3-120-z), the sp3 graft fin (fin-sp3-z), and a tube closed between two reservoir sheets (tunnel-reservoirs)
 answers:
   - how do I build a straight 120-degree Y junction of three sheets?
   - how do I run a seam or a strip along a tube axis?
   - how do I close a tube of N arcs on N seams with inward ribs, pores and a site list?
-  - what are the rail-k3-120-z / fin-k3-120-z / fin-sp3-z feature params?
+  - how do I close a tube between two reservoir sheets (sheet | tube | sheet)?
+  - what are the rail-k3-120-z / fin-k3-120-z / fin-sp3-z / tunnel-reservoirs feature params?
 applies-to: put/edit (kind='se', op='generate')
 status: active
 tags: verbs, design
@@ -93,6 +94,37 @@ third sheet an inward rib — no far-side fuse. Same `tube` (even rows),
 `out`. Optional `pores:[{"arc":k,"at":[u,v]}]` carves one hexagon each,
 refused at a rim or another pore. Findings add `pore.rings` and `sites`
 (open-valence rib/seam carbons, lumen normals, 2.5–3.0 Å pendant pairs).
+
+## Reservoir tunnel: sheet | tube | sheet
+
+The nanoreactor's reservoir stage closes a tube between two flat sheets:
+each end seats into a hole the armchair opening solver cuts in its own
+sheet (twist × scale scan on the rim's projected polygon), the dangling
+atoms stitched to the boundary in cyclic order and defect-ring faces
+minted (pentagons through nonagons where the lattices disagree;
+`opening.face.open` names seam faces that could not close).
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"t",
+ "params":{"tube":[6,6],
+ "features":[{"name":"t","type":"tunnel-reservoirs","sheet":[30,30]}],
+ "k_tether":1.0}}
+```
+
+`tube` is `[n, periods]` for an armchair `tube(n,n)` — other chiralities
+refuse by name — or `{"rail":[rows,periods],"rails":N,"rows":M,"pores":[...]}`
+for a rail tube, whose ribbed end follows the projected star outline.
+The feature takes `name`, `type`, `sheet` only; `sheet` is
+`[x_periods,row_pairs]` per reservoir sheet, refused when it cannot clear
+the mouth polygon plus margin. One tethered stick pass: both sheets
+plane-tethered, tube and junctions free. Findings: `opening.defects`
+(pairs + defect census per mouth), `junction.strain` (seam-bond and
+face-angle residuals), `termination.covered` / `geom.contacts` gates.
+`topology["sites"]` labels junction atoms `fused`/`defect`/`unbonded`
+and rail lumen/seam sites with (z, θ, normal) plus a `to_stored` frame.
+The grammar special case lives at `hexfold/examples/tunnel_reservoirs.hx`
+(a `hex(1)` hole fused to a `(6,6)` end mints six heptagons per mouth).
+Analytic seed + tethered preview only; no stability claim.
 
 ## Fin on a tube: sp3 graft along an axial zigzag chain
 
