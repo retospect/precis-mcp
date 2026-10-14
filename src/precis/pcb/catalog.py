@@ -23,6 +23,7 @@ top-up of the Basic/Preferred library.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,34 @@ from precis.utils.coerce import to_int
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+#: An agent-typed C-number: ``C`` + 3–8 digits (any case). The smallest
+#: catalogued parts are 3-digit (C67, …) and the dump walks well into
+#: 8 digits.
+_LCSC_ID_RE = re.compile(r"[Cc](\d{3,8})")
+
+#: A C-number embedded in a pasted product URL — ``…_C2655145.html``
+#: (lcsc.com), ``…/C2655145`` (jlcpcb.com partdetail/urlSuffix),
+#: ``?searchTxt=C2655145``. Alphanumeric boundaries (not ``\b`` — ``_``
+#: is a word char) so ``RN60C9992FB14`` does not match.
+_LCSC_URL_RE = re.compile(r"(?<![A-Za-z0-9])[Cc](\d{3,8})(?![A-Za-z0-9])")
+
+
+def lcsc_id(raw: Any) -> str | None:
+    """Canonical ``C<n>`` for an agent-supplied part id, or ``None``.
+
+    Accepts a bare ``C…`` (any case) and a pasted LCSC/JLCPCB product URL —
+    the C-number is extracted from the string; the URL is never fetched.
+    Anything else returns ``None`` (callers keep their existing handling
+    for non-C-number ids)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    m = _LCSC_ID_RE.fullmatch(s)
+    if m is not None:
+        return f"C{m.group(1)}"
+    m = _LCSC_URL_RE.search(s)
+    return f"C{m.group(1)}" if m is not None else None
 
 
 def _lcsc_number(raw: Any) -> str | None:

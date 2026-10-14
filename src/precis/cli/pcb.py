@@ -479,6 +479,9 @@ def _refresh_from_api(store: Store, *, page_size: int, row_limit: int | None) ->
         row_budget=row_limit if row_limit is not None else DEFAULT_ROW_BUDGET,
         client=client,
         page_size=page_size,
+        # The operator asked for the API leg by name — attempt it even
+        # during a recorded outage (the daily pass skips those).
+        force_walk=True,
     )
     error = result.get("error")
     if error:

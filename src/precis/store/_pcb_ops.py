@@ -856,6 +856,20 @@ class PcbMixin:
         inst_by_refdes = self._pcb_instance_map(conn, ref.id)
         net_by_name = self._pcb_net_map(conn, ref.id)
 
+        # Canonicalise ``part``/``part_lcsc`` once per batch (gr485250): a
+        # lowercase C-number or a pasted lcsc.com/jlcpcb.com product URL
+        # resolves to its ``C<n>`` here so every downstream read
+        # (``_pcb_insert_component``, ``_pcb_footprint_ref(s)``,
+        # ``part_cache``) sees the same key. Non-C-number values pass
+        # through untouched — ``part_lcsc`` is a LOOSE reference by design.
+        from precis.pcb.catalog import lcsc_id
+
+        for c in components:
+            for field in ("part", "part_lcsc"):
+                raw = c.get(field)
+                if raw is not None and (canon := lcsc_id(raw)) is not None:
+                    c[field] = canon
+
         # catalog snapshots for the whole batch up front (two ANY()
         # queries) — resolving inside the loop was 2 queries per component.
         part_cache = self._pcb_resolve_parts(
@@ -4384,6 +4398,55 @@ class PcbMixin:
                 "package": r[6],
                 "datasheet_url": r[7],
                 "description": r[8],
+            }
+            for r in rows
+        ]
+
+    def pcb_bom_availability(self, ref_id: int) -> list[dict[str, Any]]:
+        """Per component TYPE: its C-number, refdes set, qty, and the
+        catalog/stock/lifecycle facts the ``view='availability'`` EOL sweep
+        renders (gr485250). A hand-entered component (no ``part_lcsc``)
+        still lists — its catalog columns are NULL. ``params`` carries the
+        live-listing ``_lifecycle``/``_lcsc_url`` keys when a live row wrote
+        them; ``discontinued`` is ``part_availability``'s absent-from-dump
+        flag."""
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT c.component_id, c.label, c.part_lcsc, "
+                "       array_agg(i.refdes ORDER BY i.refdes), "
+                "       count(i.instance_id), "
+                "       p.mfr_part, p.basic, p.stock, p.price, p.params, "
+                "       p.refreshed_at, "
+                "       a.discontinued, a.ewma_stock, a.restock_count "
+                "FROM pcb_components c "
+                "JOIN pcb_instances i ON i.component_id = c.component_id "
+                "                    AND i.retired_at IS NULL "
+                "LEFT JOIN parts p ON p.lcsc = c.part_lcsc "
+                "LEFT JOIN part_availability a ON a.lcsc = c.part_lcsc "
+                "WHERE c.ref_id = %s AND c.retired_at IS NULL "
+                "GROUP BY c.component_id, c.label, c.part_lcsc, "
+                "         p.mfr_part, p.basic, p.stock, p.price, p.params, "
+                "         p.refreshed_at, a.discontinued, a.ewma_stock, "
+                "         a.restock_count "
+                "ORDER BY min(i.refdes)",
+                (ref_id,),
+            ).fetchall()
+        return [
+            {
+                "component_id": int(r[0]),
+                "label": r[1],
+                "part_lcsc": r[2],
+                "refdes": [str(x) for x in (r[3] or [])],
+                "qty": int(r[4]),
+                "mfr_part": r[5],
+                "basic": r[6],
+                "stock": r[7],
+                "price": r[8],
+                "params": r[9],
+                "refreshed_at": r[10],
+                "discontinued": bool(r[11]) if r[11] is not None else False,
+                "ewma_stock": r[12],
+                "restock_count": r[13],
             }
             for r in rows
         ]

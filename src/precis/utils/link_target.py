@@ -173,6 +173,14 @@ def parse_link_target(
             next="link='kind:identifier'",
         )
 
+    if kind == "part":
+        # A part identifier is the C-number — accept it lowercase or as a
+        # pasted lcsc.com/jlcpcb.com product URL (extracted, never fetched),
+        # so every link door resolves the same ref the mint path made.
+        from precis.pcb.catalog import lcsc_id
+
+        identifier = lcsc_id(identifier) or identifier
+
     # Resolve the ref. Numeric kinds take int(refs.id); slug kinds
     # take refs.slug. ``store.get_ref`` returns None on miss; we
     # convert that to NotFound with the original input echoed back.
@@ -346,7 +354,36 @@ def mint_lazy_link_target(target: str, *, store: Store) -> None:
         store.ensure_skill_ref(identifier)
         return
     if identifier and handle_registry.parse(identifier) is None:
-        store.ensure_part_ref(identifier)
+        # Accept the C-number however it arrives — lowercase, or a pasted
+        # lcsc.com/jlcpcb.com product URL (the C-number is extracted, never
+        # fetched). On a catalog miss ask the live listing endpoint once
+        # (gr485250): the dump lacks the Extended range, so a catalog miss
+        # is not proof the part does not exist.
+        from precis.pcb import catalog, jlc_library
+
+        key = catalog.lcsc_id(identifier) or identifier
+        try:
+            store.ensure_part_ref(key)
+            return
+        except NotFound as exc:
+            if catalog.lcsc_id(key) is None:
+                raise
+            try:
+                found = jlc_library.live_lookup(store, key)
+            except Exception as live_exc:
+                exc.next = [
+                    *([exc.next] if isinstance(exc.next, str) else []),
+                    f"the live jlcpcb.com lookup failed ({live_exc})",
+                ]
+                raise exc from live_exc
+            if found is None:
+                exc.next = [
+                    *([exc.next] if isinstance(exc.next, str) else []),
+                    f"the live jlcpcb.com listing was checked too — no {key} "
+                    "there either",
+                ]
+                raise
+        store.ensure_part_ref(key)
 
 
 def _kind_is_numeric(kind: str, *, store: Store) -> bool:

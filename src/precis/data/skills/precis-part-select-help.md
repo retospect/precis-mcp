@@ -19,9 +19,12 @@ A `part` is reference data in the LCSC/JLCPCB catalog, addressed by its **LCSC
 C-number** (`C25804`). It is **ingest-only** (loaded via `precis pcb
 refresh-parts` / the `parts_refresh` worker, from the JLCPCB Open API or the
 community `jlcparts` dump) — you `get`, `search` and link it, never `put` it.
-The whole catalog is **JLCPCB-assemblable by definition**, so a part you find
-here can be placed and soldered by the fab. This skill feeds the `part` field
-of a `pcb` component ([[precis-pcb-help]]).
+On a catalog miss, `get`/`search`/linking fall back to a **live** query
+against JLCPCB's public parts listing and catalogue the hit — the dump lacks
+the Extended range below ~C6.37M and newer parts, so a catalog miss does not
+mean the part doesn't exist. The whole catalog is **JLCPCB-assemblable by
+definition**, so a part you find here can be placed and soldered by the fab.
+This skill feeds the `part` field of a `pcb` component ([[precis-pcb-help]]).
 
 ## Search the catalog — `search(kind='part', q=…)`
 
@@ -55,10 +58,18 @@ The selector **hard-filters to assemblable parts** and ranks them:
 Columns: `lcsc · mfr_part · description · basic · stock · restocks · package ·
 $ea`. Pick the top Basic row that matches your parametrics + footprint.
 
-> If a search returns nothing, the catalog may simply be empty on this host —
-> it's populated by `precis pcb refresh-parts` (the JLCPCB Open API, falling
-> back to the community jlcparts dump without API credentials). Say so
-> rather than inventing a C-number.
+A `q` that is itself a C-number is a point lookup against the catalog row
+(the selector's description match would never see it). When the local catalog
+has no hit, `search` asks the live jlcpcb.com listing with the same keyword —
+results are headed **LIVE**, catalogued on the way out, and show
+`restocks = —` until turnover accrues. A wedged endpoint degrades to the
+catalog's own answer with the failure named.
+
+> If a search returns nothing *and* the live listing found nothing either,
+> the catalog may simply be empty on this host — it's populated by `precis
+> pcb refresh-parts` (the JLCPCB Open API, falling back to the community
+> jlcparts dump without API credentials). Say so rather than inventing a
+> C-number.
 
 ## Read one part — `get(kind='part', id='C…')`
 
@@ -67,6 +78,13 @@ get(
     kind="part", id="C25804"
 )  # mfr part, assemblable, basic, stock, package, height, datasheet, restocks
 ```
+
+The id is a C-number **however it arrives** — `c25804`, or a pasted
+`lcsc.com`/`jlcpcb.com` product URL (the C-number is extracted from the
+string; the URL is never fetched). On a catalog miss `get` queries the live
+listing endpoint once and catalogues the hit — an Extended part the dump
+never carried resolves transparently. A real miss is negative-cached for a
+few minutes, then the `NotFound` says the live listing was checked too.
 
 Use this to confirm a candidate before committing it to a design — especially
 `package` (must match your footprint) and `basic`.
@@ -81,8 +99,11 @@ link(kind="component", id="my-cap", rel="realized-by", target="part:C25804")
 link(kind="memory", id=42, target="part:C25804")  # any kind with a link verb
 ```
 
-- A C-number that is not in the catalog has nothing to mint from, so the
-  link is refused (`NotFound`). `mode='remove'` and `like=` never mint.
+- A C-number that is not in the catalog gets one live-lookup shot at
+  minting; only a live miss refuses the link (`NotFound`, naming that the
+  listing was checked). `mode='remove'` and `like=` never mint.
+- The `target=` identifier takes the same forms `get` does — lowercase or a
+  pasted product URL both canonicalise to the `C<n>` ref.
 - Once a part has a ref, `get(kind='part', id='C25804')` adds `ref: pn<id>`
   and its links under the catalog row. If the daily catalog refresh later
   drops the row, `get` still shows the ref and its links, with "no longer in
@@ -189,7 +210,10 @@ The catalog itself is refreshed by the `parts_refresh` pass, which walks
 the JLCPCB Open API `lastKey` cursor daily. A failed walk raises
 `parts_refresh/jlcpcb-api` (warn — the parts table just stays stale);
 triage starts at the alert detail (auth/permission vs transport), and
-`precis pcb refresh-parts --from-sqlite` is the fallback.
+`precis pcb refresh-parts --from-sqlite` is the fallback. Day-to-day you
+shouldn't need either: the live lookup above covers individual parts on
+demand — refresh-parts is for keeping the *bulk* catalog fresh, not for
+answering "does C<n> exist?"
 
 ## Selecting per function (typical board)
 

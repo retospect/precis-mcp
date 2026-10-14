@@ -159,6 +159,11 @@ def _lib_fail(store):
     raise VendorError("jlcpcb-web", "HTTP 503")
 
 
+def _empty_listing(body):
+    """Listing-walk fake: an empty first page — no rows, next_page=None."""
+    return {"data": {"componentPageInfo": {"pages": 0, "list": []}}}
+
+
 def _sev(store, fp):
     from precis.alerts import open_alert_severity
 
@@ -168,15 +173,23 @@ def _sev(store, fp):
 def test_pass_runs_library_when_api_is_dark(store):
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
-    r = run_parts_refresh_pass(store, client=_Client(available=False), library=_lib_ok)
-    assert r == {"claimed": 0, "ok": 0, "failed": 0, "library": 2}
+    r = run_parts_refresh_pass(
+        store,
+        client=_Client(available=False),
+        library=_lib_ok,
+        list_post=_empty_listing,
+    )
+    assert r["failed"] == 0 and r["library"] == 2 and r["api_walk"] == "dark"
 
 
 def test_pass_library_failure_raises_alert(store):
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
     r = run_parts_refresh_pass(
-        store, client=_Client(available=False), library=_lib_fail
+        store,
+        client=_Client(available=False),
+        library=_lib_fail,
+        list_post=_empty_listing,
     )
     assert r["failed"] == 1 and r["library"] == 0 and "HTTP 503" in r["library_error"]
     assert _sev(store, "jlcpcb-library") is not None
@@ -188,16 +201,22 @@ def test_pass_alert_lifecycle_per_fingerprint(store):
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
     api_bad = _Client(error=JlcPermissionError("jlcpcb", "no scope", status=403))
-    run_parts_refresh_pass(store, client=api_bad, library=_lib_fail)
+    run_parts_refresh_pass(
+        store, client=api_bad, library=_lib_fail, list_post=_empty_listing
+    )
     assert _sev(store, "jlcpcb-api") is not None
     assert _sev(store, "jlcpcb-library") is not None
 
-    r = run_parts_refresh_pass(store, client=_Client(), library=_lib_fail)
+    r = run_parts_refresh_pass(
+        store, client=_Client(), library=_lib_fail, list_post=_empty_listing
+    )
     assert r["failed"] == 1 and r["ok"] == 1
     assert _sev(store, "jlcpcb-api") is None
     assert _sev(store, "jlcpcb-library") is not None
 
-    r = run_parts_refresh_pass(store, client=_Client(), library=_lib_ok)
+    r = run_parts_refresh_pass(
+        store, client=_Client(), library=_lib_ok, list_post=_empty_listing
+    )
     assert r["failed"] == 0 and r["library"] == 2
     assert _sev(store, "jlcpcb-library") is None
 
@@ -207,10 +226,17 @@ def test_pass_dark_leaves_open_api_alert(store):
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
     api_bad = _Client(error=JlcPermissionError("jlcpcb", "no scope", status=403))
-    run_parts_refresh_pass(store, client=api_bad, library=_lib_ok)
+    run_parts_refresh_pass(
+        store, client=api_bad, library=_lib_ok, list_post=_empty_listing
+    )
     assert _sev(store, "jlcpcb-api") is not None
     # Dark skips the walk: neither confirms nor clears the API alert.
-    run_parts_refresh_pass(store, client=_Client(available=False), library=_lib_ok)
+    run_parts_refresh_pass(
+        store,
+        client=_Client(available=False),
+        library=_lib_ok,
+        list_post=_empty_listing,
+    )
     assert _sev(store, "jlcpcb-api") is not None
 
 

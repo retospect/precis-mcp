@@ -72,6 +72,7 @@ import warnings
 import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
@@ -545,6 +546,30 @@ def _reset_drain_flag() -> Iterator[None]:
     from precis import liveness
 
     liveness._DRAIN.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_jlcpcb_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr485250: the part live-lookup path (:mod:`precis.pcb.jlc_library`
+    ``live_lookup``/``live_search``/``iter_keyword_rows``) POSTs to the real
+    jlcpcb.com listing endpoint when no ``post=`` is injected — reachable
+    from handler/link code paths now, not just the refresh worker, so a
+    test that forgets the seam would make a real network call. Deny by
+    default: constructing the real poster in a test raises ``VendorError``
+    (the same degradation a wedged endpoint produces), which is what the
+    callers' miss/failure handling is built to absorb. Tests exercise the
+    path by injecting a fake ``post=`` (or by patching ``live_lookup``
+    /``live_search`` outright).
+    """
+    import precis.pcb.jlc_library as _jl
+
+    def _denied(*_a: Any, **_k: Any) -> Any:
+        raise _jl.VendorError(
+            "jlcpcb-web",
+            "live jlcpcb.com call in a test — inject post= or patch the seam",
+        )
+
+    monkeypatch.setattr(_jl, "_WebPoster", _denied)
 
 
 @pytest.fixture(autouse=True)

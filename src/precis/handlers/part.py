@@ -7,6 +7,14 @@ It is **ingest-only** — populated by ``precis pcb refresh-parts`` / the
 community ``jlcparts`` SQLite dump absent API credentials), never by
 ``put``. Selection prefers **JLCPCB-assemblable, high-turnover** parts.
 
+On a catalog miss ``get``/``search`` fall back to a **live** query against
+JLCPCB's public parts-listing endpoint (:mod:`precis.pcb.jlc_library`,
+gr485250): the dump lacks the Extended range below ~C6.37M and beyond, so a
+C-number the catalog doesn't know (or a free-text query with no local hit)
+is asked of the site directly and the hit is upserted into ``parts`` on the
+way out. Live misses are negative-cached briefly; a wedged endpoint degrades
+to the catalog's own answer with the failure noted.
+
 Slice 1 ships read-only access (``get`` one part, ``search`` the catalog) over
 whatever the importer has loaded; the turnover ranking + lazy
 ``easyeda2kicad`` footprint fetch land in Slice 2.
@@ -53,12 +61,15 @@ first use:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._links_render import render_links_section
+from precis.pcb import catalog, jlc_library
+from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
 from precis.pcb.datasheets import datasheet_state
 from precis.protocol import Handler, KindSpec
@@ -105,9 +116,13 @@ class PartHandler(Handler):
         title="Part",
         description=(
             "LCSC/JLCPCB catalog part — reference data addressed "
-            "by LCSC C-number (get(kind='part', id='C25804')). Ingest-only "
-            "(jlcparts dump); linkable: link(target='part:C25804') mints its "
-            "ref on first use. search(kind='part', q='0.1uF 0402 X7R') filters "
+            "by LCSC C-number (get(kind='part', id='C25804'); a pasted "
+            "lcsc.com/jlcpcb.com product URL works too). Catalog-loaded "
+            "(jlcparts dump + JLCPCB library top-up); a catalog miss on a "
+            "C-number is looked up LIVE on jlcpcb.com and catalogued, and "
+            "search falls back to the same live keyword search. Linkable: "
+            "link(target='part:C25804') mints its ref on first use. "
+            "search(kind='part', q='0.1uF 0402 X7R') filters "
             "to JLCPCB-assemblable parts and prefers Basic + high-turnover + "
             "cheap. Used by a pcb design to pick manufacturable parts. "
             "See precis-part-select-help."
@@ -118,10 +133,28 @@ class PartHandler(Handler):
         id_required=False,
     )
 
-    def __init__(self, *, hub: Hub) -> None:
+    def __init__(
+        self,
+        *,
+        hub: Hub,
+        live_lookup: Callable[..., Any] | None = None,
+        live_search: Callable[..., Any] | None = None,
+    ) -> None:
         if hub.store is None:
             raise InitError("part: store required")
         self.store = hub.store
+        #: Test seams — ``live_lookup``: ``(store, lcsc) -> normalized row |
+        #: None``; ``live_search``: ``(store, q, page_size=) -> rows``.
+        #: Both default to the real endpoint (:mod:`precis.pcb.jlc_library`).
+        self._live_lookup = live_lookup
+        self._live_search = live_search
+
+    def _live(self, lcsc: str) -> dict[str, Any] | None:
+        """The injectable live lookup; resolves to the real endpoint
+        (:func:`precis.pcb.jlc_library.live_lookup`) when no test double
+        was injected."""
+        fn = self._live_lookup or jlc_library.live_lookup
+        return fn(self.store, lcsc)
 
     # ── get ──────────────────────────────────────────────────────────
     def get(self, *, id: str | int | None = None, **_kw: Any) -> Response:
@@ -130,16 +163,33 @@ class PartHandler(Handler):
                 "get(kind='part') requires id= (an LCSC C-number)",
                 next="get(kind='part', id='C25804')  or  search(kind='part', q='...')",
             )
-        lcsc = str(id).strip().upper()
+        lcsc = catalog.lcsc_id(id) or str(id).strip().upper()
         row = self.store.part_row(lcsc)
+        live_note: str | None = None
+        if row is None and catalog.lcsc_id(lcsc) is not None:
+            # Catalog miss on a C-number: ask the live listing endpoint
+            # (gr485250 — the dump lacks the Extended range). A hit is
+            # upserted into ``parts`` by the lookup itself.
+            try:
+                if self._live(lcsc) is not None:
+                    row = self.store.part_row(lcsc)
+                else:
+                    live_note = (
+                        "the live jlcpcb.com parts listing was checked too — "
+                        f"no {lcsc} there either"
+                    )
+            except VendorError as exc:
+                live_note = f"the live jlcpcb.com lookup failed ({exc})"
         ref_id = self.store.part_ref_id(lcsc)
         ref = self.store.get_ref(kind="part", id=ref_id) if ref_id is not None else None
         if row is None and ref is None:
             raise NotFound(
                 f"part {lcsc} not in the catalog",
-                next="the parts catalog is populated by the parts_refresh worker "
-                "(precis pcb refresh-parts); search(kind='part', q='...') once "
-                "it has run",
+                next=[
+                    *([live_note] if live_note else []),
+                    "search(kind='part', q='...') for alternatives "
+                    "(live-searched too on a catalog miss)",
+                ],
             )
         if row is not None:
             payload = {
@@ -183,15 +233,41 @@ class PartHandler(Handler):
         # Basic-first then turnover (store.parts_search).
         rows = self.store.parts_search(q, limit=page_size)
         if not rows:
+            # A C-number query is a point lookup — the selector's
+            # description-only tsv never matches one.
+            direct = catalog.lcsc_id(q)
+            if direct is not None:
+                hit = self.store.part_row(direct)
+                if hit is not None:
+                    rows = [hit]
+        live_rows: list[dict[str, Any]] | None = None
+        live_err: str | None = None
+        if not rows:
+            # Live fallback (gr485250): one bounded keyword query against
+            # the public listing endpoint; hits are catalogued on the way
+            # out. A wedged endpoint degrades to the catalog's own answer
+            # with the failure named, never to a hang.
+            fn = self._live_search or jlc_library.live_search
+            try:
+                live_rows = fn(self.store, q, page_size=min(page_size, 25))
+            except VendorError as exc:
+                live_err = str(exc)
+        if not rows and not live_rows:
+            note = f"no assemblable parts match {q!r}"
+            if live_err is not None:
+                note += f"; the live jlcpcb.com lookup failed ({live_err})"
+            elif live_rows is not None:
+                note += " — the live jlcpcb.com listing found nothing either"
             return Response(
-                body=f"no assemblable parts match {q!r}\n\n"
-                "Note: the parts catalog is populated by `precis pcb "
+                body=note
+                + "\n\n"
+                + "Note: the parts catalog is populated by `precis pcb "
                 "refresh-parts` (JLCPCB Open API, or the jlcparts dump as a "
                 "fallback) — it may be empty until that has run."
             )
         out = []
-        for r in rows:
-            price = min_unit_price(r["price"])
+        for r in rows or live_rows or []:
+            price = min_unit_price(r.get("price"))
             out.append(
                 {
                     "lcsc": r["lcsc"],
@@ -199,14 +275,21 @@ class PartHandler(Handler):
                     "description": (r["description"] or "")[:50],
                     "basic": "yes" if r["basic"] else "no",
                     "stock": r["stock"] if r["stock"] is not None else "—",
-                    "restocks": r["restock_count"],
+                    "restocks": r.get("restock_count", "—"),
                     "package": r["package"] or "—",
                     "$ea": f"{price:.4g}" if price is not None else "—",
                 }
             )
+        head = (
+            f"# {len(out)} assemblable part(s) for {q!r} (Basic + high-turnover first)"
+            if rows
+            else f"# {len(out)} LIVE part(s) for {q!r} — fetched from "
+            "jlcpcb.com's listing just now and catalogued (not yet ranked by "
+            "turnover; these include Extended parts the catalog lacks)"
+        )
         return Response(
-            body=f"# {len(out)} assemblable part(s) for {q!r} "
-            "(Basic + high-turnover first)\n"
+            body=head
+            + "\n"
             + render_agent_table(
                 out,
                 schema=[

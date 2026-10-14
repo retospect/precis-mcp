@@ -632,6 +632,25 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         triage="Read the alert detail (auth/permission vs transport); fallback "
         "is `precis pcb refresh-parts --from-sqlite`.",
     ),
+    AlertRule(
+        "parts_refresh",
+        "jlcpcb-listing",
+        "The daily jlcpcb.com listing walk failed — the pass's catalog "
+        "coverage while the Open API is dead.",
+        "warn",
+        None,
+        triage="The listing endpoint is undocumented; check the error in "
+        "worker_logs. If it is gone, `parts` only has the jlcparts dump + "
+        "on-demand live lookups until it recovers.",
+    ),
+    AlertRule(
+        "parts_refresh",
+        "jlcpcb-library",
+        "The daily JLCPCB Basic/Preferred library top-up failed.",
+        "warn",
+        None,
+        triage="Manual retry: `precis pcb refresh-parts --library`.",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

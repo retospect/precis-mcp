@@ -235,7 +235,11 @@ class DatasheetHandler(PaperHandler):
                 )
             patch["subtype"] = sub
         if part_lcsc is not None:
-            patch["part_lcsc"] = part_lcsc.strip().upper()
+            from precis.pcb.catalog import lcsc_id
+
+            # blank clears the field; a bare C-number in any case or a
+            # pasted product URL normalises to the canonical ``C<n>``
+            patch["part_lcsc"] = lcsc_id(part_lcsc) or part_lcsc.strip().upper()
         return patch
 
 

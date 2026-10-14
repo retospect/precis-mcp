@@ -1763,14 +1763,54 @@ class DispatchMixin(RuntimeShape):
                 ),
             )
 
-        handler = self._resolve_handler(resolved_kind, verb)
-        return self._invoke_handler(
-            handler,
-            verb,
-            kind=resolved_kind,
-            kind_was_defaulted=kind_was_defaulted,
-            args=args,
+        try:
+            handler = self._resolve_handler(resolved_kind, verb)
+            return self._invoke_handler(
+                handler,
+                verb,
+                kind=resolved_kind,
+                kind_was_defaulted=kind_was_defaulted,
+                args=args,
+            )
+        except NotFound as exc:
+            self._maybe_hint_lcsc(exc, resolved_kind, args)
+            raise
+
+    @staticmethod
+    def _maybe_hint_lcsc(
+        exc: NotFound, resolved_kind: str, args: dict[str, Any]
+    ) -> None:
+        """Append a ``kind='part'`` pointer when the failed call named a
+        C-number (gr485250). An id like ``C2655145`` — or a pasted
+        lcsc.com/jlcpcb.com product URL — is an LCSC part regardless of
+        the kind it was looked up under; the part kind answers it live
+        even on a catalog miss, so the suggestion is load-bearing, not
+        decorative."""
+        if resolved_kind == "part":
+            return
+        from precis.pcb.catalog import lcsc_id
+
+        lcsc = next(
+            (
+                found
+                for v in (args.get("id"), args.get("q"))
+                if v is not None and (found := lcsc_id(v)) is not None
+            ),
+            None,
         )
+        if lcsc is None:
+            return
+        hint = (
+            f"{lcsc} looks like an LCSC/JLCPCB part number — "
+            f"get(kind='part', id='{lcsc}') resolves it (live lookup on a "
+            "catalog miss); search(kind='part', q=...) too"
+        )
+        if exc.next is None:
+            exc.next = hint
+        elif isinstance(exc.next, str):
+            exc.next = [exc.next, hint]
+        elif hint not in exc.next:
+            exc.next.append(hint)
 
     def _resolve_kind(
         self,

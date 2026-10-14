@@ -93,6 +93,7 @@ from precis.pcb import (
     ratsnest,
     route_summary_status,
 )
+from precis.pcb import catalog as pcb_catalog
 from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import cost as pcb_cost
 from precis.pcb import datasheets as pcb_datasheets
@@ -105,6 +106,7 @@ from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
+from precis.pcb import jlc_library as pcb_jlc_library
 from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import optimize as pcb_optimize
@@ -198,7 +200,17 @@ _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: ``notes`` (pcb-argue-with-design.md) — the design's argument ledger:
 #: what the user typed on the board page, verbatim, anchored by handle,
 #: with the model's answer re each question (:mod:`precis.pcb.argue`).
-_OTHER_VIEWS = ("links", "footprints", "pinout", "pinout-preview", "notes")
+#: ``availability`` (gr485250) — the per-BOM-line stock/library/lifecycle
+#: table for an EOL sweep; rows whose catalog data is stale get one bounded
+#: live jlcpcb.com refresh on the way out.
+_OTHER_VIEWS = (
+    "links",
+    "footprints",
+    "pinout",
+    "pinout-preview",
+    "notes",
+    "availability",
+)
 _VIEWS = (
     *_PROBE_VIEWS,
     *_EXPORT_VIEWS,
@@ -228,6 +240,41 @@ _INLINE_EDIT_OPS = (
 #: never as an enqueued worker job.
 _FOOTPRINT_OPS = ("footprint",)
 _OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS, "datasheets")
+
+#: ``view='availability'``: catalog rows older than this (or absent) are
+#: re-checked live, bounded by ``jlc_library._LIVE_BATCH_MAX`` per call.
+_AVAIL_STALE_S = 6 * 3600
+
+
+def _availability_lifecycle(row: dict[str, Any], live_outcome: str | None) -> str:
+    """The lifecycle/EOL cell for one ``view='availability'`` row: every
+    signal the catalog row carries, or the live-refresh outcome when the
+    part was probed this call (a confirmed 'miss' beats 'not in catalog')."""
+    tokens: list[str] = []
+    params = row.get("params") or {}
+    lc = params.get("_lifecycle") or {}
+    if lc.get("merged"):
+        tokens.append(f"merged→{lc['merged']}")
+    if lc.get("alts"):
+        tokens.append(f"alts {lc['alts']}")
+    if lc.get("no_buy"):
+        tokens.append(f"no-buy {lc['no_buy']}")
+    if lc.get("idle"):
+        tokens.append("idle")
+    if lc.get("est"):
+        tokens.append(f"est {lc['est']}")
+    if lc.get("loss"):
+        tokens.append(f"loss {lc['loss']}")
+    if row.get("discontinued"):
+        tokens.append("dropped-from-dump")
+    if row.get("stock") == 0:
+        tokens.append("stock 0")
+    if not tokens and row.get("part_lcsc") and row.get("refreshed_at") is None:
+        tokens.append(
+            "absent from jlcpcb.com" if live_outcome == "miss" else "not in catalog"
+        )
+    return "; ".join(tokens) if tokens else "ok"
+
 
 #: A pre-existing finding the group move makes more negative than this is a
 #: new fault, not a standing one.
@@ -557,7 +604,9 @@ class PcbHandler(Handler):
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
-            "'congestion'|'planes'), which catalog parts have a cached "
+            "'congestion'|'planes'), per-BOM-line stock/library/lifecycle "
+            "for an EOL sweep (view='availability', live-refreshes stale "
+            "C-numbers), which catalog parts have a cached "
             "footprint (view='footprints', one row per catalog-part "
             "instance), one instance's actual physical pinout "
             "(id='slug#J1', view='pinout', read-only), an unsaved explicit mapping "
@@ -609,12 +658,18 @@ class PcbHandler(Handler):
         views=_VIEWS,
     )
 
-    def __init__(self, *, hub: Hub) -> None:
+    def __init__(
+        self, *, hub: Hub, live_refresh: Callable[..., Any] | None = None
+    ) -> None:
         if hub.store is None:
             raise InitError("pcb: store required")
         self.hub = hub
         self.store = hub.store
         self.embedder = hub.embedder
+        #: Test seam for ``view='availability'``'s bounded live refresh —
+        #: ``(store, lcscs) -> {lcsc: 'hit'|'miss'|'error: …'}``; defaults
+        #: to :func:`precis.pcb.jlc_library.live_refresh_many`.
+        self._live_refresh = live_refresh
 
     # ── put ──────────────────────────────────────────────────────────
     def put(
@@ -1979,7 +2034,7 @@ class PcbHandler(Handler):
                     next="put(kind='pcb', id='slug', args={'op':'footprint',"
                     "'part':'C639448','footprint':{'pads':[...]}})",
                 )
-            lcsc = parts[0].upper()
+            lcsc = pcb_catalog.lcsc_id(parts[0]) or parts[0].upper()
             try:
                 _, data = normalize_local_footprint({**footprint_data, "name": lcsc})
             except ValueError as exc:
@@ -2009,7 +2064,7 @@ class PcbHandler(Handler):
         fetched: dict[str, dict[str, Any]] = {}
         errors: dict[str, str] = {}
         for raw in parts:
-            lcsc = raw.upper()
+            lcsc = pcb_catalog.lcsc_id(raw) or raw.upper()
             try:
                 if not force and self.store.part_footprint_get(lcsc) is not None:
                     continue
@@ -2196,6 +2251,8 @@ class PcbHandler(Handler):
             )
         if view == "footprints":
             return self._render_footprints_view(ref_id)
+        if view == "availability":
+            return self._render_availability(ref_id)
         if view == "notes":
             return self._render_notes(ref_id)
         if view == "links":
@@ -3598,6 +3655,102 @@ class PcbHandler(Handler):
             + render_agent_table(
                 rows,
                 schema=["refdes", "lcsc", "cached", "source", "n_pads", "synthesized"],
+            )
+        )
+
+    def _render_availability(self, ref_id: int) -> Response:
+        """``view='availability'`` (gr485250): one row per component TYPE —
+        refdes set, qty, C-number, library class, stock, unit price and
+        every lifecycle/discontinued signal the catalog row carries
+        (``params._lifecycle`` written by the live listing:
+        merged/alt successor, no-buy reason, idle, restock estimate;
+        plus ``part_availability.discontinued``). Parts rows older than
+        ``_AVAIL_STALE_S`` — or absent from ``parts`` entirely — get a
+        bounded live refresh from the jlcpcb.com listing on the way out."""
+        rows = self.store.pcb_bom_availability(ref_id)
+        if not rows:
+            return Response(body="no components on this board")
+        now = datetime.now(UTC)
+        stale = sorted(
+            {
+                str(r["part_lcsc"])
+                for r in rows
+                if r["part_lcsc"]
+                and (
+                    r["refreshed_at"] is None
+                    or (now - r["refreshed_at"]).total_seconds() > _AVAIL_STALE_S
+                )
+            }
+        )
+        head = f"# availability — {len(rows)} BOM line(s)"
+        outcomes: dict[str, str] = {}
+        if stale:
+            fn = self._live_refresh or pcb_jlc_library.live_refresh_many
+            outcomes = fn(self.store, stale)
+            hits = sum(1 for v in outcomes.values() if v == "hit")
+            miss = sum(1 for v in outcomes.values() if v == "miss")
+            errs = sorted(k for k, v in outcomes.items() if v.startswith("error"))
+            skipped = len(stale) - len(outcomes)
+            head += (
+                f"\nlive refresh ({len(stale)} stale): {hits} re-catalogued, "
+                f"{miss} absent from the listing"
+                + (f", {len(errs)} failed: {', '.join(errs)}" if errs else "")
+                + (f", {skipped} skipped (bounded)" if skipped else "")
+            )
+            if hits:
+                rows = self.store.pcb_bom_availability(ref_id)
+
+        def _age(ts: Any) -> str:
+            if ts is None:
+                return "—"
+            s = (now - ts).total_seconds()
+            if s < 3600:
+                return f"{max(0, int(s // 60))}m"
+            if s < 86400:
+                return f"{int(s // 3600)}h"
+            return f"{int(s // 86400)}d"
+
+        table = []
+        for r in rows:
+            lcsc = str(r["part_lcsc"]).strip().upper() if r["part_lcsc"] else None
+            price = pcb_catalog.min_unit_price(r.get("price"))
+            refdes = r["refdes"]
+            table.append(
+                {
+                    "refdes": ",".join(refdes[:6]) + ("…" if len(refdes) > 6 else ""),
+                    "qty": r["qty"],
+                    "lcsc": lcsc or "—",
+                    "mfr_part": r["mfr_part"] or "—",
+                    "lib": (
+                        "—"
+                        if lcsc is None or r["basic"] is None
+                        else ("basic" if r["basic"] else "ext")
+                    ),
+                    "stock": r["stock"] if r["stock"] is not None else "—",
+                    "$ea": f"{price:.4g}" if price is not None else "—",
+                    "lifecycle": _availability_lifecycle(r, outcomes.get(lcsc or "")),
+                    "fetched": _age(r["refreshed_at"]),
+                }
+            )
+        n_uncatalogued = sum(1 for r in rows if r["part_lcsc"] is None)
+        if n_uncatalogued:
+            head += f"\n{n_uncatalogued} line(s) have no LCSC number (not orderable at JLCPCB)"
+        return Response(
+            body=head
+            + "\n"
+            + render_agent_table(
+                table,
+                schema=[
+                    "refdes",
+                    "qty",
+                    "lcsc",
+                    "mfr_part",
+                    "lib",
+                    "stock",
+                    "$ea",
+                    "lifecycle",
+                    "fetched",
+                ],
             )
         )
 

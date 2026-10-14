@@ -535,7 +535,32 @@ pair and prints the reason (pcb component types aren't refs, so the
 link-door `rel='kept-distinct'` is the component kind's form). See
 [[precis-component-help]] for the attribute-role model.
 
-### Mechanical features — the CAD bridge
+## BOM availability — `view='availability'` (the EOL sweep)
+
+```python
+get(kind="pcb", id="s", view="availability")  # stock/lifecycle per BOM line
+```
+
+One row per component type: `refdes · qty · lcsc · mfr_part · lib · stock ·
+$ea · lifecycle · fetched`. `lib` is `basic`/`ext` (the JLCPCB library
+class; a Basic part sits on the line free, an Extended part costs a
+loading fee).
+`lifecycle` is every signal the catalog row carries — `merged→<C-no>` (the
+part was folded into a successor — strongest EOL tell), `alts`, `no-buy`,
+`idle`, `est`, `dropped-from-dump`, `stock 0` — or `ok`. A line with no
+LCSC number lists as such; a C-number absent from the catalog says `not in
+catalog` (or `absent from jlcpcb.com` when the live check just ran).
+
+Rows whose catalog data is older than ~6h — or missing — get one **bounded**
+live refresh from the jlcpcb.com listing on the way out (≤12 C-numbers per
+call; the head line reports `re-catalogued / absent / failed / skipped`).
+The live listing carries no explicit "EOL" flag, so lifecycle is inferred
+from the signals above + stock. Component `part:`/`part_lcsc:` values take
+a bare `C<n>` in any case or a pasted lcsc.com/jlcpcb.com product URL
+(extracted, never fetched). See [[precis-part-select-help]] for the
+part-kind side.
+
+## Mechanical features — the CAD bridge
 
 Add non-electrical geometry so the board can drive an enclosure:
 

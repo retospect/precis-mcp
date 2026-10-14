@@ -907,6 +907,22 @@ class SearchMixin(RuntimeShape):
                 lines.append(tip)
             response = Response(body="\n".join(lines), cost=response.cost)
 
+        # gr485250: a C-number query is almost certainly a part lookup.
+        # ``part`` opts out of the cross-kind merge (per-kind TOON table),
+        # so the fan-out never even tries it — name the door.
+        from precis.pcb.catalog import lcsc_id
+
+        lcsc_q = lcsc_id(q)
+        if lcsc_q is not None:
+            lines = response.body.splitlines()
+            lines.append(
+                f"_({lcsc_q} looks like an LCSC/JLCPCB part number — "
+                f"search(kind='part', q='{lcsc_q}') or "
+                f"get(kind='part', id='{lcsc_q}') resolves it, live on a "
+                "catalog miss)_"
+            )
+            response = Response(body="\n".join(lines), cost=response.cost)
+
         return _stamp_non_production_embedder(response, embedder)
 
     def _dispatch_cross_kind_tags_only(
