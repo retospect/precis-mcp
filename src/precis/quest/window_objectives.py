@@ -43,7 +43,9 @@ constraint holds. With no operating point at all the mask is all-wanted
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import logging
 from dataclasses import replace as _dc_replace
 from types import ModuleType
@@ -71,7 +73,36 @@ WINDOW_MEASURE_KEYS: tuple[str, ...] = (
 #: span itself (``pH_window`` on the map) sets the V·pH area scale.
 _PH_GRID_POINTS = 29
 
+#: Candidate-meta key holding the input hash the last stamp ran against —
+#: when it matches, the map/routes/Shapley recompute is skipped entirely.
+WINDOW_INPUTS_KEY = "window_measures_input"
+
 _NO_KEY = object()  # sentinel: no wanted-termination criterion could be derived
+
+
+def _centroid_u(
+    resting_map: Any, weights: Any, total: float, notes: list[str]
+) -> float:
+    """The window's area-weighted mean U — snapped to the nearest U
+    column that carries window weight when the mean falls in a forbidden
+    gap between disjoint strips (an empty column can never be an
+    operating point). ``weights`` is the settled mask product (window,
+    or the baseline/resting fallback)."""
+    u_best = float((resting_map.u_grid() * weights).sum() / total)
+    u_ax = [float(u) for u in resting_map.u_rhe]
+    col_w = weights.sum(axis=0)  # over the pH axis
+    live = [j for j in range(len(u_ax)) if float(col_w[j]) > 0.0]
+    if not live:
+        return u_best
+    nearest = min(range(len(u_ax)), key=lambda j: abs(u_ax[j] - u_best))
+    if float(col_w[nearest]) > 0.0:
+        return u_best
+    snapped = u_ax[min(live, key=lambda j: abs(u_ax[j] - u_best))]
+    notes.append(
+        f"U centroid {u_best:+.3f} V sits in a forbidden gap — read at the "
+        f"nearest in-window column {snapped:+.3f} V"
+    )
+    return snapped
 
 
 def _staircase_masks() -> ModuleType | None:
@@ -280,7 +311,7 @@ def window_measures(
         )
         if total <= 0.0:
             return out
-    u_best = float((resting_map.u_grid() * weights).sum() / total)
+    u_best = _centroid_u(resting_map, weights, total, notes)
     if her is not None:
         out["her_margin_at_Uopt"] = float(
             her.limiting_g(u_best) - route.limiting_g(u_best)
@@ -413,27 +444,101 @@ def _candidate_pathway_ref_id(store: Any, structure_ref_id: int) -> int | None:
 # ── harvest hook ─────────────────────────────────────────────────────────
 
 
-def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | None:
+def _input_hash(
+    quest_meta: dict[str, Any],
+    structure_meta: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    pathway_id: int | None,
+    pathway_results: Any,
+) -> str:
+    """Fingerprint everything the window/Shapley compute reads — the scan
+    anchors (per succeeded scan's id + footing), the pathway's stored
+    results, the quest's objective/condition inputs and the candidate's
+    resting-termination stamp — plus the precis version and the plugin
+    modules' presence so a deploy or a landed adapter re-computes once.
+    A succeeded job's ``che_sweep`` and a pathway's ``results`` are written
+    once and never mutated, so ids + digests identify them exactly."""
+    import precis
+
+    basis = {
+        "precis": precis.__version__,
+        "staircase_masks": _staircase_masks() is not None,
+        "staircase_routes": _staircase_routes() is not None,
+        "scans": sorted(
+            [
+                int(j["ref_id"]),
+                j.get("anchor_key"),
+                j.get("engine_version"),
+                json.dumps(j.get("corrections"), sort_keys=True, default=str),
+            ]
+            for j in jobs
+        ),
+        "pathway": [pathway_id, pathway_results],
+        "quest": {
+            k: quest_meta.get(k)
+            for k in (
+                "rubric_objectives",
+                "window_objectives",
+                "operating_conditions",
+            )
+        },
+        "resting": structure_meta.get("resting_termination_at_point"),
+    }
+    blob = json.dumps(basis, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def stamp_window_measures(
+    store: Any,
+    quest_id: int,
+    structure: Any,
+    *,
+    quest_meta: dict[str, Any] | None = None,
+) -> str | None:
     """Stamp the window/Shapley measures + validity region on one
     candidate. The single call ``compute.harvest_measures`` makes, placed
     after the bulk-Pourbaix harvest.
 
     No-ops (returns ``None``, stamps nothing) unless the quest declares a
     :data:`WINDOW_MEASURE_KEYS` objective — the feature flag keeping
-    unflagged quests bit-identical. Missing inputs degrade to notes, not
-    crashes: no scan map → nothing to say; no pathway/routes adapter →
-    only the validity stamp lands. Returns a one-line note on change.
+    unflagged quests bit-identical. ``quest_meta`` lets the tick pass the
+    quest meta it already fetched. When the input hash
+    (``meta.window_measures_input``) is unchanged the map/routes/Shapley
+    recompute is skipped — the stamps it would write are identical by
+    construction. Missing inputs degrade to notes, not crashes: no scan
+    map → nothing to say; no pathway/routes adapter → only the validity
+    stamp lands. Returns a one-line note on change.
     """
     from precis.quest import pourbaix_map
     from precis.quest.logbook import MEASURED_BY, append_entry
     from precis.utils import handle_registry
 
-    quest = store.fetch_refs_by_ids({quest_id}).get(quest_id)
-    quest_meta = dict(quest.meta or {}) if quest is not None else {}
+    if quest_meta is None:
+        quest = store.fetch_refs_by_ids({quest_id}).get(quest_id)
+        quest_meta = dict(quest.meta or {}) if quest is not None else {}
     if not window_objectives_enabled(quest_meta):
         return None
 
-    maps = pourbaix_map.maps_for_structure(store, structure)
+    # Fresh meta: the anchors harvest may have stamped
+    # ``resting_termination_at_point`` earlier in this same tick.
+    fresh = store.fetch_refs_by_ids({int(structure.id)}).get(int(structure.id))
+    existing = dict(
+        (fresh.meta if fresh is not None else getattr(structure, "meta", None)) or {}
+    )
+    jobs = pourbaix_map.scan_jobs(store, int(structure.id))
+    if not jobs:
+        return None
+    pathway_id = _candidate_pathway_ref_id(store, int(structure.id))
+    pw_results = None
+    if pathway_id is not None:
+        pw = store.fetch_refs_by_ids({pathway_id}).get(pathway_id)
+        if pw is not None:
+            pw_results = (pw.meta or {}).get("results")
+    input_hash = _input_hash(quest_meta, existing, jobs, pathway_id, pw_results)
+    if existing.get(WINDOW_INPUTS_KEY) == input_hash:
+        return None
+
+    maps = pourbaix_map.maps_for_structure(store, structure, jobs=jobs)
     if not maps:
         return None
     m = maps[0]
@@ -448,7 +553,7 @@ def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | No
             f"(anchor_key {str(m.get('anchor_key'))[:12]}…)"
         )
     point_u = _operating_point_u(quest_meta)
-    wanted_key = _wanted_key(m, point_u, getattr(structure, "meta", None))
+    wanted_key = _wanted_key(m, point_u, existing)
     if wanted_key is _NO_KEY:
         notes.append(
             "no operating point (meta.operating_conditions.U_RHE or "
@@ -459,7 +564,6 @@ def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | No
         notes.append("map carries no U_RHE_window/grid — no resting map")
 
     routes = her = None
-    pathway_id = _candidate_pathway_ref_id(store, int(structure.id))
     if pathway_id is None:
         notes.append("no pathway ref for this candidate — no staircase routes")
     else:
@@ -510,8 +614,8 @@ def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | No
     validity = _validity_region_at_point(m, point_u)
     if validity is not None:
         desired["validity_region_at_point"] = validity
+    desired[WINDOW_INPUTS_KEY] = input_hash
 
-    existing = getattr(structure, "meta", None) or {}
     changed = {
         k: v
         for k, v in desired.items()
@@ -520,6 +624,10 @@ def stamp_window_measures(store: Any, quest_id: int, structure: Any) -> str | No
     if not changed:
         return None
     store.stamp_ref_meta(structure.id, changed)
+    if set(changed) == {WINDOW_INPUTS_KEY}:
+        # Inputs changed but every measure came out identical — restamp the
+        # hash (so the recompute isn't paid again) but report nothing.
+        return None
 
     handle = (
         handle_registry.try_format("structure", structure.id)
@@ -643,6 +751,7 @@ def propose_anchor_scans(
 
 
 __all__ = [
+    "WINDOW_INPUTS_KEY",
     "WINDOW_MEASURE_KEYS",
     "propose_anchor_scans",
     "stamp_window_measures",

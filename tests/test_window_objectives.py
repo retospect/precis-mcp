@@ -116,6 +116,20 @@ def test_her_dominating_gives_negative_margin() -> None:
     assert any("empty" in n for n in out["window_notes"])
 
 
+def test_centroid_in_forbidden_gap_snaps_to_live_column() -> None:
+    """Two disjoint in-window strips (cols {-1,-0.75,-0.5} and {0.5,0.75})
+    put the area-weighted centroid nearest the forbidden col at -0.25|0.
+    The read snaps to the nearest in-window column (-0.5): with main dg =
+    -1.6 + 2U and HER dg = -0.6 + U (HER loses on every wanted column),
+    the margin is 1.0 - U, so 1.5 exactly at the snapped point."""
+    r = _resting(_cols(_resting(), -1.0, -0.75, -0.5, 0.5, 0.75))
+    main = sm.Route("norr", (_rung("m", -1.6, n_e=2),))
+    her = sm.Route("her", (_rung("h", -0.6, kind="her"),))
+    out = wo.window_measures(r, [main], her)
+    assert out["her_margin_at_Uopt"] == pytest.approx(1.5)
+    assert any("forbidden gap" in n for n in out["window_notes"])
+
+
 def test_her_margin_positive_when_main_wins() -> None:
     """HER's limiting step sits above the main's → mask lets the whole
     resting map through and the margin is positive."""

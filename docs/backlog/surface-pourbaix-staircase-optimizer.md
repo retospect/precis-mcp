@@ -434,23 +434,8 @@ separate from the propagated/model-form bands.
 - `staircase_routes._step_kind` labels any `~` product as desorption, not
   only the final edge; labels only, masks are kind-blind (B2 review).
 - The JS re-tilt and mismatch logic on `/pourbaix` have no test.
-- `propose_anchor_scans` has no caller yet; wire it into
-  `surface_anchors.dispatch_surface_anchors` (B3 review).
-- `stamp_window_measures` fetches the quest meta per structure per tick
-  before the flag check, and recomputes map + routes + Shapley every tick
-  on flagged quests; hoist the flag read and skip on an unchanged input
-  hash (B3 review).
-- The window's U centroid can fall in a forbidden gap between two disjoint
-  strips; snap to the nearest in-window column (B3 review).
-- `theta0_check` is stamped null (deferred): wire `compare_lowest_theta`
-  against the candidate pathway's single-adsorbate node energies (B1).
-- `harvest_surface_anchors` fetches the quest per candidate before its flag
-  check; `_frontier_ids` runs a full `quest_frontier` each tick while a
-  flagged quest has non-front, sub-neb candidates without scans (B1 review).
 - Failed anchor scans are never re-minted (Part A convention, chosen in B1);
   a retry cap would need its own idem-key generation.
-- No test drives the `harvest_measures` hook (exception safety) or snapshots
-  a scanned candidate's meta on an unflagged quest (B3 review).
 
 ## Explicitly NOT in scope
 

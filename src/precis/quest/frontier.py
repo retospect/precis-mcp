@@ -1345,6 +1345,9 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "needs_anchor_top",
         "theta0_check",
         "theta0_note",
+        # The window-measures input fingerprint (window_objectives) — a
+        # hash string, already dropped by ``_numeric``.
+        "window_measures_input",
     }
 )
 

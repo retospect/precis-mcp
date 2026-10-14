@@ -337,11 +337,15 @@ def newest_or_first(jobs: list[dict[str, Any]], key: str) -> Any:
     return None
 
 
-def maps_for_structure(store: Any, ref: Any) -> list[dict[str, Any]]:
+def maps_for_structure(
+    store: Any, ref: Any, *, jobs: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """One map per footing among the structure's succeeded scans; the bulk
     layer rides on every one (it is the same bulk verdict, labelled
-    uncertain on each)."""
-    jobs = scan_jobs(store, int(ref.id))
+    uncertain on each). ``jobs`` lets a caller that already ran
+    :func:`scan_jobs` pass the rows through instead of re-querying."""
+    if jobs is None:
+        jobs = scan_jobs(store, int(ref.id))
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for row in jobs:
         groups.setdefault(_footing_key(row), []).append(row)

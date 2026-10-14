@@ -3235,6 +3235,19 @@ def harvest_measures(
     harvested = ruled_out = 0
     notes: list[str] = []
     viewport_updates: dict[str, tuple[float, float]] = {}
+    # The SPSO flags are quest-level inputs: read them once per tick, not
+    # once per candidate inside the per-structure loop (the per-candidate
+    # helpers still take the meta so standalone callers keep working).
+    from precis.quest.surface_anchors import harvest_surface_anchors
+    from precis.quest.window_objectives import (
+        stamp_window_measures,
+        window_objectives_enabled,
+    )
+
+    quest_ref = store.fetch_refs_by_ids({quest_id}).get(quest_id)
+    quest_meta = dict(quest_ref.meta or {}) if quest_ref is not None else {}
+    anchors_flagged = bool(quest_meta.get("surface_anchors"))
+    windows_flagged = window_objectives_enabled(quest_meta)
     for s in structures:
         handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
         name = (s.title or "").splitlines()[0] if s.title else handle
@@ -3247,27 +3260,31 @@ def harvest_measures(
                 harvested += 1
         except Exception:
             log.exception("harvest_measures: Pourbaix harvest failed for %s", s.id)
-        try:
-            from precis.quest.surface_anchors import harvest_surface_anchors
-
-            anchors_note = harvest_surface_anchors(store, quest_id, s)
-            if anchors_note:
-                notes.append(anchors_note)
-                harvested += 1
-        except Exception:
-            log.exception(
-                "harvest_measures: surface-anchors harvest failed for %s", s.id
-            )
+        if anchors_flagged:
+            try:
+                anchors_note = harvest_surface_anchors(
+                    store, quest_id, s, quest_meta=quest_meta
+                )
+                if anchors_note:
+                    notes.append(anchors_note)
+                    harvested += 1
+            except Exception:
+                log.exception(
+                    "harvest_measures: surface-anchors harvest failed for %s", s.id
+                )
         # After the anchors harvest: window measures read the
         # resting_termination_at_point it stamps.
-        try:
-            from precis.quest.window_objectives import stamp_window_measures
-
-            window_note = stamp_window_measures(store, quest_id, s)
-            if window_note:
-                notes.append(window_note)
-        except Exception:
-            log.exception("harvest_measures: window-measures stamp failed for %s", s.id)
+        if windows_flagged:
+            try:
+                window_note = stamp_window_measures(
+                    store, quest_id, s, quest_meta=quest_meta
+                )
+                if window_note:
+                    notes.append(window_note)
+            except Exception:
+                log.exception(
+                    "harvest_measures: window-measures stamp failed for %s", s.id
+                )
         if "atom_cost" not in (s.meta or {}):
             try:
                 scene, _handles = store.structure_load(s.id)

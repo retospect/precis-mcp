@@ -888,6 +888,56 @@ class TestHarvest:
         step2 = compute_mod.harvest_measures(store, qid)
         assert step2.results_harvested == 0
 
+    def test_harvest_measures_isolates_spso_hook_errors(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising SPSO hook (Pourbaix / surface anchors / window
+        measures) is logged and skipped per candidate — it must not abort
+        the tick's real work for the other candidates."""
+        qid = _mk_quest(store, "SPSO flagged")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "surface_anchors": True,
+                "reaction_config": {"name": "x"},
+                "rubric_objectives": [{"key": "window_area_VpH", "sense": "max"}],
+            },
+        )
+        spec2 = dict(_SPEC)
+        spec2["ops"] = [{"op": "add_atom", "element": "Ni", "frac": [0.0, 0.0, 0.5]}]
+        sids = [
+            compute_mod.ensure_candidate(store, qid, {"name": n, "structure": s})
+            for n, s in (("Fe", _SPEC), ("Ni", spec2))
+        ]
+        assert all(sids)
+        for sid in sids:
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=5,
+                max_disp=0.0,
+                energy=-5.0,
+            )
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("hook exploded")
+
+        monkeypatch.setattr("precis.quest.pourbaix.harvest_pourbaix_candidate", boom)
+        monkeypatch.setattr(
+            "precis.quest.surface_anchors.harvest_surface_anchors", boom
+        )
+        monkeypatch.setattr(
+            "precis.quest.window_objectives.stamp_window_measures", boom
+        )
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 2
+        for sid in sids:
+            meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+            assert "anchors_job_id" not in meta
+            assert "window_area_VpH" not in meta
+
     def test_relax_result_entry_stamped_by_system_not_the_caller_by(
         self, store: Any
     ) -> None:
