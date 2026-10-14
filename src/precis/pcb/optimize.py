@@ -2078,6 +2078,16 @@ class OptimizeEngine:
         #: common "nowhere near each other" answer still costs one numpy
         #: comparison over the whole board.
         self._keepout_r = courtyard_bound_radius_mm(self._keepout_poly)
+        #: bool[n_instances] — True for a part with a drilled pad (a
+        #: through-hole lead or slot). Its pads stand on BOTH outer
+        #: layers, so the opposite-side exemption in
+        #: :meth:`_sides_clear` does not hold for it: taz15-blank's anneal
+        #: (job 484766, 2026-10-14) parked top-side SW3 and C20 on the
+        #: bottom-side XH headers' pads, 0.000 mm apart on F.Cu.
+        self._through_hole = np.zeros(ir.n_instances, dtype=bool)
+        for pad in ir.footprint_pads:
+            if pad.raw.get("drill") or pad.raw.get("slot"):
+                self._through_hole[pad.instance] = True
         #: Every mounting hole as a STATIC obstacle (gr263082-adjacent
         #: user report: Q3/R1/C1 landing on/under an M4 solder-nut hole) —
         #: a fixed-position, fixed-radius circumscribing polygon
@@ -3270,7 +3280,9 @@ class OptimizeEngine:
         while DRC called the identical layout clean.
 
         Mounting holes are exempt from that exemption: a hole goes
-        THROUGH the board, so it obstructs both sides.
+        THROUGH the board, so it obstructs both sides. So is a
+        through-hole part (:meth:`_sides_clear`): its pads stand on both
+        outer layers.
 
         Placement move generators call this and return ``None`` rather
         than offering the annealer an illegal state. The graded
@@ -3281,7 +3293,6 @@ class OptimizeEngine:
         """
         ir = self.ir
         keepout = self._keepout_r
-        bottom = ir.inst_bottom
         moving = [inst for inst, _, _ in proposals]
         rotations = rotations or {}
         proposed_poly = {
@@ -3308,8 +3319,8 @@ class OptimizeEngine:
             # polygon of NaNs that no SAT axis can separate.
             near = np.nonzero(d2 < sep * sep)[0]
             for other in near:
-                if bottom[inst] != bottom[int(other)]:
-                    continue  # opposite sides -- the board is between them
+                if self._sides_clear(inst, int(other)):
+                    continue
                 if convex_polygons_overlap(
                     proposed_poly[inst], self._world_courtyard(int(other))
                 ):
@@ -3330,14 +3341,25 @@ class OptimizeEngine:
             ):
                 return False  # a solder land on an authored via
             for other, ox, oy in proposals[i + 1 :]:
-                if bottom[inst] != bottom[other]:
-                    continue  # opposite sides -- the board is between them
+                if self._sides_clear(inst, other):
+                    continue
                 sep_ij = keepout[inst] + keepout[other]
                 if (x - ox) ** 2 + (y - oy) ** 2 >= sep_ij * sep_ij:
                     continue
                 if convex_polygons_overlap(proposed_poly[inst], proposed_poly[other]):
                     return False
         return True
+
+    def _sides_clear(self, a: int, b: int) -> bool:
+        """True when ``a`` and ``b`` cannot collide because the board is
+        between them: opposite sides, and neither has a drilled pad
+        (:attr:`_through_hole`)."""
+        ir = self.ir
+        return bool(
+            ir.inst_bottom[a] != ir.inst_bottom[b]
+            and not self._through_hole[a]
+            and not self._through_hole[b]
+        )
 
     def pose_conflicts(
         self, inst: int, x: float, y: float, rot: float | None = None
@@ -3358,7 +3380,7 @@ class OptimizeEngine:
         d2[inst] = math.inf
         sep = keepout + keepout[inst]
         for other in np.nonzero(d2 < sep * sep)[0]:
-            if ir.inst_bottom[inst] != ir.inst_bottom[int(other)]:
+            if self._sides_clear(inst, int(other)):
                 continue
             if convex_polygons_overlap(poly, self._world_courtyard(int(other))):
                 conflicts.append(
