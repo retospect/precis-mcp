@@ -29,7 +29,10 @@ class _FakeConn:
         self._value = value
         self._counter = counter
 
-    def execute(self, _sql: str, _params: Any) -> Any:
+    def execute(self, sql: str, _params: Any = ()) -> Any:
+        if "vault.list()" in sql:
+            # No versions known: entries fall back to the 60 s window.
+            return type("R", (), {"fetchall": lambda self: []})()
         self._counter[0] += 1
         val = self._value
         return type("R", (), {"fetchone": lambda self: (val,)})()
@@ -64,7 +67,10 @@ def test_require_vault_secret_ignores_env_file_and_cache(
     monkeypatch.setenv("STRICT_KEY", "from-env")
     monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
     (tmp_path / "STRICT_KEY").write_text("from-file", encoding="utf-8")
-    vault._cache["STRICT_KEY"] = (float("inf"), "from-cache")
+    vault._cache["STRICT_KEY"] = vault._Entry(
+        "from-cache", now=0.0, version=None, max_age=float("inf")
+    )
+    vault._cache["STRICT_KEY"].recheck = float("inf")
     store: Any = _FakeStore("from-vault")
     assert vault.require_vault_secret("STRICT_KEY", store=store) == "from-vault"
     assert store.calls == [1]

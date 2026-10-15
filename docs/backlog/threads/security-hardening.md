@@ -19,7 +19,7 @@ Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); d
 untrusted input reaches a privileged agent unscanned, and the role and
 sandbox boundaries hold under the real pool and profiles — what lets agents
 and a public web surface run without a blast radius (`docs/roadmap.md`
-platform bucket). Today eight filed items have no owner; the order is a live
+platform bucket). Today seven filed items have no owner; the order is a live
 leak first, then boundaries that are inert today, then dependency and
 residual items.
 **Last reviewed:** 2026-10-02
@@ -31,13 +31,10 @@ residual items.
 1. **backlog/rotate-credentials.md** — leaked agent_rw, OpenRouter key,
    OAuth token and anki password are live today; needs a deliberate cluster
    pause for agent_rw, so it is also a coordination item.
-2. **backlog/vault-reveal-cache.md** — the OpenRouter key is revealed
-   ~22k/day because the 60 s cache is not holding; every reveal widens 1's
-   exposure.
-3. **backlog/agent-deny-lists-are-profile-dependent.md** — the dream-agent
+2. **backlog/agent-deny-lists-are-profile-dependent.md** — the dream-agent
    tool deny-list is inert under the command MCP profile; a boundary that
    reads as enforced and is not.
-4. **backlog/db-role-enforce-pgbouncer.md** — SET ROLE enforcement breaks
+3. **backlog/db-role-enforce-pgbouncer.md** — SET ROLE enforcement breaks
    under the transaction pool; the read-only-agent guarantee depends on the
    answer (shared with session-mcp-shared-server Horizon 1).
 
@@ -59,5 +56,5 @@ residual items.
 ## Seam
 
 `session-mcp-shared-server` owns the MCP's DB-role isolation (its Horizon 1);
-4 here is the pgbouncer half of the same boundary. `deploy-fleet-ops` owns the
+3 here is the pgbouncer half of the same boundary. `deploy-fleet-ops` owns the
 vault-truncation blast-radius answer that scopes 1.

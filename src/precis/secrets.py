@@ -24,15 +24,17 @@ secrets TCB is therefore every package imported into a DSN-holding process:
 keep those processes to hash-pinned, audited deps, and push heavy/untrusted
 code out-of-process (:func:`adopt_process_store` scrubs the DSN from env so
 spawned subprocesses never inherit it). This module holds **no policy** —
-it is transport plus ergonomics (a boot-bound store, a small TTL cache, and
-a legible resolution order).
+it is transport plus ergonomics (a boot-bound store, a version-checked
+reveal cache, and a legible resolution order).
 
 Resolution order for :func:`get_secret` (env-override-wins is the migration
 safety net — a call site can move onto ``get_secret`` with zero behaviour
 change while its value still lives in the environment):
 
 1. explicit environment variable ``name`` (bootstrap, tests, transition);
-2. ``vault.reveal(name)`` over the boot-bound store (cached briefly);
+2. ``vault.reveal(name)`` over the boot-bound store, cached in process
+   memory only: re-checked against ``vault.list()``'s ``updated_at`` every
+   60 s (no decrypt, no audit row) and re-decrypted on change or after 1 h;
 3. a file ``<PRECIS_SECRETS_FILE_DIR>/<name>`` (default ``~/.secrets/pw``);
 4. ``default``.
 
@@ -56,7 +58,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -73,15 +75,93 @@ _STORE: Store | None = None
 #: that lost the env race) fall back to the already-connected store's DSN.
 _ADOPTED_DSN: str | None = None
 
-#: Short cache so a hot ``get_secret`` doesn't hit the DB every call, while
-#: rotation still propagates within one TTL without LISTEN plumbing. Misses are
-#: never cached, so a freshly-``set`` secret appears immediately.
+#: Revalidation window. After it, a cached value is re-checked against
+#: ``vault.list()``'s ``updated_at`` (no decrypt, no audit row), so a rotation
+#: or delete in any process propagates within this window without LISTEN
+#: plumbing. Misses are never cached, so a freshly-``set`` secret appears
+#: immediately.
 _CACHE_TTL_SECONDS = 60.0
-_cache: dict[str, tuple[float, str]] = {}
+#: Hard bound on how long one decrypt is reused, version check or not: each
+#: process still writes one ``vault.events`` row per name per hour, so the
+#: audit trail keeps showing who holds a key. A 60 s plain TTL decrypted once
+#: a minute in every process (~22k/day for one key across the cluster).
+_CACHE_MAX_AGE_SECONDS = 3600.0
+
+
+class _Entry:
+    """One cached plaintext. The value never reaches a repr, a pickle or a log.
+
+    ``version`` is the ``vault.list()`` ``updated_at`` seen *before* the
+    decrypt, or ``None`` when it could not be read (then the entry expires at
+    the revalidation window, as the plain 60 s cache did). Reading the version
+    first means a rotation racing the decrypt costs one extra reveal, never a
+    stale value.
+    """
+
+    __slots__ = ("max_age", "recheck", "value", "version")
+
+    def __init__(
+        self, value: str, *, now: float, version: object | None, max_age: float
+    ) -> None:
+        self.value = value
+        self.version = version
+        self.recheck = now + _CACHE_TTL_SECONDS
+        self.max_age = now + max_age
+
+    def __repr__(self) -> str:
+        return "<secrets._Entry redacted>"
+
+    def __reduce__(self) -> Any:
+        raise TypeError("cached secrets are not picklable")
+
+
+_cache: dict[str, _Entry] = {}
 _cache_lock = threading.Lock()
+
+#: Fill locks, striped by name: concurrent misses on one name share one
+#: decrypt, and the lock count stays fixed however many names are asked for.
+_FILL_STRIPES = 64
+_fill_locks: list[threading.Lock] = [threading.Lock() for _ in range(_FILL_STRIPES)]
+
+#: When a fill last ended in a miss, per name (monotonic). Callers that were
+#: already queued on that fill take its miss instead of re-revealing one by
+#: one; later callers still ask the vault, so a freshly-``set`` secret shows
+#: at once. Cleared wholesale past :data:`_MISS_RECORDS_MAX` names.
+_fill_miss: dict[str, float] = {}
+_MISS_RECORDS_MAX = 1024
+
+#: Last ``vault.list()`` snapshot, ``name -> updated_at``, and when it was
+#: taken (monotonic). One snapshot serves every name for one window.
+_versions: dict[str, object] = {}
+_versions_at: float | None = None
 
 #: Expiry of a recent :func:`reveal_unbound` miss, per name (monotonic).
 _unbound_miss: dict[str, float] = {}
+
+
+def _reset_after_fork() -> None:
+    """Fresh locks and an empty cache in a forked child.
+
+    A fork while another thread holds ``_cache_lock`` or a fill lock leaves
+    that lock held forever in the child, so its first ``get_secret`` would
+    deadlock. Clearing also drops the child's references to inherited
+    plaintext; the copied pages stay in its memory until reused (Python
+    strings cannot be zeroed). The child re-reveals under its own pid, so the
+    audit row names it. ``subprocess`` with ``preexec_fn`` (the render
+    sandbox) runs this hook too, so it only rebinds and clears.
+    """
+    global _cache_lock, _versions_at
+    _cache_lock = threading.Lock()
+    _fill_locks[:] = [threading.Lock() for _ in range(_FILL_STRIPES)]
+    _fill_miss.clear()
+    _cache.clear()
+    _unbound_miss.clear()
+    _versions.clear()
+    _versions_at = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
 
 #: Warn-once guard so a persistently-misconfigured vault (no key, no schema)
 #: doesn't spam the log on every resolve.
@@ -216,13 +296,20 @@ def complete_dsn_password(dsn: str) -> str:
 
 def invalidate(name: str | None = None) -> None:
     """Drop cached plaintext — one name, or all. Call after a rotation."""
+    global _versions_at
     with _cache_lock:
         if name is None:
             _cache.clear()
             _unbound_miss.clear()
+            _fill_miss.clear()
+            _versions.clear()
+            _versions_at = None
         else:
             _cache.pop(name, None)
             _unbound_miss.pop(name, None)
+            _fill_miss.pop(name, None)
+            # The snapshot predates the write: the next fill re-lists.
+            _versions_at = None
 
 
 def _warn_once(key: str, msg: str) -> None:
@@ -388,6 +475,95 @@ def require_vault_secret(name: str, *, store: Store) -> str:
     return value
 
 
+def _list_versions(store: Store) -> dict[str, object] | None:
+    """``name -> updated_at`` from ``vault.list()``: no decrypt, no audit row.
+    ``None`` on any error; the detail stays out of the log (type name only)."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute("SELECT name, updated_at FROM vault.list()").fetchall()
+    except Exception as exc:
+        _warn_once(
+            f"versions:{type(exc).__name__}",
+            f"secrets: vault.list() unavailable ({type(exc).__name__}); "
+            "cached secrets fall back to a 60 s reveal",
+        )
+        return None
+    return {str(r[0]): r[1] for r in rows}
+
+
+def _current_versions(
+    store: Store, now: float
+) -> tuple[dict[str, object], float] | None:
+    """The version snapshot and when it was taken (monotonic), refreshed at
+    most once per window per process; ``None`` when ``vault.list()`` fails."""
+    global _versions_at
+    with _cache_lock:
+        if _versions_at is not None and now - _versions_at < _CACHE_TTL_SECONDS:
+            return _versions, _versions_at
+    snap = _list_versions(store)
+    with _cache_lock:
+        _versions.clear()
+        if snap is None:
+            _versions_at = None
+            return None
+        _versions.update(snap)
+        _versions_at = now
+        return _versions, now
+
+
+def _fill_lock(name: str) -> threading.Lock:
+    return _fill_locks[hash(name) % _FILL_STRIPES]
+
+
+def _cached_reveal(store: Store, name: str) -> str | None:
+    """``vault.reveal`` behind the version-checked cache.
+
+    Fresh entry: served. Past the revalidation window: one ``vault.list()``
+    per window confirms the version and extends it to one window past that
+    snapshot, until the hard max age.
+    Otherwise (miss, rotated, deleted, aged out, unverifiable) one thread per
+    name decrypts while concurrent callers wait for its result.
+    """
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(name)
+    if hit is not None and now < hit.recheck:
+        return hit.value
+    if hit is not None and hit.version is not None and now < hit.max_age:
+        snap = _current_versions(store, now)
+        if snap is not None and snap[0].get(name) == hit.version:
+            # The snapshot only proves the version as of when it was taken,
+            # so the extension runs from then, not from now: a rotation is
+            # seen within one window of happening, never two.
+            hit.recheck = snap[1] + _CACHE_TTL_SECONDS
+            return hit.value
+    arrived = now
+    with _fill_lock(name):
+        now = time.monotonic()
+        with _cache_lock:
+            filled = _cache.get(name)
+            missed = _fill_miss.get(name)
+        if filled is not None and now < filled.recheck:
+            return filled.value
+        if missed is not None and missed > arrived:
+            return None
+        snap = _current_versions(store, now)
+        version = snap[0].get(name) if snap is not None else None
+        val = _reveal(store, name)
+        with _cache_lock:
+            if val is None:
+                _cache.pop(name, None)
+                if len(_fill_miss) >= _MISS_RECORDS_MAX:
+                    _fill_miss.clear()
+                _fill_miss[name] = time.monotonic()
+            else:
+                _fill_miss.pop(name, None)
+                _cache[name] = _Entry(
+                    val, now=now, version=version, max_age=_CACHE_MAX_AGE_SECONDS
+                )
+        return val
+
+
 def get_secret(
     name: str, *, store: Store | None = None, default: str | None = None
 ) -> str | None:
@@ -398,15 +574,8 @@ def get_secret(
 
     st = store if store is not None else _STORE
     if st is not None:
-        now = time.monotonic()
-        with _cache_lock:
-            hit = _cache.get(name)
-            if hit is not None and hit[0] > now:
-                return hit[1]
-        val = _reveal(st, name)
+        val = _cached_reveal(st, name)
         if val is not None:
-            with _cache_lock:
-                _cache[name] = (now + _CACHE_TTL_SECONDS, val)
             return val
 
     from_file = _from_file(name)
@@ -438,14 +607,17 @@ def reveal_unbound(name: str) -> str | None:
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(name)
-        if hit is not None and hit[0] > now:
-            return hit[1]
+        if hit is not None and now < hit.recheck:
+            return hit.value
         if _unbound_miss.get(name, 0.0) > now:
             return None
     val = _reveal_unbound_once(name)
     with _cache_lock:
         if val is not None:
-            _cache[name] = (now + _CACHE_TTL_SECONDS, val)
+            # No bound store to check versions against: a plain 60 s entry.
+            _cache[name] = _Entry(
+                val, now=now, version=None, max_age=_CACHE_TTL_SECONDS
+            )
         else:
             _unbound_miss[name] = now + _CACHE_TTL_SECONDS
     return val
