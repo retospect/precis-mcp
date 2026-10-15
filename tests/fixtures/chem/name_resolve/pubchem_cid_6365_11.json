@@ -1,0 +1,18 @@
+{
+  "PropertyTable": {
+    "Properties": [
+      {
+        "CID": 6365,
+        "SMILES": "CC(Cl)Cl",
+        "InChIKey": "SCYULBFZEHDVBN-UHFFFAOYSA-N",
+        "Title": "1,1-Dichloroethane"
+      },
+      {
+        "CID": 11,
+        "SMILES": "C(CCl)Cl",
+        "InChIKey": "WSLDOOZREJYCGB-UHFFFAOYSA-N",
+        "Title": "1,2-Dichloroethane"
+      }
+    ]
+  }
+}

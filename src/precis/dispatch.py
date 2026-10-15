@@ -1253,6 +1253,12 @@ def boot(
 
         _gated(WikipediaHandler)
 
+        # Chem — name/CAS/abbreviation → SMILES + InChIKey (PubChem,
+        # OPSIN, CIR over safe_get; rdkit canonicalises when present).
+        from precis.handlers.chem import ChemHandler
+
+        _gated(ChemHandler)
+
         # News — RSS/Atom article fetch. Like web/wikipedia, httpx +
         # trafilatura are the only requirements (declared on the
         # handler); always registers when those are available. The

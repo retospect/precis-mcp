@@ -62,6 +62,7 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
         "web",
         "youtube",
         "wikipedia",
+        "chem",  # identifier resolver, addressed by the name/CAS queried
         "semanticscholar",
         "perplexity-reasoning",
         "perplexity-research",

@@ -224,6 +224,7 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "semanticscholar",
     "wikipedia",
     "youtube",
+    "chem",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
 )

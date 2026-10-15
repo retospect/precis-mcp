@@ -154,6 +154,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
 | `web` | Fetch + extract a URL | `https://example.com/page` | free |
 | `wikipedia` | Resolve + fetch one Wikipedia article (on-demand; fenced from default search via `ORIGIN:wikipedia`) | `CRISPR gene editing` | free |
+| `chem` | Chemical name / CAS / abbreviation → canonical SMILES + InChIKey, source named; ambiguous names refused with candidates. See `precis-chem-help`. | `aspirin` · `50-78-2` · `DCM` | free |
 | `websearch` | Perplexity Sonar: fast factual | `latest perovskite results` | paid |
 | `perplexity-reasoning` | Perplexity Sonar Reasoning Pro | `compare DAC and BECCS` | paid |
 | `perplexity-research` | Perplexity Sonar Deep Research | `mechanism of NOxRR` | paid |
@@ -222,6 +223,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-nursery-help` | Per-minute SQL-only review tier — incoherence + worker-health, `critical` pages |
 | `precis-health-digest-help` | Hourly slow-rot liveness digest — curated/derived checks, daily/on-degradation push |
 | `precis-wikipedia-help` | On-demand Wikipedia lookup + the `ORIGIN:wikipedia` search fence |
+| `precis-chem-help` | Name / CAS / abbreviation → SMILES + InChIKey; tiers, ambiguity refusal, caching |
 
 PRIO sort key + 1/N rotation across active strategics + dedup-aware
 nursery / structural / deep reviewers are the operational discipline
