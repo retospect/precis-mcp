@@ -1420,6 +1420,25 @@ def test_pathway_u_readout_scalars_rendered_when_present(client, runtime) -> Non
     assert "T = 300.00 K" in resp.text
     assert 'id="pw-u-snap-ul"' in resp.text
     assert 'id="pw-u-snap-uopt"' in resp.text
+    assert "off the slider window" not in resp.text
+
+
+def test_pathway_u_opt_off_the_slider_is_flagged(client, runtime) -> None:
+    """gr489166/gr489167: an unconstrained U_opt can sit far outside the
+    -1.5…+0.5 V slider (prod pw483780: -4.24 V). The readout flags it, and
+    the snap names the clamp instead of reading the slider end as U_opt."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": {**_ELECTRO_RESULTS, "U_opt": -4.24}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "U_opt = -4.240 V" in resp.text
+    assert "(off the slider window)" in resp.text
+    # the snap passes its name so setU can say it clamped
+    assert "setU(V.results && V.results.U_opt, 'U_opt')" in resp.text
+    assert "is off the slider (-1.50" in resp.text
 
 
 def test_pathway_u_readout_scalars_omitted_when_absent(client, runtime) -> None:

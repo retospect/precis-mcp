@@ -155,7 +155,8 @@
     <button type="button" id="pw-u-snap-ul" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_L</button>
     {% endif %}
     {% if results_electro.U_opt is not none %}
-    <span>U_opt = {{ '%.3f'|format(results_electro.U_opt) }} V</span>
+    <span>U_opt = {{ '%.3f'|format(results_electro.U_opt) }} V{% if results_electro.U_opt < -1.5 or results_electro.U_opt > 0.5 %}
+      <span class="pw-uopt-off text-amber-700" title="the span minimum lies outside the slider's -1.5…+0.5 V window — an unconstrained optimum, not an operating point">(off the slider window)</span>{% endif %}</span>
     <button type="button" id="pw-u-snap-uopt" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_opt</button>
     {% endif %}
     {% if results_electro.span_at_Uopt is not none %}
@@ -1966,11 +1967,19 @@
     if (pH !== 0) {
       text += ` (${sheFromRhe(currentU, pH, T).toFixed(2)} V SHE @ pH ${pH})`;
     }
+    if (clampNote) { text += ` — ${clampNote}`; }
     uReadout.textContent = text;
   }
-  function setU(u) {
+  // A snap target outside the slider window (an unconstrained U_opt can
+  // run to -5 V, gr489167) lands on the nearest end WITH a note — never
+  // silently, which read as if the end were the snapped value.
+  let clampNote = '';
+  function setU(u, name) {
     if (u == null || Number.isNaN(u)) { return; }
     currentU = Math.max(-1.5, Math.min(0.5, u));
+    clampNote = name && currentU !== u
+      ? `${name} = ${u.toFixed(2)} V is off the slider (-1.50…+0.50 V); showing the nearest end`
+      : '';
     if (uSlider) { uSlider.value = String(currentU); }
     updateUReadout();
     try {
@@ -1985,8 +1994,8 @@
   if (phInput) { phInput.addEventListener('input', () => { updateUReadout(); syncUrl(); }); }
   const snapUL = document.getElementById('pw-u-snap-ul');
   const snapUopt = document.getElementById('pw-u-snap-uopt');
-  if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L));
-  if (snapUopt) snapUopt.addEventListener('click', () => setU(V.results && V.results.U_opt));
+  if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L, 'U_L'));
+  if (snapUopt) snapUopt.addEventListener('click', () => setU(V.results && V.results.U_opt, 'U_opt'));
 
   // Copy-link (gr486822) — the address bar already carries the whole
   // selection, so the button just copies location.href; the clipboard API
