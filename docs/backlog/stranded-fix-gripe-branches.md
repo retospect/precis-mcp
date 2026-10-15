@@ -17,6 +17,11 @@ deleted on the node, and the other 29 followed on 2026-10-02 (Reto) — the
 node's fix checkout holds only `main`; its 67 scratch clones (18G) are
 removed. The bundle of all 43 (`~/work/archive/stranded-gripes-2026-10-01.bundle`
 on Reto's Mac) is the only copy now and the source for every branch below.
+Local-branch sweep 2026-10-15: nothing deletable — the only sessionless
+unprotected branches (`allow-host-ops`, `spso-picker-spec`) both carry
+unmerged commits; every merged branch is still held by a live worktree.
+Details and remote-only stragglers: /tmp/gripe-fleet/morning-queue.md
+"stranded branches".
 
 ## Left
 
