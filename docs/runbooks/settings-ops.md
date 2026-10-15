@@ -43,7 +43,8 @@ this drifts as keys are added, code doesn't): `budget.hourly_usd`,
 `budget.daily_usd`, `budget.quota_ceiling_pct`, `budget.resume_until`
 (DB-only, no env — a one-shot manual override), `contact.crossref_mailto`,
 `contact.polite_email`, `contact.edgar_user_agent`,
-`contact.wikipedia_ua`.
+`contact.wikipedia_ua`, `chem.cir_enabled` (bool, off = chem resolves
+PubChem-only with an "uncorroborated" note — the CIR-outage switch).
 
 ## What never moves here
 

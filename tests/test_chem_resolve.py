@@ -8,6 +8,7 @@ the test, so nothing reaches the network.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -221,7 +222,41 @@ def test_cir_fault_does_not_block_pubchem_answer() -> None:
     routes[_cir("aspirin")] = TimeoutError("slow")
     res = cr.resolve("aspirin", Replay(routes))
     assert res.status == "resolved"
+    assert "uncorroborated: CIR unavailable" in res.notes
+
+
+def test_cir_miss_note_is_distinct_from_unavailable() -> None:
+    # A CIR 404 is an answer ("no such record"), not an outage.
+    routes = _aspirin_routes()
+    routes[_cir("aspirin")] = NOT_FOUND
+    res = cr.resolve("aspirin", Replay(routes))
+    assert res.status == "resolved"
     assert "not corroborated: CIR gave no answer" in res.notes
+
+
+def test_cir_disabled_never_calls_it() -> None:
+    fetch = Replay(_aspirin_routes())
+    res = cr.resolve("aspirin", fetch, cir_enabled=False)
+    assert res.status == "resolved"
+    assert res.answer is not None
+    assert res.answer.source == "PubChem CID 2244"
+    assert ("CIR", "skipped (disabled)") in res.tiers
+    assert not any("cactus" in url for url in fetch.calls)
+    assert "uncorroborated: CIR unavailable" in res.notes
+
+
+def test_locant_refusal_still_fires_with_cir_disabled() -> None:
+    fetch = Replay(
+        {
+            _opsin("dichloroethane"): (404, _fx("opsin_failure.json")),
+            _pc_name("dichloroethane"): (200, _fx("pubchem_name_dichloroethane.json")),
+            _pc_props("6365"): (200, _fx("pubchem_cid_6365.json")),
+        }
+    )
+    res = cr.resolve("dichloroethane", fetch, cir_enabled=False)
+    assert res.status == "ambiguous"
+    assert [c.name for c in res.candidates] == ["1,1-Dichloroethane"]
+    assert any("substituent positions" in n for n in res.notes)
 
 
 # ── handler (cache flow) ─────────────────────────────────────────────
@@ -345,3 +380,45 @@ def test_handler_renders_underspecified_refusal(chem: ChemHandler) -> None:
     body = chem.get(id="dichloroethane").body
     assert "REFUSED: underspecified" in body
     assert "1. 1,1-Dichloroethane: CC(Cl)Cl" in body
+
+
+def test_handler_cir_off_via_env_never_calls_it(
+    chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetch = Replay(_aspirin_routes())
+    chem.fetch = fetch
+    monkeypatch.setenv("PRECIS_CHEM_CIR_ENABLED", "0")
+    body = chem.get(id="aspirin").body
+    assert "uncorroborated: CIR unavailable" in body
+    assert "CIR: skipped (disabled)" in body
+    assert not any("cactus" in url for url in fetch.calls)
+
+
+def test_cir_leg_keeps_its_8s_timeout(
+    chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[dict[str, Any]] = []
+
+    def fake_http_fetch(**kwargs: Any) -> cr.Fetch:
+        made.append(kwargs)
+        return Replay(_aspirin_routes())
+
+    monkeypatch.delenv("PRECIS_CHEM_CIR_ENABLED", raising=False)
+    monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
+    chem.get(id="aspirin")
+    assert made == [{}, {"timeout_s": 8.0, "attempts": 1}]
+
+
+def test_handler_cir_off_builds_no_cir_fetcher(
+    chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[dict[str, Any]] = []
+
+    def fake_http_fetch(**kwargs: Any) -> cr.Fetch:
+        made.append(kwargs)
+        return Replay(_aspirin_routes())
+
+    monkeypatch.setenv("PRECIS_CHEM_CIR_ENABLED", "0")
+    monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
+    chem.get(id="aspirin")
+    assert made == [{}]

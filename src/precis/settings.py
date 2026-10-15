@@ -133,6 +133,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "makes sense for a one-shot manual override.",
         ),
         SettingSpec(
+            key="chem.cir_enabled",
+            type="bool",
+            env_var="PRECIS_CHEM_CIR_ENABLED",
+            default=True,
+            doc="Query NCI/CADD CIR as the chem resolver's fallback and "
+            "PubChem corroboration tier (precis.handlers._chem_resolve). "
+            "Off skips the leg: PubChem answers come back marked "
+            "'uncorroborated: CIR unavailable'. Built for the 2026-10 "
+            "CIR TLS outage (gr489605).",
+        ),
+        SettingSpec(
             key="si.attention_enabled",
             type="bool",
             env_var="PRECIS_SI_ATTENTION",

@@ -55,7 +55,9 @@ The resolver tries these sources in order and stops at the first answer:
    only one meaning, so it is never ambiguous. CAS numbers skip it.
 3. **PubChem.** It covers trivial names, trade names and CAS numbers.
 4. **NCI/CADD CIR.** It is used when PubChem has no record. When PubChem
-   does answer, CIR checks that answer.
+   does answer, CIR checks that answer. It can be switched off with the
+   `chem.cir_enabled` setting when the service is down; the lookup then
+   skips the leg instead of waiting out its connect timeout.
 
 When rdkit is installed, the SMILES is canonicalised with rdkit and the
 InChIKey is computed from it. The `canonical:` line names the rdkit
@@ -89,8 +91,11 @@ Answers are cached for 30 days. This includes refusals and "not found".
 To look again, pass `mode='refresh'`. If PubChem itself faulted (a
 timeout or a 5xx error) and no other source answered, the call raises an
 error and nothing is cached, so a retry runs the lookup again. CIR only
-cross-checks: when it is unreachable, the answer stands and a note says
-it was not cross-checked. A CAS number with a
+cross-checks: when it is unreachable or switched off
+(`chem.cir_enabled`), the answer stands and carries
+`note: uncorroborated: CIR unavailable` — check the `name:` line before
+relying on it. `not corroborated: CIR gave no answer` means CIR was up
+but had no record. A CAS number with a
 bad check digit is refused before any lookup.
 
 The structured answer is stored in the cache meta as `smiles`,

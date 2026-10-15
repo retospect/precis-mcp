@@ -3,6 +3,9 @@
 ``get(kind='chem', id='aspirin')`` resolves the identifier through the
 tiers in :mod:`precis.handlers._chem_resolve` (abbreviation table → OPSIN
 → PubChem, cross-checked against NCI/CIR) and caches the answer 30 days.
+The CIR leg can be switched off fleet-wide with the ``chem.cir_enabled``
+setting (env ``PRECIS_CHEM_CIR_ENABLED``) for a CIR outage: answers then
+resolve from PubChem alone and carry an "uncorroborated" note.
 Every answer names its source; an ambiguous identifier is refused with
 the candidate structures listed, and that refusal is cached too. A
 lookup where nothing answered and a source faulted raises ``Upstream``
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from precis import settings
 from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.handlers._chem_resolve import (
@@ -91,10 +95,18 @@ class ChemHandler(CacheBackedHandler):
     def _fetch(self, key: str) -> FetchResult:
         # CIR only corroborates, and it was unreachable from prod at r38
         # (TLS handshake timeouts): short timeout, no connect retry.
+        # chem.cir_enabled skips the leg outright — a dead CIR still
+        # costs its connect timeout on every lookup.
+        cir_enabled = settings.get_bool("chem.cir_enabled") is not False
         if self.fetch is not None:
-            res = resolve(key, self.fetch)
+            res = resolve(key, self.fetch, cir_enabled=cir_enabled)
         else:
-            res = resolve(key, http_fetch(), http_fetch(timeout_s=8.0, attempts=1))
+            res = resolve(
+                key,
+                http_fetch(),
+                http_fetch(timeout_s=8.0, attempts=1) if cir_enabled else None,
+                cir_enabled=cir_enabled,
+            )
         if res.status == "fault":
             raise Upstream(
                 f"chem: no source answered for {key!r} ({_tier_line(res)})",

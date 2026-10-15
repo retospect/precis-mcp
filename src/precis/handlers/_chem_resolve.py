@@ -19,6 +19,9 @@ Tiers, first answer wins:
 4. **NCI/CADD CIR** — fallback when PubChem misses, corroboration when
    it hits. Connectivity disagreement (InChIKey first block) between
    PubChem and CIR is refused as ambiguous with both readings listed.
+   ``resolve(cir_enabled=False)`` skips this leg outright (PubChem-only
+   mode for a CIR outage); answers it could not corroborate are marked
+   "uncorroborated", not refused.
 
 A tier that faults (transport error, 5xx) is recorded and skipped. When
 nothing answered and something faulted, :func:`resolve` returns status
@@ -401,11 +404,18 @@ def _dedupe(cands: list[StructureReading]) -> list[StructureReading]:
 # ── entry point ──────────────────────────────────────────────────────────
 
 
-def resolve(raw_query: str, fetch: Fetch, cir_fetch: Fetch | None = None) -> Resolution:
+def resolve(
+    raw_query: str,
+    fetch: Fetch,
+    cir_fetch: Fetch | None = None,
+    *,
+    cir_enabled: bool = True,
+) -> Resolution:
     """Resolve ``raw_query`` through the tiers. Never raises on upstream
     trouble: faults land in ``tiers``, and ``status='fault'`` only when
     PubChem itself failed to answer. ``cir_fetch`` lets the caller give
-    the corroborating CIR leg a shorter timeout."""
+    the corroborating CIR leg a shorter timeout; ``cir_enabled=False``
+    skips the CIR leg outright (PubChem-only mode for a CIR outage)."""
     query = normalise_query(raw_query)
     qtype = classify_query(query)
     res = Resolution(query=query, query_type=qtype, status="not_found")
@@ -459,7 +469,15 @@ def resolve(raw_query: str, fetch: Fetch, cir_fetch: Fetch | None = None) -> Res
 
     pubchem = _dedupe(run("PubChem", lambda: _tier_pubchem(query, fetch, notes)) or [])
     pubchem_faulted = res.tiers[-1][1].startswith("fault")
-    cir = _dedupe(run("CIR", lambda: _tier_cir(query, cir_fetch or fetch, notes)) or [])
+    if cir_enabled:
+        cir = _dedupe(
+            run("CIR", lambda: _tier_cir(query, cir_fetch or fetch, notes)) or []
+        )
+        cir_answered = not res.tiers[-1][1].startswith("fault")
+    else:
+        cir = []
+        cir_answered = False
+        res.tiers.append(("CIR", "skipped (disabled)"))
 
     if pubchem:
         if len(pubchem) > 1:
@@ -490,8 +508,10 @@ def resolve(raw_query: str, fetch: Fetch, cir_fetch: Fetch | None = None) -> Res
             )
         elif cir:
             notes.append("CIR agrees")
-        else:
+        elif cir_answered:
             notes.append("not corroborated: CIR gave no answer")
+        else:
+            notes.append("uncorroborated: CIR unavailable")
         res.candidates, res.status = [best], "resolved"
         return res
 
@@ -501,12 +521,14 @@ def resolve(raw_query: str, fetch: Fetch, cir_fetch: Fetch | None = None) -> Res
         return res
 
     # PubChem is the authoritative tier: a PubChem miss is a real "not
-    # found" even when the corroborating CIR leg is unreachable.
+    # found" even when the corroborating CIR leg is unreachable or off.
     if pubchem_faulted:
         res.status = "fault"
     else:
         res.status = "not_found"
-        if faulted:
+        if not cir_enabled:
+            notes.append("OPSIN and PubChem found nothing; CIR is disabled")
+        elif faulted:
             notes.append("CIR was unreachable; OPSIN and PubChem found nothing")
     return res
 
