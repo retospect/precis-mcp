@@ -24,7 +24,52 @@ resolve_pgb_host() {
         return 0
     fi
 
-    local repo overlay node addr common main
+    local overlay node addr
+    overlay="$(resolve_overlay)" || return 2
+
+    # `postgres_host: <node>` under all.vars, then that node's ansible_host.
+    node="$(awk '/^[[:space:]]*postgres_host:[[:space:]]*/ {
+                     gsub(/["\047]/, "", $2); print $2; exit }' "$overlay")"
+    if [ -z "$node" ]; then
+        echo "pgb-host: $overlay has no 'postgres_host:' key." >&2
+        return 2
+    fi
+
+    # First `ansible_host:` after the `<node>:` block header.
+    addr="$(awk -v want="$node:" '
+                $1 == want { found = 1; next }
+                found && /^[[:space:]]*ansible_host:[[:space:]]*/ {
+                    gsub(/["\047]/, "", $2); print $2; exit }' "$overlay")"
+    if [ -z "$addr" ]; then
+        echo "pgb-host: no ansible_host for '$node' in $overlay." >&2
+        return 2
+    fi
+
+    printf '%s\n' "$addr"
+}
+
+# Every inventory host as "<name> <ansible_host>" lines, in file order, once
+# each: a `<name>:` key whose block carries an `ansible_host:`.
+list_cluster_hosts() {
+    local overlay
+    overlay="$(resolve_overlay)" || return 2
+    awk '
+        /^[[:space:]]*[A-Za-z0-9_.-]+:[[:space:]]*$/ {
+            key = $1; sub(/:$/, "", key); next }
+        /^[[:space:]]*ansible_host:[[:space:]]*/ && key != "" {
+            addr = $2; gsub(/["\047]/, "", addr)
+            if (!(key in seen)) { seen[key] = 1; print key, addr }
+            key = "" }' "$overlay"
+}
+
+# Path of the gitignored overlay `deploy/inventory/hosts.yml`, or fail loudly.
+# $CLUSTER_INVENTORY overrides (tests point it at a fixture).
+resolve_overlay() {
+    local repo overlay common main
+    if [ -n "${CLUSTER_INVENTORY:-}" ]; then
+        printf '%s\n' "$CLUSTER_INVENTORY"
+        return 0
+    fi
     repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
     overlay="$repo/deploy/inventory/hosts.yml"
 
@@ -48,24 +93,5 @@ resolve_pgb_host() {
         echo "  Either sync the overlay or run with PGB_HOST=<addr>." >&2
         return 2
     fi
-
-    # `postgres_host: <node>` under all.vars, then that node's ansible_host.
-    node="$(awk '/^[[:space:]]*postgres_host:[[:space:]]*/ {
-                     gsub(/["\047]/, "", $2); print $2; exit }' "$overlay")"
-    if [ -z "$node" ]; then
-        echo "pgb-host: $overlay has no 'postgres_host:' key." >&2
-        return 2
-    fi
-
-    # First `ansible_host:` after the `<node>:` block header.
-    addr="$(awk -v want="$node:" '
-                $1 == want { found = 1; next }
-                found && /^[[:space:]]*ansible_host:[[:space:]]*/ {
-                    gsub(/["\047]/, "", $2); print $2; exit }' "$overlay")"
-    if [ -z "$addr" ]; then
-        echo "pgb-host: no ansible_host for '$node' in $overlay." >&2
-        return 2
-    fi
-
-    printf '%s\n' "$addr"
+    printf '%s\n' "$overlay"
 }
