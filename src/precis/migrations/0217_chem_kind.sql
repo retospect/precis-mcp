@@ -1,4 +1,4 @@
--- 0216_chem_kind.sql
+-- 0217_chem_kind.sql
 --
 -- Register `kind='chem'` — chemical name / CAS / abbreviation resolver.
 --
@@ -27,4 +27,4 @@ ON CONFLICT (slug) DO NOTHING;
 
 COMMIT;
 
--- End of 0216_chem_kind.sql
+-- End of 0217_chem_kind.sql
