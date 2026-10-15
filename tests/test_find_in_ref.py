@@ -107,6 +107,24 @@ def test_no_match(memory: MemoryHandler) -> None:
     assert "scanned" in out
 
 
+def test_long_lines_are_clipped(memory: MemoryHandler) -> None:
+    """Paragraph-per-line bodies: the hit line is windowed around the
+    match and context lines keep a head, so a find never re-serves the
+    whole body (r37 dogfood, me483106)."""
+    filler = "lorem ipsum dolor " * 80
+    body = f"{filler}\n\n{filler}plaza packing{filler}\n\n{filler}\n"
+    rid = id_of(memory.put(text=body).body)
+    out = memory.get(id=rid, q="Plaza Packing").body
+    assert "1 match" in out
+    hit = next(ln for ln in out.splitlines() if ln.startswith(">"))
+    assert "plaza packing" in hit
+    assert hit.startswith(">    3: …") and "-char line]" in hit
+    assert len(hit) < 500
+    context = [ln for ln in out.splitlines() if ln.startswith("  ") and "lorem" in ln]
+    assert context and all("chars)" in ln and len(ln) < 250 for ln in context)
+    assert len(out) < 1500
+
+
 def test_literal_not_regex_escaping(memory: MemoryHandler) -> None:
     """A literal q with regex metachars matches only the literal text."""
     rid = id_of(memory.put(text="use a.c here\nabc somewhere\n").body)

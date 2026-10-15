@@ -70,6 +70,18 @@ _MAX_CONTEXT_LINES = 25
 #: render cost first.
 _MAX_MATCH_LINES = 400
 
+#: Lines longer than this are clipped in the render. Memory and gripe
+#: bodies are often one paragraph per line, so an unclipped ±3-line
+#: window can return the whole body (dogfood of r37, me483106: a
+#: 1.5k-char hit line plus two 1k-char context lines).
+_MAX_LINE_CHARS = 400
+#: Characters kept either side of each match on a clipped hit line.
+_HIT_WINDOW_CHARS = 160
+#: Matches windowed per clipped hit line; the rest are counted.
+_MAX_SPANS_PER_LINE = 3
+#: Head kept from a clipped context line.
+_CONTEXT_HEAD_CHARS = 160
+
 #: chunk_kind values that carry the ref's primary prose — rendered
 #: unlabelled. ``<kind>_body`` also counts (memory_body, gripe_body, …).
 #: Anything else (``<kind>_comment``, quest_log, job_event, review
@@ -214,6 +226,52 @@ def _compile_matcher(q: str) -> Callable[[str], bool]:
     return lambda line: rx.search(line[:_MAX_REGEX_LINE_CHARS]) is not None
 
 
+def _span_finder(q: str) -> re.Pattern[str]:
+    """A pattern locating ``q``'s matches inside a line, for clipping.
+
+    Only called after :func:`_compile_matcher` has validated ``q``.
+    """
+    if q.startswith(REGEX_PREFIX):
+        return re.compile(q[len(REGEX_PREFIX) :], re.IGNORECASE)
+    return re.compile(re.escape(q), re.IGNORECASE)
+
+
+def _clip_context(line: str) -> str:
+    if len(line) <= _MAX_LINE_CHARS:
+        return line
+    rest = len(line) - _CONTEXT_HEAD_CHARS
+    return f"{line[:_CONTEXT_HEAD_CHARS]}… (+{rest} chars)"
+
+
+def _clip_hit(line: str, finder: re.Pattern[str]) -> str:
+    """Window a long hit line around its matches; short lines pass through."""
+    if len(line) <= _MAX_LINE_CHARS:
+        return line
+    spans = [
+        m.span()
+        for m in finder.finditer(line[:_MAX_REGEX_LINE_CHARS])
+        if m.end() > m.start()
+    ]
+    if not spans:
+        return _clip_context(line)
+    windows: list[tuple[int, int]] = []
+    for s, e in spans[:_MAX_SPANS_PER_LINE]:
+        lo, hi = max(0, s - _HIT_WINDOW_CHARS), min(len(line), e + _HIT_WINDOW_CHARS)
+        if windows and lo <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], hi)
+        else:
+            windows.append((lo, hi))
+    parts = [line[lo:hi] for lo, hi in windows]
+    out = " … ".join(parts)
+    if windows[0][0] > 0:
+        out = "…" + out
+    if windows[-1][1] < len(line):
+        out += "…"
+    extra = len(spans) - _MAX_SPANS_PER_LINE
+    more = f", +{extra} more matches" if extra > 0 else ""
+    return f"{out} [{len(line)}-char line{more}]"
+
+
 def _passages(
     hit_lines: list[int], *, context: int
 ) -> list[tuple[int, int, list[int]]]:
@@ -285,6 +343,7 @@ def find_response(
     """
     ctx = _clamp_context(context)
     match = _compile_matcher(q)
+    finder = _span_finder(q)
     label_of = chunk_label or (lambda c: _chunk_label(kind, display, c))
 
     n_matches = 0
@@ -330,13 +389,17 @@ def find_response(
             marks = set(group)
             sections.append(f"## {label}{tag} · lines {hit_desc}")
             for i in range(lo_c, hi_c + 1):
-                prefix = "> " if i in marks else "  "
-                sections.append(f"{prefix}{line_base + i:>4}: {lines[i]}")
+                if i in marks:
+                    prefix, shown = "> ", _clip_hit(lines[i], finder)
+                else:
+                    prefix, shown = "  ", _clip_context(lines[i])
+                sections.append(f"{prefix}{line_base + i:>4}: {shown}")
             sections.append("")
 
     head = [f"# find {q!r} in {display}"]
     if n_matches == 0:
-        head.append(f"no match — scanned {len(chunks)} chunks")
+        scanned = "chunk" if len(chunks) == 1 else "chunks"
+        head.append(f"no match — scanned {len(chunks)} {scanned}")
     else:
         plural = "match" if n_matches == 1 else "matches"
         chunk_plural = "chunk" if matched_chunks == 1 else "chunks"
