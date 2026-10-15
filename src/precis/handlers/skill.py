@@ -2143,6 +2143,10 @@ class SkillHandler(Handler):
                     schema=["field", "value"],
                 )
             )
+        # gr484241 / gr486840: agents read refs.meta, ref_tags and chunk
+        # text through prod-psql because nothing here named the MCP reads.
+        lines.extend(["", "**Introspection (no SQL needed)**", ""])
+        lines.extend(_INTROSPECTION_POINTERS)
         lines.extend(["", "**Dark switches**", ""])
         lines.extend(_render_dark_switches(store))
         lines.extend(["", "**Fleet utilisation (last hour)**", ""])
@@ -3252,6 +3256,16 @@ def _collect_embedder_info(embedder: Any) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # Optional-dep probe table — used by ``precis-status``
 # ---------------------------------------------------------------------------
+
+#: The MCP reads that answer what agents used to ask prod-psql for.
+_INTROSPECTION_POINTERS: tuple[str, ...] = (
+    "- meta keys a kind carries: `search(kind=K, view='meta')` "
+    "(`args={'key': K2}` drills one level)",
+    "- tag axes and values in use: `search(kind=K, view='tags')`; "
+    "the refs carrying one: `search(kind=K, tags=['<value>'])`",
+    "- passages inside one ref: `get(kind=K, id=N, q='<text>' | 're:<regex>')`",
+    "- totals and facets: `search(kind=K, view='count')`",
+)
 
 #: ``(import name, display label, kinds it backs, pip install hint)``.
 #:

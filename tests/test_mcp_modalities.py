@@ -333,6 +333,18 @@ def test_precis_status_reports_active_embedder_and_warns_on_mock(
     assert "non-functional" in body
 
 
+def test_precis_status_points_at_introspection_reads(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr484241: the status page names the MCP reads for meta keys, tag
+    values and in-ref passages, so agents stop reaching for prod-psql."""
+    body = runtime_with_store.dispatch("get", {"kind": "skill", "id": "precis-status"})
+    assert "**Introspection (no SQL needed)**" in body
+    assert "view='meta'" in body
+    assert "view='tags'" in body
+    assert "q='<text>'" in body
+
+
 def test_precis_status_marks_missing_optional_dep(monkeypatch) -> None:
     """When an optional dep is missing, the probe row tags it
     MISSING and surfaces the install hint.  Simulated by
