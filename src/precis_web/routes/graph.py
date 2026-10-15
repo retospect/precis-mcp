@@ -236,13 +236,15 @@ class _Filters:
 
         out = [_chip(f"rel:{v}", [("rels", v)]) for v in self.rels]
         out += [_chip(f"kind:{v}", [("kinds", v)]) for v in self.kinds]
-        for axis, v in (
-            ("since", self.since),
-            ("until", self.until),
-            ("trust", self.trust),
+        # The ``trust`` axis is the finding publication tier; its chip says
+        # so, since each row's own trust state is origin · confidence.
+        for axis, label, v in (
+            ("since", "since", self.since),
+            ("until", "until", self.until),
+            ("trust", "finding tier", self.trust),
         ):
             if v:
-                out.append(_chip(f"{axis}:{v}", [(axis, v)]))
+                out.append(_chip(f"{label}:{v}", [(axis, v)]))
         if self.depth is not None and self.depth != 2:
             out.append(_chip(f"depth:{self.depth}", [("depth", str(self.depth))]))
         if len(out) > 1:
@@ -547,6 +549,9 @@ def _row(n: dict[str, Any], e: dict[str, Any]) -> dict[str, Any]:
         "graph_url": f"/graph/{n['kind']}/{n['id']}",
         "state": n.get("state") or "live",
         "retired": bool(n.get("retired")),
+        # origin · confidence (graph-node-trust-state slice 1), display
+        # only; the ``trust`` filter axis is the finding tier
+        "trust": n.get("trust") or "",
         "kids": [],
     }
 
@@ -745,6 +750,7 @@ async def graph_focus(
             "handle": focus_h,
             "focus_label": data["focus"]["label"],
             "focus_state": data["focus"].get("state", "live"),
+            "focus_trust": data["focus"].get("trust", ""),
             "focus_retired": bool(data["focus"].get("retired")),
             "reader_url": ref_url(kind, ref_id),
             "json_url": f"{page}.json" + (f"?{json_qs}" if json_qs else ""),

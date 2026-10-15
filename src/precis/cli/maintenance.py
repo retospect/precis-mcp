@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg import sql
 
 from precis.cli._common import resolve_dsn
+from precis.store.revision_context import trust_door
 
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
@@ -415,6 +416,9 @@ _NO_MEASURES = (
 )
 
 
+# a purged parent nulls its children's parent_id (ON DELETE SET NULL): a
+# semantic change to those children, re-stamped computed
+@trust_door("computed")
 def _purge_soft_deleted(
     *,
     store: Store,

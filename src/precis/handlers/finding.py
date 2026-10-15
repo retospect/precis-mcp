@@ -171,6 +171,8 @@ _TRUST_POOL_MAX = 100
 
 
 class FindingHandler(NumericRefHandler):
+    #: Agent-authored assertions (graph-node-trust-state slice 1).
+    trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
         kind="finding",
         title="Finding",

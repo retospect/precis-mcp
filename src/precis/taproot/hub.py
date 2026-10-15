@@ -38,6 +38,7 @@ from precis.identity import (
     normalize_text_for_hash,
 )
 from precis.ingest.provenance import check_ref_retraction
+from precis.store.revision_context import trust_door
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
     NONEMPIRICAL_ARTIFACT_TYPES,
@@ -687,6 +688,7 @@ class HubFrozenError(ValueError):
     """
 
 
+@trust_door("generated")
 def refine_claim_sentence(
     store: Store,
     hub_ref_id: int,
@@ -1637,6 +1639,7 @@ class WouldStrandHub(BadInput):
     """
 
 
+@trust_door("computed")
 def remove_evidence(
     store: Store,
     *,
@@ -1756,6 +1759,7 @@ def remove_evidence(
         return _do(c)
 
 
+@trust_door("computed")
 def reattach_as_disputes(
     store: Store,
     *,
@@ -1872,6 +1876,7 @@ def reattach_as_disputes(
         return _do(c)
 
 
+@trust_door("computed")
 def remove_disputes(
     store: Store,
     *,
@@ -2480,6 +2485,7 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
     )
 
 
+@trust_door("computed")
 def _apply_merge_plan(
     store: Store,
     conn: Any,

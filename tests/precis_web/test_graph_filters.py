@@ -223,7 +223,7 @@ def test_filter_controls_and_chips(
     page = graph_client.get(f"/graph/paper/{focus}?kinds=paper&trust=verified&depth=1")
     for field in ("kinds", "rels", "since", "until", "trust", "depth"):
         assert f'name="{field}"' in page.text
-    assert "kind:paper ×" in page.text and "trust:verified ×" in page.text
+    assert "kind:paper ×" in page.text and "finding tier:verified ×" in page.text
     assert "depth:1 ×" in page.text
     assert ">clear ×<" in page.text  # >1 active value → clear-all chip
     # a chip's href is the same URL minus that one value (chips carry
@@ -242,7 +242,7 @@ def test_filter_controls_and_chips(
     )
     for field in ("kinds", "rels", "since", "until", "trust"):
         assert f'name="{field}"' in panel.text
-    assert "kind:paper ×" in panel.text and "trust:verified ×" in panel.text
+    assert "kind:paper ×" in panel.text and "finding tier:verified ×" in panel.text
     chip_hx = re.findall(
         r'<a href="[^"]+" hx-get="([^"]+)"[^>]*title="remove this filter"',
         panel.text,

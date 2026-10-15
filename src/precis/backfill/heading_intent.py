@@ -34,6 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.store.revision_context import trust_door
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 
@@ -96,6 +97,7 @@ def _intent_ref_for(store: Store, heading_handle: str) -> int | None:
     return int(row[0]) if row else None
 
 
+@trust_door("generated")
 def set_intent(
     store: Store,
     heading_handle: str,

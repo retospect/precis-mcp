@@ -1019,6 +1019,7 @@ class TestNeighbourhood:
             "kind": "paper",
             "id": focus,
             "label": "Test paper focus2020",
+            "trust": "unknown · unknown",
         }
         assert nb["truncated"] is False
         assert nb["counts"]["cites"] == {"paper": 1}
@@ -1066,6 +1067,7 @@ class TestNeighbourhood:
                 "dst": _h("memory", leaf),
                 "rel": "related-to",
                 "dir": "out",
+                "trust": "unknown · unknown",
                 "hop": 2,
             }
         ]

@@ -37,6 +37,7 @@ from typing import Any
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
+from precis.store.revision_context import trust_door
 from precis.utils.title_merge import title_merge_refusal
 
 log = logging.getLogger(__name__)
@@ -159,6 +160,7 @@ def _move_body_to_survivor(
     return moved
 
 
+@trust_door("computed")
 def inherit_missing_identity(
     store: Store,
     *,
@@ -228,6 +230,7 @@ def inherit_missing_identity(
     return filled
 
 
+@trust_door("computed")
 def merge_duplicate(
     store: Store,
     *,

@@ -51,6 +51,7 @@ from precis.store._mappers import (
     _row_to_ref,
     _row_to_s2_neighbor,
 )
+from precis.store.revision_context import trust_door
 from precis.store.types import (
     FINDING_TRUST_TIERS,
     ActorSlug,
@@ -224,18 +225,21 @@ def _linked_refs_where(
 # rewrite ``links_for`` applies) and the request's filters; ``ret_ok`` admits
 # retired far ends as tombstone rows. Output: one 'c' row per (rel, far kind)
 # with the full edge count, then up to ``lim`` edge rows ('r'), newest first.
-# Layout: (tag, anchor, far, dir, rel, kind, title, state, n, retired).
+# Layout: (tag, anchor, far, dir, rel, kind, title, state, n, retired,
+# far trust, link trust) — the trust pair is 'origin · confidence' (0214).
 _NBH_SQL = """
 WITH inv(slug, inv) AS (
   SELECT * FROM unnest(%(slugs)s::text[], %(invs)s::text[])
 ),
 x AS (
   SELECT l.link_id, l.created_at AS lat, l.src_ref_id AS anchor,
-         l.dst_ref_id AS far, 'out'::text AS dir, l.relation AS rel
+         l.dst_ref_id AS far, 'out'::text AS dir, l.relation AS rel,
+         l.trust_origin || ' · ' || l.trust_confidence AS ltrust
     FROM links l WHERE l.src_ref_id = ANY(%(anchors)s::bigint[])
   UNION ALL
   SELECT l.link_id, l.created_at, l.dst_ref_id, l.src_ref_id, 'in',
-         COALESCE(inv.inv, l.relation)
+         COALESCE(inv.inv, l.relation),
+         l.trust_origin || ' · ' || l.trust_confidence
     FROM links l LEFT JOIN inv ON inv.slug = l.relation
    WHERE l.dst_ref_id = ANY(%(anchors)s::bigint[])
 ),
@@ -245,7 +249,8 @@ e AS (
                      JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
                     ORDER BY t.value LIMIT 1), 'live') AS fstate,
-         (r.retired_at IS NOT NULL) AS fret
+         (r.retired_at IS NOT NULL) AS fret,
+         r.trust_origin || ' · ' || r.trust_confidence AS ftrust
     FROM x JOIN refs r ON r.ref_id = x.far
    WHERE (%(ret_ok)s::bool OR r.retired_at IS NULL)
      AND NOT (x.far = ANY(%(excl)s::bigint[]))
@@ -255,12 +260,13 @@ e AS (
      AND (%(until)s::timestamptz IS NULL OR r.created_at < %(until)s::timestamptz)
 )
 SELECT 'c'::text, NULL::bigint, NULL::bigint, NULL::text, rel, fkind,
-       NULL::text, NULL::text, count(*)::bigint, NULL::bool
+       NULL::text, NULL::text, count(*)::bigint, NULL::bool, NULL::text,
+       NULL::text
   FROM e GROUP BY rel, fkind
 UNION ALL
 SELECT * FROM (
   SELECT 'r'::text, anchor, far, dir, rel, fkind, ftitle, fstate, 0::bigint,
-         fret
+         fret, ftrust, ltrust
     FROM e ORDER BY lat DESC, link_id DESC
    LIMIT %(lim)s::int
 ) rr
@@ -298,10 +304,11 @@ def _nbh_edge(
     r: tuple[Any, ...],
     h: Callable[[str, int], str],
 ) -> dict[str, Any]:
-    """One edge dict from a ``_NBH_SQL`` row, stored direction preserved."""
+    """One edge dict from a ``_NBH_SQL`` row, stored direction preserved;
+    ``trust`` is the link's own origin · confidence (0214)."""
     a, f = h(anchor_kind, anchor_id), h(r[5], int(r[2]))
     src, dst = (a, f) if r[3] == "out" else (f, a)
-    return {"src": src, "dst": dst, "rel": r[4], "dir": r[3]}
+    return {"src": src, "dst": dst, "rel": r[4], "dir": r[3], "trust": r[11]}
 
 
 class LinksMixin:
@@ -787,9 +794,9 @@ class LinksMixin:
 
         Shape (shared by the web graph route and the agent walk)::
 
-            {"focus": {kind, id, label},
-             "nodes": [{kind, id, label, state}],
-             "edges": [{src, dst, rel, dir}],
+            {"focus": {kind, id, label, trust},
+             "nodes": [{kind, id, label, state, trust}],
+             "edges": [{src, dst, rel, dir, trust}],
              "counts": {rel: {kind: n}}, "truncated": bool,
              # depth=2 only:
              "counts2": {rel: {kind: n}}}
@@ -810,7 +817,11 @@ class LinksMixin:
           ``rels=`` filters on that presented slug.
         - ``label`` = ref title (handle when blank). ``state`` = the ref's
           ``STATUS:`` tag value, else ``"live"``. Retired refs are never
-          returned.
+          returned. ``trust`` on the focus, every node and every edge is
+          that row's ``"<origin> · <confidence>"`` stamp (migration 0214,
+          graph-node-trust-state slice 1) — display only, carried in the
+          same statements (no extra round trip), and a different axis from
+          the ``trust=`` finding-tier filter below.
         - ``since`` / ``until`` bound the *linked* ref's ``created_at``
           (inclusive / exclusive); ``kinds`` filters the linked ref's kind.
         - ``trust`` (``verified|signed|disputed|any``) applies to
@@ -893,7 +904,8 @@ class LinksMixin:
                 " COALESCE((SELECT t.value FROM ref_tags rt"
                 "   JOIN tags t ON t.tag_id = rt.tag_id"
                 "   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'"
-                "   ORDER BY t.value LIMIT 1), 'live')"
+                "   ORDER BY t.value LIMIT 1), 'live'),"
+                " trust_origin || ' · ' || trust_confidence"
                 " FROM refs r WHERE ref_id = %s AND kind = %s",
                 (ref_id, kind),
             ).fetchone()
@@ -927,6 +939,7 @@ class LinksMixin:
                         "id": far,
                         "label": r[6] or _h(r[5], far),
                         "state": r[7],
+                        "trust": r[10],
                     }
                     if r[9]:
                         n["retired"] = True
@@ -936,6 +949,7 @@ class LinksMixin:
                 "kind": kind,
                 "id": ref_id,
                 "label": frow[0] or _h(kind, ref_id),
+                "trust": frow[3],
             }
             if include_retired:
                 focus["state"] = frow[2]
@@ -964,6 +978,7 @@ class LinksMixin:
                                 "id": far,
                                 "label": r[6] or _h(r[5], far),
                                 "state": r[7],
+                                "trust": r[10],
                                 "hop": 2,
                             }
                             if r[9]:
@@ -1212,6 +1227,7 @@ class LinksMixin:
             )
         return out
 
+    @trust_door("computed")
     def migrate_links(
         self,
         old_ref_id: int,

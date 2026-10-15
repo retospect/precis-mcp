@@ -34,7 +34,10 @@ import re
 import textwrap
 import time
 from collections import OrderedDict
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+
+import psycopg
 
 from precis.errors import BadInput, Denied, Internal, NotFound, PrecisError, Unsupported
 from precis.protocol import (
@@ -49,7 +52,16 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime._shared import RuntimeShape
+from precis.runtime.trust_verb import (
+    TRUST_VERBS,
+    create_receipt,
+    edit_trust,
+    pop_trust_payload,
+    producer_kwargs,
+    trust_line,
+)
 from precis.runtime.under_facet import UNDER_NEXT
+from precis.store._review_ops import trust_refusal
 from precis.store._salience import current_background_actor
 from precis.store.revision_context import (
     current_revision_context,
@@ -196,7 +208,7 @@ _WRITE_VERBS = frozenset({"put", "edit", "delete", "tag", "link"})
 
 
 def _write_context(
-    verb: str, kind: str, reason: str | None
+    verb: str, kind: str, reason: str | None, *, trust: dict[str, Any] | None = None
 ) -> contextlib.AbstractContextManager[object]:
     """The revision context a write verb runs in (local-mesh-upkeep §2b).
 
@@ -204,7 +216,8 @@ def _write_context(
     ``"<verb>(kind='<kind>')"``. Actor: an enclosing context's (a worker
     calling the runtime), else the background actor, else the process
     actor (a stdio server run for one speaker, :mod:`precis.acting_user`),
-    else ``agent``.
+    else ``agent``. ``trust`` is the producer part
+    (:func:`precis.runtime.trust_verb.producer_kwargs`, migration 0214).
     """
     if verb not in _WRITE_VERBS:
         return contextlib.nullcontext()
@@ -214,7 +227,7 @@ def _write_context(
     actor = None
     if outer is None or outer.actor is None:
         actor = current_background_actor() or process_actor() or "agent"
-    return revision_context(reason, actor=actor)
+    return revision_context(reason, actor=actor, **(trust or {}))
 
 
 def _explicit_param_names(func: Any) -> frozenset[str]:
@@ -2197,6 +2210,25 @@ class DispatchMixin(RuntimeShape):
         ):
             reason = args.pop("reason", None)
 
+        # graph-node-trust-state slice 1: the typed trust payload and the
+        # trust-only edit are consumed before the handler's kwargs gate.
+        trust_payload = (
+            pop_trust_payload(args, _EXTRAS_KEY) if verb in TRUST_VERBS else None
+        )
+        if verb == "edit" and args.get("mode") == "trust":
+            outer = current_revision_context()
+            return edit_trust(
+                self.store,
+                kind=kind,
+                ident=args.get("id"),
+                payload=trust_payload,
+                outer=outer,
+                actor=(outer.actor if outer is not None else None)
+                or current_background_actor()
+                or process_actor()
+                or "agent",
+            )
+
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:
             accepted = self._accepted_kwargs(method)
@@ -2319,13 +2351,38 @@ class DispatchMixin(RuntimeShape):
             )
 
         try:
-            with _write_context(verb, kind, reason):
+            with _write_context(
+                verb,
+                kind,
+                reason,
+                trust=producer_kwargs(
+                    verb,
+                    kind,
+                    type(handler).trust_origin,
+                    trust_payload,
+                    current_revision_context(),
+                )
+                if verb in _WRITE_VERBS
+                else None,
+            ) as wctx:
                 response = method(**clean)
+            act = getattr(wctx, "trust_act", None)
+            if act is not None and act.target_id is None:
+                response = replace(
+                    response,
+                    body=f"{response.body}\n{create_receipt(self.store, act)}",
+                )
         except PrecisError as exc:
             if kind_was_defaulted:
                 exc.cause = f"(searched kind={kind!r}) {exc.cause}"
             raise
         except Exception as exc:
+            # A trust guard's refusal (migration 0214) is the caller's
+            # input, not an internal error.
+            if isinstance(exc, psycopg.errors.CheckViolation):
+                refusal = trust_refusal(exc)
+                if refusal is not None:
+                    raise refusal from exc
             # Non-Precis exceptions get wrapped as ``Internal`` at
             # the dispatcher boundary; do the wrap here when the
             # kind was defaulted so the annotation lands on the
@@ -2339,11 +2396,38 @@ class DispatchMixin(RuntimeShape):
 
         if verb == "get" and args.get("view") is None:
             self._stamp_recalled(kind, args.get("id"))
+            response = self._append_trust_line(handler, kind, args.get("id"), response)
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         if verb == "get" and self._is_id_empty(args.get("id")):
             response = self._maybe_append_kind_skill_footer(response, kind)
         return response
+
+    def _append_trust_line(
+        self, handler: Handler, kind: str, ident: Any, response: Response
+    ) -> Response:
+        """Close a single-ref ``get`` of a converted kind with its trust
+        stamp and content sha (graph-node-trust-state slice 1): the sha is
+        what ``edit(mode='trust')`` names as ``expected_sha``. Best-effort:
+        a failed lookup never fails the read."""
+        if (
+            type(handler).trust_origin is None
+            or ident is None
+            or isinstance(ident, (list, tuple))
+            or (isinstance(ident, str) and ident.strip().startswith("/"))
+        ):
+            return response
+        store = self.store
+        if store is None:
+            return response
+        try:
+            line = trust_line(store, kind, ident)
+        except Exception:
+            log.debug("trust line for %s %r failed", kind, ident, exc_info=True)
+            return response
+        if line is None:
+            return response
+        return replace(response, body=f"{response.body.rstrip()}\n\n{line}")
 
     def _stamp_recalled(self, kind: str, ident: Any) -> None:
         """Record an agent read of one ref's own view (``refs.last_recalled_at``).

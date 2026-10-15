@@ -47,6 +47,7 @@ from precis.ingest.pres import (
     write_pres,
 )
 from precis.store import Store
+from precis.store.revision_context import trust_door
 from precis.store.types import Tag
 
 log = logging.getLogger(__name__)
@@ -1206,6 +1207,7 @@ def _fold_into_named_stub(
     return stub_id
 
 
+@trust_door("computed")
 def _reconcile_orphan_stub(
     store: Store,
     *,

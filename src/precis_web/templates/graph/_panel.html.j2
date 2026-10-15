@@ -38,6 +38,7 @@
           <span class="w-3 shrink-0 text-slate-400" title="{{ 'outbound' if row.dir == 'out' else 'inbound' }}">{{ '→' if row.dir == 'out' else '←' }}</span>
           <a href="{{ row.url }}" class="shrink-0 font-mono text-sky-700 hover:underline">{{ row.handle }}</a>
           <span class="min-w-0 truncate {% if row.state != 'live' %}italic text-slate-400{% else %}text-slate-600{% endif %}" title="{{ row.label }}">{{ row.label }}</span>
+          {% if row.trust %}<span class="shrink-0 text-[10px] font-mono text-slate-400" title="origin · confidence">{{ row.trust }}</span>{% endif %}
           <a href="{{ row.graph_url }}" class="shrink-0 text-[10px] text-slate-400 hover:text-sky-700" title="focus the graph on it">◦</a>
         </li>
         {% endfor %}
@@ -79,11 +80,11 @@
            class="rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
     <input type="date" name="until" value="{{ f.until }}" title="linked ref created before"
            class="rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
-    <select name="trust" title="finding trust tier (findings only)"
+    <select name="trust" title="finding publication tier (findings only); each row shows its own origin · confidence"
             class="rounded border border-slate-200 px-1 py-px text-[11px]">
-      <option value="">trust · off</option>
+      <option value="">finding tier · off</option>
       {% for t in trust_tiers %}
-      <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>trust · {{ t }}</option>
+      <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>finding tier · {{ t }}</option>
       {% endfor %}
     </select>
     <button type="submit" class="rounded bg-slate-800 px-1.5 py-px text-[11px] text-white hover:bg-slate-700">apply</button>

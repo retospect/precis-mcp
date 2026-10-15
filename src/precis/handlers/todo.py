@@ -261,6 +261,8 @@ class TodoHandler(NumericRefHandler):
     #: points at it, gr478557).
     supports_comment: ClassVar[bool] = True
 
+    #: Agent-authored assertions (graph-node-trust-state slice 1).
+    trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
         kind="todo",
         title="Todo",

@@ -74,6 +74,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from precis.store.revision_context import trust_door
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.grounding import has_grounding_prose
 from precis.taproot.reground import (
@@ -364,6 +365,7 @@ def _fetch_hub_claim(store: Store, hub_ref_id: int) -> CanonicalClaim | None:
     return CanonicalClaim(sentence=str(row[0] or "").strip(), scope=scope)
 
 
+@trust_door("computed")
 def _apply_grounding(
     store: Store, link_id: int, chunk_id: int, source_handle: str
 ) -> bool:

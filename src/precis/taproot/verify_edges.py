@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from precis.store.revision_context import trust_door
 from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_sha
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 
@@ -367,6 +368,7 @@ def count_passageless_edges(
 # ── per-edge verify + write ─────────────────────────────────────────────
 
 
+@trust_door("generated")
 def _stamp_edge(
     store: Store, link_id: int, verdict: dict[str, Any], sentence: str
 ) -> None:
@@ -392,6 +394,7 @@ def _stamp_edge(
         )
 
 
+@trust_door("generated")
 def _strip_support(store: Store, link_id: int) -> None:
     """Remove exactly the ``support`` key — the edge returns to withheld
     behind the publish gate. Deliberately nothing else: ``verified_by`` is

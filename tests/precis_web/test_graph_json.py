@@ -121,7 +121,12 @@ def test_json_matches_store_and_links_for(
     expected = store.neighbourhood("paper", focus, cap=DEFAULT_CAP)
     expected["groups"] = ring_groups(expected["counts"])
     assert body == expected
-    assert body["focus"] == {"kind": "paper", "id": focus, "label": "Paper focus2020"}
+    assert body["focus"] == {
+        "kind": "paper",
+        "id": focus,
+        "label": "Paper focus2020",
+        "trust": "unknown · unknown",
+    }
     assert body["truncated"] is False
     assert "counts2" not in body
 

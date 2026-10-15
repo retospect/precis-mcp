@@ -21,6 +21,7 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from precis.cli._common import resolve_dsn
+from precis.store.revision_context import trust_door
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -1103,6 +1104,7 @@ _PAPER_EVIDENCE_CANDIDATE_SQL = """
 """
 
 
+@trust_door("computed")
 def _backfill_grounding(store: Store, *, dry_run: bool) -> dict[str, Any]:
     """Upgrade ref-level taproot/draft citation edges to chunk-grounded.
 

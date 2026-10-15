@@ -31,6 +31,8 @@ from precis.reading.concepts import (
 
 
 class ConceptHandler(NumericRefHandler):
+    #: Agent-authored assertions (graph-node-trust-state slice 1).
+    trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
         kind="concept",
         title="Concept",

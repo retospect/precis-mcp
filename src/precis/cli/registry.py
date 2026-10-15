@@ -47,6 +47,9 @@ class Command:
     a module whose registrar adds several commands (the ``jobs`` modules)
     is registered once however many of its commands are selected.
     ``run`` names the function the dispatcher calls with the parsed args.
+    ``trust`` is the trust origin (migration 0214) the dispatcher runs a
+    command under when it writes refs of a converted kind outside the verb
+    path; ``None`` runs it without a trust context.
     """
 
     name: str
@@ -54,6 +57,7 @@ class Command:
     help: str | None
     register: str = "add_parser"
     run: str = "run"
+    trust: str | None = None
 
 
 def _c(name: str, module: str, help: str | None, **kw: str) -> Command:
@@ -105,6 +109,7 @@ COMMANDS: tuple[Command, ...] = (
         "migrate-refs",
         "migrate_refs",
         "Rewrite legacy kind:ref / ¶ references to universal handles.",
+        trust="computed",
     ),
     _c(
         "reconcile-duplicates",
@@ -169,9 +174,18 @@ COMMANDS: tuple[Command, ...] = (
         "Read/act on graph-gardener proposals (merge apply + undo).",
     ),
     _c(
+        "trust",
+        "trust",
+        "Graph trust state: compat report, acts, strict switch.",
+    ),
+    _c(
         "memory",
         "memory",
         "Import / render harness memory as SPACE:repo-dev graph nodes.",
+        # model-written harness memory files; the memory CLIs are
+        # review-pinned (test_memory_mirror_acceptance), so the context is
+        # set here rather than in them
+        trust="generated",
     ),
     _c("add", "add", "Ingest a paper (PDF, DOI, or arXiv ID) into the v2 schema."),
     _c(

@@ -27,7 +27,8 @@ review are complete; the orchestrator confirms all five policy decisions
 below and **slice 1 is unblocked**. Independent Codex review is required
 per slice. Keep this multi-slice item `status: draft` for owner-led gated
 work, not automatic fixer pickup. Target R15 or a later approved gate;
-**do not disturb R14**. This branch currently contains documentation only.
+**do not disturb R14**. Slice 1 is built in compatibility mode (migrations
+0214/0215); see its entry below for what remains.
 All schema work requires a NEW forward-only migration and the gated path
 under [thresholds](../conventions/thresholds.md). The policy approval does
 not bypass review of the concrete populated-table migration/defaults.
@@ -280,41 +281,114 @@ seams above; independent Codex planning review PASS at
 supersede the initial inventory/decision hold. This is not a runtime ship.
 
 **1. Non-NULL origin AND confidence on every refs/links write; legacy unknown.
-GATED SCHEMA; unblocked for the gated path, R15 or when ready.**
+BUILT in compatibility mode (tree `mesh-trust`, 2026-10-15; migrations
+0214/0215). Strict mode and the remaining writer closure are open (below).**
 
 Reto's physical-scope ruling, 2026-10-05 (~19:50Z as relayed): **refs and
-links only**. No chunk columns or backfill; no demonstrated measure consumer
-needs new origin/confidence fields in this slice. Deferred domain tables
-are not trust-filtered. The five policies and slices 2–4 remain unchanged;
-this is a smaller first storage slice, not universal graph enforcement.
+links only**. No chunk columns or backfill; deferred domain tables are not
+trust-filtered. The as-built contract lives in the 0214 header and
+`precis.store.revision_context`; in short:
 
-- Stamp all writers of `refs` and `links`, including raw-SQL ingest,
-  bulk/COPY, workers, nested SQL functions and plugin-to-mesh materializers.
-  A deferred table's writer enters scope when it mints or changes a ref or
-  link. No parent/endpoint origin or confidence inheritance.
-- Extend the transaction-scoped write context with origin, confidence and
-  attributable explicit acts. Quick human notes use human+hunch; generated
-  hypotheses use generated+hunch even when requested by a human. Considered
-  requires an explicit recorded act; never infer human from token owner.
-- Dedicated constrained columns and the existing ref/link revision ledger;
-  no new natural-key target registry, plugin schema or per-association
-  ledger. Body edits affect the owning ref's content version without
-  stamping 4.16M chunk rows. Preserve old actor evidence and workflow meta.
-- Legacy origin AND confidence are unknown, without guessing. Additive
-  compatibility defaults also mark unconverted writes honestly unknown;
-  measure and close this bounded window through per-writer conversion.
-  Strict guards then refuse missing context. A cluster-wide writer fence
-  is not required by the proposed rollout; exact bounded-lock acceptance
-  and compatible rollback still gate implementation.
-- Acceptance: complete in-scope writer coverage, direct-SQL/NULL/invalid/
-  bare-considered refusal, pooled transaction isolation, recorded acts,
-  content-neutral sealer retention, unknown legacy/rerun preservation and
-  mixed-version cutover. Detailed cases and deferred scope are below.
-- Independent Codex review, focused canonical tests/types/Ruff, throwaway
-  migration dry-run/apply plus scheduled integration gate before shipping.
-  No R14 integration, deploy or full suite outside coordinator scheduling.
+- `refs`/`links` carry `trust_origin`, `trust_confidence` and
+  `trust_write_version` (constant defaults `unknown/unknown/0`, CHECKs added
+  NOT VALID, validated by 0215 in its own transaction). Triggers derive the
+  stamp from the write context (`precis.trust_origin`, `.trust_actor_type`,
+  `.trust_act`). Raw trust values, NULL, invalid origins and a bare
+  considered value are refused.
+- A converted writer stamps `<origin>/hunch` v1 on create and on every
+  semantic change, including a live-body change through the parent-ref chunk
+  guard (both owners on a move). Derived `ord < 0` chunks and appended
+  timeline entries are excluded: comments, job events, summaries and
+  results, run and quest logs, review notes, figure/diagram turns and
+  tag-overflow storage (`precis_trust_subject_chunk`). An
+  unconverted writer writes v0 and is refused on v1 content. Retire/restore
+  and bookkeeping meta keep the stamp.
+- Conversion is per kind: only refs of the converted kinds
+  (`precis_trust_kind_converted`, pinned equal to the handlers that set
+  `trust_origin`) and links with a converted end take a stamp or an act. A
+  door that also writes a paper leaves the paper v0, so the paper writers
+  (enrichers, ingest, `edit(kind='paper')`) are not refused. Converting a
+  kind is a migration that replaces that list.
+- Acts (consider, demote, correct-origin, legacy-import, carry, plus the
+  implicit create/revise) land in `revisions.trust_acts`, in order, under
+  the row lock. A stale `expected_sha` is refused, a same-op replay records
+  nothing, and a changed payload conflicts. The sealer keeps rows that carry
+  acts and drops phantom create acts from upserts. Content shas exclude the
+  stamp, so existing review certificates are untouched.
+- Converted producers: the verb path for memory, finding, concept, taxon,
+  todo and gripe (`Handler.trust_origin = 'generated'`; `link` runs on the
+  source kind). The web dispatch ingress is `human` for those kinds and
+  keeps the kind's own producer otherwise. Worker/CLI doors converted with
+  `trust_door`: the taproot hub reword/evidence/dispute/merge doors,
+  `hub_refine._reverify_pinned_edges`, verify/repair-evidence, the
+  grounding backfill, garden apply/undo, `migrate_links`, paper hygiene,
+  dedup and orphan-stub reconcile, the chase snapshot, `set_intent` and the
+  maintenance purge (a purged parent nulls its children's `parent_id`). A
+  door handed an open transaction sends its context into it and restores
+  the caller's on return. CLI commands that write converted kinds outside
+  the verb path run as a producer from the registry (`Command.trust`):
+  `precis memory` (generated) and `precis migrate-refs` (computed).
+- Surfaces: `args={'trust': …}` on put/edit, `edit(mode='trust')`, the
+  `trust:` line on `get` (stamp + sha), `origin · confidence` on `/graph`
+  nodes and edges (the old `trust=` chip now reads "finding tier") and
+  `precis trust report|show|consider|demote|correct-origin|legacy-import|strict`.
+  `precis-edit-help` § "Mark a node considered".
 
-Concrete slice-1 gate contract: [storage, writers and cutover](#slice-1-concrete-populated-table-gate-contract).
+#### Slice 1 — what remains before the strict boundary
+
+1. **Writer closure.** `precis trust report` lists v0 rows written since
+   0214, by ref kind / relation and set_by. Each entry is a writer still to
+   convert:
+   - every kind without `trust_origin`, converted as one unit with all of
+     its writers. Papers next: the paper verb, the enrichers (OpenAlex,
+     Crossref, ORCID cross-check, resolve/fix-metadata) and the stub-to-full
+     body upgrade in `ingest/db_writer.py`;
+   - get/search acquisitions (`_cache_ops`, `_cache_base`, `_good_search`,
+     paper/provider acquire);
+   - workers outside the verb path (glossary, dispatch/executors, alerts,
+     agentlog);
+   - raw ingest (`ingest/db_writer.py`, `pres.py`) and `_draft_ops` /
+     draftimport;
+   - DB functions (`precis_measure_taxon`, `file_gripe_readonly`, seed
+     functions) and plugin ref/link producers;
+   - handlers called directly rather than through the dispatcher
+     (quest compute and catalyst seed, `precis_web/design_turn.py`);
+   - the web routes that write without dispatch: nanopub, claim, and the
+     papers merge/delete routes. They get the doors' default producers;
+     typed human text there is not yet labelled human.
+
+   Insert-only writers of converted kinds (`file_gripe_readonly`,
+   `precis_measure_taxon`, worker-filed gripes/todos, quest rulings) are
+   fine in compat mode and refused only under strict. A
+   `handlers/structure.py` link note (`merge_meta`) is refused only on a
+   structure→converted link first stamped elsewhere; unverified.
+2. **Carry on copy.** `migrate_links` copies links as new `computed/hunch`
+   rows, so a considered link loses its stamp across a paper merge. A
+   per-row `carry` act is the fix.
+3. **Capability.** The GUCs are transport. Human origin and the operator
+   acts are gated in Python only (MCP refuses `human`, `correct-origin` and
+   `legacy-import`). An authenticated ingress or DB-role capability still
+   has to be frozen; slice 2's Reto-only human review depends on it.
+4. **Measured gate.** Run the 0214/0215 dry-run/apply on a representative
+   throwaway copy. Measure the DDL/VALIDATE lock time, per-write trigger
+   overhead (the BEFORE guard on every refs UPDATE, the chunk guards) and
+   ledger growth (one `revisions` row per converted create). Then freeze the
+   lock budget for `precis_trust_activate_strict`. None of this was measured
+   here; only the per-branch test DB ran.
+5. **Certificate scope.** 0185's content sha still covers timeline
+   chunks. A comment therefore stales a consider act's `expected_sha` but
+   does not demote the stamp. Slices 2/3 decide which sha a certificate
+   binds.
+6. **Strict activation.** The coordinator runs `precis trust strict` after
+   items 1–5 and exercises straddling transactions, nested functions, COPY
+   and old-binary refusal. The switch takes SHARE ROW EXCLUSIVE on
+   refs/links/chunks under `lock_timeout`; a timeout leaves compat in force
+   (tested).
+
+A static review of the built slice (2026-10-15) found context-less
+writers, paper doors and the 0214 lock order; those are fixed. Reto ruled
+2026-10-15 ~12:40Z that builders may /qland and the release owner deploys;
+never /qgo (migration). Strict mode stays off until items 1–6.
 
 **2. Shared evidence-exclusion predicate and defined grounding.
 GATED IF SCHEMA.**
@@ -402,310 +476,12 @@ changed grounding reaching all consumers, configurable thresholds/cadence,
 low-degree sampling, small strata and actor authority. Independent Codex
 review before shipping; operational model/service holds remain in force.
 
-### Slice 1: concrete populated-table gate contract
-
-**Narrowed review proposal, not migration SQL.** Reto's 2026-10-05 physical
-ruling supersedes the previous 69-core/ten-SE-table proposal. Source checked
-in this task worktree at `2c6bd5c8354f569f88c7cbefd98898b132667f9d`;
-only documentation changes here. Native Python search/symbol lookup located
-`best_measure`; local owning code confirms the consumer and ref body hash.
-The served index is discovery evidence, not proof of this branch or deployed
-implementation. The original 14:25–14:30 UTC inventory remains historical;
-no new production audit, schema allocation, backfill or runtime work.
-
-#### Storage boundary and column shape
-
-**Exactly two stamped tables: `refs` and `links`.** Every kind using these
-tables is in scope, even a CAD/PCB/plugin-owned ref. Domain tables themselves
-are excluded. `revisions` changes only to record acts for its existing
-numeric ref/link targets; it is an audit ledger, not another stamped node.
-No `chunks`, `measures`, association or plugin columns in this slice.
-
-| Column on refs and links only | Type / permitted values | Compatibility default | Strict-write contract |
-|---|---|---|---|
-| `trust_origin` | non-NULL text; human, extracted, computed, generated, unknown | unknown | Known producer for ordinary new assertions; unknown only for recorded legacy/import/carry exceptions. |
-| `trust_confidence` | non-NULL text; hunch, considered, unknown | unknown | Typed writer supplies hunch unless an explicit considered act is attached; legacy may remain unknown. |
-| `trust_write_version` | non-NULL small integer; 0 or 1 | 0 | 0 means unstamped legacy/compatibility content and requires unknown/unknown. 1 means this write passed the contract, not a trust rank. |
-
-Use NOT NULL and finite-vocabulary/version-pair CHECK constraints. Keep the
-constant defaults for mixed-version compatibility; strict DB guards refuse
-an ordinary write that falls back to version 0, even while these defaults
-remain. Defaults are not authority to bypass guards. Reject caller-supplied
-NULL, invalid enums and considered without a matching act in both modes.
-Unknown origin plus considered is permitted on legacy content only after an
-explicit act: consideration does not reconstruct origin. `set_by`, workflow
-`meta.origin`, scientific `tier`/`trusted` and existing review meanings stay
-separate. No origin-only indexes, grounding/review columns or read filtering
-in slice 1; slice 3 owns measured read-index decisions.
-
-**Why no chunk columns:** memories, findings, taxa and concepts are refs;
-chunks hold their bodies. Existing `precis_ref_sha_of` combines ref content
-with `precis_body_sha`, which hashes live `ord >= 0` body text. That gives
-one content-versioned trust subject for each requested node. Existing
-`precis_chunks_body_revision` only covers registered kinds and INSERT/DELETE:
-it is a reuse seam, **not proof of complete enforcement**. The implementation
-must cover semantic body changes, retirement/moves and direct SQL for every
-in-scope ref, including kinds currently outside `covered_meta`, through a
-parent-ref act/invalidation guard. No chunk provenance column, scan/backfill
-of 4.16M rows, or body rewrite is needed. Mutation-time guards on chunks are
-allowed solely to protect the owning ref, not to stamp chunk records.
-Derived cards/keywords/summaries cannot silently change the ref's origin or
-be presented as independently considered passages; independent passage/card
-trust is deferred. A ref stamp certifies only that ref's declared content
-projection, not every derivative attached to it. New trust-version coverage
-must not retroactively change existing review certificates; use a separate
-explicit-act projection if the current review hash omits semantic fields.
-
-**Why no measures columns:** `best_measure` and quest `view='measures'`
-already use the newest current measure review and expose `review_state`.
-Those are real mesh consumers, but neither currently needs new origin/hunch
-columns to keep that contract. No specific new measure consumer requirement
-was established for slice 1. Keep existing measure review/SI behavior;
-`mx` is not silently treated as a trusted ref or included in new filtering.
-A measured result materialized as a finding/ref or link is stamped there.
-
-| Deferred storage / projection | Slice-1 disposition and mint boundary |
-|---|---|
-| Chunks as independent passage/card targets; chunk summaries and tag/membership rows | **Deferred, not trust-filtered; revisit only with a concrete consumer.** Bodies participate in the owning ref's trust-version guard above; no independent inherited chunk/tag trust. |
-| Measures, compatibility value views, property/category definitions | **Deferred, not trust-filtered; revisit only with a concrete consumer.** `precis_measure_taxon` creates taxon refs and links: those writes are enforced at mint, not the measure row. |
-| PCB, structure, design, checklist, parts, CAD tables | **Deferred, not trust-filtered; revisit only with a concrete consumer.** No guards on domain-only writes, stage/swap or nested objects. Lazy part refs, CAD refs, generated findings and graph links still pass mesh guards. |
-| Source-binary tables, citation/identity tables | **Deferred, not trust-filtered; revisit only with a concrete consumer.** No stamps on binaries, identifiers/bylines/citations. Acquisition/import ref and link creation is in scope. |
-| Nanopub artifact/mirror/proof tables | **Deferred, not trust-filtered; revisit only with a concrete consumer.** Claim refs and materialized evidence links remain in scope. Slice 2's nanopub evidence-consumer predicate tests are unchanged. |
-| All SE plugin tables and other plugin-only domain tables/selectors | **Deferred, not trust-filtered; revisit only with a concrete consumer.** No plugin migration or enforcement dependency. Any plugin-created ref/link uses the core contract. |
-| Embedded associations, external file/version keys and derived relations not stored as links | **Deferred, not trust-filtered; revisit only with a concrete consumer.** No per-association/natural-key ledger. They do not convey reviewed evidence by inheritance; a persisted link gets its own stamp. |
-
-Operational/authentication/cache-index/lease tables remain implementation
-state, not reviewed assertions. Their producers must stamp any resulting
-ref/link. This limited scope does **not** prove trust enforcement over every
-possible graph projection or domain object. Deferred objects are neither
-deleted nor promoted; later readers must not label them considered/sourced
-by copying a nearby ref's state. Reto's five policies and slices 2–4 retain
-their intended behavior; no deferred domain-table rollout is smuggled into
-slice 1 to anticipate those later consumers.
-
-#### Reuse revisions for explicit ref/link acts
-
-Current revision targets are already numeric ref/link IDs, one row per
-target per transaction. Retain that identity and unique target/xact index;
-no target-kind expansion, `target_key`, digest index or association adapters
-are needed now. Extend `revisions` with a non-NULL ordered `trust_acts`
-JSONB array (legacy default empty) and a `trust-recorded` event for a
-trust-only transaction. Preserve actor/model/reason, DB UTC time, prior
-state, ordinary content events and existing SHA interpretation. Audit rows
-survive deletion of their targets. No second review ledger.
-
-Each act records operation ID, target and expected content version, action
-(create, carry, revise, consider, correct-origin, demote, legacy-import),
-before/after origin and confidence, authenticated actor/type, model/run
-when applicable, reason and DB UTC time. A protected append/aggregate path
-validates shape and keeps the first prior state while appending same-xact
-acts in order. Under the target lock, reject stale versions; same operation
-ID/payload returns its receipt, a changed payload conflicts. Later
-transactions cannot rewrite earlier acts; direct arbitrary ledger DML is
-not an ingress. DB guards and deferred validation require the matching act
-before committing a version-1 stamp or considered state. Rollback/no-op
-upserts cannot manufacture successful acts.
-
-Considered is an explicit command/flag payload, including on create; it
-requires a reason and expected content version. It never follows merely
-from human authorship, a deterministic calculation, a stronger model or
-review completion. Legacy origin may remain unknown after consideration.
-No side effect marks human-reviewed, sourced, defined, verified or published.
-Substantive replacement records its producer and new confidence intent;
-considered cannot survive solely because the ref ID did. Assertion-preserving
-carry names its predecessor; operational-only changes and true no-op upserts
-preserve the state. Guards classify semantic fields and body operations
-explicitly; an unknown new field is not a bookkeeping exemption.
-
-**Preserve the reviewed sealer correction:** `precis_revisions_seal()` must
-retain every revision with nonempty trust acts even if edit/undo makes its
-final content SHA equal its initial SHA. Coordinate sealing and deferred
-validation; empty content-neutral edits retain existing no-op behavior.
-Only a future NEW migration may replace sealed 0185 functions.
-
-**Prior TRUST-S1-KEY-1 remains closed at contract level.** Same-root PASS
-at `2c6bd5c8354f569f88c7cbefd98898b132667f9d` approved full identity off-index,
-bounded nonunique digest lookup, fresh post-lock full equality and
-collision-safe ordered acts. The exact design remains in that revision's
-spec/history, with long-key/equivalent-key/forced-collision/concurrency
-acceptance. It is **deferred entirely**, not replaced with an unsafe index:
-refs/links have bounded numeric identities. Do not add or test natural-key
-machinery in slice 1. Any future concrete non-ref consumer must reuse or
-explicitly re-review that contract; no SQL or concurrency proof was claimed.
-
-#### Writer coverage and transaction boundaries
-
-The closure is **every writer of refs or links**, including indirect body
-changes to a ref's declared semantic content. It is not every writer of
-all physical tables. Extend `revision_context`/`PrecisPool`, preserving
-transaction-local actor/context isolation. Existing write-verb wrapping and
-pool-checkout-only application do not cover get/search side effects,
-already-acquired connections or autocommit; enforce on the actual write
-transaction, with direct-SQL DB guards as the common boundary.
-
-| In-scope write family | Required conversion / evidence |
-|---|---|
-| Ref/link primitives and raw ingest | `_refs_ops`, `_links_ops`, raw ref SQL in `ingest/db_writer.py` and `pres.py`, raw links in `_draft_ops`/draftimport. No exempt bulk/COPY or caller-supplied `conn=`. |
-| Body-as-ref mutations | `_chunks_ops`, ingest replacement, worker/body writers and raw chunk SQL must record/invalidate the owning ref's semantic state. Guard INSERT/DELETE plus semantic UPDATE/move/retire effects, including both old/new owners; derived-only bookkeeping has an explicit exclusion. |
-| Read-side acquisitions and caches | `_cache_ops`, `_cache_base`, `_good_search`, paper/provider acquire paths: stamp the ref/link at creation even under get/search. Extracted content and generated conclusions use distinct production contexts. |
-| Workers/jobs/agents | Dream, chase, glossary, dispatch/executors, alerts, agentlog and any other output using core Store or raw ref/link SQL. Nonsemantic counters/queue updates preserve state; no model/worker execution is authorized by this inventory. |
-| Domain/plugin-to-mesh materialization | `_pcb_ops.ensure_part_ref`, domain ref writers in CAD/structure/material/component/rxn, SE/bio/chem ref mutations, publication/evidence materializers. Only ref/link effects enter enforcement; domain-only stage/swap, se save_tree and catalogue rows do not. |
-| DB functions/triggers and imports | `precis_measure_taxon`/nested legacy-value functions in 0188, `file_gripe_readonly`, seed/operator import functions and any plugin trigger minting refs/links. Context propagates into nested statements; change existing functions only in a NEW migration. |
-| Ingress and connection modes | MCP/CLI/web/bots carry authenticated producer context down to the writer. Handle COPY/executemany/direct psycopg, nested override, savepoint, retry and new transactions on reused connections; reject an unsupported autocommit mutation rather than silently lose context. |
-
-Static candidate destinations were previously inventoried; narrow that
-manifest to `refs`/`links`, classify semantic versus bookkeeping mutations,
-and reconcile at the chosen implementation assembly. Candidates are not
-executed coverage. The implementation gate must include all registered
-core/plugin producers touching those tables, dynamic SQL and nested DB
-functions, plus body mutation guards. A new ref/link writer without a
-converted adapter/test fails closure; a new domain-only table does not.
-No full-schema/table registry or installed-plugin domain audit is required.
-Raw SQL cannot bypass provenance by writing valid enum strings. A custom
-GUC or ContextVar is transport, not authenticated identity; freeze trusted
-ingress/DB-role capabilities before implementation. Shared MCP credentials
-do not prove a human authored the payload. Ordinary typed writer confidence
-defaults to hunch; DB compatibility defaults remain unknown, never human.
-
-#### Legacy backfill, cutover and rollback limits
-
-**Smallest proposed cutover: additive expansion, rolling per-writer
-conversion, then an atomic strict boundary for mesh writes. No planned
-cluster-wide writer fence or service maintenance window.** Brief bounded
-DDL/guard locks are still necessary; actual lock protocol/budgets and
-mixed-version races require the populated-table gate. If measurements
-cannot meet those budgets, stop and request a targeted mesh-write pause;
-do not silently expand to cluster-wide downtime. Read filtering still
-starts immediately in slice 3; this write-compatibility window does not
-change that policy.
-
-1. **Prepare on a representative throwaway DB.** Reconcile the two-table
-   writer closure at the exact compatible assembly. Measure ref/link DDL,
-   constraint validation, body-guard and ledger costs. Freeze abort/retry
-   lock budgets and the strict-switch transaction protocol before SQL.
-   No optional-plugin migration ordering is needed for domain tables;
-   plugin ref/link producers do need compatible core-context integration.
-2. **Expand with honest defaults.** Add the three constant-default columns
-   to refs and links and audit support to revisions through future NEW
-   forward-only migrations. All existing rows, including retired rows,
-   logically read unknown/unknown/version 0. Verify metadata-only default
-   behavior and constraints on the throwaway copy; do not assume every
-   ALTER is cheap. No chunk or domain-table backfill, origin guessing or
-   corpus body rewrite. Any necessary physical reconciliation is bounded,
-   keyset-resumable and conditional on version 0; never reset newer acts.
-3. **Compatibility mode and per-writer conversion.** Old writers may
-   create unknown/unknown/version-0 refs/links or semantically change still
-   unstamped rows; these writes are counted separately from pre-expansion
-   legacy rows, with a bounded rollout deadline. Converted writers produce
-   version 1 and acts. An unconverted writer cannot semantically overwrite
-   a version-1 assertion or its body: refuse with an actionable context
-   error, never preserve stale considered state or silently demote it.
-   Bookkeeping/no-op updates preserve existing stamps. Considered/invalid
-   bypass guards apply from expansion, not only after cutover. Measure
-   compatibility activity by writer/path where attributable; unattributed
-   SQL remains an explicit unresolved writer, never evidence of closure.
-4. **Strict boundary without stopping unrelated writes.** Once all
-   in-scope writers are converted and exercised, coordinator activates the
-   strict guards atomically. The chosen DB switch must serialize with
-   guarded ref/link/body-write transactions, so a transaction admitted in
-   compatibility mode either finishes before the boundary or is refused/
-   retried under strict rules; none may commit a late version-0 assertion.
-   Lock waiting is bounded and a failed switch leaves compatibility mode
-   intact. Version heartbeats, MAX(id) or a quiet sample alone do not prove
-   this race closed. Domain-only writers and readers need no global fence.
-   Retain harmless compatibility defaults behind strict guards; any old
-   writer missing context now fails visibly, including nested function,
-   COPY and body paths. Exact lock/race proof is an implementation gate,
-   not claimed by this document.
-5. **After cutover.** Ordinary new assertions require known origin and
-   hunch or explicit considered. Restricted, reasoned legacy/import/carry
-   acts may keep origin unknown. Completion reconciles ref/link version
-   counts and acts, separately reporting compatibility-window unknowns;
-   those rows are not guessed into known provenance. Existing unknowns
-   remain unknown until a recorded act, with later slice-3 visibility.
-
-**Rollback limits:** before strict mode, a legacy binary may write only
-under compatibility rules and cannot edit already stamped semantic content;
-that limitation is visible, not a promise of unrestricted old-binary
-rollback. After strict mode, roll back only to a tested context-capable
-binary. Missing-context writers fail even though constant defaults remain.
-Do not disable guards, reopen compatibility, change sealed migrations or
-remove audit to make an old binary work. Failed additive stages resume by
-recorded stage/key; failed strict activation aborts atomically. Forward
-repair and compatible application rollback need throwaway rehearsal;
-backup restore remains a separate disaster-recovery decision. No service,
-SQL, production backfill or maintenance action is authorized by this spec.
-
-#### Slice-1 acceptance for the populated-table gate
-
-Required future receipts; **none of these DB/runtime tests executed here**:
-
-- **Scope/closure:** exactly refs/links stamped, revisions audit-only; no
-  chunk/domain/plugin columns, backfill or domain-only write enforcement.
-  Every direct, bulk, indirect/raw-SQL and installed-plugin ref/link writer
-  is reconciled at the assembly SHA. Deferred-table-to-ref/link minting
-  is guarded; domain-only operation still works without trust context.
-- **Values/identity:** quick human note human+hunch; generated output under
-  human request generated+hunch; quotation extracted, calculation computed.
-  Missing context after strict cutover, NULL/invalid values, enum-only
-  considered, forged human/legacy capability and arbitrary ledger DML fail.
-- **Body/ref boundary:** all requested kinds including uncovered-meta kinds;
-  body replace/move/retire and raw SQL cannot leave a stale considered ref.
-  Both owners checked on move; content hashes exclude trust metadata;
-  existing review certificates not rewritten. Derived card/keyword updates
-  do not relabel the source ref or gain independent considered status.
-- **Transactions/acts:** no-op identity preserved; passed connection,
-  autocommit handling, pooled reuse, nested rollback/restore and retries
-  isolated. Ref/link numeric-target same-xact acts retain order and first
-  prior state; concurrent operation replay is idempotent or conflicts on
-  changed payload, never loses an act. Stale expected version is refused.
-- **Considered/sealer:** explicit create/legacy consideration with reason;
-  demotion recorded; origin can stay unknown. Edit → consider/demote → undo
-  retaining initial content SHA still commits every trust act. Empty
-  content-neutral edits retain old no-op behavior. No review/grounding/
-  publication promotion. No natural-key/digest-index work in this slice.
-- **Compatibility/cutover:** untouched legacy and old-writer new rows read
-  unknown/unknown, distinguished in receipts. Old writer may change only
-  version-0 semantic content; converted writes get acts; attempts to alter
-  version-1 content/body fail without context. Exercise transactions that
-  straddle the strict switch, nested functions, COPY, lock-budget abort,
-  converted-writer rollback and old-binary refusal after cutover. No late
-  compatibility commit; unrelated domain writes continue.
-- **Backfill/limits:** ref/link counts/IDs/content and old actors preserved,
-  retired rows included, no inference from DREAM/set_by/model NULL. Batches
-  resume without resetting version 1. Measure locks/WAL/runtime and ledger
-  overhead on a representative throwaway copy; no production audit rerun
-  or corpus mutation as substitute proof.
-
-Independent contract and implementation reviews, focused canonical
-`scripts/test`, scoped types/Ruff, throwaway migration dry-run/apply and
-coordinator-scheduled integrated gate remain required before shipping.
-Slice 2's shared predicate and three-consumer/link-refusal tests are
-unchanged. R14 and unrelated holds remain untouched.
-
-#### Remaining implementation gates after the scope ruling
-
-Physical scope is **settled: refs/links only**, no plugin-table migration
-order. Do not re-ask the five policy questions. Remaining concrete gates:
-
-1. Approve exact core DDL/constraints, numeric ref/link ordered-act guard
-   and sealer/parent-body trigger plan against the chosen assembly. No
-   natural-key design approval or full-schema provenance map is needed.
-2. Freeze the additive typed provenance/considered payload on existing
-   put/edit paths, authenticated ingress/DB-role capability and receipt/
-   error shape. Explicit expected content projection must cover semantic
-   changes without rewriting existing review SHA semantics.
-3. Name the first compatible assembly and complete in-scope writer closure;
-   approve measured lock/batch budgets, compatibility deadline/counters,
-   strict-switch serialization and tested rollback limits. A targeted
-   mesh-write pause is a contingency only if staging rejects online bounds.
-
 ## Explicitly NOT in scope
 
 - Bypassing the populated-table migration gate, independent review per
   slice, or coordinator scheduling; R14 stays untouched.
-- This branch makes no schema/product writes, migrations, backfills,
-  service changes or model runs. No production trust assignments.
+- No backfill, guessed origin, service change or model run. No production
+  trust assignments; legacy rows stay unknown/unknown until a recorded act.
 - No new source of scientific truth, trust number, graph engine, kind,
   verb, replacement review ledger or blanket corpus-wide model review.
 - No automatic human-authority promotion, generated-origin laundering,
@@ -734,13 +510,13 @@ migration merely because the final design was approved.
 
 ## Target + blast radius
 
-Slice 1: refs/links plus their revision audit and parent-ref body guards;
-no chunk/domain-table columns or natural-key association ledger. Later slices: ingress/ingest, taxonomy, concept/memory/finding handlers,
+Slice 1 (built): refs/links plus their revision audit and parent-ref body
+guards; no chunk/domain-table columns or natural-key association ledger. Later slices: ingress/ingest, taxonomy, concept/memory/finding handlers,
 dream/LLM/computed producers and derived projections; reviews/revisions
 target hashes; universal rows/search/working sets/eye traversal; draft/
 quest evidence consumers and gardener/curation exception queues.
 Refresh owning docstrings and user skills with each shipping slice;
-this documentation-only branch adds no runtime declarations.
+slice 1 refreshed `precis-edit-help`.
 
 ## Open questions / decisions log
 
@@ -775,12 +551,9 @@ path for R15 or when ready; do not disturb R14. Earlier planning-only
 holds and unresolved-policy wording are superseded by this decision.
 
 **Remaining implementation gate, not a request to revisit these rulings:**
-the [slice-1 concrete contract](#slice-1-concrete-populated-table-gate-contract)
-now proposes exact physical targets, columns/defaults/constraints, writer and
-ref/link writer closure, considered acts, and bounded rolling cutover. Reto
-resolved physical scope on 2026-10-05: refs/links only; deferred domain
-tables are not trust-filtered. The three remaining implementation gates
-require concrete review before migration SQL is added. No migration number is reserved in this documentation update. Slice 2 must separately gate the
+slice 1 is built as migrations 0214/0215 (refs/links only, compatibility
+mode); its remaining closure, capability, measurement and strict-switch
+items are listed under slice 1 above. Slice 2 must separately gate the
 multi-grounding storage representation. Model runs and production schema
 application remain outside this owner task's authorization.
 

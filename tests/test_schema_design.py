@@ -169,6 +169,11 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # link — a snapshot of refs/links whose own jsonb columns are open,
         # restored whole, never queried by key.
         "revisions.prev_state",
+        # 0214: the ordered trust acts of one target in one transaction
+        # (graph-node-trust-state slice 1 names this JSONB array) — an
+        # append-only audit list read whole per target, its ``payload``
+        # echoing the open act; the stamp itself is real columns on refs/links.
+        "revisions.trust_acts",
         "llm_call_log.features",
         "material_properties.allowed_values",
         # 0187: the legacy conditions bag survives for the compatibility

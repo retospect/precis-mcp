@@ -16,6 +16,7 @@ import importlib
 import logging
 import sys
 from types import ModuleType
+from typing import cast
 
 from precis.cli.registry import JOB_COMMANDS, Command, commands
 from precis.utils.log_scrub import install_log_scrub
@@ -195,8 +196,23 @@ def _select(cmds: tuple[Command, ...], name: str) -> Command:
 
 
 def _call(cmd: Command, args: argparse.Namespace) -> None:
-    """Run ``cmd``; its module is already imported by the parser build."""
-    getattr(_load(cmd), cmd.run)(args)
+    """Run ``cmd``; its module is already imported by the parser build.
+    A command with a ``trust`` origin runs as that converted producer."""
+    run = getattr(_load(cmd), cmd.run)
+    if cmd.trust is None:
+        run(args)
+        return
+    from precis.store.revision_context import (
+        TRUST_ORIGINS,
+        TrustOrigin,
+        trust_producer,
+    )
+
+    if cmd.trust not in TRUST_ORIGINS:
+        raise ValueError(f"precis {cmd.name}: unknown trust origin {cmd.trust!r}")
+    origin = cast(TrustOrigin, cmd.trust)
+    with trust_producer(origin, actor_type="operator", actor=f"cli:{cmd.name}"):
+        run(args)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ fake runtime onto ``app.state`` without monkeypatching globals.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -220,7 +221,30 @@ def dispatch(request: Request, verb: str, args: dict[str, Any]) -> tuple[str, bo
     call freezes every other request on the process, /healthz included.
     """
     runtime = get_runtime(request)
-    return runtime.dispatch_with_status(verb, args)
+    with human_write_context(request):
+        return runtime.dispatch_with_status(verb, args)
+
+
+def human_write_context(request: Request) -> contextlib.AbstractContextManager[Any]:
+    """The trust context of a write a logged-in person made in the browser
+    (graph-node-trust-state slice 1): actor ``user:<abbrev>``, origin
+    ``human``, confidence hunch (considered stays an explicit act). With
+    auth off nobody knows who typed it, so nothing is claimed and the write
+    falls back to the verb's own producer. Only for routes whose payload the
+    person typed — a route that runs a model keeps its generated producer."""
+    from precis.acting_user import actor_for
+    from precis.store.revision_context import revision_context
+    from precis_web.auth import current_user
+
+    # a route-test double without an ASGI scope has no authenticated user
+    user = current_user(request) if hasattr(request, "scope") else None
+    if user is None:
+        return contextlib.nullcontext()
+    return revision_context(
+        actor=actor_for(user.abbrev),
+        trust_origin="human",
+        trust_actor_type="human",
+    )
 
 
 async def await_dispatch(
@@ -240,7 +264,12 @@ async def await_dispatch(
     from monopolising the asyncio loop.
     """
     runtime = get_runtime(request)
-    return await asyncio.to_thread(runtime.dispatch_with_status, verb, args)
+
+    def _run() -> tuple[str, bool]:
+        with human_write_context(request):
+            return runtime.dispatch_with_status(verb, args)
+
+    return await asyncio.to_thread(_run)
 
 
 async def redirect_or_error(

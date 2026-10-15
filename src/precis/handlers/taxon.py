@@ -127,6 +127,8 @@ _NEAREST_CAP = 3
 class TaxonHandler(NumericRefHandler):
     owns_under = True
 
+    #: Agent-authored assertions (graph-node-trust-state slice 1).
+    trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
         kind="taxon",
         title="Taxon",

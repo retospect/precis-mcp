@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.store.revision_context import trust_door
 from precis.taproot.canon import (
     TAPROOT_CLAIM,
     TAPROOT_NAMESPACE,
@@ -1483,6 +1484,8 @@ def _evidence_edge_meta(
     return meta
 
 
+# caveats aggregated from the hops' LLM verification verdicts
+@trust_door("generated")
 def _snapshot_chain(
     conn: Connection, store: Store, finding_ref_id: int, chain: list[dict[str, Any]]
 ) -> None:

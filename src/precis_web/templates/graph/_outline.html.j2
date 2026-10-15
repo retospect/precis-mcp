@@ -12,7 +12,7 @@
   <span class="text-slate-400" title="{{ 'outbound' if row.dir == 'out' else 'inbound' }}">{{ '→' if row.dir == 'out' else '←' }}</span>
   <a href="{{ row.url }}" class="font-mono text-sky-700 hover:underline">{{ row.handle }}</a>
   <span class="{% if row.retired %}italic text-slate-400 line-through{% elif row.state != 'live' %}italic text-slate-400{% else %}text-slate-700{% endif %}">{{ row.label }}</span>
-  <span class="text-[10px] font-mono text-slate-400">{{ row.kind }}{% if show_rel %} · {{ row.rel }}{% endif %}{% if row.retired %} · retired{% elif row.state != 'live' %} · {{ row.state }}{% endif %}</span>
+  <span class="text-[10px] font-mono text-slate-400">{{ row.kind }}{% if show_rel %} · {{ row.rel }}{% endif %}{% if row.retired %} · retired{% elif row.state != 'live' %} · {{ row.state }}{% endif %}{% if row.trust %} · {{ row.trust }}{% endif %}</span>
   <a href="{{ row.graph_url }}" class="text-[10px] text-slate-400 hover:text-sky-700" title="focus the graph on it">◦</a>
   {% if row.kids %}
   <ul class="ml-7 mt-px space-y-px border-l border-slate-100 pl-3">
@@ -27,7 +27,7 @@
   <div class="mb-2 flex items-baseline gap-2">
     <a href="{{ reader_url }}" class="font-mono font-semibold text-sky-700 hover:underline">{{ handle }}</a>
     <span class="{% if focus_retired %}italic text-slate-400 line-through{% else %}font-medium text-slate-800{% endif %}">{{ focus_label }}</span>
-    <span class="text-[10px] font-mono text-slate-400">{{ kind }}{% if focus_retired %} · retired{% elif focus_state != 'live' %} · {{ focus_state }}{% endif %}</span>
+    <span class="text-[10px] font-mono text-slate-400">{{ kind }}{% if focus_retired %} · retired{% elif focus_state != 'live' %} · {{ focus_state }}{% endif %}{% if focus_trust %} · {{ focus_trust }}{% endif %}</span>
   </div>
   {% for g in outline %}
   <div class="mt-2">

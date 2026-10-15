@@ -67,6 +67,8 @@ _PUT_PRIO: RequestState[int | None] = RequestState("precis_gripe_put_prio", None
 
 
 class GripeHandler(NumericRefHandler):
+    #: Agent-authored assertions (graph-node-trust-state slice 1).
+    trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
         kind="gripe",
         title="Gripe",

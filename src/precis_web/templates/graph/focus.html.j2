@@ -62,11 +62,11 @@
          class="rounded border border-slate-200 px-1.5 py-0.5 font-mono">
   <input type="date" name="until" value="{{ f.until }}" title="linked ref created before"
          class="rounded border border-slate-200 px-1.5 py-0.5 font-mono">
-  <select name="trust" title="finding trust tier (findings only)"
+  <select name="trust" title="finding publication tier (findings only); each row shows its own origin · confidence"
           class="rounded border border-slate-200 px-1 py-0.5">
-    <option value="">trust · off</option>
+    <option value="">finding tier · off</option>
     {% for t in trust_tiers %}
-    <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>trust · {{ t }}</option>
+    <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>finding tier · {{ t }}</option>
     {% endfor %}
   </select>
   <select name="depth" title="ring depth"

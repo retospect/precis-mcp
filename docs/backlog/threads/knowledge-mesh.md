@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 remains a contract.
+- **Next:** R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 is built (compat mode), reviewed and landing; see Do next 0.
 - **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old Castor/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
 - **Unblocks:** A qualified taxonomy substrate for graph memory.
 - **Acceptance:** The bounded R17 criteria in [norr-her-meta](../norr-her-meta.md#r17-packing-evidence-reconciliation), with durable native receipts and explicit unavailable evidence; no full corpus, freeze, gold adjudication or quest tick.
@@ -78,11 +78,17 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-0. **[Graph node/edge trust state](../graph-node-trust-state.md)** — spec
-   landed on main 2026-10-07 from the `work/knowledge-mesh/graph-node-trust-state`
-   branch (status draft, Reto's five policy rulings of 2026-10-05 recorded,
-   slice 1 unblocked for the gated migration path, refs/links only). Owner-led,
-   independent review per slice; not for automatic fixer pickup.
+0. **[Graph node/edge trust state](../graph-node-trust-state.md)** — slice 1
+   built in compatibility mode on tree `mesh-trust` (2026-10-15, migrations
+   0214/0215): origin + confidence on every ref/link, acts in
+   `revisions.trust_acts`, and six converted verb kinds plus the taproot,
+   garden and merge doors. Conversion is per kind (papers stay v0). Review
+   findings fixed 2026-10-15 (non-verb writers, paper doors, lock order);
+   landing by /qland per Reto's 2026-10-15 ruling, strict mode off. The
+   item's slice-1 list holds what is left: writer closure, carry on copy,
+   capability, the measured gate and the strict switch. Slice 2 (the
+   shared evidence predicate and defined grounding) is next and is not
+   started.
 
 0b. **[Corpus quantitative extraction](../corpus-quantitative-extraction.md)**
    — assigned here by Reto 2026-10-12 (chat): sourced numbers from papers,

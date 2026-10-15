@@ -82,6 +82,7 @@ from precis.ingest.cards import rewrite_cards
 from precis.ingest.db_writer import PaperToWrite, register_aliases_and_maybe_upgrade
 from precis.store import Store
 from precis.store._body_predicate import has_body_sql
+from precis.store.revision_context import trust_door
 from precis.store.types import Tag
 from precis.utils.authors import author_display, author_names, is_junk_author_name
 
@@ -245,6 +246,7 @@ def collapse_superseded_chains(
 # ---------------------------------------------------------------------------
 
 
+@trust_door("computed")
 def migrate_dangling_paper_links(
     store: Store, *, dry_run: bool = True, limit: int | None = None
 ) -> list[int]:

@@ -301,6 +301,26 @@ prior state and who made it. The reason goes on that entry:
 `edit(kind='finding', id=N, mode='replace', text='…', reason='Cu(111), per
 the 2024 STM data')`. Without one, the entry reads `edit(kind='<kind>')`.
 
+## Mark a node considered, or take it back
+## Record a trust act on a memory, finding, concept, taxon, todo or gripe
+
+Every ref and link carries an origin (`human`, `extracted`, `computed`,
+`generated`; `unknown` for legacy) and a confidence (`hunch`,
+`considered`, `unknown`). Your own writes are `generated · hunch`, and a
+content edit sets them back to hunch. `considered` is an explicit act
+against the content you checked. `get` ends with a `trust:` line that
+gives the stamp and its sha:
+
+`edit(kind='memory', id='me12', mode='trust', args={'trust':
+{'confidence': 'considered', 'reason': 'checked against fi176861',
+'expected_sha': '<sha from the trust line>'}})`.
+
+`'confidence': 'hunch'` demotes. A link takes `'link': <link_id>`. A
+stale sha is refused, so re-read and decide again. On `put`,
+`args={'trust': {'confidence': 'considered', 'reason': '…'}}` creates
+the node considered, and `{'origin': 'extracted'}` marks a verbatim
+quotation. You cannot assert `human` origin.
+
 ## See also
 
 - [[precis-files-help]] — shared address grammar (`~L`, `~N`, qualnames).

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput, NotFound
+from precis.store.revision_context import trust_door
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -59,6 +60,7 @@ class MergeRecord:
     links: list[dict[str, Any]] = field(default_factory=list)
 
 
+@trust_door("generated")
 def apply_merge(
     store: Store,
     loser_id: int,
@@ -259,6 +261,7 @@ def apply_merge(
     return record
 
 
+@trust_door("generated")
 def undo_merge(store: Store, merge_id: str) -> dict[str, int]:
     """Reverse an applied merge. Returns counts ``{links_restored,
     links_deleted, aliases_removed}``.

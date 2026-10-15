@@ -257,6 +257,7 @@ from psycopg import Connection
 from precis.nanopub import method_gap
 from precis.nanopub.demote import DemotionRequest, run_demotions
 from precis.nanopub.term_coverage import paper_chunks
+from precis.store.revision_context import trust_door
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
@@ -3225,6 +3226,7 @@ def _hub_verdict(conn: Connection, hub_ref_id: int, plan: RegroundPlan) -> str:
 # ── publish-gate re-verify of attached-but-unverified edges ──────────
 
 
+@trust_door("generated")
 def _reverify_pinned_edges(
     conn: Connection,
     store: Store,

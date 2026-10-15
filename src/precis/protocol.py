@@ -311,6 +311,17 @@ class Handler(ABC):
     #: and receive ``q`` in ``get`` unchanged.
     supports_find_in_ref: ClassVar[bool] = False
 
+    #: The trust origin of what this kind's write verbs produce when an
+    #: agent calls them (graph-node-trust-state slice 1, migration 0214):
+    #: ``generated`` for agent-authored assertions, ``extracted`` for
+    #: acquisitions, ``computed`` for deterministic results. ``None`` = not
+    #: yet converted: its writes land unknown/unknown version 0, and the
+    #: dispatcher sends no trust context (``trust_compat_report`` counts them).
+    #: Only the dispatcher reads it: code calling a handler method directly
+    #: (quest steps, the memory mirror/import CLIs, tests) is an unconverted
+    #: writer until it runs inside its own trust context.
+    trust_origin: ClassVar[str | None] = None
+
     #: Populated by :meth:`_register_with` so handlers that need
     #: hub introspection (e.g. SkillHandler rendering
     #: ``precis-help``, or any handler that wants the embedder /

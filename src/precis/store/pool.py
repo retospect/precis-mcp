@@ -244,6 +244,10 @@ class PrecisPool(ConnectionPool):
         pinned = _PINNED.get()
         if pinned is not None:
             with pinned.transaction():
+                # Re-send (or clear) on every checkout: transaction-local
+                # settings outlive a nested context's savepoint, so the
+                # writes after it would otherwise run under its producer.
+                apply_revision_context(pinned, clear=True)
                 yield pinned
             return
         with super().connection(timeout=timeout) as conn:
