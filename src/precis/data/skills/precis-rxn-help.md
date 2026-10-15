@@ -230,7 +230,8 @@ get(kind='rxn', id='no-nh3-ledger-300k', view='energetics', args={'T': 400})
 ```
 
 The reader recomputes from pinned sources; `meta.energetics_snapshot` is
-archival text, not a current measured result. Optional `n_electrons` belongs
+archival text, not a current measured result. Reads take the slug or the
+numeric ref id that put's reply prints. Optional `n_electrons` belongs
 inside `meta.energetics` for a single equation only. Invalid inputs are
 refused before storage. The web keep action reuses identical submitted
 inputs. Use a separate record for a SMILES reaction. This is `rxn`, whereas

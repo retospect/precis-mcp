@@ -84,6 +84,33 @@ _SMILES_IDENTITY_KEYS = (
     "uid_strict",
     "desired_product",
 )
+_KEPT_INPUT_KEYS = frozenset({"q", "T", "n_electrons"})
+
+
+def _kept_inputs(ref: Any) -> dict[str, Any] | None:
+    """The kept ``meta.energetics`` inputs, or None when the ref keeps none.
+
+    Public put validates these, but a row authored outside it can carry a
+    malformed dict; refuse it with BadInput rather than a KeyError/TypeError.
+    """
+    inputs = (ref.meta or {}).get("energetics")
+    if inputs is None:
+        return None
+    if (
+        not isinstance(inputs, dict)
+        or set(inputs) - _KEPT_INPUT_KEYS
+        or not isinstance(inputs.get("q"), str)
+        or not inputs["q"].strip()
+    ):
+        raise BadInput(
+            f"rxn {ref.slug or ref.id!r} has malformed kept equation inputs; "
+            "re-keep them or supply q=",
+            next=(
+                f"put(kind='rxn', id={ref.slug or ref.id!r}, "
+                "meta={'energetics': {'q': '<equations>', 'T': 298.15}})"
+            ),
+        )
+    return inputs
 
 
 def _display_value(v: dict[str, Any]) -> str:
@@ -660,15 +687,12 @@ class RxnHandler(Handler):
         v = (view or "").strip().lower()
         if v == "energetics":
             if q is None and id is not None:
-                ref = self.store.get_ref(kind="rxn", id=str(id).strip())
-                if ref is None:
-                    raise NotFound(f"rxn {id!r} not found")
-                inputs = (ref.meta or {}).get("energetics")
-                if not isinstance(inputs, dict):
+                inputs = _kept_inputs(self._read_ref(id))
+                if inputs is None:
                     raise BadInput("this rxn has no kept equation inputs; supply q=")
                 return render_energetics(
                     inputs["q"],
-                    T=T if T is not None else inputs["T"],
+                    T=T if T is not None else inputs.get("T"),
                     n_electrons=(
                         n_electrons
                         if n_electrons is not None
@@ -688,11 +712,18 @@ class RxnHandler(Handler):
             )
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
-        slug = str(id).strip()
-        ref = self.store.get_ref(kind="rxn", id=slug)
+        return self._render_page(self._read_ref(id))
+
+    def _read_ref(self, id: Any) -> Any:
+        """Resolve a read id: the slug first, then the numeric ref id that
+        put's reply and the ``/refs/rxn/<id>`` reader print."""
+        ident = str(id).strip()
+        ref = self.store.get_ref(kind="rxn", id=ident)
+        if ref is None and ident.isdigit():
+            ref = self.store.get_ref(kind="rxn", id=int(ident))
         if ref is None:
-            raise NotFound(f"rxn {slug!r} not found")
-        return self._render_page(ref)
+            raise NotFound(f"rxn {ident!r} not found")
+        return ref
 
     def _render_registry(self) -> Response:
         rows = self.store.rxn_properties_list()
@@ -746,13 +777,19 @@ class RxnHandler(Handler):
         finding, and collapsing it would be the lie this schema prevents."""
         meta = ref.meta or {}
         head = [f"# rxn {ref.slug or ref.id} — {ref.title}"]
-        kept = isinstance(meta.get("energetics"), dict)
+        kept = "energetics" in meta
         if kept:
-            derived = render_energetics(**meta["energetics"])
+            try:
+                inputs = _kept_inputs(ref)
+                assert inputs is not None
+                derived = render_energetics(**inputs).body
+            except BadInput as exc:
+                # The sourced values below stay readable; only the ledger is refused.
+                derived = f"⚠ derived ledger refused: {exc.cause}"
             head.append(
                 "Derived ledger recomputed from pinned NASA-7 fits; "
                 "the kept snapshot is archival. No barriers or electrode reference.\n"
-                + derived.body
+                + derived
             )
         if meta.get("rxn_smiles") or meta.get("rxn_smiles_raw"):
             head.append(

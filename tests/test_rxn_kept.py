@@ -219,3 +219,54 @@ def test_public_kept_class_normalization_on_create_and_update(
     assert after.meta["reaction_class"] == "RXNO:0000001"
     assert after.meta["energetics"]["T"] == 400.0
     assert "class: RXNO:0000001" in core.get(kind="rxn", id="classified-ledger")
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "NO + H2 -> NH3",
+        {"T": 300},
+        {"q": "  "},
+        {"q": EQUATION, "T": 300, "pressure": 1},
+    ],
+)
+def test_public_reads_refuse_malformed_stored_inputs(
+    monkeypatch: Any, runtime_with_store: Any, stored: Any
+) -> None:
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    # Public put refuses these shapes; simulate an externally authored row.
+    runtime_with_store.store.rxn_entity_upsert(
+        slug="malformed-ledger",
+        title="Malformed kept inputs",
+        meta_patch={"energetics": stored},
+    )
+    error = _error_text(core.get(kind="rxn", id="malformed-ledger", view="energetics"))
+    assert "[error:BadInput]" in error
+    assert "malformed kept equation inputs" in error
+    page = core.get(kind="rxn", id="malformed-ledger")
+    assert isinstance(page, str)
+    assert "derived ledger refused: rxn 'malformed-ledger' has malformed" in page
+
+
+def test_public_reads_resolve_kept_record_by_numeric_id(
+    monkeypatch: Any, runtime_with_store: Any
+) -> None:
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    core.put(
+        kind="rxn",
+        id="kept-by-id",
+        meta={"energetics": {"q": EQUATION, "T": 300}},
+    )
+    ref = runtime_with_store.store.get_ref(kind="rxn", id="kept-by-id")
+    assert ref is not None
+    ledger = core.get(kind="rxn", id=str(ref.id), view="energetics")
+    assert isinstance(ledger, str)
+    assert "at 300 K" in ledger
+    page = core.get(kind="rxn", id=ref.id)
+    assert isinstance(page, str)
+    assert "# rxn kept-by-id" in page
+    assert "Derived ledger recomputed" in page
