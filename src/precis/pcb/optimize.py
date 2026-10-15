@@ -2714,6 +2714,10 @@ class OptimizeEngine:
         EXACT (not an approximation) because the cell size
         (:attr:`_courtyard_cell_mm`) is at least the maximum pair
         interaction distance (see its construction in ``__init__``)."""
+        if math.isnan(float(self.ir.inst_x[inst])) or math.isnan(
+            float(self.ir.inst_y[inst])
+        ):
+            return set()  # unplaced: no courtyard polygon, no neighbours
         cx, cy = self._courtyard_cell(inst)
         out: set[int] = set()
         for dx in (-1, 0, 1):
@@ -2807,6 +2811,16 @@ class OptimizeEngine:
         old_cell = self._inst_cell.get(inst)
         if old_cell is not None:
             self._courtyard_grid.get(old_cell, set()).discard(inst)
+        if math.isnan(float(ir.inst_x[inst])) or math.isnan(float(ir.inst_y[inst])):
+            # Unplaced: no courtyard polygon exists to overlap (the term
+            # would score NaN against every candidate anyway), so the
+            # instance takes no cell — the grid only ever holds placed
+            # geometry. An ``OptimizeEngine`` may be built on a board
+            # with unplaced parts (the put path legalises generator seeds
+            # against one, pcb-global-plan-router slice 5b); only
+            # ``optimize()``'s own caller pre-seeds every pose.
+            self._inst_cell.pop(inst, None)
+            return
         new_cell = self._courtyard_cell(inst)
         self._courtyard_grid.setdefault(new_cell, set()).add(inst)
         self._inst_cell[inst] = new_cell
