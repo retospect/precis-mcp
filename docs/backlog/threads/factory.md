@@ -3,10 +3,10 @@
 ## Resume
 
 - **Pillar:** platform
-- **Next:** When activated, address worker rotation starving rescue passes.
-- **Blocked by:** No declared active owner; reproduce starvation before fixing.
+- **Next:** When activated, make agent-declared halts stop being terminal-silent.
+- **Blocked by:** No declared active owner.
 - **Unblocks:** Reliable autonomous execution lanes.
-- **Acceptance:** Use [worker-rotation-starves-rescue-passes](../worker-rotation-starves-rescue-passes.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use [halt-classes-and-outage-breaker](../halt-classes-and-outage-breaker.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `factory`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -19,62 +19,63 @@ Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); d
 halt, spend is bounded, and a crashed run is recoverable — the platform
 under every pillar's agent work (`docs/roadmap.md` platform bucket). Today
 twenty filed items cover the starvation, halt, budget and crash gaps
-(six added by the 2026-10-02 platform pass); the order is silent loss first (starved lanes and rescue passes,
-terminal-silent halts), then bounded spend, then the quality-of-life and
-container items.
+(six added by the 2026-10-02 platform pass); the order is silent loss
+first (terminal-silent halts; the starved lanes and rescue passes shipped
+2026-10-15 with residuals in Horizon), then bounded spend, then the
+quality-of-life and container items.
 **Last reviewed:** 2026-10-02 (fix lane dropped)
 **Worktree:** `factory`
 **Allocation decision (historical):** no — opens at the next session restart if Reto names it.
 
 ## Do next
 
-1. **backlog/worker-rotation-starves-rescue-passes.md** — `prio: high`;
-   a starved rescue pass silently stops the thing it rescues for hours, and
-   the quest loop was only the first victim.
-2. **backlog/claude-inproc-lane-starves-old-jobs.md** — the same silent-
-   starvation class on the agent lane (hours-old jobs sit unclaimed while
-   new ones run); read with 1.
-3. **backlog/halt-classes-and-outage-breaker.md** — agent-declared halts
+1. **backlog/halt-classes-and-outage-breaker.md** — agent-declared halts
    stop being terminal-silent, so an outage no longer reads as a task verdict.
-4. **backlog/budget-guardrails.md** — the SMALL-tier breaker hole and the
+2. **backlog/budget-guardrails.md** — the SMALL-tier breaker hole and the
    unscheduled hourly runaway check are filed here as open scope; SMALL is
    all-cloud, so a tripped cap does not stop it.
-5. **backlog/bare-rung-billing-accounting.md** — bare chain rungs spend
+3. **backlog/bare-rung-billing-accounting.md** — bare chain rungs spend
    dollars the meter never counts; the meter half of the gate that
-   shipped, and 4 cannot bound what it cannot see.
+   shipped, and 2 cannot bound what it cannot see.
 
 ## Horizon
 
-1. **backlog/coordinator-crash-recovery.md** — the coordinator executor has
+1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
+   starvation shipped (overdue rescue passes age to the front of the
+   rotation); left is the one unbounded job pass still inside the wait.
+2. **backlog/claude-inproc-lane-starves-old-jobs.md** — the starvation
+   shipped (claim ageing); left are plan_tick's failure rate, quiet claim
+   skips and request timeouts on the crossref/enrich passes.
+3. **backlog/coordinator-crash-recovery.md** — the coordinator executor has
    only the wall-clock sweep for crash recovery; later by choice, the
    backstop works.
-2. **backlog/infra-failure-tag-classification-gaps.md** — two failure paths
+4. **backlog/infra-failure-tag-classification-gaps.md** — two failure paths
    skip the infra tag and mis-class as content failures.
-3. **backlog/agent-container-capability-probe.md** — deploy the probe
-   before the container flip; safety net for 4.
-4. **backlog/agent-workspace-containers.md** — `prio: high`; persistent
-   workspaces and disposable containers for coder agents; behind 3's probe.
-5. **backlog/factory-console-and-scheduling.md** — the remaining console
+5. **backlog/agent-container-capability-probe.md** — deploy the probe
+   before the container flip; safety net for 6.
+6. **backlog/agent-workspace-containers.md** — `prio: high`; persistent
+   workspaces and disposable containers for coder agents; behind 5's probe.
+7. **backlog/factory-console-and-scheduling.md** — the remaining console
    and registry scope; the scheduling half lives in
    `backlog/cluster-scheduling.md`.
-6. **backlog/tick-tool-lists-and-discovery-reflex.md** — per-job tool lists
+8. **backlog/tick-tool-lists-and-discovery-reflex.md** — per-job tool lists
    in tick prompts; prompt economy, not a failure mode.
-7. **backlog/friction-reflection-enable.md** — flip the default-off friction
+9. **backlog/friction-reflection-enable.md** — flip the default-off friction
    footer once a grouping lane exists to absorb its gripes.
-8. **backlog/plan-tick-health.md** — plan_tick (the todo planner) spins and
+10. **backlog/plan-tick-health.md** — plan_tick (the todo planner) spins and
    exhausts silently; zero-output turn-exhausted ticks log as success.
-9. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
+11. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
    exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
-   baseline first (8).
-10. **backlog/llm-quota-failure-classification.md** — only the prod MEDIUM
+   baseline first (10).
+12. **backlog/llm-quota-failure-classification.md** — only the prod MEDIUM
     ladder proof remains: a `llm.chain.medium` override (paid OpenRouter rung
     below claude) plus one observed `fell back to rung 1` warning. Needs
     prod + Reto's provider pick; code side landed 2026-10-12.
-11. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
+13. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
     branches instead of discarding them.
-12. **backlog/prioritization-auto-scoring.md** — severity x frequency
+14. **backlog/prioritization-auto-scoring.md** — severity x frequency
     auto-score plus a human triage loop.
-13. **backlog/backlog-groomer-items-half.md** — groomer for work items;
+15. **backlog/backlog-groomer-items-half.md** — groomer for work items;
     blocked on two prereqs.
 
 ## Parked

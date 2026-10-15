@@ -83,6 +83,38 @@ JOB_SUMMARY_KIND = "job_summary"
 #: age alone (``ref_id`` ASC), byte-identical to the pre-6a FIFO claim.
 _DEFAULT_JOB_PRIO = 5
 
+#: Claim ageing (claude-inproc-lane-starves-old-jobs): every this many
+#: seconds a queued job has waited, its claim rank improves by one prio
+#: band. Strict prio order let a steady stream of fresh prio-2 cron work
+#: (``news_poll``) hold prio-8 jobs queued for ~3h on a live lane; with
+#: ageing a prio-``p`` job outranks every *fresh* prio-``q`` arrival after
+#: ``(p - q)`` steps, and anything queued later than that ranks behind it,
+#: so its wait is bounded. Ageing stops at :data:`_CLAIM_AGE_FLOOR`: it lifts
+#: a job ahead of cron (2) and default (5) work but never into the prio-1
+#: chat/preempt band, which stays absolute. Override with
+#: :data:`CLAIM_AGE_STEP_ENV`; ``0`` restores strict prio order.
+DEFAULT_CLAIM_AGE_STEP_S = 600.0
+_CLAIM_AGE_FLOOR = 1.5
+CLAIM_AGE_STEP_ENV = "PRECIS_CLAIM_AGE_STEP_S"
+
+
+def claim_age_step_s() -> float:
+    """The claim-ageing step in seconds (``0`` = no ageing)."""
+    raw = os.environ.get(CLAIM_AGE_STEP_ENV)
+    if not raw:
+        return DEFAULT_CLAIM_AGE_STEP_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        log.warning(
+            "claim: %s=%r is not a number; using %gs",
+            CLAIM_AGE_STEP_ENV,
+            raw,
+            DEFAULT_CLAIM_AGE_STEP_S,
+        )
+        return DEFAULT_CLAIM_AGE_STEP_S
+
+
 #: How long an ``llm:``-affine job (see :func:`~precis.workers.dispatch.
 #: _served_model_requirement`) waits for a host that actually advertises the
 #: required model before the claim gate gives up on affinity and claims it
@@ -514,8 +546,14 @@ def claim_executor_jobs(
     invokes on its own claimed rows before running them (mirrors
     ssh_node's original inline guard, now shared).
 
-    **Claim ordering (slice 6a, FIFO fix 2026-09-25).** ``ORDER BY
-    COALESCE(prio, 5) ASC, queued_since ASC, ref_id ASC`` — LOWER
+    **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15).**
+    ``ORDER BY aged_prio ASC, queued_since ASC, ref_id ASC`` where
+    ``aged_prio`` is ``COALESCE(prio, 5)`` less one band per
+    :func:`claim_age_step_s` of ``queued_since`` age, floored at
+    ``_CLAIM_AGE_FLOOR`` (see :data:`DEFAULT_CLAIM_AGE_STEP_S`: a steady
+    fresh prio-2 stream otherwise starves prio-5/8 rows for hours; prio-1
+    preempt stays absolute). Jobs queued moments apart still order by
+    ``prio`` exactly as before — LOWER
     ``refs.prio`` first, the ``0014_refs_prio.sql``
     convention every writer follows (prio=1 chat/preempt · 2 cron · 5
     default; NULL reads as 5): the dispatcher propagates the parent
@@ -947,13 +985,36 @@ def claim_executor_jobs(
     # ``STATUS:queued`` only — the reclaim pre-pass above already handled
     # this cycle's bounded slice of stale-running candidates, so this query
     # no longer carries the running-row OR-arms (moved above).
+    # ``queued_since`` is needed twice — as a column and inside the aged
+    # rank — and an output alias can't be used in an ORDER BY expression,
+    # so the subquery is spelled out in both places.
+    queued_since_sql = """(SELECT max(rt.created_at)
+                  FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = r.ref_id
+                   AND t.namespace = %s AND t.value = %s)"""
+    age_step_s = claim_age_step_s()
+    aged_prio_sql = "COALESCE(r.prio, %s)::float8"
+    aged_params: tuple[Any, ...] = (_DEFAULT_JOB_PRIO,)
+    if age_step_s > 0:
+        # prio less one band per age step, floored at _CLAIM_AGE_FLOOR (or the
+        # row's own prio when that is already more urgent).
+        aged_prio_sql = (
+            "GREATEST(COALESCE(r.prio, %s)::float8"
+            f" - EXTRACT(EPOCH FROM (now() - {queued_since_sql}))::float8 / %s,"
+            " LEAST(COALESCE(r.prio, %s)::float8, %s))"
+        )
+        aged_params += (
+            STATUS_NAMESPACE,
+            QUEUED,
+            age_step_s,
+            _DEFAULT_JOB_PRIO,
+            _CLAIM_AGE_FLOOR,
+        )
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
-               (SELECT max(rt.created_at)
-                  FROM ref_tags rt JOIN tags t USING (tag_id)
-                 WHERE rt.ref_id = r.ref_id
-                   AND t.namespace = %s AND t.value = %s) AS queued_since
+               {queued_since_sql} AS queued_since,
+               {aged_prio_sql} AS aged_prio
           FROM refs r
          WHERE r.kind = 'job'
            AND r.retired_at IS NULL
@@ -977,13 +1038,14 @@ def claim_executor_jobs(
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
                ){exclusion_sql}{parent_sql}{suspend_sql}
-         ORDER BY COALESCE(r.prio, %s) ASC, queued_since ASC, r.ref_id ASC
+         ORDER BY aged_prio ASC, queued_since ASC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
         (
             STATUS_NAMESPACE,
             QUEUED,
+            *aged_params,
             executor,
             node,
             STATUS_NAMESPACE,
@@ -991,7 +1053,6 @@ def claim_executor_jobs(
             STATUS_NAMESPACE,
             list(TERMINAL),
             *suspend_params,
-            _DEFAULT_JOB_PRIO,
             limit * _CLAIM_OVERFETCH,
         ),
     ).fetchall()
@@ -1008,14 +1069,20 @@ def claim_executor_jobs(
         for res in res_set:
             host_count[res] = host_count.get(res, 0) + 1
 
-    def _order_key(r: Any) -> tuple[float, int, Any, int]:
-        prio = int(r[3]) if r[3] is not None else _DEFAULT_JOB_PRIO
+    def _order_key(r: Any) -> tuple[float, float, Any, int]:
+        # ``aged_prio`` (r[6]): prio less one band per age step — the SQL
+        # ORDER BY's first key. NULL only if a race retagged the row between
+        # the EXISTS and the subquery; fall back to the un-aged prio.
+        if r[6] is not None:
+            aged = float(r[6])
+        else:
+            aged = float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
         # ``queued_since`` (r[5]) before ``ref_id``: the same FIFO-within-band
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, prio, r[5] or r[4], int(r[0]))
+        return (-scarcity, aged, r[5] or r[4], int(r[0]))
 
     ranked = sorted(rows, key=_order_key)
 

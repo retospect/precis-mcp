@@ -62,6 +62,24 @@ DEFAULT_DRAIN_FILE = "/opt/precis/worker.drain"
 DRAIN_TTL_S = 3600.0
 
 
+#: Rescue-critical ref-passes: the passes other recovery depends on
+#: (``sweeper`` terminalizes orphaned claims, ``nursery`` raises the health
+#: alerts, ``quest_loop_reconcile`` re-mints swept quest loops). Keyed by
+#: service name. ``workers/conditions.py``'s rescue-gap probe watches the
+#: same set from the outside.
+RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile")
+
+#: Env var overriding :data:`DEFAULT_RESCUE_BUDGET_S`; ``0`` turns the
+#: rescue interleave off (rescue passes run only in their rotation slot).
+RESCUE_BUDGET_ENV = "PRECIS_WORKER_RESCUE_BUDGET_S"
+
+#: Longest a rescue pass may go unrun before :func:`run_loop` runs it
+#: between two other passes instead of waiting for its rotation slot. The
+#: rescue-gap alert (``PRECIS_COND_RESCUE_GAP_BUDGET_S``, 45 min) sits well
+#: above this plus one long pass.
+DEFAULT_RESCUE_BUDGET_S = 300.0
+
+
 #: mtime of the last stale drain file already warned about (per process) —
 #: keeps the TTL warning to one line per stranded flag, not one per cycle.
 _stale_drain_warned_mtime: float | None = None
@@ -225,6 +243,36 @@ class BoundedPass:
         return self._fn(batch_size)
 
 
+def _service_name(ref_pass: RefPass) -> str | None:
+    """The ``service_config`` name a ref-pass gates, counts and logs under.
+
+    Prefers an explicit ``service_name`` attribute (per-axis closures
+    registered under distinct ``axis:<id>`` services all share the literal
+    ``__name__`` ``_axis_pass``, so the name-derived fallback can't tell
+    them apart), else derives it from ``__name__`` (``_classify_pass`` ->
+    ``classify``). ``None`` for a closure with neither.
+    """
+    service = getattr(ref_pass, "service_name", None)
+    if service is not None:
+        return str(service)
+    fn_name = getattr(ref_pass, "__name__", "")
+    if fn_name.startswith("_") and fn_name.endswith("_pass"):
+        return str(fn_name[1:-5])
+    return None
+
+
+def _env_seconds(name: str, default: float) -> float:
+    """``float($name)``, or ``default`` when unset or unparseable."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("worker: %s=%r is not a number; using %gs", name, raw, default)
+        return default
+
+
 def run_loop(
     handlers: list[WorkerHandler],
     store: Store,
@@ -236,6 +284,7 @@ def run_loop(
     ref_passes: list[RefPass] | None = None,
     pass_gate: Callable[[str], bool] | None = None,
     ref_pass_deadline_s: float | None = None,
+    rescue_budget_s: float | None = None,
 ) -> None:
     """Drive ``handlers`` (chunk-level) and ``ref_passes`` (ref-level)
     in round-robin until stopped or drained.
@@ -325,6 +374,175 @@ def run_loop(
     pending: dict[str, threading.Thread] = {}
     pending_logged: set[str] = set()
 
+    # Rescue interleave (worker-rotation-starves-rescue-passes): the
+    # rotation is strictly serial, so a rescue pass otherwise waits a full
+    # rotation — the sum of every other pass's duration, unbounded while
+    # long job and background passes keep finding work (melchior
+    # 2026-08-14: ``quest_loop_reconcile`` silent ~7h, every quest frozen).
+    # A rescue pass that has gone ``rescue_budget_s`` without an attempt is
+    # aged to the front: it runs before the next handler or ref-pass instead
+    # of waiting for its slot. Its wait is then bounded by the budget plus
+    # one in-flight pass (ref-passes are themselves bounded by
+    # ``deadline_s``; job executors are not). It still runs in its rotation
+    # slot as before, so an idle-fast rotation is unchanged. ``once`` is a
+    # single rotation and skips the interleave.
+    budget_s = (
+        _env_seconds(RESCUE_BUDGET_ENV, DEFAULT_RESCUE_BUDGET_S)
+        if rescue_budget_s is None
+        else rescue_budget_s
+    )
+    rescue_passes: list[RefPass] = []
+    if not once and budget_s > 0:
+        rescue_passes = [
+            p for p in ref_passes or () if _service_name(p) in RESCUE_SERVICES
+        ]
+    # handler name → monotonic time of its last attempt; seeded at start so
+    # the first rotation's slot normally beats the budget.
+    loop_start = time.monotonic()
+    rescue_last: dict[str, float] = {
+        str(_service_name(p)): loop_start for p in rescue_passes
+    }
+
+    def _run_ref_pass(ref_pass: RefPass) -> bool:
+        """Run one ref-pass (gate, deadline, crash and log handling);
+        ``True`` when it claimed work."""
+        service = _service_name(ref_pass)
+        handler_name = str(service or getattr(ref_pass, "__name__", "ref_pass"))
+        if handler_name in rescue_last:
+            # Stamped at the attempt, not the finish: the budget bounds the
+            # wait between starts, and a gated-off or still-detached rescue
+            # pass must not be re-polled before every other pass.
+            rescue_last[handler_name] = time.monotonic()
+        if pass_gate is not None and service is not None and not pass_gate(service):
+            # Live-disabled via service_config (prio 0). Skip
+            # this cycle; not counted as work so the loop can
+            # still idle-sleep when everything else is drained.
+            return False
+        # Under ``once`` deadlines are inert (a manual run must not
+        # abandon the pass it was invoked for and return mid-work).
+        deadline_s = (
+            None if once else getattr(ref_pass, "deadline_s", ref_pass_deadline_s)
+        )
+        if deadline_s:
+            prev = pending.get(handler_name)
+            if prev is not None:
+                if prev.is_alive():
+                    if handler_name not in pending_logged:
+                        pending_logged.add(handler_name)
+                        log.info(
+                            "worker: %s still running detached past its "
+                            "deadline; skipping this cycle",
+                            handler_name,
+                        )
+                    else:
+                        log.debug(
+                            "worker: %s still running detached; skipping",
+                            handler_name,
+                        )
+                    return False
+                pending.pop(handler_name)
+                pending_logged.discard(handler_name)
+                log.info("worker: %s detached ref-pass run finished", handler_name)
+        activity.set_pass(ref_pass.__name__)
+        t0 = time.monotonic()
+        try:
+            if deadline_s:
+                result = call_with_deadline(
+                    partial(ref_pass, batch_size),
+                    deadline_s=deadline_s,
+                    label=handler_name,
+                )
+            else:
+                result = ref_pass(batch_size)
+        except DeadlineExceeded as exc:
+            pending[handler_name] = exc.thread
+            log.error(
+                "worker: %s ref-pass exceeded its %gs deadline; abandoned "
+                "(still running detached)",
+                handler_name,
+                deadline_s,
+                extra={
+                    "payload": {
+                        "handler": handler_name,
+                        "claimed": 0,
+                        "ok": 0,
+                        "failed": 1,
+                        "error": "DeadlineExceeded",
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
+                    }
+                },
+            )
+            return False
+        except Exception as exc:
+            # A ref-pass that crashes every single cycle must not go
+            # structurally invisible: the pass-dead probe
+            # (workers/conditions.py's ``_PASS_DEAD_SQL``) only counts
+            # ``worker_logs`` rows carrying ``payload ? 'handler'``, so
+            # without a payload here a handler that crashes
+            # deterministically on every tick and one that never runs
+            # at all look identical -- total silence (gr328589). This
+            # errored row closes that structurally: a crash-looping
+            # handler IS still "running" from the scheduler's point of
+            # view, so pass-dead correctly falls quiet once this
+            # lands; the crash itself now surfaces via this row (and,
+            # for a pass hardened to catch its own step failures --
+            # see stub_rank's per-step guards -- via its normal
+            # failed>0 success-path payload instead of even reaching
+            # here).
+            log.exception(
+                "worker: %s ref-pass raised; continuing",
+                handler_name,
+                extra={
+                    "payload": {
+                        "handler": handler_name,
+                        "claimed": 0,
+                        "ok": 0,
+                        "failed": 1,
+                        "error": type(exc).__name__,
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
+                    }
+                },
+            )
+            return False
+        finally:
+            activity.clear()
+        log.info(
+            "worker: %s claimed=%d ok=%d failed=%d",
+            result.handler,
+            result.claimed,
+            result.ok,
+            result.failed,
+            extra={
+                "payload": {
+                    "handler": result.handler,
+                    "claimed": result.claimed,
+                    "ok": result.ok,
+                    "failed": result.failed,
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                }
+            },
+        )
+        return result.claimed > 0
+
+    def _run_overdue_rescue() -> bool | None:
+        """Run every rescue pass past its budget; ``None`` on a stop
+        signal, else whether any of them claimed work."""
+        worked = False
+        for rescue in rescue_passes:
+            name = str(_service_name(rescue))
+            if time.monotonic() - rescue_last[name] < budget_s:
+                continue
+            if should_stop is not None and should_stop():
+                return None
+            log.info(
+                "worker: %s overdue (%.0fs since last attempt); running ahead "
+                "of its rotation slot",
+                name,
+                time.monotonic() - rescue_last[name],
+            )
+            worked = _run_ref_pass(rescue) or worked
+        return worked
+
     while True:
         drain_path = os.environ.get(DRAIN_FILE_ENV, DEFAULT_DRAIN_FILE)
         draining = _drain_file_fresh(drain_path)
@@ -355,6 +573,11 @@ def run_loop(
             if should_stop is not None and should_stop():
                 log.info("worker: stop signal received; exiting loop")
                 return
+            rescued = _run_overdue_rescue()
+            if rescued is None:
+                log.info("worker: stop signal received; exiting loop")
+                return
+            any_work = rescued or any_work
             t0 = time.monotonic()
             activity.track(handler.name)
             try:
@@ -395,129 +618,13 @@ def run_loop(
             if should_stop is not None and should_stop():
                 log.info("worker: stop signal received; exiting loop")
                 return
-            # Prefer an explicit ``service_name`` attribute (per-axis
-            # closures registered under distinct ``axis:<id>`` services
-            # all share the literal ``__name__`` ``_axis_pass``, so the
-            # name-derived fallback below can't tell them apart) over
-            # the ``__name__``-derived service. Computed unconditionally
-            # (not only under ``pass_gate``) because the crash path below
-            # needs it too, as the payload's ``handler`` key.
-            service = getattr(ref_pass, "service_name", None)
-            if service is None:
-                fn_name = getattr(ref_pass, "__name__", "")
-                if fn_name.startswith("_") and fn_name.endswith("_pass"):
-                    service = fn_name[1:-5]
-            if pass_gate is not None and service is not None and not pass_gate(service):
-                # Live-disabled via service_config (prio 0). Skip
-                # this cycle; not counted as work so the loop can
-                # still idle-sleep when everything else is drained.
-                continue
-            handler_name = str(service or getattr(ref_pass, "__name__", "ref_pass"))
-            # Under ``once`` deadlines are inert (a manual run must not
-            # abandon the pass it was invoked for and return mid-work).
-            deadline_s = (
-                None if once else getattr(ref_pass, "deadline_s", ref_pass_deadline_s)
-            )
-            if deadline_s:
-                prev = pending.get(handler_name)
-                if prev is not None:
-                    if prev.is_alive():
-                        if handler_name not in pending_logged:
-                            pending_logged.add(handler_name)
-                            log.info(
-                                "worker: %s still running detached past its "
-                                "deadline; skipping this cycle",
-                                handler_name,
-                            )
-                        else:
-                            log.debug(
-                                "worker: %s still running detached; skipping",
-                                handler_name,
-                            )
-                        continue
-                    pending.pop(handler_name)
-                    pending_logged.discard(handler_name)
-                    log.info("worker: %s detached ref-pass run finished", handler_name)
-            activity.set_pass(ref_pass.__name__)
-            t0 = time.monotonic()
-            try:
-                if deadline_s:
-                    result = call_with_deadline(
-                        partial(ref_pass, batch_size),
-                        deadline_s=deadline_s,
-                        label=handler_name,
-                    )
-                else:
-                    result = ref_pass(batch_size)
-            except DeadlineExceeded as exc:
-                pending[handler_name] = exc.thread
-                log.error(
-                    "worker: %s ref-pass exceeded its %gs deadline; abandoned "
-                    "(still running detached)",
-                    handler_name,
-                    deadline_s,
-                    extra={
-                        "payload": {
-                            "handler": handler_name,
-                            "claimed": 0,
-                            "ok": 0,
-                            "failed": 1,
-                            "error": "DeadlineExceeded",
-                            "duration_ms": int((time.monotonic() - t0) * 1000),
-                        }
-                    },
-                )
-                continue
-            except Exception as exc:
-                # A ref-pass that crashes every single cycle must not go
-                # structurally invisible: the pass-dead probe
-                # (workers/conditions.py's ``_PASS_DEAD_SQL``) only counts
-                # ``worker_logs`` rows carrying ``payload ? 'handler'``, so
-                # without a payload here a handler that crashes
-                # deterministically on every tick and one that never runs
-                # at all look identical -- total silence (gr328589). This
-                # errored row closes that structurally: a crash-looping
-                # handler IS still "running" from the scheduler's point of
-                # view, so pass-dead correctly falls quiet once this
-                # lands; the crash itself now surfaces via this row (and,
-                # for a pass hardened to catch its own step failures --
-                # see stub_rank's per-step guards -- via its normal
-                # failed>0 success-path payload instead of even reaching
-                # here).
-                log.exception(
-                    "worker: %s ref-pass raised; continuing",
-                    handler_name,
-                    extra={
-                        "payload": {
-                            "handler": handler_name,
-                            "claimed": 0,
-                            "ok": 0,
-                            "failed": 1,
-                            "error": type(exc).__name__,
-                            "duration_ms": int((time.monotonic() - t0) * 1000),
-                        }
-                    },
-                )
-                continue
-            finally:
-                activity.clear()
-            log.info(
-                "worker: %s claimed=%d ok=%d failed=%d",
-                result.handler,
-                result.claimed,
-                result.ok,
-                result.failed,
-                extra={
-                    "payload": {
-                        "handler": result.handler,
-                        "claimed": result.claimed,
-                        "ok": result.ok,
-                        "failed": result.failed,
-                        "duration_ms": int((time.monotonic() - t0) * 1000),
-                    }
-                },
-            )
-            if result.claimed > 0:
+            if ref_pass not in rescue_passes:
+                rescued = _run_overdue_rescue()
+                if rescued is None:
+                    log.info("worker: stop signal received; exiting loop")
+                    return
+                any_work = rescued or any_work
+            if _run_ref_pass(ref_pass):
                 any_work = True
 
         if once:

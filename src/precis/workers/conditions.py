@@ -73,6 +73,7 @@ from functools import partial
 from precis.store import Store
 from precis.workers.bounded_heal import HealSpec, run_bounded_heal
 from precis.workers.health_digest import CheckResult
+from precis.workers.runner import RESCUE_SERVICES
 
 log = logging.getLogger(__name__)
 
@@ -252,8 +253,9 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
 
 #: Rescue-critical handlers: the passes other recovery depends on. A
 #: fleet-wide gap here means the rescuers themselves are starved — much
-#: tighter budget than the per-host pass-dead row.
-_RESCUE_HANDLERS = ("sweeper", "nursery", "quest_loop_reconcile")
+#: tighter budget than the per-host pass-dead row. The same set
+#: ``run_loop`` ages to the front of a saturated rotation.
+_RESCUE_HANDLERS = RESCUE_SERVICES
 
 _LATEST_QUEST_LOOP_CTE = """
 WITH active_quests AS (
