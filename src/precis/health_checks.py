@@ -640,6 +640,10 @@ class ToolLatency:
     p50_ms: int
     p95_ms: int
     errors: int
+    #: The second-slowest call in the window (``None`` with one call). A
+    #: check needs this over its line too, so one cold call cannot carry
+    #: a p95 on its own.
+    second_slowest_ms: int | None = None
     baseline_calls: int = 0
     baseline_p95_ms: int | None = None
 
@@ -671,6 +675,10 @@ TOOL_LATENCY_BUDGET_OVERRIDES_MS: dict[str, int] = {
 
 #: Fewer calls than this in the window and the p95 is one call's time,
 #: so neither the budget check nor the regression check judges the pair.
+#: Between 10 and 19 calls one outlier still sets the p95, which is why
+#: the checks also need :attr:`ToolLatency.second_slowest_ms` over the
+#: line: r37's first eval flagged get/skill p95 16.9 s (n=12) from a
+#: single 36 s precis-status call 40 s after a server restart.
 TOOL_LATENCY_MIN_CALLS = 10
 
 
@@ -701,6 +709,8 @@ def tool_latency(
                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
                  FILTER (WHERE cur),
                count(*) FILTER (WHERE cur AND outcome <> 'ok'),
+               (array_agg(latency_ms ORDER BY latency_ms DESC)
+                 FILTER (WHERE cur))[2],
                count(*) FILTER (WHERE NOT cur),
                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
                  FILTER (WHERE NOT cur)
@@ -723,10 +733,11 @@ def tool_latency(
             p50_ms=round(p50),
             p95_ms=round(p95),
             errors=int(e),
+            second_slowest_ms=None if s2 is None else int(s2),
             baseline_calls=int(bn),
             baseline_p95_ms=None if bp95 is None else round(bp95),
         )
-        for v, k, n, p50, p95, e, bn, bp95 in rows
+        for v, k, n, p50, p95, e, s2, bn, bp95 in rows
     ]
 
 

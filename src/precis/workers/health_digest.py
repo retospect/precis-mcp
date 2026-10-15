@@ -1389,6 +1389,12 @@ def _fmt_pair(t: health_checks.ToolLatency, *, with_baseline: bool = False) -> s
     return f"{s} > {t.budget_ms / 1000:.0f}s budget (n={t.calls})"
 
 
+def _two_over(t: health_checks.ToolLatency, line_ms: int) -> bool:
+    """p95 and the second-slowest call both over ``line_ms``."""
+    s2 = t.second_slowest_ms
+    return t.p95_ms > line_ms and s2 is not None and s2 > line_ms
+
+
 def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     """MCP tool-call latency over the last hour from the ``tool_calls``
     ledger (gr479849): ``tool_latency`` goes stale when a verb/kind's p95
@@ -1397,7 +1403,8 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     ``tool_latency_regressed`` when it more than doubled against the
     trailing week. Pairs under
     :data:`~precis.health_checks.TOOL_LATENCY_MIN_CALLS` calls are not
-    judged.
+    judged, and a pair needs its second-slowest call over the line too:
+    one cold call after a restart is not a slow MCP.
     """
     try:
         rows = health_checks.tool_latency(conn, baseline_s=_TOOL_LATENCY_BASELINE_S)
@@ -1421,14 +1428,14 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
         ]
     floor = health_checks.TOOL_LATENCY_MIN_CALLS
     judged = [t for t in rows if t.calls >= floor]
-    over = [t for t in judged if t.p95_ms > t.budget_ms]
+    over = [t for t in judged if _two_over(t, t.budget_ms)]
     regressed = [
         t
         for t in judged
         if t.baseline_calls >= floor
         and t.baseline_p95_ms is not None
         and t.p95_ms >= _TOOL_LATENCY_REGRESSION_FLOOR_MS
-        and t.p95_ms > 2 * t.baseline_p95_ms
+        and _two_over(t, 2 * t.baseline_p95_ms)
     ]
     budget = (
         CheckResult(

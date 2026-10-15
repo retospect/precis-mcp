@@ -47,7 +47,7 @@ def test_rollup_reads_window_and_baseline(store) -> None:
         plain = health_checks.tool_latency(conn)
     by = {(t.verb, t.kind): t for t in rows}
     paper = by[("get", "paper")]
-    assert (paper.calls, paper.p50_ms) == (20, 10)
+    assert (paper.calls, paper.p50_ms, paper.second_slowest_ms) == (20, 10, 10)
     assert paper.p95_ms > 10 and paper.baseline_calls == 10
     assert paper.baseline_p95_ms == 100
     assert by[("search", "-")].calls == 1
@@ -62,6 +62,16 @@ def test_slow_verb_over_budget_turns_check_red(store) -> None:
     c = _checks(store)["tool_latency"]
     assert c.status == "stale" and c.is_finding
     assert "search/memory" in c.detail and "budget" in c.detail
+
+
+def test_one_cold_call_does_not_turn_check_red(store) -> None:
+    """r37's first eval: 11 fast get/skill calls plus one 36 s precis-status
+    just after a restart read p95 16.9 s. One outlier is not a slow MCP;
+    a second slow call is."""
+    _seed(store, "get", "skill", [50] * 11 + [36_000])
+    assert _checks(store)["tool_latency"].status == "ok"
+    _seed(store, "get", "skill", [36_000])
+    assert _checks(store)["tool_latency"].status == "stale"
 
 
 def test_under_budget_or_too_few_calls_is_green(store) -> None:
