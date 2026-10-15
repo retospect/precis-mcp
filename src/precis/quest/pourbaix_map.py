@@ -145,16 +145,78 @@ def scan_jobs_many(
     return out
 
 
+#: Per-lever keys of a recorded correction block that describe one model's
+#: own fit — its table entry (``sets``) or the models it had none for
+#: (``unknown``/``unanchored``). They differ between models by
+#: construction, so they are not part of the footing two models share;
+#: whether the lever *applied* is (:func:`correction_footing`).
+_PER_MODEL_CORRECTION_KEYS = frozenset({"sets", "unknown", "unanchored"})
+
+
+def applied_levers(corrections: Any) -> list[str]:
+    """The correction levers a scan's recorded block actually applied —
+    a dict lever counts when it is enabled AND carries a set for the model
+    (an enabled lever with no table entry applies nothing, gr486949); a
+    legacy scalar lever (a set name or a shift) counts when present.
+    ``[]`` for ``None`` (an engine that records no block)."""
+    if not isinstance(corrections, dict):
+        return []
+    out = []
+    for lever, v in corrections.items():
+        if lever == "version":
+            continue
+        if isinstance(v, dict):
+            if v.get("enabled") and v.get("sets"):
+                out.append(str(lever))
+        elif v is not None and v is not False:
+            out.append(str(lever))
+    return sorted(out)
+
+
+def correction_footing(corrections: Any) -> str | None:
+    """The correction footing of a recorded block, as a canonical string:
+    the correction table version and, per lever, its settings and whether
+    it applied — minus the per-model fit itself. Two models share a footing
+    when the same corrections applied to both under the same table; a model
+    the table has no entry for is on a different footing from one it has
+    (ruling q2, gr489162). ``None`` for an engine that records no block.
+    The coverage-scan dispatch pools on this exact key, so the stored sweep
+    and the map partition agree."""
+    if corrections is None:
+        return None
+    if not isinstance(corrections, dict):
+        return json.dumps(corrections, sort_keys=True, default=str)
+    out: dict[str, Any] = {}
+    for lever, v in corrections.items():
+        if isinstance(v, dict):
+            kept = {k: x for k, x in v.items() if k not in _PER_MODEL_CORRECTION_KEYS}
+            kept["applied"] = bool(v.get("enabled")) and bool(v.get("sets"))
+            out[str(lever)] = kept
+        else:
+            out[str(lever)] = v
+    return json.dumps(out, sort_keys=True, default=str)
+
+
 def _footing_key(row: dict[str, Any]) -> tuple[Any, ...]:
     """The footing a scan was measured on — one map per distinct footing,
     never blended (ruling q2). ``anchor_key`` already pins slab + anchor set
-    + engine version; ``corrections`` is what the scan recorded (``None`` on
-    engines that apply none — a distinct footing from any recorded set)."""
+    + engine version; :func:`correction_footing` is the correction footing
+    the scan recorded (``None`` on engines that apply none — a distinct
+    footing from any recorded set)."""
     return (
         row.get("anchor_key"),
         row.get("engine_version"),
-        json.dumps(row.get("corrections"), sort_keys=True),
+        correction_footing(row.get("corrections")),
     )
+
+
+def _sweep_models(sweep: dict[str, Any]) -> set[str]:
+    """Every model a stored sweep pooled — its ``models`` list plus the
+    ``+``-joined per-anchor model labels."""
+    out = {str(m) for m in sweep.get("models") or [] if m}
+    for a in sweep.get("anchors") or []:
+        out.update(m for m in str(a.get("model") or "").split("+") if m)
+    return out
 
 
 def bulk_verdict(store: Any, candidate_meta: dict[str, Any]) -> dict[str, Any] | None:
@@ -305,11 +367,26 @@ def build_map(
     sweep = dict(newest["che_sweep"]) if newest else {}
     models = sorted({str(j.get("model")) for j in jobs if j.get("model")})
     corrections = newest_or_first(jobs, "corrections")
-    uncorrected = corrections is None
+    uncorrected = not applied_levers(corrections)
     window = sweep.get("U_RHE_window") or [None, None]
     incomplete: list[str] = []
     if newest is None:
         incomplete.append("no pooled che_sweep recorded on this footing's scan jobs")
+    # A sweep that pooled anchors from another footing (a scan recorded
+    # under a different correction set or engine — gr489162) is not this
+    # footing's map: never drawn, never blended (ruling q2). A sweep that
+    # stamps its own footing key is checked against it; an older one by
+    # the models it pooled.
+    footing = correction_footing(corrections)
+    foreign = sorted(_sweep_models(sweep) - set(models))
+    if newest is not None and (foreign or sweep.get("footing_key", footing) != footing):
+        incomplete.append(
+            f"the stored sweep on {_job_handle(int(newest['ref_id']))} pooled "
+            f"{', '.join(foreign) or 'anchors'} from another footing (a "
+            "different correction set or engine) — not drawn, never blended; "
+            "re-running this footing's scan stamps a sweep of its own"
+        )
+        sweep = {"U_RHE_window": window}
     n_models = int(sweep.get("n_models") or len(models))
     boundaries: list[dict[str, Any]] = []
     for b in sweep.get("boundaries") or []:
@@ -324,10 +401,16 @@ def build_map(
             "model-form bands need ≥2 models — one model scanned; "
             "band_model_form is absent, not zero"
         )
-    if uncorrected:
+    if corrections is None:
         incomplete.append(
             "footing correction set unrecorded — anchors are treated as "
             "uncorrected (the engine recorded none); never inferred"
+        )
+    elif uncorrected:
+        incomplete.append(
+            "corrections enabled but none applied — the correction table has "
+            f"no set for {', '.join(models) or 'this model'}; anchors are "
+            "uncorrected"
         )
     if sweep.get("sigma_e_eV") is None and newest is not None:
         incomplete.append(
@@ -350,7 +433,7 @@ def build_map(
         "sigma_e_eV": sweep.get("sigma_e_eV"),
         "n_models": n_models,
         "n_anchors": len(sweep.get("anchors") or []),
-        "regions": _regions(sweep, jobs, uncorrected) if sweep else [],
+        "regions": _regions(sweep, jobs, uncorrected) if sweep.get("envelope") else [],
         "boundaries": boundaries,
         "needs_anchor": [dict(b) for b in sweep.get("needs_anchor") or []],
         "bulk": bulk,
@@ -450,11 +533,12 @@ def render_map(m: dict[str, Any]) -> str:
     key = str(m.get("anchor_key") or "?")
     jobs = ", ".join(_job_handle(j) for j in m.get("scan_jobs") or []) or "?"
     corr = m.get("corrections")
-    corr_txt = (
-        "uncorrected (engine recorded none)"
-        if corr is None
-        else json.dumps(corr, sort_keys=True)
-    )
+    if corr is None:
+        corr_txt = "uncorrected (engine recorded none)"
+    elif m.get("uncorrected"):
+        corr_txt = "uncorrected (none applied) " + json.dumps(corr, sort_keys=True)
+    else:
+        corr_txt = json.dumps(corr, sort_keys=True)
     lines.append(
         f"map on anchor_key {key[:12]}… · engine {m.get('engine_version') or '?'} "
         f"· models {', '.join(m.get('models') or []) or '?'} · corrections {corr_txt}"

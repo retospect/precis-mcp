@@ -20,6 +20,7 @@ import pytest
 
 pytest.importorskip("autocatpath")
 
+from precis.quest import pourbaix_map
 from precis.store import Store
 from precis.store.types import Tag
 from precis.structure import export
@@ -555,12 +556,14 @@ def test_dispatch_drops_an_uncorrected_sibling_from_the_band(
     assert "mace:large" in summary and "dropped from the pooled sweep" in summary
 
 
-def test_dispatch_drops_its_own_scan_when_it_is_the_uncorrected_one(
+def test_dispatch_keeps_its_own_footing_when_it_is_the_uncorrected_one(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr486949's jo486844 case: the job that ran the uncorrected model
-    still stamps its own anchors and succeeds — its sweep is the corrected
-    sibling's alone."""
+    """gr486949/gr489162's jo486844 case: the job that ran the uncorrected
+    model stamps a sweep of its own anchors only. The corrected sibling is
+    another footing — named as not pooled, never blended in. (Before
+    gr489162 this sweep was the sibling's alone, so the uncorrected job's
+    map drew another footing's anchors.)"""
     key = "d" * 64
     good = _coverage("mace:medium", -0.03)
     good["corrections"] = {
@@ -575,7 +578,7 @@ def test_dispatch_drops_its_own_scan_when_it_is_the_uncorrected_one(
             "unanchored": [],
         },
     }
-    _scan_job(
+    sib = _scan_job(
         store, anchor_key=key, model="mace:medium", coverage=good, status="succeeded"
     )
 
@@ -607,9 +610,73 @@ def test_dispatch_drops_its_own_scan_when_it_is_the_uncorrected_one(
     m = ctx.meta_updates
     assert m["model"] == "mace:large" and m["coverage"]["model"] == "mace:large"
     che = m["che_sweep"]
+    assert che["models"] == ["mace:large"] and che["n_models"] == 1
+    assert che["not_pooled"] == [{"model": "mace:medium", "job": sib}]
+    assert "dropped_uncorrected" not in che
+    assert che["footing_key"] == pourbaix_map.correction_footing(m["corrections"])
+    summary = ctx.chunks[-1][1]
+    assert "mace:medium not pooled" in summary
+    # the read side draws this sweep as the mace:large footing's own map
+    (mp,) = pourbaix_map.maps_for_structure(
+        store,
+        SimpleNamespace(id=0, meta={}),
+        jobs=[
+            {
+                "ref_id": 1,
+                "model": m["model"],
+                "anchor_key": key,
+                "engine_version": m["engine_version"],
+                "corrections": m["corrections"],
+                "che_sweep": che,
+            }
+        ],
+    )
+    assert mp["regions"] and mp["uncorrected"] is True
+    assert not any("another footing" in i for i in mp["incomplete"])
+
+
+def test_dispatch_never_pools_a_sibling_from_another_correction_table(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489162: both scans applied gas + H* corrections, so the gr486949
+    lever-count check sees no difference, but under different correction
+    table versions they are different footings — not pooled."""
+    key = "e" * 64
+
+    def _corr(model: str, version: str) -> dict[str, Any]:
+        return {
+            "gas": {"enabled": True, "sets": {model: {}}, "unknown": []},
+            "h_star": {"enabled": True, "sets": {model: {}}, "unanchored": []},
+            "version": version,
+        }
+
+    old = _coverage("mace:small", -0.05)
+    old["corrections"] = _corr("mace:small", "2026-09-01")
+    sib = _scan_job(
+        store, anchor_key=key, model="mace:small", coverage=old, status="succeeded"
+    )
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        cov = _coverage("mace:medium", -0.02)
+        cov["corrections"] = _corr("mace:medium", "2026-10-02")
+        return {
+            "model": "mace:medium",
+            "model_index": model_index,
+            "coverage": cov,
+            "engine_version": "0.25.0",
+            "corrections": cov["corrections"],
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    ctx = _FakeCtx(store=store, params={"config": CONFIG, "anchor_key": key})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.status == "succeeded", ctx.failure
+    che = ctx.meta_updates["che_sweep"]
     assert che["models"] == ["mace:medium"] and che["n_models"] == 1
-    assert che["dropped_uncorrected"] == ["mace:large"]
-    assert "mace:large" in ctx.chunks[-1][1]
+    assert che["not_pooled"] == [{"model": "mace:small", "job": sib}]
+    assert "dropped_uncorrected" not in che
 
 
 def test_dispatch_classes_a_killed_child_as_infra(

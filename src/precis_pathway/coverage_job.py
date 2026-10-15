@@ -16,7 +16,11 @@ once per slab. The job then:
    with, ``None`` on an engine that records none) — so every anchor says
    what it was measured on (slice-1 acceptance: one footing);
 2. pools this scan with every earlier succeeded scan on the same
-   ``anchor_key`` (one per model, newest wins), drops any model whose
+   ``anchor_key`` AND the same correction footing
+   (:func:`precis.quest.pourbaix_map.correction_footing` — the key the
+   map partitions on; other footings are named in the sweep's
+   ``not_pooled`` and never blended, gr489162; the sweep stamps its
+   ``footing_key``) — one per model, newest wins — drops any model whose
    recorded correction set is a strict subset of the pool's
    (:func:`precis_pathway.surface_pourbaix.drop_uncorrected` — a band
    across mixed corrected/uncorrected anchors prices the correction, not
@@ -324,9 +328,22 @@ def find_sibling_scans(
     drops the calling job's own row). The lookup mirrors
     ``pourbaix_bulk.find_cached_entries``: newest ``ref_id`` first, a job
     that did not reach ``STATUS:succeeded`` is skipped."""
+    return {
+        model: row["coverage"]
+        for model, row in sibling_scan_rows(store, anchor_key, exclude=exclude).items()
+    }
+
+
+def sibling_scan_rows(
+    store: Any, anchor_key: str, *, exclude: int | None = None
+) -> dict[str, dict[str, Any]]:
+    """:func:`find_sibling_scans` with each scan's footing alongside:
+    ``{model: {ref_id, coverage, engine_version, corrections}}`` — what the
+    dispatch needs to pool only scans on its own footing (gr489162)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id, meta->>'model', meta->'coverage' FROM refs "
+            "SELECT ref_id, meta->>'model', meta->'coverage', "
+            "meta->>'engine_version', meta->'corrections' FROM refs "
             "WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'job_type' = %(jt)s "
             "AND meta->>'anchor_key' = %(key)s "
@@ -334,13 +351,22 @@ def find_sibling_scans(
             {"jt": NAME, "key": anchor_key},
         ).fetchall()
     out: dict[str, dict[str, Any]] = {}
-    for ref_id, model, coverage in rows:
+    for ref_id, model, coverage, engine_version, corrections in rows:
         if exclude is not None and int(ref_id) == exclude:
             continue
         if not model or not isinstance(coverage, dict) or model in out:
             continue
         if any(str(t) == "STATUS:succeeded" for t in store.tags_for(int(ref_id))):
-            out[str(model)] = coverage
+            out[str(model)] = {
+                "ref_id": int(ref_id),
+                "coverage": coverage,
+                "engine_version": engine_version,
+                # a scan stamped before the meta field: the coverage.json
+                # block the engine recorded is the same record
+                "corrections": corrections
+                if corrections is not None
+                else coverage.get("corrections"),
+            }
     return out
 
 
@@ -383,6 +409,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     except (TypeError, ValueError):
         timeout_s = 0
     cpuset = resources.get("cpuset")
+
+    from precis.quest import pourbaix_map
 
     from . import runner, surface_pourbaix
 
@@ -445,11 +473,39 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     model = str(result["model"])
     coverage = result["coverage"]
     own_id = getattr(ctx, "ref_id", None)
-    payloads = find_sibling_scans(
+    siblings = sibling_scan_rows(
         ctx.store, anchor_key, exclude=int(own_id) if isinstance(own_id, int) else None
     )
-    payloads[model] = coverage  # this run wins over an older scan of the same model
+    # Pool only scans on this run's own correction footing (gr489162):
+    # anchor_key pins slab + anchor set + engine, but not the correction
+    # set, and a sweep across footings blends them (ruling q2). The rest
+    # are named; a sibling that applied a strict subset of this run's
+    # levers is the gr486949 "uncorrected" case and keeps that name.
+    own_corr = result.get("corrections", coverage.get("corrections"))
+    footing = pourbaix_map.correction_footing(own_corr)
+    own_levers = set(pourbaix_map.applied_levers(own_corr))
+    payloads: dict[str, dict[str, Any]] = {}
+    not_pooled: list[dict[str, Any]] = []
+    for sib_model, row in siblings.items():
+        if sib_model == model:
+            continue  # this run wins over an older scan of the same model
+        if pourbaix_map.correction_footing(row["corrections"]) == footing:
+            payloads[sib_model] = row["coverage"]
+        else:
+            not_pooled.append({"model": sib_model, "job": row["ref_id"]})
+    payloads[model] = coverage
     payloads, dropped_uncorrected = surface_pourbaix.drop_uncorrected(payloads)
+    dropped_uncorrected = sorted(
+        {
+            *dropped_uncorrected,
+            *(
+                r["model"]
+                for r in not_pooled
+                if set(pourbaix_map.applied_levers(siblings[r["model"]]["corrections"]))
+                < own_levers
+            ),
+        }
+    )
     window = params.get("window_U_RHE") or list(DEFAULT_U_WINDOW)
     point = params.get("point_U_RHE")
     che = surface_pourbaix.sweep(
@@ -460,8 +516,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         point_u_rhe=None if point is None else float(point),
         sigma_e_ev=_sigma_e(params, config),
     )
+    che["footing_key"] = footing
     if dropped_uncorrected:
         che["dropped_uncorrected"] = dropped_uncorrected
+    if not_pooled:
+        che["not_pooled"] = not_pooled
     ctx.set_meta(
         anchor_key=anchor_key,
         model=model,
@@ -482,6 +541,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "correction set the kept model(s) applied; a band across mixed "
             "corrected/uncorrected anchors prices the correction, not the "
             "model form (the dropped scans' own anchors still stand)"
+        )
+    others = sorted({r["model"] for r in not_pooled} - set(dropped_uncorrected))
+    if others:
+        warnings.append(
+            "footing: model(s) "
+            + ", ".join(others)
+            + " not pooled — scanned on a different correction footing than "
+            "this run; a sweep across footings blends them (ruling q2)"
         )
     text = surface_pourbaix.render_text(che)
     if warnings:

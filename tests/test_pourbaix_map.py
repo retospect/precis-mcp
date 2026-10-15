@@ -308,6 +308,104 @@ def test_mixed_footings_partition_never_blend(store: Store, hub: Hub) -> None:
     assert sum(1 for mp in maps if mp["uncorrected"]) == 2
 
 
+def _corr(model: str | None, *, version: str = "2026-10-02") -> dict[str, Any]:
+    """An engine 0.25 correction block: both levers enabled, a set for
+    ``model`` (``None`` → the table has no entry: nothing applied)."""
+    key = model.split(":") if model else None
+    return {
+        "gas": {
+            "anchors": ["H2", "N2", "H2O"],
+            "enabled": True,
+            "sets": {model: {"key": key, "values": {"NO": 0.15}}} if model else {},
+            "unknown": [] if model else [["mace", "large"]],
+        },
+        "h_star": {
+            "enabled": True,
+            "host_metal": "Pd",
+            "sets": {model: {"key": [*key, "Pd"]}} if key else {},
+            "unanchored": [] if model else [["mace", "large", "Pd"]],
+        },
+        "version": version,
+    }
+
+
+def test_correction_footing_drops_the_per_model_fit_only() -> None:
+    """Two models corrected under the same table share a footing; a model
+    the table has no set for, or a different table version, does not."""
+    a, b = _corr("mace:medium"), _corr("mace:small")
+    assert pm.correction_footing(a) == pm.correction_footing(b)
+    assert pm.correction_footing(a) != pm.correction_footing(_corr(None))
+    assert pm.correction_footing(a) != pm.correction_footing(
+        _corr("mace:medium", version="2026-11-01")
+    )
+    assert pm.correction_footing(None) is None
+    assert pm.applied_levers(a) == ["gas", "h_star"]
+    assert pm.applied_levers(_corr(None)) == []
+    assert pm.applied_levers({"gas": "catsel19"}) == ["gas"]
+
+
+def test_a_sweep_blended_across_footings_is_not_drawn() -> None:
+    """gr489162 (jo486844 on qu164903): the mace:large job's stored sweep
+    pooled mace:medium anchors recorded under a different correction
+    footing. That footing's map must not draw the blend (ruling q2) — no
+    regions, no bands, the reason named — and with nothing applied it is
+    labelled uncorrected, not "corrected footing" (gr486949 comment 2)."""
+    blended = _sweep(
+        {
+            "mace:large": _payload("mace:large", {"H": [-0.02]}),
+            "mace:medium": _payload("mace:medium", {"H": [-0.05]}),
+        }
+    )
+    m = pm.build_map([_job(486844, "mace:large", blended, corrections=_corr(None))])
+    assert m["regions"] == [] and m["boundaries"] == []
+    assert m["U_RHE_window"] == blended["U_RHE_window"]
+    note = next(i for i in m["incomplete"] if "another footing" in i)
+    assert "jo486844" in note and "mace:medium" in note
+    assert m["uncorrected"] is True
+    assert any("none applied" in i for i in m["incomplete"])
+    assert "uncorrected (none applied)" in pm.render_map(m)
+
+
+def test_a_sweep_stamped_with_another_footing_key_is_not_drawn() -> None:
+    sweep = _sweep({"m": _payload("m", {"H": [-0.02]})})
+    sweep["footing_key"] = pm.correction_footing(_corr("m"))
+    ok = pm.build_map([_job(1, "m", sweep, corrections=_corr("m"))])
+    assert ok["regions"] and not any("another footing" in i for i in ok["incomplete"])
+    off = pm.build_map([_job(1, "m", sweep, corrections=_corr(None))])
+    assert off["regions"] == []
+    assert any("another footing" in i for i in off["incomplete"])
+
+
+def test_models_corrected_alike_share_one_map(store: Store, hub: Hub) -> None:
+    """Two models corrected under the same table are one footing — one map
+    with a model-form band — even though each records its own fitted set."""
+    st = _structure(store, hub)
+    s = _sweep(
+        {
+            "mace:medium": _payload("mace:medium", {"H": [-0.02]}),
+            "mace:small": _payload("mace:small", {"H": [-0.03]}),
+        }
+    )
+    _scan_ref(
+        store,
+        parent_id=st.id,
+        model="mace:medium",
+        status="succeeded",
+        corrections=_corr("mace:medium"),
+    )
+    _scan_ref(
+        store,
+        parent_id=st.id,
+        model="mace:small",
+        status="succeeded",
+        sweep=s,
+        corrections=_corr("mace:small"),
+    )
+    (mp,) = pm.maps_for_structure(store, st)
+    assert mp["models"] == ["mace:medium", "mace:small"] and mp["n_models"] == 2
+    assert mp["regions"] and mp["uncorrected"] is False
+
+
 def test_structure_view_renders_the_map_and_the_no_anchor_state(
     store: Store, hub: Hub
 ) -> None:
