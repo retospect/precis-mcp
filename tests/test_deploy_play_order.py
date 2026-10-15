@@ -207,7 +207,7 @@ def test_play_38_installs_then_skips_a_second_migrate() -> None:
     ]
     assert imports == ["install.yml", "migrate.yml"]
     install = _load(WEB_TASKS / "install.yml")
-    assert any("precis-mcp[web,pcb,estimate]" in t["name"] for t in install)
+    assert any("precis-mcp[web,estimate]" in t["name"] for t in install)
     (migrate,) = _load(WEB_TASKS / "migrate.yml")
     assert migrate["name"] == "Apply pending precis DB migrations"
     assert any("precis_db_migrated" in w for w in migrate["when"])

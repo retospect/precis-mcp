@@ -3345,6 +3345,18 @@ _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
         "plot kind (declarative renderer)",
         "pip install --force-reinstall 'precis-mcp'",
     ),
+    (
+        "semanticscholar",
+        "semanticscholar",
+        "paper acquire / stub enrich (Semantic Scholar lookups)",
+        "pip install --force-reinstall 'precis-mcp'",
+    ),
+    (
+        "habanero",
+        "habanero",
+        "provenance / paper citation resolution (Crossref client)",
+        "pip install --force-reinstall 'precis-mcp'",
+    ),
 )
 
 

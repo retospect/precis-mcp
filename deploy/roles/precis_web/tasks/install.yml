@@ -17,7 +17,7 @@
 # torch-free) — lives in the shared MCP venv so get(kind='estimate') serves
 # from the gateway; without the extra the handler boots but every get()
 # errors "install [estimate]" (the extra-gap class).
-- name: Install precis-mcp[web,pcb,estimate] into shared MCP venv
+- name: Install precis-mcp[web,estimate] into shared MCP venv
   # Gated on the redeploy pre-flight (`precis_deploy_changed`, step 0b) so a
   # same-sha redeploy skips the uv resolve; undefined → install (fail-safe for
   # a standalone 38/14 run). `-e precis_force_install=true` overrides.
@@ -38,10 +38,14 @@
   # get(kind='calc') automatically. See pyproject's "Deterministic, pure-
   # code, no-API tool deps" note.
   #
-  # The ``pcb`` extra (easyeda2kicad) backs the kind='pcb' Flow-B footprint
-  # conversion (ADR 0042 §5) — the shared venv runs both precis-web and the
-  # agent worker that drive PCB export/route. The Freerouting jar it routes
-  # with is installed separately by the precis_eda role.
+  # No ``pcb`` extra: it was deleted from pyproject (2026-08-27; Flow B
+  # parses EasyEDA JSON itself), and uv silently ignores an unknown extra.
+  # The Freerouting jar is installed separately by the precis_eda role.
+  #
+  # Paper acquire, stub enrich and the provenance kind need the
+  # semanticscholar + habanero clients; those are core deps since
+  # gr489310 (they sat in ``[paper]``, which this venv never installs).
+  # tests/test_gateway_deps.py pins this extra set.
   #
   # The web/news fetch deps (trafilatura + feedparser + wolframalpha +
   # youtube-transcript-api + httpx) are core since the 2026-08-16 extras
@@ -52,7 +56,7 @@
       {{ '' if _precis_web_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
       --overrides /opt/precis/overrides.txt \
-      'precis-mcp[web,pcb,estimate] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+      'precis-mcp[web,estimate] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so

@@ -139,6 +139,15 @@ dependencies = [
     # Same reasoning as ``pysbd`` above: a top-of-module import on an
     # always-on path is a core dep, not an extra.
     "tenacity>=8.0",
+    # Semantic Scholar + Crossref REST clients: pure-Python and small, but
+    # imported on gateway-served paths (paper acquire, stub_rank enrich,
+    # the provenance kind, citation resolution). Inside ``[paper]`` they
+    # never reached the shared MCP venv, which installs
+    # ``[web,pcb,estimate]`` only, so every acquire there minted
+    # unverified and the provenance kind stayed dark (gr489310). Same
+    # reasoning as ``tenacity`` above.
+    "semanticscholar>=0.8",
+    "habanero>=2.0",
     # Deterministic number verbalization for the narration (TTS) path
     # (``precis.draft.verbalize``) — Kokoro/espeak mispronounces raw digits
     # ("1,000" splits into "one zero zero zero" on the comma), so the
@@ -301,8 +310,8 @@ paper = [
     "fonttools>=4.40",      # embedded-font outlines for glyph recovery
                             # (ingest/glyph_outline.py, gr228652); also
                             # pulled in by matplotlib.
-    "habanero>=2.0",        # CrossRef REST client
-    "semanticscholar>=0.8", # Semantic Scholar REST client
+    # NOTE: ``habanero`` and ``semanticscholar`` moved to the core
+    # ``dependencies`` block (gr489310): gateway-served paths import them.
     # NOTE: ``tenacity`` moved to the core ``dependencies`` block — its
     # ``@retry`` decorators run at import of ``workers/fetch_oa`` (on the
     # always-on ``cli.main`` parser-build path), so gating it here broke
