@@ -172,8 +172,15 @@ def window_measures(
     her_margin_eV: float = 0.0,
     reset_eta_eV: float | None = None,
     reset_ea_floor_eV: float = 0.0,
+    pcet_routes: Any = None,
 ) -> dict[str, Any]:
     """The window robustness + Shapley scalars for one candidate.
+
+    The window, Shapley, HER margin and bottleneck read each route in the
+    one-rung CHE convention (``pcet_routes``, matched to ``routes`` by
+    name; ``staircase_masks.pcet_route`` when not given, gr489164); the
+    reset contour keeps the engine's split rungs, where the thermal
+    barriers live.
 
     ``resting_map`` is a ``staircase_masks.RestingMap`` (or a duck-typed
     equivalent — this function never imports the plugin for types, only
@@ -220,6 +227,9 @@ def window_measures(
         return out
     if resting_map is None:
         notes.append("no resting map")
+    pcet_by_name = {
+        getattr(p, "name", None): p for p in (pcet_routes or []) if p is not None
+    }
     live = [r for r in (routes or []) if getattr(r, "rungs", None)]
     if not live:
         notes.append("no main routes")
@@ -245,22 +255,21 @@ def window_measures(
         except (TypeError, AttributeError):
             return route
 
-    best: tuple[Any, Any, Any, Any] | None = None
+    best: tuple[Any, Any, Any, Any, Any] | None = None
     for route in live:
+        pcet = _with_eps(pcet_by_name.get(route.name) or sm.pcet_route(route))
         route = _with_eps(route)
         win = sm.operating_window(
-            resting_map, route, None, her=her, her_margin=her_margin_eV
+            resting_map, pcet, None, her=her, her_margin=her_margin_eV
         )
         red = sm.reduce_field(
-            sm.shapley_field(
-                resting_map, route, None, her=her, her_margin=her_margin_eV
-            )
+            sm.shapley_field(resting_map, pcet, None, her=her, her_margin=her_margin_eV)
         )
         score = (win.fraction, win.area)
         if best is None or score > best[0]:
-            best = (score, route, win, red)
+            best = (score, route, pcet, win, red)
     assert best is not None  # live is non-empty (checked above)
-    _, route, win, red = best
+    _, route, pcet, win, red = best
     if len(live) > 1:
         notes.append(f"{len(live)} routes — window of {route.name!r} is largest")
 
@@ -314,9 +323,9 @@ def window_measures(
     u_best = _centroid_u(resting_map, weights, total, notes)
     if her is not None:
         out["her_margin_at_Uopt"] = float(
-            her.limiting_g(u_best) - route.limiting_g(u_best)
+            her.limiting_g(u_best) - pcet.limiting_g(u_best)
         )
-    rung = max(route.rungs, key=lambda r: float(r.delta_g(u_best)))
+    rung = max(pcet.rungs, key=lambda r: float(r.delta_g(u_best)))
     out["bottleneck_rung"] = rung.name
     if contour is not None:
         verdict = contour.at(u_best, float(resting_map.ph[0]))
@@ -563,7 +572,7 @@ def stamp_window_measures(
     if resting is None:
         notes.append("map carries no U_RHE_window/grid — no resting map")
 
-    routes = her = None
+    routes = her = pcet_routes = None
     if pathway_id is None:
         notes.append("no pathway ref for this candidate — no staircase routes")
     else:
@@ -574,6 +583,7 @@ def stamp_window_measures(
             try:
                 sr = routes_mod.routes_for_pathway(store, pathway_id)
                 routes = list(getattr(sr, "routes", None) or [])
+                pcet_routes = list(getattr(sr, "pcet_routes", None) or [])
                 her = getattr(sr, "her", None)
                 missing = getattr(sr, "missing", None) or []
                 if missing:
@@ -596,6 +606,7 @@ def stamp_window_measures(
         her_margin_eV=_num(cfg.get("her_margin_eV")) or 0.0,
         reset_eta_eV=_num(cfg.get("reset_eta_eV")),
         reset_ea_floor_eV=_num(cfg.get("reset_ea_floor_eV")) or 0.0,
+        pcet_routes=pcet_routes,
     )
     all_notes = notes + list(out.get("window_notes") or [])
 

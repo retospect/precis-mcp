@@ -370,6 +370,17 @@ never mixed in one contract.
 - **Open question 1 (activity vs stability), resolved:** rung masks carry a
   tolerance ε on ΔG; a TOF floor is a separate objective, not folded into
   the window.
+
+## Ruling 2026-10-15 (gr489164 defect 1)
+
+- The mask reads each route in the one-rung CHE convention: an H*
+  adsorption rung and the hydrogenation that consumes it are one PCET rung
+  (`staircase_masks.pcet_route`) for viability, the window, Shapley and
+  U_L; the reset contour and the rendered staircase keep the engine's
+  split. Chemical (n_e = 0) rungs default to ε = 0.3 eV
+  (`DEFAULT_EPS_EV`; Reto: "I like the 0.3 eV thing"), electrochemical
+  rungs to 0; `window_objectives.eps_eV` still overrides.
+
 - **Open, for the pillar review:** paper-date collision. This item's
   Fe-doped Pd PoC (~Nov 2026) and the catpath trust-demo paper
   (`threads/chemistry.md`) both sit under qu459585's one-paper-a-month.

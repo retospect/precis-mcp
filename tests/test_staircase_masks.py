@@ -101,9 +101,11 @@ def test_n_e_and_eps_move_the_boundary() -> None:
         sm.rung_mask(_rung("tol", -0.2, eps_eV=0.3), r).forbidden,
         _cols(r, 0.75, 1.0),
     )
-    # chemical rung (n_e = 0): viable everywhere or nowhere
+    # chemical rung (n_e = 0): viable everywhere or nowhere, with the
+    # 0.3 eV thermal tolerance as the line (gr489164)
     assert sm.rung_mask(_rung("ch", 0.0, n_e=0, kind="chemical"), r).viable.all()
-    assert not sm.rung_mask(_rung("ch", 0.1, n_e=0, kind="chemical"), r).viable.any()
+    assert sm.rung_mask(_rung("ch", 0.3, n_e=0, kind="chemical"), r).viable.all()
+    assert not sm.rung_mask(_rung("ch", 0.31, n_e=0, kind="chemical"), r).viable.any()
 
 
 def test_sigma_marks_the_uncertain_band_without_moving_the_mask() -> None:

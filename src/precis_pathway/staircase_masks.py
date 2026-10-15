@@ -72,10 +72,16 @@ import numpy as np
 
 from .surface_pourbaix import PREFAC_V, u_she
 
-#: Default viability tolerance (eV): a step must be thermodynamically
-#: allowed — ``delta_g <= 0``. Positive eps lets slightly endergonic
-#: steps count as viable (2·kBT at 298 K is about 0.05 eV).
-DEFAULT_EPS_EV = 0.0
+#: Default viability tolerance (eV) for a chemical (``n_e = 0``) rung: a
+#: U-flat step this far uphill is still thermally surmountable at room
+#: temperature, so it never masks the whole grid on its own (gr489164,
+#: Reto 2026-10-15: "I like the 0.3 eV thing"). A quest's
+#: ``window_objectives.eps_eV`` or a rung's own ``eps_eV`` overrides it.
+DEFAULT_EPS_EV = 0.3
+
+#: Default viability tolerance (eV) for an electrochemical rung: it must
+#: be downhill at U, ``delta_g <= 0`` — U itself is the lever.
+DEFAULT_EPS_ELECTRO_EV = 0.0
 
 #: Largest rung count for exact ``2^N`` Shapley enumeration; above it the
 #: global values come from seeded permutation sampling with a warning.
@@ -122,7 +128,9 @@ class Rung:
 
     @property
     def eps(self) -> float:
-        return DEFAULT_EPS_EV if self.eps_eV is None else float(self.eps_eV)
+        if self.eps_eV is not None:
+            return float(self.eps_eV)
+        return DEFAULT_EPS_EV if self.n_e == 0 else DEFAULT_EPS_ELECTRO_EV
 
     def delta_g(self, u_rhe: Any) -> np.ndarray:
         """``delta_g0 + n_e * U_RHE`` in eV; pH-flat on the RHE scale.
@@ -174,6 +182,81 @@ class Route:
         if not self.rungs:
             return np.full(u.shape, -math.inf)
         return np.maximum.reduce([r.delta_g(u) for r in self.rungs])
+
+
+def _ends(name: str) -> tuple[str, str] | None:
+    """``(reactant, product)`` of an ``"a->b"`` rung name, else ``None``."""
+    a, sep, b = name.partition("->")
+    return (a, b) if sep and a and b else None
+
+
+def _n_h_star(state: str) -> int:
+    """Adsorbed H atoms in a state name — the ``H`` terms of ``"X+H+H"``."""
+    return state.split("+").count("H")
+
+
+def pcet_route(route: Route) -> Route:
+    """``route`` in the one-rung CHE convention: each electrochemical H*
+    adsorption rung (``X -> X+H``, the engine's Volmer half) merged with
+    the chemical rung right after it that consumes that H*
+    (``X+H -> XH``) into one PCET rung ``X -> XH`` — ``delta_g0`` and
+    ``n_e`` summed (gr489164; Nørskov CHE, 10.1021/jp047349j).
+
+    The engine splits every proton-coupled step so the hydrogenation can
+    carry a thermal barrier; for viability that split puts all the U
+    dependence into H* binding and leaves the chemistry U-flat, so one
+    uphill hydrogenation masks the whole grid. Masks, the operating
+    window and ``U_L`` read this route; the reset contour and the
+    rendered staircase keep the split (the barrier lives on the chemical
+    half). A merged rung's ``sigma`` is the hypot of its halves' — an
+    upper bound, since they share the ``X+H`` state; it carries no
+    ``bep``/``barrier_ea``. A route with nothing to merge comes back
+    unchanged."""
+    out: list[Rung] = []
+    rungs = route.rungs
+    i = 0
+    while i < len(rungs):
+        r = rungs[i]
+        nxt = rungs[i + 1] if i + 1 < len(rungs) else None
+        e1 = _ends(r.name)
+        e2 = None if nxt is None else _ends(nxt.name)
+        if (
+            nxt is not None
+            and e1 is not None
+            and e2 is not None
+            and r.n_e > 0
+            and nxt.n_e == 0
+            and nxt.kind == "chemical"
+            and e1[1] == e2[0]
+            and _n_h_star(e1[1]) > _n_h_star(e1[0])
+            and _n_h_star(e2[1]) < _n_h_star(e2[0])
+        ):
+            sig = [x.sigma for x in (r, nxt) if x.sigma is not None]
+            out.append(
+                Rung(
+                    name=f"{e1[0]}->{e2[1]}",
+                    delta_g0=r.delta_g0 + nxt.delta_g0,
+                    n_e=r.n_e,
+                    kind=r.kind,
+                    eps_eV=r.eps_eV,
+                    sigma=math.hypot(*sig) if sig else None,
+                )
+            )
+            i += 2
+            continue
+        out.append(r)
+        i += 1
+    if len(out) == len(rungs):
+        return route
+    return Route(name=route.name, rungs=tuple(out))
+
+
+def u_limiting(route: Route) -> float | None:
+    """``U_L = -max(delta_g0 / n_e)`` over the route's reduction rungs —
+    the most positive U at which every one of them is downhill. ``None``
+    without a reduction rung."""
+    vals = [r.delta_g0 / r.n_e for r in route.rungs if r.n_e > 0]
+    return -max(vals) if vals else None
 
 
 def _axis_weights(axis: np.ndarray) -> np.ndarray:
@@ -735,6 +818,7 @@ def render_text(sf: ShapleyField, red: Reductions) -> str:
 
 
 __all__ = [
+    "DEFAULT_EPS_ELECTRO_EV",
     "DEFAULT_EPS_EV",
     "DEFAULT_SHAPLEY_SAMPLES",
     "EXACT_SHAPLEY_MAX_RUNGS",
@@ -750,9 +834,11 @@ __all__ = [
     "Window",
     "her_mask",
     "operating_window",
+    "pcet_route",
     "reduce_field",
     "render_text",
     "rung_mask",
     "shapley_field",
+    "u_limiting",
     "u_she",
 ]

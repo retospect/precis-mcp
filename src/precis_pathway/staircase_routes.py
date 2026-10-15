@@ -41,11 +41,11 @@ fabricating rungs. Pure: numpy + dataclasses, no engine import, no DB —
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from . import reset_contour
-from .staircase_masks import PREFAC_V, Route, Rung, u_she
+from .staircase_masks import PREFAC_V, Route, Rung, pcet_route, u_limiting, u_she
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -68,9 +68,17 @@ class StaircaseRoutes:
     ``delta_g(U)`` reproduces them anyway. ``footing`` — engine version,
     corrections record, ``network_digest``: the one-map-one-footing
     provenance the view must show. ``missing`` names what the results
-    lack, so an honest "older engine" beats an invented staircase."""
+    lack, so an honest "older engine" beats an invented staircase.
+
+    ``pcet_routes`` — the same routes in the one-rung CHE convention
+    (:func:`~precis_pathway.staircase_masks.pcet_route`, gr489164),
+    index-aligned with ``routes``: the viability mask, the operating
+    window and ``route_stats[...]["U_L"]`` read these; the reset contour
+    and the rendered rungs keep the engine's split ``routes``. The
+    engine's own split-convention ``U_L`` stays as ``U_L_engine``."""
 
     routes: list[Route] = field(default_factory=list)
+    pcet_routes: list[Route] = field(default_factory=list)
     her: Route | None = None
     footing: dict[str, Any] = field(default_factory=dict)
     missing: list[str] = field(default_factory=list)
@@ -159,6 +167,25 @@ def _kinetics(edge_record: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _pcet_with_sigma(results: dict[str, Any], route: Route) -> Route:
+    """:func:`pcet_route` with each merged rung's ``sigma`` re-read from
+    its true endpoints (``hypot(std_X, std_XH)``) instead of the bound
+    the pure merge carries."""
+    pcet = pcet_route(route)
+    if pcet is route:
+        return route
+    split = {rg.name for rg in route.rungs}
+    return Route(
+        name=pcet.name,
+        rungs=tuple(
+            rg
+            if rg.name in split
+            else replace(rg, sigma=_sigma(results, *rg.name.split("->", 1)))
+            for rg in pcet.rungs
+        ),
+    )
+
+
 def routes_from_results(
     results: dict[str, Any] | None, *, engine_version: str | None = None
 ) -> StaircaseRoutes:
@@ -178,6 +205,7 @@ def routes_from_results(
         missing.append("network_digest absent — footing provenance-incomplete")
 
     routes: list[Route] = []
+    pcet_routes: list[Route] = []
     route_stats: dict[str, dict[str, Any]] = {}
     scale: str | None = None
     T: float | None = None
@@ -220,9 +248,13 @@ def routes_from_results(
                     )
                 )
             name = str(pr.get("route") or f"route {i + 1}")
-            routes.append(Route(name=name, rungs=tuple(rungs)))
+            route = Route(name=name, rungs=tuple(rungs))
+            pcet = _pcet_with_sigma(r, route)
+            routes.append(route)
+            pcet_routes.append(pcet)
             route_stats[name] = {
-                "U_L": _num(pr.get("U_L")),
+                "U_L": u_limiting(pcet),
+                "U_L_engine": _num(pr.get("U_L")),
                 "U_opt": _num(pr.get("U_opt")),
                 "span_at_UL": _num(pr.get("span_at_UL")),
             }
@@ -268,6 +300,7 @@ def routes_from_results(
             )
     return StaircaseRoutes(
         routes=routes,
+        pcet_routes=pcet_routes,
         her=her_route,
         footing=footing,
         missing=missing,
@@ -380,8 +413,9 @@ def render_staircase(
         lines.append(
             f"route {i + 1} of {len(sr.routes)}: {route.name}"
             + (
-                f"  — U_L {_fmt_v(stats.get('U_L'))}, U_opt "
-                f"{_fmt_v(stats.get('U_opt'))}, span_at_UL "
+                f"  — U_L {_fmt_v(stats.get('U_L'))} (one PCET rung per "
+                f"H+ + e-; engine split {_fmt_v(stats.get('U_L_engine'))}), "
+                f"U_opt {_fmt_v(stats.get('U_opt'))}, span_at_UL "
                 + (
                     f"{stats['span_at_UL']:.3f} eV"
                     if stats.get("span_at_UL") is not None
@@ -405,9 +439,16 @@ def render_staircase(
                 f"ΔG0 {rung.delta_g0:+.3f}  ΔG(U) {dg:+.3f} eV{sig}"
             )
         assert best is not None
+        pcet = sr.pcet_routes[i] if i < len(sr.pcet_routes) else route
         lines.append(
             f"  limiting rung at U = {u:+.2f} V: {best[0].name} (ΔG {best[1]:+.3f} eV)"
         )
+        if pcet is not route:
+            top = max(pcet.rungs, key=lambda rg: float(rg.delta_g(u)))
+            lines.append(
+                f"  limiting PCET rung (H* adsorption + hydrogenation as one "
+                f"step): {top.name} (ΔG {float(top.delta_g(u)):+.3f} eV)"
+            )
         edges = reset_contour.reset_edges(route)
         worst = min(edges, key=lambda e: float(e.slack(u)))
         slack = float(worst.slack(u))
@@ -417,13 +458,14 @@ def render_staircase(
                 f"guaranteed — every edge downhill by its margin "
                 f"(limiting {worst.rung.name}, slack {slack:+.3f} eV)"
             )
-        elif all(float(rung.delta_g(u)) <= rung.eps for rung in route.rungs):
+        elif all(float(rung.delta_g(u)) <= rung.eps for rung in pcet.rungs):
             verdict = (
                 f"hysteretic — {worst.rung.name} is {-slack:.3f} eV "
                 "short of its reset margin"
             )
         else:
-            verdict = f"outside the viable window ({worst.rung.name} uphill)"
+            blocking = max(pcet.rungs, key=lambda rg: float(rg.delta_g(u)) - rg.eps)
+            verdict = f"outside the viable window ({blocking.name} uphill)"
         lines.append(
             f"  reset (slice 7): {verdict} "
             f"[estimators: {est}, η {reset_contour.DEFAULT_ETA_EV:g} eV]"
@@ -451,7 +493,8 @@ def render_staircase(
         for i, route in enumerate(sr.routes):
             if not route.rungs:
                 continue
-            margin = her_g - float(route.limiting_g(u))
+            pcet = sr.pcet_routes[i] if i < len(sr.pcet_routes) else route
+            margin = her_g - float(pcet.limiting_g(u))
             lines.append(
                 f"  route {i + 1} HER margin at U: {margin:+.3f} eV "
                 "(limiting_HER − limiting_route; positive = the route "

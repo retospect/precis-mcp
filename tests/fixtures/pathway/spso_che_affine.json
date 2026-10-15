@@ -1,0 +1,1074 @@
+{
+ "pw483780_st479058": {
+  "U_L": -0.06103385415740359,
+  "che_affine": {
+   "scale": "RHE",
+   "T": 298.15,
+   "pH": null,
+   "per_route": [
+    {
+     "route": "* -> NO@N -> NO+H -> HNO -> HNO+H -> H2NO -> NH2+O -> NH2+O+H -> NH3+O -> O -> O+H -> OH -> OH+H -> H2O",
+     "U_L": 0.27984202251214363,
+     "U_opt": -2.3247844588372635,
+     "span_at_UL": 1.8820440605068627,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.306237,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->HNO",
+       "delta_g0": 0.544419,
+       "n_e": 0
+      },
+      {
+       "edge": "HNO->HNO+H",
+       "delta_g0": -0.279842,
+       "n_e": 1
+      },
+      {
+       "edge": "HNO+H->H2NO",
+       "delta_g0": 0.124968,
+       "n_e": 0
+      },
+      {
+       "edge": "H2NO->NH2+O",
+       "delta_g0": -0.416452,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2+O->NH2+O+H",
+       "delta_g0": -0.367755,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+O+H->NH3+O",
+       "delta_g0": -0.820907,
+       "n_e": 0
+      },
+      {
+       "edge": "NH3+O->O",
+       "delta_g0": 1.796652,
+       "n_e": 0
+      },
+      {
+       "edge": "O->O+H",
+       "delta_g0": -0.320054,
+       "n_e": 1
+      },
+      {
+       "edge": "O+H->OH",
+       "delta_g0": -0.515538,
+       "n_e": 0
+      },
+      {
+       "edge": "OH->OH+H",
+       "delta_g0": -0.351761,
+       "n_e": 1
+      },
+      {
+       "edge": "OH+H->H2O",
+       "delta_g0": -0.404172,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+H -> HNO -> HNO+H -> HNOH -> NH+OH -> NH+OH+H -> NH+H2O -> NH -> NH+H -> NH2 -> NH2+H -> NH3",
+     "U_L": 0.27984202251214363,
+     "U_opt": -0.050985664367593074,
+     "span_at_UL": 2.1481000601366578,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.306237,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->HNO",
+       "delta_g0": 0.544419,
+       "n_e": 0
+      },
+      {
+       "edge": "HNO->HNO+H",
+       "delta_g0": -0.279842,
+       "n_e": 1
+      },
+      {
+       "edge": "HNO+H->HNOH",
+       "delta_g0": -0.234149,
+       "n_e": 0
+      },
+      {
+       "edge": "HNOH->NH+OH",
+       "delta_g0": -0.731784,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+OH->NH+OH+H",
+       "delta_g0": -0.296258,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+OH+H->NH+H2O",
+       "delta_g0": -0.762033,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+H2O->NH",
+       "delta_g0": -0.31262,
+       "n_e": 0
+      },
+      {
+       "edge": "NH->NH+H",
+       "delta_g0": -0.284891,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+H->NH2",
+       "delta_g0": -0.122874,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.311731,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.602154,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+H -> HNO -> HNO+H -> HNOH -> NH+OH -> NH+OH+H -> NH2+OH -> NH2+OH+H -> NH2+H2O -> NH2 -> NH2+H -> NH3",
+     "U_L": 0.27984202251214363,
+     "U_opt": -0.03765979527922377,
+     "span_at_UL": 2.1481000601366578,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.306237,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->HNO",
+       "delta_g0": 0.544419,
+       "n_e": 0
+      },
+      {
+       "edge": "HNO->HNO+H",
+       "delta_g0": -0.279842,
+       "n_e": 1
+      },
+      {
+       "edge": "HNO+H->HNOH",
+       "delta_g0": -0.234149,
+       "n_e": 0
+      },
+      {
+       "edge": "HNOH->NH+OH",
+       "delta_g0": -0.731784,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+OH->NH+OH+H",
+       "delta_g0": -0.296258,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+OH+H->NH2+OH",
+       "delta_g0": -0.198323,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2+OH->NH2+OH+H",
+       "delta_g0": -0.376372,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+OH+H->NH2+H2O",
+       "delta_g0": -0.545319,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2+H2O->NH2",
+       "delta_g0": -0.362406,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.311731,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.602154,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> NH+O -> NH+O+H -> NH2+O -> NH2+O+H -> NH3+O -> O -> O+H -> OH -> OH+H -> H2O",
+     "U_L": -0.06103385415740359,
+     "U_opt": -3.4501495274686653,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->NH+O",
+       "delta_g0": -0.893795,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+O->NH+O+H",
+       "delta_g0": -0.127313,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+O+H->NH2+O",
+       "delta_g0": -0.175697,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2+O->NH2+O+H",
+       "delta_g0": -0.367755,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+O+H->NH3+O",
+       "delta_g0": -0.820907,
+       "n_e": 0
+      },
+      {
+       "edge": "NH3+O->O",
+       "delta_g0": 1.796652,
+       "n_e": 0
+      },
+      {
+       "edge": "O->O+H",
+       "delta_g0": -0.320054,
+       "n_e": 1
+      },
+      {
+       "edge": "O+H->OH",
+       "delta_g0": -0.515538,
+       "n_e": 0
+      },
+      {
+       "edge": "OH->OH+H",
+       "delta_g0": -0.351761,
+       "n_e": 1
+      },
+      {
+       "edge": "OH+H->H2O",
+       "delta_g0": -0.404172,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> N+OH -> N+OH+H -> N+H2O -> N -> N+H -> NH -> NH+H -> NH2 -> NH2+H -> NH3",
+     "U_L": -0.06103385415740359,
+     "U_opt": -2.5122600469725374,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->N+OH",
+       "delta_g0": -1.070296,
+       "n_e": 0
+      },
+      {
+       "edge": "N+OH->N+OH+H",
+       "delta_g0": -0.211059,
+       "n_e": 1
+      },
+      {
+       "edge": "N+OH+H->N+H2O",
+       "delta_g0": -0.834617,
+       "n_e": 0
+      },
+      {
+       "edge": "N+H2O->N",
+       "delta_g0": -0.324907,
+       "n_e": 0
+      },
+      {
+       "edge": "N->N+H",
+       "delta_g0": -0.281408,
+       "n_e": 1
+      },
+      {
+       "edge": "N+H->NH",
+       "delta_g0": -0.519878,
+       "n_e": 0
+      },
+      {
+       "edge": "NH->NH+H",
+       "delta_g0": -0.284891,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+H->NH2",
+       "delta_g0": -0.122874,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.311731,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.602154,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> N+OH -> N+OH+H -> NH+OH -> NH+OH+H -> NH+H2O -> NH -> NH+H -> NH2 -> NH2+H -> NH3",
+     "U_L": -0.06103385415740359,
+     "U_opt": -2.2989275434481895,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->N+OH",
+       "delta_g0": -1.070296,
+       "n_e": 0
+      },
+      {
+       "edge": "N+OH->N+OH+H",
+       "delta_g0": -0.211059,
+       "n_e": 1
+      },
+      {
+       "edge": "N+OH+H->NH+OH",
+       "delta_g0": -0.589898,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+OH->NH+OH+H",
+       "delta_g0": -0.296258,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+OH+H->NH+H2O",
+       "delta_g0": -0.762033,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+H2O->NH",
+       "delta_g0": -0.31262,
+       "n_e": 0
+      },
+      {
+       "edge": "NH->NH+H",
+       "delta_g0": -0.284891,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+H->NH2",
+       "delta_g0": -0.122874,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.311731,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.602154,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> N+OH -> N+OH+H -> NH+OH -> NH+OH+H -> NH2+OH -> NH2+OH+H -> NH2+H2O -> NH2 -> NH2+H -> NH3",
+     "U_L": -0.06103385415740359,
+     "U_opt": -2.2806610184515206,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->N+OH",
+       "delta_g0": -1.070296,
+       "n_e": 0
+      },
+      {
+       "edge": "N+OH->N+OH+H",
+       "delta_g0": -0.211059,
+       "n_e": 1
+      },
+      {
+       "edge": "N+OH+H->NH+OH",
+       "delta_g0": -0.589898,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+OH->NH+OH+H",
+       "delta_g0": -0.296258,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+OH+H->NH2+OH",
+       "delta_g0": -0.198323,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2+OH->NH2+OH+H",
+       "delta_g0": -0.376372,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+OH+H->NH2+H2O",
+       "delta_g0": -0.545319,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2+H2O->NH2",
+       "delta_g0": -0.362406,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.311731,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.602154,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> NH+O -> NH+O+H -> NH+OH -> NH+OH+H -> NH+H2O -> NH -> NH+H -> NH2 -> NH2+H -> NH3",
+     "U_L": -0.06103385415740359,
+     "U_opt": -2.449814998346219,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->NH+O",
+       "delta_g0": -0.893795,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+O->NH+O+H",
+       "delta_g0": -0.127313,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+O+H->NH+OH",
+       "delta_g0": -0.850146,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+OH->NH+OH+H",
+       "delta_g0": -0.296258,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+OH+H->NH+H2O",
+       "delta_g0": -0.762033,
+       "n_e": 0
+      },
+      {
+       "edge": "NH+H2O->NH",
+       "delta_g0": -0.31262,
+       "n_e": 0
+      },
+      {
+       "edge": "NH->NH+H",
+       "delta_g0": -0.284891,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+H->NH2",
+       "delta_g0": -0.122874,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.311731,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.602154,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> N+OH -> N+OH+H -> N+H2O -> N -> N+NO -> N+N+O -> N2+O -> O~n2",
+     "U_L": -0.06103385415740359,
+     "U_opt": -3.1683571573854055,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->N+OH",
+       "delta_g0": -1.070296,
+       "n_e": 0
+      },
+      {
+       "edge": "N+OH->N+OH+H",
+       "delta_g0": -0.211059,
+       "n_e": 1
+      },
+      {
+       "edge": "N+OH+H->N+H2O",
+       "delta_g0": -0.834617,
+       "n_e": 0
+      },
+      {
+       "edge": "N+H2O->N",
+       "delta_g0": -0.324907,
+       "n_e": 0
+      },
+      {
+       "edge": "N->N+NO",
+       "delta_g0": -0.37688,
+       "n_e": 0
+      },
+      {
+       "edge": "N+NO->N+N+O",
+       "delta_g0": 1.13625,
+       "n_e": 0
+      },
+      {
+       "edge": "N+N+O->N2+O",
+       "delta_g0": -1.615378,
+       "n_e": 0
+      },
+      {
+       "edge": "N2+O->O~n2",
+       "delta_g0": -0.38118,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+O+H -> N+OH -> N+OH+H -> N+H2O -> N -> N+NO -> N2O -> *~n2o",
+     "U_L": -0.06103385415740359,
+     "U_opt": -3.3841662565613033,
+     "span_at_UL": 1.9589206282166742,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.802627,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+O+H",
+       "delta_g0": 0.061034,
+       "n_e": 1
+      },
+      {
+       "edge": "N+O+H->N+OH",
+       "delta_g0": -1.070296,
+       "n_e": 0
+      },
+      {
+       "edge": "N+OH->N+OH+H",
+       "delta_g0": -0.211059,
+       "n_e": 1
+      },
+      {
+       "edge": "N+OH+H->N+H2O",
+       "delta_g0": -0.834617,
+       "n_e": 0
+      },
+      {
+       "edge": "N+H2O->N",
+       "delta_g0": -0.324907,
+       "n_e": 0
+      },
+      {
+       "edge": "N->N+NO",
+       "delta_g0": -0.37688,
+       "n_e": 0
+      },
+      {
+       "edge": "N+NO->N2O",
+       "delta_g0": -0.779519,
+       "n_e": 0
+      },
+      {
+       "edge": "N2O->*~n2o",
+       "delta_g0": 1.495962,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+NO -> ONNO -> N2O+O -> O~n2o",
+     "U_L": null,
+     "U_opt": 0.0,
+     "span_at_UL": null,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+NO",
+       "delta_g0": -1.136445,
+       "n_e": 0
+      },
+      {
+       "edge": "NO+NO->ONNO",
+       "delta_g0": -0.115902,
+       "n_e": 0
+      },
+      {
+       "edge": "ONNO->N2O+O",
+       "delta_g0": 1.605186,
+       "n_e": 0
+      },
+      {
+       "edge": "N2O+O->O~n2o",
+       "delta_g0": 0.274324,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+H -> HNO -> HNO+H -> H2NO -> H2NO+H -> NH2OH -> *~nh2oh",
+     "U_L": 0.27984202251214363,
+     "U_opt": -2.2374920071048097,
+     "span_at_UL": 2.149912927909183,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -1.847947,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.306237,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->HNO",
+       "delta_g0": 0.544419,
+       "n_e": 0
+      },
+      {
+       "edge": "HNO->HNO+H",
+       "delta_g0": -0.279842,
+       "n_e": 1
+      },
+      {
+       "edge": "HNO+H->H2NO",
+       "delta_g0": 0.124968,
+       "n_e": 0
+      },
+      {
+       "edge": "H2NO->H2NO+H",
+       "delta_g0": -0.51509,
+       "n_e": 1
+      },
+      {
+       "edge": "H2NO+H->NH2OH",
+       "delta_g0": -0.619809,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2OH->*~nh2oh",
+       "delta_g0": 2.033722,
+       "n_e": 0
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "pw483766_st261823": {
+  "U_L": 0.18435665482457786,
+  "che_affine": {
+   "scale": "RHE",
+   "T": 298.15,
+   "pH": null,
+   "per_route": [
+    {
+     "route": "* -> NO@N -> N+O -> O+H -> OH -> OH+H -> H2O",
+     "U_L": 0.33505986224025275,
+     "U_opt": -0.3610998197921651,
+     "span_at_UL": 0.1134523382812791,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.113452,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->O+H",
+       "delta_g0": -0.382666,
+       "n_e": 1
+      },
+      {
+       "edge": "O+H->OH",
+       "delta_g0": -0.630313,
+       "n_e": 0
+      },
+      {
+       "edge": "OH->OH+H",
+       "delta_g0": -0.33506,
+       "n_e": 1
+      },
+      {
+       "edge": "OH+H->H2O",
+       "delta_g0": -0.741068,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> N+O -> N+H -> NH -> NH+H -> NH2 -> NH2+H -> NH3",
+     "U_L": 0.2684899617633789,
+     "U_opt": -0.9384735642802902,
+     "span_at_UL": 0.1134523382812791,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->N+O",
+       "delta_g0": 0.113452,
+       "n_e": 0
+      },
+      {
+       "edge": "N+O->N+H",
+       "delta_g0": -0.283956,
+       "n_e": 1
+      },
+      {
+       "edge": "N+H->NH",
+       "delta_g0": -1.108977,
+       "n_e": 0
+      },
+      {
+       "edge": "NH->NH+H",
+       "delta_g0": -0.26849,
+       "n_e": 1
+      },
+      {
+       "edge": "NH+H->NH2",
+       "delta_g0": -0.34892,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2->NH2+H",
+       "delta_g0": -0.323569,
+       "n_e": 1
+      },
+      {
+       "edge": "NH2+H->NH3",
+       "delta_g0": -0.531305,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO@O",
+     "U_L": null,
+     "U_opt": 0.0,
+     "span_at_UL": null,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO@O",
+       "delta_g0": -0.944594,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO@par",
+     "U_L": null,
+     "U_opt": 0.0,
+     "span_at_UL": null,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO@par",
+       "delta_g0": -0.016362,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+H -> HNO -> HNO+H -> H2NO -> H2NO+H -> NH2OH -> *~nh2oh",
+     "U_L": 0.2687253767079234,
+     "U_opt": -1.3506870781455635,
+     "span_at_UL": 0.544085662733437,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.842114,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->HNO",
+       "delta_g0": 0.458519,
+       "n_e": 0
+      },
+      {
+       "edge": "HNO->HNO+H",
+       "delta_g0": -0.753977,
+       "n_e": 1
+      },
+      {
+       "edge": "HNO+H->H2NO",
+       "delta_g0": 0.544086,
+       "n_e": 0
+      },
+      {
+       "edge": "H2NO->H2NO+H",
+       "delta_g0": -0.268725,
+       "n_e": 1
+      },
+      {
+       "edge": "H2NO+H->NH2OH",
+       "delta_g0": -1.075327,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2OH->*~nh2oh",
+       "delta_g0": 1.09824,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+H -> HNO -> HNO+H -> HNOH -> HNOH+H -> NH2OH -> *~nh2oh",
+     "U_L": 0.18435665482457786,
+     "U_opt": -0.27416236148963335,
+     "span_at_UL": 0.4585190163142112,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.842114,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->HNO",
+       "delta_g0": 0.458519,
+       "n_e": 0
+      },
+      {
+       "edge": "HNO->HNO+H",
+       "delta_g0": -0.753977,
+       "n_e": 1
+      },
+      {
+       "edge": "HNO+H->HNOH",
+       "delta_g0": -0.400178,
+       "n_e": 0
+      },
+      {
+       "edge": "HNOH->HNOH+H",
+       "delta_g0": -0.184357,
+       "n_e": 1
+      },
+      {
+       "edge": "HNOH+H->NH2OH",
+       "delta_g0": -0.215432,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2OH->*~nh2oh",
+       "delta_g0": 1.09824,
+       "n_e": 0
+      }
+     ]
+    },
+    {
+     "route": "* -> NO@N -> NO+H -> NOH -> NOH+H -> HNOH -> HNOH+H -> NH2OH -> *~nh2oh",
+     "U_L": 0.18435665482457786,
+     "U_opt": -0.7078149332119583,
+     "span_at_UL": 0.0,
+     "steps": [
+      {
+       "edge": "*->NO@N",
+       "delta_g0": -0.026518,
+       "n_e": 0
+      },
+      {
+       "edge": "NO@N->NO+H",
+       "delta_g0": -0.842114,
+       "n_e": 1
+      },
+      {
+       "edge": "NO+H->NOH",
+       "delta_g0": -0.359587,
+       "n_e": 0
+      },
+      {
+       "edge": "NOH->NOH+H",
+       "delta_g0": -0.335832,
+       "n_e": 1
+      },
+      {
+       "edge": "NOH+H->HNOH",
+       "delta_g0": -0.000215,
+       "n_e": 0
+      },
+      {
+       "edge": "HNOH->HNOH+H",
+       "delta_g0": -0.184357,
+       "n_e": 1
+      },
+      {
+       "edge": "HNOH+H->NH2OH",
+       "delta_g0": -0.215432,
+       "n_e": 0
+      },
+      {
+       "edge": "NH2OH->*~nh2oh",
+       "delta_g0": 1.09824,
+       "n_e": 0
+      }
+     ]
+    }
+   ]
+  }
+ }
+}
