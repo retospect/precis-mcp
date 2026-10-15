@@ -41,25 +41,32 @@ SEED = 1
 #: first-run state, pinned so the anneal item measures deltas against it.
 #: Keys are DRC rule names; values are finding counts at that severity.
 #:
-#: The mix is the honest part: ``unrouted`` is the 26 nets the maze
+#: The mix is the honest part: ``unrouted`` is the 29 nets the maze
 #: could not realize on the two routable layers (F.Cu/B.Cu — the default
-#: stackup pours In1/In2); ``connectivity`` is the 10 of them left with
-#: partial copper (gr488909: the 16 with none are the ``unrouted``
+#: stackup pours In1/In2); ``connectivity`` is the 11 of them left with
+#: partial copper (gr488909: the 18 with none are the ``unrouted``
 #: question only, not a second error per net), ``silk_missing`` is
-#: 35 refdes labels with no legal spot, and the warn tier is real margin
+#: 36 refdes labels with no legal spot, and the warn tier is real margin
 #: spend (clearance 0.100 vs required 0.150 mm, board-edge). Zero errors
 #: alone would NOT satisfy the authored requirements here (doc Blockers
 #: §3 residue: the shared router clearance is one value, so per-net
 #: shortfalls land as warnings) — the pin is the whole tuple.
+#:
+#: Re-pinned 2026-10-15 after slice 6 dropped ``MoveKind.PIN_SWAP``: its
+#: 0.2 final-stage weight was a no-op draw on a board with no swap groups,
+#: so removing it changes the anneal's move mix, not any cost. Restoring
+#: that no-op draw reproduces 38 routed at ``SEED`` exactly; over seeds
+#: 1-8 the new mix leaves 6 of 8 placements legal (old: 2 of 8) and
+#: routes 30-37 (mean 34.5) where the old mix routed 38 and 35.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
-    "connectivity": 10,
-    "unrouted": 26,
+    "connectivity": 11,
+    "unrouted": 29,
     "outline_containment": 1,
     "silk_edge_clearance": 1,
-    "silk_missing": 35,
+    "silk_missing": 36,
 }
 BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
-    "clearance": 10,
+    "clearance": 9,
     "board_edge_clearance": 2,
     "silk_edge_clearance": 3,
 }
@@ -68,11 +75,11 @@ BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
 
 #: Route status over nets with fanout >= 2 (the honest denominator —
 #: single-member nets trivially "route" and are never the question).
-#: 38 of 64 nets realized; the 26 failures are congestion-dominated
+#: 35 of 64 nets realized; the 29 failures are congestion-dominated
 #: (the route job's failure reasons: congestion, same-layer-crossing,
 #: width) — the residue the anneal feedback loop exists to close.
-BASELINE_ROUTED = 38
-BASELINE_FAILED = 26
+BASELINE_ROUTED = 35
+BASELINE_FAILED = 29
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
