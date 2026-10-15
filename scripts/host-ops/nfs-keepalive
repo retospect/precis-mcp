@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Interim NFS keepalive — ported from cluster-desk's nfs-keepalive.sh
+# (2026-10-15, gr489397). The server's nfsd still leaves client-closed sockets
+# in CLOSE_WAIT after `nfsd restart`; a Linux client closes its NFS transport
+# after 5 min idle and then wedges. A statfs every 60 s (always a server round
+# trip on NFS) keeps each transport from going idle.
+# Transient systemd timer: gone at the next reboot, nothing written to disk.
+#   scripts/host-ops/nfs-keepalive          # start on every linux-group client
+#   scripts/host-ops/nfs-keepalive --stop   # remove
+# Clients are the inventory `linux` group; the statfs target is `shared_mount`.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: nfs-keepalive [--stop]
+
+Start (or with --stop, remove) a transient systemd timer on each linux-group
+inventory host that stats the shared NFS mount every 60 s, keeping the NFS
+transport from going idle (the server-side CLOSE_WAIT wedge workaround).
+EOF
+}
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/pgb-host.sh
+. "${_HERE}/../lib/pgb-host.sh"
+
+STOP=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --stop) STOP=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+MNT="$(resolve_inventory_var shared_mount)"
+CLIENTS="$(inventory_group_hosts linux)"
+[[ -n "$CLIENTS" ]] || { echo "inventory 'linux' group is empty — no clients" >&2; exit 1; }
+
+O=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+for h in $CLIENTS; do
+  echo "-- $h"
+  if (( STOP )); then
+    ssh "${O[@]}" "$h" 'sudo -n systemctl stop nfs-keepalive.timer nfs-keepalive.service 2>/dev/null; echo stopped' \
+      || echo "  ($h unreachable or stop failed — continuing)"
+  else
+    ssh "${O[@]}" "$h" "systemctl is-active -q nfs-keepalive.timer && echo already-running || \
+      sudo -n systemd-run --unit=nfs-keepalive --on-active=10s --on-unit-active=60s \
+        /usr/bin/timeout 20 /usr/bin/stat -f $MNT; systemctl list-timers nfs-keepalive.timer --no-legend" \
+      || echo "  ($h unreachable or install failed — continuing)"
+  fi
+done

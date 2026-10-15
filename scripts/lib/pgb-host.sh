@@ -48,6 +48,45 @@ resolve_pgb_host() {
     printf '%s\n' "$addr"
 }
 
+# A scalar `all.vars` value — `postgres_host`, `nfs_server`, `shared_mount`,
+# the role-named aliases — read out of the overlay. Same loose lookup shape
+# as the postgres_host line in resolve_pgb_host: the first `<name>: <value>`
+# anywhere in hosts.yml wins (in practice these keys live only in all.vars).
+resolve_inventory_var() {
+    local name="$1" overlay val
+    overlay="$(resolve_overlay)" || return 2
+    val="$(awk -v k="${name}:" '
+                $1 == k { gsub(/["\047]/, "", $2); print $2; exit }' "$overlay")"
+    if [ -z "$val" ]; then
+        echo "inventory: no '${name}:' var in $overlay." >&2
+        return 2
+    fi
+    printf '%s\n' "$val"
+}
+
+# Host names of one inventory group (`compute`, `linux`, `vllm_serving`, …),
+# one per line, in file order. Empty output when the group is absent or has
+# `hosts: {}` — callers decide whether that is an error, so this stays quiet.
+inventory_group_hosts() {
+    local group="$1" overlay
+    overlay="$(resolve_overlay)" || return 2
+    awk -v want="${group}:" '
+        done { next }
+        $1 == want {
+            match($0, /^[[:space:]]*/); gind = RLENGTH
+            ing = 1; next }
+        ing {
+            if ($0 ~ /^[[:space:]]*($|#)/) next
+            match($0, /^[[:space:]]*/); ind = RLENGTH
+            if (ind <= gind) { ing = 0; done = 1; next }
+            if ($1 == "hosts:") { hosts = 1; hind = ind; next }
+            if (ind <= hind) hosts = 0
+            if (hosts && ind > hind) {
+                if (hent == 0) hent = ind
+                if (ind == hent) { n = $1; sub(/:$/, "", n); print n } } }' \
+        "$overlay"
+}
+
 # Every inventory host as "<name> <ansible_host>" lines, in file order, once
 # each: a `<name>:` key whose block carries an `ansible_host:`.
 list_cluster_hosts() {

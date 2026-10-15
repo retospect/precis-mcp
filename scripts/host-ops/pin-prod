@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Pin the prod checkout to origin/prod (detached) and show the result.
+# Ported from /tmp/gripe-fleet/pin-prod.sh.
+#
+# The pinned checkout is what scripts/host-ops/play runs playbooks from; this
+# is the manual re-pin step (phase B/C of the host-lanes run order).
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: pin-prod
+
+Fetch origin in the prod checkout and detach HEAD at origin/prod, then print
+the pinned sha and any dirty state. Env: PROD_CHECKOUT (default
+~/precis-mcp-prod).
+EOF
+}
+
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  "") ;;
+  *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+esac
+
+PROD_CHECKOUT="${PROD_CHECKOUT:-$HOME/precis-mcp-prod}"
+[[ -d "$PROD_CHECKOUT/.git" || -f "$PROD_CHECKOUT/.git" ]] || {
+  echo "no prod checkout at $PROD_CHECKOUT (set PROD_CHECKOUT)" >&2; exit 2; }
+git -C "$PROD_CHECKOUT" fetch -q origin
+git -C "$PROD_CHECKOUT" checkout -q --detach origin/prod
+cd "$PROD_CHECKOUT"
+echo "precis-mcp-prod at $(git rev-parse --short HEAD); origin/prod $(git rev-parse --short origin/prod)"
+git status --porcelain --untracked-files=no | head -5

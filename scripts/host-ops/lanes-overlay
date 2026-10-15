@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# host-lanes overlay patch (Reto ruling 2026-10-15 ~16:35Z + 16:40Z).
+# Ported from cluster-desk's /tmp/gripe-fleet/host-lanes-overlay.sh.
+#
+# Edits the gitignored deploy overlay (deploy/inventory in the primary
+# checkout) to the new GB10 lane layout:
+#
+#   castor  vLLM (new vllm_serving group, replaces the /tmp layered inventory)
+#           + heartbeat only. OUT of `compute` and of every science capability.
+#           Does NOT rejoin agent_sandbox_hosts (job_claude_docker moves to spark).
+#   pollux  compute: autocatpath seeds (+ aggregate/explore, nodes[0]), MACE,
+#           fold, dft. Stays in `serving` (heartbeat; it carries no LLM today).
+#   spark   back on duty: compute (autocatpath seeds, MACE), chem_route
+#           (retrosynth), agent_sandbox_hosts (job_claude_docker + image build).
+#
+# Files touched (nothing else):
+#   hosts.yml                      groups: compute, agent_sandbox_hosts,
+#                                  vllm_serving (new); spark/castor/inference comments
+#   group_vars/all/topology.yml    precis_capabilities lists + comments
+#   host_vars/spark.yml            rewritten (back on duty, 6G extra reserve)
+#   host_vars/castor.yml           NEW: vLLM model + tiktoken paths (from the
+#                                  live vllm.service, 2026-10-15)
+#
+# Usage:
+#   scripts/host-ops/lanes-overlay            # dry run: prints the diff
+#   scripts/host-ops/lanes-overlay --apply    # writes, then shows git diff
+# Every anchor must match exactly once or the script aborts without writing.
+# Commit in the overlay repo afterwards (it is its own git repo, private).
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: lanes-overlay [--apply]
+
+Patch the gitignored deploy inventory overlay to the host-lanes GB10 layout:
+castor = vLLM + heartbeat only (new vllm_serving group, out of compute),
+pollux = science lanes, spark = back on duty (compute, chem_route,
+agent_sandbox_hosts). Dry run prints the diff; --apply writes. Every anchor
+must match exactly once or nothing is written. The overlay is resolved like
+scripts/lib/pgb-host.sh ($PRECIS_OVERLAY_DIR / $CLUSTER_INVENTORY, else the
+main checkout's deploy/inventory). Commit in the overlay repo afterwards.
+EOF
+}
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/pgb-host.sh
+. "${_HERE}/../lib/pgb-host.sh"
+
+APPLY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -n "${PRECIS_OVERLAY_DIR:-}" ]]; then
+  OVERLAY="$PRECIS_OVERLAY_DIR"
+else
+  OVERLAY="$(dirname "$(resolve_overlay)")"
+fi
+[[ -f "$OVERLAY/hosts.yml" ]] || { echo "no overlay at $OVERLAY" >&2; exit 1; }
+
+python3 - "$OVERLAY" "$APPLY" <<'PY'
+import difflib, re, sys
+from pathlib import Path
+
+root, apply = Path(sys.argv[1]), sys.argv[2] == "1"
+out: dict[Path, tuple[str, str]] = {}
+
+def edit(rel: str, pairs: list[tuple[str, str]], regex: bool = False) -> None:
+    p = root / rel
+    old = out[p][1] if p in out else p.read_text(encoding="utf-8")
+    new = old
+    for a, b in pairs:
+        if regex:
+            n = len(re.findall(a, new, flags=re.S | re.M))
+            if n != 1:
+                sys.exit(f"{rel}: pattern matched {n}x: {a[:70]!r}")
+            new = re.sub(a, lambda _m: b, new, flags=re.S | re.M)
+        else:
+            if new.count(a) != 1:
+                sys.exit(f"{rel}: anchor matched {new.count(a)}x: {a[:70]!r}")
+            new = new.replace(a, b)
+    out[p] = (out[p][0] if p in out else old, new)
+
+def write(rel: str, text: str) -> None:
+    p = root / rel
+    out[p] = (p.read_text(encoding="utf-8") if p.exists() else "", text)
+
+# ── hosts.yml ────────────────────────────────────────────────────────────
+edit("hosts.yml", [
+    # spark's comment block (the host entry lines below it stay as they are)
+    (r"        # spark: back on cluster duty \(Reto 2026-10-02.*?provisioning in roles/mcps\.\n",
+     "        # spark: back on cluster duty as a SCIENCE host (host-lanes, Reto\n"
+     "        # 2026-10-15: \"spark can be used now also\"). In `compute`\n"
+     "        # (autocatpath seeds + MACE, playbook 43; 20c gives it the venv +\n"
+     "        # heartbeat) and `agent_sandbox_hosts` (job_claude_docker lane +\n"
+     "        # code-task image build, playbooks 34/35). Not in `inference`: that\n"
+     "        # group drives 20b's collapsed worker. node_role stays `standalone`\n"
+     "        # (`inference` gates podman-sandbox provisioning in roles/mcps). The\n"
+     "        # fleet embedder (docs/backlog/spark-fleet-embedder.md) is still to\n"
+     "        # come via an `embedder` group; re-check the memory budget then.\n"),
+    (r"        # castor\+pollux: paired DGX Sparks \(GB10\).*?bootstrap-tailscale\)\.\n",
+     "        # castor+pollux: paired DGX Sparks (GB10) with the 200G ConnectX\n"
+     "        # RPC link (spark_distributed_llm_serving; no distributed serving\n"
+     "        # runs today). Host lanes since 2026-10-15 (Reto): castor = the\n"
+     "        # LLM host (`vllm_serving`, gpt-oss-120b) + heartbeat only, out of\n"
+     "        # `compute` (roles/hardening refuses vllm_serving+compute and sums\n"
+     "        # each host's lanes against 121 GiB); pollux = science (autocatpath\n"
+     "        # nodes[0], MACE, fold, dft). Both stay in `serving` for the\n"
+     "        # heartbeat worker (20c).\n"
+     "        # ansible_host = tailscale IP (filled after bootstrap-tailscale).\n"),
+], regex=True)
+edit("hosts.yml", [
+    ("    # Empty by design (since 2026-08-29), like `monitoring`: every\n"
+     "    # worker/watch/dft play targeting this group no-ops. The science lanes\n"
+     "    # live on pollux (`compute` group + topology.yml; Reto 2026-10-02,\n"
+     "    # local-compute-5: castor = big model, pollux = science, spark =\n"
+     "    # embeddings), so nothing belongs here. spark's return (see its host\n"
+     "    # comment) goes through an `embedder` group, not this one.\n",
+     "    # Empty by design (since 2026-08-29), like `monitoring`: every\n"
+     "    # worker/watch/dft play targeting this group no-ops. The science lanes\n"
+     "    # live on pollux + spark (`compute` group + topology.yml; host-lanes,\n"
+     "    # Reto 2026-10-15), so nothing belongs here.\n"),
+    ("    serving:\n      hosts:\n        castor:\n        pollux:\n",
+     "    serving:\n      hosts:\n        castor:\n        pollux:\n"
+     "\n"
+     "    # vLLM host (playbook 49-vllm; was a layered /tmp inventory until\n"
+     "    # 2026-10-15). Never also in `compute` (roles/hardening refuses it).\n"
+     "    vllm_serving:\n      hosts:\n        castor:\n"),
+    ("    agent_sandbox_hosts:\n      hosts: {}\n",
+     "    # Re-armed 2026-10-15 on spark (host-lanes): the job_claude_docker lane\n"
+     "    # and its code-task image build leave the LLM host. service_config:\n"
+     "    # spark job_claude_docker prio 5, castor 0 (set by hand; the deploy\n"
+     "    # seed never overwrites an existing row).\n"
+     "    agent_sandbox_hosts:\n      hosts:\n        spark:\n"),
+    ("    compute:\n      hosts:\n        castor:\n        pollux:\n",
+     "    # host-lanes 2026-10-15: castor left (LLM host), spark joined.\n"
+     "    compute:\n      hosts:\n        pollux:\n        spark:\n"),
+])
+
+# ── group_vars/all/topology.yml ─────────────────────────────────────────
+topo = "group_vars/all/topology.yml"
+edit(topo, [
+    ("  # spark is permanently off cluster duty since 2026-08-29 (paper box; see\n"
+     "  # hosts.yml). autocatpath",
+     "  # (History: spark was off cluster duty 2026-08-29 .. 2026-10-15 as the\n"
+     "  # paper box; it is back as a science host, see below.) autocatpath"),
+    ("  worker_heartbeat: [castor, pollux]\n",
+     "  worker_heartbeat: [castor, pollux, spark]\n"),
+    ("  dft:             [pollux]\n",
+     "  # host-lanes 2026-10-15 (Reto): castor serves the LLM only; science\n"
+     "  # lanes split over pollux + spark by what each already holds (both\n"
+     "  # carry precis-dft:cpu, alphafold3:ready and the MACE models; spark\n"
+     "  # also precis-aizynth + precis-agent). pollux keeps dft + fold and is\n"
+     "  # autocatpath nodes[0]; spark takes retrosynth and the sandbox lane.\n"
+     "  dft:             [pollux]\n"),
+    ("  # list. The node's PRECIS_NODE gate + the job's target_node route them;\n"
+     "  # aggregate/explore pin to nodes[0] (castor).\n"
+     "  autocatpath:         [castor, pollux]\n",
+     "  # list. The node's PRECIS_NODE gate + the job's target_node route them;\n"
+     "  # aggregate/explore pin to nodes[0] (pollux).\n"
+     "  autocatpath:         [pollux, spark]\n"),
+    ("  autocatpath_mace:    [castor, pollux]\n",
+     "  autocatpath_mace:    [pollux, spark]\n"),
+    ("  autocatpath_plugin:  [melchior, castor, pollux]\n",
+     "  autocatpath_plugin:  [melchior, pollux, spark]\n"),
+    ("  # (Rehomed to castor 2026-08-29; models already on the shared NAS.)\n"
+     "  chem_route:      [castor]\n",
+     "  # (Rehomed castor -> spark 2026-10-15, host-lanes; spark already holds\n"
+     "  # the precis-aizynth image; models on the shared NAS.)\n"
+     "  chem_route:      [spark]\n"),
+])
+
+# ── host_vars ───────────────────────────────────────────────────────────
+write("host_vars/spark.yml", """---
+# spark — back on cluster duty as a science host (host-lanes, Reto 2026-10-15;
+# it was off duty 2026-08-29 .. 2026-10-15 as the paper box). Groups: compute
+# (autocatpath seeds + MACE, chem_route retrosynth) and agent_sandbox_hosts
+# (job_claude_docker lane + code-task image build). See hosts.yml + topology.yml.
+#
+# Non-precis services still run here and count against the memory budget
+# (roles/hardening host_memory_extra_reserve): apt-managed grafana+prometheus,
+# the n8n + snappymail containers (measured 2026-10-15: n8n ~2 GiB, grafana
+# ~0.7 GiB, prometheus RSS ~0.1 GiB; page cache is reclaimable). Leftover
+# ollama/llama-swap stay untouched.
+node_role: standalone
+
+gpu_enabled: true
+
+# Reserve cores 0-1 (of 20) for the system so heavy compute never starves sshd
+# (nice-all-jobs).
+precis_compute_cpuaffinity: "2-19"
+precis_job_cpuset: "2-19"
+
+# Memory held outside precis units (above). Budget with the compute and
+# sandbox lanes: 4 + 48 + 40 + 2 + 8 + 10 OS + 6 = 118 of 121 GiB.
+host_memory_extra_reserve: 6G
+
+# FinnMacCool NAS mount path (Linux uses /nas, not /opt/nas)
+finnmaccool_mount_base: "/nas"
+""")
+write("host_vars/castor.yml", """---
+# castor — the LLM host (host-lanes, Reto 2026-10-15): vLLM gpt-oss-120b
+# (vllm_serving) + the heartbeat worker only. Budget at the role default
+# fraction: 0.70 x 121 = 84.7 + heartbeat 4 + OS 10 = 98.7 GiB (0.60: 86.6).
+# No compute fallback lane: none of the job types route here any more, and a
+# 25G lane would push the 0.70 budget to 123.7 GiB.
+
+# Weights + harmony vocab where the 2026-10-12 slice-0 run staged them (the
+# live vllm.service mounts these; the role defaults point at /srv/models).
+vllm_model_dir: /home/deploy/models/hf/gpt-oss-120b
+vllm_tiktoken_dir: /home/deploy/slice0/tiktoken
+""")
+
+changed = 0
+for p, (old, new) in out.items():
+    if old == new:
+        continue
+    changed += 1
+    sys.stdout.writelines(difflib.unified_diff(
+        old.splitlines(True), new.splitlines(True),
+        fromfile=f"a/{p.relative_to(root)}", tofile=f"b/{p.relative_to(root)}"))
+    if apply:
+        p.write_text(new, encoding="utf-8")
+print(f"\n{changed} file(s) {'written' if apply else 'would change (dry run; --apply to write)'}")
+PY

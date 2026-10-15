@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Run ONE deploy playbook from the checkout pinned to the deployed prod sha
+# (host-lanes apply order). Ported from cluster-desk's host-lanes-play.sh.
+# Refuses when the pinned checkout is not exactly origin/prod, or when prod
+# does not yet contain the host-lanes commit, so a playbook can never install
+# code ahead of prod (the 2026-10-15 castor venv break came from a run out of
+# the main checkout).
+#
+#   scripts/host-ops/play playbooks/20c-precis-heartbeat-serving.yml --limit spark
+#   scripts/host-ops/play playbooks/10-hardening.yml --tags oom-guard --limit castor,pollux,spark
+#
+# Env: PROD_CHECKOUT (default ~/precis-mcp-prod), MAIN_CHECKOUT (default the
+# primary checkout of this repo; source of the origin/prod ref), OVERLAY via
+# scripts/lib/pgb-host.sh ($PRECIS_OVERLAY_DIR / $CLUSTER_INVENTORY or the
+# gitignored deploy/inventory of the main checkout).
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: play playbooks/<play>.yml [ansible-playbook args]
+
+Run one deploy playbook from PROD_CHECKOUT (default ~/precis-mcp-prod), which
+must be exactly origin/prod (after a fetch), clean, and contain the
+host-lanes commit. Passes the inventory overlay and deploy/.vault-pass, and
+pins precis_worker/web/embedder_git_ref to the prod sha like scripts/deploy.
+Env: PROD_CHECKOUT, MAIN_CHECKOUT, HOST_LANES_SHA (set empty to skip that gate).
+EOF
+}
+
+PROD_CHECKOUT="${PROD_CHECKOUT:-$HOME/precis-mcp-prod}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -z "${MAIN_CHECKOUT:-}" ]]; then
+  _common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  MAIN_CHECKOUT="$(dirname "${_common:-$REPO/.git}")"
+fi
+HOST_LANES_SHA="${HOST_LANES_SHA-932364d0a}"
+
+# shellcheck source=scripts/lib/pgb-host.sh
+. "${REPO}/scripts/lib/pgb-host.sh"
+
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  "") echo "usage: $0 playbooks/<play>.yml [ansible-playbook args] (or --help)" >&2; exit 2 ;;
+esac
+
+git -C "$MAIN_CHECKOUT" fetch -q origin
+prod="$(git -C "$MAIN_CHECKOUT" rev-parse origin/prod)"
+git -C "$PROD_CHECKOUT" fetch -q origin
+pinned="$(git -C "$PROD_CHECKOUT" rev-parse HEAD)"
+[[ "$pinned" == "$prod" ]] || {
+  echo "REFUSE: $PROD_CHECKOUT is at ${pinned:0:9}, origin/prod is ${prod:0:9}." >&2
+  echo "        git -C $PROD_CHECKOUT checkout --detach $prod   (then re-run)" >&2
+  exit 1; }
+if [[ -n "$HOST_LANES_SHA" ]]; then
+  git -C "$PROD_CHECKOUT" merge-base --is-ancestor "$HOST_LANES_SHA" HEAD || {
+    echo "REFUSE: prod ${prod:0:9} does not contain host-lanes $HOST_LANES_SHA yet; wait for golden's release." >&2
+    exit 1; }
+fi
+[[ -z "$(git -C "$PROD_CHECKOUT" status --porcelain --untracked-files=no)" ]] || {
+  echo "REFUSE: $PROD_CHECKOUT has local edits." >&2; exit 1; }
+
+OVERLAY="$(resolve_overlay)" || exit 2
+VPASS="$(dirname "$(dirname "$OVERLAY")")/.vault-pass"
+[[ -f "$VPASS" ]] || { echo "REFUSE: no vault password file at $VPASS" >&2; exit 1; }
+
+echo "pinned ${prod:0:9} | overlay $(dirname "$OVERLAY") | $*"
+cd "$PROD_CHECKOUT/deploy"
+# cluster-desk 2026-10-15: the install roles pip-install precis-mcp from GitHub
+# @ precis_worker_git_ref (default "main"), so the checkout pin alone still
+# installs main. Pin the refs to prod like scripts/deploy's SHA_ARGS.
+exec ansible-playbook -i "$OVERLAY" \
+  --vault-password-file "$VPASS" \
+  -e precis_worker_git_ref="$prod" -e precis_web_git_ref="$prod" -e precis_embedder_git_ref="$prod" \
+  "$@"

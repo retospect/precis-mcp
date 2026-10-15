@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Rolling OS + firmware update for ONE GB10 host (Reto approved 2026-10-15
+# ~16:40Z; ported from /tmp/gripe-fleet/spark-os-update.sh). Run once per
+# host, in this order, only after the previous host came back clean:
+#     scripts/host-ops/os-update --host spark     # canary: idle, no LLM
+#     scripts/host-ops/os-update --host pollux    # science lanes
+#     scripts/host-ops/os-update --host castor    # the LLM host (vLLM down ~15-25 min)
+#
+# What was pending (read-only apt/fwupd check, 2026-10-15 ~16:45Z):
+#   * NVIDIA driver 580.173.02 (castor, pollux) / 580.159.03 (spark)
+#     -> 580.178.04. Same R580 branch (CUDA 13.0 driver API): no new driver
+#     major and no new CUDA major. cuda-toolkit-13-0 (13.0.3) is not upgraded;
+#     only the cuda-toolkit*-config-common metapackages move 13.3 -> 13.4.
+#   * Kernel: linux-nvidia-hwe-24.04 6.17.0 -> 7.0.0-1019 (a kernel MAJOR
+#     jump), with the matching prebuilt linux-modules-nvidia-580-open. This is
+#     the item to watch: the canary run on spark proves the driver loads on 7.0.
+#   * nvidia-container-toolkit libs 1.19.1/1.20.0 -> 1.20.1 (docker --gpus path).
+#   * linux-firmware, nvidia-ai-workbench (castor, pollux); ~286-350 packages total.
+#   * fwupd: pollux lists DGX Spark USB-C PD controller firmware (capsule on
+#     disk, applied at reboot); castor and spark report nothing pending.
+#   vLLM (container, own CUDA userspace), MACE (torch 2.13 cu13) and the tblite
+#   wheel (CPU) depend on the driver branch, not the kernel: no rebuild
+#   expected. The post-reboot checks below prove the GPU path on each host.
+#
+# Per host: reserve (no new heavy claims) -> wait for running compute to drain
+# -> apt full-upgrade -> fwupd update -> reboot -> wait for ssh -> check
+# kernel, nvidia-smi, docker GPU, precis units -> release the reserve.
+# Needs: ssh as a sudo-capable user on the host; RUN_ON (default
+# pollux; castor when updating pollux) for the precis CLI reserve/release.
+#
+# Flags: --host <castor|pollux|spark> (required); --dry-run (print the plan);
+#        --drain-timeout <min> (default 240); --force-drain (reboot even if
+#        compute is still running after the timeout).
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: os-update --host castor|pollux|spark [--dry-run] [--drain-timeout MIN]
+                 [--force-drain]
+
+Rolling OS + firmware update for ONE GB10 host: reserve -> drain ->
+apt/dpkg lock check -> apt full-upgrade -> fwupd -> reboot -> checks ->
+release. Run order: spark, then pollux, then castor — one host at a time,
+only after the previous host's checks are all active. The precis reserve
+CLI runs on RUN_ON (default pollux; castor when updating pollux).
+EOF
+}
+
+HOST=""; DRY=0; DRAIN_MIN=240; FORCE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    --drain-timeout) DRAIN_MIN="$2"; shift 2 ;;
+    --force-drain) FORCE=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+case "$HOST" in
+  castor) UNITS="vllm precis-worker" ;;
+  pollux) UNITS="precis-worker precis-worker-compute" ;;
+  spark)  UNITS="docker" ;;   # precis lanes join after the host-lanes apply; see check below
+  *) echo "--host castor|pollux|spark required" >&2; exit 2 ;;
+esac
+# The precis CLI runs on a peer that keeps running while HOST reboots.
+RUN_ON="${RUN_ON:-$([[ "$HOST" == pollux ]] && echo castor || echo pollux)}"
+ACTOR="os-update-$(date -u +%Y%m%dT%H%MZ)"
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10)
+say() { echo "[$(date -u +%H:%M:%SZ)] $HOST: $*"; }
+run() { if (( DRY )); then echo "DRY: $*"; else "$@"; fi; }
+
+precis_cli() {
+  # shellcheck disable=SC2029
+  "${SSH[@]}" "$RUN_ON" "
+    dsn=\$(systemctl show precis-worker -p Environment --value | tr ' ' '\n' | sed -n 's/^PRECIS_DATABASE_URL=//p')
+    sudo -u deploy -H env PGPASSFILE=/home/deploy/.pgpass /opt/precis/venv/bin/precis service $* --database-url \"\$dsn\""
+}
+
+say "1/7 reserve: no new heavy (ssh_node/claude_docker) claims for 6 h"
+run precis_cli reserve --host "$HOST" --hours 6 --actor "$ACTOR"
+
+say "2/7 drain: wait for autocatpath seeds and job containers to finish (<= ${DRAIN_MIN} min)"
+busy() {
+  "${SSH[@]}" "$HOST" '
+    # [p] bracket: the pattern must not match this ssh bash -c line itself
+    # (plain "precis_pathway.runner" counted 2 on an idle spark, 2026-10-15).
+    n=$(pgrep -fc "python.* -m [p]recis_pathway[.]runner" || true)
+    c=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -vcE "^(vllm|n8n|snappymail)$" || true)
+    echo $(( n + c ))'
+}
+if (( ! DRY )); then
+  deadline=$(( $(date +%s) + DRAIN_MIN * 60 ))
+  while :; do
+    b=$(busy); [[ "$b" == 0 ]] && break
+    if (( $(date +%s) > deadline )); then
+      (( FORCE )) || { say "still $b compute process(es)/container(s) after ${DRAIN_MIN} min; rerun with --force-drain or wait"; exit 1; }
+      say "forcing reboot with $b still running (--force-drain)"; break
+    fi
+    say "  $b still running; next check in 5 min"; sleep 300
+  done
+fi
+
+say "2b/7 apt/dpkg lock check (refuse on a holder older than 1 h)"
+# 2026-10-15: spark had an `apt update` from dgx-dashboard-admin hung since Sep 24
+# (fetchers idle, sockets CLOSE-WAIT) holding /var/lib/apt/lists/lock. Never kill
+# it from here; print the holder and the exact kill line for Reto.
+stale=$("${SSH[@]}" "$HOST" '
+  for l in /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock; do
+    for p in $(sudo -n fuser "$l" 2>/dev/null); do
+      age=$(ps -o etimes= -p "$p" | tr -d " ")
+      [ -n "$age" ] && [ "$age" -gt 3600 ] && echo "$p $age $l $(ps -o args= -p "$p" | cut -c1-80)"
+    done
+  done | sort -u' || true)
+if [[ -n "$stale" ]]; then
+  say "REFUSE: stale apt/dpkg lock holder(s) (pid age_s lock cmd):"
+  echo "$stale"
+  pids=$(awk '{print $1}' <<<"$stale" | sort -u | tr '\n' ' ')
+  say "if they are hung (idle fetchers, CLOSE-WAIT sockets), Reto runs:"
+  echo "  ssh $HOST 'for p in $pids; do sudo pkill -P \$p; sudo kill \$p; done; sleep 5; sudo fuser -v /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend; sudo dpkg --audit && echo dpkg-clean'"
+  say "then rerun this script (the reserve is still set)"
+  exit 1
+fi
+
+say "3/7 apt full-upgrade"
+run "${SSH[@]}" "$HOST" 'sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q -o Dpkg::Options::=--force-confold full-upgrade'
+
+say "4/7 firmware (capsule-on-disk updates apply during the reboot)"
+run "${SSH[@]}" "$HOST" 'sudo fwupdmgr refresh --force >/dev/null || true; sudo fwupdmgr update -y --no-reboot-check || true'
+
+say "5/7 reboot"
+run "${SSH[@]}" "$HOST" 'sudo systemctl reboot' || true
+
+if (( ! DRY )); then
+  sleep 60
+  say "6/7 wait for ssh (<= 25 min; firmware capsules lengthen the boot)"
+  for _ in $(seq 1 50); do
+    "${SSH[@]}" "$HOST" true 2>/dev/null && break
+    sleep 30
+  done
+  "${SSH[@]}" "$HOST" true || { say "NOT BACK after 25 min: check the console"; exit 1; }
+fi
+
+say "7/7 checks"
+run "${SSH[@]}" "$HOST" "
+  set -e
+  echo kernel: \$(uname -r)
+  nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+  sudo docker run --rm --gpus all nvidia/cuda:12.6.1-base-ubuntu22.04 nvidia-smi -L 2>/dev/null \
+    || echo 'WARN docker --gpus smoke failed (image absent? check nvidia-container-toolkit)'
+  for u in $UNITS \$(systemctl list-units --no-legend 'precis-*' | awk '{print \$1}'); do
+    printf '%-34s %s\n' \"\$u\" \"\$(systemctl is-active \"\$u\")\"
+  done
+  systemctl --failed --no-legend
+"
+if [[ "$HOST" == castor && $DRY == 0 ]] && \
+   [[ "$("${SSH[@]}" castor 'systemctl is-enabled vllm 2>/dev/null' || true)" != enabled ]]; then
+  say "vllm disabled, skipping health wait"   # stopped 18:44Z 2026-10-15 (gr489474)
+elif [[ "$HOST" == castor && $DRY == 0 ]]; then
+  say "waiting for vLLM health (model load 10-15 min)"
+  for _ in $(seq 1 40); do
+    "${SSH[@]}" castor 'curl -sf localhost:8000/health' >/dev/null 2>&1 && { say "vLLM healthy"; break; }
+    sleep 30
+  done
+fi
+
+say "release the reserve"
+run precis_cli release --host "$HOST"
+say "done: confirm the unit list above is all active before the next host"

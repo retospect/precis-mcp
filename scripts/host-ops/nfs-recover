@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# NFS shared-mount recovery — ported from cluster-desk's nfs-recover.sh
+# (2026-10-15).
+# Cause: the NFS server's macOS nfsd never closes a TCP socket after the client
+# closes it (all client sockets sit in CLOSE_WAIT on the server; even a fresh
+# rpcinfo probe does). Linux clients drop idle NFS transports, wait in
+# FIN-WAIT-2 for the server's FIN, which never arrives (keepalive ACKs keep it
+# alive), so the mount never reconnects.
+# Step 1 restarts nfsd on the server (postgres untouched). Step 2 force-closes
+# any client socket still stuck. Hard mounts retransmit, so in-flight IO
+# resumes; nothing is lost. The script stops (does not escalate) if the nfsd
+# restart fails. Never reboot the NFS server from here: it is the DB host.
+#
+# Hosts come from the gitignored deploy inventory overlay: the server is the
+# `nfs_server` var, its LAN address that host's `lan_ip`, the clients the
+# `linux` group (the ss-capable NFS mounts), the mount `shared_mount`.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: nfs-recover
+
+Restart nfsd on the inventory's nfs_server host, force-close FIN-WAIT-2
+NFS sockets on every linux-group client, then verify the shared_mount stat
+and that a fresh probe leaves no CLOSE_WAIT on the server. Stops without
+escalating if the nfsd restart fails. Never reboots the server (DB host).
+Env: NFS_RECOVER_SLEEP_S overrides the settle sleeps (tests).
+EOF
+}
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/pgb-host.sh
+. "${_HERE}/../lib/pgb-host.sh"
+# shellcheck source=scripts/lib/node-host.sh
+. "${_HERE}/../lib/node-host.sh"
+
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  "") ;;
+  *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+esac
+
+SRV_NODE="$(resolve_inventory_var nfs_server)"      # ssh target (inventory name)
+SRV="$(resolve_node_var "$SRV_NODE" lan_ip)"        # LAN address the mounts use
+MNT="$(resolve_inventory_var shared_mount)"
+CLIENTS="$(inventory_group_hosts linux)"            # macOS clients have no `ss`
+[[ -n "$CLIENTS" ]] || { echo "inventory 'linux' group is empty — no clients" >&2; exit 1; }
+
+O=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+s() { ssh "${O[@]}" "$@"; }
+nap() { sleep "${NFS_RECOVER_SLEEP_S:-$1}"; }
+
+echo "== $(date -u +%FT%TZ) before: $SRV_NODE sockets on 2049"
+s "$SRV_NODE" "netstat -an -p tcp | grep '\.2049 '" || true
+
+echo "== step 1: restart nfsd on $SRV_NODE"
+s "$SRV_NODE" 'sudo -n nfsd restart && sleep 5 && sudo -n nfsd status' \
+  || { echo "nfsd restart FAILED — stop here, report to cluster-desk"; exit 1; }
+nap 15
+echo "== $SRV_NODE sockets after restart"
+s "$SRV_NODE" "netstat -an -p tcp | grep '\.2049 '" || true
+
+echo "== step 2: kill client sockets still in FIN-WAIT-2"
+for h in $CLIENTS; do
+  echo "-- $h"
+  s "$h" "ss -tan state fin-wait-2 '( dport = :2049 )' | tail -n +2; \
+    if ss -tan state fin-wait-2 '( dport = :2049 )' | tail -n +2 | grep -q .; then \
+      sudo -n ss -K state fin-wait-2 dst $SRV dport = :2049 >/dev/null; echo killed; fi" \
+    || echo "  ($h unreachable or probe failed — continuing)"
+done
+nap 20
+
+echo "== verify"
+for h in $CLIENTS; do
+  echo "-- $h"
+  s "$h" "timeout 8 stat -c 'stat ok %y' $MNT/. || echo 'STAT HUNG/FAILED'; \
+    ss -tan '( dport = :2049 )' | tail -n +2; \
+    echo D-state on nfs: \$(ps -eo state,wchan:30 | awk '\$1==\"D\" && \$2 ~ /rpc|nfs/' | wc -l)" \
+    || echo "  ($h verify failed — see above)"
+done
+echo "== recurrence check: a fresh probe must not leave CLOSE_WAIT on $SRV_NODE"
+FIRST_CLIENT="$(head -1 <<<"$CLIENTS")"
+s "$FIRST_CLIENT" "timeout 8 rpcinfo -T tcp $SRV nfs 3" || true
+nap 5
+s "$SRV_NODE" "netstat -an -p tcp | grep '\.2049 ' | grep CLOSE_WAIT || echo 'no CLOSE_WAIT: nfsd closes sockets again'" || true
+echo "== done $(date -u +%FT%TZ)"

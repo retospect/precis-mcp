@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Stop (or restore) the vLLM host's vLLM — ported from cluster-desk's
+# castor-vllm-stop.sh (2026-10-15, gr489474).
+# vllm/vllm-openai:v0.20.1 serves corrupt gpt-oss-120b output on GB10 (vllm#37030)
+# while holding ~85 GB of the host's unified memory. Nothing in prod routing uses
+# it (llm_call_log: 0 gpt-oss calls in 3 days; no app_settings chain names it).
+# Touches ONLY the `vllm` systemd unit and its `vllm` docker container.
+#
+#   scripts/host-ops/vllm-stop            # stop + disable, print memory before/after
+#   scripts/host-ops/vllm-stop --start    # enable + start again (model load ~14 min)
+#   scripts/host-ops/vllm-stop --host <h> # override the host
+#
+# The host is the single member of the overlay's `vllm_serving` group; --host
+# overrides it (needed before lanes-overlay creates that group). A later
+# 49-vllm play (host-lanes phase C) re-enables and starts it.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: vllm-stop [--host <name>] [--start]
+
+Stop + disable the vllm systemd unit and its docker container on the vLLM
+host (default: the overlay's vllm_serving group member; --host overrides).
+--start re-enables, starts and waits for /health (model load ~14 min).
+Refuses when sglang is active on the host.
+Env: VLLM_STOP_SLEEP_S overrides the settle/health sleeps (tests).
+EOF
+}
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/pgb-host.sh
+. "${_HERE}/../lib/pgb-host.sh"
+
+HOST=""; START=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --start) START=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+if [[ -z "$HOST" ]]; then
+  HOST="$(inventory_group_hosts vllm_serving || true)"
+  HOST="${HOST%%$'\n'*}"
+  [[ -n "$HOST" ]] || {
+    echo "no --host and no 'vllm_serving' group member in the inventory overlay" >&2
+    exit 2; }
+fi
+
+O=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+c() { ssh "${O[@]}" "$HOST" "$@"; }
+nap() { sleep "${VLLM_STOP_SLEEP_S:-$1}"; }
+mem() { echo "[$(date -u +%H:%M:%SZ)] $1: $(c 'free -g | sed -n 2p')"; }
+
+if (( START )); then
+  mem before
+  c 'sudo -n systemctl enable --now vllm && systemctl is-active vllm'
+  echo "waiting for /health (up to 20 min)"
+  for _ in $(seq 1 40); do
+    c 'curl -sf -o /dev/null localhost:8000/health' && { echo "vLLM healthy"; break; }
+    nap 30
+  done
+  mem after
+  exit 0
+fi
+
+c 'systemctl is-active sglang 2>/dev/null | grep -qx active' && { echo "REFUSE: sglang is active on $HOST; this script only handles vllm" >&2; exit 1; }
+mem before
+c 'sudo -n systemctl disable --now vllm; systemctl is-active vllm || true'
+# The unit's ExecStop should remove the container; make sure.
+c 'if docker ps --format "{{.Names}}" | grep -qx vllm; then docker stop -t 60 vllm >/dev/null && echo "container stopped"; else echo "container gone"; fi'
+nap 20
+mem after
+c 'nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null || true'
