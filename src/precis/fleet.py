@@ -45,6 +45,7 @@ REPORTER_FIELDS: tuple[str, ...] = (
     "window_name",
     "attach",
     "exceptions",
+    "via",
 )
 #: Fields only the coordinator edits; a report never touches them.
 COORDINATOR_FIELDS: tuple[str, ...] = ("assigned", "slice", "note")
@@ -123,6 +124,7 @@ def _agent_fields(row: dict[str, Any], host: str, codes: list[str]) -> dict[str,
         "window_name": tmux.get("window_name") if isinstance(tmux, dict) else None,
         "attach": row.get("attach") or None,
         "exceptions": sorted(set(codes)),
+        "via": row.get("via") or None,
     }
 
 
@@ -177,8 +179,19 @@ def apply_report(
     report: dict[str, Any],
     now: datetime | None = None,
 ) -> ReportResult:
-    """Fold one host's ``fleet-report --json`` into fleet rows (one tx)."""
+    """Fold one host's ``fleet-report --json`` into fleet rows (one tx).
+
+    A ``report['partial']`` push (``fleet-report --hook``: one session
+    reporting only itself) upserts its rows and keeps the host fresh but
+    never marks absent rows dead and never clobbers ``quota`` or
+    ``exceptions_hash`` it did not measure. A row pushed with
+    ``via='hook'`` also survives a full report's dead-marking: the session
+    owns its own liveness and says ``dead`` on SessionEnd; a crashed one
+    ages out in the view. A full report that sees the same key patches
+    ``via`` back to None and owns liveness again.
+    """
     now = now or datetime.now(UTC)
+    partial = bool(report.get("partial"))
     wanted = _fold_rows(report, host)
     res = ReportResult()
     hkey = host_key(host)
@@ -187,10 +200,13 @@ def apply_report(
         "key": hkey,
         "host": host,
         "reported_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "quota": report.get("quota") or {},
         "reporter_version": report.get("version"),
-        "exceptions_hash": exceptions_hash(report),
     }
+    if not partial:
+        host_fields["quota"] = report.get("quota") or {}
+        host_fields["exceptions_hash"] = exceptions_hash(report)
+    elif report.get("quota"):
+        host_fields["quota"] = report["quota"]
     with store.tx() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"fleet:{host}",))
         rows = conn.execute(
@@ -222,7 +238,12 @@ def apply_report(
                 res.unchanged += 1
 
         for key, (ref_id, old) in existing.items():
-            if old.get("type") != "agent" or key in wanted:
+            if (
+                partial
+                or old.get("type") != "agent"
+                or key in wanted
+                or old.get("via") == "hook"
+            ):
                 continue
             if old.get("state") != "dead":
                 store.update_ref(ref_id, meta_patch=_DEAD_PATCH, conn=conn)

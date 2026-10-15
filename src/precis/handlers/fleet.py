@@ -5,7 +5,9 @@ One numeric ref per agent tree (``meta.type='agent'``) and one per host
 owns ``assigned`` / ``slice`` / ``note``. Not embedded, not searchable.
 
     - put(kind='fleet', mode='report', args={'host', 'report'}) — a
-      collector's ``scripts/fleet-report --json`` output (the only put)
+      collector's ``scripts/fleet-report --json`` output (the only put);
+      ``report['partial']`` marks a session-hook push (``--hook``): upserts
+      only, never dead-marks or clobbers host quota/exceptions_hash
     - edit(kind='fleet', id=…, mode='replace', args={'assigned': …}) —
       coordinator-owned fields only
     - get(kind='fleet')            — the fisheye (EXCEPTIONS / READY / AGENTS / QUOTA)

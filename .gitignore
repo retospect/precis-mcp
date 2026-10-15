@@ -67,8 +67,10 @@ board*.svg
 
 # devin/windsurf: ignore session state, but TRACK the shareable
 # workflows (ported from .claude/commands/) so they ship with the repo.
+# hooks.v1.json is also shareable: it wires the fleet session-hook push.
 .devin/*
 !.devin/workflows/
+!.devin/hooks.v1.json
 **/.windsurf
 
 # Claude Code: ignore session state (worktrees, transcripts, todos,

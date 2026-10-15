@@ -45,7 +45,7 @@ READY lists trees whose `.claude/purpose` first line reads `<tree> at
 
 | type | key | fields |
 |---|---|---|
-| agent | `vendor:host:project:tree` | reporter-owned: `branch purpose state last_active ctx_pct dirty ahead behind pane tmux window_name attach exceptions`; coordinator-owned: `assigned slice note` |
+| agent | `vendor:host:project:tree` | reporter-owned: `branch purpose state last_active ctx_pct dirty ahead behind pane tmux window_name attach exceptions via`; coordinator-owned: `assigned slice note` |
 | host | `host:<host>` | `reported_at quota reporter_version exceptions_hash` |
 
 State: `working idle asking waiting dead`. One row per vendor per tree. A
@@ -68,3 +68,18 @@ Collector, on each host: `scripts/fleet-report --push` (set
 `PRECIS_FLEET_MCP_URL` overrides the endpoint). `--remote HOST` pushes
 another host's report through this one. Operator install/scheduling of
 the push lives in `scripts/fleet-report-install --help` (launchd, macOS).
+
+Session-hook push: `scripts/fleet-report --hook --push` reports only the
+calling session (state from `--state` or the `hook_event_name` on stdin;
+ctx% from the own pane footer, else the Claude transcript; tmux target
+from `$TMUX_PANE`) as a *partial* report. A partial report upserts rows
+and keeps the host fresh but never dead-marks absent rows and never
+clobbers host `quota`/`exceptions_hash`. Its rows carry `via: "hook"`: a
+full host report patches the fields it sees but does not dead-mark a
+hook-owned row (the session says `dead` itself on SessionEnd). Wiring:
+`.devin/hooks.v1.json` in this repo covers Devin
+(SessionStart/UserPromptSubmit → working, PermissionRequest → waiting,
+Stop → idle, SessionEnd → dead); the Claude `.claude/settings.json`
+entry and the disable knob live in docs/runbooks/fleet-session-push.md.
+Hook mode never breaks the session — push failures go to stderr with
+exit 0.

@@ -18,6 +18,13 @@ Step 2 collector: `--push` POSTs the report to the local precis HTTP MCP as
 http://127.0.0.1:8765/mcp; bearer from PRECIS_MCP_TOKEN). `--remote HOST`
 (repeatable) runs this script on HOST over ssh and pushes that host's report.
 Without those flags it stays read-only.
+
+Session-hook collector: `--hook` reports only the calling session as a
+one-row partial report (the session's own state and context fill, not a
+host scan), for harness lifecycle hooks (SessionStart/Stop/SessionEnd;
+.devin/hooks.v1.json wires Devin, a .claude/settings.json entry wires
+Claude). `--hook --push` sends it; hook mode never breaks the session
+(failures go to stderr, exit 0; PRECIS_FLEET_HOOK=0 disables).
 """
 
 from __future__ import annotations
@@ -335,8 +342,11 @@ def newest(paths) -> Path | None:
 def claude_session(cwd: str, window: int | None) -> dict | None:
     """State from the newest transcript for this cwd (None when absent)."""
     f = newest(claude_dir(cwd).glob("*.jsonl"))
-    if f is None:
-        return None
+    return claude_transcript(f, window) if f else None
+
+
+def claude_transcript(f: Path, window: int | None) -> dict:
+    """State and context fill from one Claude transcript file."""
     mtime = f.stat().st_mtime
     entries = [d for d in json_tail(f) if d.get("type") in ("assistant", "user")]
     ctx = model = None
@@ -706,6 +716,131 @@ def render(rep: dict) -> str:
 # ---------------------------------------------------------------- push
 
 
+# ---------------------------------------------------------------- hook mode
+
+#: hook_event_name -> state for sessions that push their own row
+#: (``--state`` wins when the harness passes one explicitly).
+HOOK_STATES = {
+    "sessionstart": "working",
+    "userpromptsubmit": "working",
+    "pretooluse": "working",
+    "posttooluse": "working",
+    "precompact": "working",
+    "postcompaction": "working",
+    "notification": "waiting",
+    "permissionrequest": "waiting",
+    "stop": "idle",
+    "subagentstop": "idle",
+    "sessionend": "dead",
+}
+
+
+def detect_vendor() -> str:
+    """Which harness is calling, from the environment (lowest precedence)."""
+    agent = (os.environ.get("AI_AGENT") or "").lower()
+    for v in ("claude", "codex", "devin"):
+        if agent.startswith(v):
+            return v
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_PROJECT_DIR"):
+        return "claude"
+    if os.environ.get("CODEX_HOME"):
+        return "codex"
+    return "agent"
+
+
+def hook_stdin() -> dict:
+    """The hook payload on stdin (``{}`` when absent or not JSON)."""
+    if sys.stdin.isatty():
+        return {}
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hook_report(
+    vendor: str | None, state: str | None, window: int | None
+) -> dict | None:
+    """A one-row ``partial`` report for the calling session; None when the
+    cwd is not inside a git worktree."""
+    data = hook_stdin()
+    cwd = str(data.get("cwd") or Path.cwd())
+    wt = worktree_info(cwd)
+    if wt is None:
+        return None
+    t = now_ts()
+    pane = None
+    pane_id = os.environ.get("TMUX_PANE")
+    if pane_id:
+        pane = next((p for p in tmux_panes() if p["pane_id"] == pane_id), None)
+    if vendor is None:
+        vendor = vendor_of(pane["command"]) if pane else detect_vendor()
+    if state is None:
+        state = HOOK_STATES.get(str(data.get("hook_event_name") or "").lower())
+    state = state or "unknown"
+    ctx_pct = None
+    if pane and state != "dead":
+        ctx_pct = pane_ctx_pct(pane_screen(pane["pane_id"]))
+    if ctx_pct is None and vendor == "claude" and state != "dead":
+        tp = data.get("transcript_path")
+        try:
+            sess = (
+                claude_transcript(Path(str(tp)), window)
+                if tp
+                else claude_session(wt["path"], window)
+            )
+        except OSError:
+            sess = None
+        if sess:
+            ctx_pct = sess["ctx_pct"]
+    live = pane if pane and state != "dead" else None
+    row = {
+        "vendor": vendor,
+        "host": socket.gethostname().split(".")[0],
+        "project": wt["project"],
+        "tree": wt["tree"],
+        "path": wt["path"],
+        "branch": wt["branch"],
+        "dirty": wt["dirty"],
+        "ahead": wt["ahead"],
+        "behind": wt["behind"],
+        "purpose": wt["purpose"],
+        "state": state,
+        "quiet_min": 0.0,
+        "last_active": iso(t),
+        "ctx_pct": ctx_pct,
+        "tmux": {
+            k: live[k]
+            for k in (
+                "session",
+                "window",
+                "window_name",
+                "pane_id",
+                "pane_pid",
+                "command",
+            )
+        }
+        if live
+        else None,
+        "attach": f"tmux attach -t {live['session']}:{live['window']}"
+        if live
+        else None,
+        "via": "hook",
+    }
+    rep = {
+        "host": row["host"],
+        "version": REPORT_VERSION,
+        "generated": iso(t),
+        "rows": [row],
+        # A partial report: apply_report skips dead-marking and keeps the
+        # host row's quota/exceptions_hash (we measured neither).
+        "partial": True,
+    }
+    rep["exceptions"] = exceptions([row], 30.0)
+    return rep
+
+
 class PushError(Exception):
     pass
 
@@ -764,14 +899,15 @@ def mcp_post(
     return (d if isinstance(d, dict) else None), sid
 
 
-def push_report(rep: dict, url: str, token: str | None) -> str:
+def push_report(rep: dict, url: str, token: str | None, timeout: float = 30.0) -> str:
     """initialize -> notifications/initialized -> tools/call put. Returns the
     tool's text reply; raises PushError on any failure."""
     init, sid = mcp_post(
         url,
         token,
         None,
-        {
+        timeout=timeout,
+        msg={
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
@@ -784,12 +920,19 @@ def push_report(rep: dict, url: str, token: str | None) -> str:
     )
     if not init or "error" in init:
         raise PushError(f"initialize failed: {(init or {}).get('error')}")
-    mcp_post(url, token, sid, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    mcp_post(
+        url,
+        token,
+        sid,
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        timeout=timeout,
+    )
     reply, _ = mcp_post(
         url,
         token,
         sid,
-        {
+        timeout=timeout,
+        msg={
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
@@ -859,6 +1002,39 @@ def remote_report(host: str, repo: str = "~/precis-mcp") -> dict:
     return rep
 
 
+def mcp_token() -> str | None:
+    token = os.environ.get("PRECIS_MCP_TOKEN")
+    if not token:
+        token_file = os.environ.get("PRECIS_MCP_TOKEN_FILE")
+        if token_file:
+            try:
+                token = Path(token_file).read_text(encoding="utf-8").strip()
+            except OSError:
+                token = None
+    return token
+
+
+def hook_main(args: argparse.Namespace) -> int:
+    """``--hook``: report just this session. Never breaks the session: push
+    failures go to stderr and the exit code stays 0. ``PRECIS_FLEET_HOOK=0``
+    disables the push entirely."""
+    if os.environ.get("PRECIS_FLEET_HOOK", "").lower() in ("0", "off", "false"):
+        return 0
+    rep = hook_report(args.vendor, args.state, args.claude_window)
+    if rep is None:
+        print("fleet-report --hook: not inside a git worktree", file=sys.stderr)
+        return 0
+    if not args.push:
+        print(json.dumps(rep, indent=2) if args.json else render(rep))
+        return 0
+    url = os.environ.get("PRECIS_FLEET_MCP_URL") or DEFAULT_MCP_URL
+    try:
+        push_report(rep, url, mcp_token(), timeout=8.0)
+    except PushError as e:
+        print(f"fleet-report --hook: {e}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Read-only per-host agent session report.")
     ap.add_argument(
@@ -901,21 +1077,34 @@ def main(argv: list[str] | None = None) -> int:
         metavar="HOST",
         help="run on HOST over ssh and push its report (repeatable)",
     )
+    ap.add_argument(
+        "--hook",
+        action="store_true",
+        help="session-hook mode: report only the calling session as a "
+        "partial report (reads the hook payload on stdin; combine with "
+        "--push to send it)",
+    )
+    ap.add_argument(
+        "--vendor",
+        default=None,
+        help="vendor for --hook (default: the pane command, else the "
+        "AI_AGENT/CLAUDECODE/CODEX_HOME environment)",
+    )
+    ap.add_argument(
+        "--state",
+        default=None,
+        help="state for --hook (default: mapped from hook_event_name)",
+    )
     args = ap.parse_args(argv)
+    if args.hook:
+        return hook_main(args)
     repos = args.repo or [str(Path(__file__).resolve().parent.parent)]
     if not args.push and not args.remote:
         rep = collect(repos, args.quiet_min, args.since_min, args.claude_window)
         print(json.dumps(rep, indent=2) if args.json else render(rep))
         return 0
     url = os.environ.get("PRECIS_FLEET_MCP_URL") or DEFAULT_MCP_URL
-    token = os.environ.get("PRECIS_MCP_TOKEN")
-    if not token:
-        token_file = os.environ.get("PRECIS_MCP_TOKEN_FILE")
-        if token_file:
-            try:
-                token = Path(token_file).read_text(encoding="utf-8").strip()
-            except OSError:
-                token = None
+    token = mcp_token()
     status = 0
 
     def push(label: str, make) -> None:

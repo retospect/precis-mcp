@@ -395,3 +395,52 @@ def test_gc_retires_rows_of_a_silent_host(h: FleetHandler) -> None:
     )
     agent(h, KEY)
     agent(h, f"host:{HOST}")
+
+
+def test_partial_report_upserts_but_never_dead_marks(h: FleetHandler) -> None:
+    other = f"claude:{HOST}:proj:other"
+    send(h, rep([row(), row(tree="other")]))
+    out = send(h, rep([row(state="idle")], partial=True))
+    assert "0 marked dead" in out
+    assert agent(h, KEY).meta["state"] == "idle"
+    assert agent(h, other).meta["state"] == "working"
+
+
+def test_partial_report_preserves_host_quota_and_hash(h: FleetHandler) -> None:
+    send(
+        h,
+        rep(
+            [row()],
+            quota={"codex": {"primary": {"used_percent": 12.0}}},
+            exceptions=[
+                {"who": f"claude@{HOST}/proj/main", "reason": "waiting on approval"}
+            ],
+        ),
+    )
+    before = agent(h, f"host:{HOST}").meta
+    send(h, rep([row()], partial=True))
+    hm = agent(h, f"host:{HOST}").meta
+    assert hm["quota"]["codex"]["primary"]["used_percent"] == 12.0
+    assert hm["exceptions_hash"] == before["exceptions_hash"]
+    assert hm["reported_at"]
+
+
+def test_hook_row_survives_a_full_report(h: FleetHandler) -> None:
+    send(h, rep([row(via="hook")]))
+    send(h, rep([row(tree="other")]))  # full report; the hook key is absent
+    assert agent(h, KEY).meta["state"] == "working"  # not dead-marked
+
+
+def test_full_report_claims_a_seen_hook_row(h: FleetHandler) -> None:
+    send(h, rep([row(via="hook")]))
+    send(h, rep([row(state="idle")]))  # the collector sees the same key
+    m = agent(h, KEY).meta
+    assert (m["state"], m.get("via")) == ("idle", None)
+    send(h, rep([row(tree="other")]))  # now absent: dead-marks again
+    assert agent(h, KEY).meta["state"] == "dead"
+
+
+def test_via_is_reporter_owned(h: FleetHandler) -> None:
+    send(h, rep([row()]))
+    with pytest.raises(BadInput, match="reporter-owned"):
+        h.edit(id=KEY, via="hook")

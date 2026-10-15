@@ -272,6 +272,20 @@ transcript usage; agent rows carry `tmux` (`session:window`) and
 `window_name`, and a `<tree> at <sha>: …` purpose marks the row
 finished-with-tip (READY section, `done@<sha>` in AGENTS).
 
+**Session-hook push (2026-10-15, gr486948):** `scripts/fleet-report
+--hook --push` lets a session report only itself — a one-row *partial*
+report (`report['partial']`) that upserts its row and refreshes the host
+without dead-marking absent rows or clobbering `quota`/
+`exceptions_hash`. Hook rows carry `via='hook'`: a full collector report
+patches fields it sees but leaves liveness to the session (SessionEnd
+pushes `dead`); a full report that sees the same key patches `via` back
+and owns it again. Wired for Devin by `.devin/hooks.v1.json`
+(SessionStart/UserPromptSubmit → working, PermissionRequest → waiting,
+Stop → idle, SessionEnd → dead). Claude needs the same entries under
+`hooks` in `.claude/settings.json`; settings.json is user-owned, so the
+repo ships the script and the recipe — the exact JSON and the disable
+knob are in docs/runbooks/fleet-session-push.md.
+
 Write-path tests on the dev DB. Fallback when prod precis is down: local
 files (`round.json`, `.claude/purpose`, `inflight`) keep working.
 

@@ -655,3 +655,125 @@ def test_remote_runs_script_over_ssh_and_pushes_that_report(env, monkeypatch):
     assert out.strip() == "someone@remote: reported ok"
     sent = mcp.posts[2][1]["params"]["arguments"]["args"]
     assert sent["report"]["rows"] == [] and sent["host"]
+
+
+def run_hook(e, payload: dict, *args: str):
+    return subprocess.run(
+        [str(SCRIPT), "--hook", *args],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def hook_json(e, payload: dict, *args: str) -> dict:
+    r = run_hook(e, payload, "--json", *args)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_hook_reports_only_the_calling_session(env, monkeypatch):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    rep = hook_json(
+        env,
+        {"cwd": str(env.repo), "hook_event_name": "SessionStart"},
+        "--vendor",
+        "devin",
+    )
+    assert rep["partial"] is True
+    (row,) = rep["rows"]
+    assert (row["vendor"], row["project"], row["tree"]) == ("devin", "proj", "proj")
+    assert (row["state"], row["via"], row["purpose"]) == (
+        "working",
+        "hook",
+        "build the thing",
+    )
+    assert row["tmux"] is None and row["attach"] is None
+
+
+def test_hook_state_flag_beats_event_and_dead_drops_the_pane(env, monkeypatch):
+    env.panes.write_text(pane_line(env, command="devin"), encoding="utf-8")
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    rep = hook_json(
+        env,
+        {"cwd": str(env.repo), "hook_event_name": "SessionStart"},
+        "--vendor",
+        "devin",
+        "--state",
+        "dead",
+    )
+    row = rep["rows"][0]
+    assert row["state"] == "dead"
+    assert row["tmux"] is None and row["attach"] is None
+
+
+def test_hook_ctx_and_vendor_from_the_own_pane(env, monkeypatch):
+    env.panes.write_text(pane_line(env, command="devin"), encoding="utf-8")
+    env.capture.write_text(
+        "SWE-2 High            Context: 212k / 262k tokens (81%)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    rep = hook_json(env, {"cwd": str(env.repo)})
+    row = rep["rows"][0]
+    assert row["ctx_pct"] == 81.0
+    assert row["vendor"] == "devin"  # detected from the pane command
+    assert row["tmux"]["session"] == "main" and row["attach"] == "tmux attach -t main:3"
+    assert row["state"] == "unknown"  # no --state and no hook_event_name
+
+
+def test_hook_ctx_from_the_claude_transcript(env, monkeypatch):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    t = env.tmp_path / "t.jsonl"
+    write_jsonl(t, [assistant([{"type": "text"}], "end_turn", 5)])
+    rep = hook_json(
+        env,
+        {
+            "cwd": str(env.repo),
+            "transcript_path": str(t),
+            "hook_event_name": "Stop",
+        },
+        "--vendor",
+        "claude",
+    )
+    row = rep["rows"][0]
+    assert row["ctx_pct"] == 60.0 and row["state"] == "idle"
+
+
+def test_hook_push_sends_the_partial_report(env, monkeypatch):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    with FakeMcp(False) as mcp:
+        monkeypatch.setenv("PRECIS_FLEET_MCP_URL", mcp.url)
+        monkeypatch.setenv("PRECIS_MCP_TOKEN", "tok-secret")
+        r = run_hook(
+            env,
+            {"cwd": str(env.repo)},
+            "--vendor",
+            "devin",
+            "--state",
+            "idle",
+            "--push",
+        )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == ""  # hooks stay silent on stdout
+    sent = mcp.posts[2][1]["params"]["arguments"]["args"]["report"]
+    assert sent["partial"] is True
+    (row,) = sent["rows"]
+    assert (row["via"], row["state"], row["vendor"]) == ("hook", "idle", "devin")
+
+
+def test_hook_push_failure_never_breaks_the_session(env, monkeypatch):
+    monkeypatch.setenv("PRECIS_FLEET_MCP_URL", "http://127.0.0.1:9/mcp")
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "tok-secret")
+    r = run_hook(env, {"cwd": str(env.repo)}, "--vendor", "devin", "--push")
+    assert r.returncode == 0
+    assert "cannot reach" in r.stderr
+    assert "tok-secret" not in r.stdout + r.stderr
+
+
+def test_hook_outside_a_worktree_is_a_noop(env):
+    r = run_hook(env, {"cwd": str(env.tmp_path)}, "--vendor", "devin", "--json")
+    assert r.returncode == 0
+    assert r.stdout == "" and "worktree" in r.stderr
