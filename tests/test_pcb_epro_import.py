@@ -357,6 +357,76 @@ def test_the_rule_table_lands_in_net_classes_and_meta(store) -> None:
     assert pours[0]["layer"] == "B.Cu" and len(pours[0]["polygon"]) >= 3
 
 
+def _forget_rules(store, ref_id: int, *, keep: dict[str, str] | None = None) -> None:
+    """Make an import look like one from before 8e4e7b614 (gr488912: taz15
+    and taz15-blank): no meta rule passthrough, no class on any net —
+    except the ``keep`` ``{net: class}`` set here by hand."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'epro_rules' - 'epro_board' "
+            "- 'epro_pours' WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE pcb_nets SET net_class = NULL WHERE ref_id = %s", (ref_id,)
+        )
+        for net, cls in (keep or {}).items():
+            conn.execute(
+                "UPDATE pcb_nets SET net_class = %s WHERE ref_id = %s AND name = %s",
+                (cls, ref_id, net),
+            )
+        conn.commit()
+
+
+def test_update_brings_the_rule_table_to_an_import_that_predates_it(store) -> None:
+    """gr488912: a re-import with --update keeps the ref id and gives the
+    old import the table — meta passthrough, classes, and each unclassed
+    net's class (without the last, the classes bind nothing)."""
+    first = pcb_epro.import_epro(store, _rules_stream(), slug="epro-rules-up")
+    _forget_rules(store, first.ref_id)
+    result = pcb_epro.import_epro(
+        store, _rules_stream(), slug="epro-rules-up", update=True
+    )
+    assert result.ref_id == first.ref_id
+    plan = result.update
+    assert plan is not None
+    assert sorted(plan.classed) == ["CURVE", "GND", "SIG", "TEE"]
+    assert "  classed 4 unclassed net(s) from the source's rule table" in plan.lines()
+    graph = store.pcb_graph(first.ref_id)
+    assert {n["name"]: n["net_class"] for n in graph["nets"]} == dict.fromkeys(
+        ["SIG", "GND", "CURVE", "TEE"], "Default"
+    )
+    assert set(graph["net_classes"]) == {"Default", "Wide"}
+    meta = store.get_ref(kind="pcb", id="epro-rules-up").meta or {}
+    assert len(meta["epro_rules"]) == 5
+    assert meta["epro_pours"]
+
+
+def test_update_keeps_a_net_class_set_on_the_board(store) -> None:
+    first = pcb_epro.import_epro(store, _rules_stream(), slug="epro-rules-kept")
+    _forget_rules(store, first.ref_id, keep={"GND": "Wide"})
+    result = pcb_epro.import_epro(
+        store, _rules_stream(), slug="epro-rules-kept", update=True, dry_run=True
+    )
+    assert result.update is not None
+    assert "GND" not in result.update.classed
+    assert result.update.class_differs == ["GND: board Wide, source Default"]
+    assert "  net class GND: board Wide, source Default (kept)" in (
+        result.update.lines()
+    )
+    # a dry run writes nothing: SIG is still unclassed
+    nets = {n["name"]: n["net_class"] for n in store.pcb_graph(first.ref_id)["nets"]}
+    assert nets["SIG"] is None
+    pcb_epro.import_epro(store, _rules_stream(), slug="epro-rules-kept", update=True)
+    nets = {n["name"]: n["net_class"] for n in store.pcb_graph(first.ref_id)["nets"]}
+    assert nets == {
+        "GND": "Wide",
+        "SIG": "Default",
+        "CURVE": "Default",
+        "TEE": "Default",
+    }
+
+
 # ── catalog identity + local-vs-catalog footprints (slice 3, Reto 2026-10-14)
 _CATALOG_ATTRS = (
     (400, "c1", "Supplier", "LCSC"),

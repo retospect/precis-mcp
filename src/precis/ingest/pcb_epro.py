@@ -224,6 +224,14 @@ class UpdatePlan:
     #: Live measures with a ``feature_id`` operand on a retired legacy hole
     #: (one warning line each). Reported, never edited or deleted.
     legacy_hole_measures: list[str] = field(default_factory=list)
+    #: Existing nets the board leaves unclassed but the source's rule table
+    #: classes (an import from before the table was read, 8e4e7b614 —
+    #: gr488912). Applied: no class at all means the fab floor, never a
+    #: decision made here.
+    classed: dict[str, str] = field(default_factory=dict)
+    #: ``"GND: board Power, source Default"`` — a class set on the board
+    #: is kept, as a rewired pin is.
+    class_differs: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = [
@@ -255,6 +263,12 @@ class UpdatePlan:
                 f"holes, which follow the part"
             )
         out += [f"  warning: {w}" for w in self.legacy_hole_measures]
+        if self.classed:
+            out.append(
+                f"  classed {len(self.classed)} unclassed net(s) from the "
+                f"source's rule table"
+            )
+        out += [f"  net class {w} (kept)" for w in self.class_differs]
         if self.features_added or self.features_missing:
             out.append(
                 f"  features: {self.features_added} in the source but not on "
@@ -350,6 +364,22 @@ def plan_update(
             plan.rewired.append(
                 f"{key[0]}.{key[1]}: board {b or 'unconnected'}, "
                 f"source {s or 'unconnected'}"
+            )
+
+    # A stored net the source names only by copper (fresh routed intake
+    # adds those) takes the default class, as that intake gives it.
+    source_classes = {str(n["name"]): n.get("net_class") for n in design.nets}
+    default_class = next((c for c in source_classes.values() if c), None)
+    for n in graph["nets"]:
+        name, board_class = str(n["name"]), n.get("net_class")
+        source_class = source_classes.get(name, default_class)
+        if not source_class:
+            continue
+        if board_class is None:
+            plan.classed[name] = str(source_class)
+        elif board_class != source_class:
+            plan.class_differs.append(
+                f"{name}: board {board_class}, source {source_class}"
             )
 
     have = [_feature_key(f) for f in features]
@@ -1355,7 +1385,16 @@ def _update(
                 slug=slug,
                 title=existing.title,
                 components=components,
-                nets=[n for n in design.nets if n["name"] in wired],
+                # An unclassed existing net carries only its name and
+                # class, which pcb_apply patches onto the row.
+                nets=[
+                    *(n for n in design.nets if n["name"] in wired),
+                    *(
+                        {"name": name, "net_class": cls}
+                        for name, cls in plan.classed.items()
+                        if name not in wired
+                    ),
+                ],
                 connections=connections,
                 features=[],
                 footprints=[f for f in design.footprints if f["name"] in used],

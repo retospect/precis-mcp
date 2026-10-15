@@ -57,7 +57,9 @@ copper by default. Arc centres, handedness, nets and layers survive;
 or certify the source DRC. Real files stay local; no native file-import op.
 `--dry-run` writes nothing. `--copper none` retains measurement-only intake;
 partial `--update` defaults to none and refuses fixed (changed copper may
-not match the deliberately retained netlist/outline). Use a fresh preview
+not match the deliberately retained netlist/outline). `--update` keeps the
+ref id and refreshes the rule table: classes, and the class of every net
+the board left unclassed (a class set on the board is kept and reported). Use a fresh preview
 slug for a faithful routed copy. Pinout-preview is an unsaved pin proposal
 on an existing board, not a source-board importer; it never adds copper.
 
