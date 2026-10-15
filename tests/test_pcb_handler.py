@@ -1187,6 +1187,29 @@ def test_op_route_corridor_and_escape_flags(store, monkeypatch):
         handler._enqueue_op(ref, "route", {"corridor": -1})
 
 
+def test_op_route_accepts_corridor_and_escape_opts(pcb, store):
+    """``corridor``/``escape`` must be in ``ARGS_KEYS['put']`` — the job
+    schema took them but dispatch refused the ``put()`` args outright,
+    a bug the ``_enqueue_op`` tests could not see because they enter
+    below the dispatch validation."""
+    pcb.put(id="route-opts", args=_CROSSED)
+    resp = pcb.put(
+        id="route-opts", args={"op": "route", "corridor": 5, "escape": "plaza"}
+    )
+    assert "enqueued" in resp.body
+    ref = store.get_ref(kind="pcb", id="route-opts")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'params'->>'corridor', meta->'params'->>'escape' "
+            "FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None
+    assert float(row[0]) == 5.0 and row[1] == "plaza"
+
+
 def test_op_route_enqueues_a_pcb_route_job(pcb, store):
     pcb.put(id="route-enqueue", args=_CROSSED)
     resp = pcb.put(id="route-enqueue", args={"op": "route"})
@@ -2206,6 +2229,35 @@ def test_congestion_view_appends_the_capacity_map(pcb):
     assert "no route run yet" in body
     assert "# capacity map" in body
     assert "strict flow" in body
+
+
+def test_congestion_capacity_map_is_cached(pcb, monkeypatch):
+    """The strict flow-graph build costs seconds; a second read of an
+    unchanged board must reuse it (the cache keys on content_hash), and
+    a board edit must rebuild."""
+    from precis.pcb import globalplan as pcb_globalplan
+
+    calls = 0
+    real = pcb_globalplan.build_tile_graph
+
+    def counting(*args: Any, **kwargs: Any):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pcb_globalplan, "build_tile_graph", counting)
+    pcb.put(id="cong-cache", args=_CROSSED)
+    pcb.get(id="cong-cache", view="congestion")
+    assert calls == 1
+    pcb.get(id="cong-cache", view="congestion")
+    assert calls == 1
+    # A board edit changes the content hash: the map rebuilds.
+    pcb.put(
+        id="cong-cache",
+        args={"op": "move", "refdes": "A", "x": 10.0, "y": 10.0},
+    )
+    pcb.get(id="cong-cache", view="congestion")
+    assert calls == 2
 
 
 def test_congestion_view_flags_a_digest_whose_nets_were_ripped_since(pcb, store):

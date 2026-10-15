@@ -208,6 +208,12 @@ _STATUS_VIEWS = ("route-status",)
 #: authored plane assignments. ``stackup`` (gr486893) is the board's
 #: copper stackup as the router sees it — role, plane net, routable.
 _SESSION_VIEWS = ("congestion", "planes", "stackup")
+
+#: ``view='congestion'``'s capacity map, one entry per ref keyed by the
+#: board's ``content_hash`` — the strict flow-graph build costs seconds
+#: on a real board, and every input the map reads is inside that digest.
+_CAPACITY_MAP_CACHE: dict[int, tuple[str, str]] = {}
+
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
 #: rubber-band sketch off the IR. See :meth:`PcbHandler._render_svg`.
@@ -554,6 +560,8 @@ class PcbHandler(Handler):
                 "seed",
                 "warm_start",
                 "negotiate",
+                "corridor",
+                "escape",
                 "loop",
                 "moves",
                 "refdes",
@@ -4111,10 +4119,16 @@ class PcbHandler(Handler):
         per-layer rows of summed/min boundary track capacities measured
         as vertex-disjoint paths across each two-tile strip on the SAME
         static occupancy grid a route pass would start from, so a wall
-        the router hits is a wall the map shows. Built lazily on each
-        view (the grid is a few hundred ms on a small board), never
-        stored — a stored map could describe copper a later ``op='rip'``
-        removed. Empty string when the board has nothing to measure."""
+        the router hits is a wall the map shows. Empty string when the
+        board has nothing to measure.
+
+        The build costs seconds on a real board, so the rendered text is
+        cached in ``_CAPACITY_MAP_CACHE`` keyed on the board's
+        ``content_hash`` — every map input (placement, outline, fixed
+        copper, swaps, planes, classes) is inside that digest, so a
+        changed board always rebuilds and an unchanged board's repeat
+        reads are free. Realized-route status is deliberately NOT in the
+        digest: the map describes the pre-route grid, not the copper."""
         try:
             graph = self.store.pcb_graph(ref_id)
             if not graph.get("nets"):
@@ -4127,6 +4141,23 @@ class PcbHandler(Handler):
                 else []
             )
             features = self.store.pcb_features_list(ref_id)
+            pin_swaps = self.store.pcb_pin_swaps_list(ref_id)
+            planes = self.store.pcb_planes_list(ref_id)
+            key = pcb_session.content_hash(
+                graph,
+                {},
+                session_state={
+                    "features": features,
+                    "routes": self.store.pcb_routes_get(ref_id),
+                    "pin_swaps": pin_swaps,
+                    "planes": planes,
+                    "measures": self.store.pcb_measures_list(ref_id),
+                    "fixed_copper": fixed,
+                },
+            )
+            hit = _CAPACITY_MAP_CACHE.get(ref_id)
+            if hit is not None and hit[0] == key:
+                return hit[1]
             ir = pcb_session.build_ir(
                 graph,
                 outline=pcb_session.outline_from_features(features),
@@ -4135,14 +4166,12 @@ class PcbHandler(Handler):
                 local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
                 fixed_copper=fixed,
             )
-            pcb_session.apply_pin_swap_overrides(
-                ir, self.store.pcb_pin_swaps_list(ref_id)
-            )
+            pcb_session.apply_pin_swap_overrides(ir, pin_swaps)
             name_to_net = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
             layer_idx = {
                 str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
             }
-            for plane in self.store.pcb_planes_list(ref_id):
+            for plane in planes:
                 net_id = name_to_net.get(plane["net"])
                 li = layer_idx.get(plane["layer"])
                 if net_id is not None and li is not None:
@@ -4185,12 +4214,14 @@ class PcbHandler(Handler):
                 strict=True,
                 capacity="flow",
             )
-            return (
+            text = (
                 f"\n\n# capacity map — strict flow, tile {tgraph.tile_mm} mm, "
                 f"lane {track_mm + clearance_mm:.3f} mm "
                 f"(track {track_mm} + clearance {clearance_mm}, modal class)\n"
                 + "\n".join(tgraph.row_report)
             )
+            _CAPACITY_MAP_CACHE[ref_id] = (key, text)
+            return text
         except Exception as exc:  # the digest above still renders without it
             return f"\n\n# capacity map — unavailable ({exc})"
 
