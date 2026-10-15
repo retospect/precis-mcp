@@ -1472,6 +1472,16 @@ def _pad_shape(
     return maze.PadShape("circle", point[0], point[1], diameter, diameter)
 
 
+def _net_clearances(
+    rules_by_net: dict[int, NetRules], config: RealizeConfig
+) -> dict[int, float]:
+    """Each net's routing clearance: its class figure, floored at
+    ``config.clearance_mm``."""
+    return {
+        n: max(config.clearance_mm, r.clearance_mm) for n, r in rules_by_net.items()
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _RouteContext:
     """Everything a routing attempt is built from, before the first
@@ -1487,7 +1497,13 @@ class _RouteContext:
     rules_by_net: dict[int, NetRules]
     net_layers: dict[int, list[int]]
     net_layer_lock_fail: dict[int, str]
+    #: The smallest net clearance on the board: the grid's base figure and
+    #: what the pitch is cut from. ``net_clearance`` carries every net's
+    #: own; ``clearance_max`` the widest, for the board-edge inset and the
+    #: plane pours, which apply one figure to every net.
     clearance: float
+    net_clearance: dict[int, float]
+    clearance_max: float
     spec: maze.GridSpec
     plane_ids: list[int]
     route_ids: list[int]
@@ -1589,9 +1605,13 @@ def _route_context(
         net_layers[n] = layers_n
         if problem is not None:
             net_layer_lock_fail[n] = problem
-    clearance = max(
-        config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
-    )
+    # Per net, not one global max (slice 9, pcb-lazy-netlist-and-checks):
+    # one 0.4 mm HV class inflating every net to 0.4 mm made the 0.099 mm
+    # fabric unroutable. The grid keeps the smallest as its base and each
+    # wider net carries its difference (maze.py, "Per-net clearance").
+    net_clearance = _net_clearances(rules_by_net, config)
+    clearance = min(net_clearance.values())
+    clearance_max = max(net_clearance.values())
     # The board-edge inset is a DIFFERENT figure from inter-net clearance
     # (drc.check_board_edge_clearance reads board_edge_clearance_*_mm), and
     # it applies to the copper's edge, so half the widest COPPER FEATURE has
@@ -1627,7 +1647,7 @@ def _route_context(
             default=0.0,
         ),
     )
-    edge_inset = max(clearance, edge_min) + widest / 2.0
+    edge_inset = max(clearance_max, edge_min) + widest / 2.0
     # The coarsest cell the clearance survives. `maze` adds one cell of
     # slack to every keep-out, so a cell is extra clearance a fine-pitch
     # escape has to squeeze past. Measured on a 140-part 200 mm board
@@ -1691,6 +1711,8 @@ def _route_context(
         net_layers,
         net_layer_lock_fail,
         clearance,
+        net_clearance,
+        clearance_max,
         spec,
         plane_ids,
         route_ids,
@@ -1717,7 +1739,9 @@ def _static_route_grid(
     no routed net. The tile-capacity planner and the ``view='congestion'``
     capacity map measure this grid; the reorder passes each build their
     own through :func:`_route_pass` as before."""
-    grid = maze.OccupancyGrid(ctx.spec, clearance_mm=ctx.clearance)
+    grid = maze.OccupancyGrid(
+        ctx.spec, clearance_mm=ctx.clearance, net_clearance_mm=ctx.net_clearance
+    )
     grid.set_body_mask(ctx.body_mask)
     tracks, vias, unrouted, failed_pins = _claim_static(
         ir,
@@ -1789,6 +1813,7 @@ def _realize_maze(
     net_layers = ctx.net_layers
     net_layer_lock_fail = ctx.net_layer_lock_fail
     clearance = ctx.clearance
+    net_clearance = ctx.net_clearance
     spec = ctx.spec
     plane_ids = ctx.plane_ids
     route_ids = ctx.route_ids
@@ -1812,7 +1837,9 @@ def _realize_maze(
         """Up to ``config.route_passes`` passes, failures to the front."""
         nonlocal best, best_score
         for _attempt in range(max(1, config.route_passes)):
-            attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+            attempt_grid = maze.OccupancyGrid(
+                spec, clearance_mm=clearance, net_clearance_mm=net_clearance
+            )
             attempt_grid.set_body_mask(body_mask)
             accepted: list[int] | None = [] if preferred is not None else None
             outcome = _route_pass(
@@ -1923,8 +1950,8 @@ def _realize_maze(
         vias,
         unrouted,
         plane_ids,
-        clearance,
-        max(clearance, edge_min) + 0.01,
+        ctx.clearance_max,
+        max(ctx.clearance_max, edge_min) + 0.01,
         footprints,
         fixed_copper,
         npth_clearance_mm=_npth_clearance_mm(config),
@@ -1977,8 +2004,8 @@ def _realize_maze(
             vias,
             unrouted,
             plane_ids,
-            clearance,
-            max(clearance, edge_min) + 0.01,
+            ctx.clearance_max,
+            max(ctx.clearance_max, edge_min) + 0.01,
             footprints,
             fixed_copper,
             npth_clearance_mm=_npth_clearance_mm(config),
@@ -3063,7 +3090,11 @@ def _negotiate(
 
     ``config.negotiate_budget_s`` is checked before each net, so the
     wall-clock bound holds inside an iteration too."""
-    grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    grid = maze.OccupancyGrid(
+        spec,
+        clearance_mm=clearance,
+        net_clearance_mm=_net_clearances(rules_by_net, config),
+    )
     grid.set_body_mask(body_mask)
     _claim_static(
         ir,
@@ -5214,7 +5245,11 @@ def _stitch_plane_fragments(
         if not poly.is_empty:
             pour_polys.append((str(pour.get("net", "")), idx, poly))
 
-    grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    grid = maze.OccupancyGrid(
+        spec,
+        clearance_mm=clearance,
+        net_clearance_mm=_net_clearances(rules_by_net, config),
+    )
     _claim_fiducial_keepouts(grid, ir)
     _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
     _stamp_pads(grid, pads)

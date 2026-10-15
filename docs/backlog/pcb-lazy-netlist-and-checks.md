@@ -555,22 +555,6 @@ and changes only when the assignment changes; `pcb_pin_swaps` no longer
 exists after the migration and every reader that consulted it now reads
 the snapshot.
 
-### Slice 9 — per-net clearance in the maze grid (blocker for the HV board)
-
-`realize._realize_maze` builds the occupancy grid with ONE clearance:
-`clearance = max(config.clearance_mm, max(r.clearance_mm for r in
-rules_by_net.values()))`. Add a 0.4 mm HV class and every net inflates to
-0.4 mm; the 0.099 mm fabric becomes unroutable. Per-net clearance needs
-the grid to carry a per-net dilation, not one global number.
-`ewod-controller-and-hv-supply.md` Slice 4 owns the HV class end-to-end and
-names this as its Blocker 1; this slice is that blocker's fix, listed here
-because the matcher (Slice 6) costs against the same grid. Do not
-duplicate the HV-class work; land the grid change here, the class there.
-
-*Accept:* the two-net fixture from that Slice 4's acceptance (one 0.4 mm
-class, one default net) routes the default net at fab clearance and keeps
-0.4 mm around the HV net; the dogfood's realized count does not drop.
-
 ## Explicitly NOT in scope (follow-ons, with reasons)
 
 - **Shove placement.** There is none today: `courtyard_overlap`
@@ -680,7 +664,8 @@ class, one default net) routes the default net at fab clearance and keeps
   "one connected component"), `precis-pcb-ewod-help`.
 - Sibling docs to trim to pointers in the same commits:
   `ewod-controller-and-hv-supply.md` Defect A / Slice 1 (→ Slice 2 here),
-  its Slice 4 Blocker 1 (→ Slice 9 here); `pcb-ewod-multitile.md` ruling 6
+  its Slice 4 Blocker 1 (shipped as this doc's Slice 9: per-net clearance
+  in `maze.OccupancyGrid`); `pcb-ewod-multitile.md` ruling 6
   gets a "superseded by supply tagging" line.
 
 ## Open questions / decisions log

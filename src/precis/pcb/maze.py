@@ -30,6 +30,16 @@ routing net's own half-width, plus one cell for discretisation (a path is
 sampled at cell centres, and adjacent centres are up to ``pitch*sqrt(2)``
 apart). Same guarantee, evaluated with the widths actually involved.
 
+**Per-net clearance is the same split.** ``clearance_mm`` is the board's
+SMALLEST net clearance (it sets the pitch); a net whose class asks for
+more carries the difference as an extra (``net_clearance_mm``). Its
+claims grow by its extra and its queries by its extra, so two nets end up
+``base + extra_a + extra_b`` apart: at least ``max(c_a, c_b)``, exact
+whenever one side is at base. Two wide-class nets sit
+``c_a + c_b - base`` apart, more than they need; the alternative (per-
+owner dilation inside the search kernels) was not worth it for the one
+HV class a board carries.
+
 **Rip-up and retry** is by re-ordering, and it lives in
 :func:`precis.pcb.realize._realize_maze` rather than here: the whole pass
 is re-run on a fresh grid with the previous attempt's failures moved to
@@ -65,7 +75,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -463,9 +473,22 @@ class OccupancyGrid:
     involved rather than the worst one on the board.
     """
 
-    def __init__(self, spec: GridSpec, *, clearance_mm: float):
+    def __init__(
+        self,
+        spec: GridSpec,
+        *,
+        clearance_mm: float,
+        net_clearance_mm: Mapping[int, float] | None = None,
+    ):
         self.spec = spec
         self.clearance_mm = clearance_mm
+        #: Per net: how far its class clearance exceeds ``clearance_mm``
+        #: (module docstring, "Per-net clearance"). Absent means none.
+        self._net_extra: dict[int, float] = {
+            int(n): float(c) - clearance_mm
+            for n, c in (net_clearance_mm or {}).items()
+            if float(c) > clearance_mm + 1e-12
+        }
         self._owner = np.full((spec.n_layers, spec.ny, spec.nx), FREE, dtype=np.int32)
         self._flat = self._owner.reshape(-1)
         #: Per net: flat cell index -> the EXACT centreline coordinate that
@@ -555,6 +578,11 @@ class OccupancyGrid:
             )
         self._body_mask = None if mask is None else mask.astype(bool)
 
+    def extra_mm(self, net_id: int) -> float:
+        """``net_id``'s clearance beyond ``clearance_mm``; 0 for a
+        default-class net, a sentinel or :data:`CONTESTED`."""
+        return self._net_extra.get(int(net_id), 0.0)
+
     def core_radius_mm(self, width_mm: float) -> float:
         """The radius one piece of copper claims for itself: its own
         half-width plus its own clearance. What another net owes on top
@@ -575,8 +603,10 @@ class OccupancyGrid:
         ``(x, y)`` on each of ``layers``. With ``contest=True`` a cell
         already owned by a DIFFERENT net becomes :data:`CONTESTED`
         (passable by nobody) instead of being overwritten — the correct
-        resolution for two pads whose keep-outs overlap."""
+        resolution for two pads whose keep-outs overlap. A net with a
+        class clearance above ``clearance_mm`` claims its extra on top."""
         spec = self.spec
+        radius_mm += self.extra_mm(net_id)
         r_cells = math.ceil(radius_mm / spec.pitch)
         cx, cy = spec.to_cell(x, y)
         lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
@@ -675,9 +705,11 @@ class OccupancyGrid:
         every board layer, and the ``inside`` mask below is the same for
         each of them, computed ONCE and only the write repeated per
         layer; a bare one-shot ``Iterable`` would silently claim nothing
-        past the first layer once consumed."""
+        past the first layer once consumed. Like :meth:`stamp_disk`, the
+        net's extra clearance is added to ``margin_mm``."""
         layer_list = list(layers)
         spec = self.spec
+        margin_mm += self.extra_mm(net_id)
         if shape.kind == "poly" and shape.poly:
             xs_v = [p[0] for p in shape.poly]
             ys_v = [p[1] for p in shape.poly]
@@ -782,8 +814,10 @@ class OccupancyGrid:
         via stamped without asking produced real overlapping copper, and
         the occupancy grid's whole guarantee is that copper is claimed
         before it is drawn. Callers that choose a position must ask first.
+        The querying net's extra clearance is added to ``radius_mm``.
         """
         spec = self.spec
+        radius_mm += self.extra_mm(net_id)
         r_cells = math.ceil(radius_mm / spec.pitch)
         cx, cy = spec.to_cell(x, y)
         lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
@@ -826,7 +860,7 @@ class OccupancyGrid:
                 float(b[0]),
                 float(b[1]),
                 int(n),
-                float(radius_mm),
+                float(radius_mm) + self.extra_mm(net_id),
                 int(net_id),
                 float(spec.x0),
                 float(spec.y0),
@@ -990,13 +1024,14 @@ class OccupancyGrid:
         tl, tiy, tix, viy, vix = path_cells(path, self.spec)
         if tl.shape[0] == 0:
             return False
-        r_track = math.ceil((width_mm / 2.0) / self.spec.pitch) + 1
+        extra = self.extra_mm(path.net_id)
+        r_track = math.ceil((width_mm / 2.0 + extra) / self.spec.pitch) + 1
         if via_dia_mm is None:
             if viy.shape[0]:
                 return False
             r_via, half_via, pad_keep = 0, _disk_half_chords(0), np.zeros((1, 1), bool)
         else:
-            r_via = math.ceil((via_dia_mm / 2.0) / self.spec.pitch) + 1
+            r_via = math.ceil((via_dia_mm / 2.0 + extra) / self.spec.pitch) + 1
             half_via = _disk_half_chords(r_via)
             pad_keep = self._pad_keepout_mask(via_dia_mm / 2.0)
         return bool(
@@ -1302,7 +1337,10 @@ class OccupancyGrid:
         # answer but cost ~170 s of a 280 s real-board realize — the window
         # is most of the board, and the search touches a small part of it.
         wy0, wy1, wx0, wx1 = window
-        r_cells = math.ceil((width_mm / 2.0) / spec.pitch) + 1
+        # A wide-class net also pays its extra clearance here (module
+        # docstring, "Per-net clearance").
+        extra = self.extra_mm(net_id)
+        r_cells = math.ceil((width_mm / 2.0 + extra) / spec.pitch) + 1
         half_track = _disk_half_chords(r_cells)
         owner = self._owner
         # A via is not a track. It is wider (an annulus, not a trace) and
@@ -1318,7 +1356,7 @@ class OccupancyGrid:
             half_via = None
             pad_keep = None
         else:
-            via_r_cells = math.ceil((via_dia_mm / 2.0) / spec.pitch) + 1
+            via_r_cells = math.ceil((via_dia_mm / 2.0 + extra) / spec.pitch) + 1
             half_via = _disk_half_chords(via_r_cells)
             # A pad keep-out on top of the other-net disk above, not
             # instead of it: those two answer different questions

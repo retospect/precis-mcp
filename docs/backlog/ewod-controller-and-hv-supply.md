@@ -344,13 +344,10 @@ has margin, consistent with ruling 3.
      by `drc.py::check_clearance` (`net_rules=`, per pair = max of the two
      nets' `clearance_mm`), by `realize.py` (`_resolve_track_rules`) and
      by `cost.py`. `op='class_rules'` is live.
-   - **Blocker 1 — the router uses ONE clearance for the whole board:**
-     `realize.py::_realize_maze` sets `clearance = max(config.clearance_mm,
-     max(r.clearance_mm for r in rules_by_net.values()))` and builds the
-     `maze.OccupancyGrid` with it. Authoring 0.4 mm on the HV net inflates
-     every net's clearance to 0.4 mm — the 0.099 mm fabric becomes
-     unroutable. Per-net (or per-pair) clearance in the occupancy grid is
-     a prerequisite of Slice 4.
+   - **Blocker 1 (shipped 2026-10-15):** the maze grid keeps per-net
+     clearance (`maze.OccupancyGrid(net_clearance_mm=)`, module docstring
+     "Per-net clearance"); the grid base and pitch come from the smallest
+     net clearance, the board-edge inset and plane pours from the widest.
    - **Blocker 2 — an authored class clearance is a WARN tier, not an
      ERROR tier:** `check_clearance` → `_two_tier(gap, jlc_min, required)`
      errors only below the fab floor (`jlc_min`); the class value only
@@ -511,7 +508,7 @@ aperture and no drill; the strip is on the `top_plate_net` and
 carries the parylene-mask sentence.
 
 **Slice 4 — HV net class end-to-end. Engine work, no footprints.**
-(a) per-net clearance in `maze.OccupancyGrid`/`_route_pass` (Blocker 1);
+(a) per-net clearance in the grid — shipped (Blocker 1);
 (b) `min_clearance_mm` hard-floor class key at ERROR tier (Blocker 2);
 (c) `working_voltage_v` class key → `conductor_spacing_mm(layer, coated)`
 in `resolve_net_rules`, clamped to the fab floor like everything else;
