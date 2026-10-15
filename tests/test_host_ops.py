@@ -196,7 +196,10 @@ def test_shellcheck() -> None:
         pytest.skip("shellcheck not installed")
     for script in _SCRIPTS:
         result = subprocess.run(
-            ["shellcheck", str(_DIR / script)],
+            # -x follows each script's `# shellcheck source=scripts/lib/...`
+            # (paths are repo-relative, hence cwd); without it SC1091 fails.
+            ["shellcheck", "-x", str(_DIR / script)],
+            cwd=_REPO,
             capture_output=True,
             text=True,
             encoding="utf-8",

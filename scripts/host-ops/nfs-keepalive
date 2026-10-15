@@ -44,6 +44,7 @@ for h in $CLIENTS; do
     ssh "${O[@]}" "$h" 'sudo -n systemctl stop nfs-keepalive.timer nfs-keepalive.service 2>/dev/null; echo stopped' \
       || echo "  ($h unreachable or stop failed — continuing)"
   else
+    # shellcheck disable=SC2029  # $MNT expands locally on purpose
     ssh "${O[@]}" "$h" "systemctl is-active -q nfs-keepalive.timer && echo already-running || \
       sudo -n systemd-run --unit=nfs-keepalive --on-active=10s --on-unit-active=60s \
         /usr/bin/timeout 20 /usr/bin/stat -f $MNT; systemctl list-timers nfs-keepalive.timer --no-legend" \

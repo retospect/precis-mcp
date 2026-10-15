@@ -82,6 +82,7 @@ run precis_cli reserve --host "$HOST" --hours 6 --actor "$ACTOR"
 
 say "2/7 drain: wait for autocatpath seeds and job containers to finish (<= ${DRAIN_MIN} min)"
 busy() {
+  # shellcheck disable=SC2016  # the script body runs on the remote host
   "${SSH[@]}" "$HOST" '
     # [p] bracket: the pattern must not match this ssh bash -c line itself
     # (plain "precis_pathway.runner" counted 2 on an idle spark, 2026-10-15).
@@ -105,6 +106,7 @@ say "2b/7 apt/dpkg lock check (refuse on a holder older than 1 h)"
 # 2026-10-15: spark had an `apt update` from dgx-dashboard-admin hung since Sep 24
 # (fetchers idle, sockets CLOSE-WAIT) holding /var/lib/apt/lists/lock. Never kill
 # it from here; print the holder and the exact kill line for Reto.
+# shellcheck disable=SC2016  # the script body runs on the remote host
 stale=$("${SSH[@]}" "$HOST" '
   for l in /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock; do
     for p in $(sudo -n fuser "$l" 2>/dev/null); do

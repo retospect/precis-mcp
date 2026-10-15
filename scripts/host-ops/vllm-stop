@@ -49,6 +49,7 @@ if [[ -z "$HOST" ]]; then
 fi
 
 O=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+# shellcheck disable=SC2029  # callers pass remote commands built locally
 c() { ssh "${O[@]}" "$HOST" "$@"; }
 nap() { sleep "${VLLM_STOP_SLEEP_S:-$1}"; }
 mem() { echo "[$(date -u +%H:%M:%SZ)] $1: $(c 'free -g | sed -n 2p')"; }

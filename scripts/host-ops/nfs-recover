@@ -47,6 +47,7 @@ CLIENTS="$(inventory_group_hosts linux)"            # macOS clients have no `ss`
 [[ -n "$CLIENTS" ]] || { echo "inventory 'linux' group is empty — no clients" >&2; exit 1; }
 
 O=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+# shellcheck disable=SC2029  # callers pass remote commands built locally
 s() { ssh "${O[@]}" "$@"; }
 nap() { sleep "${NFS_RECOVER_SLEEP_S:-$1}"; }
 
