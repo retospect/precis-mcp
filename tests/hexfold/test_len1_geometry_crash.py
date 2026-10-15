@@ -1,7 +1,7 @@
 """A ring-less net must survive the stick-geometry pass.
 
 ``stick_relax_pinned`` documents ``springs`` as ``(K,3)``, but
-``stick_info`` built it with ``np.array(_angle_springs(net))`` — shape
+``stick_info`` built it with ``np.array(angle_springs(net))`` — shape
 ``(0,)`` when the net has no rings, so the ``springs[:, 0]`` unpack raised
 ``IndexError: too many indices for array``. A one-period armchair tube is
 precisely that net: every atom sits on a rim and no ring closes.

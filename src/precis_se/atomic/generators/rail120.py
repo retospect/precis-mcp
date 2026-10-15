@@ -23,7 +23,7 @@ import numpy as np
 from hexfold.check import Relaxed, geometry_findings
 from hexfold.railtube import rail_tube
 from hexfold.report import Finding, Report, Severity
-from hexfold.stick import _angle_springs, stick_relax_pinned
+from hexfold.stick import angle_springs, stick_relax_pinned
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
@@ -218,7 +218,7 @@ def build_rail120(params: dict[str, Any]) -> GeneratedBlock:
         seed,
         np.asarray([(i, j) for i, j, _ in net.bonds], dtype=np.int64),
         np.full(len(net.bonds), net.lattice.sigma_A),
-        np.asarray(_angle_springs(net), dtype=float),
+        np.asarray(angle_springs(net), dtype=float),
         net.lattice.sigma_A,
         movable=movable,
         tether=tether,

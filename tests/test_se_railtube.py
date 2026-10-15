@@ -176,6 +176,18 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
     by_ord = {e["ordinal"]: e for e in sites["sites"]}
     rot = np.asarray(sites["frame"]["to_stored"]["rot"])
     shift = np.asarray(sites["frame"]["to_stored"]["shift_A"])
+    # the termination polish (gr486406) may move carbons near a closed rim
+    # pair — within 3 hops, matching _TERMINATE_POLISH_HOPS in hexfold_spec —
+    # so those sites legitimately sit off the authored lattice position
+    # (measured up to 0.18 A here); every other site keeps the tight 0.1 A
+    # bound, where the frame fit itself is sub-0.01
+    polished = {o for pair in direct.topology["terminated"]["closed"] for o in pair}
+    adj: list[set[int]] = [set() for _ in range(n_c)]
+    for i, j in carbon_bonds:
+        adj[i].add(j)
+        adj[j].add(i)
+    for _hop in range(3):
+        polished |= {x for o in polished for x in adj[o]}
     for entry in sites["sites"]:
         theta = np.radians(entry["theta_deg"])
         xyz = np.array(
@@ -185,9 +197,8 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
                 entry["z_A"],
             ]
         )
-        # rim atoms near a cap-collision closure settle by ~0.2 A in the
-        # termination polish (gr486406); the frame fit itself is sub-0.01
-        assert np.linalg.norm(xyz @ rot + shift - relaxed[entry["ordinal"]]) < 0.25
+        bound = 0.25 if entry["ordinal"] in polished else 0.1
+        assert np.linalg.norm(xyz @ rot + shift - relaxed[entry["ordinal"]]) < bound
         n_hat = np.asarray(entry["normal"])
         assert np.linalg.norm(n_hat) == pytest.approx(1.0, abs=1e-9)
         # normals are inward/toward-axis in the recorded build frame

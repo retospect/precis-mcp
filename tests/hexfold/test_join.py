@@ -33,9 +33,9 @@ from hexfold.join import (
 )
 from hexfold.report import Severity
 from hexfold.stick import (
-    _angle_springs,
     _rep_pairs,
     _spring_forces,
+    angle_springs,
     stick_info,
     stick_relax_pinned,
 )
@@ -541,7 +541,7 @@ def test_stick_relax_pinned_matches_reference_algorithm(example: str) -> None:
         ],
         dtype=np.float64,
     )
-    springs = np.array(_angle_springs(net), dtype=np.float64)
+    springs = np.array(angle_springs(net), dtype=np.float64)
     # 50 iterations spans >2 repulsion-pair refresh cycles (_REFRESH=20),
     # enough to exercise every branch without the full 3000-iteration
     # cost of a converged stick() call.

@@ -82,7 +82,7 @@ def _spectral_seed(net: Net) -> np.ndarray:
     return seed * (net.lattice.sigma_A / med)
 
 
-def _angle_springs(net: Net) -> list[tuple[int, int, float]]:
+def angle_springs(net: Net) -> list[tuple[int, int, float]]:
     """Chord springs enforcing the ideal interior angle at each ring vertex
     (ring ideal for sp2, the sp3 tetrahedral angle at an sp3 vertex), and
     the sp2 angle at a one-bond lattice atom's neighbour."""
@@ -277,7 +277,7 @@ def stick_info(
     )
     # `.reshape(-1, 3)` keeps :func:`stick_relax_pinned`'s documented
     # (K,3) contract when there are no angle springs at all: a net with no
-    # rings gives `_angle_springs` an empty list, and `np.array([])` is
+    # rings gives `angle_springs` an empty list, and `np.array([])` is
     # shape (0,), so the `springs[:, 0]` unpack raised IndexError. A
     # one-period armchair tube is exactly that net — every atom sits on a
     # rim and no ring closes — so `tube(5,5,len=1)` with geometry on
@@ -285,7 +285,7 @@ def stick_info(
     # spec", on a spec whose topology is fine (tests/hexfold/
     # test_len1_rims.py). Empty index arrays make the assignments below a
     # no-op, which is the right answer.
-    springs = np.array(_angle_springs(net), dtype=np.float64).reshape(-1, 3)
+    springs = np.array(angle_springs(net), dtype=np.float64).reshape(-1, 3)
     return stick_relax_pinned(
         pos, bonds, brest, springs, sig, tether=tether, k_tether=k_tether
     )

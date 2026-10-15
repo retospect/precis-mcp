@@ -47,7 +47,7 @@ from hexfold.check import check, geometry_findings
 from hexfold.extent import measures as hx_measures
 from hexfold.lattice import SP3_IDEAL_DEG
 from hexfold.report import BuildError, Finding, HexfoldError, Profile, Report, Severity
-from hexfold.stick import _angle_springs, stick, stick_relax_pinned
+from hexfold.stick import angle_springs, stick, stick_relax_pinned
 from precis_se.atomic.generators._types import (
     GeneratedBlock,
     GeneratedMeasure,
@@ -544,7 +544,7 @@ def _polish_termination(
             for i, j, _o in net.bonds
         ]
     )
-    springs = np.asarray(_angle_springs(net), dtype=float).reshape(-1, 3)
+    springs = np.asarray(angle_springs(net), dtype=float).reshape(-1, 3)
     pos, force = stick_relax_pinned(
         np.asarray(coords, dtype=float),
         np.asarray([(i, j) for i, j, _o in net.bonds], dtype=np.int64),

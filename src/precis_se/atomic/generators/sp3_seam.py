@@ -24,7 +24,7 @@ from hexfold.sp3_seam import (
     straight_k3z,
     straight_k4,
 )
-from hexfold.stick import _angle_springs, stick_relax_pinned
+from hexfold.stick import angle_springs, stick_relax_pinned
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
@@ -160,7 +160,7 @@ def build_sp3_seam(params: dict[str, Any]) -> GeneratedBlock:
         seed,
         np.asarray([(i, j) for i, j, _ in net.bonds], dtype=np.int64),
         np.full(len(net.bonds), net.lattice.sigma_A),
-        np.asarray(_angle_springs(net), dtype=float).reshape(-1, 3),
+        np.asarray(angle_springs(net), dtype=float).reshape(-1, 3),
         net.lattice.sigma_A,
         movable=movable,
         tether=tether,

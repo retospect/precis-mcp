@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from hexfold.build import build
-from hexfold.stick import _angle_springs, stick_relax_pinned
+from hexfold.stick import angle_springs, stick_relax_pinned
 
 _EXAMPLES = Path(__file__).resolve().parent.parent / "hexfold" / "examples"
 
@@ -145,7 +145,7 @@ def test_real_build_parity(example: str) -> None:
         ],
         dtype=np.float64,
     )
-    springs = np.array(_angle_springs(net), dtype=np.float64).reshape(-1, 3)
+    springs = np.array(angle_springs(net), dtype=np.float64).reshape(-1, 3)
     ref = _ref_relax(pos0, bonds, brest, springs, sig, iters=300)
     got = stick_relax_pinned(pos0, bonds, brest, springs, sig, iters=300)
     _same(ref, got)
@@ -158,7 +158,7 @@ def test_full_3000_iterations_real_build() -> None:
     sig = net.lattice.sigma_A
     bonds = np.array([(i, j) for i, j, _ in net.bonds], dtype=np.int64)
     brest = np.full(len(bonds), sig)
-    springs = np.array(_angle_springs(net), dtype=np.float64).reshape(-1, 3)
+    springs = np.array(angle_springs(net), dtype=np.float64).reshape(-1, 3)
     _same(
         _ref_relax(pos0, bonds, brest, springs, sig),
         stick_relax_pinned(pos0, bonds, brest, springs, sig),
