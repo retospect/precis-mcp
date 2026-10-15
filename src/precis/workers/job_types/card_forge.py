@@ -1,7 +1,7 @@
 """``card_forge`` job_type — the morning card work, before the reading brief.
 
-Third daily reading-loop job beside ``reading_brief`` (02:30) and ``meditation``
-(21:00); scheduled at 01:30 so the day's cards exist before the brief composes
+Third weekly reading-loop job beside ``reading_brief`` (02:30) and ``meditation``
+(21:00); scheduled at 01:30 so the week's cards exist before the brief composes
 (its recall lane reports them). Deterministic in-process producer under
 ``claude_inproc`` (melchior — the authoring calls use a nice model via the
 litellm proxy). Driven by a recurring (``meta.schedule`` set) todo

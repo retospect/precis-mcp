@@ -2640,3 +2640,39 @@ def test_cast_audio_daily_cadence_warns_past_a_day(store) -> None:
     res = _cast_audio_check(store)
     assert res.status == "stale", res.detail
     assert "budget 26h" in res.detail
+
+
+def test_card_forge_weekly_schedule_reads_ok_past_the_floor(store) -> None:
+    """al481399 at the check level: the card_forge watch is weekly
+    ('30 1 * * 1'), so a success 60h ago sits inside budget — the pre-fix
+    fixed-26h read kept the watchdog firing against a healthy weekly lane."""
+    _seed_recurring(store, "card_forge", "30 1 * * 1")
+    _seed_job(
+        store,
+        executor="claude_inproc",
+        status="succeeded",
+        age_min=60 * 60,
+        extra_meta={"job_type": "card_forge"},
+    )
+    with store.pool.connection() as conn:
+        res = health_digest._check_card_forge(conn)
+    assert res.status == "ok", res.detail
+    assert "budget 170h" in res.detail
+    assert "card_forge schedule '30 1 * * 1'" in res.detail
+
+
+def test_card_forge_no_live_schedule_stays_stale_at_the_floor(store) -> None:
+    """The floor must still bite when the watch is gone: a 60h-old success
+    with no live card_forge recurring reads stale, not whited out."""
+    _seed_job(
+        store,
+        executor="claude_inproc",
+        status="succeeded",
+        age_min=60 * 60,
+        extra_meta={"job_type": "card_forge"},
+    )
+    with store.pool.connection() as conn:
+        res = health_digest._check_card_forge(conn)
+    assert res.status == "stale"
+    assert "budget 26h" in res.detail
+    assert "no live card_forge schedule" in res.detail

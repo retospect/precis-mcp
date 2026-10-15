@@ -1,9 +1,9 @@
-"""Daily card work — mint today's new anki cards from concepts, and rework the
+"""Weekly card work — mint today's new anki cards from concepts, and rework the
 cards that aren't working (reading-prep loop: cards-as-representations + the
 adaptive re-munge, observe-first).
 
-Runs every morning *before* the reading brief (the `card_forge` job_type), so
-the day starts with fresh cards on the phone and the brief can report what
+Runs Monday mornings *before* the reading brief (the `card_forge` job_type), so
+the week starts with fresh cards on the phone and the brief can report what
 changed. Two halves:
 
 **Mint** — up to a daily cap of concepts (candidate/active, no cards yet, newest
