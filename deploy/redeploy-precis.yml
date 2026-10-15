@@ -1057,10 +1057,12 @@
   ansible.builtin.import_playbook: playbooks/34-code-task-image.yml
   tags: [codetask]
 
-# ── 2e. Sandbox worker lane (agent_sandbox_hosts only) ──
+# ── 2e. Sandbox worker lane (agent_sandbox_lane) ──
 # The job_claude_docker claimant on hosts whose system worker doesn't run
 # the collapsed profile (castor is serving/heartbeat-only) — see the
-# playbook header. No-op while agent_sandbox_hosts is empty.
+# playbook header. Runs on agent_sandbox_hosts plus any Linux host with the
+# unit already installed (gr485861), and asserts the bounced lane runs the
+# deployed build. No-op when neither exists.
 - name: "Deploy the sandbox_run worker lane (agent_sandbox_hosts)"
   # Tag `sandbox` lets deploy role scoping skip it on web-only / no-code
   # diffs.
@@ -1119,7 +1121,10 @@
       failed_when: false
 
     # The owned set mirrors the lane plays' own host rules — extend it when
-    # a new lane lands (43 on compute:inference, 35 on agent_sandbox_hosts).
+    # a new lane lands (43 on compute:inference, 35 on agent_sandbox_lane,
+    # the group play 35's selection play builds from agent_sandbox_hosts
+    # plus installed units; absent when role scoping skipped play 35, and
+    # the sweep then bounces the sandbox unit itself).
     # A unit listed there is already bounced by its owning play, so the
     # sweep leaves it alone.
     - name: Worker lane units a lane play owns on this host
@@ -1131,7 +1136,9 @@
                  ((groups['compute'] | default([])) + (groups['inference'] | default([])))
               else [])
            + (['precis-worker-sandbox.service']
-              if inventory_hostname in (groups['agent_sandbox_hosts'] | default([]))
+              if inventory_hostname in
+                 ((groups['agent_sandbox_hosts'] | default([]))
+                  + (groups['agent_sandbox_lane'] | default([])))
               else []) }}
 
     - name: Orphaned lane units on this host (loaded but owned by no play)

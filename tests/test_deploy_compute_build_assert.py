@@ -9,9 +9,9 @@ of the unit itself: the venv named by its ExecStart must hold the deployed sha
 and the main process must have started after that install.
 
 The playbook renders that check as a self-contained python script via
-`copy: content:`. These tests (1) pin the playbook structure around it and
-(2) extract the script text verbatim and run it against fake `systemctl` and
-`ps`, so the text that ships is the text that is tested.
+`copy: src:` from `deploy/playbooks/files/assert-unit-build.py`. These tests
+(1) pin the playbook structure around it and (2) run that file against fake
+`systemctl` and `ps`, so the text that ships is the text that is tested.
 """
 
 from __future__ import annotations
@@ -33,6 +33,10 @@ _PLAYBOOK = (
     / "playbooks"
     / "43-precis-worker-compute.yml"
 )
+
+#: The script both lane plays render (``copy: src:`` resolves ``files/``
+#: next to the playbook).
+_SCRIPT_FILE = _PLAYBOOK.parent / "files" / "assert-unit-build.py"
 
 _REDEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "redeploy-precis.yml"
 _REDEPLOY_PLAY = "Bounce all precis daemons"
@@ -69,9 +73,9 @@ def _play43_vars() -> dict[str, Any]:
 
 
 def _script() -> str:
-    content = _task(_RENDER)["ansible.builtin.copy"]["content"]
-    assert isinstance(content, str)
-    return content
+    src = _task(_RENDER)["ansible.builtin.copy"]["src"]
+    assert src == _SCRIPT_FILE.name
+    return _SCRIPT_FILE.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------

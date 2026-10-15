@@ -100,9 +100,12 @@ precis_lane_memory:
     container_reserve: 40G
   # job_claude_docker lane (35): the worker is small (~120 MiB); each job is
   # one docker container capped by PRECIS_SANDBOX_MEMORY (default 8g, batch 1).
+  # agent_sandbox_lane (gr485861): play 35's selection play also places the
+  # lane on any Linux host where the unit is already installed — count it
+  # there too, or an adopted host's budget never sees the lane.
   - lane: sandbox
     unit: precis-worker-sandbox
-    groups: [agent_sandbox_hosts]
+    groups: [agent_sandbox_hosts, agent_sandbox_lane]
     memory_high: 1536M
     memory_max: 2G
     container_reserve: 8G

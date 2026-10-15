@@ -264,7 +264,10 @@ def _render_sandbox_worker_env() -> dict[str, str]:
     ).read_text(encoding="utf-8")
     plays = yaml.safe_load(play_src)
     render_task = next(
-        t for t in plays[0]["tasks"] if "service_unit_env" in t.get("vars", {})
+        t
+        for play in plays
+        for t in play.get("tasks", [])
+        if "service_unit_env" in t.get("vars", {})
     )
     expr = render_task["vars"]["service_unit_env"]
 

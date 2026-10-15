@@ -1,5 +1,6 @@
 # 35-precis-worker-sandbox.yml — the sandbox_run claimant lane on
-# agent_sandbox_hosts (agent-workspace-containers slice 1).
+# agent_sandbox_lane (agent_sandbox_hosts plus installed units; see HOST
+# SELECTION below; agent-workspace-containers slice 1).
 #
 # WHY A DEDICATED UNIT. The job_claude_docker pass lives in the collapsed
 # `--profile all` worker (20b) — which runs only on gateway+scheduler. The
@@ -21,8 +22,62 @@
 # (43 uses /var/lib/precis for MACE-cache reasons) would make the built
 # image invisible to the worker.
 
-- name: Deploy the sandbox_run worker lane (agent_sandbox_hosts)
-  hosts: agent_sandbox_hosts:gateway
+# HOST SELECTION (gr485861). The lane runs on `agent_sandbox_lane`: every
+# declared agent_sandbox_hosts member, plus any Linux host that already has
+# precis-worker-sandbox.service installed. The declared group was emptied
+# 2026-09-10 (lane dark; playbooks 34/35 went red against an unprovisioned
+# host), but the unit stayed installed and enabled on the former member
+# and came back with the host — so the play ran nowhere while the unit ran
+# stale code. An
+# installed unit proves the host was provisioned for the lane, so refreshing
+# it cannot hit the unprovisioned-host failure; a host without the unit is
+# never selected. The submit allowlist (PRECIS_SANDBOX_HOSTS) still comes
+# from the declared group alone, so adopting an installed unit keeps it
+# fresh without opening the lane to new submissions. Set
+# `agent_sandbox_adopt_installed: false` to select the declared group only
+# (redeploy's step-2f sweep then still bounces the orphan).
+- name: Select the sandbox lane hosts (declared group + installed units)
+  # :gateway — per-host isolation anchor (r36, gr488897), same as the lane
+  # play below: every linux host failing the probe at once would otherwise
+  # end the whole run. The anchor leaves in the first pre_task.
+  hosts: linux:agent_sandbox_hosts:gateway
+  gather_facts: false
+  become: true
+  pre_tasks:
+    - name: "Isolation anchor: the gateway only keeps this play's batch alive"
+      ansible.builtin.meta: end_host
+      when: >-
+        inventory_hostname not in
+        ((groups['linux'] | default([])) + (groups['agent_sandbox_hosts'] | default([])))
+  tasks:
+    - name: Probe for an installed precis-worker-sandbox unit
+      when:
+        - os_family == "linux"
+        - agent_sandbox_adopt_installed | default(true) | bool
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - list-unit-files
+          - --no-legend
+          - precis-worker-sandbox.service
+      register: _sb_unit_probe
+      changed_when: false
+      failed_when: false
+      ignore_unreachable: true
+
+    - name: Join the sandbox lane group
+      when: >-
+        inventory_hostname in (groups['agent_sandbox_hosts'] | default([]))
+        or 'precis-worker-sandbox.service' in (_sb_unit_probe.stdout | default(''))
+      ansible.builtin.group_by:
+        key: agent_sandbox_lane
+
+- name: Deploy the sandbox_run worker lane (agent_sandbox_lane)
+  # :gateway — the gateway joins only as the per-host isolation anchor
+  # (gr488897 below): it leaves in the first pre_task. agent_sandbox_lane
+  # membership is decided by the selection play above, so an adopted host
+  # (installed unit, not in the declared group) stays in this batch.
+  hosts: agent_sandbox_lane:gateway
   become: true
   # Per-host isolation (r36, gr488897): ansible ends the WHOLE playbook when
   # every host in one play's batch fails (playbook_executor: len(batch) ==
@@ -34,13 +89,14 @@
   pre_tasks:
     - name: "Isolation anchor: the gateway only keeps this play's batch alive"
       ansible.builtin.meta: end_host
-      when: inventory_hostname not in (groups['agent_sandbox_hosts'] | default([]))
+      when: inventory_hostname not in (groups['agent_sandbox_lane'] | default([]))
     - name: "host-lanes: this host's lanes fit its memory (roles/hardening budget)"
       ansible.builtin.import_role:
         name: hardening
         tasks_from: memory_budget
   vars:
     _sb_venv: /opt/precis/venv
+    _sb_build_check_script: /opt/precis/bin/assert-unit-build.py
     _sb_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
     # Rootless podman needs /run/user/<uid> (XDG_RUNTIME_DIR), which
@@ -118,12 +174,11 @@
     # play 43's site.yml-path task covers for the compute lane). Fires
     # whenever a deploy did NOT prove this host's venvs static:
     # `precis_deploy_changed` is unset on this group either way (the
-    # pre-flight play never targets agent_sandbox_hosts), and a
+    # pre-flight play never targets agent_sandbox_lane), and a
     # defined-true must still bounce because no other play will. Only a
     # defined-false (a redeploy that found no managed venv moving) skips.
-    # Orphan case — the unit installed on a host that LEFT this group — is
-    # covered by redeploy-precis.yml's step-2f sweep, not here: an empty
-    # group means this play runs nowhere.
+    # A host that left agent_sandbox_hosts but kept the unit is adopted by
+    # the selection play above, so it is bounced here too.
     - name: Bounce the sandbox lane on a code refresh (no step-2 coverage — gr485861)
       when:
         - os_family == "linux"
@@ -133,3 +188,38 @@
         state: restarted
         daemon_reload: true
       failed_when: false
+      register: _sb_bounce
+
+    # gr479965 pattern, same script as the compute lane (play 43): a
+    # `changed` restart proves only that systemd restarted the unit, not that
+    # the new process runs the build this deploy installed. The check reads
+    # the venv the unit's ExecStart names, compares its direct_url.json sha
+    # with the deployed ref, and fails if the main process started before
+    # that install.
+    - name: "gr485861: render the post-bounce build check"
+      when: os_family == "linux"
+      ansible.builtin.copy:
+        src: assert-unit-build.py
+        dest: "{{ _sb_build_check_script }}"
+        mode: "0755"
+        owner: root
+        group: root
+
+    # Runs whenever the bounce ran (`is not skipped`, so a failed restart
+    # hidden by the bounce's failed_when: false is caught here). The lane
+    # has no ExecStartPre gate, so 20 x 15s is ample for `activating`.
+    - name: "gr485861: assert the bounced sandbox lane runs the deployed build"
+      when:
+        - os_family == "linux"
+        - _sb_bounce is not skipped
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _sb_build_check_script }}"
+          - precis-worker-sandbox
+          - "{{ precis_worker_git_ref | default('') }}"
+      register: _sb_build_check
+      retries: 20
+      delay: 15
+      until: (_sb_build_check.rc | default(1)) == 0
+      changed_when: false

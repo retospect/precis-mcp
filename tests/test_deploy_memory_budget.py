@@ -29,10 +29,13 @@ _SANDBOX_EXECUTOR = (
 )
 
 # Every inventory group that places a lane or an LLM on a Linux host.
+# agent_sandbox_lane: play 35's dynamic group — declared members plus hosts
+# adopted for an installed precis-worker-sandbox unit (gr485861).
 _LANE_GROUPS = (
     "serving",
     "compute",
     "agent_sandbox_hosts",
+    "agent_sandbox_lane",
     "inference",
     "vllm_serving",
     "sglang_serving",
@@ -212,16 +215,27 @@ def test_sandbox_container_reserve_covers_the_executor_default() -> None:
 
 
 def test_lane_plays_run_the_budget_check() -> None:
-    for play in (
-        "35-precis-worker-sandbox.yml",
-        "43-precis-worker-compute.yml",
-        "49-vllm.yml",
-        "49a-sglang.yml",
-    ):
+    """The check must run on the play that lands the lane — for 35 that is
+    the second play (the first only builds agent_sandbox_lane, and a
+    budget check there would run before group_by populates it, so an
+    adopted host's plan could not count the lane anyway)."""
+    lane_plays = {
+        "35-precis-worker-sandbox.yml": (
+            "Deploy the sandbox_run worker lane (agent_sandbox_lane)"
+        ),
+        "43-precis-worker-compute.yml": (
+            "Deploy the dedicated GPU/compute worker lane (job_ssh_node only)"
+        ),
+        "49-vllm.yml": "Run vLLM on the dedicated serving host",
+        "49a-sglang.yml": "Run SGLang on the dedicated serving host",
+    }
+    for play, lane_play in lane_plays.items():
         doc = yaml.safe_load((_DEPLOY / "playbooks" / play).read_text(encoding="utf-8"))
+        found = [p for p in doc if p.get("name") == lane_play]
+        assert len(found) == 1, (play, lane_play)
         roles = [
             t.get("ansible.builtin.import_role", {})
-            for t in doc[0].get("pre_tasks", [])
+            for t in found[0].get("pre_tasks", [])
         ]
         assert {"name": "hardening", "tasks_from": "memory_budget"} in roles, play
 
