@@ -63,8 +63,6 @@ residue, then batched ops and flip steps.
    writes, plan_tick without a checkout.
    These stall agents but corrupt nothing, so they rank below the deploy
    work.
-10. **backlog/agent-readonly-web-access.md** — an agent web credential
-    for the prod web UI (the `claude` web user, vaulted).
 
 ## Parked
 

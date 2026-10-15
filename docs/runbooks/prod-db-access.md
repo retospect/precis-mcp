@@ -76,3 +76,26 @@ see [`prod-one-off-cli`](./prod-one-off-cli.md).
   to caspar (above) bypasses both problems.
 - A direct prod `Store` from the controller for exports:
   [`local-prod-draft-export`](./local-prod-draft-export.md).
+
+## Reading the prod web UI (the `claude` web user)
+
+The prod web UI is Basic-auth against `web_users`. Reto's ruling
+(2026-10-11, gr477803): agents use the existing `claude` web user
+(`web_users` id 4, full access — precis-web has no roles). Access is
+**read-only by convention: GET only, never POST a form.**
+
+Fetch the password inside a script that never prints, echoes or logs it
+(`secret get` writes a vault audit row):
+
+    pw="$(scripts/prod-precis secret get PRECIS_WEB_PASSWORD:claude)"
+    curl -u "claude:$pw" "<prod web URL><path>"   # /graph, /eye/<id>, /rules, /builds
+
+The variable keeps the literal out of the command text but `-u` still
+leaves it in argv where `ps` can see it; where that matters, give curl a
+0600 `mktemp` file instead — `curl --netrc-file <tmp>` or `-K <tmp>` with
+`login`/`password` lines — and remove it after.
+
+The host is the Tailscale Serve host (repo-dev memory `me481709`). It
+never appears in this repo — the repo is public and
+`tests/test_deploy_tree_no_secrets.py` gates tailnet/LAN addresses
+tree-wide.
