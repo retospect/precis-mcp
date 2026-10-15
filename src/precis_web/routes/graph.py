@@ -78,6 +78,7 @@ from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUPS, resolve_up, ring_group
 from precis_web.deps import get_store, templates
 from precis_web.graph_filters import csv_list, parse_kind_filter
+from precis_web.graph_peek import peek_cards
 from precis_web.graph_svg import KIND_SHAPES, focus_graph_svg
 from precis_web.ref_urls import ref_url
 from precis_web.routes.favorites import faved
@@ -375,6 +376,63 @@ def _advance_trail(
     if here in trail:
         return trail[: trail.index(here) + 1]
     return [*trail, here][-TRAIL_MAX:]
+
+
+def _came_from(
+    store: Store,
+    data: dict[str, Any],
+    raw_trail: list[tuple[str, int]],
+    here: tuple[str, int],
+    trail: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """The previous focus for the came-from slot (item 8): the trail
+    cookie's last entry before this visit, as a ref card plus the
+    relation followed (``rel``, as the previous page presented the hop-1
+    edge between the two, and ``toward_here`` for its stored direction).
+    ``rel`` is ``None`` when no hop-1 edge joins them in this view — a
+    crumb, a path card, a typed URL, or a filter hiding the edge; with
+    parallel edges the first in neighbourhood order is shown. ``None``
+    on a first visit or a reload. No extra read unless the
+    previous node is neither on the trail nor on the ring."""
+    prev = raw_trail[-1] if raw_trail else None
+    if prev is None or prev == here:
+        return None
+    prev_h = _handle(*prev)
+    card = next((c for c in trail if (c["kind"], c["id"]) == prev), None)
+    if card is None:
+        node = next((n for n in data["nodes"] if (n["kind"], n["id"]) == prev), None)
+        if node is not None:
+            card = {
+                "kind": prev[0],
+                "id": prev[1],
+                "handle": prev_h,
+                "label": node.get("label") or prev_h,
+                "url": ref_url(*prev),
+                "graph_url": f"/graph/{prev[0]}/{prev[1]}",
+            }
+        else:
+            ref = store.get_ref(kind=prev[0], id=prev[1], include_deleted=False)
+            if ref is None:
+                return None
+            card = _card(ref)
+    edge = next(
+        (
+            e
+            for e in data["edges"]
+            if not e.get("hop") and prev_h in (e["src"], e["dst"])
+        ),
+        None,
+    )
+    if edge is None:
+        return {**card, "rel": None, "toward_here": False}
+    # The edge's ``rel`` is presented from this focus (an inbound ``serves``
+    # reads ``served-by``); the rel followed is what the previous page
+    # showed, its inverse. ``src``/``dst`` stay stored direction.
+    return {
+        **card,
+        "rel": store.inverse_relation(edge["rel"]) or edge["rel"],
+        "toward_here": edge["src"] == prev_h,
+    }
 
 
 def _trail_cards(store: Store, trail: list[tuple[str, int]]) -> list[dict[str, Any]]:
@@ -715,7 +773,9 @@ async def graph_focus(
         )
     focus_h = _handle(kind, ref_id)
     page = f"/graph/{kind}/{ref_id}"
-    trail = _trail_cards(store, _advance_trail(_read_trail(request), (kind, ref_id)))
+    raw_trail = _read_trail(request)
+    trail = _trail_cards(store, _advance_trail(raw_trail, (kind, ref_id)))
+    came_from = _came_from(store, data, raw_trail, (kind, ref_id), trail)
     focus_ref = store.get_ref(kind=kind, id=ref_id, include_deleted=True)
     up = resolve_up(
         store,
@@ -741,6 +801,11 @@ async def graph_focus(
         {n["kind"] for n in data["nodes"]} | {kind},
         key=lambda k: (KIND_SHAPES.get(k, "circle"), k),
     )
+    # Keyboard map (item 9) ``1``/``2``: the same page at the other depth.
+    q_nodepth = f.qs(remove=[("depth", str(f.depth))] if f.depth else [])
+    depth_hrefs = {
+        d: f"{page}?{q_nodepth + '&' if q_nodepth else ''}depth={d}" for d in (1, 2)
+    }
     response = templates.TemplateResponse(
         request,
         "graph/focus.html.j2",
@@ -755,7 +820,15 @@ async def graph_focus(
             "reader_url": ref_url(kind, ref_id),
             "json_url": f"{page}.json" + (f"?{json_qs}" if json_qs else ""),
             "eye_url": f"/eye/{focus_h}",
-            "svg": "" if f.view else focus_graph_svg(data),
+            "svg": ""
+            if f.view
+            else focus_graph_svg(
+                data, came_from=came_from["handle"] if came_from else None
+            ),
+            "peeks": [] if f.view else list(peek_cards(store, data["nodes"]).values()),
+            "came_from": came_from,
+            "depth_hrefs": depth_hrefs,
+            "depth_now": f.depth if f.depth is not None else 2,
             "outline": _outline_groups(data) if f.view == "outline" else None,
             "view": f.view or "radial",
             "view_href": view_href,

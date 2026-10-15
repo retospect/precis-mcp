@@ -4,8 +4,9 @@ result — the picture behind ``GET /graph/<kind>/<id>``
 
 Layout is computed in Python, not a force layout or a JS library: the
 focus sits at the centre, its hop-1 neighbours on the first ring evenly
-spaced in store order (newest links first — a stable order across
-refocuses), its hop-2 neighbours on the second ring clustered inside
+spaced in ``(kind, id)`` order — a global order, so two successive
+refocuses keep the relative order of the nodes both rings share — with
+the previous focus (``came_from``, item 8) pinned to the top slot; its hop-2 neighbours on the second ring clustered inside
 their hop-1 anchor's sector. Kinds are node *shapes* (rect for the
 evidence kinds, diamond for findings, hexagon for quests, ellipse for
 memories, rounded rect for convs, circle for the rest); relations are
@@ -182,7 +183,7 @@ def _edge_geometry(
     return d, (ux, uy), (tip_x, tip_y)
 
 
-def focus_graph_svg(data: dict[str, Any]) -> str:
+def focus_graph_svg(data: dict[str, Any], *, came_from: str | None = None) -> str:
     """The 2-hop neighbourhood as a radial-rings ``<svg>`` string.
 
     ``data`` is a :meth:`Store.neighbourhood` result at ``depth=2``:
@@ -192,10 +193,23 @@ def focus_graph_svg(data: dict[str, Any]) -> str:
     to their own ``/graph/<kind>/<id>`` focus page. ``truncated`` (hop-1
     over the cap) and a counts-only ``counts2`` (hop-2 over the cap)
     render as count chips on the ring they would have filled.
+
+    ``came_from`` (a handle) takes ring 1's top slot when it is on the
+    ring. Every node's shape link carries ``data-peek`` (its handle, the
+    key of the page's embedded peek card) and ``data-ring`` (its index in
+    ring order: ring 1 clockwise from the top, then ring 2 by angle) —
+    the keyboard map's ``j``/``k`` order.
     """
     focus = data["focus"]
     focus_h = _handle(focus["kind"], focus["id"])
-    hop1 = [n for n in data["nodes"] if not n.get("hop")]
+    hop1 = sorted(
+        (n for n in data["nodes"] if not n.get("hop")),
+        key=lambda n: (
+            _handle(n["kind"], n["id"]) != came_from,
+            n["kind"],
+            int(n["id"]),
+        ),
+    )
     hop2 = [n for n in data["nodes"] if n.get("hop") == 2]
     edges = data["edges"]
 
@@ -346,6 +360,7 @@ def focus_graph_svg(data: dict[str, Any]) -> str:
         r: float,
         fill: str,
         stroke: str,
+        ring_index: int,
         anchor_delta: float | None = None,
     ) -> None:
         x, y = pos[h]
@@ -367,14 +382,17 @@ def focus_graph_svg(data: dict[str, Any]) -> str:
         live = (n.get("state") or "live") == "live"
         label = _truncate(n.get("label") or h)
         url = f"/graph/{n['kind']}/{n['id']}"
+        came = ' data-came-from="1"' if h == came_from else ""
         out.append(
-            f'<a href="{_esc(url)}"><g transform="translate({_fmt(x)},{_fmt(y)})">'
+            f'<a href="{_esc(url)}" data-peek="{_esc(h)}" '
+            f'data-ring="{ring_index}"{came}>'
+            f'<g transform="translate({_fmt(x)},{_fmt(y)})">'
             f"<title>{_esc(n.get('label') or h)} — {_esc(n['kind'])}</title>"
-            + _node_shape(n["kind"], r, fill, stroke, live)
+            + _node_shape(n["kind"], r, fill, "#d97706" if came else stroke, live)
             + "</g></a>"
         )
         out.append(
-            f'<a href="{_esc(url)}"><text x="{_fmt(lx)}" y="{_fmt(ly + 3)}" '
+            f'<a href="{_esc(url)}" data-peek="{_esc(h)}" tabindex="-1"><text x="{_fmt(lx)}" y="{_fmt(ly + 3)}" '
             f'text-anchor="{anchor}" font-size="10" fill="{_INK}">'
             f"{_esc(label)}</text></a>"
         )
@@ -384,9 +402,15 @@ def focus_graph_svg(data: dict[str, Any]) -> str:
             f'fill="{_EDGE_LABEL}">{_esc(n["kind"])} · {_esc(h)}</text>'
         )
 
-    for n in hop1:
-        emit_node(n, _handle(n["kind"], n["id"]), _NODE_R, _NODE_FILL, _NODE_STROKE)
-    for n in hop2:
+    for i, n in enumerate(hop1):
+        emit_node(n, _handle(n["kind"], n["id"]), _NODE_R, _NODE_FILL, _NODE_STROKE, i)
+    hop2_by_angle = sorted(
+        hop2,
+        key=lambda n: (
+            (angle[_handle(n["kind"], n["id"])] + math.pi / 2) % (2.0 * math.pi)
+        ),
+    )
+    for i, n in enumerate(hop2_by_angle, start=len(hop1)):
         h = _handle(n["kind"], n["id"])
         emit_node(
             n,
@@ -394,6 +418,7 @@ def focus_graph_svg(data: dict[str, Any]) -> str:
             _NODE_R,
             _HOP2_FILL,
             _HOP2_STROKE,
+            i,
             anchor_delta=angle[h] - angle.get(anchor_of.get(h, ""), angle[h]),
         )
 

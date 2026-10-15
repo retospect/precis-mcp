@@ -6,7 +6,7 @@
 <nav class="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500" aria-label="focus trail">
   {% if retreat %}
   <a href="{{ retreat.graph_url }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
-     aria-label="retreat" title="back along the trail to {{ retreat.handle }}" rel="prev">← retreat</a>
+     aria-label="retreat" data-key="u Backspace" title="back along the trail to {{ retreat.handle }}" rel="prev">← retreat</a>
   {% endif %}
   {% for c in trail %}
   {% if not loop.first %}<span class="text-slate-300">›</span>{% endif %}

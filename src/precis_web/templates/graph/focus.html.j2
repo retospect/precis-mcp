@@ -2,6 +2,17 @@
 {% block title %}Graph · {{ handle }}{% endblock %}
 {% block content %}
 {% set here = handle %}{% include "graph/_trail.html.j2" %}
+{# Came-from slot (item 8): the previous focus in a fixed place, so a
+   refocus does not reshuffle the picture; it also holds ring 1's top slot. #}
+<p class="mt-1 min-h-[1.25rem] text-xs text-slate-500" aria-label="came from">
+  {% if came_from %}
+  came from
+  <a href="{{ came_from.graph_url }}" class="font-mono underline" data-came-from="{{ came_from.handle }}"
+     title="{{ came_from.label }}">{{ came_from.handle }}</a>
+  <span>{{ came_from.label | truncate(60) }}</span>
+  {% if came_from.rel %}<span class="font-mono text-amber-700">{{ '→' if came_from.toward_here else '←' }} {{ came_from.rel }}</span>{% else %}<span class="italic text-slate-400">no link in this view</span>{% endif %}
+  {% endif %}
+</p>
 <div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
   <div>
     <h1 class="text-lg font-semibold font-mono">
@@ -22,7 +33,7 @@
     <p class="mt-1 text-xs text-slate-500" aria-label="zoom out">
       {% if zoom_out.target %}
       <a href="{{ zoom_out.target.graph_url }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
-         data-zoom-out="{{ zoom_out.target.handle }}" rel="up"
+         data-zoom-out="{{ zoom_out.target.handle }}" rel="up" data-key="U"
          title="{{ zoom_out.target.label }}">↑ zoom out</a>
       <span class="font-mono">{{ zoom_out.rel }}</span>
       <a href="{{ zoom_out.target.graph_url }}" class="font-mono underline">{{ zoom_out.target.handle }}</a>
@@ -48,6 +59,9 @@
   </div>
   <p class="text-xs text-slate-500">
     {{ n_hop1 }} hop-1 · {{ n_hop2 }} hop-2 · {{ n_edges }} edge{{ '' if n_edges == 1 else 's' }}
+    · depth
+    {% for d, href in depth_hrefs.items() %}<a href="{{ href }}" data-key="{{ d }}"
+       class="{{ 'font-semibold text-slate-700' if d == depth_now else 'underline' }}">{{ d }}</a>{% endfor %}
     · cap {{ cap }}{% if truncated %} <span class="text-amber-600">(over cap — count chips)</span>{% endif %}
   </p>
 </div>
@@ -88,9 +102,67 @@
 {% if view == 'outline' %}
 {% include "graph/_outline.html.j2" %}
 {% else %}
-<div class="rounded-lg border border-slate-200 bg-white p-2 overflow-x-auto">
-  {{ svg | safe }}
+<div class="relative" x-data="graphKeys()" @mouseover="peek($event)" @focusin="peek($event)"
+     @mouseleave="shown = false" @focusout="shown = false"
+     @keydown.window="key($event)">
+  {# Peek (items 8/8b): the hovered or keyboard-focused node's card, copied
+     from the embedded #graph-peeks set — no request per hover. #}
+  <div x-ref="box" x-show="shown" x-cloak role="status" aria-live="polite"
+       class="pointer-events-none absolute right-2 top-2 z-10 w-80 rounded border border-slate-300 bg-white/95 p-2 text-xs shadow"></div>
+  <div class="rounded-lg border border-slate-200 bg-white p-2 overflow-x-auto">
+    {{ svg | safe }}
+  </div>
 </div>
+<div id="graph-peeks" hidden>
+  {% for p in peeks %}
+  <div data-peek-card="{{ p.handle }}">
+    <p class="font-medium text-slate-800">{{ p.hook }}</p>
+    <p class="font-mono text-[10px] text-slate-500">{{ p.kind }} · {{ p.handle }}{% if p.section %} · section:{{ p.section }}{% endif %}</p>
+    {% if p.byline %}<p class="text-slate-600">{{ p.byline }}</p>{% endif %}
+    {% if p.abstract %}<p class="mt-1 text-slate-600">{{ p.abstract }}</p>{% endif %}
+    {% if p.provenance %}<p class="text-slate-600">{{ p.provenance }}</p>{% endif %}
+    {% if p.counts %}<p class="mt-1 font-mono text-[10px] text-slate-500">{% for c in p.counts %}{{ '→' if c.dir == 'out' else '←' }}{{ c.rel }} {{ c.n }}{% if not loop.last %} · {% endif %}{% endfor %}{% if p.more %} · +{{ p.more }}{% endif %}</p>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+<script>
+  // Keyboard map (item 9): every key targets an anchor or input already
+  // on the page — j/k walk the nodes in ring order (data-ring), Enter
+  // follows the focused node's link natively, u/Backspace retreat, U zoom
+  // out, / search, 1/2 depth (data-key on each target).
+  function graphKeys() {
+    return {
+      shown: false,
+      peek(ev) {
+        const a = ev.target.closest && ev.target.closest('[data-peek]');
+        const card = a && document.querySelector(
+          '#graph-peeks [data-peek-card="' + CSS.escape(a.dataset.peek) + '"]');
+        this.shown = !!card;
+        if (card) this.$refs.box.innerHTML = card.innerHTML;
+      },
+      key(ev) {
+        const t = ev.target;
+        if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat || ev.isComposing || ev.defaultPrevented ||
+            (t && (t.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)))) return;
+        if (ev.key === 'j' || ev.key === 'k') {
+          const nodes = [...document.querySelectorAll('a[data-ring]')]
+            .sort((x, y) => x.dataset.ring - y.dataset.ring);
+          if (!nodes.length) return;
+          const i = nodes.indexOf(document.activeElement);
+          const n = i < 0 ? 0 : (i + (ev.key === 'j' ? 1 : nodes.length - 1)) % nodes.length;
+          nodes[n].focus();
+          ev.preventDefault();
+          return;
+        }
+        const el = [...document.querySelectorAll('[data-key]')]
+          .find((e) => e.dataset.key.split(' ').includes(ev.key));
+        if (!el) return;
+        ev.preventDefault();
+        if (el.tagName === 'INPUT') el.focus(); else el.click();
+      },
+    };
+  }
+</script>
 {% endif %}
 {% if not n_edges %}
 <p class="mt-2 text-xs italic text-slate-400">
@@ -104,6 +176,9 @@
   ({{ legend | join(' · ') }}; unlisted kinds are circles), an edge's
   label its relation and its arrow the stored direction. Click a node to
   re-focus on it. Grey pills are count chips for neighbours past the cap.
+  Hover a node for its summary. Keys: <kbd>j</kbd>/<kbd>k</kbd> next/previous
+  node, <kbd>Enter</kbd> re-focus, <kbd>u</kbd> or <kbd>Backspace</kbd> retreat,
+  <kbd>U</kbd> zoom out, <kbd>/</kbd> search, <kbd>1</kbd>/<kbd>2</kbd> depth.
 </p>
 {% endif %}
 {% endblock %}
