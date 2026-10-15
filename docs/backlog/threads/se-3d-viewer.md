@@ -123,7 +123,11 @@ up:
    the addressing half shipped. Last feature because no design is decided.
 5. **backlog/se-mechanical-drc.md** — validator and render both built
    (the "tool volumes" toggle fetches `tool-volumes.json` on demand; the
-   scene never runs `fasten`). What is left there needs Reto (a fastener
+   scene never runs `fasten`), and `probe` now pixel-diffs the toggle
+   nightly — the seed mints the fixture's bound ISO fasteners first,
+   because `set_binding` stores only a slug and `attach_catalog` derives
+   at load, so a bare replay leaves `fasten` seeing no screw at all (0
+   findings where prod shows 2). What is left there needs Reto (a fastener
    blocked only by another fastener) or waits on 3 below (phase 2).
    Budget: the insertion check took `fasten` on unicycle-c1 from 0.35 s
    to 1.39 s; the render slice must not add to that. The flange_bolt_left

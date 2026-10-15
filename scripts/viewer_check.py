@@ -2,8 +2,8 @@
 local precis-web and assert, by canvas pixel-diff, that each control
 CHANGES THE PICTURE. Run nightly by ``.github/workflows/viewer-check.yml``
 over two committed fixtures: ``probe`` on the unicycle (blocks, selection,
-explode, level, export, scroll) and ``strain`` on a small smooth_drum
-(target surface, strain layers, pentagon θp).
+explode, level, tool volumes, export, scroll) and ``strain`` on a small
+smooth_drum (target surface, strain layers, pentagon θp).
 
     viewer_check.py seed <ops.json> <slug>       # needs PRECIS_DATABASE_URL
     viewer_check.py probe <base-url> <slug> <out-dir>
@@ -72,6 +72,13 @@ TARGET_CHANGED_MIN = 300
 #: A strain layer recolours a few percent of the atoms or bonds, not whole
 #: blocks; set from the first measured run on se:hexa-smooth-drum-v2.
 STRAIN_CHANGED_MIN = 300
+#: The tool-volumes overlay draws translucent bolt/driver cylinders around
+#: a centimetre-scale fastener inside a metre-scale design — most of the
+#: swept volume is hidden inside the blocks it collides with, so the
+#: visible change is small (measured n=20 on se:unicycle-c1, headless
+#: Chrome). The canvas floor alone is too thin to carry the check; the
+#: check also requires the vendored tree to grow by the group's rows.
+TOOLVOL_CHANGED_MIN = 10
 #: "Back to the base picture" — measured n=1 on the hand harness.
 RESTORED_MAX = 200
 #: Ceiling for any one wait on an observable condition.
@@ -88,6 +95,42 @@ class Check:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+def _seed_bound_components(hub: Any, ops: list[dict[str, Any]]) -> list[str]:
+    """Mint the standards-series components a fixture's ``set_binding``
+    ops name, and return the minted slugs.
+
+    ``set_binding`` carries only the slug — ``persist.attach_catalog``
+    derives a bound block's facets at LOAD from ``component`` refs in the
+    same DB — so an ops replay into a store without them renders the
+    scene fine but leaves ``fasten`` seeing no screw-form fastener: every
+    insertion-path check silently vacates and the tool-volumes endpoint
+    answers empty (measured on the seeded unicycle-c1: 0 findings where
+    prod shows 2). A slug no packaged series covers (``wheel-20in-
+    assembly``, ``saddle-bicycle``) stays a dangling binding, which is a
+    legal state and matches what a store that lacks it would do."""
+    from precis import component_series
+    from precis.handlers.component import ComponentHandler
+
+    series = component_series.load_series()
+    slugs = {
+        str(o["design"])
+        for o in ops
+        if o.get("op") == "set_binding" and o.get("kind") == "component"
+    }
+    minted: list[str] = []
+    handler = ComponentHandler(hub=hub)
+    for slug in sorted(slugs):
+        hit = next((s for s in series if slug.startswith(s.series_id + "-")), None)
+        if hit is None:
+            continue
+        size = slug[len(hit.series_id) + 1 :].upper()
+        resp = handler.put(id=slug, series=hit.series_id, size=size)
+        if "skipped" in resp.body:
+            raise RuntimeError(f"component mint incomplete for {slug}: {resp.body}")
+        minted.append(slug)
+    return minted
+
+
 def seed(ops_path: str, slug: str) -> None:
     from psycopg_pool import ConnectionPool
 
@@ -99,6 +142,9 @@ def seed(ops_path: str, slug: str) -> None:
     dsn = os.environ["PRECIS_DATABASE_URL"]
     with ConnectionPool(dsn, min_size=1, max_size=4, open=True) as pool:
         hub = boot(store=Store(pool, dsn=dsn))
+        minted = _seed_bound_components(hub, payload["ops"])
+        if minted:
+            print(f"minted component(s): {', '.join(minted)}")
         print(f"seeding {len(payload['ops'])} op(s) -> se:{slug}")
         print(SeHandler(hub=hub).put(id=slug, text=json.dumps(payload)))
 
@@ -271,6 +317,66 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         unexploded = _diff(again, unexploded_shot)
         checks.append(
             Check("unexplode_restores", unexploded["n"] <= RESTORED_MAX, unexploded)
+        )
+
+        # Tool volumes (se-mechanical-drc rulings 5/6): the toggle fetches
+        # the swept fastener/driver/hand volumes of every blocked
+        # insertion-path finding and appends them to the live scene. Wait
+        # on the status line, not a timeout — the fetch runs `fasten`
+        # server-side (seconds) while the canvas holds still, so a shot
+        # taken early diffs the pre-toggle frame against itself. Three
+        # witnesses: the status names the finding count, the vendored tree
+        # grows by the group's rows, and the canvas moves by the small
+        # visible sliver of the overlaid cylinders.
+        status_js = (
+            "() => (document.querySelector('#bt3d-validate [role=status]')"
+            "?.textContent || '')"
+        )
+        rows_js = "() => document.querySelectorAll('.tv-tree-node').length"
+        rows0 = page.evaluate(rows_js)
+        page.click("#bt3d-tool-volumes")
+        try:
+            page.wait_for_function(
+                f"() => ({status_js})().startsWith('tool volumes:')",
+                timeout=int(WAIT_S * 1000),
+            )
+            drew = True
+        except PlaywrightTimeout:
+            drew = False
+        status = page.evaluate(status_js)
+        if drew:
+            rows1 = page.evaluate(rows_js)
+            vols_on = _diff(unexploded_shot, settle("07a_tool_volumes"))
+            checks.append(
+                Check(
+                    "tool_volumes_draw",
+                    vols_on["n"] >= TOOLVOL_CHANGED_MIN and rows1 > rows0,
+                    {
+                        **vols_on,
+                        "status": status,
+                        "rows_before": rows0,
+                        "rows_after": rows1,
+                    },
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "tool_volumes_draw",
+                    False,
+                    {"status": status, "error": "status line never appeared"},
+                )
+            )
+        if page.is_checked("#bt3d-tool-volumes"):
+            page.click("#bt3d-tool-volumes")
+        vols_off = _diff(unexploded_shot, settle("07b_tool_volumes_off"))
+        rows2 = page.evaluate(rows_js)
+        checks.append(
+            Check(
+                "tool_volumes_off_restores",
+                vols_off["n"] <= RESTORED_MAX and rows2 == rows0,
+                {**vols_off, "rows_before": rows0, "rows_after": rows2},
+            )
         )
 
         # The pick panel lists the selected block's levels (outside the
