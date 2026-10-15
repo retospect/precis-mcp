@@ -26,6 +26,17 @@ same data:
   outage. Returns the re-rendered notes list. Mirrors ``POST
   /se/{slug}/note`` (``routes/blocktree_view.py``) in access posture:
   ambient store, no layer beyond the page's own.
+* ``GET  /pcb/{slug}/view/{name}`` — one read view as text (the quest
+  board panel's links, gr488206): route-status, congestion, stackup and
+  drc off ``get(kind='pcb', view=…)``, and ``tapeout`` — the
+  ``pcb-tapeout`` checklist status for this board.
+* ``POST /pcb/{slug}/op`` — the quest board panel's action buttons:
+  ``route`` (``corridor=``/``escape=`` opt-ins) and ``place``
+  (``groups=``) queue the job through ``put(args={'op': …})``, the same
+  dispatch an agent calls; ``review`` runs a fresh ``view='check'``
+  (DRC + ERC, recorded) until the ``pcb_review`` job exists. The page
+  confirms before posting; the route redirects back to ``back`` (a
+  ``/refs/quest/`` path only) or renders the handler's error.
 
 Both SVG endpoints delegate to the SAME code the MCP surface serves
 (``PcbHandler.get(view='svg'|'schematic')``) rather than re-assembling
@@ -54,8 +65,13 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import argue
-from precis_web import design_chat, design_turn, pcb_design
-from precis_web.deps import get_store, templates
+from precis_web import design_chat, design_turn, pcb_design, quest_board
+from precis_web.deps import (
+    await_dispatch,
+    get_store,
+    redirect_or_error,
+    templates,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -410,3 +426,112 @@ async def pcb_chat_apply(
             status=409,
         )
     return design_chat.redirect_after_apply("pcb", slug, result)
+
+
+def _view_call(slug: str, name: str) -> dict[str, Any]:
+    """The dispatch args behind ``GET /pcb/{slug}/view/{name}``."""
+    if name == "tapeout":
+        return {
+            "kind": "checklist",
+            "id": quest_board.TAPEOUT_CHECKLIST,
+            "target": f"pcb:{slug}",
+        }
+    return {"kind": "pcb", "id": slug, "view": name}
+
+
+@router.get("/pcb/{slug}/view/{name}", response_class=HTMLResponse)
+async def pcb_view(request: Request, slug: str, name: str) -> Any:
+    if name not in quest_board.LINKED_VIEWS:
+        return RawResponse(status_code=404, content=f"no linked view {name!r}")
+    call = _view_call(slug, name)
+    body, is_error = await await_dispatch(request, "get", call)
+    shown = ", ".join(f"{k}={v!r}" for k, v in call.items())
+    return templates.TemplateResponse(
+        request,
+        "pcb/view.html.j2",
+        {
+            "active_tab": "pcb",
+            "slug": slug,
+            "view": name,
+            "views": quest_board.LINKED_VIEWS,
+            "call": f"get({shown})",
+            "body": body,
+            "is_error": is_error,
+        },
+        status_code=400 if is_error else 200,
+    )
+
+
+#: The board panel's actions (gr488206).
+_PANEL_OPS = ("route", "place", "review")
+
+
+def _op_call(
+    slug: str,
+    op: str,
+    *,
+    corridor: str | None,
+    escape: str | None,
+    groups: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """(verb, dispatch args) for one panel action. ``route``/``place`` go
+    through ``put`` in the MCP's ``args=`` shape (``__extras__``, so the
+    handler's ``ARGS_KEYS`` gate applies exactly as for an agent);
+    ``review`` is a fresh ``view='check'``. Raises ``BadInput`` on a
+    malformed corridor."""
+    if op == "review":
+        # TODO(pcb-datasheet-review slice 7): queue the pcb_review job
+        # here once it exists, instead of the check run.
+        return "get", {"kind": "pcb", "id": slug, "view": "check"}
+    extras: dict[str, Any] = {"op": op}
+    if op == "route":
+        if corridor is not None and corridor.strip():
+            try:
+                extras["corridor"] = float(corridor)
+            except ValueError as exc:
+                raise BadInput(
+                    f"corridor must be a number of mm, got {corridor!r}"
+                ) from exc
+        if escape:
+            extras["escape"] = escape
+    elif op == "place" and groups:
+        extras["groups"] = True
+    return "put", {"kind": "pcb", "id": slug, "__extras__": extras}
+
+
+def _safe_back(back: str | None, slug: str) -> str:
+    """Only a local quest page is a redirect target — never an open
+    redirect to another host."""
+    if back and back.startswith("/refs/quest/") and "//" not in back:
+        return back
+    return f"/pcb/{slug}"
+
+
+@router.post("/pcb/{slug}/op")
+async def pcb_op(
+    request: Request,
+    slug: str,
+    op: str = Form(...),
+    corridor: str | None = Form(None),
+    escape: str | None = Form(None),
+    groups: str | None = Form(None),
+    back: str | None = Form(None),
+) -> Any:
+    try:
+        if op not in _PANEL_OPS:
+            raise BadInput(f"op must be one of {', '.join(_PANEL_OPS)}, got {op!r}")
+        verb, args = _op_call(slug, op, corridor=corridor, escape=escape, groups=groups)
+    except BadInput as exc:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Board action refused", "detail": str(exc), "status": 400},
+            status_code=400,
+        )
+    return await redirect_or_error(
+        request,
+        verb,
+        args,
+        redirect=_safe_back(back, slug),
+        error_title=f"{op} refused for {slug}",
+    )

@@ -558,6 +558,7 @@ class PcbHandler(Handler):
                 "negotiate",
                 "corridor",
                 "escape",
+                "groups",
                 "loop",
                 "moves",
                 "refdes",

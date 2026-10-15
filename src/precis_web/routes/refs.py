@@ -54,7 +54,7 @@ from precis.workers.job_types.deferred_llm_call import (
     deferral_params,
     serialize_request,
 )
-from precis_web import ask
+from precis_web import ask, quest_board
 from precis_web.deps import (
     await_dispatch,
     get_store,
@@ -525,6 +525,14 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
 
     live_servers = _live_servers(store, qid)
 
+    # Board panel (gr488206) — a quest served by kind='pcb' refs shows one
+    # column per board instead of the Pareto front, which means nothing
+    # for a board unless the quest declares its own numeric objectives.
+    board_panel = await asyncio.to_thread(quest_board.board_panel, store, live_servers)
+    show_frontier = board_panel is None or quest_board.declares_objectives(
+        getattr(ref, "meta", None)
+    )
+
     # Lineage — the `serves` DAG one hop each way. Children are the
     # already-fetched live servers narrowed to kind='quest' (no extra
     # query); parents are the outbound edge, resolved + narrowed the
@@ -594,9 +602,11 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     # Frontier + gaps — the same markdown a `get(view=…)` call returns,
     # rendered inline (the template applies the same ``linkify_toon``
     # filter the generic detail body does — no second renderer to drift).
-    frontier_text, frontier_error = await await_dispatch(
-        request, "get", {"kind": "quest", "id": qid, "view": "frontier"}
-    )
+    frontier_text, frontier_error = "", False
+    if show_frontier:
+        frontier_text, frontier_error = await await_dispatch(
+            request, "get", {"kind": "quest", "id": qid, "view": "frontier"}
+        )
     gaps_text, gaps_error = await await_dispatch(
         request, "get", {"kind": "quest", "id": qid, "view": "gaps"}
     )
@@ -620,110 +630,113 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_axis_keys: list[str] = []
     frontier_axis_counts: dict[str, int] = {}
     frontier_axis_docs: list[dict[str, str]] = []
-    try:
-        fr = frontier_mod.quest_frontier(store, qid)
-        frontier_has_candidates = bool(
-            fr.frontier or fr.dominated or fr.provisional or fr.unevaluated
-        )
-        objectives = fr.objectives
-        default_x, default_y, default_x_label, default_y_label = (
-            frontier_mod.plot_axes_for(getattr(ref, "meta", None), objectives)
-        )
-        # Selectable axes for the ``?fx=&fy=`` picker: any measure present
-        # on >= 1 candidate (any band — a human may plot a raw run scalar
-        # the quest doesn't rank on) union the declared rubric objective
-        # keys (a declared-but-unmeasured-yet axis is still a valid pick,
-        # it just plots nothing until a candidate lands on it). An
-        # unrecognised query value is silently ignored (falls back to the
-        # quest's default), never a 400 — a stale/hand-edited link degrades
-        # quietly rather than erroring the whole hub.
-        # Keyed by axis key, valued by how many candidates (any band —
-        # provisional's merged view included) carry a value for it: the
-        # pickers label each option "atom_cost (5)" so a sparse/empty axis
-        # is self-explanatory before plotting it. A declared objective
-        # nothing has measured yet shows "(0)" rather than vanishing.
-        frontier_axis_counts = {k: 0 for k, _ in objectives}
-        for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
-            for k in c.measures:
-                frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
-        for pc in fr.provisional:
-            for k in pc.measures:
-                frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
-        frontier_axis_keys = sorted(frontier_axis_counts)
-        axis_key_set = set(frontier_axis_keys)
-        req_fx = request.query_params.get("fx")
-        req_fy = request.query_params.get("fy")
-        if req_fx is not None and req_fx in axis_key_set:
-            x_key, x_label = req_fx, frontier_mod.axis_label_for(req_fx)
-        else:
-            x_key, x_label = default_x, default_x_label
-        if req_fy is not None and req_fy in axis_key_set:
-            y_key, y_label = req_fy, frontier_mod.axis_label_for(req_fy)
-        else:
-            y_key, y_label = default_y, default_y_label
-        frontier_x = x_key
-        frontier_y = y_key
-        # z-axis (color) picker — same "known axis key or ignore" rule as
-        # fx/fy above, with one asymmetry: fx/fy fall back to a default on
-        # ANY absent/bad value, but fz distinguishes "never asked" (no ``fz``
-        # param at all — a bare page load) from "asked for none" (the form's
-        # submitted-but-blank ``(none)`` select, an empty string). Only the
-        # former gets the default colour axis — the first declared rubric
-        # objective not already plotted on x/y — so the hub opens with the
-        # third dimension visible, yet an explicit "(none)" pick sticks.
-        # A quest with < 3 declared objectives simply has no default z.
-        req_fz = request.query_params.get("fz")
-        z_key: str | None = None
-        z_label = ""
-        if req_fz is None:
-            z_key = next((k for k, _s in objectives if k not in (x_key, y_key)), None)
-        elif req_fz and req_fz in axis_key_set:
-            z_key = req_fz
-        if z_key:
-            z_label = frontier_mod.axis_label_for(z_key)
-        frontier_z = z_key
-        # Contour toggle (``?fc=``) — default ON (absent or anything but
-        # "0"): the filled-contour underlay only draws when z is active
-        # anyway, and a sparse quest's misleading field is one explicit
-        # ``fc=0`` away from dismissed.
-        frontier_c = request.query_params.get("fc") != "0"
-        # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
-        # [lo, hi]}``) — unions into the plotted range so the axis doesn't
-        # keep re-scaling as new points land inside a range already widened
-        # by a human/agent. Malformed/absent handled by
-        # `build_frontier_scatter` itself.
-        raw_viewport = (getattr(ref, "meta", None) or {}).get("frontier_viewport")
-        viewport = raw_viewport if isinstance(raw_viewport, dict) else None
-        frontier_scatter = frontier_mod.build_frontier_scatter(
-            fr.frontier + fr.dominated,
-            provisional=fr.provisional,
-            open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
-            frontier_ref_ids={c.ref_id for c in fr.frontier},
-            x_measure=x_key,
-            y_measure=y_key,
-            x_label=x_label,
-            y_label=y_label,
-            viewport=viewport,
-            objectives=objectives,
-            z_measure=z_key,
-            z_label=z_label,
-            contour=frontier_c,
-        )
-        if frontier_scatter is not None:
-            axis_slots = [("x", x_key), ("y", y_key)]
+    if show_frontier:
+        try:
+            fr = frontier_mod.quest_frontier(store, qid)
+            frontier_has_candidates = bool(
+                fr.frontier or fr.dominated or fr.provisional or fr.unevaluated
+            )
+            objectives = fr.objectives
+            default_x, default_y, default_x_label, default_y_label = (
+                frontier_mod.plot_axes_for(getattr(ref, "meta", None), objectives)
+            )
+            # Selectable axes for the ``?fx=&fy=`` picker: any measure present
+            # on >= 1 candidate (any band — a human may plot a raw run scalar
+            # the quest doesn't rank on) union the declared rubric objective
+            # keys (a declared-but-unmeasured-yet axis is still a valid pick,
+            # it just plots nothing until a candidate lands on it). An
+            # unrecognised query value is silently ignored (falls back to the
+            # quest's default), never a 400 — a stale/hand-edited link degrades
+            # quietly rather than erroring the whole hub.
+            # Keyed by axis key, valued by how many candidates (any band —
+            # provisional's merged view included) carry a value for it: the
+            # pickers label each option "atom_cost (5)" so a sparse/empty axis
+            # is self-explanatory before plotting it. A declared objective
+            # nothing has measured yet shows "(0)" rather than vanishing.
+            frontier_axis_counts = {k: 0 for k, _ in objectives}
+            for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+                for k in c.measures:
+                    frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
+            for pc in fr.provisional:
+                for k in pc.measures:
+                    frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
+            frontier_axis_keys = sorted(frontier_axis_counts)
+            axis_key_set = set(frontier_axis_keys)
+            req_fx = request.query_params.get("fx")
+            req_fy = request.query_params.get("fy")
+            if req_fx is not None and req_fx in axis_key_set:
+                x_key, x_label = req_fx, frontier_mod.axis_label_for(req_fx)
+            else:
+                x_key, x_label = default_x, default_x_label
+            if req_fy is not None and req_fy in axis_key_set:
+                y_key, y_label = req_fy, frontier_mod.axis_label_for(req_fy)
+            else:
+                y_key, y_label = default_y, default_y_label
+            frontier_x = x_key
+            frontier_y = y_key
+            # z-axis (color) picker — same "known axis key or ignore" rule as
+            # fx/fy above, with one asymmetry: fx/fy fall back to a default on
+            # ANY absent/bad value, but fz distinguishes "never asked" (no ``fz``
+            # param at all — a bare page load) from "asked for none" (the form's
+            # submitted-but-blank ``(none)`` select, an empty string). Only the
+            # former gets the default colour axis — the first declared rubric
+            # objective not already plotted on x/y — so the hub opens with the
+            # third dimension visible, yet an explicit "(none)" pick sticks.
+            # A quest with < 3 declared objectives simply has no default z.
+            req_fz = request.query_params.get("fz")
+            z_key: str | None = None
+            z_label = ""
+            if req_fz is None:
+                z_key = next(
+                    (k for k, _s in objectives if k not in (x_key, y_key)), None
+                )
+            elif req_fz and req_fz in axis_key_set:
+                z_key = req_fz
             if z_key:
-                axis_slots.append(("colour", z_key))
-            frontier_axis_docs = [
-                {
-                    "axis": axis,
-                    "key": key,
-                    "label": frontier_mod.axis_label_for(key),
-                    "text": frontier_mod.axis_description_for(key),
-                }
-                for axis, key in axis_slots
-            ]
-    except Exception:
-        log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
+                z_label = frontier_mod.axis_label_for(z_key)
+            frontier_z = z_key
+            # Contour toggle (``?fc=``) — default ON (absent or anything but
+            # "0"): the filled-contour underlay only draws when z is active
+            # anyway, and a sparse quest's misleading field is one explicit
+            # ``fc=0`` away from dismissed.
+            frontier_c = request.query_params.get("fc") != "0"
+            # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
+            # [lo, hi]}``) — unions into the plotted range so the axis doesn't
+            # keep re-scaling as new points land inside a range already widened
+            # by a human/agent. Malformed/absent handled by
+            # `build_frontier_scatter` itself.
+            raw_viewport = (getattr(ref, "meta", None) or {}).get("frontier_viewport")
+            viewport = raw_viewport if isinstance(raw_viewport, dict) else None
+            frontier_scatter = frontier_mod.build_frontier_scatter(
+                fr.frontier + fr.dominated,
+                provisional=fr.provisional,
+                open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
+                frontier_ref_ids={c.ref_id for c in fr.frontier},
+                x_measure=x_key,
+                y_measure=y_key,
+                x_label=x_label,
+                y_label=y_label,
+                viewport=viewport,
+                objectives=objectives,
+                z_measure=z_key,
+                z_label=z_label,
+                contour=frontier_c,
+            )
+            if frontier_scatter is not None:
+                axis_slots = [("x", x_key), ("y", y_key)]
+                if z_key:
+                    axis_slots.append(("colour", z_key))
+                frontier_axis_docs = [
+                    {
+                        "axis": axis,
+                        "key": key,
+                        "label": frontier_mod.axis_label_for(key),
+                        "text": frontier_mod.axis_description_for(key),
+                    }
+                    for axis, key in axis_slots
+                ]
+        except Exception:
+            log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
 
     # Latest quest_tick run — lets a human spy on what the autonomous
     # loop actually did/said last, via the existing agentlog viewer.
@@ -795,6 +808,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "paper_pdf_url": paper_pdf_url,
             "happening_now": happening_now,
             "log_tail": log_tail,
+            "board_panel": board_panel,
+            "show_frontier": show_frontier,
             "frontier_text": frontier_text,
             "frontier_error": frontier_error,
             "frontier_scatter": frontier_scatter,

@@ -1,0 +1,17 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ slug }} — {{ view }}{% endblock %}
+{% block content %}
+<div class="mb-3 flex items-baseline gap-3 flex-wrap">
+  <a href="/pcb/{{ slug }}" class="text-sm text-sky-700 hover:underline">&larr; {{ slug }}</a>
+  <h1 class="text-lg font-semibold">{{ view }}</h1>
+  <span class="text-xs text-slate-400 font-mono">{{ call }}</span>
+</div>
+<p class="mb-3 text-xs flex flex-wrap gap-x-3">
+  {% for v in views %}<a href="/pcb/{{ slug }}/view/{{ v }}" class="{% if v == view %}font-semibold text-slate-800{% else %}text-sky-700 hover:underline{% endif %}">{{ v }}</a>{% endfor %}
+</p>
+{% if is_error %}
+<p class="text-sm text-rose-700 whitespace-pre-wrap">{{ body | linkify_refs }}</p>
+{% else %}
+<div class="text-xs text-slate-700 overflow-x-auto rounded-lg border border-slate-200 bg-white p-3">{{ body | linkify_toon }}</div>
+{% endif %}
+{% endblock %}

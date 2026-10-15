@@ -1,0 +1,166 @@
+{# ── Board panel (gr488206) — one column per served pcb, in place of the
+   Pareto front. Built by precis_web.quest_board.board_panel; a section
+   that failed to read is None and shows "unavailable". Every action
+   button confirms before it posts: the queue is production. #}
+{% set bp = board_panel %}
+<section id="board" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-3">Boards — {{ bp.boards | length }} serving this quest</h2>
+  <div class="grid gap-4" style="grid-template-columns: repeat({{ bp.boards | length }}, minmax(0, 1fr));">
+    {% for b in bp.boards %}
+    <div class="board-col rounded-md border border-slate-200 p-3 text-sm" data-slug="{{ b.slug }}">
+      <h3 class="font-semibold text-slate-800">
+        <a href="{{ b.page_url }}" class="text-sky-700 hover:underline">{{ b.slug }}</a>
+        {% if b.phase %}<span class="ml-1 text-xs font-normal px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">phase {{ b.phase }}</span>{% endif %}
+      </h3>
+      <p class="text-xs text-slate-500 mb-2">{{ b.title }}</p>
+
+      <dl class="space-y-2">
+        {# Route completion #}
+        <div>
+          <dt class="text-xs font-semibold uppercase text-slate-400">Route</dt>
+          <dd>
+            {% if b.route %}
+            {% set r = b.route %}
+            <span class="font-medium">{{ r.routed }}/{{ r.routable }} nets routed</span>
+            {% if r.failed %}<span class="text-rose-700"> · {{ r.failed }} failed</span>{% endif %}
+            {% if r.unrouted %}<span class="text-slate-500"> · {{ r.unrouted }} unrouted</span>{% endif %}
+            {% if r.sketched %}<span class="text-slate-500"> · {{ r.sketched }} sketched</span>{% endif %}
+            {% if r.dangling %}<span class="text-slate-400"> · {{ r.dangling }} dangling</span>{% endif %}
+            {% if r.fail_reasons %}
+            <div class="text-xs text-rose-700">failure classes:
+              {% for k, n in r.fail_reasons %}{{ k }} ×{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </div>
+            {% endif %}
+            {% else %}<span class="text-slate-400 italic">unavailable</span>{% endif %}
+            {% for label, j in (("last route", b.route_job), ("last place", b.place_job)) %}
+            <div class="text-xs text-slate-500">{{ label }}:
+              {% if j %}
+              <a href="/refs/job/{{ j.id }}" class="font-mono text-sky-700 hover:underline">jo{{ j.id }}</a>
+              <span class="{% if j.status == 'failed' %}text-rose-700{% elif j.status == 'done' %}text-emerald-700{% endif %}">{{ j.status }}</span>
+              {% if j.failure_class %}({{ j.failure_class }}){% endif %}
+              {% if j.created %}<span class="text-slate-400">{{ j.created }}</span>{% endif %}
+              {% if j.error %}<div class="text-slate-400 truncate" title="{{ j.error }}">{{ j.error }}</div>{% endif %}
+              {% else %}<span class="italic">never run</span>{% endif %}
+            </div>
+            {% endfor %}
+          </dd>
+        </div>
+
+        {# DRC / ERC #}
+        <div>
+          <dt class="text-xs font-semibold uppercase text-slate-400">DRC / ERC</dt>
+          <dd>
+            {% if b.drc and b.drc.has_run %}
+            {% set d = b.drc %}
+            DRC <span class="{% if d.drc_errors %}text-rose-700 font-medium{% endif %}">{{ d.drc_errors }} error{{ '' if d.drc_errors == 1 else 's' }}</span>, {{ d.drc_warns }} warn ·
+            ERC <span class="{% if d.erc_errors %}text-rose-700 font-medium{% endif %}">{{ d.erc_errors }} error{{ '' if d.erc_errors == 1 else 's' }}</span>, {{ d.erc_warns }} warn
+            {% if d.top_rules %}
+            <div class="text-xs text-slate-500">{% for k, n in d.top_rules %}{{ k }} ×{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+            {% endif %}
+            {% elif b.drc %}<span class="text-slate-400 italic">no check run yet</span>
+            {% else %}<span class="text-slate-400 italic">unavailable</span>{% endif %}
+          </dd>
+        </div>
+
+        {# Datasheet review — the pcb-tapeout ledger's judgment verdicts #}
+        <div>
+          <dt class="text-xs font-semibold uppercase text-slate-400">Datasheet review</dt>
+          <dd>
+            {% if b.review %}
+            {% set v = b.review %}
+            {{ v.verdicts['pass'] }} pass · <span class="{% if v.verdicts['fail'] %}text-rose-700 font-medium{% endif %}">{{ v.verdicts['fail'] }} fail</span> · {{ v.verdicts['n/a'] }} n/a · {{ v.verdicts['waived'] }} waived
+            <div class="text-xs text-slate-500">{{ v.not_checked }} not checked · {{ v.stale }} stale · {{ v.machine }} machine / {{ v.human }} human, of {{ v.items }} items</div>
+            {% else %}<span class="text-slate-400 italic">unavailable</span>{% endif %}
+          </dd>
+        </div>
+
+        {# BOM coverage #}
+        <div>
+          <dt class="text-xs font-semibold uppercase text-slate-400">BOM</dt>
+          <dd>
+            {% if b.bom %}
+            {% set m = b.bom %}
+            {{ m.with_lcsc }}/{{ m.parts }} parts with LCSC · {{ m.with_mpn }}/{{ m.parts }} with MPN
+            <div class="text-xs text-slate-500">
+              {{ m.lines }} lines ({{ m.lcsc_lines }} catalogued) ·
+              {% if m.stock_known %}<span class="{% if m.stock_short %}text-rose-700{% endif %}">{{ m.stock_short }} short or discontinued</span> of {{ m.stock_known }} with stock{% else %}no stock data{% endif %} ·
+              {% if m.unit_cost is not none %}${{ '%.2f' | format(m.unit_cost) }}/board ({{ m.priced }} lines priced){% else %}no prices{% endif %}
+            </div>
+            {% else %}<span class="text-slate-400 italic">unavailable</span>{% endif %}
+          </dd>
+        </div>
+
+        {# Fab readiness #}
+        <div>
+          <dt class="text-xs font-semibold uppercase text-slate-400">Fab readiness</dt>
+          <dd>
+            {% if b.tapeout %}
+            {% set t = b.tapeout %}
+            tapeout: <span class="{% if t.blocking_open %}text-amber-700{% else %}text-emerald-700{% endif %} font-medium">{{ t.blocking - t.blocking_open }}/{{ t.blocking }} blocking items clear</span>
+            {% if t.failing %}<div class="text-xs text-rose-700">failing: {{ t.failing | join(', ') }}</div>{% endif %}
+            {% else %}<span class="text-slate-400 italic">tapeout checklist unavailable</span>{% endif %}
+            <div class="text-xs text-slate-500">JLCPCB order:
+              {% if b.order %}{{ b.order.state }}{% if b.order.qty %} · qty {{ b.order.qty }}{% endif %}{% if b.order.ident %} · <span class="font-mono">{{ b.order.ident }}</span>{% endif %}{% if b.order.added_at %} · {{ b.order.added_at }}{% endif %}
+              {% else %}<span class="italic">none</span>{% endif %}
+            </div>
+          </dd>
+        </div>
+      </dl>
+
+      <p class="mt-2 text-xs flex flex-wrap gap-x-2">
+        {% for v in b.views %}<a href="{{ v.url }}" class="text-sky-700 hover:underline">{{ v.name }}</a>{% endfor %}
+      </p>
+      {% if b.errors %}<p class="mt-1 text-xs text-rose-600">could not read: {{ b.errors | join(', ') }}</p>{% endif %}
+
+      {# Actions — each queues the existing op through POST /pcb/{slug}/op #}
+      <div class="mt-3 space-y-2 border-t border-slate-100 pt-2">
+        <form method="post" action="{{ b.op_url }}" class="flex flex-wrap items-center gap-2 text-xs"
+              onsubmit="return confirm('Queue a route job for {{ b.slug }} on production?');">
+          <input type="hidden" name="op" value="route">
+          <input type="hidden" name="back" value="/refs/quest/{{ ref.id }}#board">
+          <label class="flex items-center gap-1" title="corridor= (mm, >= 0): router corridor width opt-in">corridor
+            <input name="corridor" inputmode="decimal" placeholder="mm" class="w-14 rounded border border-slate-300 px-1 py-0.5">
+          </label>
+          <label class="flex items-center gap-1" title="escape='plaza': escape-plaza opt-in"><input type="checkbox" name="escape" value="plaza"> escape=plaza</label>
+          <button class="rounded-md bg-sky-600 text-white px-2 py-1 hover:bg-sky-700">Route</button>
+        </form>
+        <form method="post" action="{{ b.op_url }}" class="flex flex-wrap items-center gap-2 text-xs"
+              onsubmit="return confirm('Queue a place job for {{ b.slug }} on production? It moves parts.');">
+          <input type="hidden" name="op" value="place">
+          <input type="hidden" name="back" value="/refs/quest/{{ ref.id }}#board">
+          <label class="flex items-center gap-1" title="groups=true: move authored groups as rigid bodies"><input type="checkbox" name="groups" value="1"> groups</label>
+          <button class="rounded-md bg-sky-600 text-white px-2 py-1 hover:bg-sky-700">Place</button>
+        </form>
+        <form method="post" action="{{ b.op_url }}" class="flex flex-wrap items-center gap-2 text-xs"
+              onsubmit="return confirm('Run a fresh DRC/ERC check on {{ b.slug }}? It records a check run on production.');">
+          <input type="hidden" name="op" value="review">
+          <input type="hidden" name="back" value="/refs/quest/{{ ref.id }}#board">
+          <button class="rounded-md border border-slate-300 bg-white text-slate-700 px-2 py-1 hover:bg-slate-50">Review (check)</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# Feature todos serving the quest #}
+  <div class="mt-4">
+    <h3 class="text-xs font-semibold uppercase text-slate-400 mb-1">
+      Features — {{ bp.todos.rows | length }} todo{{ '' if bp.todos.rows | length == 1 else 's' }}
+      {% for st, n in bp.todos.counts %}<span class="ml-1 normal-case font-normal text-slate-500">{{ n }} {{ st }}</span>{% endfor %}
+    </h3>
+    {% if bp.todos.rows %}
+    <ul class="text-sm space-y-0.5">
+      {% for t in bp.todos.rows %}
+      <li class="flex items-baseline gap-2">
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs
+          {% if t.status == 'done' %}bg-emerald-100 text-emerald-800{% elif t.status == 'open' %}bg-sky-100 text-sky-800{% else %}bg-slate-100 text-slate-700{% endif %}">{{ t.status }}</span>
+        <a href="/refs/todo/{{ t.id }}" class="font-mono text-xs text-slate-400 hover:underline">td{{ t.id }}</a>
+        <span class="text-slate-700">{{ t.title }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-sm text-slate-400 italic">no feature todos serve this quest yet.</p>
+    {% endif %}
+  </div>
+</section>

@@ -3887,3 +3887,16 @@ def test_pcb_link_missing_target_and_bad_mode(pcb):
         pcb.link(id="taz-arg")
     with pytest.raises(BadInput, match="must be 'add' or 'remove'"):
         pcb.link(id="taz-arg", target="quest:1", mode="detach")
+
+
+def test_every_enqueue_op_option_is_an_accepted_put_key():
+    """gr488206: an option ``_enqueue_op`` reads must also be in
+    ``ARGS_KEYS['put']``, or dispatch refuses it before it reaches the
+    job (``groups`` shipped unreachable through ``put`` this way)."""
+    import inspect
+    import re
+
+    src = inspect.getsource(PcbHandler._enqueue_op)
+    read = set(re.findall(r'opts(?:\.get\(|\[)"([a-z_]+)"', src))
+    assert "groups" in read
+    assert read <= PcbHandler.ARGS_KEYS["put"], read - PcbHandler.ARGS_KEYS["put"]
