@@ -379,15 +379,26 @@ def discover_tests(
     seen = set(targets)
     reached_fixtures: dict[str, tuple[int, str]] = {}  # name -> (dist, qn)
     frontier: list[str] = list(inbound)
+    # Intermediates between a reached caller and the target, caller-side
+    # first: an indirect hit names its chain (gr488913).
+    via: dict[str, tuple[str, ...]] = {}
     for dist in range(1, depth + 1):
         nxt: list[str] = []
         for callee in frontier:
+            chain = () if dist == 1 else (callee, *via.get(callee, ()))
             for edge in inbound.get(callee) or edges_to.get(callee, []):
                 caller = edge.caller
                 if caller in seen:
                     continue
                 seen.add(caller)
+                via[caller] = chain
                 caller_sym = idx.symbol(caller)
+                how = "static call" if dist == 1 else "indirect call"
+                via_s = (
+                    "via " + " -> ".join(q.rsplit(".", 1)[-1] for q in chain)
+                    if chain
+                    else ""
+                )
                 if is_test_path(edge.file):
                     if caller_sym is not None and _is_fixture(caller_sym):
                         reached_fixtures.setdefault(caller_sym.name, (dist, caller))
@@ -402,8 +413,9 @@ def discover_tests(
                                 ),
                                 file=edge.file,
                                 tier=TIER_DIRECT if dist == 1 else TIER_INDIRECT,
-                                evidence=f"static call at {edge.file}:{edge.line}",
+                                evidence=f"{how} at {edge.file}:{edge.line}",
                                 distance=dist,
+                                detail=via_s,
                             )
                         )
                     elif caller_sym is None or caller_sym.kind == "module":
@@ -418,6 +430,7 @@ def discover_tests(
                                     f"module-scope call at {edge.file}:{edge.line}"
                                 ),
                                 distance=dist,
+                                detail=via_s,
                             )
                         )
                     # Helpers/fixtures in test files are not pytest

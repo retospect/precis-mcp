@@ -74,7 +74,7 @@ class ChangedSymbol:
 
     qualname: str  # head-side qualname (base-side for removals)
     file: str  # head-side file (base-side for removals)
-    change: str  # added | removed | signature | body | moved
+    change: str  # added | removed | signature | body | moved | shifted
     detail: str = ""  # e.g. "def f(a) -> def f(a, b)" or "moved to pkg/b.py"
     live: bool = True  # False for removed symbols (no live callers)
 
@@ -87,7 +87,9 @@ class Impact:
     head_desc: str
     changed_files: list[str]
     changes: list[ChangedSymbol]
-    callers: list[tuple[str, str, int, str]]  # (caller qn, file, line, of)
+    #: (caller qn, file, line, of, via) — ``via`` is the chain of
+    #: intermediate callees, caller-side first; empty = direct.
+    callers: list[tuple[str, str, int, str, tuple[str, ...]]]
     importers: list[tuple[str, str, str]]  # (module qn, file, imports-of)
     tests: list[ptests.TestHit]
     test_for: dict[str, str]  # nodeid -> changed qualname it evidences
@@ -271,6 +273,32 @@ class _Git:
                     changes.setdefault(line[3:], "A")
         return changes
 
+    def dirty_paths(self) -> set[str]:
+        """``*.py`` paths whose worktree bytes differ from ``HEAD``
+        (staged, unstaged or untracked). A ``base`` older than ``HEAD``
+        also diffs committed files; those are not uncommitted bytes."""
+        out = self.run(
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+            "--",
+            "*.py",
+        )
+        dirty: set[str] = set()
+        fields = out.split("\0")
+        i = 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if len(entry) < 4:
+                continue
+            dirty.add(entry[3:])
+            if entry[0] in "RC":
+                i += 1  # -z rename/copy: the next field is the old path
+        return dirty
+
 
 # ---------------------------------------------------------------------------
 # Snapshot indexing (git blobs / live bytes)
@@ -391,12 +419,12 @@ def _diff_modules(
                 elif _body_slice(bmod, b) != _body_slice(hmod, h):
                     changes.append(ChangedSymbol(qn, rel, "body"))
                 elif b.start_line != h.start_line:
+                    # Only its lines shifted (an edit above it); nothing
+                    # about the symbol changed (gr488914): one summary
+                    # line in the render, never a fan-out seed.
                     changes.append(
                         ChangedSymbol(
-                            qn,
-                            rel,
-                            "moved",
-                            f"L{b.start_line} -> L{h.start_line} (same file)",
+                            qn, rel, "shifted", f"L{b.start_line} -> L{h.start_line}"
                         )
                     )
 
@@ -428,7 +456,18 @@ def _diff_modules(
                     f"{gone.qualname} ({gone.file}) -> {new.qualname} ({new.file})",
                 )
             )
-    return changes
+    return sorted(changes, key=lambda c: _CHANGE_RANK.get(c.change, len(_CHANGE_RANK)))
+
+
+#: Render and seed order: contract changes first, line shifts last.
+_CHANGE_RANK = {
+    "signature": 0,
+    "removed": 1,
+    "body": 2,
+    "added": 3,
+    "moved": 4,
+    "shifted": 5,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -438,11 +477,13 @@ def _diff_modules(
 
 def _fanout_callers(
     idx: RepoIndex, seed_qns: list[str], *, depth: int, limit: int
-) -> tuple[list[tuple[str, str, int, str]], int]:
+) -> tuple[list[tuple[str, str, int, str, tuple[str, ...]]], int]:
     """Reverse-BFS callers of every seed, bounded by depth and limit.
 
     Level 1 matches callees by seed prefix (a call to ``Cls.m`` counts
-    toward a ``Cls`` seed); deeper levels use exact callee lookups.
+    toward a ``Cls`` seed); deeper levels use exact callee lookups. Each
+    row carries its ``via`` chain so a transitive caller never reads as a
+    direct one (gr488913).
     """
     edges_to = ptests._edges_to(idx)
     seeds = set(seed_qns)
@@ -450,23 +491,25 @@ def _fanout_callers(
     for callee, edges in edges_to.items():
         if callee in seeds or any(callee.startswith(s + ".") for s in seeds):
             inbound[callee] = edges
-    rows: list[tuple[str, str, int, str]] = []
+    rows: list[tuple[str, str, int, str, tuple[str, ...]]] = []
     total = 0
     visited = set(seed_qns)
-    frontier: list[tuple[str, str]] = [(q, q) for q in inbound]
-    for _ in range(depth):
-        nxt: list[tuple[str, str]] = []
-        for qn, seed in frontier:
+    # (callee, seed, via of callee); level-1 callees are the seed or a member.
+    frontier: list[tuple[str, str, tuple[str, ...]]] = [(q, q, ()) for q in inbound]
+    for level in range(depth):
+        nxt: list[tuple[str, str, tuple[str, ...]]] = []
+        for qn, seed, via in frontier:
+            chain = via if level == 0 else (qn, *via)
             for e in inbound.get(qn) or edges_to.get(qn, []):
                 if e.caller in visited:
                     continue
                 visited.add(e.caller)
                 total += 1
                 if len(rows) < limit:
-                    rows.append((e.caller, e.file, e.line, seed))
-                nxt.append((e.caller, seed))
+                    rows.append((e.caller, e.file, e.line, seed, chain))
+                nxt.append((e.caller, seed, chain))
         frontier = nxt
-    rows.sort(key=lambda r: (r[1], r[2], r[0]))
+    rows.sort(key=lambda r: (len(r[4]), r[1], r[2], r[0]))
     return rows, total
 
 
@@ -584,6 +627,7 @@ def impact_diff(
     wt_paths = set(idx._by_file)
     head_files: dict[str, bytes | None] = {}
     fingerprints: dict[str, str] = {}
+    dirty = git.dirty_paths() if head_sha is None else set()
     for rel, _status in paths.items():
         if head_sha is not None:
             head_files[rel] = git.show(head_sha, rel) if rel in head_tree else None
@@ -594,7 +638,7 @@ def impact_diff(
             except OSError:
                 raw = None
             head_files[rel] = raw
-            if raw is not None:
+            if raw is not None and rel in dirty:
                 fingerprints[rel] = hashlib.sha256(raw).hexdigest()
     base_files: dict[str, bytes | None] = {
         rel: git.show(base_sha, rel) if rel in base_tree else None for rel in paths
@@ -667,7 +711,7 @@ def _assemble(
     """Shared fan-out + unknowns for both entry forms."""
     unknowns: list[str] = []
 
-    live_qns = [c.qualname for c in changes if c.live]
+    live_qns = [c.qualname for c in changes if c.live and c.change != "shifted"]
     # Seed symbols for per-symbol fan-out (bounded).
     seeds: list[Symbol] = []
     for qn in live_qns:
@@ -761,35 +805,62 @@ _GLYPH = {
     "signature": "~",
     "body": "~",
     "moved": "~",
+    "shifted": "~",
     "seed": "·",
 }
 
+#: Shifted qualnames named on the one summary line before ``+N more``.
+_SHIFTED_NAMED = 5
+
+
+def _short(qualname: str) -> str:
+    """Last dotted part: chains name functions the rows spell out in full."""
+    return qualname.rsplit(".", 1)[-1]
+
 
 def render_impact(alias: str, imp: Impact, *, depth: int, limit: int) -> str:
+    real = [c for c in imp.changes if c.change != "shifted"]
+    shifted = [c for c in imp.changes if c.change == "shifted"]
+    n_files = len(imp.changed_files)
     lines = [
         f"# impact on {alias}: {imp.base_desc}..{imp.head_desc}  "
-        f"({len(imp.changed_files)} file{'s' if len(imp.changed_files) != 1 else ''}, "
-        f"{len(imp.changes)} symbol{'s' if len(imp.changes) != 1 else ''})\n"
+        f"({n_files} file{'s' if n_files != 1 else ''}, "
+        f"{len(real)} changed symbol{'s' if len(real) != 1 else ''}"
+        + (f" + {len(shifted)} line-shift only" if shifted else "")
+        + ")\n"
     ]
 
     lines.append("Changed symbols:")
     if not imp.changes:
         lines.append("  (no symbol-level changes)")
-    for c in imp.changes[:limit]:
+    for c in real[:limit]:
         detail = f"  {c.detail}" if c.detail else ""
         lines.append(
             f"  {_GLYPH.get(c.change, '?')} {c.change:<9} {alias}::{c.qualname}  "
             f"{c.file}{detail}"
         )
-    if len(imp.changes) > limit:
-        lines.append(f"  … ({len(imp.changes) - limit} more)")
+    if len(real) > limit:
+        lines.append(f"  … ({len(real) - limit} more)")
+    if shifted:
+        named = ", ".join(_short(c.qualname) for c in shifted[:_SHIFTED_NAMED])
+        if len(shifted) > _SHIFTED_NAMED:
+            named += f" +{len(shifted) - _SHIFTED_NAMED} more"
+        lines.append(
+            f"  ~ shifted   {len(shifted)} symbol{'s' if len(shifted) != 1 else ''} "
+            f"moved lines only, otherwise unchanged (no fan-out): {named}"
+        )
 
     lines.append("")
     lines.append(f"Callers of changed symbols (depth<={depth}):")
     if not imp.callers:
         lines.append("  (none resolved)")
-    for caller, file, line, seed in imp.callers:
-        lines.append(f"  {alias}::{caller}  {file}:{line}  calls {seed}")
+    for caller, file, line, seed, via in imp.callers:
+        how = (
+            f"reaches {seed} via {' -> '.join(_short(q) for q in via)}"
+            if via
+            else f"calls {seed}"
+        )
+        lines.append(f"  {alias}::{caller}  {file}:{line}  {how}")
     if imp.n_caller_rows > len(imp.callers):
         lines.append(
             f"  … ({imp.n_caller_rows - len(imp.callers)} more; raise max_results)"
@@ -816,6 +887,7 @@ def render_impact(alias: str, imp: Impact, *, depth: int, limit: int) -> str:
         lines.append(
             f"  {hit.nodeid}  [{hit.confidence}]  "
             f"for {imp.test_for.get(hit.nodeid, '')} — {hit.evidence}"
+            + (f" ({hit.detail})" if hit.detail else "")
         )
 
     lines.append("")

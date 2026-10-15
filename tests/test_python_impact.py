@@ -290,3 +290,78 @@ def test_impact_no_source_execution(repo: Path, monkeypatch) -> None:
     head = _git(repo, "rev-parse", "HEAD")
     body = handler.get(id="r", view="impact", base=base, head=head).body
     assert "pkg.core.target" in body
+
+
+def test_impact_transitive_callers_name_their_chain(repo: Path) -> None:
+    """gr488913: a two-hop caller reads ``reaches X via Y``, never as a
+    direct ``calls X``; an indirect test hit names its chain."""
+    _write(
+        repo,
+        "pkg/top.py",
+        "from pkg.user import run\n\n\ndef top() -> int:\n    return run()\n",
+    )
+    _write(
+        repo,
+        "tests/test_top.py",
+        "from pkg.top import top\n\n\ndef test_top():\n    assert top()\n",
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": repo})
+    body = handler.get(id="r::pkg.core.target", view="impact", depth=3).body
+    run_row = next(ln for ln in body.splitlines() if "r::pkg.user.run " in ln)
+    assert "calls pkg.core.target" in run_row  # run calls target directly
+    top_row = next(ln for ln in body.splitlines() if "r::pkg.top.top " in ln)
+    assert "reaches pkg.core.target via run" in top_row
+    test_row = next(
+        ln for ln in body.splitlines() if "tests/test_top.py::test_top " in ln
+    )
+    assert "indirect call at" in test_row and "(via top -> run)" in test_row
+
+
+def test_impact_line_shift_only_is_one_summary_line(repo: Path) -> None:
+    """gr488914: a symbol whose lines moved but whose text did not is
+    'shifted' — counted apart in the header, one summary line, no seed."""
+    base = _git(repo, "rev-parse", "HEAD")
+    _write(
+        repo,
+        "pkg/core.py",
+        '''
+        """Core module docstring."""
+
+        PAD = 1
+
+
+        def target(x: int) -> int:
+            return x + 2
+
+
+        def helper(x: int) -> int:
+            return target(x) * 2
+
+
+        def doomed() -> None:
+            return None
+        ''',
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": repo})
+    body = handler.get(id="r", view="impact", base=base).body
+    assert "1 changed symbol + 2 line-shift only" in body
+    assert "~ body      r::pkg.core.target" in body
+    assert "~ shifted   2 symbols moved lines only" in body
+    assert "helper" in body and "doomed" in body
+
+
+def test_impact_fingerprints_only_uncommitted_files(repo: Path) -> None:
+    """gr488915: with base older than HEAD, committed changes are diffed
+    but only files whose worktree bytes differ from HEAD get a fingerprint."""
+    base = _git(repo, "rev-parse", "HEAD")
+    _commit_v2(repo)
+    clean = PythonHandler(hub=Hub(), roots={"r": repo})
+    body = clean.get(id="r", view="impact", base=base).body
+    assert "pkg.core.target" in body
+    assert "Worktree fingerprints" not in body
+    _write(repo, "pkg/added.py", "def brand_new() -> int:\n    return 8\n")
+    dirty = PythonHandler(hub=Hub(), roots={"r": repo})
+    body = dirty.get(id="r", view="impact", base=base).body
+    fp = body.split("Worktree fingerprints", 1)[1].split("\n\n", 1)[0]
+    assert "pkg/added.py" in fp
+    assert "pkg/core.py" not in fp

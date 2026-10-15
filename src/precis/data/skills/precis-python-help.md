@@ -193,17 +193,20 @@ get(kind="python", id="precis", view="impact",
     args={"base": "origin/main", "head": "HEAD"})
 get(kind="python", id="precis", view="impact", args={"base": "HEAD~1"})
 # Scope to one file:
-get(kind="python", id="precis/src/precis/registry.py", view="impact",
+get(kind="python", id="precis/src/precis/utils/link_target.py", view="impact",
     args={"base": "HEAD~1"})
 # Or take one symbol as the change (no diff):
-get(kind="python", id="precis::precis.registry.Registry.get",
+get(kind="python", id="precis::precis.utils.link_target.parse_link_target",
     view="impact")
 ```
 
-Sections: changed symbols (`added` / `removed` / `signature` / `body` /
-`moved`), bounded transitive callers and importers
-(`args={'depth': 1-6, 'max_results': 1-200}`), affected tests (same
-evidence ladder as `tests`), and docs/skills naming the qualname.
+Sections: changed symbols (`signature` / `removed` / `body` / `added` /
+`moved`, in that order; symbols whose lines only shifted collapse into
+one `shifted` line and seed no fan-out), bounded transitive callers and
+importers (`args={'depth': 1-6, 'max_results': 1-200}`; a transitive
+caller reads `reaches X via a -> b`), affected tests (same evidence
+ladder as `tests`), and docs/skills naming the qualname. Fingerprints
+list only files whose bytes differ from `HEAD`.
 `Unknowns:` lists unresolved dynamic dispatch, unparsed files and
 unscanned roots — fan-out always runs on the indexed worktree, so a
 `head=` revision diff labels that caveat. Git reads are plumbing only;
@@ -212,14 +215,14 @@ nothing executes source.
 ## Which tests cover this symbol?
 
 ```python
-get(kind="python", id="precis::precis.registry.Registry.get", view="tests")
+get(kind="python", id="precis::precis.utils.link_target.parse_link_target", view="tests")
 ```
 
 Each row is a pytest nodeid labelled with evidence and confidence —
 strongest first: `measured` (per-test `.coverage` contexts verified
 against indexed bytes via `.coverage.precis.json`) > `strong` (direct
 call) > `medium` (indirect through helpers/fixtures within
-`args={'depth': N}`, default 3) > `low` (imports only) > `lowest`
+`args={'depth': N}`, default 3; the row names its `via` chain) > `low` (imports only) > `lowest`
 (name match). A `coverage:` line names the DB state; absent or
 unverifiable means static evidence only — never complete coverage.
 `Run:` lines give the exact `scripts/test <nodeid>` invocations.
@@ -521,10 +524,10 @@ renames and accidental deletions when copying a class body.
 ## Workflow: read → modify → write
 
 ```python
-get(kind='python', id='precis::precis.registry.Registry.get', view='source')
+get(kind='python', id='precis::precis.utils.link_target.parse_link_target', view='source')
 # returns indented body
 # modify locally
-edit(kind='python', id='precis::precis.registry.Registry.get',
+edit(kind='python', id='precis::precis.utils.link_target.parse_link_target',
     text=<modified source>, mode='replace')
 ```
 
