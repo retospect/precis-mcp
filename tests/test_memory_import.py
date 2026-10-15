@@ -880,7 +880,7 @@ def test_export_dir_writes_one_file_per_topic_node_by_handle(
         line.split("\t")
         for line in (dest / "_sections.tsv").read_text(encoding="utf-8").splitlines()
     ]
-    assert {len(r) for r in rows} == {14}
+    assert {len(r) for r in rows} == {15}
     manifest = {r[0]: r[1] for r in rows}
     topic_ids = {r.id for r in topics}
     sections = [
@@ -931,7 +931,8 @@ def test_export_manifest_records_the_fisheye_shape(
     rows = {r[0]: r[2:] for r in (line.split("\t") for line in manifest.splitlines())}
     today = rows[_handle(orphan)][0]
     # updated, chars, eye chars, live links, hidden by the group cap, dead,
-    # hub handle, qualified-by count, accessed, parent, review, gotchas_none
+    # hub handle, qualified-by count, accessed, parent, review, gotchas_none,
+    # supersedes
     assert rows[_handle(hub_id)] == [
         today,
         str(_VERBATIM_CAP + 500),
@@ -945,8 +946,9 @@ def test_export_manifest_records_the_fisheye_shape(
         "",
         "",
         "0",
+        "",
     ]
-    assert rows[_handle(spokes[0])][3:] == ["1", "0", "0", "", "0", "", "", "", "0"]
+    assert rows[_handle(spokes[0])][3:] == ["1", "0", "0", "", "0", "", "", "", "0", ""]
     assert rows[_handle(orphan)][1:] == [
         "4",
         "4",
@@ -959,6 +961,7 @@ def test_export_manifest_records_the_fisheye_shape(
         "",
         "",
         "0",
+        "",
     ]
     assert _handle(gone) not in rows
 

@@ -213,11 +213,11 @@ def test_manifest_carries_hub_and_qualified_columns(hub: Hub, tmp_path: Path) ->
             .splitlines()
         )
     }
-    assert all(len(r) == 14 for r in rows.values())
+    assert all(len(r) == 15 for r in rows.values())
     assert rows[_h(root)][8:10] == ["-", "0"]
     assert rows[_h(thread)][8:10] == [_h(root), "1"]
     assert rows[_h(gotcha)][8:10] == [_h(root), "0"]
-    assert rows[_h(stray)][8:] == ["", "0", "", "", "", "0"]
+    assert rows[_h(stray)][8:] == ["", "0", "", "", "", "0", ""]
     # an agent read of a node's own view stamps last_recalled_at -> accessed
     store.touch_recalled(stray)
     export_memory_nodes(store, tmp_path / "n2")
