@@ -961,7 +961,8 @@ def test_handler_health_view_terse_ok_rows(hub: Hub, monkeypatch: Any) -> None:
     panel: dict[str, Any] = {
         "computed_at": datetime(2026, 10, 14, 8, 0, tzinfo=UTC),
         "snapshot_age_hours": 0.5,
-        "open_alerts": {"warn": 1},
+        "open_alerts": {"warn": 1, "critical": 2},
+        "open_critical": [{"ref_id": 489172, "title": "castor host-dark"}],
         "checks": [
             {
                 "id": "watchdog:discovery/embed",
@@ -970,6 +971,14 @@ def test_handler_health_view_terse_ok_rows(hub: Hub, monkeypatch: Any) -> None:
                 "severity": "warn",
                 "age_hours": 0.4,
                 "live": True,
+            },
+            {
+                "id": "watchdog:reading/card_forge",
+                "status": "ok",
+                "detail": "card-forge: 82.1h ago (budget 170h, card_forge schedule)",
+                "severity": "warn",
+                "age_hours": 82.1,
+                "live": False,
             },
             {
                 "id": "watchdog:ingest/news",
@@ -988,7 +997,12 @@ def test_handler_health_view_terse_ok_rows(hub: Hub, monkeypatch: Any) -> None:
     assert "a news ref landing: last seen 30.0h ago" in body
     assert "0 pending (caught up)" not in body
     assert "- watchdog:discovery/embed [warn, 0.4h] (live)" in body
-    assert "## ok (1)" in body
+    assert "## ok (2)" in body
+    # gr489193: an ok row's age carries its resolved budget
+    assert "- watchdog:reading/card_forge [warn, 82.1h of 170h]" in body
+    # gr489194: the critical count names its alerts; the cap overflow points on
+    assert "## open critical (2)\n- al489172 castor host-dark" in body
+    assert "- more: get(kind='alert', id='/open')" in body
 
 
 def test_tag_verb_add_resolved_replaces_open(hub: Hub, store: Store) -> None:

@@ -91,6 +91,10 @@ _CONTEXT_MARGIN_MIN = 10
 _CONTEXT_LINE_CHARS = 220
 
 
+#: The resolved budget in a freshness check's detail ("… (budget 170h, …)").
+_BUDGET_RE = re.compile(r"\(budget (\d+(?:\.\d+)?h)\b")
+
+
 def _fingerprint_vars(subject_pattern: str, fingerprint: str) -> dict[str, str]:
     """Extract ``{var}`` values from a concrete fingerprint.
 
@@ -241,6 +245,12 @@ class AlertHandler(NumericRefHandler):
             "presence (lazily-loaded services idle-unload by design). Follow an "
             "id with get(kind='alert', id='<id>') — its rule, state and detail.",
         ]
+        crit = panel.get("open_critical") or []
+        if crit:
+            out += ["", f"## open critical ({sev.get('critical', len(crit))})"]
+            out += [f"- al{a['ref_id']} {a['title']}" for a in crit]
+            if sev.get("critical", 0) > len(crit):
+                out.append("- more: get(kind='alert', id='/open')")
         checks = panel["checks"]
         for status, title in (("stale", "stale"), ("unknown", "unknown"), ("ok", "ok")):
             rows = [c for c in checks if c.get("status") == status]
@@ -257,6 +267,10 @@ class AlertHandler(NumericRefHandler):
                 # single-id read away. stale/unknown rows keep detail — that
                 # is the actionable text.
                 if status == "ok":
+                    # gr489193: an age without its budget reads as "late".
+                    m = _BUDGET_RE.search(str(c.get("detail") or ""))
+                    if age_s and m:
+                        age_s += f" of {m.group(1)}"
                     out.append(f"- {c['id']} [{c['severity']}{age_s}]{live}")
                 else:
                     out.append(

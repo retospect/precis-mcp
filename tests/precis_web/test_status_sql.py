@@ -243,6 +243,7 @@ def test_health_panel_runs_against_real_pg(store: Any) -> None:
         "snapshot_age_hours",
         "checks",
         "open_alerts",
+        "open_critical",
     }
     live = [c for c in panel["checks"] if c["live"]]
     assert live  # the _FRESHNESS_CHECKS probes re-ran on this store

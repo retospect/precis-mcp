@@ -2677,6 +2677,10 @@ def _conn_or_pool(store: Store, conn: Any | None) -> Iterator[Any]:
             yield pooled
 
 
+#: Open critical alerts the panel names by id (the count covers the rest).
+_PANEL_CRITICAL_CAP = 10
+
+
 def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
     """The per-subsystem health read — agent (``id='/health'``) and web
     (``/status`` Health sub-tab) render literally this object.
@@ -2684,13 +2688,16 @@ def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
     Same states ``/status`` and the digest show, in one call, without the
     expensive part: every check comes from the last eval's snapshot
     (hourly; ``snapshot_age_hours`` says how old), except the cheap
-    :data:`_FRESHNESS_CHECKS` probes, which are re-run live and overlay
-    their snapshot rows. ``checks`` is a list of the snapshot's JSON
+    :data:`_FRESHNESS_CHECKS` probes and ``hosts_alive``, which are re-run
+    live and overlay their snapshot rows. ``checks`` is a list of the snapshot's JSON
     shape (``group``/``name``/``status``/``detail``/``severity``/
     ``age_hours``/``id``) with a ``live`` flag; the ``id`` is the
     registered failure id (``watchdog:<group>/<fingerprint>``), so a
     stale row can be followed straight to its rule and its open alert.
-    ``open_alerts`` is the open-alert count by severity. Returns
+    ``open_alerts`` is the open-alert count by severity; ``open_critical``
+    names the open critical alerts (``ref_id``/``title``, newest first,
+    capped at :data:`_PANEL_CRITICAL_CAP`) so a count is never the only
+    trace of a page (gr489194). Returns
     ``snapshot_age_hours=None`` and an empty ``checks`` list when no
     eval has run yet (a fresh install) — never raises.
 
@@ -2713,6 +2720,9 @@ def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
     try:
         with _conn_or_pool(store, conn) as c:
             live = _freshness_layer1(c)
+            # gr489195: one indexed heartbeat read (sub-ms on prod) — a
+            # host back from dark must not read dark for up to an hour.
+            live.append(_check_hosts_alive(c))
     except Exception:
         log.exception("health_panel: live freshness probes raised")
         live = []
@@ -2744,11 +2754,34 @@ def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
     except Exception:
         log.exception("health_panel: open-alert count raised")
 
+    open_critical: list[dict[str, Any]] = []
+    if open_by_sev.get("critical"):
+        try:
+            with _conn_or_pool(store, conn) as c:
+                crit = c.execute(
+                    """
+                    SELECT r.ref_id, r.title
+                      FROM refs r
+                      JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE r.kind = 'alert' AND r.retired_at IS NULL
+                       AND t.namespace = 'OPEN' AND t.value = %s
+                       AND r.meta->>'severity' = 'critical'
+                     ORDER BY r.updated_at DESC
+                     LIMIT %s
+                    """,
+                    (STATE_OPEN, _PANEL_CRITICAL_CAP),
+                ).fetchall()
+            open_critical = [{"ref_id": int(i), "title": t or ""} for i, t in crit]
+        except Exception:
+            log.exception("health_panel: open-critical list raised")
+
     return {
         "computed_at": computed_at,
         "snapshot_age_hours": _hours_since(computed_at),
         "checks": checks,
         "open_alerts": open_by_sev,
+        "open_critical": open_critical,
     }
 
 

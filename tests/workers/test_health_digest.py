@@ -2045,6 +2045,46 @@ def test_checks_snapshot_round_trips_into_the_health_panel(store) -> None:
     assert papers["live"] is True
 
 
+def test_health_panel_reruns_hosts_alive_live(store) -> None:
+    """gr489195: a stale hosts_alive snapshot row is overlaid by a live
+    re-probe (no silent heartbeat rows here, so live says all fresh)."""
+    health_digest._store_checks_snapshot(
+        store,
+        [
+            CheckResult(
+                "infra", "hosts_alive", "stale", "hosts alive: pollux dark", "warn"
+            )
+        ],
+    )
+    panel = health_digest.health_panel(store)
+    row = next(c for c in panel["checks"] if c["id"] == "watchdog:infra/hosts_alive")
+    assert row["live"] is True
+    assert row["status"] == "ok"
+
+
+def test_health_panel_names_open_critical_alerts(store) -> None:
+    """gr489194: the panel names each open critical alert, not just a count."""
+    from precis.alerts import raise_alert
+
+    crit, _ = raise_alert(
+        store,
+        source="nursery:host-dark",
+        fingerprint="host-dark:castor",
+        title="castor host-dark",
+        severity="critical",
+    )
+    raise_alert(
+        store,
+        source="test:probe",
+        fingerprint="probe:1",
+        title="probe",
+        severity="warn",
+    )
+    panel = health_digest.health_panel(store)
+    assert panel["open_alerts"]["critical"] == 1
+    assert panel["open_critical"] == [{"ref_id": crit, "title": "castor host-dark"}]
+
+
 def test_run_pass_persists_the_checks_snapshot(store, monkeypatch) -> None:
     monkeypatch.delenv(health_digest.DEADMAN_PING_URL_ENV, raising=False)
     run_health_digest_pass(store, specs=[])
