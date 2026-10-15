@@ -1254,6 +1254,55 @@ def render_status_flat(
     return Response(body=body)
 
 
+def render_flat(store: Store, *, limit: int = 200) -> Response:
+    """``view='flat'`` / ``view='index'`` — the plain enumeration:
+    every live todo, one row each with status + parent columns
+    (gr489581 — finding "parentless open todos whose text starts
+    with …" needed raw SQL because no flat listing existed)."""
+    terminal = sorted(views_terminal())
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id,
+                   COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) AS status,
+                   r.parent_id, r.title
+              FROM refs r
+             WHERE r.kind = 'todo'
+               AND r.retired_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
+             ORDER BY r.ref_id DESC
+             LIMIT %s
+            """,
+            (terminal, limit),
+        ).fetchall()
+    if not rows:
+        return Response(body="no live todos")
+    lines = [f"# {len(rows)} todo (flat)", "", "  id | status | parent | title"]
+    for ref_id, status, parent_id, title in rows:
+        first_line = (title or "").split("\n", 1)[0]
+        preview = (first_line[:80] + "…") if len(first_line) > 80 else first_line
+        lines.append(
+            f"  {int(ref_id)} | {status} | {int(parent_id) if parent_id else '—'} "
+            f"| {preview}"
+        )
+    return Response(body="\n".join(lines))
+
+
+def views_terminal() -> frozenset[str]:
+    """Terminal STATUS values hidden by the flat listing."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    return frozenset(str(s) for s in TERMINAL_TODO_STATUSES)
+
+
 def render_waiting(store: Store) -> Response:
     """Leaves carrying any ``waiting-for:*`` tag that are still live — a
     done/won't-do/auto-timeout row keeps its tag as history, but listing it

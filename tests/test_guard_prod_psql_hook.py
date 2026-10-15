@@ -505,3 +505,22 @@ def test_write_meta_commands_ask_without_ro() -> None:
         "\\set ON_ERROR_STOP 0",
     ):
         assert _verdict(f"scripts/prod-psql '{sql}'") == "ask", sql
+
+
+def test_read_over_refs_meta_carries_an_mcp_hint() -> None:
+    """gr489447: a SELECT reading refs meta/status/tags still runs, but
+    the allow carries a hint naming the MCP equivalent."""
+    evaluate = _hook().evaluate
+    out = evaluate(
+        'scripts/prod-psql --ro "SELECT ref_id, meta FROM refs WHERE ref_id = 5"'
+    )
+    assert out is not None and out["decision"] == "allow"
+    assert "view='meta'" in (out.get("context") or "")
+    # Non-ro lone read path gets the same hint.
+    out = evaluate("scripts/prod-psql 'SELECT ref_id FROM ref_tags WHERE ref_id = 5'")
+    assert out is not None and out["decision"] == "allow"
+    assert out.get("context")
+    # An unrelated read carries no hint.
+    out = evaluate('scripts/prod-psql --ro "SELECT count(*) FROM jobs"')
+    assert out is not None and out["decision"] == "allow"
+    assert "context" not in out

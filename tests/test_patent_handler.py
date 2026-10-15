@@ -267,6 +267,17 @@ class TestGetViews:
         assert "EP1234567B1" in r.body  # in the note line
         assert "espacenet" in r.body.lower()
 
+    def test_toc_view_maps_blocks(self, handler: PatentHandler) -> None:
+        """gr489412: view='toc' renders the structural map — description
+        range plus one row per claim — so a caller picks a ~N..M range."""
+        handler.get(id="ep1234567b1")
+        r = handler.get(id="ep1234567b1", view="toc")
+        assert "TOC" in r.body
+        assert "description" in r.body
+        assert "claim 1" in r.body
+        assert "independent" in r.body or "depends on" in r.body
+        assert "~" in r.body
+
     def test_unknown_view_rejected(self, handler: PatentHandler) -> None:
         handler.get(id="EP1234567B1")
         with pytest.raises(Unsupported, match="unknown view"):

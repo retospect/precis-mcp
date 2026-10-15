@@ -71,7 +71,8 @@ condition label, or its taxon's name, slug or alias). A numeric value may carry
 a unit (`potential<-0.5V`, `temperature>300 K`); a bare number is read in that
 input's display unit, else SI. A text value compares by slug (`hardware=M2-Ultra`
 equals `M2 Ultra`); quote one with spaces: `hardware="M2 Ultra"`. Every other
-word must occur in the subject label. Results are output rows only, one line
+word must occur in the subject label, the measurand name, the literal,
+or the quantified-by anchor chunk text. Results are output rows only, one line
 each: `mx12 | subject | measurand: value | conditions | tier | paper handle`.
 
 `get(kind='quest', id=Q, view='measures')` lists, for everything that serves

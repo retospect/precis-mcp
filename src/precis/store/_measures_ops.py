@@ -1459,12 +1459,27 @@ class MeasuresMixin:
         if max_si is not None:
             where.append(f"{_LO_SQL} <= %(max)s")
             params["max"] = max_si + abs(max_si) * _REL_TOL
+        from_ = _MEASURE_FROM
         for i, word in enumerate((text or "").split()):
             esc = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            where.append(f"m.subject ILIKE %(w{i})s")
+            # gr489581: a free-text query ("ammonia faradaic efficiency")
+            # names the measurand or the anchored passage, not only the
+            # subject label — each word may match any of them.
+            where.append(
+                f"(m.subject ILIKE %(w{i})s OR m.literal ILIKE %(w{i})s "
+                f"OR t.meta ->> 'name' ILIKE %(w{i})s "
+                f"OR at_.text ILIKE %(w{i})s)"
+            )
             params[f"w{i}"] = f"%{esc}%"
+        if (text or "").strip():
+            # Anchor text = the chunk the measure was quantified by
+            # (primary_link_id → links.src_chunk_id → chunks).
+            from_ += (
+                " LEFT JOIN links al_ ON al_.link_id = m.primary_link_id"
+                " LEFT JOIN chunks at_ ON at_.chunk_id = al_.src_chunk_id"
+            )
         sql = (
-            f"SELECT {_MEASURE_COLS} {_MEASURE_FROM} WHERE {' AND '.join(where)} "
+            f"SELECT {_MEASURE_COLS} {from_} WHERE {' AND '.join(where)} "
             "ORDER BY t.ref_id, m.id LIMIT %(cap)s"
         )
         with self.pool.connection() as conn:

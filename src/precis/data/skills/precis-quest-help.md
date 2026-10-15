@@ -181,7 +181,8 @@ get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-r
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
-leaderboard · results · series · measures · logbook · pourbaix` (quest-specific) plus the generic
+leaderboard · results · series · measures · logbook · pourbaix · status ·
+rubric` (quest-specific) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
 `view='fisheye+1hop'` shows the quests this one serves and the quests
@@ -194,6 +195,10 @@ Note the trap: this doc says *deeds* constantly, but it isn't a view — a
 digest with only the logbook **tail** (last 10 entries, cheap even on a quest
 with thousands); `view='logbook'` is the complete append-only notebook;
 `view='log'` is the raw ref-events ledger, a different (generic) thing.
+`view='status'` is the one-line lifecycle read (striving status · priority ·
+horizon) for "is this quest still live"; `view='rubric'` prints just the
+measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
+scalars + meta + a capped links section (`view='links'` is the full graph).
 
 `view='tree'` is the map: it walks who serves the quest (grouped by
 kind), recurses into sub-quests, prints the deed ledger + tote, and ends

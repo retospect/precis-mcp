@@ -68,6 +68,7 @@ _SUPPORTED_VIEWS: tuple[str, ...] = (
     "abstract",
     "description",
     "claims",
+    "toc",
     "bibtex",
     "links",
 )
@@ -670,6 +671,9 @@ class PatentHandler(Handler):
                 lines.append("")
             return Response(body="\n".join(lines).rstrip())
 
+        if view == "toc":
+            return self._render_toc(ref, handle=handle)
+
         if view == "bibtex":
             return Response(body=_format_bibtex(ref, meta))
 
@@ -685,6 +689,57 @@ class PatentHandler(Handler):
             options=list(_SUPPORTED_VIEWS),
             next=f"see precis-patent-help - try views: {', '.join(_SUPPORTED_VIEWS)}",
         )
+
+    def _render_toc(self, ref: Ref, *, handle: str) -> Response:
+        """``view='toc'`` — a structural map: the description block range
+        and one row per claim (number + independent/dependent shape), so a
+        caller can pick a ``~N..M`` range without dumping a section
+        (gr489412 — agents kept guessing 'toc' from the paper surface)."""
+        slug = ref.slug or "?"
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if not blocks:
+            return Response(body=f"no body blocks stored for {slug}")
+        lines = [f"# {handle} — TOC ({len(blocks)} blocks)"]
+        marked = [b for b in blocks if (b.meta or {}).get("patent_block")]
+        if marked:
+            desc = [b for b in marked if b.meta["patent_block"] == "description"]
+            claims = [b for b in marked if b.meta["patent_block"] == "claim"]
+            if desc:
+                lines.append(
+                    f"  ~{desc[0].ord}..{desc[-1].ord}  "
+                    f"description ({len(desc)} paragraphs)"
+                )
+            for b in claims:
+                m = b.meta or {}
+                if m.get("claim_independent"):
+                    shape = "independent"
+                else:
+                    deps = m.get("depends_on") or []
+                    shape = (
+                        "depends on claim " + ", ".join(str(d) for d in deps)
+                        if deps
+                        else "dependent"
+                    )
+                lines.append(f"  ~{b.ord}  claim {m.get('claim_number')} ({shape})")
+            unmarked = [b for b in blocks if not (b.meta or {}).get("patent_block")]
+            if unmarked:
+                lines.append(
+                    f"  ~{unmarked[0].ord}..{unmarked[-1].ord}  "
+                    f"unmarked blocks ({len(unmarked)})"
+                )
+        else:
+            # Pre-marker ingest — no claim structure to enumerate.
+            lines.append(
+                f"  ~{blocks[0].ord}..{blocks[-1].ord}  "
+                "(no block markers — view='description' / 'claims' dump "
+                "the sections; a re-ingest restores markers)"
+            )
+        lines.append("")
+        lines.append(
+            f"read a range: get(kind='patent', id='{slug}~LO..HI'); "
+            "whole sections: view='description' / 'claims'"
+        )
+        return Response(body="\n".join(lines))
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk

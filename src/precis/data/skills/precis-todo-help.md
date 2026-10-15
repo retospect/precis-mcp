@@ -62,6 +62,7 @@ search(kind="todo", view="active")  # open + doing + blocked + paused (the queue
 search(kind="todo", view="doing")  # in-progress only
 search(kind="todo", view="blocked")  # blocked-by links + STATUS:blocked
 search(kind="todo", view="done")  # completed
+search(kind="todo", view="flat")  # every live todo: id | status | parent | title (alias: 'index')
 ```
 
 (The old `id='/open'` `/queue` `/doing` `/blocked` `/done` paths still

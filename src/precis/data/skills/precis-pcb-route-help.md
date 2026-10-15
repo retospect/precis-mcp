@@ -338,7 +338,7 @@ same as the pinned sketch). **Never route ground/power beyond the
 dog-bone fanout** is the house policy this encodes; a routed trace on a
 plane-served net is an anomaly, not a normal outcome.
 
-## Move, lock, and net-class edits
+## Move and lock edits
 
 ```python
 put(kind="pcb", id="s", args={"op": "move", "refdes": "U1", "x": 10.0, "y": 5.0, "rot": "90deg"})
@@ -375,6 +375,8 @@ as one resulting board, so a swap works where neither single move would (a
 generator member in the list still brings its group; one part twice, or two
 members of one group, is refused; nothing is written on any refusal):
 `put(kind="pcb", id="s", args={"op": "move", "moves": [{"refdes": "U1", "x": 12, "y": 5}, {"refdes": "U2", "x": 4, "y": 5}]})`.
+
+## Net-class rule edits
 
 `op='class_rules'` upserts one net class's rules (`{name, rules}` — same
 shape as `put(args={'net_classes': {...}})` at design-authoring time, just

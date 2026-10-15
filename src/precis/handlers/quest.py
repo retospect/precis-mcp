@@ -368,6 +368,8 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "measures",
     "logbook",
     "pourbaix",
+    "status",
+    "rubric",
 )
 
 
@@ -923,6 +925,15 @@ class QuestHandler(NumericRefHandler):
         if view == "pourbaix" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_pourbaix(ref))
+        # gr489411: 'status' / 'rubric' are the two names callers reach
+        # for when they want the lifecycle line / the measured axes
+        # without the whole digest — serve them instead of erroring.
+        if view == "status" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_status(ref))
+        if view == "rubric" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_rubric(ref))
         # The eye ladder (fisheye-everywhere AC 2): `fisheye` / `fisheye+1hop` /
         # `fisheye+2hop`, any rung with a `+recall` suffix. One-hop shows the
         # quests it serves and the ones serving it under `Roadmap`, plus the
@@ -942,8 +953,8 @@ class QuestHandler(NumericRefHandler):
                 options=[*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, measures, logbook, pourbaix "
-                    "(quest-specific) · "
+                    "results, series, measures, logbook, pourbaix, status, "
+                    "rubric (quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",
@@ -953,6 +964,38 @@ class QuestHandler(NumericRefHandler):
                 ],
             )
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _render_status(self, ref: Ref) -> str:
+        """``view='status'`` — the lifecycle line only: STATUS value, prio,
+        horizon. The read ``get(id=N, view='status')`` agents reach for to
+        check whether a quest is still striving (gr489411)."""
+        tags = self.store.tags_for(ref.id)
+        status = _status_of(tags) or "active"
+        meta = ref.meta or {}
+        lines = [f"quest {ref.id}: striving {status}"]
+        if ref.prio is not None:
+            lines.append(f"priority: {ref.prio}")
+        if meta.get("horizon"):
+            lines.append(f"horizon: {meta['horizon']}")
+        return "\n".join(lines)
+
+    def _render_rubric(self, ref: Ref) -> str:
+        """``view='rubric'`` — the rubric axes (``meta.rubric_objectives``)
+        plus ``demand:``/``supply:`` lines, the same summary the fisheye
+        gist composes via :func:`_rubric_summary` (gr489411)."""
+        meta = ref.meta or {}
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        lines = [f"# rubric — quest {ref.id}: {head}"]
+        rubric = _rubric_summary(meta)
+        if rubric:
+            lines += ["", *rubric]
+        else:
+            lines += [
+                "",
+                "(no rubric — set axes with "
+                "edit(kind='quest', id=N, meta={'rubric_objectives': [...]})",
+            ]
+        return "\n".join(lines)
 
     def _render_measures(self, ref: Ref) -> str:
         """`view='measures'` — the quest's number table: the best live value of

@@ -959,11 +959,19 @@ class NumericRefHandler(Handler):
         # status filter" — map them onto the '*' opt-out (gr484229).
         if explicit and resolved.lower() in ("any", "all"):
             resolved = "*"
-        # A comma-joined list can't be expressed — tags AND, and a ref
+        # A separator-joined list can't be expressed — tags AND, and a ref
         # carries exactly one STATUS value. Say so and name the opt-out.
-        if explicit and "," in resolved:
+        # `|`/`;` count too: kind descriptions spell the vocabulary as
+        # ``open|triaged|…``, which agents paste verbatim (gr489410).
+        kind_values = _KIND_STATUS_VALUES.get(self.kind)
+        vocab = (
+            f" (valid for kind={self.kind!r}: {', '.join(sorted(kind_values))})"
+            if kind_values
+            else ""
+        )
+        if explicit and re.search(r"[,|;]", resolved):
             raise BadInput(
-                f"status= takes one value, got {status!r}",
+                f"status= takes one value, got {status!r}{vocab}",
                 next=(
                     f"search(kind={self.kind!r}, status='*') for every "
                     "status, or run one search per value"
@@ -974,7 +982,7 @@ class NumericRefHandler(Handler):
             explicit
             and resolved
             and resolved != "*"
-            and (kind_values := _KIND_STATUS_VALUES.get(self.kind)) is not None
+            and kind_values is not None
             and resolved not in kind_values
         ):
             # Fail here rather than in the later tag normalisation — this
@@ -2730,7 +2738,14 @@ class NumericRefHandler(Handler):
         out += ["", "meta:"]
         out.append(json.dumps(ref.meta or {}, indent=2, sort_keys=True, default=str))
         body = "\n".join(out)
-        body += self._render_links_section(ref)
+        # gr489582: ``raw`` exists so an agent can read meta — the link
+        # list must not drown it. Cap like the bare-get append; the
+        # overflow line already points at ``view='links'`` for the rest.
+        from precis.handlers._links_render import DEFAULT_LINK_ROW_CAP
+
+        body += self._render_links_section(
+            ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
+        )
         return body
 
     def _render_links_section(
@@ -2746,9 +2761,8 @@ class NumericRefHandler(Handler):
         link-blindness fix).
 
         ``limit``/``priority`` default to the original unbounded/id-order
-        behaviour so ``view='raw'`` (the "hides nothing" debug view,
-        which also calls this) stays byte-identical; the bare-``get``
-        callsite passes ``limit=12, priority=True`` (gr311344).
+        behaviour; ``view='raw'`` and the bare-``get`` append both pass
+        ``limit=DEFAULT_LINK_ROW_CAP, priority=True`` (gr311344, gr489582).
         """
         from precis.handlers._links_render import render_links_section
 

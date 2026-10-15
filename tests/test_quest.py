@@ -416,3 +416,43 @@ class TestListViews:
         _created_id(h.put(text="Striving one"))
         body = h.get(id="/active").body
         assert "Striving one" in body
+
+
+class TestStatusAndRubricViews:
+    """gr489411 — view='status' / view='rubric' are the names callers
+    reach for; serve them instead of erroring."""
+
+    def test_status_view(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        body = h.get(id=qid, view="status").body
+        assert "striving active" in body
+
+    def test_status_view_dormant(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A dormant striving"))
+        h.tag(id=qid, add=["STATUS:dormant"])
+        body = h.get(id=qid, view="status").body
+        assert "striving dormant" in body
+
+    def test_rubric_view_empty(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="An unrubriced striving"))
+        body = h.get(id=qid, view="rubric").body
+        assert "no rubric" in body
+
+    def test_rubric_view_lists_axes(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A rubriced striving"))
+        h.edit(
+            id=qid,
+            meta={
+                "rubric_objectives": [
+                    {"key": "faradaic_efficiency", "sense": "max"},
+                    {"key": "span_at_Uopt", "sense": "min", "optional": True},
+                ]
+            },
+        )
+        body = h.get(id=qid, view="rubric").body
+        assert "faradaic_efficiency max" in body
+        assert "span_at_Uopt min (optional)" in body

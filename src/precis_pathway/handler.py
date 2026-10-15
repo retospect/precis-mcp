@@ -110,13 +110,16 @@ class PathwayHandler(Handler):
             "put(kind='pathway', id='<name>', text='<config yaml>') runs it; "
             "get(kind='pathway') with no id lists existing pathways; "
             "get(kind='pathway', id='<name>', view='network'|'profile'|"
-            "'methods'|'config'). Slice 0 runs EMT in-process (qualitative). "
+            "'methods'|'config'). search(kind='pathway', q='NO→NH3') finds "
+            "pathways by slug/title/body text or a linked structure/quest "
+            "handle. Slice 0 runs EMT in-process (qualitative). "
             "See precis-pathway-help."
         ),
         supports_get=True,
         supports_put=True,
         supports_delete=True,
         supports_tag=True,
+        supports_search=True,
         is_numeric=False,
         placement="artifact",
         corpus_role="none",
@@ -350,6 +353,70 @@ class PathwayHandler(Handler):
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         return list(self.spec.views)
+
+    # -- search ------------------------------------------------------------
+    def search(
+        self,
+        *,
+        q: str | None = None,
+        page_size: int = 10,
+        **_kw: Any,
+    ) -> Response:
+        """Find pathways by reaction label / slug words, or by a linked
+        structure / quest handle (gr489581 — search used to be
+        Unsupported; agents detoured through structure fisheyes)."""
+        store = self.hub.live_store
+        if not q or not q.strip():
+            raise BadInput(
+                "pathway search needs q= (a reaction label, slug words, "
+                "or a structure/quest handle)",
+                next="search(kind='pathway', q='NO→NH3') · "
+                "search(kind='pathway', q='se123') · get(kind='pathway') "
+                "lists all",
+            )
+        text = q.strip()
+
+        # A handle (se123 / qu7 / pw12) names a neighbour to pivot from:
+        # every inbound 'related-to'/'serves' link from a pathway.
+        parsed = handle_registry.parse(text)
+        via_handle: dict[int, str] = {}
+        if parsed is not None and not parsed[1]:
+            tgt = store.get_ref(kind=parsed[0], id=parsed[2])
+            if tgt is not None and parsed[0] != "pathway":
+                for ln in store.links_for(tgt.id, direction="in"):
+                    via_handle[ln.src_ref_id] = f"linked from {text}"
+
+        esc = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id, slug_id.id_value, r.title, "
+                "       r.meta->>'status', "
+                "       CASE WHEN slug_id.id_value ILIKE %(p)s "
+                "            OR r.title ILIKE %(p)s THEN 'slug/title' "
+                "            ELSE 'body' END AS matched_on "
+                "FROM refs r "
+                "LEFT JOIN ref_identifiers slug_id "
+                "  ON slug_id.ref_id = r.ref_id AND slug_id.id_kind = 'cite_key' "
+                "WHERE r.kind = 'pathway' AND r.retired_at IS NULL AND ("
+                "  slug_id.id_value ILIKE %(p)s OR r.title ILIKE %(p)s "
+                "  OR EXISTS (SELECT 1 FROM chunks c "
+                "             WHERE c.ref_id = r.ref_id "
+                "             AND c.retired_at IS NULL AND c.text ILIKE %(p)s)"
+                "  OR r.ref_id = ANY(%(via)s)"
+                ") ORDER BY r.updated_at DESC LIMIT %(lim)s",
+                {"p": f"%{esc}%", "via": sorted(via_handle) or [-1], "lim": page_size},
+            ).fetchall()
+        if not rows:
+            return Response(
+                body=f"no pathways match {text!r} — get(kind='pathway') "
+                "lists all; a structure or quest handle finds linked pathways"
+            )
+        lines = [f"# {len(rows)} pathway(s) matching {text!r}"]
+        for ref_id, slug, title, status, matched_on in rows:
+            via = via_handle.get(ref_id)
+            note = via or matched_on
+            lines.append(f"  {slug or ref_id}  [{status or '?'}]  {title}  ({note})")
+        return Response(body="\n".join(lines))
 
     # -- get -------------------------------------------------------------
     def get(

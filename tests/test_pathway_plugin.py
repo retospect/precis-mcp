@@ -3110,3 +3110,29 @@ def test_seed_job_poll_failure_reason_carries_exit_and_stderr(
     assert ctx.failure is not None
     assert "exit_code=-9, exit_signal=SIGKILL" in ctx.failure
     assert "MemoryError: boom" in ctx.failure
+
+
+def test_search_finds_pathways_by_text_and_handle(pathway_store: Store) -> None:
+    """gr489581: search(kind='pathway') was Unsupported — now finds by
+    slug/title/body text or via a linked structure/quest handle."""
+    from precis.store.types import ChunkInsert
+
+    ref = pathway_store.insert_ref(
+        kind="pathway",
+        slug="no-to-nh3-pd",
+        title="NO → NH3 on Pd",
+        meta={"status": "ready"},
+    )
+    pathway_store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text="nitrate reduction pathway")]
+    )
+    other = pathway_store.insert_ref(
+        kind="structure", slug="se-x", title="slab", meta={}
+    )
+    pathway_store.add_link(
+        src_ref_id=ref.id, dst_ref_id=other.id, relation="related-to"
+    )
+    h = _handler(pathway_store)
+    assert "no-to-nh3-pd" in h.search(q="nitrate").body
+    assert "no-to-nh3-pd" in h.search(q=f"st{other.id}").body
+    assert "no pathways match" in h.search(q="zzzzz-nothing").body

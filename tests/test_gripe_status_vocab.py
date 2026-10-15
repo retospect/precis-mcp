@@ -70,6 +70,23 @@ def test_search_status_comma_list_rejected_with_wildcard_hint(
     assert isinstance(nxt, str) and "status='*'" in nxt
 
 
+def test_search_status_pipe_list_rejected_naming_valid_values(
+    hub: Any, store: Store
+) -> None:
+    """gr489410: the pipe-joined STATUS vocabulary in the kind description
+    (``open|triaged|…``) gets pasted as one ``status=`` value — the error
+    must say "one value" AND list what the kind accepts."""
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        h.search(status="open|triaged|ready_for_fix|in_review")
+    assert "takes one value" in str(exc.value)
+    assert "ready_for_fix" in str(exc.value)
+    nxt = exc.value.next
+    assert isinstance(nxt, str) and "status='*'" in nxt
+
+
 def test_search_status_invalid_value_names_wildcard(hub: Any, store: Store) -> None:
     """An unknown explicit status= fails in ``_apply_status_default``
     with the opt-out in the hint, before tag normalisation would."""

@@ -1671,3 +1671,20 @@ class TestReviewHandler:
             h.edit(review="model", meta={"model": "m"})
         with pytest.raises(NotFound, match="not found"):
             h.edit(id=999999, review="model", meta={"model": "m"})
+
+
+def test_search_text_matches_measurand_and_literal_not_just_subject(
+    store: Store, w: dict[str, Any]
+) -> None:
+    """gr489581: 'ammonia faradaic efficiency' is free text — each word
+    may hit the subject label, the measurand name, or the literal. Before
+    this, words had to all be in the subject label and the query found
+    nothing."""
+    _fe_run(store, w, "80", "-0.5")
+    got = store.search_measures(text="faradaic")
+    assert got.rows, "measurand name 'Faradaic efficiency' must match"
+    # A word in no label/name/literal still finds nothing.
+    assert store.search_measures(text="zzznovelword").rows == []
+    _put(store, w, "bond", "9.9", unit="Å", label="W slab")
+    got = store.search_measures(text="9.9")
+    assert [r["literal"] for r in got.rows] == ["9.9"]

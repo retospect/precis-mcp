@@ -91,6 +91,7 @@ import json
 import os
 import re
 import sys
+from typing import Any
 
 #: Read-only openers. A statement must start with one of these to be read-only.
 _READ_OPENER = re.compile(
@@ -605,6 +606,29 @@ def _invocation(segment: str) -> tuple[bool, str] | None:
     return ro, rest
 
 
+#: gr489447: a read over refs/ref_tags/chunks with a ref_id or
+#: status/meta predicate re-implements an MCP view — 239 of 1331
+#: prod-psql calls in 7 days did exactly this. The query still runs;
+#: we attach a one-line hint naming the MCP equivalent.
+_MCP_TABLE_RE = re.compile(r"\b(REFS|REF_TAGS|CHUNKS)\b")
+_MCP_PRED_RE = re.compile(r"\b(REF_ID|STATUS|META)\b")
+
+
+def _mcp_read_hint(sql: str) -> str | None:
+    """The MCP pointer for a ref-meta/status read, or None."""
+    try:
+        text = _blank(sql)
+    except _Ambiguous:
+        return None
+    if _MCP_TABLE_RE.search(text.upper()) and _MCP_PRED_RE.search(text.upper()):
+        return (
+            "hint: refs meta/status/tag reads are covered by the MCP — "
+            "get(kind, id, view='meta'|'tags'), search(kind=K, view='count'), "
+            "get(kind, id, q='...'); prefer those over prod-psql"
+        )
+    return None
+
+
 def _ask(why: str) -> dict[str, str]:
     return {
         "decision": "ask",
@@ -650,10 +674,13 @@ def evaluate(command: str) -> dict[str, str] | None:
             # Only meta-commands acting on the node itself are judged.
             if danger := _ro_meta_danger(sql_ro):
                 return _ask(danger)
-            return {
+            out = {
                 "decision": "allow",
                 "reason": "prod-psql --ro (agent_ro, read-only transaction) — auto-approved",
             }
+            if hint := _mcp_read_hint(sql_ro):
+                out["context"] = hint
+            return out
     if len(segs) == 1 and bare:
         ro, args = calls[0][1]
         m = re.fullmatch(r"\s*(\"[^\"$`\\]*\"|'[^']*')\s*", args)
@@ -663,10 +690,13 @@ def evaluate(command: str) -> dict[str, str] | None:
             if kind == "ask":
                 return _ask(why)
             if kind == "read":
-                return {
+                out = {
                     "decision": "allow",
                     "reason": "read-only prod-psql probe (SELECT/EXPLAIN/backslash) — auto-approved",
                 }
+                if hint := _mcp_read_hint(sql):
+                    out["context"] = hint
+                return out
             if kind == "write":
                 return {
                     "decision": "allow",
@@ -723,17 +753,14 @@ def main() -> int:
         return 0
     if result["decision"] == "ask" and os.environ.get("ALLOW_PROD_WRITE"):
         return 0  # escape hatch silences the ask, not the allow
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": result["decision"],
-                    "permissionDecisionReason": result["reason"],
-                }
-            }
-        )
-    )
+    hook_out: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": result["decision"],
+        "permissionDecisionReason": result["reason"],
+    }
+    if result.get("context"):
+        hook_out["additionalContext"] = result["context"]
+    print(json.dumps({"hookSpecificOutput": hook_out}))
     return 0
 
 

@@ -36,6 +36,7 @@ get(kind="patent", id="pt40", view="abstract")
 get(kind="patent", id="pt40", view="claims")
 get(kind="patent", id="pt40", view="biblio")  # bibliographic table
 get(kind="patent", id="pt40", view="description")
+get(kind="patent", id="pt40", view="toc")  # structural map: description range + one row per claim
 get(kind="patent", id="pt40", view="bibtex")
 ```
 

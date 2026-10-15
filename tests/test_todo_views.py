@@ -383,6 +383,20 @@ def test_raw_view_dumps_meta_and_columns(handler: TodoHandler) -> None:
     assert "Recurring watch." in out.body
 
 
+def test_raw_view_caps_the_links_section(handler: TodoHandler) -> None:
+    """gr489582: view='raw' exists to read meta — a heavily-linked ref used
+    to dump every link inline (a quest rendered ~250 KB). The section is
+    capped with a pointer at view='links', like the bare-get append."""
+    r = handler.put(text="Hub todo.")
+    rid = _id_of(r.body)
+    for i in range(30):
+        leaf = handler.put(text=f"leaf {i}")
+        handler.link(id=rid, target=f"todo:{_id_of(leaf.body)}")
+    out = handler.get(id=rid, view="raw")
+    assert "Links (20 of 30):" in out.body
+    assert "view='links'" in out.body
+
+
 def test_raw_view_in_unknown_view_options(handler: TodoHandler) -> None:
     """The 'unknown view' error now advertises 'raw' (it is a base view),
     so an agent that guessed a bad view name has a working recovery path."""
@@ -871,3 +885,19 @@ def test_unminted_detector_ignores_recurring_todo(
     rid = _id_of(handler.put(text="news poll", meta=meta).body)
     _age_todo(store, rid, 45)
     assert _attention_unminted(store) == []
+
+
+def test_flat_and_index_views_list_parent_and_status(handler: TodoHandler) -> None:
+    """gr489581: a flat enumeration with parent/status columns — the gap
+    that forced raw SQL for 'parentless open todos starting with X'."""
+    a = handler.put(text="parent root")
+    aid = _id_of(a.body)
+    b = handler.put(text="cite check child", parent_id=aid)
+    bid = _id_of(b.body)
+    done = handler.put(text="finished")
+    handler.tag(id=_id_of(done.body), add=["STATUS:done"])
+    for spelling in ("flat", "index"):
+        out = handler.search(view=spelling)
+        assert "id | status | parent | title" in out.body
+        assert f"{bid} | open | {aid}" in out.body
+        assert f"{_id_of(done.body)} | done" not in out.body

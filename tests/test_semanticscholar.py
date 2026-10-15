@@ -879,3 +879,66 @@ def test_get_author_complete_summary_line_renders_once_with_request_count(
     assert resp.body.count("150 works (complete, 1 request).") == 1
     assert resp.body.count("Work 0") == 1
     assert resp.body.count("Work 149") == 1
+
+
+class _FakeResp:
+    """Minimal httpx.Response stand-in for ``_s2_raw_get`` monkeypatches."""
+
+    def __init__(self, status_code: int, payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = ""
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def test_doi_query_routes_to_paper_lookup(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """gr489407: a bare DOI must hit /paper/DOI:<doi>, not free-text
+    search — that path returned unrelated papers."""
+    paper = {
+        "title": "Real Paper",
+        "year": 2006,
+        "authors": [{"name": "A. Author"}],
+        "externalIds": {"DOI": "10.1021/jp052519t"},
+        "venue": "JPCB",
+        "citationCount": 12,
+    }
+    seen: list[str] = []
+
+    def fake_raw(url: str, params: dict) -> _FakeResp:
+        seen.append(url)
+        return _FakeResp(200, paper)
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
+    resp = s2handler.get(id="10.1021/jp052519t")
+    assert seen == [
+        "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1021/jp052519t"
+    ]
+    assert "Real Paper" in resp.body
+    assert "10.1021/jp052519t" in resp.body
+
+
+def test_doi_prefixed_query_routes_to_lookup(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    seen: list[str] = []
+
+    def fake_raw(url: str, params: dict) -> _FakeResp:
+        seen.append(url)
+        return _FakeResp(200, {"title": "P"})
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
+    s2handler.get(id="doi:10.1016/j.jcat.2024.115706")
+    assert seen[0].endswith("/paper/DOI:10.1016/j.jcat.2024.115706")
+
+
+def test_doi_lookup_404_is_a_clean_not_found(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    monkeypatch.setattr(s2handler, "_s2_raw_get", lambda url, params: _FakeResp(404))
+    resp = s2handler.get(id="10.9999/nonexistent")
+    assert "no record" in resp.body.lower()
+    assert "404" in resp.body

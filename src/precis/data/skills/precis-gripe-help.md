@@ -77,6 +77,11 @@ search(kind="gripe", q="X", status="wontfix")  # one other cohort
 search(kind="gripe", q="X", status="*")  # every status, no filter
 ```
 
+`status=` takes ONE value — a gripe carries exactly one `STATUS:` tag, so
+`status='open|triaged'` (or a comma list) is an error naming the valid
+values, not a union filter. Run one search per value, or `status='*'`.
+Valid: `open`, `triaged`, `ready_for_fix`, `in_review`, `done`, `wontfix`.
+
 **Enumerating vs. searching — a trap.** Adding `q=` to a status/tag
 filter turns a *complete enumeration* into a *ranked filter*: a gripe
 must also lexically match `q` to appear, so the count can fall far below

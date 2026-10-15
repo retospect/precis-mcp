@@ -147,6 +147,11 @@ class TodoView(StrEnum):
     ACTIVE = "active"
     DOING = "doing"
     DONE = "done"
+    # gr489581: a flat listing — every live todo with id / status /
+    # parent columns, no tree roll-up. 'index' is the name the other
+    # kinds use; both spellings land here.
+    FLAT = "flat"
+    INDEX = "index"
 
 
 def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> Response:
@@ -194,6 +199,8 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.DONE: lambda store, args, ps: views.render_status_flat(
         store, statuses=frozenset({"done"}), label="done", limit=ps or 200
     ),
+    TodoView.FLAT: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
+    TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have

@@ -185,6 +185,11 @@ _AUTHOR_COMPLETE_TITLE_FALLBACK_CAP = 200
 #: Used to auto-prefix a path id when the caller passes a naked id.
 _ARXIV_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
+#: Bare-DOI shape — ``10.<4-9 digits>/<non-space>`` (gr489407: a DOI as
+#: query must route to the ``/paper/DOI:<doi>`` lookup, not a free-text
+#: search that returns unrelated papers).
+_DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+
 _ATTRIBUTION = (
     "Source: Semantic Scholar (https://www.semanticscholar.org). "
     "Each cited paper is an external work — verify and cite the "
@@ -220,7 +225,9 @@ class SemanticScholarHandler(CacheBackedHandler):
             "known paper's citation graph: id='refs:<paper-id>' lists the "
             "papers it cites, id='cites:<paper-id>' the papers citing "
             "it — each row carrying the DOI to feed a "
-            "put(kind='paper', doi=…) acquisition stub. Or walk the "
+            "put(kind='paper', doi=…) acquisition stub. A bare DOI "
+            "(id='10.x/y' or 'doi:10.x/y', or q= a DOI) resolves that "
+            "one paper via the lookup endpoint. Or walk the "
             "author graph: id='authors:<paper-id>' lists that paper's "
             "authors (each with their ORCID — the key into kind='orcid' — "
             "h-index, affiliations, senior author flagged), "
@@ -571,7 +578,69 @@ class SemanticScholarHandler(CacheBackedHandler):
             if mode == "author":
                 return self._fetch_author_papers(key, ident)
             return self._fetch_graph(key, mode, ident)
+        # gr489407: a bare DOI (or ``doi:`` prefix) is a paper *lookup*,
+        # not a topic search — free-texting it returned junk hits.
+        if doi := self._doi_of(key):
+            return self._fetch_paper_lookup(key, doi)
         return self._fetch_search(key)
+
+    @staticmethod
+    def _doi_of(key: str) -> str | None:
+        """The DOI a canonical key names, or None for a real query."""
+        k = key.strip()
+        if k.startswith("doi:"):
+            return k[4:] or None
+        return k if _DOI_RE.match(k) else None
+
+    def _fetch_paper_lookup(self, key: str, doi: str) -> FetchResult:
+        """Resolve one paper by DOI via ``/paper/DOI:<doi>`` (gr489407).
+
+        A 404 is a clean "not found" row, not an Upstream error — the
+        caller verifying a DOI needs that answer, not a retry hint."""
+        url = f"{_S2_PAPER_BASE}/DOI:{doi}"
+        resp = self._s2_raw_get(url, {"fields": _S2_FIELDS})
+        if resp.status_code == 404:
+            return FetchResult(
+                title=f"S2 paper lookup: {doi}",
+                body_blocks=[
+                    ChunkInsert(
+                        ord=0,
+                        text=(
+                            f"Semantic Scholar has no record for DOI {doi} "
+                            "(404). Check the spelling, or try "
+                            "search(kind='semanticscholar', ...) terms."
+                        ),
+                    )
+                ],
+                cost_usd=None,
+                meta={"key": key, "nav": "doi", "doi": doi, "result_count": 0},
+            )
+        paper = self._s2_parse_response(resp)
+        # Reuse the topic-search corpus-diff render: ``meta['papers']``
+        # marks it so ``_render`` flags held:/stub:/NEW like a hit list.
+        return FetchResult(
+            title=f"S2 paper lookup: {doi}",
+            body_blocks=[ChunkInsert(ord=0, text=_format_paper(paper))],
+            cost_usd=None,
+            meta={
+                "key": key,
+                "nav": "doi",
+                "doi": doi,
+                "result_count": 1,
+                "papers": [paper],
+            },
+        )
+
+    def search(
+        self,
+        *,
+        q: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """A DOI-shaped ``q`` routes to the paper lookup (gr489407)."""
+        if q is not None and self._doi_of(" ".join(q.lower().split())):
+            return self.get(id=q)
+        return super().search(q=q, **_kw)
 
     def _fetch_paper_authors(self, key: str, ident: str) -> FetchResult:
         """List a paper's authors — the bridge into ORCID.

@@ -41,6 +41,10 @@ get(kind="orcid", id="0000-0002-1825-0097")
 #     frontier budget allows (or 'all'). LLM-gated — see precis-orcid-help.
 get(kind="orcid", id="0000-0002-1825-0097", args={"enqueue": 20})
 
+# 2c. Verify a paper by DOI: a bare DOI (or doi: prefix, or a DOI as
+#     search q=) resolves via S2's lookup endpoint — not a topic search.
+get(kind="semanticscholar", id="10.1021/jp052519t")
+
 # 3. The fetch_oa worker grabs open-access PDFs for the new stubs
 #    out-of-band. Read what landed, score the frontier, expand.
 search(kind="paper", q="your topic")
