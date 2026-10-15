@@ -263,6 +263,7 @@ _INLINE_EDIT_OPS = (
     "class_rules",
     "stackup",
     "phase",
+    "pins",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
@@ -585,6 +586,8 @@ class PcbHandler(Handler):
                 "footprint",
                 "force",
                 "phase",
+                "pins",
+                "source",
             }
         ),
         "get": frozenset(
@@ -669,7 +672,7 @@ class PcbHandler(Handler):
             "job (never inline; idempotent per design+op+content-hash) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'|"
-            "'phase'}) "
+            "'phase'|'pins'}) "
             "are cheap inline edits; put(args={'op':'footprint','part':"
             "'C639448'}) (or parts=[...], force=True to re-pull, or "
             "footprint={...} to author one directly under part=) pulls/"
@@ -1204,6 +1207,8 @@ class PcbHandler(Handler):
             return self._op_class_rules(ref, args)
         if op == "phase":
             return self._op_phase(ref, args)
+        if op == "pins":
+            return self._op_pins(ref, args)
         if op == "stackup":
             return self._op_stackup(ref, args)
         if op == "footprint":
@@ -2052,6 +2057,53 @@ class PcbHandler(Handler):
                 "pcb_boards.meta['phase'])\nNext: get(kind='pcb', "
                 f"id='{ref.slug}', view='check')"
             )
+        )
+
+    def _op_pins(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'pins','refdes':'U7','pins':[{...}]})`` —
+        annotate pin SEMANTICS on an existing instance
+        (docs/backlog/pcb-datasheet-review.md slice 2): the ``etype`` /
+        ``rail`` / ``max_voltage_v`` / ``vih`` / ``vil`` /
+        ``max_current_a`` / ``current_role`` (``series``|``shunt``|
+        ``signal``) / ``nc`` / ``unused`` / ``must_terminate`` /
+        ``min_dielectric`` / ``source``
+        facts the ERC rules read. This is the write path an imported
+        board needs: a re-put is create-or-extend and never edits pins,
+        so nothing could feed the check surface after import until now.
+        Per-pin names are validated against the component's real pins
+        (a bad one refuses the call and lists them), the result is
+        idempotent, and ``source`` records the origin. ``args.source``
+        is the default origin for pins that don't name their own."""
+        refdes = str(args.get("refdes") or "").strip()
+        pins = args.get("pins")
+        if not refdes or not isinstance(pins, list) or not pins:
+            raise BadInput(
+                "op='pins' needs args.refdes and a non-empty args.pins list",
+                next="args={'op':'pins','refdes':'U7','pins':[{'name':'VDD',"
+                "'etype':'power_in','rail':'3v3','max_voltage_v':3.6,"
+                "'source':'datasheet p.12'}]}",
+            )
+        source = args.get("source")
+        if source is not None:
+            pins = [
+                {**p, "source": str(source)} if p.get("source") is None else p
+                for p in pins
+                if isinstance(p, dict)
+            ]
+        try:
+            result = self.store.pcb_patch_pins(ref.id, refdes, pins)
+        except ValueError as exc:
+            raise BadInput(f"pcb: {exc}") from exc
+        changed, unchanged = result["changed"], result["unchanged"]
+        body = f"# {refdes}: {len(changed)} pin(s) annotated"
+        if unchanged:
+            body += f", {len(unchanged)} already as declared"
+        body += "\n"
+        if changed:
+            body += "changed: " + ", ".join(changed) + "\n"
+        return Response(
+            body=body + f"Next: get(kind='pcb', id='{ref.slug}', view='check', "
+            "args={'phase':'netlist'}) — the ERC rules now read this pin."
         )
 
     def _op_stackup(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -5023,6 +5075,10 @@ class PcbHandler(Handler):
             + pcb_drc.check_no_decoupling(
                 nets, positions, roles_by_refdes=roles_by_refdes
             )
+            + pcb_drc.check_over_current(nets)
+            + pcb_drc.check_passive_rating(
+                nets, graph.get("instances") or [], design.get("net_classes")
+            )
         )
 
     def _drc_run(
@@ -6470,8 +6526,42 @@ class PcbHandler(Handler):
             }
             for p in nb["pins"]
         ]
+        body = f"# {refdes} — {len(nb['pins'])} pin(s)\n"
+        if nb.get("part_lcsc"):
+            body += (
+                f"catalog: {nb['part_lcsc']}"
+                + (
+                    f" — {nb['part_description']}"
+                    if nb.get("part_description")
+                    else " (no catalogue row yet)"
+                )
+                + "\n"
+            )
+        spec = pcb_catalog.parse_passive_description(nb.get("part_description"))
+        if spec is not None:
+            # Slice 3's derived fact, shown on #REFDES per in-scope 4:
+            # the rating/dielectric the catalog description carries.
+            if spec["kind"] == "capacitor":
+                value = f"{spec['value_f']:g} F" if spec.get("value_f") else "?"
+                rating = (
+                    f"{spec['rated_v']:g} V"
+                    if spec.get("rated_v") is not None
+                    else "unrated"
+                )
+                derived = (
+                    f"capacitor {value}, {rating}, "
+                    f"dielectric {spec.get('dielectric') or 'unknown'}"
+                )
+            else:
+                rating = (
+                    f"{spec['rated_w']:g} W"
+                    if spec.get("rated_w") is not None
+                    else "unrated"
+                )
+                derived = f"resistor {spec['ohm']:g} Ω, {rating}"
+            body += f"derived: {derived} (from catalog description)\n"
         return Response(
-            body=f"# {refdes} — {len(nb['pins'])} pin(s)\n"
+            body=body
             + render_agent_table(
                 rows, schema=["pin", "pad", "tags", "net", "neighbors"]
             )

@@ -68,6 +68,7 @@ order (pcb: schematic → netlist → layout → fab):
 | `stale (item revised)` | the item's text changed since you judged it | re-read, re-judge |
 | `stale (target changed)` | the design changed within the verdict's scope | re-check only this item |
 | `stale (target changed: U7 gone)` | an anchor you named no longer exists | re-check; anchor to what replaced it |
+| `stale (input changed: X)` | an input the verdict recorded (a policy/rule/fact revision) moved | re-derive against the new revision |
 | `not run (…)` | a tool checker has nothing to read yet | run the checker named in the reason (e.g. `view='drc'`) |
 
 Below the table, the **argument** section lists the item threads: open
@@ -102,10 +103,30 @@ edit(kind='checklist', id='pcb-tapeout', target='pcb:sensor-node',
   would convince a reviewer — the ledger is the review record.
 - A second verdict on the same item appends; the old row stays
   queryable. Nothing is ever overwritten.
+- `inputs={'margin:fixed-derating': 1, ...}` records the revisions a
+  verdict consumed (policy/rule/part-fact/skill). When one's current
+  revision disagrees, the verdict reads `stale (input changed: …)` —
+  re-derivable verdicts are honest about what they read. `origin=`
+  defaults to human (sticky); `origin='machine'` marks a disposable
+  verdict an automated pass produced.
 
 Kinds without a fingerprint bridge accept an opaque `fingerprint='…'`
 string instead of `anchors`; pass the same string to `get(...,
 fingerprint=...)` to detect change yourself.
+
+## Forget machine verdicts so a pass re-derives them
+
+```python
+edit(kind='checklist', id='pcb-tapeout', target='pcb:sensor-node',
+     op='forget')                     # every machine verdict on the target
+edit(..., op='forget', item='decoupling-adequate')        # one item
+edit(..., op='forget', consumed='margin:fixed-derating')  # only verdicts that read it
+```
+
+`op='forget'` retires live **machine-origin** verdicts so the next
+review pass recomputes them — after a rule, policy or fact revision, or
+a corrected extraction. Human verdicts are never dropped: they stay,
+shown stale, until a human re-confirms.
 
 ## Waive an item
 ## Argue that an item does not apply here

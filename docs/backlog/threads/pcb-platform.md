@@ -69,14 +69,20 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## Horizon
 
-- **backlog/pcb-datasheet-review.md** — `draft/high`, filed 2026-10-13 from
-  the taz15-blank dogfood: shared part facts, design intent in graph
-  memory, re-derivable verdicts, review job, shortlist selection with
-  lifecycle, design from facts, human review. Absorbed
+- **backlog/pcb-datasheet-review.md** — `in-progress/high`, filed
+  2026-10-13 from the taz15-blank dogfood: shared part facts, design
+  intent in graph memory, re-derivable verdicts, review job, shortlist
+  selection with lifecycle, design from facts, human review. Absorbed
   `pcb-design-source-provenance.md`, the ratings-validation part of
-  Do-next 2 and the checklist lifecycle TTL. Slice 1 (epro import keeps
-  part identity) has no dependencies and could jump the queue; slice 5
-  waits on `datasheet-facts-mesh.md`.
+  Do-next 2 and the checklist lifecycle TTL. **Slices 2–4 shipped
+  2026-10-14** (`ds-review`): `op='pins'` annotation + `max_current_a` +
+  `over_current`; `passive_rating` — catalog-description parse, the
+  `fixed-derating` margin policy, pin-declared `min_dielectric`; and the
+  re-derivable-verdict substrate — `checklist_verdicts.origin` +
+  `.inputs`, `stale (input changed: …)`, `op='forget'` (machine verdicts
+  only) — with per-net "… unknown: ask the user" rows throughout. Slice
+  1 (epro import keeps part identity) landed from `p1-epro` as
+  `a7863eda3`; slice 5 waits on `datasheet-facts-mesh.md`.
 - **gr458878 — pin-level datasheet provenance + the two-source pin-name
   cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
   `link(rel='datasheet-of')` already bind a datasheet to a PART; what is

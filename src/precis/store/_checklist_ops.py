@@ -29,7 +29,8 @@ _ITEM_COLS = (
 )
 _VERDICT_COLS = (
     "id, target_ref_id, checklist_id, item_name, item_rev, verdict, "
-    "evidence, fingerprint, checked_at, checked_by, retired_at, anchors"
+    "evidence, fingerprint, checked_at, checked_by, retired_at, anchors, "
+    "origin, inputs"
 )
 _NOTE_COLS = (
     "id, target_ref_id, checklist_id, item_name, name, kind, body, re, "
@@ -81,6 +82,8 @@ def _row_to_verdict(row: tuple[Any, ...]) -> dict[str, Any]:
         "checked_by": row[9],
         "retired_at": row[10],
         "anchors": list(row[11] or []),
+        "origin": row[12],
+        "inputs": dict(row[13] or {}),
     }
 
 
@@ -392,17 +395,32 @@ class ChecklistMixin:
         fingerprint: str | None = None,
         checked_by: str | None = None,
         anchors: list[str] | None = None,
+        origin: str = "human",
+        inputs: dict[str, Any] | None = None,
     ) -> int:
         """Append one verdict row. Never updates a prior verdict — the
         ledger is the primitive, "current status" is a read-time query
         over ``checked_at DESC``. ``anchors`` names the sub-objects the
-        fingerprint was narrowed to (empty = whole target)."""
+        fingerprint was narrowed to (empty = whole target).
+
+        ``origin`` is the slice-4 lifecycle class (0213): ``human``
+        verdicts are sticky — ``op='forget'`` keeps them, staleness only
+        ever SHOWS; ``machine`` verdicts are disposable and forget-
+        droppable. ``inputs`` is the ``{name: revision}`` consumed-input
+        map a verdict records so a later revision bump marks exactly the
+        verdicts that read it stale (read-time compare via the kind
+        bridge's ``input_revision``)."""
+        if origin not in ("human", "machine"):
+            raise ValueError(
+                f"checklist verdict origin {origin!r} must be 'human' or "
+                "'machine' — nothing else can retire under op='forget'"
+            )
         with self.tx() as conn:
             row = conn.execute(
                 "INSERT INTO checklist_verdicts "
                 "(target_ref_id, checklist_id, item_name, item_rev, verdict, "
-                " evidence, fingerprint, checked_by, anchors) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                " evidence, fingerprint, checked_by, anchors, origin, inputs) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     target_ref_id,
                     checklist_id,
@@ -413,10 +431,48 @@ class ChecklistMixin:
                     fingerprint,
                     checked_by,
                     list(anchors or []),
+                    origin,
+                    Jsonb(inputs or {}),
                 ),
             ).fetchone()
         assert row is not None
         return int(row[0])
+
+    def checklist_verdicts_forget(
+        self,
+        *,
+        target_ref_id: int,
+        checklist_id: int,
+        item_name: str | None = None,
+        input_name: str | None = None,
+    ) -> list[str]:
+        """Retire every live MACHINE-origin verdict for one (target,
+        checklist) — pcb-datasheet-review slice 4's ``op='forget'``:
+        machine verdicts are disposable (dropped so the next pass
+        re-derives them); human verdicts are never touched. ``item_name``
+        narrows to one item, ``input_name`` to verdicts that consumed
+        that named input (a rule/policy revision, a part fact). Returns
+        the distinct item names whose verdicts were forgotten."""
+        clauses = [
+            "target_ref_id = %s",
+            "checklist_id = %s",
+            "retired_at IS NULL",
+            "origin = 'machine'",
+        ]
+        params: list[Any] = [target_ref_id, checklist_id]
+        if item_name is not None:
+            clauses.append("item_name = %s")
+            params.append(item_name)
+        if input_name is not None:
+            clauses.append("jsonb_exists(inputs, %s)")
+            params.append(input_name)
+        with self.tx() as conn:
+            rows = conn.execute(
+                "UPDATE checklist_verdicts SET retired_at = now() "
+                f"WHERE {' AND '.join(clauses)} RETURNING item_name",
+                params,
+            ).fetchall()
+        return sorted({str(r[0]) for r in rows})
 
     def checklist_verdict_latest(
         self, *, target_ref_id: int, checklist_id: int, item_name: str

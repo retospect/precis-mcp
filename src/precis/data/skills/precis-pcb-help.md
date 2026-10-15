@@ -459,6 +459,36 @@ courtyard) and the stored ones are cleared, so re-send them with every edit.
 (refdes, C-number, cached?, source, pad count) — the read-side counterpart,
 and where to check before trusting a `view='drc'` pass on that part.
 
+## Annotate pin semantics on an existing part — `op='pins'`
+
+A re-`put` never edits pins (create-or-extend only), so the pin facts the
+ERC rules read — `etype`, `rail`, `max_voltage_v`, `vih`, `vil`,
+`max_current_a`, `current_role` (`series`|`shunt`|`signal`), `nc`,
+`unused`, `must_terminate`, `min_dielectric` — are annotated after the
+fact, one refdes per call:
+
+```python
+put(kind="pcb", id="s", args={
+    "op": "pins", "refdes": "U7", "source": "datasheet p.12",
+    "pins": [{"name": "VDD", "etype": "power_in", "rail": "3v3",
+              "max_voltage_v": 3.6, "max_current_a": 0.5},
+             {"name": "SDA", "etype": "bidi", "rail": "3v3"}]})
+```
+
+`name` must be one of the component's real pins — a bad one refuses the
+call and lists them. Re-sending the same values is a no-op
+("already as declared"); `null` clears a field, `pad` is refused (pad
+binding stays with canonical-name authoring). `source` says who or what
+asserted the fact (a datasheet page, `import`, a hand check) and is
+recorded per pin; the `args.source` above applies to pins without one.
+Annotating `max_current_a` without `current_role` still checks it against
+the net's `current` — `shunt` is the only exemption (a tap, not the
+through-path). `min_dielectric` (`x7r`, `c0g`, …) on a `power_in` pin is
+the datasheet's "CIN ≥ X7R"-style requirement: `passive_rating` holds
+every capacitor on the pin's rail to it. The rating side needs no
+annotation — a part carrying a C-number gets value/dielectric/rating
+parsed from its catalog description, shown as `derived:` on `#REFDES`.
+
 ## Place and route it — `put(args={'op':'place'|'route', …})`
 
 ### The judged-mutation gate

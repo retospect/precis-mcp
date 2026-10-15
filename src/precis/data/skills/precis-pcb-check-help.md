@@ -2,7 +2,7 @@
 id: precis-pcb-check-help
 family: pcb
 title: precis — the PCB check surface (view='check', phases, finding delta, ERC)
-summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling) join the geometric DRC on the same table; every run persists and deltas against the previous run of the same phase
+summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; every run persists and deltas against the previous run of the same phase
 answers:
   - how do I check a pcb design — DRC, netlist checks, ERC?
   - how do I see only errors, or only one rule's findings?
@@ -32,9 +32,23 @@ same findings, same table.
 - The phase derives from board state; `fab` can only be claimed:
   `put(args={'op':'phase','phase':'fab'})`, `phase: null` clears it.
 - ERC joins DRC here: `pin_conflict`, `no_driver`, `over_voltage`,
-  `rail_crossing` (`roles:['level_shifter']` translates), `no_decoupling`
-  — fed by `pins[].etype`, `rail`, `max_voltage_v`, `nets[].rail`.
-  A rule missing its vocabulary reports `not_checked`, not a pass.
+  `rail_crossing` (`roles:['level_shifter']` translates), `no_decoupling`,
+  `over_current`, `passive_rating` — fed by `pins[].etype`, `rail`,
+  `max_voltage_v`, `max_current_a`/`current_role`, `min_dielectric`,
+  `nets[].rail`/`voltage`/`current`, and the catalog `part_description`
+  behind a placed C-number (annotate on an existing part via `op='pins'`
+  — [[precis-pcb-help]]). A rule missing its vocabulary reports
+  `not_checked`, not a pass; a pin bound on a net with no declared
+  voltage/current reports `voltage|current unknown for net X: ask the
+  user` — never guessed.
+- `passive_rating` parses a catalog part's description (`C1525` →
+  `100nF 16V X7R`) and checks it against the `fixed-derating` margin
+  policy: cap rated ≥ 2× the voltage across it (≥ 1.5× for C0G/NP0),
+  resistor dissipation ≤ 50 % of rated power (V²/R across its nets,
+  or I²R through a `series` pin on a net with `current`), and dielectric
+  rank ≥ a pin's declared `min_dielectric` (C0G > X7R > X5R > Y5V/Z5U)
+  on the pin's rail. The findings name both numbers and the policy; a
+  description that does not parse is a not-checked info row.
 
 ## Read a run as a delta — finding ids
 

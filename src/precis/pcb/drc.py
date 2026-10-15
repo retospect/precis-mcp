@@ -131,8 +131,18 @@ from shapely.ops import nearest_points
 from shapely.strtree import STRtree
 
 from precis.finding_id import finding_hash
-from precis.pcb import PIN_ETYPES
+from precis.pcb import (
+    CAP_DIELECTRIC_RANK,
+    PASSIVE_CAP_VOLTAGE_FACTOR,
+    PASSIVE_CAP_VOLTAGE_FACTOR_DEFAULT,
+    PASSIVE_MARGIN_POLICY,
+    PASSIVE_MARGIN_REVISION,
+    PASSIVE_RESISTOR_POWER_FRACTION,
+    PIN_CURRENT_ROLES,
+    PIN_ETYPES,
+)
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
+from precis.pcb.catalog import parse_passive_description
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.rules import NetRules
@@ -3464,6 +3474,46 @@ def check_no_driver(
     return out
 
 
+def _erc_unknown_for_net(
+    rule: str,
+    net: dict[str, Any],
+    pins: list[dict[str, Any]],
+    what: str,
+) -> DrcFinding:
+    """A per-net cannot-fire row (pcb-datasheet-review.md slice 2, Reto's
+    ruling): pins on this net declare a bound (``max_voltage_v`` /
+    ``max_current_a``) but the net declares no voltage/current to compare
+    it against. The net's value is NEVER guessed — the finding asks the
+    user instead. Renders ``info`` like the rule-level not-checked row."""
+    return DrcFinding(
+        rule=rule,
+        severity="warn",
+        where=f"net {net['name']}",
+        detail=(
+            f"{what} unknown for net {net['name']}: ask the user — pin(s) "
+            + ", ".join(f"{p['refdes']}/{p['pin']}" for p in pins)
+            + " declare a bound nothing on the net answers"
+        ),
+        objects=(
+            {"not_checked": True, "rule": rule, "net": net["name"]},
+            *(_pin_obj(p) for p in pins),
+        ),
+    )
+
+
+def _net_voltage(net: dict[str, Any], class_rules: dict[str, Any]) -> float | None:
+    """A net's working voltage: ``pcb_nets.working_voltage_v`` when
+    authored, else its class's ``rules['working_voltage_v']`` (the Slice
+    4c net-class key — one key, two+ consumers: ``check_over_voltage``,
+    ``check_passive_rating``). ``None`` when nobody declared it — the
+    never-guess ruling leaves the caller to emit an ask-the-user row."""
+    v = net.get("working_voltage_v")
+    if v is None:
+        cls = class_rules.get(str(net.get("net_class") or ""))
+        v = (cls or {}).get("working_voltage_v") if isinstance(cls, dict) else None
+    return None if v is None else float(v)
+
+
 def check_over_voltage(
     nets: Iterable[dict[str, Any]],
     net_class_rules: dict[str, Any] | None = None,
@@ -3475,28 +3525,29 @@ def check_over_voltage(
     authored, else its class's ``rules['working_voltage_v']`` (the Slice
     4c net-class key — one key, two consumers). Cannot fire — and says
     so — when nothing declares either side (no net voltage AND no pin
-    bound). A net with no voltage and a pin with no bound simply
-    cannot be compared and is skipped, which the not-checked row covers
-    only when NO net/pin carries anything at all."""
+    bound). A bound pin on a net whose voltage nobody declared is a
+    per-net not-checked row (``voltage unknown for net X: ask the
+    user``) — an imported board's rails are never guessed."""
     class_rules = net_class_rules or {}
     any_voltage = False
     any_bound = False
     out: list[DrcFinding] = []
     for net in nets:
-        v = net.get("working_voltage_v")
-        if v is None:
-            cls = class_rules.get(str(net.get("net_class") or ""))
-            v = (cls or {}).get("working_voltage_v") if isinstance(cls, dict) else None
+        v = _net_voltage(net, class_rules)
         if v is not None:
             any_voltage = True
+        unbounded: list[dict[str, Any]] = []
         for m in net.get("members") or []:
             bound = (m.get("meta") or {}).get("max_voltage_v")
             if bound is None:
                 continue
             any_bound = True
+            if v is None:
+                unbounded.append(m)
+                continue
             # Absolute values — a negative rail (−12 V against a 5 V pin
             # bound) is just as over.
-            if v is None or abs(float(bound)) >= abs(float(v)):
+            if abs(float(bound)) >= abs(float(v)):
                 continue
             out.append(
                 DrcFinding(
@@ -3511,11 +3562,359 @@ def check_over_voltage(
                     objects=(_pin_obj(m),),
                 )
             )
+        if unbounded:
+            out.append(_erc_unknown_for_net("over_voltage", net, unbounded, "voltage"))
     if not out and not (any_voltage and any_bound):
         return [
             _erc_not_checked(
                 "over_voltage",
                 "no net carries working_voltage_v or no pin carries max_voltage_v",
+            )
+        ]
+    return out
+
+
+def check_over_current(
+    nets: Iterable[dict[str, Any]],
+) -> list[DrcFinding]:
+    """A net's declared ``est_current_a`` exceeds a pin's declared
+    ``max_current_a`` — a 3 A rail through a pin rated 1 A
+    (pcb-datasheet-review.md slice 2; the ratings-validation half of
+    ``pcb-component-model.md``'s power section).
+
+    Whether a pin sits IN the current path is ``meta['current_role']``
+    (``series``/``shunt``/``signal``, authored via ``op='pins'``): only
+    ``shunt`` is exempt — a shunt device taps the net without carrying
+    its through current, so its rating is not the net's budget. A pin
+    that declares ``max_current_a`` with no role is still compared: the
+    bound is the authored fact, the role only exempts.
+
+    Cannot fire — and says so — when nothing declares either side. A
+    bound pin on a net with no ``est_current_a`` is a per-net
+    not-checked row (``current unknown for net X: ask the user``), the
+    same never-guess ruling as :func:`check_over_voltage`."""
+    any_current = False
+    any_bound = False
+    out: list[DrcFinding] = []
+    for net in nets:
+        i_net = net.get("est_current_a")
+        if i_net is not None:
+            any_current = True
+        unknown: list[dict[str, Any]] = []
+        for m in net.get("members") or []:
+            meta = m.get("meta") or {}
+            bound = meta.get("max_current_a")
+            if bound is None:
+                continue
+            any_bound = True
+            # ``shunt`` is the one exemption (a tap, not the through
+            # path); every other declared role — and none — compares.
+            if str(meta.get("current_role") or "").strip() == "shunt":
+                continue
+            if i_net is None:
+                unknown.append(m)
+                continue
+            if abs(float(i_net)) <= abs(float(bound)):
+                continue
+            out.append(
+                DrcFinding(
+                    rule="over_current",
+                    severity="error",
+                    where=f"net {net['name']}",
+                    detail=(
+                        f"net {net['name']} carries {float(i_net):g} A but "
+                        f"{m['refdes']}/{m['pin']} is rated "
+                        f"{float(bound):g} A max"
+                    ),
+                    objects=(_pin_obj(m),),
+                )
+            )
+        if unknown:
+            out.append(_erc_unknown_for_net("over_current", net, unknown, "current"))
+    if not out and not (any_current and any_bound):
+        return [
+            _erc_not_checked(
+                "over_current",
+                "no net carries est_current_a or no pin carries max_current_a",
+            )
+        ]
+    return out
+
+
+def _passive_not_checked(refdes: str, why: str, *objects: dict[str, Any]) -> DrcFinding:
+    """``check_passive_rating``'s per-part cannot-fire row — one warn
+    naming the part and the gap, the ``not_checked`` object marker the
+    surface renders ``info`` (same contract as
+    :func:`_erc_unknown_for_net`, keyed to the part not the net)."""
+    return DrcFinding(
+        rule="passive_rating",
+        severity="warn",
+        where=f"part {refdes}",
+        detail=f"passive_rating CANNOT check {refdes} — {why}",
+        objects=(
+            {"not_checked": True, "rule": "passive_rating", "refdes": refdes},
+            *objects,
+        ),
+    )
+
+
+def check_passive_rating(
+    nets: Iterable[dict[str, Any]],
+    instances: Iterable[dict[str, Any]],
+    net_class_rules: dict[str, Any] | None = None,
+) -> list[DrcFinding]:
+    """A catalog passive whose parsed rating fails the margin policy —
+    pcb-datasheet-review.md slice 3 (in-scope 4's parse + 5's
+    ``passive_rating``): ``C1525``'s description parses to
+    ``100nF 16V X7R`` (:func:`precis.pcb.catalog.parse_passive_description`)
+    and the named policy (``PASSIVE_MARGIN_POLICY`` r
+    ``PASSIVE_MARGIN_REVISION``) then asks rated ≥ factor × the voltage
+    across it, dielectric rank ≥ any ``min_dielectric`` a member pin
+    declares, and a resistor's dissipation ≤ 50 % of its rated power.
+
+    ``instances`` are the graph's instance dicts — the check needs only
+    ``refdes`` + ``part_description`` (the ``parts`` catalog join
+    ``pcb_graph`` hoists). A capacitor's working voltage is the spread
+    between the nets it joins (``_net_voltage`` — authored or class
+    ``working_voltage_v``); an unannotated one produces the ask-the-user
+    row, never a guess. ``min_dielectric`` is the design-layer stand-in
+    for the slice-5 part fact's ``dielectric ≥``: declared on a pin via
+    ``op='pins'``, it binds every parsed capacitor on the pin's rail
+    (pin ``meta.rail`` → all nets sharing that net-level ``meta.rail``;
+    no rail means the pin's own net) — the same join
+    ``check_no_decoupling`` uses to find the caps serving a rail.
+
+    Cannot fire — and says so — when no placed part parses to a rated
+    passive; a parse that lacks the field a check needs, or a net whose
+    voltage is unknown, is a per-part not-checked info row, not a pass.
+    """
+    nets = list(nets)
+    class_rules = net_class_rules or {}
+    specs: dict[str, dict[str, Any]] = {}
+    for inst in instances:
+        spec = parse_passive_description(
+            inst.get("part_description")
+            if isinstance(inst.get("part_description"), str)
+            else None
+        )
+        if spec is not None:
+            specs[str(inst.get("refdes") or "")] = spec
+
+    member_nets: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    net_rails: dict[str, Any] = {}
+    for net in nets:
+        net_rails[str(net["name"])] = (net.get("meta") or {}).get("rail")
+        for m in net.get("members") or []:
+            member_nets.setdefault(str(m.get("refdes") or ""), []).append((net, m))
+
+    # Dielectric requirements: each pin's meta.min_dielectric, scoped by
+    # its rail join — a declared rail widens the requirement to every net
+    # on that rail (a bypass cap may sit on a neighbouring net of the
+    # same rail), otherwise just the pin's own net.
+    reqs: list[dict[str, Any]] = []
+    for net in nets:
+        for m in net.get("members") or []:
+            meta = m.get("meta") or {}
+            need = meta.get("min_dielectric")
+            if need is None:
+                continue
+            cls = str(need).strip().lower()
+            if cls not in CAP_DIELECTRIC_RANK:
+                continue  # unreachable — op='pins' validates the vocabulary
+            rail = meta.get("rail") or net_rails.get(str(net["name"]))
+            scope = (
+                {
+                    name
+                    for name, r in net_rails.items()
+                    if r is not None and str(r) == str(rail)
+                }
+                if rail is not None
+                else set()
+            )
+            # The pin's own net is always in scope — a rail the nets do
+            # not repeat shrinks the requirement to just it, never to
+            # nothing.
+            scope.add(str(net["name"]))
+            reqs.append(
+                {"pin": m, "cls": cls, "rank": CAP_DIELECTRIC_RANK[cls], "nets": scope}
+            )
+
+    out: list[DrcFinding] = []
+    evaluated = False
+    for refdes in sorted(specs):
+        spec = specs[refdes]
+        entries = member_nets.get(refdes) or []
+        if not entries:
+            continue  # unconnected passive — check_unconnected owns it
+        volts = {str(n["name"]): _net_voltage(n, class_rules) for n, _m in entries}
+        unknown = sorted(name for name, v in volts.items() if v is None)
+        known = [v for v in volts.values() if v is not None]
+        if spec["kind"] == "capacitor":
+            for req in reqs:
+                hit = sorted(set(volts) & req["nets"])
+                if not hit:
+                    continue
+                mpin = next(m for n, m in entries if str(n["name"]) in req["nets"])
+                rank = CAP_DIELECTRIC_RANK.get(str(spec.get("dielectric") or ""))
+                if rank is None:
+                    out.append(
+                        _passive_not_checked(
+                            refdes,
+                            f"rail serving net {hit[0]} requires dielectric "
+                            f"≥ {req['cls']} ({req['pin']['refdes']}/"
+                            f"{req['pin']['pin']}) but the catalog "
+                            "description names no ranked dielectric — "
+                            "cannot confirm",
+                            _pin_obj(mpin),
+                        )
+                    )
+                elif rank > req["rank"]:
+                    evaluated = True
+                    out.append(
+                        DrcFinding(
+                            rule="passive_rating",
+                            severity="error",
+                            where=f"part {refdes}",
+                            detail=(
+                                f"{refdes} is {spec.get('dielectric')!s} "
+                                f"but net {hit[0]} requires ≥ {req['cls']} "
+                                f"({req['pin']['refdes']}/{req['pin']['pin']})"
+                            ),
+                            objects=(_pin_obj(mpin), _pin_obj(req["pin"])),
+                        )
+                    )
+                else:
+                    evaluated = True
+            rated_v = spec.get("rated_v")
+            if rated_v is None:
+                out.append(
+                    _passive_not_checked(
+                        refdes,
+                        "the catalog description names no voltage rating — "
+                        "the margin policy has nothing to compare",
+                        *(_pin_obj(m) for _n, m in entries),
+                    )
+                )
+            elif unknown:
+                out.append(
+                    _passive_not_checked(
+                        refdes,
+                        "; ".join(
+                            f"voltage unknown for net {name}: ask the user"
+                            for name in unknown
+                        ),
+                        *(_pin_obj(m) for _n, m in entries),
+                    )
+                )
+            else:
+                dv = (max(known) - min(known)) if known else 0.0
+                factor = PASSIVE_CAP_VOLTAGE_FACTOR.get(
+                    str(spec.get("dielectric") or ""),
+                    PASSIVE_CAP_VOLTAGE_FACTOR_DEFAULT,
+                )
+                need = factor * dv
+                evaluated = True
+                if float(rated_v) < need - 1e-9:
+                    out.append(
+                        DrcFinding(
+                            rule="passive_rating",
+                            severity="error",
+                            where=f"part {refdes}",
+                            detail=(
+                                f"{refdes} is rated {float(rated_v):g} V "
+                                f"across {dv:g} V working — policy "
+                                f"{PASSIVE_MARGIN_POLICY} "
+                                f"r{PASSIVE_MARGIN_REVISION} wants ≥ "
+                                f"{factor:g}× = {need:g} V"
+                            ),
+                            objects=tuple(_pin_obj(m) for _n, m in entries),
+                        )
+                    )
+        else:  # resistor
+            ohm = spec.get("ohm")
+            rated_w = spec.get("rated_w")
+            if not ohm or float(ohm) <= 0 or rated_w is None:
+                out.append(
+                    _passive_not_checked(
+                        refdes,
+                        "the catalog description names no usable "
+                        "resistance or power rating — dissipation cannot "
+                        "be derived",
+                        *(_pin_obj(m) for _n, m in entries),
+                    )
+                )
+            elif unknown:
+                # Voltage drop is not derivable; a ``series`` pin on a
+                # net with declared ``est_current_a`` still gives I²R.
+                currents = [
+                    float(n["est_current_a"])
+                    for n, m in entries
+                    if str((m.get("meta") or {}).get("current_role") or "") == "series"
+                    and n.get("est_current_a") is not None
+                ]
+                if not currents:
+                    out.append(
+                        _passive_not_checked(
+                            refdes,
+                            "; ".join(
+                                f"voltage unknown for net {name}: ask the user"
+                                for name in unknown
+                            ),
+                            *(_pin_obj(m) for _n, m in entries),
+                        )
+                    )
+                else:
+                    watts = max(currents) ** 2 * float(ohm)
+                    evaluated = True
+                    if watts > float(rated_w) * PASSIVE_RESISTOR_POWER_FRACTION:
+                        out.append(
+                            DrcFinding(
+                                rule="passive_rating",
+                                severity="error",
+                                where=f"part {refdes}",
+                                detail=(
+                                    f"{refdes} dissipates ~{watts:g} W at "
+                                    f"{max(currents):g} A — policy "
+                                    f"{PASSIVE_MARGIN_POLICY} "
+                                    f"r{PASSIVE_MARGIN_REVISION} allows ≤ "
+                                    f"{PASSIVE_RESISTOR_POWER_FRACTION:g} × "
+                                    f"{float(rated_w):g} W rated"
+                                ),
+                                objects=tuple(_pin_obj(m) for _n, m in entries),
+                            )
+                        )
+            else:
+                dv = (max(known) - min(known)) if known else 0.0
+                watts = dv * dv / float(ohm)
+                evaluated = True
+                if watts > float(rated_w) * PASSIVE_RESISTOR_POWER_FRACTION:
+                    out.append(
+                        DrcFinding(
+                            rule="passive_rating",
+                            severity="error",
+                            where=f"part {refdes}",
+                            detail=(
+                                f"{refdes} dissipates ~{watts:g} W across "
+                                f"{dv:g} V — policy {PASSIVE_MARGIN_POLICY} "
+                                f"r{PASSIVE_MARGIN_REVISION} allows ≤ "
+                                f"{PASSIVE_RESISTOR_POWER_FRACTION:g} × "
+                                f"{float(rated_w):g} W rated"
+                            ),
+                            objects=tuple(_pin_obj(m) for _n, m in entries),
+                        )
+                    )
+    if not out and not evaluated:
+        return [
+            _erc_not_checked(
+                "passive_rating",
+                (
+                    "no placed part parses to a rated passive — no catalog "
+                    "description (part_lcsc join) yields a capacitor/resistor"
+                    if not specs
+                    else "no parsed passive could be checked — its nets "
+                    "carry no voltage/current and no pin declared a "
+                    "dielectric minimum"
+                ),
             )
         ]
     return out
@@ -3765,6 +4164,7 @@ __all__ = [
     "DEFAULT_DECOUPLING_DISTANCE_MM",
     "PHASES",
     "PHASE_SEVERITY",
+    "PIN_CURRENT_ROLES",
     "PIN_ETYPES",
     "SILK_LEGIBILITY_HEIGHT_MM",
     "WORSE_MARGIN_EPS_MM",
@@ -3782,6 +4182,7 @@ __all__ = [
     "check_npth_clearance",
     "check_octilinear",
     "check_outline_containment",
+    "check_over_current",
     "check_over_voltage",
     "check_pin_conflicts",
     "check_rail_crossing",

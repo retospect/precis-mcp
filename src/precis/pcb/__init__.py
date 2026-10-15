@@ -213,6 +213,54 @@ PIN_ETYPES: tuple[str, ...] = (
     "nc",
 )
 
+#: The closed ``current_role`` vocabulary a pin may declare
+#: (``pcb_pins.meta``, via ``op='pins'`` — docs/backlog/
+#: pcb-datasheet-review.md slice 2, decisions log 2026-10-13): whether
+#: the pin sits IN the net's current path. ``series`` carries the net's
+#: through current (a fuse, switch, regulator pass device, connector
+#: contact); ``shunt`` taps it without carrying it (a decoupling cap, a
+#: TVS) and is the one exemption ``drc.check_over_current`` honours;
+#: ``signal`` is an endpoint that drives or sinks only the signal's own
+#: current. ``pcb-component-model.md`` keeps the defaulting rule that
+#: also reads it (declared net current wins; else MAX over
+#: series-capable pins).
+PIN_CURRENT_ROLES: tuple[str, ...] = ("series", "shunt", "signal")
+
+#: Ceramic-capacitor dielectric classes, ranked by capacitance stability —
+#: lower number is better (docs/backlog/pcb-datasheet-review.md in-scope
+#: 5: "dielectric rank C0G > X7R > X5R > Y5V/Z5U"). ``np0`` is the IEC
+#: spelling of the same C0G material and shares its rank. A ``min_
+#: dielectric`` pin annotation (``op='pins'``) is validated against these
+#: keys, and ``drc.check_passive_rating`` compares a parsed catalog
+#: dielectric's rank against a declared minimum's.
+CAP_DIELECTRIC_RANK: dict[str, int] = {
+    "c0g": 0,
+    "np0": 0,
+    "x8r": 1,
+    "x8l": 1,
+    "x7r": 1,
+    "x7s": 2,
+    "x6s": 2,
+    "x5r": 2,
+    "x5s": 2,
+    "y5v": 3,
+    "z5u": 3,
+}
+
+#: The margin policy ``drc.check_passive_rating`` derates passives by
+#: (slice 3, decisions log 2026-10-13): a short NAMED policy, not a
+#: table — the manufacturer derating table overrides it later per
+#: manufacturer/family, and the revision is what slice 4's verdict
+#: inputs consume. Fixed policy: a capacitor's rated voltage must be ≥
+#: factor × the voltage across it (2× for X5R/X7R-class and anything
+#: unrated; 1.5× for C0G/NP0, whose capacitance barely falls with bias),
+#: and a resistor may dissipate at most 50 % of its rated power.
+PASSIVE_MARGIN_POLICY = "fixed-derating"
+PASSIVE_MARGIN_REVISION = 1
+PASSIVE_CAP_VOLTAGE_FACTOR: dict[str, float] = {"c0g": 1.5, "np0": 1.5}
+PASSIVE_CAP_VOLTAGE_FACTOR_DEFAULT = 2.0
+PASSIVE_RESISTOR_POWER_FRACTION = 0.5
+
 #: The pseudo-status a dangling net counts under in a route-status summary.
 ROUTE_DANGLING = "dangling"
 

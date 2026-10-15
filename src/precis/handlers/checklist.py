@@ -68,6 +68,7 @@ _EDIT_OPS: tuple[str, ...] = (
     "add_item",
     "retire_item",
     "verdict",
+    "forget",
     "add_note",
     "remove_note",
     "assign",
@@ -97,12 +98,17 @@ class ChecklistHandler(Handler):
             "'blocking'|'advisory', 'decidability':'tool'|'judgment', "
             "'phase':..., 'applies':..., 'body':...}]) creates a local "
             "checklist. edit(id=<name>, op=..., ...) covers add_item, "
-            "retire_item, verdict, add_note, remove_note, assign, "
+            "retire_item, verdict, forget, add_note, remove_note, assign, "
             "unassign — op='add_item'/'retire_item' on a shipped item rev "
             "is REJECTED (add a local item or file a gripe instead). "
             "op='verdict' takes item=, verdict=pass|fail|n/a|waived, "
             "evidence={...}, anchors=[refdes/net names] (pcb: narrows the "
-            "change fingerprint to those sub-objects). get(id=<name>) "
+            "change fingerprint to those sub-objects), origin='machine' "
+            "for a disposable verdict, inputs={name: revision} the "
+            "consumed inputs it re-derives against (a bumped input marks "
+            "it stale). op='forget' drops the live machine-origin "
+            "verdicts on target= — item=/consumed= narrow it; human "
+            "verdicts are kept. get(id=<name>) "
             "renders the definition; get(id=<name>, target='<kind>:<id>') "
             "the per-target status view (not checked / stale / live tool "
             "result / verdict per item, then the argument threads — an "
@@ -217,6 +223,8 @@ class ChecklistHandler(Handler):
         fingerprint: str | None = None,
         anchors: Any = None,
         checked_by: str | None = None,
+        inputs: dict[str, Any] | None = None,
+        consumed: str | None = None,
         name: str | None = None,
         note_kind: str | None = None,
         re: str | None = None,
@@ -258,6 +266,12 @@ class ChecklistHandler(Handler):
                 fingerprint=fingerprint,
                 anchors=anchors,
                 checked_by=checked_by,
+                inputs=inputs,
+                origin=origin,
+            )
+        if op == "forget":
+            return self._edit_forget(
+                checklist, target=target, item=item, consumed=consumed
             )
         if op == "add_note":
             return self._edit_add_note(
@@ -400,6 +414,8 @@ class ChecklistHandler(Handler):
         fingerprint: str | None,
         anchors: Any,
         checked_by: str | None,
+        inputs: dict[str, Any] | None = None,
+        origin: str = "user",
     ) -> Response:
         if item is None or not str(item).strip():
             raise BadInput("edit(kind='checklist', op='verdict') requires item=<name>")
@@ -410,6 +426,21 @@ class ChecklistHandler(Handler):
             )
         if evidence is not None and not isinstance(evidence, dict):
             raise BadInput("evidence= must be a dict")
+        if inputs is not None and not isinstance(inputs, dict):
+            raise BadInput(
+                "inputs= must be a dict {input-name: revision} — the "
+                "consumed inputs a re-derivation staleness-check compares, "
+                "e.g. {'margin:fixed-derating': 1}"
+            )
+        # The op's shared ``origin`` kwarg defaults to 'user' (the notes
+        # vocabulary); a verdict's lifecycle class is human|machine.
+        vorigin = "human" if origin == "user" else origin
+        if vorigin not in ("human", "machine"):
+            raise BadInput(
+                f"op='verdict' origin={origin!r} must be 'human' or "
+                "'machine' — machine verdicts are disposable "
+                "(op='forget' drops them), human ones are kept"
+            )
         if verdict == "waived" and not (evidence or {}).get("rationale"):
             raise BadInput(
                 "verdict='waived' requires evidence={'rationale': ...} — a "
@@ -456,11 +487,58 @@ class ChecklistHandler(Handler):
             fingerprint=fp,
             checked_by=checked_by,
             anchors=anchor_list,
+            origin=vorigin,
+            inputs=inputs,
         )
         return Response(
             body=(
                 f"recorded {checklist['name']}.{item_name} = {verdict} for "
                 f"{ref.kind}:{ref.label} (item rev {current['rev']}{note})"
+            )
+        )
+
+    def _edit_forget(
+        self,
+        checklist: dict[str, Any],
+        *,
+        target: str | int | None,
+        item: str | None,
+        consumed: str | None,
+    ) -> Response:
+        """``op='forget'`` — slice 4's re-derivation lever: retire the
+        live MACHINE-origin verdicts on one target so the next pass
+        recomputes them. ``item=`` narrows to one item, ``consumed=`` to
+        verdicts that recorded that input (a bumped rule/policy
+        revision). Human verdicts are never dropped — they go stale and
+        stay shown until a human re-confirms."""
+        ref = self._resolve_target(target)
+        item_name = str(item).strip() if item else None
+        dropped = self.store.checklist_verdicts_forget(
+            target_ref_id=ref.id,
+            checklist_id=checklist["id"],
+            item_name=item_name,
+            input_name=str(consumed).strip() if consumed else None,
+        )
+        scope = []
+        if item_name:
+            scope.append(f"item {item_name!r}")
+        if consumed:
+            scope.append(f"consumed {str(consumed).strip()!r}")
+        scoped = f" ({', '.join(scope)})" if scope else ""
+        if not dropped:
+            return Response(
+                body=(
+                    f"no live machine verdicts on {checklist['name']} for "
+                    f"{ref.kind}:{ref.label}{scoped} — nothing forgotten "
+                    "(human verdicts are never dropped)"
+                )
+            )
+        return Response(
+            body=(
+                f"forgot {len(dropped)} item(s) of machine verdicts on "
+                f"{checklist['name']} for {ref.kind}:{ref.label}{scoped}: "
+                + ", ".join(dropped)
+                + " — the next pass re-derives them; human verdicts kept"
             )
         )
 

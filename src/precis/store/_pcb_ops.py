@@ -19,7 +19,9 @@ Canonical electrical pads have one active pin name. Conflicting authored
 declarations refuse the whole batch, including on a skipped existing refdes:
 silently dropping a declaration lets connections recreate it unbound. Physical
 footprint pad duplicates remain geometry, not separate electrical identities.
-Re-put is create-or-extend, not a pin editor or historical-data repair.
+Re-put is create-or-extend, not a pin editor or historical-data repair — pin
+SEMANTICS on an existing instance are edited via :meth:`pcb_patch_pins`
+(``op='pins'``; docs/backlog/pcb-datasheet-review.md slice 2).
 
 Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 ``self.insert_ref``/``self.get_ref``.
@@ -40,7 +42,13 @@ from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput, NotFound
-from precis.pcb import DEFAULT_STACKUP, PIN_ETYPES, route_summary_status
+from precis.pcb import (
+    CAP_DIELECTRIC_RANK,
+    DEFAULT_STACKUP,
+    PIN_CURRENT_ROLES,
+    PIN_ETYPES,
+    route_summary_status,
+)
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import padplace as pcb_padplace
@@ -1728,6 +1736,211 @@ class PcbMixin:
             n += result.rowcount
         return n
 
+    #: ``op='pins'`` (docs/backlog/pcb-datasheet-review.md slice 2) — the
+    #: pin-annotation dict's allowed keys. ``pad`` is deliberately absent:
+    #: pad binding stays with the canonical-pad rule — this op edits a
+    #: pin's SEMANTICS (what the ERC rules read), never its geometry, and
+    #: ``tags``/``description``/``note`` stay authoring-time fields.
+    _PIN_PATCH_KEYS = frozenset(
+        {
+            "name",
+            "etype",
+            "rail",
+            "max_voltage_v",
+            "vih",
+            "vil",
+            "max_current_a",
+            "current_role",
+            "nc",
+            "unused",
+            "must_terminate",
+            "min_dielectric",
+            "source",
+        }
+    )
+
+    #: ``op='pins'`` keys that are numbers when present.
+    _PIN_PATCH_NUMERIC = ("max_voltage_v", "vih", "vil", "max_current_a")
+
+    #: ``op='pins'`` keys stored verbatim in ``pcb_pins.meta``.
+    #: ``min_dielectric`` (slice 3) is the design-layer stand-in for the
+    #: part fact's ``dielectric ≥`` — declared on the CONSUMER's pin
+    #: (e.g. an IC's ``power_in``), ``drc.check_passive_rating`` binds it
+    #: to every parsed capacitor on the pin's rail.
+    _PIN_PATCH_META = (
+        "rail",
+        "max_voltage_v",
+        "vih",
+        "vil",
+        "max_current_a",
+        "current_role",
+        "min_dielectric",
+        "source",
+    )
+
+    def pcb_patch_pins(
+        self,
+        ref_id: int,
+        refdes: str,
+        pins: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> dict[str, Any]:
+        """``op='pins'`` — patch pin SEMANTICS on one existing instance's
+        pins (the design-layer annotation; docs/backlog/
+        pcb-datasheet-review.md slice 2). The write a plain re-put
+        deliberately never performs (:meth:`_pcb_apply`'s contract is
+        create-or-extend, "not a pin editor") — this is that editor: it is
+        how an imported or already-authored part gets the ``etype`` /
+        ``rail`` / ``max_voltage_v`` / ``vih`` / ``vil`` /
+        ``max_current_a`` / ``current_role`` / marker facts the ERC rules
+        read, WITHOUT re-authoring the component.
+
+        Every ``name`` must be one of the component's REAL pin names — a
+        bad one refuses the whole call and lists the valid set (the pins
+        table, not the footprint: a pin the design never declared is
+        added by a re-put, not by annotation). Idempotent: a value equal
+        to the stored one is reported ``unchanged``, not rewritten.
+        ``source`` (who or what said so — a datasheet page, ``'import'``,
+        a hand check) lands in the pin's meta; it is the origin marker the
+        spec's verdict-input model consumes later. Explicit ``None`` (or
+        ``false`` for the markers) CLEARS the annotation; an absent key
+        leaves it alone. Returns ``{"refdes", "changed", "unchanged"}``."""
+        if conn is not None:
+            return self._pcb_patch_pins(conn, ref_id, refdes, pins)
+        with self._pcb_tx() as c:
+            return self._pcb_patch_pins(c, ref_id, refdes, pins)
+
+    def _pcb_patch_pins(
+        self,
+        conn: Connection,
+        ref_id: int,
+        refdes: str,
+        pins: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        inst = conn.execute(
+            "SELECT component_id FROM pcb_instances "
+            "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+            (ref_id, refdes),
+        ).fetchone()
+        if inst is None:
+            raise NotFound(f"pcb {ref_id}: no live instance {refdes!r}")
+        rows = conn.execute(
+            "SELECT pin_id, name, tags, meta FROM pcb_pins "
+            "WHERE component_id = %s AND retired_at IS NULL ORDER BY name",
+            (int(inst[0]),),
+        ).fetchall()
+        by_name = {str(r[1]): r for r in rows}
+        # Validate the WHOLE batch before writing — one bad name refuses
+        # the call (same all-or-nothing discipline as _validate_pin_
+        # declarations), and the error names the part's real pins.
+        seen: set[str] = set()
+        for p in pins:
+            if not isinstance(p, dict):
+                raise ValueError(
+                    f"component {refdes}: a pins[] entry must be a dict, got {p!r}"
+                )
+            name = str(p.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"component {refdes}: a pins[] entry needs a name")
+            bad_keys = set(p) - self._PIN_PATCH_KEYS
+            if bad_keys:
+                raise ValueError(
+                    f"component {refdes}: pin {name!r} carries field(s) "
+                    f"{sorted(bad_keys)} — op='pins' annotates semantics "
+                    f"({sorted(self._PIN_PATCH_KEYS)}); pad binding stays "
+                    "with the canonical-pad rule"
+                )
+            if name in seen:
+                raise ValueError(
+                    f"component {refdes}: pin {name!r} annotated twice in "
+                    "one call — give each pin once"
+                )
+            seen.add(name)
+            if name not in by_name:
+                raise ValueError(
+                    f"component {refdes}: no pin {name!r} — the component's "
+                    f"pins are {sorted(by_name)}"
+                )
+            etype = p.get("etype")
+            if etype is not None and str(etype).strip() not in PIN_ETYPES:
+                raise ValueError(
+                    f"component {refdes}: pin {name!r} etype {etype!r} is "
+                    f"not in the ERC vocabulary {sorted(PIN_ETYPES)}"
+                )
+            role = p.get("current_role")
+            if role is not None and str(role).strip() not in PIN_CURRENT_ROLES:
+                raise ValueError(
+                    f"component {refdes}: pin {name!r} current_role "
+                    f"{role!r} is not in {sorted(PIN_CURRENT_ROLES)}"
+                )
+            diel = p.get("min_dielectric")
+            if (
+                diel is not None
+                and str(diel).strip().lower() not in CAP_DIELECTRIC_RANK
+            ):
+                raise ValueError(
+                    f"component {refdes}: pin {name!r} min_dielectric "
+                    f"{diel!r} is not a ranked dielectric class "
+                    f"({sorted(CAP_DIELECTRIC_RANK)})"
+                )
+            for key in self._PIN_PATCH_NUMERIC:
+                v = p.get(key)
+                if v is not None and (
+                    isinstance(v, bool) or not isinstance(v, int | float)
+                ):
+                    raise ValueError(
+                        f"component {refdes}: pin {name!r} {key} must be a "
+                        f"number, got {v!r}"
+                    )
+        changed: list[str] = []
+        unchanged: list[str] = []
+        for p in pins:
+            name = str(p["name"]).strip()
+            pin_id, _n, tags0, meta0 = by_name[name]
+            tags = list(tags0 or [])
+            meta = dict(meta0 or {})
+            if "etype" in p:
+                # An explicit re-annotation REPLACES the etype tag (the op
+                # is the pin editor; a same-value one is just idempotent),
+                # and `etype: null` clears it.
+                tags = [t for t in tags if t not in PIN_ETYPES]
+                if p["etype"] is not None:
+                    tags.append(str(p["etype"]).strip())
+            for marker in ("nc", "unused", "must_terminate"):
+                if marker not in p:
+                    continue
+                if p[marker]:
+                    meta[marker] = True
+                else:
+                    meta.pop(marker, None)
+            if meta.get("nc") and "nc" not in tags:
+                tags.append("nc")
+            if not meta.get("nc") and "nc" in tags:
+                tags.remove("nc")
+            for key in self._PIN_PATCH_META:
+                if key not in p:
+                    continue
+                if p[key] is None:
+                    meta.pop(key, None)
+                elif key == "min_dielectric":
+                    # Canonicalised to the rank table's keyspace so the
+                    # reader never case-folds.
+                    meta[key] = str(p[key]).strip().lower()
+                elif key in ("rail", "current_role", "source"):
+                    meta[key] = str(p[key]).strip()
+                else:
+                    meta[key] = p[key]
+            if sorted(tags) == sorted(list(tags0 or [])) and meta == dict(meta0 or {}):
+                unchanged.append(name)
+                continue
+            conn.execute(
+                "UPDATE pcb_pins SET tags = %s, meta = %s WHERE pin_id = %s",
+                (tags, Jsonb(meta), int(pin_id)),
+            )
+            changed.append(name)
+        return {"refdes": refdes, "changed": changed, "unchanged": unchanged}
+
     def _pcb_insert_instance(
         self,
         conn: Connection,
@@ -2213,13 +2426,19 @@ class PcbMixin:
         pin, and the neighbouring instances on those nets."""
         with self._pcb_conn() as conn:
             inst = conn.execute(
-                "SELECT instance_id, component_id FROM pcb_instances "
-                "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+                "SELECT i.instance_id, i.component_id, c.part_lcsc, "
+                "       pt.description "
+                "FROM pcb_instances i "
+                "JOIN pcb_components c ON c.component_id = i.component_id "
+                "LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "
+                "WHERE i.ref_id = %s AND i.refdes = %s "
+                "  AND i.retired_at IS NULL",
                 (ref_id, refdes),
             ).fetchone()
             if inst is None:
                 return None
             inst_id, comp_id = int(inst[0]), int(inst[1])
+            part_lcsc, part_description = inst[2], inst[3]
             pins = [
                 {
                     "pin": r[0],
@@ -2246,7 +2465,12 @@ class PcbMixin:
                     (inst_id, comp_id),
                 ).fetchall()
             ]
-        return {"refdes": refdes, "pins": pins}
+        return {
+            "refdes": refdes,
+            "part_lcsc": part_lcsc,
+            "part_description": part_description,
+            "pins": pins,
+        }
 
     def pcb_net_members(self, ref_id: int, name: str) -> dict[str, Any] | None:
         """A net's members: every (refdes, pin) on it."""
@@ -2397,6 +2621,14 @@ class PcbMixin:
                         if "part" in (r[14] or {})
                         else {}
                     ),
+                    # The catalog description the ``parts`` join reaches
+                    # (slice 3 — ``drc.check_passive_rating`` parses it
+                    # into a passive's value/dielectric/rating via
+                    # ``catalog.parse_passive_description``). Absent when
+                    # the instance has no catalog part — the parse's None
+                    # is what makes an uncatalogued passive not-checked,
+                    # never a guessed rating.
+                    "part_description": r[15],
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
@@ -2416,7 +2648,7 @@ class PcbMixin:
                     # -> false, matching `extended_part`'s documented
                     # "unknown is never silently promoted to a fee".
                     "       COALESCE(NOT pt.basic, false), i.meta, c.footprint, "
-                    "       c.meta "
+                    "       c.meta, pt.description "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "

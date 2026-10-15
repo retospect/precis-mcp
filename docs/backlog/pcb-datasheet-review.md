@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: "pcb: datasheet-grounded part selection, design and review — shared part facts, design-level derived facts, re-derivable verdicts, human review"
 pillar: 3d-design
 prio: high
@@ -285,10 +285,44 @@ recency); a stored sibling order is YAGNI until a reader needs it.
    schematic wire/netlist import proper (the +3V3 check confirmed the
    *board's* pads, not sch-sheet fidelity).
 2. `op='pins'` + `max_current_a` + `over_current` (2) — makes the existing
-   ERC usable on imported boards by hand.
-3. Passive rating/dielectric from catalog description + margin policy (4
-   partially, 5 `passive_rating`) — needs only 1.
-4. Verdict inputs, origin, `op='forget'`, staleness on consumed inputs (6).
+   ERC usable on imported boards by hand. **Shipped 2026-10-14**
+   (worktree `ds-review`): `put(args={'op':'pins','refdes':…,'pins':[…],
+   'source':…})` patches `etype`/`rail`/`max_voltage_v`/`vih`/`vil`/
+   `max_current_a`/`current_role`/markers onto an existing instance's
+   pins, validated against the component's real pin names, idempotent,
+   `source` recorded in pin meta; `check_over_current` joins the ERC set
+   (`shunt` is the one `current_role` exemption); `over_voltage`/
+   `over_current` report per-net `… unknown for net X: ask the user`
+   info rows rather than guessing an unannotated net.
+3. ~~Passive rating/dielectric from catalog description + margin policy
+   (4 partially, 5 `passive_rating`)~~ — **SHIPPED 2026-10-14**
+   (worktree `ds-review`, on `a7863eda3`'s slice-1 catalog join):
+   `catalog.parse_passive_description` parses a `parts.description` into
+   `{kind, value, rated, dielectric}` (never guesses — a field that does
+   not pattern-match stays `None`); `pcb_graph` hoists
+   `part_description` onto instances and `#REFDES` shows the derived
+   fact; `op='pins'` gains `min_dielectric` — the design-layer stand-in
+   for the part fact's `dielectric ≥`, declared on the consumer's pin;
+   `drc.check_passive_rating` joins the ERC set — cap rated ≥ factor ×
+   the voltage across it (named policy `fixed-derating` r1: 2×, 1.5× for
+   C0G/NP0), resistor dissipation ≤ 50 % of rated (V²/R, or I²R through
+   a `series` pin when only current is known), dielectric rank ≥ the
+   declared minimum — with per-part `… unknown … ask the user` and
+   cannot-parse not-checked rows, never a silent pass.
+4. ~~Verdict inputs, origin, `op='forget'`, staleness on consumed
+   inputs (6)~~ — **SHIPPED 2026-10-14** (worktree `ds-review`):
+   migration 0213 adds `checklist_verdicts.origin` ('human'|'machine';
+   existing rows backfill 'human' honestly) and `.inputs`
+   (`{name: revision}` consumed-input map — `margin:fixed-derating`,
+   later fact/rule/skill revisions). `edit(op='verdict')` takes
+   `origin=`/`inputs=`; `compute_statuses` marks a verdict
+   `stale (input changed: X)` when the kind bridge's `input_revision`
+   disagrees — human verdicts included (shown stale, never replaced);
+   an unresolvable name never marks stale. `PcbBridge` resolves
+   `margin:fixed-derating` → `PASSIVE_MARGIN_REVISION`. `edit(op=
+   'forget', target=…, item=?, consumed=?)` retires live machine-origin
+   verdicts only. The "consumes the whole part" fallback lands with
+   slice 5's fact ids.
 5. Part fact shapes (3) — with/after `datasheet-facts-mesh.md`'s pin table.
 6. Derived facts + `required_external`, `bus_address_conflict` (4, 5).
 7. `pcb_review` job + `precis-pcb-review-help` (7, 8).

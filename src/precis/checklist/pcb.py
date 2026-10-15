@@ -98,6 +98,17 @@ TOOL_CHECKERS: dict[str, Callable[[Any, int], ToolResult]] = {
 }
 
 
+def _current_input_revisions() -> dict[str, Any]:
+    """Input name → current revision for verdict ``inputs`` staleness
+    (slice 4). Read through the module attribute at CALL time so a
+    policy bump lands the moment the constant changes — and a test can
+    monkeypatch it. Later slices add part-fact ids (slice 5) and rule /
+    skill revisions to this map."""
+    from precis import pcb as _pcb_pkg
+
+    return {"margin:fixed-derating": _pcb_pkg.PASSIVE_MARGIN_REVISION}
+
+
 class PcbBridge:
     """:class:`precis.checklist.status.KindBridge` for ``pcb`` refs."""
 
@@ -138,6 +149,9 @@ class PcbBridge:
             store.pcb_instance_neighbors(ref_id, anchor) is not None
             or store.pcb_net_members(ref_id, anchor) is not None
         )
+
+    def input_revision(self, store: Any, ref_id: int, name: str) -> Any:
+        return _current_input_revisions().get(name)
 
 
 __all__ = ["TOOL_CHECKERS", "PcbBridge"]

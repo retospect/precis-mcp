@@ -46,6 +46,15 @@ class KindBridge(Protocol):
 
     def anchor_exists(self, store: Any, ref_id: int, anchor: str) -> bool: ...
 
+    def input_revision(self, store: Any, ref_id: int, name: str) -> Any:
+        """The CURRENT revision of a named verdict input
+        (``checklist_verdicts.inputs`` key — a policy/rule revision, a
+        part-fact id) so a verdict that recorded an older one reads
+        ``stale (input changed: <name>)``. ``None`` when this kind cannot
+        resolve the name — an unresolvable input is never a staleness
+        trigger (you cannot fault on what you cannot re-derive)."""
+        return None
+
 
 @dataclass(frozen=True)
 class ItemStatus:
@@ -126,6 +135,27 @@ def _ledger_status(
                 item,
                 verdict,
                 "stale (target changed)",
+                "ledger",
+                dict(verdict.get("evidence") or {}),
+            )
+    # Slice 4 (pcb-datasheet-review in-scope 6): a verdict's `inputs`
+    # map names the revisions it consumed; when a name's CURRENT
+    # revision disagrees the verdict is stale — human verdicts included
+    # (they stay shown, never dropped; op='forget' is what only machines
+    # lose). A name the kind's bridge cannot resolve never marks stale.
+    inputs = verdict.get("inputs") or {}
+    if inputs and bridge is not None:
+        changed = sorted(
+            str(name)
+            for name, rev in inputs.items()
+            if (cur := bridge.input_revision(store, ref_id, str(name))) is not None
+            and cur != rev
+        )
+        if changed:
+            return ItemStatus(
+                item,
+                verdict,
+                f"stale (input changed: {', '.join(changed)})",
                 "ledger",
                 dict(verdict.get("evidence") or {}),
             )

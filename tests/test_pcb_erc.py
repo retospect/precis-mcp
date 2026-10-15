@@ -192,6 +192,8 @@ def test_every_rule_reports_not_checked_when_the_vocabulary_is_absent() -> None:
         ("over_voltage", drc.check_over_voltage(nets)),
         ("rail_crossing", drc.check_rail_crossing(nets)),
         ("no_decoupling", drc.check_no_decoupling(nets, {("U1", "A"): (0, 0)})),
+        ("over_current", drc.check_over_current(nets)),
+        ("passive_rating", drc.check_passive_rating(nets, [])),
     ]:
         assert [(f.rule, f.severity) for f in findings] == [(rule, "warn")]
         assert "CANNOT be checked" in findings[0].detail
