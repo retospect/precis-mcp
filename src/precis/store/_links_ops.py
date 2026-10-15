@@ -267,6 +267,31 @@ SELECT * FROM (
 """
 
 
+#: :meth:`LinksMixin.link_path` bounds: the "path depth 4" ruling
+#: (``web-graph-navigation.md`` decisions, 2026-10-06) and the visited-node
+#: budget past which the search reports ``budget_hit`` instead of going on.
+PATH_MAX_DEPTH = 4
+PATH_NODE_BUDGET = 20_000
+
+# One BFS level for ``link_path``: every link touching the frontier whose
+# two ends are live, in link_id order so the chosen path is deterministic.
+_PATH_SQL = """
+SELECT x.src_ref_id, x.dst_ref_id, x.relation FROM (
+  SELECT l.link_id, l.src_ref_id, l.dst_ref_id, l.relation
+    FROM links l WHERE l.src_ref_id = ANY(%(f)s::bigint[])
+  UNION
+  SELECT l.link_id, l.src_ref_id, l.dst_ref_id, l.relation
+    FROM links l WHERE l.dst_ref_id = ANY(%(f)s::bigint[])
+) x
+JOIN refs s ON s.ref_id = x.src_ref_id AND s.retired_at IS NULL
+JOIN refs d ON d.ref_id = x.dst_ref_id AND d.retired_at IS NULL
+WHERE x.src_ref_id <> x.dst_ref_id
+  AND (%(rels)s::text[] IS NULL OR x.relation = ANY(%(rels)s::text[]))
+ORDER BY x.link_id
+LIMIT %(lim)s::int
+"""
+
+
 def _nbh_edge(
     anchor_id: int,
     anchor_kind: str,
@@ -969,6 +994,112 @@ class LinksMixin:
             for r in rows
             if r[5] != "finding" or passes_trust(postures.get(int(r[2])), trust)
         ]
+
+    def link_path(
+        self,
+        src_id: int,
+        dst_id: int,
+        *,
+        depth: int = PATH_MAX_DEPTH,
+        rels: list[str] | None = None,
+        budget: int = PATH_NODE_BUDGET,
+    ) -> dict[str, Any]:
+        """The shortest typed-link path between two live refs (web graph
+        navigation slice 5, ``GET /graph/path``).
+
+        Links are walked either way (a path through "X cites focus" is as
+        real as one through "focus cites X"); retired refs and self-links
+        are never stepped on. Bidirectional BFS: each round expands the
+        smaller frontier one full level (one round trip), so a hub with
+        hundreds of links on one end does not set the cost; the first
+        level at which the two searches meet carries the shortest length.
+        ``rels`` admits a link whose stored relation or its inverse slug
+        is listed, so ``cited-by`` and ``cites`` select the same rows.
+
+        Returns ``{"ids": [src_id, ..., dst_id] | None, "links":
+        [(src_ref_id, dst_ref_id, relation), ...], "budget_hit": bool}``;
+        ``links[i]`` joins ``ids[i]`` and ``ids[i+1]`` in its *stored*
+        direction. ``ids`` is None when no path exists within ``depth``
+        links; ``budget_hit`` says the search stopped because the visited
+        set passed ``budget`` nodes (or one level touched more than
+        ``budget`` links), so None then means "not found within
+        the budget", not "none exists". The two endpoints are not
+        checked here — the caller resolves them first.
+        """
+        if not 1 <= depth <= PATH_MAX_DEPTH:
+            raise BadInput(f"depth must be between 1 and {PATH_MAX_DEPTH}, got {depth}")
+        if src_id == dst_id:
+            return {"ids": [src_id], "links": [], "budget_hit": False}
+        allowed: list[str] | None = None
+        if rels:
+            want = set(rels)
+            for r in rels:
+                inv = self.inverse_relation(r)
+                if inv is not None:
+                    want.add(inv)
+            allowed = sorted(want)
+
+        # parents[side][node] = (previous node, the joining link) on the
+        # walk from that side's root; roots map to None.
+        Step = tuple[int, tuple[int, int, str]]
+        parents: tuple[dict[int, Step | None], dict[int, Step | None]] = (
+            {src_id: None},
+            {dst_id: None},
+        )
+        frontiers: list[list[int]] = [[src_id], [dst_id]]
+        levels = [0, 0]
+        meet: int | None = None
+        budget_hit = False
+        with self.pool.connection() as conn:
+            while meet is None and levels[0] + levels[1] < depth:
+                side = 0 if len(frontiers[0]) <= len(frontiers[1]) else 1
+                front = frontiers[side]
+                if not front:
+                    break
+                mine, other = parents[side], parents[1 - side]
+                in_front = set(front)
+                rows = conn.execute(
+                    _PATH_SQL,
+                    {"f": front, "rels": allowed, "lim": budget + 1},
+                ).fetchall()
+                if len(rows) > budget:
+                    budget_hit = True
+                    break
+                nxt: list[int] = []
+                for s, d, rel in rows:
+                    link = (int(s), int(d), str(rel))
+                    for a, b in ((link[0], link[1]), (link[1], link[0])):
+                        if a in in_front and b not in mine:
+                            mine[b] = (a, link)
+                            nxt.append(b)
+                            if meet is None and b in other:
+                                meet = b
+                levels[side] += 1
+                frontiers[side] = nxt
+                if len(parents[0]) + len(parents[1]) > budget and meet is None:
+                    budget_hit = True
+                    break
+        if meet is None:
+            return {"ids": None, "links": [], "budget_hit": budget_hit}
+
+        def _chain(side: int) -> tuple[list[int], list[tuple[int, int, str]]]:
+            """Root-of-``side`` → meet, as node ids and the links between."""
+            ids, links = [meet], []
+            step = parents[side][meet]
+            while step is not None:
+                prev, link = step
+                ids.append(prev)
+                links.append(link)
+                step = parents[side][prev]
+            return ids[::-1], links[::-1]
+
+        fwd_ids, fwd_links = _chain(0)
+        back_ids, back_links = _chain(1)
+        return {
+            "ids": fwd_ids + back_ids[::-1][1:],
+            "links": fwd_links + back_links[::-1],
+            "budget_hit": False,
+        }
 
     def linked_refs_page(
         self,

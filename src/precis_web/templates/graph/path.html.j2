@@ -1,0 +1,52 @@
+{% extends "base.html.j2" %}
+{% block title %}Graph · path{% endblock %}
+{% block content %}
+<h1 class="mt-2 mb-2 text-lg font-semibold">Path between two refs</h1>
+<form method="get" action="/graph/path" class="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-600" aria-label="path query">
+  <input type="text" name="from" value="{{ from_ }}" placeholder="from: me474312 or memory/474312"
+         class="w-56 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <input type="text" name="to" value="{{ to }}" placeholder="to"
+         class="w-56 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <input type="text" name="rels" value="{{ rels }}" placeholder="rels"
+         title="relations, comma-separated; either slug of an inverse pair"
+         class="w-32 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+  <select name="depth" title="most links on the path" class="rounded border border-slate-200 px-1 py-0.5">
+    {% for d in range(1, max_depth + 1) %}
+    <option value="{{ d }}" {% if d == depth %}selected{% endif %}>≤ {{ d }} links</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="rounded bg-slate-800 px-2 py-0.5 text-white hover:bg-slate-700">find path</button>
+</form>
+{% if asked %}
+{% if steps %}
+<p class="mb-2 text-xs text-slate-500">
+  {{ hops }} link{{ '' if hops == 1 else 's' }} from
+  <span class="font-mono">{{ ends[0].handle }}</span> to <span class="font-mono">{{ ends[1].handle }}</span>
+  — a shortest path; each arrow points the way the link is stored.
+</p>
+<ol class="space-y-1" aria-label="path">
+  {% for s in steps %}
+  <li class="rounded border border-slate-200 bg-white px-3 py-2 text-sm" data-handle="{{ s.card.handle }}">
+    <span class="text-[11px] text-slate-400">{{ s.card.kind }}</span>
+    <a href="{{ s.card.graph_url }}" class="font-mono underline">{{ s.card.handle }}</a>
+    <span class="text-slate-700">{{ s.card.label }}</span>
+    <a href="{{ s.card.url }}" class="text-xs text-slate-500 underline">reader</a>
+  </li>
+  {% if s.rel %}
+  <li class="pl-6 text-xs font-mono text-slate-500" aria-label="link" title="read from the step above: {{ s.presented }}">
+    {% if s.forward %}↓ {{ s.rel }}{% else %}↑ {{ s.rel }}{% endif %}
+  </li>
+  {% endif %}
+  {% endfor %}
+</ol>
+{% elif budget_hit %}
+<p class="text-sm text-amber-700">Search budget reached before a path turned up within depth {{ depth }} —
+  narrow it with <span class="font-mono">rels</span> or a lower depth.</p>
+{% else %}
+<p class="text-sm text-slate-600">No path within depth {{ depth }} between
+  <a href="{{ ends[0].graph_url }}" class="font-mono underline">{{ ends[0].handle }}</a> and
+  <a href="{{ ends[1].graph_url }}" class="font-mono underline">{{ ends[1].handle }}</a>{% if rels %} over
+  <span class="font-mono">{{ rels }}</span>{% endif %}.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

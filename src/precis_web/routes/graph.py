@@ -26,6 +26,9 @@ Routes:
   neighbourhood as a copyable bullet list — hop-1 rows under the panel's
   ring-group headings, hop-2 nested under its anchor, retired endpoints
   as tombstones (``include_retired``).
+* ``GET /graph/path?from=&to=&depth=&rels=`` — the shortest typed-link
+  path between two refs (:meth:`Store.link_path`, depth ≤ 4), as a chain
+  of ref cards; the focus page carries a "path to…" form into it.
 
 Slice 4 (``docs/backlog/web-graph-navigation.md``): the filter axes —
 ``rels``, ``kinds``, ``since``/``until``, ``trust`` and ``depth`` — are
@@ -57,10 +60,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from precis.errors import BadInput, NotFound
+from precis.store._links_ops import PATH_MAX_DEPTH
 from precis.store.types import FINDING_TRUST_TIERS
 from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUPS, ring_group
@@ -298,6 +302,122 @@ def _neighbourhood(
         cap=cap,
         include_retired=include_retired,
     )
+
+
+_ENDPOINT_RE = re.compile(r"^([a-z][a-z0-9-]*)[/:](\d+)$")
+
+
+def _parse_endpoint(text: str, axis: str) -> tuple[str, int]:
+    """A path endpoint as ``<kind>/<id>`` (the focus page's own URL tail),
+    ``<kind>:<id>`` or a handle (``me474312``) → ``(kind, ref_id)``."""
+    raw = text.strip().strip("/")
+    if raw.startswith("graph/"):
+        raw = raw[len("graph/") :]
+    m = _ENDPOINT_RE.match(raw)
+    if m:
+        return m.group(1), int(m.group(2))
+    parsed = handle_registry.parse(raw)
+    if parsed is not None and not parsed[1]:
+        return parsed[0], parsed[2]
+    raise BadInput(
+        f"{axis}={text!r} is not a ref: give <kind>/<id> or a handle such as me474312"
+    )
+
+
+def _card(ref: Any) -> dict[str, Any]:
+    """One ref card for the path chain and the trail."""
+    return {
+        "kind": ref.kind,
+        "id": ref.id,
+        "handle": _handle(ref.kind, ref.id),
+        "label": ref.title or _handle(ref.kind, ref.id),
+        "url": ref_url(ref.kind, ref.id),
+        "graph_url": f"/graph/{ref.kind}/{ref.id}",
+    }
+
+
+@router.get("/path", response_class=HTMLResponse)
+async def graph_path(
+    request: Request,
+    from_: str = Query("", alias="from"),
+    to: str = "",
+    depth: int = PATH_MAX_DEPTH,
+    rels: str = "",
+) -> HTMLResponse:
+    """Path finding (slice 5): the shortest typed-link path between two
+    refs within ``depth`` links (at most :data:`PATH_MAX_DEPTH`, the
+    2026-10-06 ruling), via :meth:`Store.link_path` — links walked either
+    way, ``rels`` narrowing to the listed slugs (either slug of an inverse
+    pair). Rendered as a chain of ref cards, the relation on each arrow and
+    the arrow in the link's stored direction. "No path within depth N" is
+    an answer (200), not an error; a malformed endpoint is a 400 and a
+    missing or retired one a 404. With neither endpoint given the page is
+    the empty form."""
+    store = get_store(request)
+    ctx: dict[str, Any] = {
+        "from_": from_,
+        "to": to,
+        "depth": depth,
+        "rels": rels,
+        "max_depth": PATH_MAX_DEPTH,
+        "asked": False,
+    }
+    if not from_.strip() and not to.strip():
+        return templates.TemplateResponse(request, "graph/path.html.j2", ctx)
+    try:
+        if not 1 <= depth <= PATH_MAX_DEPTH:
+            raise BadInput(
+                f"depth must be between 1 and {PATH_MAX_DEPTH}, got {depth!r}"
+            )
+        ends = [_parse_endpoint(from_, "from"), _parse_endpoint(to, "to")]
+        refs = []
+        for k, i in ends:
+            ref = store.get_ref(kind=k, id=i)
+            if ref is None:
+                raise NotFound(f"no live {k} ref with id {i}")
+            refs.append(ref)
+        found = store.link_path(
+            refs[0].id, refs[1].id, depth=depth, rels=csv_list(rels) or None
+        )
+    except NotFound as exc:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Not found", "status": 404, "detail": str(exc)},
+            status_code=404,
+        )
+    except BadInput as exc:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {"title": "Bad request", "status": 400, "detail": str(exc)},
+            status_code=400,
+        )
+    steps: list[dict[str, Any]] = []
+    if found["ids"] is not None:
+        by_id = store.fetch_refs_by_ids(found["ids"])
+        cards = [_card(by_id[i]) for i in found["ids"]]
+        for i, (s, _d, rel) in enumerate(found["links"]):
+            forward = s == found["ids"][i]
+            steps.append(
+                {
+                    "card": cards[i],
+                    "rel": rel,
+                    "forward": forward,
+                    "presented": rel
+                    if forward
+                    else (store.inverse_relation(rel) or rel),
+                }
+            )
+        steps.append({"card": cards[-1]})
+    ctx.update(
+        asked=True,
+        ends=[_card(r) for r in refs],
+        steps=steps,
+        hops=len(found["links"]),
+        budget_hit=found["budget_hit"],
+    )
+    return templates.TemplateResponse(request, "graph/path.html.j2", ctx)
 
 
 @router.get("/{kind}/{ref_id}.json", response_model=None)

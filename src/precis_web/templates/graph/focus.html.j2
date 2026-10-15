@@ -18,6 +18,11 @@
       · <a href="{{ json_url }}" class="underline">json</a>
       · <a href="{{ view_href }}" class="underline">{{ view_other }} view</a>
     </p>
+    <form method="get" action="/graph/path" class="mt-1 flex items-center gap-1 text-xs text-slate-500" aria-label="path from here">
+      <input type="hidden" name="from" value="{{ kind }}/{{ ref_id }}">
+      <input type="text" name="to" placeholder="path to… (handle)" class="w-40 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+      <button type="submit" class="underline">find path</button>
+    </form>
   </div>
   <p class="text-xs text-slate-500">
     {{ n_hop1 }} hop-1 · {{ n_hop2 }} hop-2 · {{ n_edges }} edge{{ '' if n_edges == 1 else 's' }}
