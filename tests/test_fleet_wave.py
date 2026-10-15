@@ -260,7 +260,8 @@ def test_launch_fills_footer_and_runs_claude_by_argv(
     assert argv[:6] == ["-w", "fix-x", "--model", "sonnet", "--permission-mode", "auto"]
     prompt = argv[6]
     assert prompt.startswith("Task: fix the thing.\nRules:")
-    assert "coord-1" in prompt and "rel-2" in prompt and "approved 2026" in prompt
+    assert "coord-1" in prompt and "rel-2" in prompt
+    assert "standing grant in .claude/fleet/authority.md" in prompt
     assert "{" not in prompt.replace("{0,", "")
 
 

@@ -608,7 +608,7 @@ class FakeStore(_FakeStoreBase):
             cell=Cell(np.eye(3) * 10.0)
         ), {}
 
-    def get_ref(self, *, kind: str, id):
+    def get_ref(self, *, kind: str, id, include_deleted: bool = False):
         for r in (
             self.todos
             + self.papers

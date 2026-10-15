@@ -177,7 +177,7 @@ class DraftFakeStore(FakeStore):
             ),
         ]
 
-    def get_ref(self, *, kind, id):
+    def get_ref(self, *, kind, id, include_deleted=False):
         if kind == "draft" and id in ("nt", 500):
             return _DRAFT
         return super().get_ref(kind=kind, id=id)
@@ -716,7 +716,7 @@ class ListDraftStore(DraftFakeStore):
             ),
         ]
 
-    def get_ref(self, *, kind, id):
+    def get_ref(self, *, kind, id, include_deleted=False):
         if kind == "draft" and id in ("lst", 701):
             return _LIST_DRAFT
         return super().get_ref(kind=kind, id=id)
@@ -919,7 +919,7 @@ class _NoProjectStore(DraftFakeStore):
     linked, or was soft-deleted). ``_project_id`` → None → the job anchors on
     the draft ref itself instead of 400ing."""
 
-    def get_ref(self, *, kind, id):
+    def get_ref(self, *, kind, id, include_deleted=False):
         if kind == "todo" and id == 1:
             return None
         return super().get_ref(kind=kind, id=id)
