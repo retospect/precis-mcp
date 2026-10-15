@@ -443,6 +443,35 @@ def release_job_reservation(conn: Connection, ref_id: int) -> None:
 # ── Claim ─────────────────────────────────────────────────────────
 
 
+def _aged_prio_sql(
+    queued_since_sql: str, queued_since_params: tuple[Any, ...], age_step_s: float
+) -> tuple[str, tuple[Any, ...]]:
+    """The claim rank over ``r.prio``: prio less one band per ``age_step_s``
+    of ``queued_since`` age, floored at :data:`_CLAIM_AGE_FLOOR` (or the
+    row's own prio when that is already more urgent). ``age_step_s <= 0``
+    is the plain prio. A NULL ``queued_since`` (a row re-tagged between the
+    claim's EXISTS and this subquery) ages as zero: without the COALESCE
+    the age term is NULL, ``GREATEST`` skips it and the row would rank at
+    the floor. Returns ``(sql, params)``; ``queued_since_sql`` binds
+    ``queued_since_params``.
+    """
+    if age_step_s <= 0:
+        return "COALESCE(r.prio, %s)::float8", (_DEFAULT_JOB_PRIO,)
+    sql = (
+        "GREATEST(COALESCE(r.prio, %s)::float8"
+        f" - COALESCE(EXTRACT(EPOCH FROM (now() - {queued_since_sql}))::float8, 0)"
+        " / %s, LEAST(COALESCE(r.prio, %s)::float8, %s))"
+    )
+    params = (
+        _DEFAULT_JOB_PRIO,
+        *queued_since_params,
+        age_step_s,
+        _DEFAULT_JOB_PRIO,
+        _CLAIM_AGE_FLOOR,
+    )
+    return sql, params
+
+
 def claim_executor_jobs(
     conn: Connection,
     *,
@@ -992,24 +1021,9 @@ def claim_executor_jobs(
                   FROM ref_tags rt JOIN tags t USING (tag_id)
                  WHERE rt.ref_id = r.ref_id
                    AND t.namespace = %s AND t.value = %s)"""
-    age_step_s = claim_age_step_s()
-    aged_prio_sql = "COALESCE(r.prio, %s)::float8"
-    aged_params: tuple[Any, ...] = (_DEFAULT_JOB_PRIO,)
-    if age_step_s > 0:
-        # prio less one band per age step, floored at _CLAIM_AGE_FLOOR (or the
-        # row's own prio when that is already more urgent).
-        aged_prio_sql = (
-            "GREATEST(COALESCE(r.prio, %s)::float8"
-            f" - EXTRACT(EPOCH FROM (now() - {queued_since_sql}))::float8 / %s,"
-            " LEAST(COALESCE(r.prio, %s)::float8, %s))"
-        )
-        aged_params += (
-            STATUS_NAMESPACE,
-            QUEUED,
-            age_step_s,
-            _DEFAULT_JOB_PRIO,
-            _CLAIM_AGE_FLOOR,
-        )
+    aged_prio_sql, aged_params = _aged_prio_sql(
+        queued_since_sql, (STATUS_NAMESPACE, QUEUED), claim_age_step_s()
+    )
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,

@@ -20,9 +20,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from precis.store import Store
 from precis.store.types import Tag
-from precis.workers.executors._common import claim_executor_jobs, set_status
+from precis.workers.executors._common import (
+    _aged_prio_sql,
+    claim_executor_jobs,
+    set_status,
+)
 
 _TICK_S = 300
 #: ``_common.DEFAULT_CLAIM_AGE_STEP_S`` — literal so the repro runs on main.
@@ -113,3 +119,20 @@ def test_ageing_keeps_prio_order_among_fresh_jobs(store: Store) -> None:
         order = [r[0] for r in claim_executor_jobs(conn, executor=ex, limit=10)]
         conn.rollback()
     assert order == [urgent, default, commodity]
+
+
+def test_null_queued_since_ranks_at_unaged_prio(store: Store) -> None:
+    """A NULL ``queued_since`` (re-tag race) ages as zero: the row keeps its
+    own prio instead of falling through ``GREATEST`` to the 1.5 floor."""
+    sql, params = _aged_prio_sql("NULL::timestamptz", (), _AGE_STEP_S)
+    aged_sql, aged_params = _aged_prio_sql(
+        "(now() - interval '30 minutes')", (), _AGE_STEP_S
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"SELECT {sql}, {aged_sql} FROM (VALUES (8)) AS r(prio)",
+            (*params, *aged_params),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(8.0)
+    assert row[1] == pytest.approx(5.0)  # 30 min = 3 steps of 600 s
