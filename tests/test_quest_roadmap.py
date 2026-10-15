@@ -548,10 +548,17 @@ class TestSupplyRole:
         assert cap_ref.meta["supply"][KEY] == {"value": 2.1, "evidence": result["hubs"]}
         # The literature lane only: no relax / autocatpath / sandbox job minted.
         with store.pool.connection() as conn:
-            (jobs,) = conn.execute(
-                "SELECT count(*) FROM refs WHERE kind = 'job' AND retired_at IS NULL"
-            ).fetchone()
-        assert jobs == 0
+            job_types = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT meta->>'job_type' FROM refs"
+                    " WHERE kind = 'job' AND retired_at IS NULL"
+                ).fetchall()
+            ]
+        # gr489243: a hub write queues one prio-2 embed_batch (self-search bound);
+        # that is the only job the literature lane may mint.
+        assert [t for t in job_types if t != "embed_batch"] == []
+        assert job_types == ["embed_batch"], job_types
         # The tick's own supply write IS a deed: none → 2.1, one entry each.
         assert result["deeds"] == 2 and result["improved"] is True
         assert result["ledger_delta"] == {f"qu{cap}:{KEY}": [None, 2.1]}
