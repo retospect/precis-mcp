@@ -10,6 +10,7 @@
 #   scripts/dev pytest tests/           # run a single tool
 #   scripts/dev uv run ruff check .     # uv-driven invocation
 #   scripts/dev bash -lc 'ruff && mypy && pytest'   # compound check
+#   scripts/dev seed-prod-shaped        # anonymized prod slice -> precis_dev
 #
 # The container bind-mounts this repo at /app, so file edits on the host
 # are visible inside the container immediately (no rebuild needed).
@@ -33,6 +34,26 @@ fi
 # scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+
+# scripts/dev seed-prod-shaped [--per-kind N] — fill the dev DB (`precis_dev`
+# on this worktree's precis-test-db) with an anonymized prod slice. The
+# extract runs on the host (it needs scripts/prod-psql --ro, read-only on
+# prod) and writes only the anonymized slice to .scratch/dev-seed/; the load
+# runs in the container. Re-running replaces the slice. See
+# scripts/_seed_prod_shaped.py and docs/setup-single-machine.md.
+if [[ "${1:-}" == "seed-prod-shaped" ]]; then
+    shift
+    SLICE=".scratch/dev-seed/slice.jsonl"
+    DEV_DSN="postgresql://postgres@precis-test-db:5432/precis_dev"
+    uv run --frozen python scripts/_seed_prod_shaped.py extract --out "$SLICE" "$@"
+    docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev \
+        up -d --wait precis-test-db >/dev/null
+    docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev \
+        run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
+        uv run --no-sync python scripts/_seed_prod_shaped.py load --slice "$SLICE" --dsn "$DEV_DSN"
+    echo "dev DB ready: scripts/dev env PRECIS_DATABASE_URL=${DEV_DSN} uv run --no-sync precis …"
+    exit 0
+fi
 
 # `--no-deps` skips bringing up any depends_on services. precis-dev has
 # none right now, but make it explicit so we never accidentally spin up

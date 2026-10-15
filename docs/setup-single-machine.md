@@ -61,6 +61,44 @@ self-migrates. Alternatives to the manual `precis migrate` step:
   running services. (`PRECIS_SCHEMA_GATE=off` is the same skip spelled
   as a mode.)
 
+### Prod-shaped dev data (repo dev, cluster access)
+
+A freshly migrated DB is empty, so bugs that need real data shapes (a
+pathway's Pourbaix map, a board's net classes, a gripe with long comments)
+don't show on it. With read access to prod, seed a dev DB from an
+anonymized slice:
+
+```bash
+scripts/dev seed-prod-shaped               # --per-kind N (default 20)
+scripts/dev env PRECIS_DATABASE_URL=postgresql://postgres@precis-test-db:5432/precis_dev \
+    uv run --no-sync precis eval "get(kind='pcb', id=482131)"
+```
+
+- **Reads prod only through `scripts/prod-psql --ro`** (the `agent_ro`
+  role inside `BEGIN READ ONLY`): the catalog, a ref-id pick, a names list
+  for pseudonymizing, then one statement for the rows.
+- **The slice:** the newest live refs of every kind, plus named anchors
+  (qu164903 with pw483780/pw483766, pcb taz15-blank, memory root me474312
+  and its hubs) and their link neighbours, the longest gripes and the
+  most-seen alerts. Every table that hangs off `refs` by foreign key comes
+  along (chunks, tags, links, pcb_*, struct_*, se_*, design_*, ...), with
+  the lookup rows they point at. Not copied: users, mail accounts,
+  settings, nanopub signing records, logs, embeddings (the worker
+  regenerates them) and bulk caches (`EXCLUDED` in
+  `scripts/_seed_prod_shaped.py`).
+- **Anonymized before it touches disk:** credential shapes
+  (`precis.utils.secret_scan`), secret-named JSON keys, emails, private
+  and tailnet addresses, home paths, Discord mentions, and the names of
+  prod users outside the bibliographic record (a paper's authors stay).
+  Only the anonymized slice is written, to `.scratch/dev-seed/slice.jsonl`
+  (gitignored).
+- **Loads into `precis_dev`** on this worktree's `precis-test-db`. The
+  schema comes from `precis migrate`, never from the dump. The load
+  truncates the slice tables, inserts the slice, drops rows whose foreign
+  keys point outside it and moves sequences past the copied ids, all in
+  one transaction. Re-running replaces the slice; dev writes to those
+  tables go with it.
+
 ## 3. Pick an embedder
 
 `PRECIS_EMBEDDER` ∈ `mock` | `bge-m3` | `remote`
