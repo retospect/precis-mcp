@@ -269,34 +269,27 @@ downward) for a rung whose product leaves the lab despite being consumed.
   `precis-roadmap-help` (new).
 - Web: `/refs/quest/<id>` hub — ledger panel for roadmap quests (can trail).
 
-## Residuals after the 2026-09-29 build (items 1–6 built, skills not)
+## Residuals after the 2026-09-29 build
 
-Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (skills) is not. Remaining known gaps:
+In-scope items 1–7 are BUILT (blame carries them), and the `benign`
+upward-only override is admitted by `todo/guards.py::_RUNG_ALLOWED_KEYS`.
+Remaining known gaps:
 
-1. **`meta.rung.benign = "required"` cannot be stored.** The "Terminal vs
-   intermediate rungs" section specifies it as an upward-only override, but
-   `todo/guards.py::_RUNG_ALLOWED_KEYS` is a closed set
-   `{pathway, consumes, produces}`, so the write is refused. `rung_is_terminal()`
-   honours the key if present and the bridge honours a model-emitted one at
-   mint time, but **no door admits it** — the override is dead until `benign`
-   joins that allowlist with a value check. One-line change plus a test; not
-   done during the build because the guard file was off-limits to the agent
-   that found it.
-2. **"Lowest unmet capability" was never defined.** Implemented as "the
+1. **"Lowest unmet capability" was never defined.** Implemented as "the
    capability consumed by the most other rungs' `consumes`" (a chain-depth
    proxy), ties by `serves` link order. Reasonable, but it is the builder's
    reading, not a ruling — revisit if the root picks surprising capabilities.
-3. **Supply-absent rows.** With `demand` set and no supply, the ledger says
+2. **Supply-absent rows.** With `demand` set and no supply, the ledger says
    `unmet` and `quest_gaps()` emits `unmet-capability`, which the role table
    routes to *bridge* — but bridging with no supply number is meaningless.
    Role selection therefore splits unmet rows: cited supply present → bridge,
    none → supply. The role table above should be read with that in mind.
-4. **Deed baseline on the first tick.** "Improved since the previous ledger
+3. **Deed baseline on the first tick.** "Improved since the previous ledger
    chunk" is literal: the pinned chunk carries `meta.signature` and the next
    tick diffs it. On the very first tick the baseline is that tick's own
    starting ledger, so pre-existing supplies seed silently while a supply the
    first tick itself writes does get stamped.
-5. Not built, by scope: the capped *framing* chunk from the §Dossier-shape
+4. Not built, by scope: the capped *framing* chunk from the §Dossier-shape
    ruling, and the web hub ledger panel (spec already says it can trail).
 
 ## Resume (2026-09-29)
@@ -312,17 +305,7 @@ act = the first live tick, on Reto's word (td458387), on that build.
 
 Ordered:
 
-1. **Stage 4 — skills (in-scope item 7).** Write `precis-roadmap-help` (rung
-   meta shape, the three roles demand/supply/bridge, the no-number-no-rung
-   rule) and update `precis-quest-help` + `precis-quest-writing-help` for the
-   roadmap body. Delegate to a documenter; skills live in
-   `src/precis/data/skills/`.
-2. **Residual 1** — `benign` joins
-   `todo/guards.py::_RUNG_ALLOWED_KEYS` with a value check
-   (`"required"` only, upward-only override) and a test.
-3. **`/go`** — full gate + deploy. The first real verification the roadmap
-   code gets.
-4. **Prod, only after 3, each step a Reto-approved write.**
+1. **Prod, each step a Reto-approved write.**
    `precis quest tick 453863 --dry-run` — DONE 2026-09-30 13:24 UTC (role
    demand, qu453869 `placement_error_nm`); then activate `qu453863`; then
    watch three ticks. Fail signals: a rung minted without a number; deed
