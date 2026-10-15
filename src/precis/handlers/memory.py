@@ -27,7 +27,17 @@ Semantics (`precis-memory-help`):
     - delete(id=N)                 — soft-delete memory N
     - get(id=N)                    — read title + body + tags
     - get(id='/recent')            — list recent memories
-    - search(q=...)                — lexical search over the body chunks
+    - get(id=N, view='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
+                                   — the walk: link rings via
+                                     ``eye_render.render_eye``; ``+recall``
+                                     fills k from the focus's ``SPACE:``
+                                     tag inside the semantic search
+    - search(q=...)                — hybrid search over the body chunks
+    - search(q=..., view='index')  — recall: each hit as the session-start
+                                     bullet (handle, mirror filename, hook),
+                                     shared with ``precis memory index --q``;
+                                     ``view='count'`` forwards to the
+                                     generic search like no view
 
 Attribution gate (``handlers/_attribution.py``): every body write
 (create / edit / supersede) checks that a unit-bearing number next to a

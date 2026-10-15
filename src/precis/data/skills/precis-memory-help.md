@@ -69,7 +69,8 @@ links, the file's body and links written over it); `mirror export` writes a live
 `SPACE:repo-dev` node that has no file to a new `<slug>.md` (slug of the title,
 `-<id>` on a clash; `description:` = its hook (else the body's first line),
 `metadata.type` = its `type` meta
-or `project`) and stamps it as a mirror node, and reports any node it still
+or `project`) and stamps it as a mirror node (its title becomes the slug, so keep
+the readable line in the hook), and reports any node it still
 cannot render (no title, or another namespace's) as `unexported`.
 
 **Where to edit.** A memory that has a file is edited in the graph with the anchored

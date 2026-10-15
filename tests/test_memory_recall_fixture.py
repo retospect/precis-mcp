@@ -1,5 +1,6 @@
 """Recall number for ``precis memory index --q … --k 5``
-(docs/backlog/memory-recall-walk-keep.md AC 5).
+(memory recall/walk/keep AC 5; 9/10 at k=5 when built, 2026-10-07; the
+one miss was "label timestamps with Z, use datetime" → ``timestamps_utc``).
 
 A synthetic ``SPACE:repo-dev`` memory set (24 topics shaped like harness
 topic files, each with a mirror filename and a hook) plus research-space

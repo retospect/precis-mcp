@@ -3,12 +3,12 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Continue the remaining acceptance work in [memory recall/walk/keep](../memory-recall-walk-keep.md#current-activation-contract). The initial production cutover and host bootstrap are active: root me474312, namespace repo-dev-harness-20261007, 150 new memories, zero retirement attempts, 323 edges and complete separate readback. The Mac bootstrap followed on 2026-10-08 (Reto's go): the post-import file drift (3 edited topics, 1 new) was folded in by anchored edit/put, and the old index was kept as `MEMORY.md.pre-cutover` beside the bootstrap. The SessionStart hook now renders the graph index on both hosts. AGENTS carries the shared policy and bootstrap locator; CLAUDE links to it. Preserve the original pointer and immutable recovery evidence.
-- **Blocked by:** No remaining initial-cutover gate. Broader recall/walk/keep acceptance remains in the existing spec. Prior GO, provenance, classifications, deployed loader, import/readback and guarded bootstrap activation are accepted. Preserve 146 legacy nodes/356 links; title-only retire supersedes refresh. Native CLI export is deferred; immutable input, full production readback and locked legacy backup satisfy recovery. No repeat import/readback or historical-reconstruction gate is implied.
-- **Unblocks:** An agent that recalls, walks and keeps graph memory without leaving the graph; the web neighbourhood panel (web-graph-navigation slice 1 is built here).
-- **Acceptance:** [memory-recall-walk-keep](../memory-recall-walk-keep.md) AC 1–6; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
+- **Next:** Rewire `utils/eye_render.py::_first_hop` onto `Store.neighbourhood` (Do next 1). Recall, walk and keep shipped and passed the prod dogfood 2026-10-15 (memory-recall-walk-keep deleted on ship): `search(kind='memory', view='index')`, `get(view='fisheye+1hop+recall')`, the mirror's legacy/unexported reports. The production cutover and host bootstrap are active: root me474312, namespace repo-dev-harness-20261007. AGENTS carries the shared policy and bootstrap locator; CLAUDE links to it. Preserve the original pointer and immutable recovery evidence.
+- **Blocked by:** Nothing. Preserve 146 legacy nodes/356 links; title-only retire supersedes refresh. Native CLI export is deferred; immutable input, full production readback and locked legacy backup satisfy recovery.
+- **Unblocks:** One link neighbourhood for every render: the MCP rings, the web panel and focus page cannot disagree about what is linked.
+- **Acceptance:** after the rewire, `tests/test_eye_render.py` and `tests/test_finding.py` stay green and the memory/finding 1-hop render is unchanged on their fixtures; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
 - **Worktree:** `memory-graph`
-- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Builds:** 1.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
 ## Handoff 2026-10-07 15:25Z
@@ -82,13 +82,17 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
 
 ## Do next
 
-1. **backlog/memory-recall-walk-keep.md** — the agent side of coexisting
-   file and graph memory (td470555's named next step; local since the
-   2026-10-07 wind-down): walk on one neighbourhood function shared with
-   `web-graph-navigation.md` slice 1, recall as the index-line render,
-   the coexistence write rule and the mirror's legacy/unexported reports.
-   Ready 2026-10-07 after the readiness vet (split 1a/1b/2/3; 1a is
-   also web-graph-navigation slice 1).
+1. **Rewire `eye_render._first_hop` onto `Store.neighbourhood`** — the
+   follow-up recall-walk-keep slice 1a filed (2026-10-07) and never built.
+   `_first_hop` still calls `store.links_for(direction='both')` and applies
+   its own grouping; the web graph route uses `neighbourhood`. Move the
+   ring data onto `neighbourhood(depth=1)` so the MCP rings and the web
+   panel share one inverse rule and one cap. Touches every link kind's
+   render (`finding` included): `tests/test_eye_render.py`,
+   `tests/test_finding.py`. Also open from that item: the mirror
+   acceptance test rewrites the tracked
+   `.scratch/memory-mirror-acceptance.json` on every run (revert it before
+   committing); a change there touches an attested test (me481899).
 2. **memory-file-mirror** — SHIPPED and deployed, backlog doc deleted
    2026-10-15. Legacy refresh (8993c22e6) and native export (afa814bd9)
    landed; the real import is live (namespace `repo-dev-harness-20261007`).

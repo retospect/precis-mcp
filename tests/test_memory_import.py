@@ -1005,7 +1005,7 @@ def test_export_failure_keeps_the_previous_node_set(
 
 
 # ---------------------------------------------------------------------------
-# precis memory index --q … --k N (memory-recall-walk-keep slice 2)
+# precis memory index --q … --k N (memory recall/walk/keep, recall)
 # ---------------------------------------------------------------------------
 
 

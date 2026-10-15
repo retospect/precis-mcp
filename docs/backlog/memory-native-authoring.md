@@ -366,7 +366,7 @@ scripts only — nothing reads the graph at that moment.
   nodes this importer created on 2026-10-03 remain and are stale against
   the files; they carry no `file_mirror` key, so the mirror would import
   beside them. Their fate (retire or keep) is decision 3 of
-  `memory-recall-walk-keep.md` and td471883 (`waiting-for:reto`). The
+  recall/walk/keep (shipped, spec deleted 2026-10-15) and td471883 (`waiting-for:reto`). The
   cutover sequence above stays valid but is held behind that go; do not
   re-run `--sync` or re-cut on a hunch. What this item built and keeps:
   the `SPACE:` axis, `meta.hook`, `memory index`, the hook script and
