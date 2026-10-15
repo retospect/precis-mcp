@@ -205,12 +205,18 @@ def _findings_from_net(net: Net) -> list[Finding]:
                 data=(("chi", cchi), ("sheet", name)),
             )
         )
-        # a component whose rims were consumed by a fuse/bond attach into
-        # a larger structure is no longer a standalone surface -- SPEC
-        # 0.1 skips residual/internal.euler for it rather than report on
-        # incomplete B data; a seam never does this (its rims keep their
-        # own B_expected in net.seam_rims, so this never applies there).
-        consumed = not single and any(set(rim) <= comp for rim in net.consumed_rims)
+        # a component whose rim was consumed by a bond attach into a
+        # larger structure is no longer a standalone surface -- SPEC 0.1
+        # skips residual/internal.euler for it rather than report on
+        # incomplete B data.  A fuse-consumed rim does not count: a fuse
+        # merges both rims into this same sheet and its seam faces are in
+        # the census, so the sheet stays a complete surface.  A seam never
+        # does this (its rims keep their own B_expected in net.seam_rims).
+        attach_ords = {o for bond in net.attach for o in bond}
+        consumed = not single and any(
+            set(rim) <= comp and attach_ords.intersection(rim)
+            for rim in net.consumed_rims
+        )
         # "closed" stays a whole-net (single-sheet) concept, reproducing
         # 0.1 exactly: a multi-sheet net (bond-attach or seam) always
         # reports euler.residual for a fully-bonded, 0-rim sheet (e.g. a

@@ -166,7 +166,9 @@ class Net:
     # rim walks consumed by a seam (atoms, B, B_expected): unlike a fuse,
     # a seam does not merge its rims' sheets, so each rim's own boundary
     # term must survive its port's deletion for the per-sheet counting
-    # law (SPEC 6.3) -- these are never in consumed_rims.
+    # law (SPEC 6.3) -- these are never in consumed_rims.  B is combinatorial:
+    # on a fused sheet with no outer port left, the first seam rim carries
+    # the sheet's remainder, so B may differ from B_expected per rim.
     seam_rims: tuple[tuple[tuple[int, ...], int, int], ...] = ()
     # sheet partition (SPEC 6.3): connected components of the surface
     # graph -- atoms joined by fuse, excluding bond-verb attachments and
@@ -5211,7 +5213,13 @@ def _apply_connects(
                 for nm, p in ports.items()
                 if p.normal == "hole" and set(p.atoms) <= comp
             )
-            rem = 6 * chi_n - sigma_terms - hole_sum
+            # a rim a k>=3 seam already consumed keeps its own boundary
+            # term on this sheet (net.seam_rims), so the remainder nets it out
+            comp_seam = [
+                si for si, (rim, _b, _be) in enumerate(seam_rims) if set(rim) <= comp
+            ]
+            seam_sum = sum(seam_rims[si][1] for si in comp_seam)
+            rem = 6 * chi_n - sigma_terms - hole_sum - seam_sum
             outer = sorted(
                 nm
                 for nm, p in ports.items()
@@ -5219,6 +5227,11 @@ def _apply_connects(
             )
             for oi, nm in enumerate(outer):
                 ports[nm] = replace(ports[nm], b=rem if oi == 0 else 0)
+            if not outer and comp_seam:
+                # every outer rim went into a seam (flanged_doughnut.hx's
+                # washer-wall-washer sheet): the first seam rim absorbs it
+                rim, b, be = seam_rims[comp_seam[0]]
+                seam_rims[comp_seam[0]] = (rim, b + rem, be)
     atoms_t = tuple(sorted(atoms, key=lambda a: a.ord))
     bonds_t = tuple(sorted(bonds))
     rings_t = tuple(sorted(set(rings)))

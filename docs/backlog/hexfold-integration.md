@@ -103,12 +103,6 @@ development, with the boundary kept clean for a later pip re-export.
    spec §28.4–6 and §28.8 (the valve tools); nothing about the order
    lives here.
 
-## Follow-ups
-
-- `check.py` residual skipped for multi-block files with consumed rims
-  (also silently skips `sheet_pill_bump.hx`'s fused sheets) — restrict
-  `consumed` to bond-attached sheets.
-
 ## What builds today (hexfold 0.1, verified with `hexfold check`)
 
 sheet(12,12) + C60 `[2+2]` (residual 0); tube(5,5) + `cap(5,5)` + `[2+2]`
@@ -389,10 +383,7 @@ Open, needing a decision rather than work:
    this for blocks with uids (`#41`, addressable as `'#41.bore'`); ports
    want the same, with the concatenated name as a display label. Avoid
    making the concatenated name load-bearing in the meantime.
-3. **`spec.md` §28 lists `seam.terminated` as a §13 finding, but it has
-   never had a §13 row.** Pre-existing gap, cheap to close next time §13
-   is touched (step 6 slice 3 will be).
-4. ~~The prod scratch design `hexfold-join-dogfood` still holds the broken
+3. ~~The prod scratch design `hexfold-join-dogfood` still holds the broken
    state (`chain3` missing a part its build record claims).~~ **Design
    retired 2026-09-29 (ref 456184, 10 blocks, nothing referenced it) —
    but the DEFECT IS NOT FIXED: gripe 457995.**
@@ -584,8 +575,8 @@ parent is overwritten and recorded nowhere. The INFO therefore fires on
 the `b` side alone, with `data.block`/`data.old_parent`; the
 two-composite case stays the `join.part_addressed` ERROR. `spec.md` §13
 gained rows for `join.reparented`, `join.pose_dropped` and
-`join.part_addressed`, none of which had one (the same gap open item 3
-records for `seam.terminated`, which is still open).
+`join.part_addressed`, none of which had one (the same gap
+`seam.terminated` had; its row landed 2026-10-15).
 
 ## Step 6 slice 2: built, with two things deliberately left undone (2026-09-29)
 

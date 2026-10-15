@@ -204,11 +204,11 @@ def test_example_per_sheet_chi_and_residual() -> None:
     # s.  Each capped tube (up+its lid, down+its lid) is a disc with one
     # remaining rim (the foot end, consumed into the seam): chi=1, six
     # pentagons at the lid corners.  Those two sheets each absorbed a
-    # fuse-consumed rim (the cap seat), so check.py treats them as
-    # "consumed" and skips their own euler.residual report (SPEC 6.3);
-    # only s -- untouched by any fuse -- gets one, and it is 0
-    # (B_expected balances exactly; the seam is invisible to each
-    # sheet's own law).
+    # fuse-consumed rim (the cap seat), but a fuse keeps both rims inside
+    # one complete sheet, so each still gets its own euler.residual
+    # (SPEC 6.3); only a bond-attach consumes a sheet out of the report.
+    # Every residual is 0 (B_expected balances exactly; the seam is
+    # invisible to each sheet's own law).
     rep = check(_EXAMPLE)
     chi = {f.where: dict(f.data)["chi"] for f in rep.findings if f.code == "euler.chi"}
     res = {
@@ -219,7 +219,8 @@ def test_example_per_sheet_chi_and_residual() -> None:
     assert len(chi) == 3
     assert chi["s"] == 0
     assert all(v == 1 for k, v in chi.items() if k != "s")
-    assert res == {"s": 0}
+    assert res == dict.fromkeys(chi, 0)
+    assert rep.ok  # internal.euler: combinatorial B holds on every sheet
 
 
 def test_example_seam_rings_finding() -> None:
@@ -293,6 +294,7 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
             ("euler.chi", "INFO", 0),
             ("euler.chi", "INFO", 0),
             ("euler.residual", "INFO", 0),
+            ("euler.residual", "INFO", 0),
         ],
     ),
     "flanged_doughnut_oh.hx": (
@@ -300,6 +302,7 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         [
             ("euler.chi", "INFO", 0),
             ("euler.chi", "INFO", 0),
+            ("euler.residual", "INFO", 0),
             ("euler.residual", "INFO", 0),
         ],
     ),
