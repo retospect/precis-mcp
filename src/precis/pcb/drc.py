@@ -2886,6 +2886,11 @@ def check_connectivity(model: dict[str, Any]) -> list[DrcFinding]:
     # idiom, same reason, as handlers/_paper_search.py.
     from precis.pcb.connectivity import net_islands
 
+    # A net with no copper at all is the ``unrouted`` question (gr488909):
+    # its pads are each "a piece", so asking here too reported every
+    # multi-pad net of a pads-only board as a connectivity error per pad —
+    # one defect under two names.
+    copper_nets = {str(item.get("net", "")) for item in model.get("copper") or []}
     return [
         DrcFinding(
             rule="connectivity",
@@ -2903,6 +2908,7 @@ def check_connectivity(model: dict[str, Any]) -> list[DrcFinding]:
             objects=({"net": island.net, "components": island.components},),
         )
         for island in net_islands(model)
+        if island.net in copper_nets
     ]
 
 

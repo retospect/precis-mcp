@@ -128,8 +128,10 @@ comment, oldest first, with `get(kind='gripe', id=42, view='comments')`.
 `view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
-50), and `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of
-them in a single transaction.
+50); add a single-id view to map it over the batch —
+`get(kind='gripe', id=[42, 43], view='comments')` (or `'links'`, `'log'`).
+`tag(kind='gripe', id=[...], add=[...])` applies one edit to all of them in
+a single transaction.
 
 ## Add context to an existing gripe
 ## Comment on a gripe

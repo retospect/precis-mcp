@@ -23,7 +23,11 @@ same findings, same table.
 - `args={'rule':'a,b'}`/`{'severity':'error'}` filter the table;
   `{'phase':'netlist|placed|routed|fab'}` judges AT that phase:
   `netlist` runs only geometry-free rules and never reads copper;
-  `placed` is pads-only; `routed`/`fab` the full pass.
+  `placed` is pads-only; `routed`/`fab` the full pass. Only a claimed
+  phase (`args.phase` or `op='phase'`) scopes the run — a derived
+  `placed` board that carries copper still gets it checked.
+  `connectivity` judges nets that have copper; a net with none is
+  `unrouted` only.
 - Severity is a function of `(rule, phase)`: `unrouted` reads `todo`
   before `routed`, `error` after; a netless pin warns below `fab`,
   errors at it (`todo` is a display tier; stored rows keep `error|warn`).

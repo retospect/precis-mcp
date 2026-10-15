@@ -108,13 +108,15 @@ def _union_same_pin_pads(
 
 def _pad_primitives(
     model: dict[str, Any], start_group: int
-) -> tuple[list[_Prim], dict[int, tuple[Point, ...]], list[_PadKey]]:
+) -> tuple[list[_Prim], dict[int, tuple[Point, ...]], list[_PadKey], list[list[int]]]:
     """Pads as disks, each its OWN group — two pads of one part are not
     electrically joined just because they belong to the same footprint
     (the pads of one PIN are, see :func:`_union_same_pin_pads`; the third
     return value carries each primitive's ``(refdes, pin)`` for that). A
     pad with no net is skipped — a mechanical land has nothing to be
-    connected to.
+    connected to. A drilled pad is one disk per board layer; the fourth
+    return value lists each such barrel's primitive indices for the
+    caller to join.
 
     The disk is the pad's INSCRIBED circle (``min(w, h) / 2``) for a
     genuinely round (``shape == 'circle'``) pad — that disk already IS its
@@ -150,6 +152,8 @@ def _pad_primitives(
     prims: list[_Prim] = []
     polys: dict[int, tuple[Point, ...]] = {}
     keys: list[_PadKey] = []
+    barrels: list[list[int]] = []
+    all_layers = [str(name) for name in model.get("layers") or []]
     for i, pad in enumerate(model.get("pads") or []):
         net = str(pad.get("net", ""))
         if not net:
@@ -162,21 +166,36 @@ def _pad_primitives(
             r = math.hypot(w, h) / 2.0
         else:
             r = min(w, h) / 2.0
-        pad_index = len(prims)
-        prims.append(
-            _Prim(
-                (float(pad["x"]), float(pad["y"])),
-                None,
-                r,
-                start_group + i,
-                net,
-                str(pad.get("layer", "")),
-            )
+        layer = str(pad.get("layer", ""))
+        # A drilled pad's land is copper on EVERY layer (gr488908) — the
+        # model's single ``layer`` is only its outer flash, the same
+        # convention drc.py's clearance rules read ``drill`` against. One
+        # primitive per layer, joined below like a via's barrel.
+        pad_layers = (
+            [layer, *(name for name in all_layers if name != layer)]
+            if pad.get("drill")
+            else [layer]
         )
-        if poly is not None:
-            polys[pad_index] = poly
-        keys.append(_pad_key(pad))
-    return prims, polys, keys
+        barrel: list[int] = []
+        for pad_layer in pad_layers:
+            pad_index = len(prims)
+            barrel.append(pad_index)
+            prims.append(
+                _Prim(
+                    (float(pad["x"]), float(pad["y"])),
+                    None,
+                    r,
+                    start_group + i,
+                    net,
+                    pad_layer,
+                )
+            )
+            if poly is not None:
+                polys[pad_index] = poly
+            keys.append(_pad_key(pad))
+        if len(barrel) > 1:
+            barrels.append(barrel)
+    return prims, polys, keys, barrels
 
 
 def _copper_primitives_with_vias(
@@ -328,7 +347,7 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     """
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
-    pad_prims, pad_polys_raw, pad_keys = _pad_primitives(
+    pad_prims, pad_polys_raw, pad_keys, pad_barrels = _pad_primitives(
         model, start_group=len(model.get("copper") or [])
     )
     prims += pad_prims
@@ -343,6 +362,9 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     for members in via_groups.values():
         for other in members[1:]:
             dsu.union(members[0], other)
+    for barrel in pad_barrels:
+        for other in barrel[1:]:
+            dsu.union(pad_offset + barrel[0], pad_offset + other)
     _union_same_pin_pads(dsu, pad_offset, pad_keys)
 
     # A pour is a polygon, not a capsule, so it joins the union-find by

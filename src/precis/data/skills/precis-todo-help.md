@@ -91,7 +91,8 @@ tag(kind="todo", id=[122, 123, 124], add=["STATUS:done"])  # several, one transa
 ```
 
 `id=[...]` (up to 50) also works on `get(kind='todo', id=[...])`, which
-returns one summary block per id instead of the full render.
+returns one summary block per id instead of the full render; a single-id
+view maps over the batch (`get(kind='todo', id=[122, 123], view='comments')`).
 
 ## Change priority
 ## Re-prioritise a todo

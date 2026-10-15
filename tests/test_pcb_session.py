@@ -554,8 +554,10 @@ def test_placement_drc_report_is_silent_when_clean():
 
 def test_run_placement_drc_is_a_subset_of_run_geometric_drc():
     # The subset contract: run_placement_drc fires only rules that exist
-    # before routing. On an unrouted 2-pin net, run_geometric_drc raises
-    # 'connectivity' (a router-output rule) while run_placement_drc — which
+    # before routing. On a 2-pin net with a stub that stops short,
+    # run_geometric_drc raises 'connectivity' (a router-output rule; a net
+    # with no copper at all is only 'unrouted', gr488909) while
+    # run_placement_drc — which
     # never looks at connectivity/unrouted/trace_width/annular_ring — stays
     # silent, so acting on the early gate can only ever AGREE with the later
     # full run, never fire something it would not.
@@ -580,11 +582,22 @@ def test_run_placement_drc_is_a_subset_of_run_geometric_drc():
     }
     ir = build_ir(graph)
     layers = [str(layer.get("name")) for layer in ir.stackup]
-    model = {
-        "layers": layers,
-        "pads": realize.pads_for_ir(ir, layers, None),
-        "copper": [],
+    pads = realize.pads_for_ir(ir, layers, None)
+    start = next(p for p in pads if p["refdes"] == "U1" and p["net"] == "NET1")
+    stub = {
+        "ctype": "track",
+        "layer": start["layer"],
+        "net": "NET1",
+        "width_mm": 0.2,
+        "segments": [
+            {
+                "shape": "line",
+                "start": [start["x"], start["y"]],
+                "end": [start["x"], start["y"] + 2.0],
+            }
+        ],
     }
+    model = {"layers": layers, "pads": pads, "copper": [stub]}
     cap = capability_for("4layer")
     geometric_rules = {f.rule for f in drc.run_geometric_drc(model, capability=cap)}
     placement_rules = {f.rule for f in drc.run_placement_drc(model, capability=cap)}

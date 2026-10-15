@@ -480,6 +480,11 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
     )
 
 
+#: ``search(kind='skill', mode=...)`` values — the cross-kind search
+#: modes this kind can honour (``hybrid`` is the default).
+_SKILL_SEARCH_MODES = ("hybrid", "semantic", "lexical", "verbatim")
+
+
 def _lexical_row(
     slug: str, count: int, preview: str, *, verbatim: bool, compounds: int = 0
 ) -> _SkillSearchRow:
@@ -974,8 +979,19 @@ class SkillHandler(Handler):
         kinds: str | None = None,
         family: str | None = None,
         configured_only: bool = False,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``mode=`` (gr488917, silently ignored before): ``hybrid`` (the
+        # default) merges both streams; ``semantic`` drops the lexical
+        # ones; ``lexical`` drops the embedder; ``verbatim`` keeps only
+        # whole-phrase substring hits — the literal-quote lookup.
+        mode_norm = (mode or "hybrid").strip().lower()
+        if mode_norm not in _SKILL_SEARCH_MODES:
+            raise BadInput(
+                f"search(kind='skill'): mode={mode!r} not recognized",
+                options=list(_SKILL_SEARCH_MODES),
+            )
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
         # rest of the surface (``search(kind='memory', tags=[...])``,
         # for instance) degrades on empty q to a list view; doing the
@@ -998,8 +1014,14 @@ class SkillHandler(Handler):
         # used for the ``more`` column is a closer approximation of
         # "how many H2 sections of this skill matched."
         over_fetch = page_size * 5
-        semantic_hits = self._semantic_hits(q, page_size=over_fetch)
-        lexical_hits = self._lexical_hits(q)
+        semantic_hits = (
+            []
+            if mode_norm in ("lexical", "verbatim")
+            else self._semantic_hits(q, page_size=over_fetch)
+        )
+        lexical_hits = [] if mode_norm == "semantic" else self._lexical_hits(q)
+        if mode_norm == "verbatim":
+            lexical_hits = [h for h in lexical_hits if h[3]]
 
         # Count semantic chunk hits per slug BEFORE dedup so the
         # ``more`` column can reflect "this skill has N additional
@@ -1019,11 +1041,14 @@ class SkillHandler(Handler):
             if existing is None or row.score > existing.score:
                 merged[hit.slug] = row
         for slug, count, preview, verbatim, compounds in lexical_hits:
-            if slug in merged:
-                continue
-            merged[slug] = _lexical_row(
+            row = _lexical_row(
                 slug, count, preview, verbatim=verbatim, compounds=compounds
             )
+            existing = merged.get(slug)
+            # Better signal wins per slug, as for semantic hits above — a
+            # weak semantic row must not discard a verbatim hit (gr488917).
+            if existing is None or row.score > existing.score:
+                merged[slug] = row
 
         # Title / header intent boost. A query whose content words
         # overlap a skill's stated purpose ("how to cite a paper, add a
@@ -1041,7 +1066,7 @@ class SkillHandler(Handler):
         # coverage so a single common word can't promote the catalogue;
         # score carries the overlap so higher-overlap titles lead.
         qtokens = set(_content_tokens(q))
-        if qtokens:
+        if qtokens and mode_norm in ("hybrid", "lexical"):
             single = len(qtokens) == 1
             all_slugs = _list_skills()
             # Per-skill identity/section token pools, computed once so

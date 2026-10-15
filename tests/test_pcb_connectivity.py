@@ -285,3 +285,23 @@ def test_a_polygon_pad_with_no_resolvable_outline_falls_back_conservatively() ->
     }
     model = _model([_track("N", [(3.0, 3.0), (1.0, 1.0)], w=0.1)], [pad])
     assert connectivity.net_islands(model) == []
+
+
+def test_a_drilled_pad_is_copper_on_every_layer() -> None:
+    """gr488908: a through-hole pad's plated barrel joins its lands on every
+    layer, as a via's does. The model records one ``layer`` (the outer flash
+    on the mount side) plus ``drill``, so a track arriving on the far side
+    read as a second piece at the pad's own coordinate (taz15:
+    FANSPEEDMEASURE witnesses at (20.396,4.388) on F.Cu and on B.Cu)."""
+    tht = {**_pad("N", 0.0, 0.0), "w": 1.6, "h": 1.6, "drill": 1.0}
+    far = _pad("N", 5.0, 0.0, layer="B.Cu")
+    bottom = _track("N", [(0.0, 0.0), (5.0, 0.0)], layer="B.Cu")
+    assert connectivity.net_islands(_model([bottom], [tht, far])) == []
+
+    # The same pad without a drill is an SMD land on F.Cu only: the B.Cu
+    # track does not reach it.
+    smd = {k: v for k, v in tht.items() if k != "drill"}
+    assert [
+        (i.net, i.components)
+        for i in connectivity.net_islands(_model([bottom], [smd, far]))
+    ] == [("N", 2)]

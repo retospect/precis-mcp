@@ -448,8 +448,9 @@ def _ctx_session(ctx: Context | None) -> object | None:
 def get(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    # A list is the batch form (gripe/alert/todo): one summary block per
-    # id. Declared on the wire so FastMCP's pydantic layer admits it.
+    # A list is the batch form (gripe/alert/todo/memory): one summary block
+    # per id, or with view= that single-id view mapped per id. Declared on
+    # the wire so FastMCP's pydantic layer admits it.
     id: str | int | list[str | int] | None = None,
     view: str | None = None,
     q: str | None = None,

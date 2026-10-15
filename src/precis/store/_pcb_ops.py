@@ -3044,10 +3044,13 @@ class PcbMixin:
         the next full run against it would report every geometric
         finding as resolved-then-new.
 
-        A phase with no map entry falls back to the latest UNKEYED run —
-        one written before the map existed, or by a raw
-        ``pcb_write_drc_findings`` call — never to another phase's keyed
-        run. Genuinely no baseline → ``(None, [])``."""
+        A phase with no map entry falls back to the latest run only on a
+        board that has NO keyed run yet — its history predates the map.
+        Once any phase is keyed, an unmapped phase has no baseline: the
+        map keeps only each phase's latest run, so an older run missing
+        from it is a superseded keyed run of some other phase, not an
+        unkeyed one (gr488910 — a first ``routed`` run diffed the
+        superseded ``placed`` run). Genuinely no baseline → ``(None, [])``."""
         with self._pcb_conn() as conn:
             if phase is not None:
                 row = conn.execute(
@@ -3057,16 +3060,8 @@ class PcbMixin:
                 ).fetchone()
                 by_phase = dict((row[0] if row else None) or {})
                 run_id = by_phase.get(phase)
-                if run_id is None:
-                    keyed = {str(v) for v in by_phase.values()}
-                    for cand in conn.execute(
-                        "SELECT run_id FROM pcb_drc_runs WHERE board_id = %s "
-                        "ORDER BY created_at DESC",
-                        (board_id,),
-                    ).fetchall():
-                        if str(cand[0]) not in keyed:
-                            run_id = str(cand[0])
-                            break
+                if run_id is None and not by_phase:
+                    run_id = self._pcb_drc_latest_run_id(conn, board_id)
             else:
                 run_id = self._pcb_drc_latest_run_id(conn, board_id)
             if run_id is None:

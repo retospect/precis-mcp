@@ -41,16 +41,18 @@ SEED = 1
 #: first-run state, pinned so the anneal item measures deltas against it.
 #: Keys are DRC rule names; values are finding counts at that severity.
 #:
-#: The mix is the honest part: ``unrouted``/``connectivity`` are the 26
-#: nets the maze could not realize on the two routable layers
-#: (F.Cu/B.Cu — the default stackup pours In1/In2), ``silk_missing`` is
+#: The mix is the honest part: ``unrouted`` is the 26 nets the maze
+#: could not realize on the two routable layers (F.Cu/B.Cu — the default
+#: stackup pours In1/In2); ``connectivity`` is the 10 of them left with
+#: partial copper (gr488909: the 16 with none are the ``unrouted``
+#: question only, not a second error per net), ``silk_missing`` is
 #: 35 refdes labels with no legal spot, and the warn tier is real margin
 #: spend (clearance 0.100 vs required 0.150 mm, board-edge). Zero errors
 #: alone would NOT satisfy the authored requirements here (doc Blockers
 #: §3 residue: the shared router clearance is one value, so per-net
 #: shortfalls land as warnings) — the pin is the whole tuple.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
-    "connectivity": 26,
+    "connectivity": 10,
     "unrouted": 26,
     "outline_containment": 1,
     "silk_edge_clearance": 1,

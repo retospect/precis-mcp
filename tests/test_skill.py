@@ -1240,6 +1240,67 @@ def test_semantic_search_distinct_section_count_skips_twin_variants(
     assert "+1" in rows[0], rows[0]
 
 
+def _strong_semantic_elsewhere(skill: SkillHandler, monkeypatch) -> None:
+    """A strong semantic hit on an unrelated skill plus a weak one on the
+    skill that holds the literal phrase — prod's shape for gr488917."""
+    from precis.skill_index import SearchHit
+
+    hits = [
+        SearchHit(
+            slug="precis-overview",
+            chunk_idx=1,
+            heading="What are the seven verbs?",
+            score=0.8,
+            snippet="seven verbs",
+            variant="structural",
+        ),
+        SearchHit(
+            slug="precis-pcb-help",
+            chunk_idx=1,
+            heading="x",
+            score=0.05,
+            snippet="x",
+            variant="structural",
+        ),
+    ]
+    monkeypatch.setattr(skill, "_semantic_hits", lambda q, *, page_size: hits)
+
+
+def _rows(body: str) -> list[str]:
+    return [ln.split("\t")[0] for ln in body.splitlines() if ln.startswith("precis-")]
+
+
+def test_search_mode_verbatim_returns_only_literal_hits(
+    skill: SkillHandler, monkeypatch
+) -> None:
+    """gr488917: mode='verbatim' was silently ignored — the literal
+    phrase's skill ranked under unrelated semantic neighbours."""
+    _strong_semantic_elsewhere(skill, monkeypatch)
+    out = skill.search(q="Five verbs, no new ones", mode="verbatim")
+    rows = _rows(out.body)
+    # pcb-help (and draft-help, which says it too) — never the semantic
+    # neighbour that only talks about "seven verbs".
+    assert "precis-pcb-help" in rows and "precis-overview" not in rows, out.body
+    assert all(
+        "substring hit" in ln
+        for ln in out.body.splitlines()
+        if ln.startswith("precis-")
+    ), out.body
+    with pytest.raises(BadInput, match="mode"):
+        skill.search(q="x", mode="fuzzy")
+
+
+def test_search_verbatim_hit_not_replaced_by_weaker_semantic_row(
+    skill: SkillHandler, monkeypatch
+) -> None:
+    """gr488917: in hybrid mode a weak semantic row for a slug used to
+    discard that slug's (higher-scoring) verbatim lexical hit."""
+    _strong_semantic_elsewhere(skill, monkeypatch)
+    out = skill.search(q="Five verbs, no new ones")
+    row = next(ln for ln in out.body.splitlines() if ln.startswith("precis-pcb-help"))
+    assert "substring hit" in row, row
+
+
 def test_search_emits_more_column(skill: SkillHandler) -> None:
     """The result table carries a ``more`` column counting additional
     semantic H2 hits per slug (``+N`` / ``.``) — mirrors the

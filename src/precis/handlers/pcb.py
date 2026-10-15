@@ -4793,7 +4793,13 @@ class PcbHandler(Handler):
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
         phase = phase_arg or self._design_phase(design)
-        ran = self._drc_run(ref_id, design, eval_phase=phase, erc=True)
+        ran = self._drc_run(
+            ref_id,
+            design,
+            eval_phase=phase,
+            eval_phase_claimed=bool(phase_arg),
+            erc=True,
+        )
         if ran is None:
             return Response(
                 body=f"# check — phase {phase}\n— nothing the rules at this "
@@ -4828,7 +4834,9 @@ class PcbHandler(Handler):
             tiered = [(f, s) for f, s in tiered if f.rule != "unrouted"]
         n_error = sum(1 for _f, s in tiered if s == "error")
         n_warn = sum(1 for _f, s in tiered if s == "warn")
-        n_todo = sum(1 for _f, s in tiered if s == "todo")
+        # The collapsed unrouted rows are still todos (gr488911): the head
+        # tally is the same with or without the expanding rule filter.
+        n_todo = sum(1 for _f, s in tiered if s == "todo") + n_unrouted
         n_info = sum(1 for _f, s in tiered if s == "info")
         authored = str((design["board"].get("meta") or {}).get("phase") or "")
         phase_src = (
@@ -5088,6 +5096,7 @@ class PcbHandler(Handler):
         design: dict[str, Any],
         *,
         eval_phase: str | None = None,
+        eval_phase_claimed: bool = True,
         erc: bool = False,
     ) -> _DrcRun | None:
         """One check-surface run over ``design`` (which must have a board):
@@ -5105,6 +5114,13 @@ class PcbHandler(Handler):
         (pad geometry, no copper); ``routed``/``fab`` the full geometric
         pass. ``view='drc'`` calls this with ``None``: same run it has
         always done.
+
+        ``eval_phase_claimed=False`` marks ``eval_phase`` as the derived
+        default (``view='check'`` with no ``args.phase``): it tiers
+        severities and keys the delta, but never scopes the run — only an
+        ``args.phase`` or authored claim makes ``placed`` pads-only
+        (gr488909: taz15's 749 imported tracks went unchecked at its
+        derived ``placed``).
 
         ``erc=True`` adds Slice 5's netlist ERC rules — ``view='check'``
         passes it (the check surface is the superset); ``view='drc'`` is
@@ -5147,7 +5163,7 @@ class PcbHandler(Handler):
         # this phase"). A merely derived phase never hides copper that
         # exists: a board seeded with tracks but nothing placed still
         # gets them checked.
-        claimed_phase = eval_phase or authored_phase
+        claimed_phase = (eval_phase if eval_phase_claimed else None) or authored_phase
         if claimed_phase == "netlist":
             # Phase gate (Slice 8): netlist phase was ASKED for (args or
             # an authored claim), so only the rules needing no geometry

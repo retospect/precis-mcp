@@ -197,7 +197,8 @@ get(kind="memory", id=[73, 74])  # several, each in full, one call
 ```
 
 `id=[...]` (up to 50) renders every memory in full, separated by `---`;
-a missing id is a one-line block. For one memory with its linked
+a missing id is a one-line block. A single-id view maps over the batch
+(`get(kind='memory', id=[73, 74], view='links')`). For one memory with its linked
 neighbours use `view='fisheye+1hop'` on a single id. `q=` on a single
 id is find-in-ref — matching passages with context instead of the whole
 body (`get(kind='memory', id=73, q='…')`, see `precis-get-help`).

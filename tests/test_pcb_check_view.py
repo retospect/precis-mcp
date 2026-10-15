@@ -343,16 +343,13 @@ def test_netlist_eval_with_zero_findings_still_records_a_run(
 
 #: The exact ``view='drc'`` body the ``_mini_design`` fixture rendered
 #: before this slice existed — ``run <8hex>`` masked — so the preset
-#: claim is pinned, not implied.
+#: claim is pinned, not implied. gr488909 dropped its three per-pad
+#: ``connectivity`` rows: a copperless net is the ``unrouted`` question.
 _DRC_GOLDEN = """
-# DRC — run XXXXXXXX — 8 error(s), 2 warn(s)
+# DRC — run XXXXXXXX — 5 error(s), 2 warn(s)
 vs previous run: none to compare against (first run with finding ids on this board) — every finding below is reported without a new/still verdict
 (pads-only DRC — no routed copper yet)
-by rule: connectivity 3 error, unrouted 3 error, unconnected_pin 2 error, unconnected_pin 2 warn
 {id	severity	rule	where	margin_mm	detail}
-2f7df4aee774	error	connectivity	net GND		net GND copper is in 2 disconnected pieces; a net's copper must be one connected component. Witnesses (one point per piece): (-4.000,0.000) on F.Cu; (12.000,0.000) on F.Cu
-f070c962fb33	error	connectivity	net SIG		net SIG copper is in 2 disconnected pieces; a net's copper must be one connected component. Witnesses (one point per piece): (-11.000,0.000) on F.Cu; (5.000,0.000) on F.Cu
-97a4f49dbeb9	error	connectivity	net VDD		net VDD copper is in 2 disconnected pieces; a net's copper must be one connected component. Witnesses (one point per piece): (-7.000,0.000) on F.Cu; (9.000,0.000) on F.Cu
 344573af2263	error	unrouted	net GND		at least one connection on net GND has no route; the board is not finished
 7423a0f851af	error	unrouted	net SIG		at least one connection on net SIG has no route; the board is not finished
 11898670f503	error	unrouted	net VDD		at least one connection on net VDD has no route; the board is not finished
@@ -436,3 +433,89 @@ def test_check_netlist_unrouted_only_board_reads_clean(
     assert "3 net(s) unrouted — expected before routing" in body
     assert "— no findings ✓" in body
     assert "no findings match" not in body
+
+
+def _two_tracks_too_close(store: Any, slug: str) -> None:
+    """SIG and GND tracks 0.02 mm apart — a clearance error only a pass
+    that reads the copper can see. No route rows, so the derived phase
+    stays ``placed``."""
+    ref = store.get_ref(kind="pcb", id=slug)
+    board_id = store.pcb_ensure_board(ref.id)
+    net_ids = store.pcb_net_ids(ref.id)
+    store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids[net],
+                "route_id": None,
+                "geom": {
+                    "segments": [{"shape": "line", "start": [0.0, y], "end": [1.0, y]}],
+                    "width_mm": 0.2,
+                },
+            }
+            for net, y in (("SIG", 0.0), ("GND", 0.22))
+        ],
+    )
+
+
+def test_check_placed_phase_reports_no_connectivity_for_copperless_nets(
+    pcb: PcbHandler,
+) -> None:
+    """gr488909: a net with no copper is the ``unrouted`` question (a todo
+    before routing), not a ``connectivity`` error per pad — taz15's
+    placed run read ~80 such errors ("GND 78 pieces" = its 78 pads)."""
+    pcb.put(id="chk-copperless", args=_mini_design())
+    body = pcb.get(id="chk-copperless", view="check", args={"phase": "placed"}).body
+    assert "\tunrouted\t" in body
+    assert "\tconnectivity\t" not in body, body
+
+
+def test_check_derived_phase_reads_existing_copper(pcb: PcbHandler, store: Any) -> None:
+    """gr488909: only a CLAIMED ``placed`` (args or ``op='phase'``) is the
+    pads-only pass. A merely derived ``placed`` board that carries copper
+    (taz15: 749 imported tracks, no route rows) gets it checked."""
+    pcb.put(id="chk-derived-copper", args=_mini_design())
+    _two_tracks_too_close(store, "chk-derived-copper")
+    body = pcb.get(id="chk-derived-copper", view="check").body
+    assert "phase placed (derived)" in body
+    assert "pads-only" not in body, body
+    assert "\tclearance\t" in body, body
+    # The explicit claim still scopes the run to pads.
+    claimed = pcb.get(
+        id="chk-derived-copper", view="check", args={"phase": "placed"}
+    ).body
+    assert "pads-only" in claimed
+    assert "\tclearance\t" not in claimed
+
+
+def test_first_run_at_a_phase_never_diffs_another_phases_run(
+    pcb: PcbHandler,
+) -> None:
+    """gr488910: two ``placed`` runs supersede the first placed baseline;
+    the first ``routed`` run then has no baseline of its own and must say
+    so — not diff the superseded placed run as if it were a pre-keying
+    (unkeyed) one (taz15: placed and routed both read "vs run 523fda88")."""
+    pcb.put(id="chk-phase-delta", args=_mini_design())
+    pcb.get(id="chk-phase-delta", view="check", args={"phase": "placed"})
+    pcb.get(id="chk-phase-delta", view="check", args={"phase": "placed"})
+    routed = pcb.get(id="chk-phase-delta", view="check", args={"phase": "routed"}).body
+    assert "none to compare against" in routed, routed
+
+
+def test_check_netlist_head_counts_collapsed_unrouted_todos(
+    pcb: PcbHandler,
+) -> None:
+    """gr488911: the collapsed unrouted rows are still todos — the head's
+    tally must count them, the same with or without a rule filter."""
+    pcb.put(id="chk-todo-tally", args=_mini_design())
+    body = pcb.get(id="chk-todo-tally", view="check", args={"phase": "netlist"}).body
+    head = body.splitlines()[0]
+    assert ", 3 todo" in head, head
+    expanded = pcb.get(
+        id="chk-todo-tally",
+        view="check",
+        args={"phase": "netlist", "rule": "unrouted"},
+    ).body
+    assert ", 3 todo" in expanded.splitlines()[0]
