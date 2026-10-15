@@ -811,6 +811,144 @@ def test_ring_defects_classify() -> None:
         assert classes[n:] == ["open-edge"] * n
 
 
+def _fused_ring_graph() -> tuple[StructScene, AtomCloud, list[str]]:
+    """A 6-ring and a 7-ring sharing one bond (a Stone–Wales-like pair):
+    atoms 0–1 are the shared edge, 2–5 the hexagon-only carbons, 6–10 the
+    heptagon-only ones, and each ring atom carries a pendant C leaf
+    (atoms 11–21) so it reaches three C neighbours."""
+    from precis.structure.cell import Cell
+    from precis.structure.scene import Atom, Bond
+
+    ring = ["s0", "s1", "h2", "h3", "h4", "h5", "q1", "q2", "q3", "q4", "q5"]
+    leaves = [f"l{i}" for i in range(11)]
+    labels = ring + leaves
+    hexagon = ["s0", "s1", "h2", "h3", "h4", "h5"]
+    heptagon = ["s0", "s1", "q1", "q2", "q3", "q4", "q5"]
+    edges = {
+        frozenset((face[k], face[(k + 1) % len(face)]))
+        for face in (hexagon, heptagon)
+        for k in range(len(face))
+    }
+    pts = np.array(
+        [
+            *[[i * 1.4, 0.0, 0.0] for i in range(len(ring))],
+            *[[i * 1.4, 1.4, 0.0] for i in range(len(ring))],
+        ]
+    )
+    atoms = {
+        l: Atom(label=l, element="C", frac=pts[i] / 60.0) for i, l in enumerate(labels)
+    }
+    bonds = [
+        *[Bond(i=a, j=b, order=1.33) for a, b in (sorted(e) for e in edges)],
+        *[Bond(i=ring[i], j=leaves[i], order=1.33) for i in range(len(ring))],
+    ]
+    scene = StructScene(
+        cell=Cell(lattice=np.eye(3) * 60.0, pbc=(False, False, False)),
+        atoms=atoms,
+        bonds=bonds,
+    )
+    cloud = AtomCloud(
+        name="toy",
+        labels=labels,
+        elements=["C"] * len(labels),
+        pts_A=pts,
+        radii_A=np.full(len(labels), VDW_RADII_A["C"]),
+    )
+    return scene, cloud, labels
+
+
+def test_fused_ring_carbons_classify_by_every_ring_they_sit_on() -> None:
+    """(a) gr488904: a carbon is classified by every ring it sits on —
+    the two atoms sharing the 6-ring/7-ring bond read '7-ring' (the
+    defect ring, not the smallest ring), so 'ring:7-ring' can match a
+    heptagon's carbons even where they also close hexagons."""
+    scene, cloud, labels = _fused_ring_graph()
+    adj, unsat = se_atomic_sites._bond_graph(scene, labels, cloud.pts_A)
+    classes = se_atomic_sites.ring_classes(cloud, adj, unsat)
+    by_label = dict(zip(labels, classes))
+    assert by_label["s0"] == by_label["s1"] == "7-ring"
+    assert all(by_label[f"h{i}"] == "6-ring" for i in range(2, 6))
+    assert all(by_label[f"q{i}"] == "7-ring" for i in range(1, 6))
+    assert all(by_label[f"l{i}"] == "open-edge" for i in range(11))
+    # 'ring:7-ring' selects all seven heptagon carbons — including the
+    # two that also sit on the hexagon.
+    pol = se_atomic_sites._polarity_map(
+        {"toy": [{"site": "ring:7-ring", "group": "OH"}]},
+        {"toy": cloud},
+        {"toy": classes},
+    )
+    assert set(pol["toy"]) == {0, 1, *range(6, 11)}
+    # 'ring:6-ring' stays the pure-hexagon class; the defect atoms'
+    # hexagon membership is implicit.
+    pol6 = se_atomic_sites._polarity_map(
+        {"toy": [{"site": "ring:6-ring", "group": "OH"}]},
+        {"toy": cloud},
+        {"toy": classes},
+    )
+    assert set(pol6["toy"]) == set(range(2, 6))
+
+
+def test_edge_shared_by_two_defect_rings_reads_compound_class() -> None:
+    """An atom on two defect rings labels both — '5+7-ring' — and each
+    named size's selector reaches it by membership."""
+    from precis.structure.cell import Cell
+    from precis.structure.scene import Atom, Bond
+
+    # a 5-ring and a 7-ring sharing one vertex (atom 0)
+    labels = ["v0", *[f"p{i}" for i in range(1, 5)], *[f"q{i}" for i in range(1, 7)]]
+    leaves = [f"l{i}" for i in range(len(labels))]
+    pentagon = ["v0", "p1", "p2", "p3", "p4"]
+    heptagon = ["v0", "q1", "q2", "q3", "q4", "q5", "q6"]
+    edges = {
+        frozenset((face[k], face[(k + 1) % len(face)]))
+        for face in (pentagon, heptagon)
+        for k in range(len(face))
+    }
+    all_labels = labels + leaves
+    pts = np.array(
+        [
+            *[[i * 1.4, 0.0, 0.0] for i in range(len(labels))],
+            *[[i * 1.4, 1.4, 0.0] for i in range(len(labels))],
+        ]
+    )
+    atoms = {
+        l: Atom(label=l, element="C", frac=pts[i] / 80.0)
+        for i, l in enumerate(all_labels)
+    }
+    bonds = [
+        *[Bond(i=a, j=b, order=1.33) for a, b in (sorted(e) for e in edges)],
+        *[Bond(i=labels[i], j=leaves[i], order=1.33) for i in range(len(labels))],
+    ]
+    scene = StructScene(
+        cell=Cell(lattice=np.eye(3) * 80.0, pbc=(False, False, False)),
+        atoms=atoms,
+        bonds=bonds,
+    )
+    cloud = AtomCloud(
+        name="toy",
+        labels=all_labels,
+        elements=["C"] * len(all_labels),
+        pts_A=pts,
+        radii_A=np.full(len(all_labels), VDW_RADII_A["C"]),
+    )
+    adj, unsat = se_atomic_sites._bond_graph(scene, all_labels, cloud.pts_A)
+    classes = se_atomic_sites.ring_classes(cloud, adj, unsat)
+    by_label = dict(zip(all_labels, classes))
+    assert by_label["v0"] == "5+7-ring"
+    pol = se_atomic_sites._polarity_map(
+        {"toy": [{"site": "ring:7-ring", "group": "OH"}]},
+        {"toy": cloud},
+        {"toy": classes},
+    )
+    assert set(pol["toy"]) == {0, *range(5, 11)}
+    pol5 = se_atomic_sites._polarity_map(
+        {"toy": [{"site": "ring:5-ring", "group": "OH"}]},
+        {"toy": cloud},
+        {"toy": classes},
+    )
+    assert set(pol5["toy"]) == {0, *range(1, 5)}
+
+
 def test_sites_is_read_only(handler: SeHandler, store: Store) -> None:
     """Single and pair `view='sites'` calls leave the design's pose, rot
     and the bound structure's atoms untouched."""
@@ -911,10 +1049,9 @@ def test_lining_ring_selector_matching_nothing_is_refused(
     handler: SeHandler,
 ) -> None:
     """(a) a ring-class selector that matches no carbon was a silent
-    no-op; it now names the classes the block does have and that the
-    class is the SMALLEST ring a carbon closes."""
+    no-op; it now names the classes the block does have."""
     _put_valve(handler, "sites12")
-    with pytest.raises(BadInput, match="(?i)smallest ring") as exc:
+    with pytest.raises(BadInput, match="(?i)matches no carbon") as exc:
         handler.get(
             id="sites12",
             view="clearance",

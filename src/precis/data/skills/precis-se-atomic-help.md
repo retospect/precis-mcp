@@ -282,8 +282,10 @@ get(kind="se", id="valve", view="clearance", args={
 `view='sites'` enumerates the carbons that can take a substituent on a
 structure-bound block. Each row is one (atom, free-face) site: `ring` is
 `open-edge` (fewer than three carbon neighbours — the rim dangling bond,
-axial only for a zigzag rim) or the smallest C–C ring it closes (5–8,
-else `non-ring`); `sp3` (a ≥4-coordinated single-bond carbon, e.g. a fin
+axial only for a zigzag rim) or the C–C rings it sits on — every defect
+(non-6) ring size it closes (5–8), joined `+` where two defects share
+the atom (`5+7-ring`), `6-ring` for a pure-hexagon carbon, else
+`non-ring`; `sp3` (a ≥4-coordinated single-bond carbon, e.g. a fin
 graft junction) and `substituted` (carries a non-C non-H group) count in
 the summary but never list — no free valence. `face` is
 `out`/`in`/`axial`, the free direction's sign against the block's own
@@ -308,9 +310,12 @@ ladder: relax rungs, charges). It decorates site carbons: `site` is the
 atom `ordinal` from the sites table or `'ring:<class>'` for every carbon
 of that class (`non-ring` excluded); `group` maps to a polarity class —
 OH→polar-donor, NH3+→cationic, COO-→anionic, CH3→apolar,
-H/undecorated→bare. A `ring:<class>` that matches no carbon on
-the block is refused, naming the classes present (the class is the
-SMALLEST ring a carbon closes — address a heptagon's carbons by ordinal). `lining` alone implies the default sweep and the
+H/undecorated→bare. `ring:<n>-ring` matches every carbon that sits on
+an n-ring — a defect-shared `5+7-ring` atom answers to both
+`ring:5-ring` and `ring:7-ring` (`ring:6-ring` is the pure-hexagon
+class; a defect atom's hexagon membership is implicit). A `ring:<class>`
+that matches no carbon on the block is refused, naming the classes
+present. `lining` alone implies the default sweep and the
 lining is validated BEFORE the sweep runs. Each pocket scores per angle:
 shape = pocket volume vs `cargo_A3`, polarity = COMPATIBLE decorated
 contact pairs (+1: polar–polar, cationic–anionic, apolar–apolar,

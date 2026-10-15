@@ -756,7 +756,12 @@ removed as met — the transport move it waited on happened 09-29)
    on the block axis; the pair form keeps sites facing the partner) and
    `args.lining` on the clearance sweep scores each pocket's
    shape-vs-`cargo_A3` + like-minus-unlike polarity pairs with an
-   arc-verdict STUB (`precis_se.atomic.sites`). Remaining: the
+   arc-verdict STUB (`precis_se.atomic.sites`). gr488904 fixes landed
+   across 10-15: empty `ring:` selector refused with the classes
+   present, `in`-face exposure 0 + limit + `face='axial'` (ed1f8ce4c),
+   and ring class = every ring the atom sits on (defect labels like
+   `5+7-ring`; `ring:<n>` selects by membership — heptagon carbons on
+   hexagons now match `ring:7-ring`). Remaining: the
    surface-mesh clearance field (item 1's post-§20.6 form), real
    energetics over the stub, audit, drag-vs-torque.
 9. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,

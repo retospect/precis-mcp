@@ -10,8 +10,10 @@ ways:
   on single bonds (a graft junction — no free valence, counted but not a
   site), ``substituted`` when it already carries a non-C non-H group,
   ``open-edge`` under three carbon neighbours (a rim dangling bond —
-  the H cap, if any, is replaceable), else the smallest C–C ring it
-  closes on the bond graph (5/6/7/8, ``non-ring`` past that);
+  the H cap, if any, is replaceable), else the C–C rings it sits on:
+  every defect (non-6) ring size it closes on the bond graph, joined
+  ``+`` (``5+7-ring`` where two defects share the atom), ``6-ring`` for
+  a pure-hexagon carbon, ``non-ring`` past that;
 - *face* — which side of the local surface the substituent would grow
   on: the free direction's sign against the block's envelope axis
   (``out`` = away from the axis, ``in`` = toward the bore, ``axial`` =
@@ -86,9 +88,13 @@ _CC_DERIVE_BOND_A = 1.9
 #: four neighbours stays a ring site rather than reading as sp³.
 _SINGLE_BOND_ORDER = 1.2
 
-#: Smallest-ring search depth on the C–C graph — covers 5–8 membered
-#: rings; anything longer reads as ``non-ring``.
+#: Ring search depth on the C–C graph — covers 5–8 membered rings;
+#: anything longer reads as ``non-ring``.
 _RING_MAX_DEPTH = 4
+
+#: Ring sizes the taxonomy names — a carbon closing only 3/4-rings or
+#: cycles past 8 reads ``non-ring``.
+_RING_SIZES = frozenset({5, 6, 7, 8})
 
 #: Free-direction vs axis-radial cosine thresholds for the face
 #: classification: beyond ±0.3 the site faces clearly in or out; a
@@ -124,7 +130,11 @@ GROUP_POLARITY: dict[str, str] = {
 _POLAR = frozenset({"polar-donor", "polar-acceptor"})
 
 #: Classes that ARE sites — a carbon can take a substituent; ``sp3`` and
-#: ``substituted`` are counted in the summary but never listed.
+#: ``substituted`` are counted in the summary but never listed. Compound
+#: defect classes (``5+7-ring`` — an atom two defect rings share) are
+#: site classes too but are not nameable ``ring:`` selectors: each
+#: named size selects them by membership, so ``ring:5-ring`` and
+#: ``ring:7-ring`` both reach a ``5+7-ring`` atom.
 _SITE_CLASSES = ("5-ring", "6-ring", "7-ring", "8-ring", "open-edge", "non-ring")
 _EXCLUDED_CLASSES = ("sp3", "substituted")
 _GROUP_NAMES = tuple(GROUP_POLARITY)
@@ -201,22 +211,24 @@ def _c_adjacency(adj: list[list[int]], elements: list[str]) -> list[list[int]]:
     return [[j for j in nbrs if elements[j] == "C"] for nbrs in adj]
 
 
-def _min_ring_size(adj: list[list[int]], root: int) -> int | None:
-    """Smallest ring through ``root`` on the C–C graph, or ``None`` —
-    BFS to :data:`_RING_MAX_DEPTH`, tracking which root-neighbour subtree
-    each visited node belongs to: an edge joining different subtrees
-    closes a ring through root of ``depth[u] + depth[v] + 1``, and the
-    smallest such length is the answer."""
+def _ring_sizes(adj: list[list[int]], root: int) -> set[int]:
+    """Every small-cycle size through ``root`` on the C–C graph — BFS to
+    :data:`_RING_MAX_DEPTH`, tracking which root-neighbour subtree each
+    visited node belongs to: an edge joining different subtrees closes a
+    simple cycle through root of ``depth[u] + depth[v] + 1``. All closure
+    sizes count, not just the smallest: a heptagon's carbon that also
+    sits on hexagons must still read as a 7-ring site."""
     subtree: dict[int, int] = {}
     depth: dict[int, int] = {}
     queue: deque[int] = deque()
+    sizes: set[int] = set()
     for nb in adj[root]:
         if nb in subtree:
-            return 3  # two root-neighbours bonded to each other
+            sizes.add(3)  # two root-neighbours bonded to each other
+            continue
         subtree[nb] = nb
         depth[nb] = 1
         queue.append(nb)
-    best: int | None = None
     while queue:
         u = queue.popleft()
         for v in adj[u]:
@@ -228,9 +240,20 @@ def _min_ring_size(adj: list[list[int]], root: int) -> int | None:
                 if depth[v] <= _RING_MAX_DEPTH:
                     queue.append(v)
             elif subtree[v] != subtree[u]:
-                cand = depth[u] + depth[v] + 1
-                best = cand if best is None else min(best, cand)
-    return best
+                sizes.add(depth[u] + depth[v] + 1)
+    return sizes
+
+
+def _ring_label(sizes: set[int]) -> str:
+    """The site's ring name: its defect (non-6) ring sizes joined ``+``
+    (``5+7-ring`` for a vertex two defect rings share), ``6-ring`` for a
+    pure-hexagon carbon, ``non-ring`` when it closes no named ring. The
+    hexagon membership of a defect-ring atom is implicit — ``6-ring`` is
+    reserved for carbons that close ONLY hexagons."""
+    defects = sorted(sizes - {6})
+    if defects:
+        return "+".join(str(s) for s in defects) + "-ring"
+    return "6-ring" if 6 in sizes else "non-ring"
 
 
 def ring_classes(
@@ -244,7 +267,8 @@ def ring_classes(
     carrying a non-C non-H group, ``sp3`` for a four-or-more-coordinated
     all-single-bond carbon (or one the generator tagged ``sp3`` — a graft
     junction has no free valence), ``open-edge`` under three C
-    neighbours, else the smallest C–C ring (5–8) or ``non-ring``."""
+    neighbours, else the C–C rings (5–8) the atom sits on
+    (:func:`_ring_label`) or ``non-ring``."""
     cadj = _c_adjacency(adj, cloud.elements)
     out: list[str | None] = []
     for i, el in enumerate(cloud.elements):
@@ -260,8 +284,7 @@ def ring_classes(
         if len(cadj[i]) < 3:
             out.append("open-edge")
             continue
-        size = _min_ring_size(cadj, i)
-        out.append(f"{size}-ring" if size in (5, 6, 7, 8) else "non-ring")
+        out.append(_ring_label(_ring_sizes(cadj, i) & _RING_SIZES))
     return out
 
 
@@ -543,9 +566,12 @@ def _fmt_sites(
                 key = (str(ring), "—")
                 counts[key] = counts.get(key, 0) + 1
     lines.append("")
+    extra = sorted(
+        {ring for ring, _face in counts} - set(_SITE_CLASSES) - set(_EXCLUDED_CLASSES)
+    )
     count_rows = [
         {"ring": ring, "face": face, "count": counts.get((ring, face), 0)}
-        for ring in _SITE_CLASSES
+        for ring in (*_SITE_CLASSES, *extra)
         for face in ("in", "out", "axial", "n/a")
         if counts.get((ring, face), 0)
     ]
@@ -717,6 +743,13 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
 # ── complementarity stub ──────────────────────────────────────────────
 
 
+def _label_ring_set(label: str) -> frozenset[int]:
+    """The ring sizes a ring-family class names — ``'5+7-ring'`` →
+    ``{5, 7}``, ``'6-ring'`` → ``{6}``. Defect labels drop the implicit
+    hexagon, so ``ring:6-ring`` selects only the pure-hexagon class."""
+    return frozenset(int(p) for p in label[: -len("-ring")].split("+"))
+
+
 def _polarity_map(
     lining: Any,
     cloud_by_name: dict[str, AtomCloud],
@@ -724,8 +757,10 @@ def _polarity_map(
 ) -> dict[str, dict[int, str]]:
     """``lining`` → per-block ``{ordinal: polarity class}``; undecorated
     atoms are ``bare``. ``site`` is an atom ordinal or ``'ring:<class>'``
-    (every carbon of that class — ``non-ring`` excluded: a carbon that
-    closes no small ring isn't a nameable site class)."""
+    (every carbon classified under that class — ``ring:7-ring`` matches
+    every atom that sits on a 7-ring, including defect-shared
+    ``5+7-ring`` ones; ``non-ring`` excluded: a carbon that closes no
+    small ring isn't a nameable site class)."""
     if not isinstance(lining, dict) or not lining:
         raise BadInput(
             "clearance 'lining' must be an object like "
@@ -775,19 +810,38 @@ def _polarity_map(
                         f"lining[{name!r}] site 'ring:' class must be one of "
                         f"{selectable}; got {site!r}"
                     )
-                matched = [i for i, cls in enumerate(classes) if cls == ring]
+                if ring == "open-edge":
+                    matched = [i for i, cls in enumerate(classes) if cls == ring]
+                else:
+                    size = int(ring[: -len("-ring")])
+                    matched = [
+                        i
+                        for i, cls in enumerate(classes)
+                        if cls is not None
+                        and cls.endswith("-ring")
+                        and cls != "non-ring"
+                        and size in _label_ring_set(cls)
+                    ]
                 if not matched:
                     present: dict[str, int] = {}
                     for cls in classes:
-                        if cls in selectable:
+                        if cls in selectable or (
+                            cls is not None
+                            and cls.endswith("-ring")
+                            and cls != "non-ring"
+                        ):
                             present[cls] = present.get(cls, 0) + 1
-                    have = ", ".join(f"{c} {n}" for c, n in present.items()) or "none"
+                    have = (
+                        ", ".join(f"{c} {n}" for c, n in sorted(present.items()))
+                        or "none"
+                    )
                     raise BadInput(
                         f"lining[{name!r}] site {site!r} matches no carbon on "
-                        f"{name!r} (classes present: {have}). A carbon's class "
-                        "is the SMALLEST ring it closes, so a heptagon's "
-                        "carbons that also sit on a hexagon read 6-ring — "
-                        "list their ordinals from view='sites' instead"
+                        f"{name!r} (classes present: {have}). A carbon's "
+                        "class names every defect ring it sits on — a "
+                        "'5+7-ring' atom matches both 'ring:5-ring' and "
+                        "'ring:7-ring'; 'ring:6-ring' is the pure-hexagon "
+                        "class. List ordinals from view='sites' for finer"
                     )
                 for i in matched:
                     out[name][i] = GROUP_POLARITY[group]
