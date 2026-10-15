@@ -506,6 +506,111 @@ def test_pourbaix_page_draws_reset_layer_and_ships_rung_margins(
     assert "data-rmargin" in text and "m_e" in text
 
 
+# ── deep links: panel state in the URL ───────────────────────────────────
+
+
+def _input_tag(text: str, el_id: str) -> str:
+    m = re.search(rf'<input[^>]*id="{el_id}"[^>]*>', text)
+    assert m is not None, el_id
+    return m.group(0)
+
+
+def _attr(tag: str, name: str) -> str:
+    m = re.search(rf'\s{name}="([^"]*)"', tag)
+    assert m is not None, (name, tag)
+    return m.group(1)
+
+
+def test_pourbaix_link_state_round_trips_u_ph_and_reset(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    """A link carrying the bank state (?u= ?ph= ?reset=0, the params the
+    page script writes with history.replaceState) re-opens on that state,
+    the server defaults ride along so the script leaves default sliders
+    out of the URL, and re-requesting the rendered values is a fixed
+    point."""
+    sid = _seed_structure(runtime_with_store)
+    base = pb_client.get(f"/pourbaix/st{sid}").text
+    assert 'id="pbx-reset-toggle" checked' in base
+    assert "history.replaceState" in base
+    u_def = _attr(_input_tag(base, "pbx-u"), "data-default")
+    ph_def = _attr(_input_tag(base, "pbx-ph"), "data-default")
+
+    text = pb_client.get(f"/pourbaix/st{sid}?u=-0.315&ph=7.5&reset=0").text
+    u_tag, ph_tag = _input_tag(text, "pbx-u"), _input_tag(text, "pbx-ph")
+    assert float(_attr(u_tag, "value")) == -0.315
+    assert float(_attr(ph_tag, "value")) == 7.5
+    assert 'id="pbx-reset-toggle" class' in text  # unchecked
+    # the defaults are the page's own, not the linked values
+    assert _attr(u_tag, "data-default") == u_def
+    assert _attr(ph_tag, "data-default") == ph_def
+    again = pb_client.get(
+        f"/pourbaix/st{sid}?u={_attr(u_tag, 'value')}"
+        f"&ph={_attr(ph_tag, 'value')}&reset=0"
+    ).text
+    assert _input_tag(again, "pbx-u") == u_tag
+    assert _input_tag(again, "pbx-ph") == ph_tag
+    assert "pbx-link-note" not in text
+
+
+def test_pourbaix_link_state_bad_params_fall_back_with_a_note(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    base = pb_client.get(f"/pourbaix/st{sid}").text
+    text = pb_client.get(f"/pourbaix/st{sid}?u=nan&ph=x&reset=maybe").text
+    assert 'id="pbx-link-note"' in text and "u, ph, reset" in text
+    assert _input_tag(text, "pbx-u") == _input_tag(base, "pbx-u")
+    assert _input_tag(text, "pbx-ph") == _input_tag(base, "pbx-ph")
+    assert 'id="pbx-reset-toggle" checked' in text
+    # pH is clamped to the slider span, U to the sanity bound
+    text = pb_client.get(f"/pourbaix/st{sid}?ph=20&u=99").text
+    assert float(_attr(_input_tag(text, "pbx-ph"), "value")) == 14.0
+    assert float(_attr(_input_tag(text, "pbx-u"), "value")) == 5.0
+
+
+def test_pourbaix_link_pathway_param_picks_the_staircase(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    """?pathway= picks which ready linked pathway feeds the staircase;
+    the picker lists them best-first with links that keep ?surface=; an
+    unknown value falls back to the best-ranked with a notice."""
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store)
+    older = _pathway(store, "pw_older", _pathway_results())
+    newer = _pathway(store, "pw_newer", _reset_results())
+    for pw in (older, newer):
+        store.add_link(
+            src_ref_id=sid, dst_ref_id=pw.id, relation="related-to", set_by="system"
+        )
+    qid = _mk_quest(runtime_with_store)
+    store.add_link(src_ref_id=sid, dst_ref_id=qid, relation="serves")
+
+    text = pb_client.get(f"/pourbaix/qu{qid}").text
+    assert "2 ready pathways" in text
+    assert f">pw{newer.id}</span>" in text  # the drawn pick, not a link
+    assert "no_reduce" not in text  # best-ranked (newest) has e1/e2 rungs
+    assert f"?surface=st{sid}&amp;pathway=pw{older.id}" in text
+
+    text = pb_client.get(f"/pourbaix/qu{qid}?surface=st{sid}&pathway=pw{older.id}").text
+    assert "no_reduce" in text
+    for raw in (str(older.id), "pw_older"):
+        assert "no_reduce" in pb_client.get(f"/pourbaix/st{sid}?pathway={raw}").text
+
+    text = pb_client.get(f"/pourbaix/st{sid}?pathway=pw999999999").text
+    assert "no ready pathway" in text and "best-ranked" in text
+    assert "no_reduce" not in text
+
+
+def test_pourbaix_picker_links_are_marked_to_carry_the_bank_state(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid, sid_a, _sid_b = _quest_with_two_surfaces(runtime_with_store)
+    text = pb_client.get(f"/pourbaix/qu{qid}").text
+    assert f'href="?surface=st{sid_a}" class="pbx-carry' in text
+    assert 'href="?view=compare" class="pbx-carry' in text
+
+
 # ── gr488208: cold render — batched reads, identical output ──────────────
 
 

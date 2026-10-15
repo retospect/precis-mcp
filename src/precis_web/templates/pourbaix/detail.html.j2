@@ -29,9 +29,9 @@
     — best-ranked first
     {% if compare %}
     · <span class="text-amber-800">comparison: every surface drawn below</span>
-    · <a href="{{ request.url.path }}" class="text-sky-700 hover:underline">back to one surface</a>
+    · <a href="{{ request.url.path }}" class="pbx-carry text-sky-700 hover:underline">back to one surface</a>
     {% else %}
-    · <a href="?view=compare" class="text-sky-700 hover:underline">compare all on one page</a>
+    · <a href="?view=compare" class="pbx-carry text-sky-700 hover:underline">compare all on one page</a>
     {% endif %}
   </div>
   {% if surface_notice %}
@@ -41,7 +41,7 @@
   {% for s in surfaces %}
     <li>
       <a href="{{ s.page_url }}" class="font-mono text-sky-700 hover:underline">{{ s.handle }}</a>
-      <a href="{{ s.select_url }}" class="text-sky-700 hover:underline">draw</a>
+      <a href="{{ s.select_url }}" class="pbx-carry text-sky-700 hover:underline">draw</a>
       {% if s.handle == selected_handle %}<span class="text-slate-400">← shown</span>{% endif %}
       {% if s.band %}<span class="rounded bg-slate-100 px-1 text-slate-500">{{ s.band }}</span>{% endif %}
       {% if s.title %}<span class="text-slate-600">{{ s.title }}</span>{% endif %}
@@ -57,22 +57,26 @@
    SHE — every quantity here is pH-flat on RHE. Honest-slider rule: each
    input carries data-offgrid; an off-grid axis (fresh anchors needed) is
    flagged, never silently extrapolated. None exist yet — the flag path is
-   wired so an axis can be marked. #}
+   wired so an axis can be marked.
+   Deep links: U, pH and the reset toggle ride the query string (?u= ?ph=
+   ?reset=0) — the script rewrites the address bar with
+   history.replaceState as they change and carries them on every picker
+   link; the server renders a linked state on load. #}
 <div id="pbx-bank" class="mb-4 rounded border border-slate-200 bg-white p-3 text-xs">
   <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
     <label class="text-slate-600">U (V vs RHE)
       <input type="range" id="pbx-u" min="{{ u_lo }}" max="{{ u_hi }}" step="0.005"
-             value="{{ u0 }}" data-offgrid="0" class="ml-1 w-48 align-middle">
+             value="{{ u0 }}" data-default="{{ u_def }}" data-offgrid="0" class="ml-1 w-48 align-middle">
     </label>
     <span id="pbx-u-read" class="font-mono"></span>
     <span id="pbx-u-she" class="text-slate-500"></span>
     <label class="text-slate-600">pH
       <input type="range" id="pbx-ph" min="0" max="14" step="0.1"
-             value="{{ ph0 }}" data-offgrid="0" class="ml-1 w-28 align-middle">
+             value="{{ ph0 }}" data-default="{{ ph_def }}" data-offgrid="0" class="ml-1 w-28 align-middle">
     </label>
     <span id="pbx-ph-read" class="font-mono"></span>
     <label class="text-slate-600">
-      <input type="checkbox" id="pbx-reset-toggle" checked class="ml-1 align-middle">
+      <input type="checkbox" id="pbx-reset-toggle"{% if reset_on %} checked{% endif %} class="ml-1 align-middle">
       reset layer
     </label>
     <span class="text-slate-400" title="guaranteed reset (solid) vs the hysteretic
@@ -82,6 +86,11 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       off the computed grid — this axis needs fresh anchors
     </span>
   </div>
+  {% if link_ignored %}
+  <p id="pbx-link-note" class="mt-1 text-amber-800">ignored link
+    parameter{{ 's' if link_ignored | length > 1 }} that did not parse:
+    {{ link_ignored | join(', ') }} — showing the default for those.</p>
+  {% endif %}
 </div>
 
 <div id="pourbaix-panel" class="space-y-6">
@@ -137,10 +146,23 @@ band — viable but not guaranteed (dashed); each in its route's colour">
     <div class="pbx-staircase mt-3 border-t border-slate-200 pt-2">
       <div class="text-xs">
         reaction staircase —
-        <a href="{{ sc.pathway_url }}" class="font-mono text-sky-700 hover:underline">{{ sc.pathway_handle }}</a>
+        <a href="{{ sc.pathway_url }}" class="pbx-carry-pw font-mono text-sky-700 hover:underline">{{ sc.pathway_handle }}</a>
         <span class="text-slate-600">{{ sc.title }}</span>
         <span class="text-slate-400">· ΔG(U) = ΔG0 + n_e·U, n_e = pairs consumed</span>
       </div>
+      {% if sc.pathway_notice %}
+      <div class="mt-1 rounded bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">{{ sc.pathway_notice }}</div>
+      {% endif %}
+      {% if sc.pathways | length > 1 and not compare %}
+      <div class="pbx-pathways mt-1 text-[11px] text-slate-600">
+        {{ sc.pathways | length }} ready pathways, best-ranked first:
+        {% for p in sc.pathways %}
+        {% if p.selected %}<span class="font-mono font-medium text-slate-800" title="{{ p.title }}">{{ p.handle }}</span>{% else %}<a
+          href="?{{ ({'surface': selected_handle, 'pathway': p.handle} if selected_handle else {'pathway': p.handle}) | urlencode }}"
+          class="pbx-carry font-mono text-sky-700 hover:underline" title="{{ p.title }}">{{ p.handle }}</a>{% endif %}{{ ' ·' if not loop.last }}
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if not e.maps %}
       <div class="mt-1 text-[11px] text-amber-700">no resting map on this
         structure — the staircase's starting surface is unverified</div>
@@ -370,12 +392,49 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       g.style.display = on ? '' : 'none';
     });
   }
-  if (resetT) resetT.addEventListener('change', applyResetLayer);
+  // ── deep links: the bank's state (U, pH, reset toggle) rides the query
+  // string. Every change rewrites the address bar with
+  // history.replaceState (no reload, no history entries) and re-stamps
+  // the picker links (.pbx-carry keep the page's own params; the pathway
+  // link .pbx-carry-pw gets the U/pH the pathway page reads). A slider
+  // on its server default stays out of the URL. ──
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  function bankParams() {
+    const out = [];
+    const u = parseFloat(uEl.value), ph = parseFloat(phEl.value);
+    if (!near(u, parseFloat(uEl.dataset.default))) out.push(['u', String(+u.toFixed(3))]);
+    if (!near(ph, parseFloat(phEl.dataset.default))) out.push(['ph', String(+ph.toFixed(1))]);
+    if (resetT && !resetT.checked) out.push(['reset', '0']);
+    return out;
+  }
+  function withBank(href, keys) {
+    let url;
+    try { url = new URL(href, window.location.href); } catch (e) { return href; }
+    keys.forEach((k) => url.searchParams.delete(k));
+    bankParams().forEach(([k, v]) => { if (keys.includes(k)) url.searchParams.set(k, v); });
+    return url.pathname + url.search + url.hash;
+  }
+  function syncLinks(rewriteBar) {
+    document.querySelectorAll('a.pbx-carry').forEach((a) => {
+      a.dataset.base = a.dataset.base || a.getAttribute('href');
+      a.setAttribute('href', withBank(a.dataset.base, ['u', 'ph', 'reset']));
+    });
+    document.querySelectorAll('a.pbx-carry-pw').forEach((a) => {
+      a.dataset.base = a.dataset.base || a.getAttribute('href');
+      a.setAttribute('href', withBank(a.dataset.base, ['u', 'ph']));
+    });
+    if (!rewriteBar) return;
+    try {
+      history.replaceState(null, '', withBank(window.location.href, ['u', 'ph', 'reset']));
+    } catch (e) { /* sandboxed context: the links still carry the state */ }
+  }
 
-  uEl.addEventListener('input', update);
-  phEl.addEventListener('input', update);
+  if (resetT) resetT.addEventListener('change', () => { applyResetLayer(); syncLinks(true); });
+  uEl.addEventListener('input', () => { update(); syncLinks(true); });
+  phEl.addEventListener('input', () => { update(); syncLinks(true); });
   update();
   applyResetLayer();
+  syncLinks(false);
 })();
 {% endraw %}
 </script>

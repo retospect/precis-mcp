@@ -74,13 +74,21 @@ def structures_for_pathway(store: Store, pathway_ref_id: int) -> list[Ref]:
 
 
 def best_pathway(store: Store, structure_ref_id: int) -> Ref | None:
-    """The pathway the staircase panel renders for this structure.
+    """The pathway the staircase panel renders for this structure: the
+    head of :func:`ranked_pathways`, ``None`` when no ready pathway is
+    linked."""
+    ranked = ranked_pathways(store, structure_ref_id)
+    return ranked[0] if ranked else None
+
+
+def ranked_pathways(store: Store, structure_ref_id: int) -> list[Ref]:
+    """The structure's ready linked pathways, best first — the order the
+    staircase panel picks from (``/pourbaix?pathway=`` overrides the pick).
 
     Ranked, documented, not a quest verdict: ready pathways only; a
     ``che_affine``-carrying (engine ≥ 0.25.0) result beats one without
     (there is no staircase to draw without it); then the fidelity tier
-    (``verify`` > ``neb`` > ``screening``); then newest. ``None`` when no
-    ready pathway is linked."""
+    (``verify`` > ``neb`` > ``screening``); then newest."""
 
     def key(ref: Ref) -> tuple[int, int, int]:
         meta = ref.meta or {}
@@ -101,7 +109,7 @@ def best_pathway(store: Store, structure_ref_id: int) -> Ref | None:
         for r in linked_pathways(store, structure_ref_id)
         if (r.meta or {}).get("status") == "ready"
     ]
-    return max(ready, key=key, default=None)
+    return sorted(ready, key=key, reverse=True)
 
 
 def quest_operating_u(store: Store, structure_ref_id: int) -> float | None:
@@ -221,6 +229,7 @@ __all__ = [
     "mismatch",
     "pathway_operating_u",
     "quest_operating_u",
+    "ranked_pathways",
     "region_coads",
     "resting_label",
     "resting_region",

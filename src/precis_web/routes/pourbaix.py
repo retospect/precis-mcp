@@ -21,6 +21,14 @@ linked reaction-staircase panel (slices 2+3).
   (``ΔG = ΔG0 + n_e·U``) and moves the marker on every map client-side;
   the pH slider only relabels SHE (the sweep is pH-flat on RHE). The page
   degrades honestly: no pathway → map only; no anchors → staircase only.
+* Deep links: the panel state rides the query string — ``?surface=``,
+  ``?view=compare``, ``?pathway=`` (which ready linked pathway feeds the
+  staircase; default the best-ranked, :func:`precis.quest.staircase.
+  ranked_pathways`), and the slider bank's ``?u=``/``?ph=``/``?reset=0``.
+  The server renders a linked state on load; the page script keeps the
+  bank params in the address bar with ``history.replaceState`` and carries
+  them on every picker link. An unparseable value is named in a notice and
+  the default kept.
 """
 
 from __future__ import annotations
@@ -110,8 +118,12 @@ def _map_ctx(
     }
 
 
-def _staircase_ctx(store: Store, ref: Any) -> tuple[dict[str, Any] | None, Any]:
-    """The affine staircase of the candidate's best linked pathway —
+def _staircase_ctx(
+    store: Store, ref: Any, *, pathway: str | None = None
+) -> tuple[dict[str, Any] | None, Any]:
+    """The affine staircase of the candidate's best linked pathway — or of
+    the ready linked pathway ``pathway`` names (handle, ref_id or slug; the
+    ``?pathway=`` deep link, falling back to the best with a notice) —
     JSON-safe rungs for the client-side re-tilt (each carrying its
     slice-7 reset margin + estimator label), the engine's own per-route
     scalars, the HER competitor, footing and the honest ``missing``
@@ -120,11 +132,12 @@ def _staircase_ctx(store: Store, ref: Any) -> tuple[dict[str, Any] | None, Any]:
     from precis.quest import staircase as sq
     from precis_pathway import reset_contour, staircase_routes
 
-    pw = sq.best_pathway(store, int(ref.id))
-    if pw is None:
+    ranked = sq.ranked_pathways(store, int(ref.id))
+    if not ranked:
         return None, None
+    pw, notice = _pick_pathway(ranked, pathway)
     sr = staircase_routes.routes_for_pathway(store, pw)
-    handle = handle_registry.try_format("pathway", int(pw.id)) or f"pathway:{pw.id}"
+    handle = _pathway_handle(pw)
     routes = []
     for r in sr.routes:
         stats = sr.route_stats.get(r.name) or {}
@@ -182,8 +195,37 @@ def _staircase_ctx(store: Store, ref: Any) -> tuple[dict[str, Any] | None, Any]:
             "her": her,
             "footing": sr.footing,
             "missing": list(sr.missing),
+            "pathway_notice": notice,
+            "pathways": [
+                {
+                    "handle": _pathway_handle(p),
+                    "title": (p.title or "").splitlines()[0] if p.title else "",
+                    "selected": int(p.id) == int(pw.id),
+                }
+                for p in ranked
+            ],
         },
         sr,
+    )
+
+
+def _pathway_handle(pw: Any) -> str:
+    return handle_registry.try_format("pathway", int(pw.id)) or f"pathway:{pw.id}"
+
+
+def _pick_pathway(ranked: list[Any], raw: str | None) -> tuple[Any, str | None]:
+    """``(pathway, notice)`` for the ``?pathway=`` pick among the ranked
+    ready pathways — matched on handle, bare ref_id or slug — else the
+    best-ranked. An unknown value falls back with a notice, never a 404."""
+    if raw is None or not raw.strip():
+        return ranked[0], None
+    raw = raw.strip()
+    for p in ranked:
+        if raw in (_pathway_handle(p), str(p.id), getattr(p, "slug", None)):
+            return p, None
+    return ranked[0], (
+        f"no ready pathway {raw!r} is linked to this structure — showing "
+        f"{_pathway_handle(ranked[0])} (best-ranked)"
     )
 
 
@@ -282,12 +324,13 @@ def _candidate_ctx(
     ref: Any,
     *,
     u_marker: float | None = None,
+    pathway: str | None = None,
 ) -> dict[str, Any]:
     from precis.quest import staircase as sq
     from precis_pathway import pourbaix_map
 
     handle = handle_registry.try_format("structure", int(ref.id)) or f"st{ref.id}"
-    staircase, sr = _staircase_ctx(store, ref)
+    staircase, sr = _staircase_ctx(store, ref, pathway=pathway)
     maps = [
         _map_ctx(
             m,
@@ -432,6 +475,47 @@ def _select_surface(
     )
 
 
+#: Sanity clamp on a linked ``?u=`` (V vs RHE) — a hand-edited link may
+#: widen the slider window, but not without bound.
+_LINK_U_BOUND = 5.0
+
+
+def _link_state(
+    params: Any, u0: float, ph0: float
+) -> tuple[float, float, bool, list[str]]:
+    """The deep-link panel state (``?u=``, ``?ph=``, ``?reset=0``) over the
+    server defaults: ``(u, pH, reset_layer_on, ignored)``. The client keeps
+    these params in the address bar via ``history.replaceState`` as the
+    sliders move; a value that doesn't parse is ignored (named in
+    ``ignored`` for the notice) and the default kept — never an error."""
+    ignored: list[str] = []
+    u, ph = u0, ph0
+    raw_u = params.get("u")
+    if raw_u is not None:
+        try:
+            val = float(raw_u)
+        except ValueError:
+            val = math.nan
+        if math.isfinite(val):
+            u = max(-_LINK_U_BOUND, min(_LINK_U_BOUND, val))
+        else:
+            ignored.append("u")
+    raw_ph = params.get("ph")
+    if raw_ph is not None:
+        try:
+            val = float(raw_ph)
+        except ValueError:
+            val = math.nan
+        if math.isfinite(val):
+            ph = max(0.0, min(14.0, val))
+        else:
+            ignored.append("ph")
+    raw_reset = params.get("reset")
+    if raw_reset is not None and raw_reset not in ("0", "1"):
+        ignored.append("reset")
+    return u, ph, raw_reset != "0", ignored
+
+
 @router.get("/pourbaix/{handle}", response_class=HTMLResponse)
 async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     store = get_store(request)
@@ -450,8 +534,10 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             status_code=404,
         )
     kind, ref = resolved
-    # operating point known before entries: the marker/markers ride it
-    u0 = _u_default(store, kind, ref)
+    # operating point known before entries: the marker/markers ride it;
+    # a deep link's ?u=/?ph=/?reset= override the defaults
+    u_def, ph_def = _u_default(store, kind, ref), _ph_default(ref)
+    u0, ph0, reset_on, link_ignored = _link_state(request.query_params, u_def, ph_def)
     surfaces: list[dict[str, Any]] = []
     compare = False
     selected: dict[str, Any] | None = None
@@ -478,7 +564,12 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             "handle": handle_registry.try_format("structure", ref.id) or f"st{ref.id}",
             "title": (ref.title or "").splitlines()[0] if ref.title else "",
         }
-    entries = [_candidate_ctx(store, s["ref"], u_marker=u0) for s in drawn]
+    # ?pathway= picks the staircase's pathway on the one drawn surface; the
+    # comparison view keeps every surface on its own best pathway
+    pathway = None if compare else request.query_params.get("pathway")
+    entries = [
+        _candidate_ctx(store, s["ref"], u_marker=u0, pathway=pathway) for s in drawn
+    ]
     u_lo, u_hi = _u_window(entries, u0)
     return templates.TemplateResponse(
         request,
@@ -496,7 +587,13 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             "u0": u0,
             "u_lo": u_lo,
             "u_hi": u_hi,
-            "ph0": _ph_default(ref),
+            "ph0": ph0,
+            # the server defaults: the client leaves a param out of the
+            # address bar while its slider sits on the default
+            "u_def": u_def,
+            "ph_def": ph_def,
+            "reset_on": reset_on,
+            "link_ignored": link_ignored,
         },
     )
 
