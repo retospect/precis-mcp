@@ -165,8 +165,8 @@ dependencies = [
     # "extra-gap" class, e.g. asa's /opt/asa venv lacking [calc]). Every
     # dep below is torch-free, so the slim serve/worker/embeddings venvs
     # (ADR 0020/0021) stay torch-free — they just carry a little more pure-
-    # Python / compiled-wheel weight. Heavy-but-pure packs (rdkit → [chem],
-    # OCCT → [cad-step], kokoro → [tts]) and everything torch-bound
+    # Python / compiled-wheel weight. Heavy-but-pure packs (OCCT →
+    # [cad-step], kokoro → [tts]; rdkit was promoted, see below) and everything torch-bound
     # (embed / paper / dft-ml / catalyst) deliberately stay optional.
     #
     # calc kind — sympy CAS + pint's curated unit registry.
@@ -202,6 +202,11 @@ dependencies = [
     # + ConvexHull in precis_se/atomic/clearance.py) so the guarantee is
     # declared, not borrowed from ase's requirements.
     "scipy>=1.14",
+    # rdkit — promoted from [chem] (Reto, 2026-10-15). Torch-free (~35 MB
+    # wheel, ~100 MB installed); the serve venv needs it for rxn identity
+    # keys, the reaction classifier and chem-kind canonicalisation. [chem]
+    # still lists it so existing `--extra chem` invocations keep working.
+    "rdkit>=2023.9",
     # Nanopub publication (docs/backlog/claim-publication-nanopub-ots.md).
     # `nanopub` is the ecosystem's reference Python implementation: rdflib
     # TriG serialization, trusty-URI hashing (spec: never hand-rolled), and
