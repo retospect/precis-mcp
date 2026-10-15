@@ -98,8 +98,13 @@ block is bound to — from there it is ordinary geometry (`cut` bores,
   (`open` rounds convex edges and reports every strut thinner than 2r it
   erased; `close` fills necks; `round` = both at one radius). At least
   half a pitch.
-- `max_iter=` — 1..300, default 60. An unconverged run says so in its
-  notes; it is a snapshot of a descent, not a design.
+- `min_member=` m — thinnest strut: filter radius `min_member/(2·pitch)`
+  elements (≥ 1.5), `pitch` above `min_member/3` refused, `round=`
+  defaults to `min_member/3` (`round=0` opts out). Else the house
+  `min_member` capability (null in fdm rows); without either, finer
+  pitch gives thinner struts, not smoother ones.
+- `max_iter=` — 1..300, default 60; about 150 lets an overhang-filtered
+  run converge. An unconverged run is a snapshot, and its notes say so.
 
 When the job lands: the block is bound (`kind='cad'`) and moded, its
 `build_frame` is pinned with `origin: simp`, and the run summary sits on

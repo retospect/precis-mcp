@@ -472,7 +472,7 @@ class SeHandler(Handler):
             "template. It never mints fasteners — which hardware to buy "
             "is a design decision. realize strategy='simp' volfrac= "
             "load_at= fixed_at= [pitch= build_dir= round=|open=|close= "
-            "max_iter=] instead enqueues an se_simp job: a SIMP topology "
+            "max_iter= min_member=] instead enqueues an se_simp job: a SIMP topology "
             "solve over the block's envelope (its objectives.force/fixed "
             "as loads/supports, placed at a face token x+..z- or a posed "
             "port), bound back as a cad design rooted at a field leaf, "

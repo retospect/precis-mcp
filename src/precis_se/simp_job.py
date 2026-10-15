@@ -51,6 +51,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "minimum": 1,
             "maximum": simp_bridge.MAX_ITER_CAP,
         },
+        "min_member": {"type": ["number", "null"]},
+        "round_source": {"type": "string"},
         # a manufacture group root's fused domain: cavity clearance (m)
         "fit": {"type": ["number", "null"]},
     },

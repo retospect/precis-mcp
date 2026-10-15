@@ -28,8 +28,11 @@ lineage), 3D and matrix-free:
   keep-out. Note that this filter smooths the *gradient*, not the design: it
   is a deliberate, well-known heuristic and is therefore not part of the
   differentiable forward map.
-- **Optimality-criteria update** with a move limit of 0.2 and bisection on
-  the volume Lagrange multiplier.
+- **Optimality-criteria update** with a per-element move limit of at most
+  0.2, damped where an element's step reverses once the descent has
+  stalled (so the zig-zag settles instead of bouncing for the whole
+  budget), and bisection on the
+  volume Lagrange multiplier.
 
 **The AM filter** (``build_dir='z+'``) is Langelaar's layer-by-layer filter.
 Sweeping from the build plate upwards, the printed density of an element is
@@ -90,7 +93,7 @@ _DEFAULT_NU = 0.3
 #: (the method, the filter, the AM sweep, the OC step). A run summary that
 #: hashes its inputs (the se bridge's ``inputs_sha``) folds this in, so a
 #: re-run after an engine change never collides with a stale summary.
-ENGINE_VERSION = "simp/1"
+ENGINE_VERSION = "simp/2"
 
 #: Langelaar smooth-maximum exponent and offset, and the 3×3 stencil size.
 #: ``Q`` is fixed by the requirement that an all-void stencil map to exactly
@@ -107,6 +110,25 @@ _AM_SMIN_EPS = 1e-4
 #: Optimality-criteria move limit and damping exponent (the ``top88`` values).
 _OC_MOVE = 0.2
 _OC_ETA = 0.5
+
+#: Per-element move-limit damping (the MMA asymptote heuristic applied to
+#: the OC move), engaged once the descent stalls: no more than
+#: ``_OC_STALL_GAIN`` improvement in the best compliance over the last
+#: ``_OC_STALL_WINDOW`` iterations. From then on an element whose step
+#: reverses sign has its move limit shrunk by ``_OC_MOVE_SHRINK``, one that
+#: keeps its direction regrows by ``_OC_MOVE_GROW`` up to :data:`_OC_MOVE`,
+#: never below ``_OC_MOVE_MIN``. Under the AM filter the fixed 0.2 move
+#: zig-zags every iteration and never settles (a 30x6x6 cantilever at
+#: volfrac 0.4 still swung 10% at 250 iterations, best compliance 284.5);
+#: stall-gated, it converges at tol 0.01 in 133 iterations at 216.5.
+#: Damping from the first iteration instead froze the design grey (88-91%
+#: intermediate densities, 60% worse compliance): the zig-zag is also how
+#: the descent makes progress, so it is only damped once that is spent.
+_OC_MOVE_SHRINK = 0.7
+_OC_MOVE_GROW = 1.2
+_OC_MOVE_MIN = 0.005
+_OC_STALL_WINDOW = 20
+_OC_STALL_GAIN = 0.01
 
 #: Floor on the design density in the sensitivity-filter denominator — keeps
 #: the filtered gradient finite where a design variable has gone to zero.
@@ -718,9 +740,11 @@ def _oc_update(
     domain: np.ndarray,
     volfrac: float,
     pinned: np.ndarray | None = None,
+    move: float | np.ndarray = _OC_MOVE,
 ) -> np.ndarray:
     """Optimality-criteria step: bisect the volume multiplier until the design
-    field hits the target volume, with a per-element move limit of 0.2.
+    field hits the target volume, with a per-element move limit ``move``
+    (a scalar or an element array; :func:`_damp_move` adapts it).
     ``pinned`` elements (passive solid) are held at 1 inside the bisection,
     so the volume they occupy comes out of the designable budget rather
     than being added on top of it."""
@@ -731,7 +755,7 @@ def _oc_update(
     for _ in range(150):
         mid = 0.5 * (lo + hi)
         cand = x * np.power(drive / mid, _OC_ETA)
-        cand = np.clip(cand, x - _OC_MOVE, x + _OC_MOVE)
+        cand = np.clip(cand, x - move, x + move)
         cand = np.clip(cand, 0.0, 1.0)
         cand = np.where(domain, cand, 0.0)
         if pinned is not None:
@@ -744,6 +768,31 @@ def _oc_update(
         if (hi - lo) <= 1e-10 * (hi + lo):
             break
     return best
+
+
+def _damp_move(
+    move: np.ndarray, step: np.ndarray, prev_step: np.ndarray | None
+) -> np.ndarray:
+    """Next per-element move limit once damping is engaged: shrink where
+    this step reversed the previous one, regrow (capped at
+    :data:`_OC_MOVE`) where it did not, and leave elements that did not
+    move alone."""
+    if prev_step is None:
+        return move
+    product = step * prev_step
+    shrunk = np.maximum(move * _OC_MOVE_SHRINK, _OC_MOVE_MIN)
+    grown = np.minimum(move * _OC_MOVE_GROW, _OC_MOVE)
+    return np.where(product < 0.0, shrunk, np.where(product > 0.0, grown, move))
+
+
+def _descent_stalled(history: Sequence[float]) -> bool:
+    """True when the best compliance of the last :data:`_OC_STALL_WINDOW`
+    iterations improves on the best before them by no more than
+    :data:`_OC_STALL_GAIN` (a fraction)."""
+    if len(history) <= _OC_STALL_WINDOW:
+        return False
+    before = min(history[:-_OC_STALL_WINDOW])
+    return min(history[-_OC_STALL_WINDOW:]) > (1.0 - _OC_STALL_GAIN) * before
 
 
 # --------------------------------------------------------------------------
@@ -901,6 +950,9 @@ def simp_optimize(
     converged = False
     iterations = 0
     cg_capped_any = False
+    move = np.full(x.shape, _OC_MOVE)
+    prev_step: np.ndarray | None = None
+    damped_from: int | None = None
 
     for iterations in range(1, max_iter + 1):
         ev = _compliance_and_sensitivity(x, problem, warm)
@@ -908,8 +960,14 @@ def simp_optimize(
         warm = ev.displacement
         cg_capped_any = cg_capped_any or ev.cg_capped
         dc = _sensitivity_filter(ev.dc, x, mask, offsets, weight_sums)
-        x_next = _oc_update(x, dc, mask, volfrac, pinned)
-        change = float(np.max(np.abs(x_next - x)[mask]))
+        x_next = _oc_update(x, dc, mask, volfrac, pinned, move)
+        step = x_next - x
+        change = float(np.max(np.abs(step)[mask]))
+        if damped_from is None and _descent_stalled(history):
+            damped_from = iterations
+        if damped_from is not None:
+            move = _damp_move(move, step, prev_step)
+        prev_step = step
         x = x_next
         if change < tol:
             converged = True
@@ -940,6 +998,21 @@ def simp_optimize(
             f"passive solid: {int(np.count_nonzero(pinned))} active element(s) "
             "held at density 1 for the whole run (under the loads/supports), "
             "counted inside the volume budget"
+        )
+    if damped_from is None:
+        notes.append(
+            f"OC move limit: {_OC_MOVE} per element throughout (the descent "
+            "never stalled, so no damping engaged)"
+        )
+    else:
+        damped = int(np.count_nonzero((move < _OC_MOVE) & mask))
+        notes.append(
+            f"OC move limit: {_OC_MOVE} per element until the descent stalled "
+            f"at iteration {damped_from} (best compliance within "
+            f"{_OC_STALL_GAIN:.0%} over {_OC_STALL_WINDOW} iterations), then "
+            f"shrunk x{_OC_MOVE_SHRINK} where a step reversed (floor "
+            f"{_OC_MOVE_MIN}); {damped} active element(s) ended below "
+            f"{_OC_MOVE}, the smallest at {float(move[mask].min()):.3g}"
         )
     if converged:
         notes.append(

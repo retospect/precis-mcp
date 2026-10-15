@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** O2–O4 before O5 (Reto 2026-10-12: "ok, we'll work on this, not highest prio now" — the recommendation O2–O4 first, rough box yes, stands as the default when the thread resumes).
+- **Next:** O5 + declared flat faces (Do next 2), then the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 wants a re-run of the bracket with `min_member=0.003` and `max_iter` about 150.
 - **Blocked by:** Nothing. Reto deprioritised this thread on 2026-10-12; the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
@@ -111,14 +111,14 @@ off that gap until it closes.
    state); B waits on
    measures-substrate, C on the class lattice (both knowledge-mesh).
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
-   bridge** (Reto 2026-10-03). The next build item. Note §14 lists it as
-   O2–O5, none with a migration (O1 shipped 264f412c0):
-   - O5 + declared flat faces: about 1 build. Its rank against O2–O4
-     waits on Reto (item -6).
-   - O2: `realize(min_member=)` mapped to the filter radius, a pitch guard
-     at min_member/3, and a `min_member` capability field.
-   - O3: default rounding at min_member/3.
-   - O4: optimiser convergence.
+   bridge** (Reto 2026-10-03). The next build item. Note §14 listed
+   O1–O5; O1 shipped 264f412c0, O2–O4 shipped 2026-10-15. Left:
+   - O5 + declared flat faces (load ports with a solid contact boss):
+     about 1 build, no migration.
+   - The house `min_member` figure (null in every fdm row; 3 mm proposed)
+     waits on print 2 being handled. Print 2 is a re-run of the bracket
+     with `min_member=0.003`, `max_iter` about 150; it needs cluster
+     compute.
    Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
    Lab X1 Carbon with tree supports; the goal is support-free.
 3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped

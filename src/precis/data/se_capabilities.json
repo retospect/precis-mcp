@@ -1,5 +1,5 @@
 {
-  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`. WIDENED on 2026-09-18 by docs/backlog/structural-solution-space.md slice 4 bridge with `simp_pitch` (mm, the voxel pitch `realize(strategy='simp')` samples the block's envelope at) — null in every fdm row with a source saying why; the op demands `pitch=` while it is null. WIDENED on 2026-09-19 by the same item's round B2 with `min_clearance` (mm, the smallest printable in-place gap between DOF-joined members, `realize(strategy='manufacture')`'s `in_place_clearance` floor) — null in every fdm row with a source saying why; the op demands `gap=` while it is null and states that the floor is uncalibrated.",
+  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`. WIDENED on 2026-09-18 by docs/backlog/structural-solution-space.md slice 4 bridge with `simp_pitch` (mm, the voxel pitch `realize(strategy='simp')` samples the block's envelope at) — null in every fdm row with a source saying why; the op demands `pitch=` while it is null. WIDENED on 2026-09-19 by the same item's round B2 with `min_clearance` (mm, the smallest printable in-place gap between DOF-joined members, `realize(strategy='manufacture')`'s `in_place_clearance` floor) — null in every fdm row with a source saying why; the op demands `gap=` while it is null and states that the floor is uncalibrated. WIDENED on 2026-10-15 by se-machine-design O2 with `min_member` (mm, the thinnest strut realize(strategy='simp') may leave: filter radius, pitch guard and default rounding) — null in every fdm row with a source saying why; without it the op keeps the engine's 1.5-element filter.",
   "rows": [
     {
       "mode": "fdm/pla",
@@ -95,7 +95,15 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+        },
+        "min_member": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-15",
+          "source": "The thinnest strut realize(strategy='simp') may leave (se-machine-design O2): it sets the sensitivity-filter radius to min_member/(2*pitch) elements, refuses a pitch above min_member/3, and defaults round= to min_member/3. The proposed house figure is 3 mm for a toy-scale part (about 3.5x min_wall, a strut that survives handling), but no SIMP part has been printed and handled yet. Null on purpose until the first test piece prints: without it the filter stays at 1.5 elements and the minimum member shrinks with the pitch; pass min_member= or set_process_override(field='min_member', value=<mm>)."
         },
         "min_clearance": {
           "physical": null,
@@ -201,7 +209,15 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+        },
+        "min_member": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-15",
+          "source": "The thinnest strut realize(strategy='simp') may leave (se-machine-design O2): it sets the sensitivity-filter radius to min_member/(2*pitch) elements, refuses a pitch above min_member/3, and defaults round= to min_member/3. The proposed house figure is 3 mm for a toy-scale part (about 3.5x min_wall, a strut that survives handling), but no SIMP part has been printed and handled yet. Null on purpose until the first test piece prints: without it the filter stays at 1.5 elements and the minimum member shrinks with the pitch; pass min_member= or set_process_override(field='min_member', value=<mm>)."
         },
         "min_clearance": {
           "physical": null,
@@ -307,7 +323,15 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+        },
+        "min_member": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-15",
+          "source": "The thinnest strut realize(strategy='simp') may leave (se-machine-design O2): it sets the sensitivity-filter radius to min_member/(2*pitch) elements, refuses a pitch above min_member/3, and defaults round= to min_member/3. The proposed house figure is 3 mm for a toy-scale part (about 3.5x min_wall, a strut that survives handling), but no SIMP part has been printed and handled yet. Null on purpose until the first test piece prints: without it the filter stays at 1.5 elements and the minimum member shrinks with the pitch; pass min_member= or set_process_override(field='min_member', value=<mm>)."
         },
         "min_clearance": {
           "physical": null,
@@ -413,7 +437,15 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+        },
+        "min_member": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-15",
+          "source": "The thinnest strut realize(strategy='simp') may leave (se-machine-design O2): it sets the sensitivity-filter radius to min_member/(2*pitch) elements, refuses a pitch above min_member/3, and defaults round= to min_member/3. The proposed house figure is 3 mm for a toy-scale part (about 3.5x min_wall, a strut that survives handling), but no SIMP part has been printed and handled yet. Null on purpose until the first test piece prints: without it the filter stays at 1.5 elements and the minimum member shrinks with the pitch; pass min_member= or set_process_override(field='min_member', value=<mm>)."
         },
         "min_clearance": {
           "physical": null,
@@ -519,7 +551,15 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+        },
+        "min_member": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-15",
+          "source": "The thinnest strut realize(strategy='simp') may leave (se-machine-design O2): it sets the sensitivity-filter radius to min_member/(2*pitch) elements, refuses a pitch above min_member/3, and defaults round= to min_member/3. The proposed house figure is 3 mm for a toy-scale part (about 3.5x min_wall, a strut that survives handling), but no SIMP part has been printed and handled yet. Null on purpose until the first test piece prints: without it the filter stays at 1.5 elements and the minimum member shrinks with the pitch; pass min_member= or set_process_override(field='min_member', value=<mm>)."
         },
         "min_clearance": {
           "physical": null,

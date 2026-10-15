@@ -24,6 +24,8 @@ from precis.structsolve.simp import (
     _am_sweep_exact,
     _build_problem,
     _compliance_and_sensitivity,
+    _damp_move,
+    _descent_stalled,
     _filter_offsets,
     _filter_weight_sums,
     _sensitivity_filter,
@@ -601,3 +603,44 @@ def test_passive_elements_stay_solid_and_count_against_the_budget() -> None:
         )
     with pytest.raises(ValueError, match="passive must match"):
         simp_optimize(domain, loads, supports, volfrac=0.4, passive=passive[:2])
+
+
+# --------------------------------------------------------------------------
+# OC move damping (se-machine-design O4)
+# --------------------------------------------------------------------------
+
+
+def test_damp_move_shrinks_reversals_regrows_steady_steps_and_keeps_its_floor() -> None:
+    move = np.array([0.2, 0.1, 0.006, 0.19, 0.1])
+    prev = np.array([0.1, -0.1, 0.1, 0.1, 0.0])
+    step = np.array([-0.1, 0.1, -0.1, 0.1, 0.1])
+    out = _damp_move(move, step, prev)
+    assert out == pytest.approx([0.14, 0.07, 0.005, 0.2, 0.1])
+    # no previous step: nothing to compare against
+    assert _damp_move(move, step, None) is move
+
+
+def test_descent_stalled_needs_a_full_window_without_a_one_percent_gain() -> None:
+    assert not _descent_stalled([100.0] * 20)
+    assert _descent_stalled([100.0] + [99.5] * 20)
+    assert not _descent_stalled([100.0] + [98.0] * 20)
+
+
+def test_am_filtered_cantilever_converges_once_the_descent_stalls() -> None:
+    """The fixed 0.2 move zig-zags under the AM filter for the whole budget
+    (this run used to end unconverged at 200 iterations, compliance 226);
+    damped once the descent stalls, it settles below tol (at 138, 195)."""
+    domain, loads, supports = _cantilever()
+    res = simp_optimize(
+        domain, loads, supports, volfrac=0.4, build_dir="z+", max_iter=200
+    )
+    assert res.converged and res.iterations < 200
+    assert res.compliance_history[-1] <= 1.01 * min(res.compliance_history)
+    assert any("descent stalled at iteration" in n for n in res.notes)
+
+
+def test_a_run_that_converges_while_descending_is_never_damped() -> None:
+    domain, loads, supports = _cantilever()
+    res = simp_optimize(domain, loads, supports, volfrac=0.4, max_iter=200)
+    assert res.converged
+    assert any("no damping engaged" in n for n in res.notes)

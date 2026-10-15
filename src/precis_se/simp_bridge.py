@@ -134,6 +134,12 @@ MAX_ITER_CAP = 300
 MAX_ELEMENTS = 500_000
 #: The capability field the house voxel pitch is read from (millimetres).
 PITCH_FIELD = "simp_pitch"
+#: The capability field the house minimum member size is read from
+#: (millimetres): the thinnest strut the solve may leave.
+MIN_MEMBER_FIELD = "min_member"
+#: The engine's own filter radius in elements; ``min_member`` only ever
+#: widens it.
+BASE_RMIN = 1.5
 #: ``build_frame.origin`` stamped on a SIMP-realized block.
 FRAME_ORIGIN = "simp"
 
@@ -165,6 +171,12 @@ class SimpRequest:
     open_r: float | None = None
     close_r: float | None = None
     max_iter: int = DEFAULT_MAX_ITER
+    #: The smallest member (metres) the solve may leave — widens the
+    #: filter radius (:meth:`rmin`); ``None`` = the engine's 1.5 elements.
+    min_member: float | None = None
+    #: How ``round_r`` was chosen: ``"given"``, ``"min_member/3"`` (the
+    #: default when ``min_member`` is set), or ``"off"`` (``round=0``).
+    round_source: str = "given"
     #: The cavity clearance a manufacture group's fused domain subtracts
     #: its stand-ins with (:func:`precis_se.manufacture.simp_domain`);
     #: ``None`` = the bare stand-in solids. Meaningless for a lone block.
@@ -184,8 +196,18 @@ class SimpRequest:
             "open": self.open_r,
             "close": self.close_r,
             "max_iter": self.max_iter,
+            "min_member": self.min_member,
+            "round_source": self.round_source,
             "fit": self.fit,
         }
+
+    def rmin(self) -> float:
+        """Sensitivity-filter radius in elements: ``min_member / (2 pitch)``
+        (the filter diameter spans one minimum member), never below the
+        engine's :data:`BASE_RMIN`."""
+        if self.min_member is None:
+            return BASE_RMIN
+        return max(BASE_RMIN, self.min_member / (2.0 * self.pitch))
 
     @classmethod
     def from_params(cls, params: dict[str, Any]) -> SimpRequest:
@@ -206,6 +228,8 @@ class SimpRequest:
             open_r=_opt("open"),
             close_r=_opt("close"),
             max_iter=int(params.get("max_iter") or DEFAULT_MAX_ITER),
+            min_member=_opt("min_member"),
+            round_source=str(params.get("round_source") or "given"),
             fit=_opt("fit"),
         )
 
@@ -512,12 +536,28 @@ def _resolve_pitch(tree: SeTree, node: SeBlock, mode: str, op: dict[str, Any]) -
     return float(resolved.value) / 1000.0
 
 
+def _resolve_min_member(
+    tree: SeTree, node: SeBlock, mode: str, op: dict[str, Any]
+) -> float | None:
+    """``min_member=`` (metres), else the house :data:`MIN_MEMBER_FIELD`
+    figure (millimetres), else ``None`` — a null house figure means no
+    physical minimum, not a default in code."""
+    given = _positive_length(op, "min_member")
+    if given is not None:
+        return given
+    resolved = se_caps.resolve(tree, replace(node, mode=mode), MIN_MEMBER_FIELD)
+    if resolved is None:
+        return None
+    return float(resolved.value) / 1000.0
+
+
 def prepare_simp(
     tree: SeTree, op: dict[str, Any], *, cad_store_reader: Store | None = None
 ) -> tuple[str, SimpRequest]:
     """Validate ``{"op": "realize", "strategy": "simp", "block", "mode",
     "volfrac", "load_at", "fixed_at", "pitch"?, "build_dir"?, "round"?,
-    "open"?, "close"?, "max_iter"?, "fit"?}`` against the in-memory tree
+    "open"?, "close"?, "max_iter"?, "min_member"?, "fit"?}`` against the
+    in-memory tree
     and return ``(echo, request)``. Pure: nothing is mutated or stored —
     the block stays unrealized until the ``se_simp`` job lands.
 
@@ -526,7 +566,13 @@ def prepare_simp(
     ``set_load``), a null house pitch with no ``pitch=``, ``volfrac``
     outside ``(0, 1)``, an unknown ``build_dir``/``load_at``/``fixed_at``
     token, ``round`` combined with ``open``/``close``, ``max_iter`` beyond
-    :data:`MAX_ITER_CAP`, or a grid beyond :data:`MAX_ELEMENTS``.
+    :data:`MAX_ITER_CAP`, a grid beyond :data:`MAX_ELEMENTS``, or a pitch
+    coarser than ``min_member / 3``.
+
+    ``min_member`` (given, or the house :data:`MIN_MEMBER_FIELD`) widens
+    the filter radius to ``min_member / (2 pitch)`` elements and, unless
+    the caller gave ``round``/``open``/``close``, defaults ``round`` to
+    ``min_member / 3``; ``round=0`` opts out of that default.
 
     A **manufacture group root** (:func:`precis_se.manufacture.
     is_manufacture_root`) is the fused-domain case: its keep-in is the
@@ -603,6 +649,14 @@ def prepare_simp(
             )
 
     pitch = _resolve_pitch(tree, node, mode, op)
+    min_member = _resolve_min_member(tree, node, mode, op)
+    if min_member is not None and pitch > min_member / 3.0 * (1.0 + 1e-9):
+        raise SimpBridgeError(
+            f"realize(simp): pitch {pitch:g} m is coarser than min_member/3 "
+            f"({min_member / 3.0:g} m, min_member {min_member:g} m) — a member "
+            "needs three elements across to be rounded without being cut; "
+            f"pass pitch<={min_member / 3.0:g} or a larger min_member"
+        )
     raw_vf = op.get("volfrac")
     if raw_vf is None:
         raise SimpBridgeError(
@@ -684,7 +738,8 @@ def prepare_simp(
             "— a load on its own support does no work"
         )
 
-    round_r = _positive_length(op, "round")
+    round_off = _is_zero(op.get("round"))
+    round_r = None if round_off else _positive_length(op, "round")
     open_r = _positive_length(op, "open")
     close_r = _positive_length(op, "close")
     if round_r is not None and (open_r is not None or close_r is not None):
@@ -692,6 +747,16 @@ def prepare_simp(
             "realize(simp): round= is open+close at one radius — give either "
             "round=, or open=/close= separately, not both"
         )
+    round_source = "off" if round_off else "given"
+    if (
+        min_member is not None
+        and not round_off
+        and round_r is None
+        and open_r is None
+        and close_r is None
+    ):
+        round_r = min_member / 3.0
+        round_source = "min_member/3"
     for name, r in (("round", round_r), ("open", open_r), ("close", close_r)):
         if r is not None and r < 0.5 * pitch:
             raise SimpBridgeError(
@@ -726,6 +791,8 @@ def prepare_simp(
         open_r=open_r,
         close_r=close_r,
         max_iter=max_iter,
+        min_member=min_member,
+        round_source=round_source,
         fit=fit,
     )
     dir_note = (
@@ -743,11 +810,35 @@ def prepare_simp(
         f"realize({key!r}, strategy='simp'): queued a {JOB_TYPE} job — pitch "
         f"{pitch:g} m over a {shape[0]}x{shape[1]}x{shape[2]} grid{domain_note}, volfrac "
         f"{volfrac:g}, {dir_note}, load at {locations['load_at']!r}, fixed at "
-        f"{locations['fixed_at']!r}, max_iter {max_iter}; {key!r} stays "
+        f"{locations['fixed_at']!r}, max_iter {max_iter}{_member_note(request)}; "
+        f"{key!r} stays "
         f"unrealized until the job lands (advisory tier: the compliance is a "
         "voxel estimate)"
     )
     return echo, request
+
+
+def _is_zero(raw: Any) -> bool:
+    """``round=0`` — the explicit opt-out of the ``min_member`` default."""
+    try:
+        return raw is not None and float(raw) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _member_note(req: SimpRequest) -> str:
+    if req.min_member is None:
+        return ""
+    if req.round_source == "min_member/3":
+        rounding = f", round {req.round_r:g} m (default min_member/3; round=0 opts out)"
+    elif req.round_source == "off":
+        rounding = ", no rounding (round=0)"
+    else:
+        rounding = ""
+    return (
+        f", min_member {req.min_member:g} m (filter radius "
+        f"{req.rmin():.3g} elements){rounding}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -913,6 +1004,7 @@ def solve_simp(
             volfrac=req.volfrac,
             h=req.pitch,
             max_iter=req.max_iter,
+            rmin=req.rmin(),
             build_dir="z+",
             passive=frame.forward_array(passive),
         )
@@ -931,6 +1023,7 @@ def solve_simp(
             findings.extend(f.detail for f in opened.findings)
             fld = fieldops.close(opened.field, req.round_r)
             morphology["round_m"] = req.round_r
+            morphology["round_source"] = req.round_source
         if req.open_r is not None:
             opened = open_field(fld, req.open_r)
             findings.extend(f.detail for f in opened.findings)
@@ -993,6 +1086,8 @@ def solve_simp(
         "morphology": morphology,
         "morphology_findings": findings,
         "max_iter": req.max_iter,
+        "min_member_m": req.min_member,
+        "rmin_elements": req.rmin(),
         "notes": list(result.notes),
         "ran_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }

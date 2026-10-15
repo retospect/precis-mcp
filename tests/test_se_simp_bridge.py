@@ -150,7 +150,7 @@ def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     # the solved geometry carries its provenance (design-state-core item 4)
     geometry = beam.provenance["geometry"]
     assert geometry["source"] == "solver" and geometry["fidelity"] == "full_solve"
-    assert geometry["solver_id"] == "simp/1"
+    assert geometry["solver_id"] == "simp/2"
     assert beam.build_frame == {
         "down": [0.0, 0.0, -1.0],
         "origin": "simp",
@@ -173,7 +173,7 @@ def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     summary = ref.meta["simp"]["last"]
     assert summary["cad"] == "simp-cant-beam" and summary["field_sha"] == sha
     assert summary["grid"] == [12, 6, 6] and summary["active_elements"] == 432
-    assert summary["engine"] == "simp/1" and len(summary["inputs_sha"]) == 64
+    assert summary["engine"] == "simp/2" and len(summary["inputs_sha"]) == 64
     assert summary["fieldops"] == FIELDOPS_VERSION
     assert summary["compliance_last"] < summary["compliance_first"]
     assert summary["volume_fraction"] == pytest.approx(0.4, abs=0.05)
@@ -693,3 +693,79 @@ def test_request_round_trips_through_job_params() -> None:
     assert simp_bridge.SimpRequest.from_params(params) == req
     assert simp_job.SPEC.name == "se_simp"
     assert simp_job.SPEC.compatible_executors == frozenset({"job_inproc"})
+    _e, member = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009))
+    assert simp_bridge.SimpRequest.from_params(member.to_params()) == member
+
+
+# --------------------------------------------------------------------------
+# min_member (se-machine-design O2) and its default rounding (O3)
+# --------------------------------------------------------------------------
+
+
+def test_min_member_guards_the_pitch_and_widens_the_filter() -> None:
+    tree = _tree(_cantilever_ops())
+    # 2 mm pitch: a 5 mm member is under three elements across
+    with pytest.raises(simp_bridge.SimpBridgeError, match="coarser than min_member/3"):
+        simp_bridge.prepare_simp(tree, _simp_op(min_member=0.005))
+    echo, req = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009))
+    assert req.min_member == pytest.approx(0.009)
+    assert req.rmin() == pytest.approx(2.25)  # 9 mm / (2 x 2 mm)
+    assert "min_member 0.009 m (filter radius 2.25 elements)" in echo
+    # exactly three elements across is allowed; the filter never drops
+    # below the engine's own 1.5 elements
+    _e, tight = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.006))
+    assert tight.rmin() == pytest.approx(simp_bridge.BASE_RMIN)
+    # no min_member anywhere: today's 1.5-element filter, no rounding
+    _e, plain = simp_bridge.prepare_simp(tree, _simp_op())
+    assert plain.min_member is None and plain.round_r is None
+    assert plain.rmin() == simp_bridge.BASE_RMIN
+
+
+def test_min_member_defaults_round_to_a_third_unless_the_caller_chose() -> None:
+    tree = _tree(_cantilever_ops())
+    echo, req = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009))
+    assert req.round_r == pytest.approx(0.003)
+    assert req.round_source == "min_member/3"
+    assert "round 0.003 m (default min_member/3; round=0 opts out)" in echo
+    _e, off = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009, round=0))
+    assert off.round_r is None and off.round_source == "off"
+    _e, given = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009, round=0.004))
+    assert given.round_r == pytest.approx(0.004) and given.round_source == "given"
+    _e, closed = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009, close=0.002))
+    assert closed.round_r is None and closed.close_r == pytest.approx(0.002)
+    with pytest.raises(simp_bridge.SimpBridgeError, match="not both"):
+        simp_bridge.prepare_simp(tree, _simp_op(round=0.003, open=0.002))
+    # round=0 only switches the default off; an explicit open still runs
+    _e, opened = simp_bridge.prepare_simp(
+        tree, _simp_op(min_member=0.009, round=0, open=0.002)
+    )
+    assert opened.round_r is None and opened.open_r == pytest.approx(0.002)
+
+
+def test_min_member_reads_the_house_figure_through_the_resolver() -> None:
+    tree = _tree(_cantilever_ops())
+    apply_ops(
+        tree,
+        [
+            {"op": "set_mode", "block": "beam", "mode": "fdm/pla"},
+            {
+                "op": "set_process_override",
+                "block": "beam",
+                "field": "min_member",
+                "value": 9.0,
+            },
+        ],
+    )
+    _e, req = simp_bridge.prepare_simp(tree, _simp_op())
+    assert req.min_member == pytest.approx(0.009)
+    assert req.round_source == "min_member/3"
+
+
+def test_the_solve_uses_the_min_member_filter_radius() -> None:
+    tree = _tree(_cantilever_ops())
+    _e, req = simp_bridge.prepare_simp(tree, _simp_op(min_member=0.009, round=0))
+    solve = simp_bridge.solve_simp(tree, req)
+    assert solve.summary["min_member_m"] == pytest.approx(0.009)
+    assert solve.summary["rmin_elements"] == pytest.approx(2.25)
+    assert solve.summary["morphology"] == {}
+    assert any("radius rmin=2.25 elements" in n for n in solve.summary["notes"])
